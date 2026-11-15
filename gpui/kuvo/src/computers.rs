@@ -1,0 +1,726 @@
+//! The Computers area's main view: your computers side by side (how each stands, what it runs,
+//! the Kuvo Code it has), a computer's page, and Add a Machine. Every fact is its box's
+//! (`kuvo/computers`, PROTOCOL.md "Computers"); what no box offers yet (renaming, reconnecting,
+//! removing, adding a machine) is drawn as not in this app yet, never done here instead.
+//!
+//! Picked by the area's sidebar: nothing (all of them), `this` (the computer this window shows),
+//! `computer:<key>` (another), or `add` (Add a Machine).
+
+use gpui::{
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, Hsla, InteractiveElement, IntoElement, ListAlignment, ListState, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
+    prelude::FluentBuilder as _, px,
+};
+use kuvo_box::areas::Computer;
+use kuvo_ui::{
+    ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
+    button::{Button, ButtonSize},
+    small::spinner,
+    text_field::TextField,
+    theme::{radius, space},
+};
+
+use crate::areas::{Reading, computer_line};
+use crate::workspace::held_words;
+
+/// The widest the page's cards grow (Settings' width).
+const PAGE_WIDTH: f32 = 720.;
+
+/// Why an action no box offers yet can't be done here, as the title bar's switcher says it.
+const NOT_YET: &str = "Not in this app yet";
+
+/// A session at work on the computer this window shows, as its list says it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtWork {
+    pub session: String,
+    pub title: String,
+    pub project: String,
+}
+
+/// What the page shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shown {
+    /// All your computers.
+    All,
+    /// The computer this window shows.
+    This,
+    /// Another, by its box's key.
+    Computer(String),
+    Add,
+}
+
+impl Shown {
+    pub fn from_key(key: Option<&str>) -> Shown {
+        match key {
+            None => Shown::All,
+            Some("this") => Shown::This,
+            Some("add") => Shown::Add,
+            Some(key) => key.strip_prefix("computer:").map(|key| Shown::Computer(key.to_owned())).unwrap_or(Shown::All),
+        }
+    }
+}
+
+pub enum ComputersEvent {
+    /// A row picked: `this`, `computer:<key>`, `add`, or none (all of them).
+    Select(Option<String>),
+    /// A session at work, to open.
+    Session(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Tone {
+    /// Waiting on something that comes by itself.
+    Waiting,
+    /// Something to do about it (an update).
+    Attention,
+    /// Just so.
+    Info,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Item {
+    Title { title: String, line: String, add: bool },
+    Group(String),
+    Row { computer: Box<Computer>, first: bool, last: bool },
+    Head(Box<Computer>),
+    Notice { key: String, tone: Tone, title: String, words: String },
+    Fact { key: String, title: String, value: String, first: bool, last: bool },
+    Session { at_work: AtWork, first: bool, last: bool },
+    Action { key: String, title: String, button: String, first: bool, last: bool },
+    Note { key: String, words: String, busy: bool },
+    AddForm,
+    AddFoot,
+    End,
+}
+
+pub struct ComputersView {
+    computers: Reading<Vec<Computer>>,
+    this_box: String,
+    this_kind: String,
+    at_work: Vec<AtWork>,
+    shown: Shown,
+    host: Entity<TextField>,
+    items: Vec<Item>,
+    list: ListState,
+}
+
+impl EventEmitter<ComputersEvent> for ComputersView {}
+
+impl ComputersView {
+    pub fn new(cx: &mut Context<Self>) -> ComputersView {
+        let host = cx.new(|cx| TextField::new(cx).placeholder("my-server or user@host"));
+        let mut view = ComputersView {
+            computers: Reading::NotYet,
+            this_box: "This Mac".into(),
+            this_kind: String::new(),
+            at_work: Vec::new(),
+            shown: Shown::All,
+            host,
+            items: Vec::new(),
+            list: ListState::new(0, ListAlignment::Top, px(400.)),
+        };
+        view.rebuild(cx);
+        view
+    }
+
+    pub fn shown(&self) -> &Shown {
+        &self.shown
+    }
+
+    /// What the page says under `key`, as it draws it: a notice's title and words, a fact's value, a
+    /// note's words (the title alone).
+    pub fn said(&self, key: &str) -> Option<(String, String)> {
+        self.items.iter().find_map(|item| match item {
+            Item::Notice { key: at, title, words, .. } if at == key => Some((title.clone(), words.clone())),
+            Item::Fact { key: at, title, value, .. } if at == key => Some((title.clone(), value.clone())),
+            Item::Note { key: at, words, .. } if at == key => Some((words.clone(), String::new())),
+            _ => None,
+        })
+    }
+
+    /// The Add a Machine page's host field.
+    pub fn host_field(&self) -> &Entity<TextField> {
+        &self.host
+    }
+
+    pub fn show(&mut self, key: Option<&str>, cx: &mut Context<Self>) {
+        let shown = Shown::from_key(key);
+        if self.shown != shown {
+            self.shown = shown;
+            // Each page opens at its top.
+            self.list.scroll_to(gpui::ListOffset::default());
+            self.rebuild(cx);
+        }
+    }
+
+    pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
+        if self.computers != computers {
+            self.computers = computers;
+            self.rebuild(cx);
+        }
+    }
+
+    pub fn set_this_box(&mut self, name: &str, kind: &str, cx: &mut Context<Self>) {
+        if self.this_box != name || self.this_kind != kind {
+            self.this_box = name.to_owned();
+            self.this_kind = kind.to_owned();
+            self.rebuild(cx);
+        }
+    }
+
+    /// The sessions at work on the computer this window shows, as its list says them.
+    pub fn set_at_work(&mut self, at_work: Vec<AtWork>, cx: &mut Context<Self>) {
+        if self.at_work != at_work {
+            self.at_work = at_work;
+            self.rebuild(cx);
+        }
+    }
+
+    /// The computer this window shows, as the box lists it; while the list isn't read, what the
+    /// window knows of it (its name and kind), with no claim of how it stands.
+    fn this(&self) -> Computer {
+        let listed = match &self.computers {
+            Reading::Ready(computers) => computers.iter().find(|computer| computer.here).cloned(),
+            _ => None,
+        };
+        let mut this = listed.unwrap_or_else(|| Computer { kind: self.this_kind.clone(), here: true, via: "here".into(), ..Default::default() });
+        // Named as the window names it ("This Mac" for this Mac's own).
+        this.name = self.this_box.clone();
+        this
+    }
+
+    fn other(&self, key: &str) -> Option<Computer> {
+        match &self.computers {
+            Reading::Ready(computers) => computers.iter().find(|computer| !computer.here && computer.key == key).cloned(),
+            _ => None,
+        }
+    }
+
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let items = match self.shown.clone() {
+            Shown::All => self.all_items(),
+            Shown::This => self.page_items(self.this()),
+            Shown::Computer(key) => match self.other(&key) {
+                Some(computer) => self.page_items(computer),
+                None => self.missing_items(),
+            },
+            Shown::Add => add_items(),
+        };
+        // Only the items that changed are laid out again; the rest keep their places and the page
+        // keeps its scroll.
+        if items != self.items {
+            let start = self.items.iter().zip(&items).take_while(|(old, new)| old == new).count();
+            let tail = self.items[start..].iter().rev().zip(items[start..].iter().rev()).take_while(|(old, new)| old == new).count();
+            self.list.splice(start..self.items.len() - tail, items.len() - tail - start);
+            self.items = items;
+        }
+        cx.notify();
+    }
+
+    /// All your computers: yours, then those filed apart, each a row with how it stands.
+    fn all_items(&self) -> Vec<Item> {
+        let mut items = vec![Item::Title { title: "Your Computers".into(), line: "Each runs its own sessions, bots and agents, with Kuvo Code on it or not.".into(), add: true }];
+        let computers = match &self.computers {
+            Reading::NotYet => {
+                items.push(Item::Note { key: "computers-loading".into(), words: "Loading your computers…".into(), busy: true });
+                items.push(Item::End);
+                return items;
+            }
+            Reading::Failed(why) => {
+                items.push(Item::Note { key: "computers-failed".into(), words: format!("Your computers couldn’t be read: {why}"), busy: false });
+                items.push(Item::End);
+                return items;
+            }
+            Reading::Ready(computers) => computers,
+        };
+        let named = |computer: &Computer| {
+            let mut computer = computer.clone();
+            if computer.here {
+                computer.name = self.this_box.clone();
+            }
+            computer
+        };
+        let (apart, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
+        // (The computer this window shows is known without the list.)
+        let yours: Vec<Computer> = if yours.iter().any(|computer| computer.here) { yours.into_iter().map(named).collect() } else { std::iter::once(self.this()).chain(yours.into_iter().map(named)).collect() };
+        rows(&mut items, yours);
+        if yours_alone(computers) {
+            items.push(Item::Note { key: "computers-alone".into(), words: "Add a machine (a Mac or Linux server you reach with SSH) to run sessions and bots there too.".into(), busy: false });
+        }
+        if !apart.is_empty() {
+            items.push(Item::Group("Shared Machines".into()));
+            rows(&mut items, apart.into_iter().map(named).collect());
+        }
+        items.push(Item::End);
+        items
+    }
+
+    /// One computer's page: who it is, how it stands and why, what's at work there, what it runs,
+    /// and what can be done with it.
+    fn page_items(&self, computer: Computer) -> Vec<Item> {
+        let name = computer.name.clone();
+        let mut items = vec![Item::Head(Box::new(computer.clone()))];
+        if let Some(notice) = self.notice(&computer) {
+            items.push(notice);
+        }
+        // What's at work there: this window's own sessions open from here; another computer's are
+        // counted, as its box says them.
+        let unknown = computer.reach == "away" || computer.reach == "unknown" || computer.apart;
+        if !unknown && !computer.reach.is_empty() {
+            items.push(Item::Group("At Work".into()));
+            if computer.here && !self.at_work.is_empty() {
+                let count = self.at_work.len();
+                items.extend(self.at_work.iter().enumerate().map(|(ix, at_work)| Item::Session { at_work: at_work.clone(), first: ix == 0, last: ix + 1 == count }));
+            } else if computer.working == 0 {
+                items.push(Item::Note { key: "at-work-none".into(), words: format!("Nothing is at work on {name} now."), busy: false });
+            } else {
+                let sessions = if computer.working == 1 { "1 session".to_owned() } else { format!("{} sessions", computer.working) };
+                items.push(Item::Fact { key: "fact-at-work".into(), title: format!("{sessions} at work"), value: String::new(), first: true, last: true });
+                // Not built: a window that shows another computer's box (`BoxClient::machine`).
+                items.push(Item::Note { key: "at-work-elsewhere".into(), words: "Opening another computer’s sessions isn’t in this app yet.".into(), busy: false });
+            }
+        }
+        items.push(Item::Group("About".into()));
+        let said = |value: &Option<String>| value.clone().unwrap_or_else(|| "Not said yet".into());
+        let mut version = said(&computer.version);
+        if computer.is_older() {
+            version = format!("{version}, older than this app");
+        }
+        let limits = if computer.limits.is_empty() {
+            "None".to_owned()
+        } else {
+            computer.limits.iter().map(|service| kuvo_box::areas::service_name(service).map(str::to_owned).unwrap_or_else(|| {
+                // As the limits' rows name an account's service ("Claude").
+                let mut chars = service.chars();
+                chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+            })).collect::<Vec<_>>().join(", ")
+        };
+        let facts = [
+            ("fact-kind", "Kind", if computer.is_mac() { "Mac".to_owned() } else if computer.kind.is_empty() { "Not said yet".to_owned() } else { "Machine".to_owned() }),
+            ("fact-system", "System", said(&computer.system)),
+            ("fact-version", "Kuvo Code", version),
+            ("fact-engine", "Engine", said(&computer.engine)),
+            ("fact-reached", "Reached", reached(&computer)),
+            ("fact-limits", "Plan limits read here", limits),
+        ];
+        let count = facts.len();
+        items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
+        // What can be done with it. BOX-NEEDED: routes on every box to rename a computer, connect
+        // to one again and remove one (`kuvo/machines…` is a Mac's app's own, answered only while
+        // it's open), each said as offered on `kuvo/computers` (`can`), as the Work Queue's items say it.
+        items.push(Item::Group("Manage".into()));
+        let mut actions = vec![("action-rename", "Rename".to_owned(), "Rename…")];
+        if computer.reach == "away" {
+            actions.push(("action-reconnect", "Connect again".to_owned(), "Connect"));
+        }
+        if !computer.here {
+            actions.push(("action-remove", format!("Remove {name}"), "Remove…"));
+        }
+        let count = actions.len();
+        items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button))| Item::Action { key: key.into(), title, button: button.into(), first: ix == 0, last: ix + 1 == count }));
+        items.push(Item::Note { key: "manage-not-yet".into(), words: "Renaming, connecting again and removing computers aren’t in this app yet.".into(), busy: false });
+        items.push(Item::End);
+        items
+    }
+
+    /// Why a computer stands as it does, where that's more than "connected".
+    fn notice(&self, computer: &Computer) -> Option<Item> {
+        let name = &computer.name;
+        if computer.is_older() {
+            let (title, words) = held_words(Some(name), computer.here);
+            return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words });
+        }
+        if computer.apart {
+            return Some(Item::Notice {
+                key: "notice-apart".into(),
+                tone: Tone::Info,
+                title: format!("{name} isn’t one of your own computers"),
+                words: "It’s shared with computers of another setup, so it says nothing of what runs there.".into(),
+            });
+        }
+        let this = &self.this_box;
+        match computer.reach.as_str() {
+            "away" => Some(Item::Notice {
+                key: "notice-away".into(),
+                tone: Tone::Waiting,
+                title: format!("{name} can’t be reached"),
+                words: format!("{this} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs."),
+            }),
+            "connecting" => Some(Item::Notice { key: "notice-connecting".into(), tone: Tone::Waiting, title: format!("Connecting to {name}…"), words: format!("{this} hasn’t heard from it yet.") }),
+            "unknown" => Some(Item::Notice {
+                key: "notice-unknown".into(),
+                tone: Tone::Info,
+                title: format!("Known through {}", computer.through.as_deref().unwrap_or("another computer")),
+                words: format!("{this} doesn’t reach {name} itself, so how it stands and what it runs can’t be said here."),
+            }),
+            _ => None,
+        }
+    }
+
+    /// A computer picked that the list doesn't have (gone since, or not read yet).
+    fn missing_items(&self) -> Vec<Item> {
+        let words = match &self.computers {
+            Reading::NotYet => return vec![Item::Note { key: "computers-loading".into(), words: "Loading your computers…".into(), busy: true }, Item::End],
+            Reading::Failed(why) => format!("Your computers couldn’t be read: {why}"),
+            Reading::Ready(_) => "This computer isn’t among yours any more.".into(),
+        };
+        vec![Item::Note { key: "computer-missing".into(), words, busy: false }, Item::End]
+    }
+
+    fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let Some(item) = self.items.get(ix).cloned() else { return div().into_any_element() };
+        let body: AnyElement = match item {
+            Item::Title { title, line, add } => div()
+                .debug_selector(|| "computers-title".into())
+                .pt(space::S8)
+                .pb(space::S2)
+                .flex()
+                .items_center()
+                .gap(space::S4)
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S1).child(div().text_ui(TypeSize::Title).medium().text_color(c.text).child(title)).child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(line)))
+                .when(add, |d| d.child(div().flex_none().child(Button::new("computers-add", "Add a Machine…").icon(IconName::Plus).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Select(Some("add".into()))))))))
+                .into_any_element(),
+            Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
+            Item::Row { computer, first, last } => self.row(&computer, first, last, cx),
+            Item::Head(computer) => head(&computer, cx),
+            Item::Notice { key, tone, title, words } => {
+                let (icon, color) = match tone {
+                    Tone::Waiting => (IconName::Clock, c.icon),
+                    Tone::Attention => (IconName::Warning, c.warning),
+                    Tone::Info => (IconName::Info, c.icon),
+                };
+                let title_selector = format!("{key}-title");
+                div()
+                    .pt(space::S4)
+                    .child(
+                        div()
+                            .debug_selector(move || key)
+                            .flex()
+                            .items_start()
+                            .gap(space::S3)
+                            .px(space::S5)
+                            .py(space::S4)
+                            .rounded(radius::POPOVER)
+                            .bg(c.card)
+                            .shadow(cx.theme().card_shadow())
+                            .child(div().pt(px(2.)).child(Icon::new(icon).color(color)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(space::S0_5)
+                                    .child(div().debug_selector(move || title_selector).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
+                                    .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            Item::Fact { key, title, value, first, last } => {
+                let value_selector = format!("{key}-value");
+                card_row(key, first, last, cx)
+                    .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title))
+                    .when(!value.is_empty(), |d| d.child(div().debug_selector(move || value_selector).flex_shrink_0().max_w(px(360.)).text_right().text_ui(TypeSize::Body).text_color(c.text_muted).child(value)))
+                    .into_any_element()
+            }
+            Item::Session { at_work, first, last } => {
+                let id = at_work.session.clone();
+                let selector = format!("at-work-{id}");
+                card_row(selector.clone(), first, last, cx)
+                    .id(SharedString::from(selector))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(c.hover))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(ComputersEvent::Session(id.clone()))))
+                    .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(spinner(SharedString::from(format!("at-work-spin-{}", at_work.session)), IconSize::Nav, c.text_muted)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(at_work.title))
+                            .when(!at_work.project.is_empty(), |d| d.child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(at_work.project))),
+                    )
+                    .child(Icon::new(IconName::ChevronRight).color(c.icon))
+                    .into_any_element()
+            }
+            Item::Action { key, title, button, first, last } => card_row(key.clone(), first, last, cx)
+                .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title))
+                .child(Button::new(SharedString::from(format!("{key}-button")), button).size(ButtonSize::Small).disabled(true).tooltip(NOT_YET))
+                .into_any_element(),
+            Item::Note { key, words, busy } => div()
+                .debug_selector(move || key)
+                .pt(space::S2)
+                .flex()
+                .items_start()
+                .gap(space::S2)
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .children(busy.then(|| div().pt(px(3.)).child(spinner("computers-reading", IconSize::Nav, c.text_muted))))
+                .child(div().flex_1().min_w_0().child(words))
+                .into_any_element(),
+            Item::AddForm => self.add_form(cx),
+            Item::AddFoot => div()
+                .pt(space::S5)
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(space::S3)
+                .child(Button::new("add-cancel", "Cancel").on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Select(None)))))
+                .child(Button::new("add-machine", "Add Machine").primary().disabled(true).tooltip(NOT_YET))
+                .into_any_element(),
+            Item::End => div().h(space::S10).into_any_element(),
+        };
+        // Each item in a column as wide as a page's cards, in the middle.
+        div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(PAGE_WIDTH)).child(body)).into_any_element()
+    }
+
+    /// A computer among all of them: how it stands, its system, the Kuvo Code it has, what's at
+    /// work there; it opens its page.
+    fn row(&mut self, computer: &Computer, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let key = if computer.here { "this".to_owned() } else { format!("computer:{}", computer.key) };
+        let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
+        let selector = format!("computers-row-{id}");
+        let version = computer.version.as_ref().map(|version| format!("Kuvo Code {version}"));
+        let working = (computer.working > 0).then(|| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(space::S1)
+                .child(spinner(SharedString::from(format!("computers-row-spin-{id}")), IconSize::Nav, c.text_muted))
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{} at work", computer.working)))
+        });
+        card_row(selector.clone(), first, last, cx)
+            .id(SharedString::from(selector))
+            .cursor_pointer()
+            .hover(|s| s.bg(c.hover))
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(ComputersEvent::Select(Some(key.clone())))))
+            .child(tile(computer, px(32.), cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
+                    .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(computer_line(computer))),
+            )
+            .children(working)
+            .children(version.map(|version| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(version)))
+            .child(Icon::new(IconName::ChevronRight).color(c.icon))
+            .into_any_element()
+    }
+
+    fn add_form(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        div()
+            .debug_selector(|| "add-form".into())
+            .pt(space::S4)
+            .flex()
+            .flex_col()
+            .gap(space::S2)
+            .child(
+                div()
+                    .px(space::S5)
+                    .py(space::S4)
+                    .rounded(radius::POPOVER)
+                    .bg(c.card)
+                    .shadow(cx.theme().card_shadow())
+                    .flex()
+                    .items_center()
+                    .gap(space::S3)
+                    .child(Icon::new(IconName::Terminal).color(c.icon))
+                    .child(div().flex_none().text_ui(TypeSize::Body).text_color(c.text).child("SSH host"))
+                    .child(div().flex_1().min_w_0().child(self.host.clone())),
+            )
+            .child(div().px(space::S1).text_ui(TypeSize::Small).text_color(c.text_muted).child("Kuvo Code connects with your SSH keys and agent, and installs its engine in ~/.kuvo-code there. It keeps running there when you quit."))
+            .into_any_element()
+    }
+}
+
+/// Add a Machine: what a machine is, where it's named, and that adding one isn't here yet.
+// BOX-NEEDED: adding a machine from a box (#636): its SSH setup steps (`POST kuvo/machines
+// {destination}` answered by the box, not a Mac's app; its `step`s as it goes), and the hosts to
+// suggest (`hosts`, from that box's `~/.ssh/config`). Until then the form is drawn and Add Machine waits.
+fn add_items() -> Vec<Item> {
+    vec![
+        Item::Title { title: "Add a Machine".into(), line: "A Mac or Linux server you reach with SSH, like a Mac mini or a VPS. Its sessions, bots and agents run there, and show here beside this Mac’s.".into(), add: false },
+        Item::AddForm,
+        Item::Notice { key: "add-not-yet".into(), tone: Tone::Info, title: "Adding machines isn’t in this app yet".into(), words: "It comes with an update to Kuvo Code. Machines you’ve added already show under Your Computers.".into() },
+        Item::AddFoot,
+        Item::End,
+    ]
+}
+
+/// Rows in one card.
+fn rows(items: &mut Vec<Item>, computers: Vec<Computer>) {
+    let count = computers.len();
+    items.extend(computers.into_iter().enumerate().map(|(ix, computer)| Item::Row { computer: Box::new(computer), first: ix == 0, last: ix + 1 == count }));
+}
+
+/// Only the computer this window shows is listed (none of your own besides).
+fn yours_alone(computers: &[Computer]) -> bool {
+    !computers.iter().any(|computer| !computer.here && !computer.shared && !computer.apart)
+}
+
+/// How the box this window shows knows a computer.
+fn reached(computer: &Computer) -> String {
+    if computer.here {
+        return "Shown in this window".into();
+    }
+    match computer.via.as_str() {
+        "relay" => "Through the relay, end to end encrypted".into(),
+        "peer" => format!("Only by {}’s word", computer.through.as_deref().unwrap_or("another computer")),
+        _ => "Not said yet".into(),
+    }
+}
+
+/// A row of a page's card.
+fn card_row(key: String, first: bool, last: bool, cx: &App) -> gpui::Div {
+    let c = &cx.theme().colors;
+    div()
+        .debug_selector(move || key)
+        .w_full()
+        .flex()
+        .items_center()
+        .gap(space::S3)
+        .px(space::S5)
+        .py(space::S3)
+        .bg(c.card)
+        .when(first, |d| d.rounded_t(radius::POPOVER))
+        .when(last, |d| d.rounded_b(radius::POPOVER))
+        .when(!last, |d| d.border_b_1().border_color(c.border))
+        .shadow(if first && last { cx.theme().card_shadow() } else { Vec::new() })
+}
+
+/// A computer's page head: its tile, its name and how it stands.
+fn head(computer: &Computer, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    // How it stands, then what it is: "Connected · Ubuntu 24.04.1 LTS", "Can’t be reached · Mac".
+    let what = computer.system.clone().unwrap_or_else(|| if computer.is_mac() { "Mac".into() } else { "Machine".into() });
+    let line = if computer.here {
+        format!("Shown in this window · {what}")
+    } else if computer.reach.is_empty() {
+        what
+    } else {
+        format!("{} · {what}", state_words(computer))
+    };
+    div()
+        .debug_selector(|| "computer-head".into())
+        .pt(space::S8)
+        .pb(space::S2)
+        .flex()
+        .items_center()
+        .gap(space::S4)
+        .child(tile(computer, px(56.), cx))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(space::S1)
+                .child(div().debug_selector(|| "computer-head-name".into()).truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(computer.name.clone()))
+                .child(div().debug_selector(|| "computer-head-line".into()).text_ui(TypeSize::Body).text_color(c.text_muted).child(line)),
+        )
+        .into_any_element()
+}
+
+/// How a computer stands, in a word or two.
+fn state_words(computer: &Computer) -> &'static str {
+    if computer.is_older() {
+        return "Needs an update";
+    }
+    match computer.reach.as_str() {
+        "connected" => "Connected",
+        "connecting" => "Connecting",
+        "away" => "Can’t be reached",
+        "unknown" => "Not reached directly",
+        _ => "Listed",
+    }
+}
+
+/// How a computer's reach is drawn: green connected, amber connecting or older, red away, faint
+/// where this box can't say. None while the list isn't read (no claim).
+pub fn reach_color(computer: &Computer, cx: &App) -> Option<Hsla> {
+    let c = &cx.theme().colors;
+    if computer.reach.is_empty() {
+        return None;
+    }
+    if computer.is_older() {
+        return Some(c.warning);
+    }
+    Some(match computer.reach.as_str() {
+        "connected" => c.success,
+        "connecting" => c.warning,
+        "away" => c.danger,
+        _ => c.text_faint,
+    })
+}
+
+/// A computer's tile: a Mac or a machine, with a dot for how it stands.
+pub fn tile(computer: &Computer, size: gpui::Pixels, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
+    let dot_selector = format!("computer-dot-{id}");
+    let dot = (size * 0.32).min(px(12.));
+    div()
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(size)
+        .rounded(radius::NAV)
+        .bg(c.sunken)
+        .border_1()
+        .border_color(c.border)
+        .child(Icon::new(if computer.is_mac() { IconName::Computer } else { IconName::Terminal }).size(if size > px(40.) { IconSize::Card } else { IconSize::Nav }).color(c.icon))
+        .children(reach_color(computer, cx).map(|color| div().debug_selector(move || dot_selector).absolute().bottom(px(-2.)).right(px(-2.)).size(dot).rounded(radius::PILL).border_2().border_color(c.surface).bg(color)))
+        .into_any_element()
+}
+
+impl Render for ComputersView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = cx.theme().colors.clone();
+        let selector = match self.shown {
+            Shown::All => "computers-page",
+            Shown::Add => "add-machine-page",
+            _ => "computer-page",
+        };
+        div()
+            .id("computers-page")
+            .debug_selector(move || selector.into())
+            .size_full()
+            .bg(c.sidebar)
+            .child(list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn computer(json: &str) -> Computer {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn a_key_picks_what_the_page_shows() {
+        assert_eq!(Shown::from_key(None), Shown::All);
+        assert_eq!(Shown::from_key(Some("this")), Shown::This);
+        assert_eq!(Shown::from_key(Some("add")), Shown::Add);
+        assert_eq!(Shown::from_key(Some("computer:key_devbox")), Shown::Computer("key_devbox".into()));
+    }
+
+    /// How a computer is reached is said as the box says it: by the relay, or by another's word.
+    #[test]
+    fn how_a_computer_is_reached_is_the_boxs_word() {
+        assert_eq!(reached(&computer(r#"{"name":"devbox","via":"relay"}"#)), "Through the relay, end to end encrypted");
+        assert_eq!(reached(&computer(r#"{"name":"mini","via":"peer","through":"devbox"}"#)), "Only by devbox’s word");
+        assert_eq!(reached(&computer(r#"{"name":"Studio","here":true,"via":"here"}"#)), "Shown in this window");
+    }
+}

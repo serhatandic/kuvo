@@ -135,6 +135,18 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "queue-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_narrow) },
     Screen { slug: "queue-item-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_narrow) },
     Screen { slug: "queue-new-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_narrow) },
+    // Computers (`kuvo/src/computers.rs`): all of them, only this Mac, a long list, a computer's
+    // page (this one, one at work, one away, one older, one shared), Add a Machine, a narrow window.
+    Screen { slug: "computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
+    Screen { slug: "computers-alone", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
+    Screen { slug: "computers-many", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
+    Screen { slug: "computer-this", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_this) },
+    Screen { slug: "computer-page", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
+    Screen { slug: "computer-away", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_away) },
+    Screen { slug: "computer-older", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_older) },
+    Screen { slug: "computer-shared", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_shared) },
+    Screen { slug: "computer-add", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
+    Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
     Screen { slug: "settings-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
@@ -366,6 +378,33 @@ fn queue_item_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 
 fn computers(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Computers, "computer:key_devbox", window, cx);
+}
+
+fn computers_all(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Computers, window, cx);
+}
+fn computer_this(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Computers, "this", window, cx);
+}
+fn computer_away(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Computers, "computer:key_studio", window, cx);
+}
+fn computer_older(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Computers, "computer:key_old", window, cx);
+}
+fn computer_shared(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Computers, "computer:key_build", window, cx);
+}
+/// Add a Machine, a host typed.
+fn computer_add(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Computers, "add", window, cx);
+    let page = workspace.area_view(Area::Computers).and_then(|view| view.read(cx).computers_page().cloned()).expect("Computers");
+    let field = page.read(cx).host_field().clone();
+    field.update(cx, |field, cx| field.set_text("sam@build.example.com", cx));
+}
+fn computer_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computer_away(workspace, window, cx);
+    workspace.rail_pressed(Area::Computers, window, cx);
 }
 
 fn usage(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -600,6 +639,13 @@ fn main() -> anyhow::Result<()> {
             // A queue with many more labels than a menu shows at once.
             if screen.slug == "queue-new-many-labels" {
                 stand_in.many_labels();
+            }
+            // Computers: only this Mac, and a long list.
+            if screen.slug == "computers-alone" {
+                stand_in.computers_alone();
+            }
+            if screen.slug == "computers-many" {
+                stand_in.more_computers(40);
             }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");

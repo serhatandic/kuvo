@@ -1,0 +1,174 @@
+//! The Computers area as someone uses it, against the stand-in box (nothing real is reached): only
+//! this Mac; this Mac with a machine at work, a Mac that can't be reached, one on an older Kuvo Code
+//! and a shared machine; a long list; a computer's page and what it says; Add a Machine. Clicks go
+//! through the window as AppKit hands them on.
+
+use gpui::{Bounds, Entity, Modifiers, Pixels, ScrollDelta, ScrollEvent, TestAppContext, TouchPhase, VisualTestContext, px, size};
+use kuvo::area::Area;
+use kuvo::computers::{ComputersView, Shown};
+use kuvo::stand_in::{Replies, StandIn};
+use kuvo::workspace::{Workspace, held_words};
+use kuvo_box::BoxClient;
+use kuvo_ui::{Appearance, Theme};
+
+const NOW: f64 = 1_794_650_000_000.0;
+
+fn open(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, Entity<ComputersView>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let client = BoxClient::new(stand_in);
+    let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1200.), px(900.)));
+    workspace.update_in(cx, |workspace, _, cx| {
+        workspace.set_now(NOW, cx);
+        workspace.read_at_once(cx);
+    });
+    cx.run_until_parked();
+    click(cx, "rail-computers");
+    let page = workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Computers).and_then(|view| view.read(cx).computers_page().cloned())).expect("Computers' page");
+    (workspace, page, cx)
+}
+
+fn bounds(cx: &mut VisualTestContext, selector: &str) -> Option<Bounds<Pixels>> {
+    cx.debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
+}
+
+fn shown(cx: &mut VisualTestContext, selector: &str) -> bool {
+    bounds(cx, selector).is_some()
+}
+
+fn click(cx: &mut VisualTestContext, selector: &str) {
+    let at = bounds(cx, selector).unwrap_or_else(|| panic!("{selector} isn't on screen"));
+    cx.simulate_click(at.center(), Modifiers::default());
+    cx.run_until_parked();
+}
+
+fn said(page: &Entity<ComputersView>, cx: &mut VisualTestContext, key: &str) -> Option<(String, String)> {
+    page.read_with(cx, |page, _| page.said(key))
+}
+
+fn title(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
+    workspace.read_with(cx, |workspace, cx| workspace.title(cx).0.map(|title| title.to_string()))
+}
+
+/// Only this Mac: it's listed, its page says what it runs, and adding a machine is offered.
+#[gpui::test]
+fn only_this_mac_is_listed_with_a_way_to_add_a_machine(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.computers_alone();
+    let (workspace, page, cx) = open(cx, stand_in);
+    // The area opens on all of them: this Mac alone, and how to add another.
+    assert!(shown(cx, "computers-page") && shown(cx, "computers-row-this") && shown(cx, "computer-this"));
+    assert!(!shown(cx, "computer-key_devbox") && !shown(cx, "computers-row-key_devbox"));
+    assert!(shown(cx, "computers-alone"));
+    // This Mac's page: connected, its facts as its box says them, and its session at work, which opens.
+    click(cx, "computers-row-this");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::This);
+    assert!(shown(cx, "computer-head") && !shown(cx, "notice-away") && !shown(cx, "notice-older"));
+    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("1.0.0"));
+    assert_eq!(said(&page, cx, "fact-system").map(|(_, value)| value).as_deref(), Some("macOS 15.1"));
+    assert_eq!(said(&page, cx, "fact-reached").map(|(_, value)| value).as_deref(), Some("Shown in this window"));
+    assert!(!shown(cx, "action-remove"), "this window's own computer isn't removed from here");
+    click(cx, "at-work-ses_signup");
+    assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_signup".into())));
+}
+
+/// Add a Machine: reached from the sidebar's row, its +, and the page's button; it draws the form
+/// and says plainly that adding isn't here yet, sending nothing; Cancel goes back to all of them.
+#[gpui::test]
+fn add_a_machine_says_its_not_here_yet_and_sends_nothing(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computers-add");
+    assert!(shown(cx, "add-machine-page") && shown(cx, "add-form") && shown(cx, "add-not-yet"));
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Add a Machine"));
+    click(cx, "add-machine");
+    assert!(stand_in.seen_at("POST", "kuvo/machines").is_empty(), "nothing is sent while no box offers it");
+    click(cx, "add-cancel");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::All);
+    click(cx, "computers-add-row");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Add);
+}
+
+/// This Mac and its other computers: each row says how it stands; a Mac that can't be reached and
+/// one on an older Kuvo Code say why on their pages, the older one in the window's held words.
+#[gpui::test]
+fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext) {
+    let (workspace, page, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    for row in ["this", "key_devbox", "key_studio", "key_old", "key_build"] {
+        assert!(shown(cx, &format!("computers-row-{row}")), "{row} among all of them");
+        assert!(shown(cx, &format!("computer-{row}")), "{row} in the sidebar");
+    }
+    // A machine at work: connected, its sessions counted as its box says.
+    click(cx, "computer-key_devbox");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
+    assert_eq!(said(&page, cx, "fact-at-work").map(|(title, _)| title).as_deref(), Some("2 sessions at work"));
+    assert_eq!(said(&page, cx, "fact-reached").map(|(_, value)| value).as_deref(), Some("Through the relay, end to end encrypted"));
+    assert!(shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
+    // Away: why, and nothing claimed of what runs there.
+    click(cx, "computer-key_studio");
+    assert_eq!(said(&page, cx, "notice-away").map(|(title, _)| title).as_deref(), Some("studio-mini can’t be reached"));
+    assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none"));
+    assert!(shown(cx, "action-reconnect"));
+    // Older: the window's own held words for it.
+    click(cx, "computer-key_old");
+    let (held_title, held_next) = held_words(Some("old-mini"), false);
+    assert_eq!(said(&page, cx, "notice-older"), Some((held_title, held_next)));
+    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.9.180, older than this app"));
+    // Shared with another setup: filed apart, and it says nothing of what runs there.
+    click(cx, "computer-key_build");
+    assert!(shown(cx, "notice-apart") && !shown(cx, "fact-at-work"));
+    // All of them again, from the sidebar's first row.
+    click(cx, "computers-all");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::All);
+}
+
+/// A computer gone from the list while its page is open says so, rather than what it said before.
+#[gpui::test]
+fn a_computer_gone_from_the_list_says_so(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    stand_in.computers_alone();
+    // Read again as Computers opens (where the list isn't followed).
+    click(cx, "rail-sessions");
+    click(cx, "rail-computers");
+    assert!(shown(cx, "computer-missing"));
+    assert_eq!(said(&page, cx, "computer-missing").map(|(words, _)| words).as_deref(), Some("This computer isn’t among yours any more."));
+    drop(workspace);
+}
+
+/// The list while it can't be read: this window's computer stays, and its page still opens.
+#[gpui::test]
+fn a_list_that_cant_be_read_keeps_this_computer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.computers_readable(false);
+    let (_workspace, page, cx) = open(cx, stand_in);
+    assert!(shown(cx, "computers-failed") && shown(cx, "computer-this"));
+    click(cx, "computer-this");
+    assert!(shown(cx, "computer-head"));
+    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("Not said yet"));
+}
+
+/// A long list: every computer is in the sidebar's list, and the page scrolls through them all.
+#[gpui::test]
+fn a_long_list_reaches_its_last_computer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.more_computers(40);
+    let (_workspace, page, cx) = open(cx, stand_in);
+    assert!(shown(cx, "computers-row-this"));
+    assert!(!shown(cx, "computers-row-key_more_39"), "drawn only as it's scrolled to");
+    // Scrolled with the wheel over the page, as a trackpad does, until its end.
+    let at = bounds(cx, "computers-row-this").expect("the page").center();
+    for _ in 0..20 {
+        cx.simulate_event(ScrollEvent { position: at, delta: ScrollDelta::Pixels(gpui::point(px(0.), px(-400.))), touch_phase: TouchPhase::Moved, ..Default::default() });
+        cx.run_until_parked();
+    }
+    assert!(shown(cx, "computers-row-key_more_39"));
+    click(cx, "computers-row-key_more_39");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Computer("key_more_39".into()));
+}

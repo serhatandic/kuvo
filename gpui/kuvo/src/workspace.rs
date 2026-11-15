@@ -82,6 +82,21 @@ pub enum BoxState {
     Unreachable(String),
 }
 
+/// What's said of a computer whose box the update gate holds: its title, and what brings it up to
+/// date. `name`: the computer's (none: "This computer"); `here`: it's this Mac's own box. The window's
+/// notice and the Computers area's page say it in the same words.
+pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
+    let subject = name.filter(|name| !name.is_empty()).unwrap_or("This computer");
+    let title = format!("{subject}’s Kuvo is older than this app");
+    let next = if here {
+        "It updates with Kuvo 1.0.".to_owned()
+    } else {
+        let computer = if subject == "This computer" { "this computer" } else { subject };
+        format!("Update Kuvo on {computer} to use it here.")
+    };
+    (title, next)
+}
+
 enum Open {
     Landing,
     Conversation { view: Entity<ConversationView>, session: String },
@@ -424,6 +439,11 @@ impl Workspace {
                 // The panel's folder, as the list says it now (a session opened before the list had
                 // it, a worktree's folder said later).
                 self.place_panel(cx);
+                // The sessions at work here, for this computer's page in Computers.
+                let at_work = self.at_work();
+                if let Some(view) = self.area_view(Area::Computers).cloned() {
+                    view.update(cx, |view, cx| view.set_at_work(at_work, cx));
+                }
                 // What waits on you may have changed with it: asked again where it isn't followed.
                 if self._waiting_follow.is_none() {
                     self.read_waiting(cx);
@@ -474,15 +494,7 @@ impl Workspace {
             return None;
         }
         let name = self.info.as_ref().map(|_| self.box_name().to_string());
-        let subject = name.as_deref().filter(|name| !name.is_empty()).unwrap_or("This computer");
-        let title = format!("{subject}’s Kuvo is older than this app");
-        let next = if self.client.here() {
-            "It updates with Kuvo 1.0.".to_owned()
-        } else {
-            let computer = if subject == "This computer" { "this computer" } else { subject };
-            format!("Update Kuvo on {computer} to use it here.")
-        };
-        Some((title, next))
+        Some(held_words(name.as_deref(), self.client.here()))
     }
 
     pub fn now(&self) -> f64 {
@@ -1232,6 +1244,23 @@ impl Workspace {
             self.waiting = waiting;
             cx.notify();
         }
+    }
+
+    /// The sessions at work on this window's box, as its list says them (conversations, not their
+    /// subagents, none waiting on you, as `kuvo/computers` counts `working`), the newest first.
+    fn at_work(&self) -> Vec<crate::computers::AtWork> {
+        let mut running: Vec<_> = self.listing.sessions().iter().filter(|(_, facts)| facts.is_running() && facts.parent.is_none() && facts.asked.is_none() && !facts.is_archived()).collect();
+        running.sort_by(|a, b| b.1.updated.total_cmp(&a.1.updated).then_with(|| a.0.cmp(b.0)));
+        running
+            .into_iter()
+            .map(|(session, facts)| {
+                let project = facts.project.as_deref().map(|folder| {
+                    self.listing.projects().get(folder).and_then(|project| project.name.clone()).unwrap_or_else(|| folder.rsplit('/').find(|part| !part.is_empty()).unwrap_or(folder).to_owned())
+                });
+                let title = facts.title.clone().filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New Session".into());
+                crate::computers::AtWork { session: session.clone(), title, project: project.unwrap_or_default() }
+            })
+            .collect()
     }
 
     /// Asks the box for your computers (in the app, on another thread; in tests and shots, at once).

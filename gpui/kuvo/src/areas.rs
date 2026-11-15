@@ -26,6 +26,7 @@ use kuvo_ui::{
 
 use crate::area::Area;
 use crate::bots::{BotsEvent, BotsView, There};
+use crate::computers::{AtWork, ComputersEvent, ComputersView};
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{Pick, SettingsView};
@@ -74,6 +75,9 @@ pub enum Go {
 
 /// One area's sidebar.
 pub struct AreaView {
+    /// Computers' main view, in the Computers area.
+    computers_page: Option<gpui::Entity<ComputersView>>,
+    _computers_page: Vec<gpui::Subscription>,
     area: Area,
     client: BoxClient,
     live: bool,
@@ -166,7 +170,21 @@ impl AreaView {
                 ]
             })
             .unwrap_or_default();
-        AreaView { queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
+        let computers_page = (area == Area::Computers).then(|| cx.new(ComputersView::new));
+        let computers_subscriptions = computers_page
+            .as_ref()
+            .map(|page| {
+                vec![cx.subscribe(page, |this: &mut AreaView, _, event: &ComputersEvent, cx| match event {
+                    ComputersEvent::Select(Some(key)) => this.pick(key.clone(), cx),
+                    ComputersEvent::Select(None) => {
+                        this.select(None, cx);
+                        cx.emit(Picked);
+                    }
+                    ComputersEvent::Session(session) => cx.emit(Go::Session(session.clone())),
+                })]
+            })
+            .unwrap_or_default();
+        AreaView { computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -184,9 +202,18 @@ impl AreaView {
         self.queue_page.as_ref()
     }
 
+    /// Computers' main view, in the Computers area.
+    pub fn computers_page(&self) -> Option<&gpui::Entity<ComputersView>> {
+        self.computers_page.as_ref()
+    }
+
     /// The area's own main view, for what's picked: a bot's page or New Bot, the Work Queue or one
-    /// of its items. None where the page isn't in the app yet (a group chat, a computer).
+    /// of its items, your computers or one of them. None where the page isn't in the app yet (a
+    /// group chat).
     pub fn main(&self) -> Option<gpui::AnyView> {
+        if let Some(page) = &self.computers_page {
+            return Some(page.clone().into());
+        }
         if let Some(page) = &self.queue_page {
             return Some(page.clone().into());
         }
@@ -213,6 +240,9 @@ impl AreaView {
     }
 
     pub fn set_this_box(&mut self, name: SharedString, kind: &str, cx: &mut Context<Self>) {
+        if let Some(page) = &self.computers_page {
+            page.update(cx, |page, cx| page.set_this_box(&name, kind, cx));
+        }
         if self.this_kind != kind {
             self.this_kind = kind.to_owned();
             cx.notify();
@@ -235,8 +265,19 @@ impl AreaView {
     /// Your computers, as the window read them.
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
         if self.computers != computers {
+            if let Some(page) = &self.computers_page {
+                let computers = computers.clone();
+                page.update(cx, |page, cx| page.set_computers(computers, cx));
+            }
             self.computers = computers;
             cx.notify();
+        }
+    }
+
+    /// The sessions at work on the computer this window shows, for its page.
+    pub fn set_at_work(&mut self, at_work: Vec<AtWork>, cx: &mut Context<Self>) {
+        if let Some(page) = &self.computers_page {
+            page.update(cx, |page, cx| page.set_at_work(at_work, cx));
         }
     }
 
@@ -345,6 +386,10 @@ impl AreaView {
             let key = self.selected.clone();
             page.update(cx, |page, cx| page.show(key.as_deref(), cx));
         }
+        if let Some(page) = &self.computers_page {
+            let key = self.selected.clone();
+            page.update(cx, |page, cx| page.show(key.as_deref(), cx));
+        }
     }
 
     /// The page's title: what's picked, named as its row is.
@@ -355,6 +400,7 @@ impl AreaView {
             "bot" => ready(&self.bots).and_then(|bots| bots.bots.iter().find(|bot| bot.id == id).map(|bot| bot.name.clone())),
             "elsewhere" => ready(&self.bots).and_then(|bots| bots.there().into_iter().find(|there| there.id == id).map(|there| there.name)),
             _ if key == "new" => Some("New Bot".into()),
+            _ if key == "add" => Some("Add a Machine".into()),
             "group" => ready(&self.bots).and_then(|bots| bots.groups.iter().find(|group| group.id == id).map(|group| group.name.clone())),
             "status" => ready(&self.queue).and_then(|queue| queue.statuses.iter().find(|status| status.id == id).map(|status| status.name.clone())),
             "label" => ready(&self.queue).and_then(|queue| queue.labels.iter().find(|label| label.id == id).map(|label| label.name.clone())),
@@ -677,23 +723,43 @@ impl AreaView {
     /// Your computers as the box lists them (`kuvo/computers`), the one this window shows first;
     /// machines that Macs of different setups share, under their own header.
     fn computer_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut rows = vec![SectionHeader::new("computers", "Your Computers").into_any_element()];
+        let c = cx.theme().colors.clone();
+        // All of them, side by side: the area's own page.
+        let all = NavRow::new("computers-all", "All Computers").icon(kuvo_ui::IconName::Computer).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
+            this.select(None, cx);
+            cx.emit(Picked);
+        }));
+        let add = Button::icon_only("computers-header-add", kuvo_ui::IconName::Plus, "Add a Machine").ghost().size(ButtonSize::Small).on_click(self.row_click("add".into(), cx));
+        let mut rows = vec![
+            div().debug_selector(|| "computers-all".into()).pb(space::S0_5).child(all).into_any_element(),
+            SectionHeader::new("computers", "Your Computers").action(add).into_any_element(),
+        ];
+        let add_row = |this: &Self, cx: &mut Context<Self>| {
+            let row = NavRow::new("computers-add-row", "Add a Machine…").leading(Icon::new(kuvo_ui::IconName::Plus).color(c.icon)).muted(true).selected(this.is_selected("add")).on_click(this.row_click("add".into(), cx));
+            div().debug_selector(|| "computers-add-row".into()).pt(space::S1).child(row).into_any_element()
+        };
         let computers = match &self.computers {
             // (The computer this window shows is known without the list: its row stays.)
             Reading::NotYet => {
                 rows.push(self.this_row(cx));
                 rows.push(quiet("Loading your computers…", true, cx));
+                rows.push(add_row(self, cx));
                 return rows;
             }
             Reading::Failed(why) => {
                 rows.push(self.this_row(cx));
                 rows.push(quiet(&format!("Your other computers couldn’t be read: {why}"), false, cx));
+                rows.push(add_row(self, cx));
                 return rows;
             }
             Reading::Ready(computers) => computers,
         };
         let (shared, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
+        if !yours.iter().any(|computer| computer.here) {
+            rows.push(self.this_row(cx));
+        }
         rows.extend(yours.into_iter().map(|computer| self.computer_row(computer, cx)));
+        rows.push(add_row(self, cx));
         if !shared.is_empty() {
             rows.push(div().debug_selector(|| "header-shared".into()).child(SectionHeader::new("shared", "Shared Machines")).into_any_element());
             rows.extend(shared.into_iter().map(|computer| self.computer_row(computer, cx)));
@@ -705,7 +771,7 @@ impl AreaView {
     /// knows which it is, and what its `kuvo/info` said it is; nothing is claimed of its reach
     /// (no dot), which only the list says.
     fn this_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let this = Computer { key: String::new(), name: self.this_box.to_string(), kind: self.this_kind.clone(), here: true, id: None, shared: false, apart: false, reach: String::new(), version: None, engine: None, system: None, via: "here".into(), through: None, working: 0, limits: Vec::new() };
+        let this = Computer { name: self.this_box.to_string(), kind: self.this_kind.clone(), here: true, via: "here".into(), ..Default::default() };
         self.computer_row(&this, cx)
     }
 
@@ -714,17 +780,6 @@ impl AreaView {
         // The one this window shows is picked as "this", by the window's own name for it.
         let (key, id, name) = if computer.here { ("this".to_owned(), "this".to_owned(), self.this_box.to_string()) } else { (computer_key(computer), computer.key.clone(), computer.name.clone()) };
         let selected = self.is_selected(&key);
-        let dot = match computer.reach.as_str() {
-            "connected" => c.success,
-            "connecting" => c.warning,
-            "away" => c.danger,
-            // Known by another's word, or a word a newer box names: no claim of this app's about it.
-            "unknown" => c.text_faint,
-            _ => c.text_faint,
-        };
-        // None said (the list isn't read yet): no dot.
-        let dot = (!computer.reach.is_empty()).then_some(dot);
-        let dot_selector = format!("computer-dot-{id}");
         let (hover, selected_bg) = (c.hover, c.selected_card);
         let selector = format!("computer-{id}");
         let working = (computer.working > 0).then(|| {
@@ -750,21 +805,7 @@ impl AreaView {
             .map(|r| kuvo_ui::row::selected_card(r, selected, cx))
             .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
             .on_click(self.row_click(key, cx))
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .size(px(28.))
-                    .rounded(radius::NAV)
-                    .bg(c.sunken)
-                    .border_1()
-                    .border_color(c.border)
-                    .child(Icon::new(if computer.is_mac() { kuvo_ui::IconName::Computer } else { kuvo_ui::IconName::Terminal }).color(c.icon))
-                    .children(dot.map(|dot| div().debug_selector(move || dot_selector).absolute().bottom(px(-2.)).right(px(-2.)).size(px(9.)).rounded(radius::PILL).border_2().border_color(c.surface).bg(dot))),
-            )
+            .child(crate::computers::tile(computer, px(28.), cx))
             .child(
                 div()
                     .flex_1()
@@ -772,7 +813,7 @@ impl AreaView {
                     .flex()
                     .flex_col()
                     .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(name))
-                    .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(computer_line(computer))),
+                    .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(computer_line(computer))),
             )
             .children(working)
             .into_any_element()
@@ -789,6 +830,9 @@ fn computer_key(computer: &Computer) -> String {
 pub fn computer_line(computer: &Computer) -> String {
     if computer.here {
         return "Shown in this window".into();
+    }
+    if computer.is_older() {
+        return "Needs an update".into();
     }
     match computer.reach.as_str() {
         "connected" => computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| "Connected".into()),
