@@ -79,14 +79,15 @@ codesign "$@" "$FRAMEWORK"
 # (scripts/build-helper.sh, from mac/helper) and signed with the same identity, its own entitlements
 # and the hardened runtime, then put in Contents/Helpers before the app that seals it: notarized with
 # the app, and packed into the box's release from it. (No kuvo-keys: build-helper.sh makes none
-# with a real identity unless asked with KEYS=1, and this never asks. This app moves its own keys,
+# with a real identity unless asked with KUVO_SIGNED_KEYS=1, and this says 0, whatever the
+# environment it's run in says. This app moves its own keys,
 # and no signed kuvo-keys is to exist until #713 piece 4 settles what keeps it to the box's move.)
 info() { /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist"; }
 HELPER_BUILD=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-helper.XXXXXXXX")
 trap 'rm -rf "$HELPER_BUILD"' EXIT
 helper_icon=""
 [ ! -f "$APP/Contents/Resources/AppIcon.icns" ] || helper_icon="$APP/Contents/Resources/AppIcon.icns"
-SIGN_IDENTITY="$SIGN_IDENTITY" APP_ID="$(info CFBundleIdentifier)" VERSION="$(info CFBundleShortVersionString)" BUILD="$(info CFBundleVersion)" \
+KUVO_SIGNED_KEYS=0 SIGN_IDENTITY="$SIGN_IDENTITY" APP_ID="$(info CFBundleIdentifier)" VERSION="$(info CFBundleShortVersionString)" BUILD="$(info CFBundleVersion)" \
     MIN_SYSTEM="$(info LSMinimumSystemVersion)" ICON="$helper_icon" ./scripts/build-helper.sh "$HELPER_BUILD"
 mkdir -p "$APP/Contents/Helpers"
 rm -rf "$APP/Contents/Helpers/Kuvo Helper.app"

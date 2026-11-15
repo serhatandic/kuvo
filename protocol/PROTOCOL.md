@@ -7410,7 +7410,7 @@ runs under **Kuvo Helper**, a small signed program of Kuvo Code's own with no bo
 Swift, for macOS only (a box on Linux needs none), in a package of its own (`mac/helper`), and
 built on its own by `scripts/build-helper.sh <folder>`, with no app built or needed: `Kuvo
 Helper.app`, signed with the hardened runtime and its own entitlements, so it can be notarized as
-it is (and `kuvo-keys`, below, ad hoc only: signed with a real identity only when asked, `KEYS=1`,
+it is (and `kuvo-keys`, below, ad hoc only: signed with a real identity only when asked, `KUVO_SIGNED_KEYS=1`,
 which nothing does yet). The box's release brings it into `bin/Kuvo Helper.app`, and it runs from there. Its bundle
 ID is the app's with `.box` after it (`run.kuvo.code.box`); an update keeps that, its signer and
 its place, which is what macOS keeps your permissions and its Keychain items by. (Until #713 it
@@ -7442,7 +7442,7 @@ was named Kuvo Code Box, in no release.)
   Launch Services, so it's its own program to macOS as launchd's would be (never the child of
   whatever asked, which would make that what macOS asks about). It answers `{started: true, mac,
   disabled: true, opened: true, message}`, exit 0: macOS was asked to open it and took that, which
-  is all `opened` says (whether the helper then keeps the box is in its own records:
+  is all `started` with `opened` says (whether the helper then keeps the box is in its own records:
   `run/helper-trouble`, `run/permissions.json`). Opened so, it runs the box until you log out, and
   isn't started at login until it's switched on again, which `message` says. One running already
   keeps the box (its lock); the one opened goes at once. Where macOS doesn't open it: `{started:
@@ -7550,7 +7550,7 @@ was named Kuvo Code Box, in no release.)
   signed ad hoc (a local build) refuses, as anything can be signed so (the tests' own build aside).
 - **`kuvo-keys`** (#713, for a box's move that no Swift keeper runs; nothing runs it yet, and
   **none is signed with a real identity yet**: `scripts/build-helper.sh` makes one only ad hoc,
-  for its tests, unless asked with `KEYS=1`, and no release asks, until #713 piece 4 settles the
+  for its tests, unless asked with `KUVO_SIGNED_KEYS=1`, and no release asks, until #713 piece 4 settles the
   two limits said below): the
   app's side of the Keychain's move as a small program of its own, built beside the helper from
   the same package (`scripts/build-helper.sh`) and signed with Kuvo Code's own identifier

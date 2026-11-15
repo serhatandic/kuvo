@@ -49,7 +49,7 @@ Box) isn't this app's any more:
   builds and signs it there, with no app (it replaces `scripts/build-box-helper.sh`).
 - `kuvo-keys`, built beside it, does the Keychain's hand-over this app's keeper did
   (`KuvoCode/Keeper/OwnBoxMove.swift`), for a box's move that no Swift keeper runs. Only ad hoc,
-  for its tests: a build signed with a real identity makes none unless asked (`KEYS=1`), and this
+  for its tests: a build signed with a real identity makes none unless asked (`KUVO_SIGNED_KEYS=1`), and this
   app's build (`scripts/build-app.sh`) never asks. No signed `kuvo-keys` is to exist until #713
   piece 4 settles what keeps it to the box's move.
 - This app still reads that code (`BoxHelperBundle`, `KeychainMove`, `LoopbackServer`, …), so
