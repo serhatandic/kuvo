@@ -2773,7 +2773,8 @@ function keptComputer(given) {
     ...engine ? { engine } : {},
     ...system ? { system } : {},
     ...working !== undefined ? { working } : {},
-    ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}
+    ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {},
+    ...given.oldApp === true ? { oldApp: true } : {}
   };
 }
 var keptBoxes = (boxes) => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
@@ -27161,7 +27162,8 @@ function hostsWithoutApp() {
   const relay = macLink.config?.relay;
   if (!saved || !relay || kept === null || kept === undefined && saved.length)
     return null;
-  const hosts = Object.entries(kept ?? {}).flatMap(([machine, { name, address, key, anotherMac }]) => typeof name === "string" && typeof address === "string" && typeof key === "string" ? [{ kind: "machine", name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some((each) => each.destination === machine) }] : []);
+  const peers = peersOf(readLink());
+  const hosts = Object.entries(kept ?? {}).flatMap(([machine, { name, address, key, anotherMac }]) => typeof name === "string" && typeof address === "string" && typeof key === "string" ? [{ kind: "machine", name: peers.find((peer) => peer.key === key)?.name || name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some((each) => each.destination === machine) }] : []);
   return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
 }
 var answer2 = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
@@ -27659,10 +27661,19 @@ function writtenMachines(link, writer) {
   const boxes = writer.here ? peersOf(link) : namedBoxes(link);
   return new Set(boxes.filter((box) => box.kind === "machine").map((box) => box.key));
 }
+var oldAppAttached = () => IS_MAC && macLink.statusFollowers.size > 0;
+var oldAppWords = (mac, name) => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`;
 function writerFacts(link = readLink()) {
   const writer = writerOf(link);
   const reachable = Boolean(writer && (writer.here || peersOf(link).some((peer) => peer.key === writer.key)));
-  return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (readPeerAgents()[writer.key]?.features ?? []).includes(MANAGE_FEATURE))), reachable };
+  const told = writer && !writer.here ? readPeerAgents()[writer.key] : undefined;
+  return {
+    writer,
+    machines: writtenMachines(link, writer),
+    takes: Boolean(writer && (writer.here || (told?.features ?? []).includes(MANAGE_FEATURE))),
+    reachable,
+    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true))
+  };
 }
 function whyNot(computer, what, here, link = readLink(), facts = writerFacts(link)) {
   const name = computer.name || "This computer";
@@ -27682,6 +27693,8 @@ function whyNot(computer, what, here, link = readLink(), facts = writerFacts(lin
     return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.takes)
     return `${writer.name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
+  if (what === "remove" && facts.oldApp)
+    return oldAppWords(writer.here ? here : writer.name, name);
   return null;
 }
 function actionsOf(computer, here, trying, link = readLink(), facts = writerFacts(link)) {
@@ -27759,6 +27772,11 @@ async function writerAct(sender, act) {
     return answer3(409, { message: `${ownName()} doesn't keep your machines' records.` });
   if (isApart(sender.key, link))
     return answer3(409, { message: "Only your own computers can rename and remove your machines." });
+  const target = peersOf(link).find((peer) => peer.key === act.item);
+  if (target && isApart(target.key, link))
+    return answer3(409, { message: `${target.name} is shared with another setup: only ${ownName()} itself can ${act.method === "DELETE" ? "remove" : "rename"} it.` });
+  if (target && act.method === "DELETE" && oldAppAttached())
+    return answer3(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name)
@@ -37312,7 +37330,8 @@ function ownComputer() {
     ...engine ?? (IS_MAC ? MAC_ENGINE_VERSION : null) ? { engine: engine ?? MAC_ENGINE_VERSION } : {},
     ...system.name ? { system: system.name } : {},
     working: atWork.length,
-    atWork: atWork.slice(0, MOST_AT_WORK)
+    atWork: atWork.slice(0, MOST_AT_WORK),
+    ...oldAppAttached() ? { oldApp: true } : {}
   };
 }
 var ownFeatures = () => IS_MAC ? macFeatures() : [...FEATURES];
@@ -37481,7 +37500,7 @@ async function* computersRoute(context, match) {
       listFollowers.delete(listTold);
     };
   };
-  return yield* followedLive(read, listen, signal, { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)}` });
+  return yield* followedLive(read, listen, signal, { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${oldAppAttached()}` });
 }
 
 // box/src/link/peers/agents.ts
@@ -44800,7 +44819,7 @@ import fs145 from "node:fs";
 import path152 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "df07fe6c3962";
+var BRIDGE_VERSION = "d4a8f96bfb73";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -58324,6 +58343,7 @@ export {
   otherComputersAllowed,
   oursNow,
   ownAgents,
+  ownComputer,
   ownDoc,
   ownRefreshed,
   ownSign,

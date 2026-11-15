@@ -22,7 +22,7 @@ import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { namedBoxes, ownKey, peersOf } from "../peers/known";
-import { actionsOf, givenName, MOST_NAME, removeHere, renameHere, whyNot, writerFacts, writerOf } from "../peers/manage";
+import { actionsOf, givenName, MOST_NAME, oldAppAttached, removeHere, renameHere, whyNot, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
 import { awaySince, PEER_REACH, readReach } from "../peers/reach";
@@ -89,6 +89,7 @@ export function ownComputer(): ToldComputer {
     ...(system.name ? { system: system.name } : {}),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_AT_WORK),
+    ...(oldAppAttached() ? { oldApp: true as const } : {}),
   };
 }
 
@@ -259,5 +260,5 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
     return () => { listFollowers.delete(listTold); };
   };
   return yield* followedLive(read, listen, signal,
-    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)}` });
+    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${oldAppAttached()}` });
 }

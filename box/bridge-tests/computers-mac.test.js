@@ -14,11 +14,14 @@ import path from "node:path";
 import { test } from "node:test";
 import { removeAtEnd } from "./at-end.js";
 
-const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-computers-mac-")));
-removeAtEnd(home);
+// (The box's folder inside its app's, as on a Mac: the app's own files, `phone-link.json`, beside it.)
+const app = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-computers-mac-")));
+removeAtEnd(app);
+const home = path.join(app, "box");
+fs.mkdirSync(home);
 process.env.KUVO_HOME = home;
 process.env.KUVO_BOX = "mac";
-process.env.KUVO_ENGINE_CONFIG = path.join(home, "engine");
+process.env.KUVO_ENGINE_CONFIG = path.join(app, "engine");
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 
 const run = path.join(home, "run");
@@ -37,6 +40,8 @@ const fresh = () => {
   // (Its keys from the app, kept in memory only, as the app gives them.)
   link.macLink.overlay = { key: k(mac), secret: k(crypto.randomBytes(32)), sign: link.newSigningSeed(), relay: "wss://relay.test", name: "Studio" };
   link.writeLink({ phones: [] });
+  // (What its app says of it: its name, and the relay.)
+  link.macLink.config = { phones: true, machines: true, relay: "wss://relay.test", name: "Studio", app: "1.0.0" };
   link.updateLink(state => link.setMacPeers(state, { peers: [devbox.peer, mini.peer, attic.peer], moved: [] }).link);
   // The app's list of machines, as it keeps it.
   fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
@@ -148,4 +153,69 @@ test("a machine this Mac set up that another setup shares too is still this Mac'
   const shared = (await link.listComputers("Studio", null)).find(each => each.key === devbox.pub);
   assert.deepEqual([shared.apart, shared.actions.map(action => action.id)], [true, ["rename", "remove"]]);
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${devbox.pub}`), { status: 200, body: {} });
+});
+
+// The old Kuvo Code app attached to this box, as it is while it's open: it follows the box's link.
+async function oldAppOpens() {
+  const handle = link.engineHandler(() => ({ port: 1, password: "pw" }), { name: "Studio" });
+  const closes = new AbortController();
+  const following = handle({ method: "GET", path: "kuvo/link/status/events", headers: {}, fromApp: true }, undefined, closes.signal)[Symbol.asyncIterator]();
+  await following.next();
+  await following.next();
+  assert.equal(link.macLink.statusFollowers.size, 1);
+  return async () => {
+    closes.abort();
+    await following.return();
+    assert.equal(link.macLink.statusFollowers.size, 0);
+  };
+}
+
+test("while the old Kuvo Code app is attached to this Mac's box, removing a machine isn't offered or taken, from here or another computer, saying why; once it's quit, a removal holds when the app opens again", async () => {
+  fresh();
+  const quit = await oldAppOpens();
+  const listed = (await link.listComputers("Studio", null)).find(each => each.key === attic.pub);
+  assert.deepEqual(listed.actions.map(action => action.id), ["rename"], "renaming holds: the app keeps names it didn't change");
+  const why = "Quit the old Kuvo Code app on Studio first: it keeps its own list of machines, and would add attic back.";
+  assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 409, body: { message: why } });
+  const [forwarded] = await handed(devbox, { method: "DELETE", item: attic.pub });
+  assert.deepEqual([forwarded.status, forwarded.value], [409, { message: why }]);
+  // What it tells your other computers of itself says so, so they don't offer it either.
+  assert.equal(link.ownComputer().oldApp, true);
+  assert.deepEqual(link.keptComputer({ working: 0, oldApp: true }), { working: 0, oldApp: true });
+  // The app saves its list again and says its machines: all of them still there, nothing undone.
+  fs.writeFileSync(path.join(home, "machines.json"), JSON.stringify([{ destination: "devbox" }, { destination: "mini" }, { destination: "attic" }]));
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["devbox", "mini", "attic"]);
+
+  // Quit: removed now; and the app opening again saves the list it reads (without it) and says the
+  // machines it still keeps bridges for (with it): it stays removed.
+  await quit();
+  assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 200, body: {} });
+  const reopened = await oldAppOpens();
+  fs.writeFileSync(path.join(home, "machines.json"), fs.readFileSync(path.join(home, "machines.json")));
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [devbox.peer, mini.peer, attic.peer], moved: [] })).status, 200);
+  assert.deepEqual(names(), ["devbox", "mini"]);
+  await reopened();
+});
+
+test("a machine's other computers can't remove or rename one shared with another setup through this Mac: only this Mac itself can", async () => {
+  fresh();
+  link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ at: Date.now(), agents: { at: Date.now(), list: [], shared: true } })), devbox.key, link.publicOf(mac)).message, undefined, (sender, payload) => link.peerMail(sender, payload, null));
+  const [removed] = await handed(mini, { method: "DELETE", item: devbox.pub });
+  assert.deepEqual([removed.status, removed.value], [409, { message: "devbox is shared with another setup: only Studio itself can remove it." }]);
+  const [renamed] = await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Shared" } });
+  assert.equal(renamed.status, 409);
+  assert.deepEqual(names(), ["devbox", "mini", "attic"]);
+});
+
+test("a name you gave a machine is the one your phones are given for it too", async () => {
+  fresh();
+  // What the app keeps of your machines' bridges, as it wrote it.
+  fs.writeFileSync(path.join(app, "phone-link.json"), JSON.stringify({ machines: { devbox: { name: "devbox", address: devbox.peer.address, key: devbox.pub } } }));
+  assert.equal((await ask("PATCH", `kuvo/computers/${devbox.pub}`, { name: "Build box" })).status, 200);
+  const front = link.macFront(link.engineHandler(() => ({ port: 1, password: "pw" }), { name: "Studio" }), { wait: 10, look: 60_000 });
+  const pieces = [];
+  for await (const piece of front({ method: "GET", path: "kuvo/hosts", headers: {} }, undefined)) pieces.push(piece);
+  const hosts = JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString()).hosts;
+  assert.deepEqual(hosts.map(each => [each.machine, each.name]), [["devbox", "Build box"]]);
 });

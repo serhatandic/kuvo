@@ -100,6 +100,8 @@ export interface ToldComputer {
   system?: string;
   working?: number;
   atWork?: AtWorkSession[];
+  /** A Mac's box with the old Kuvo Code app (before 1.0) attached: it takes no removals now. */
+  oldApp?: true;
 }
 
 /** A session at work on a computer: its id there, and its title (none for one that has none yet). */

@@ -107,8 +107,10 @@ function hostsWithoutApp(): Hosts | null {
   const saved = savedMachines(kept);
   const relay = macLink.config?.relay;
   if (!saved || !relay || kept === null || (kept === undefined && saved.length)) return null;
+  // (Each by the name you gave it from any of your computers, where you gave one.)
+  const peers = peersOf(readLink());
   const hosts = Object.entries(kept ?? {}).flatMap(([machine, { name, address, key, anotherMac }]) => (typeof name === "string" && typeof address === "string" && typeof key === "string"
-    ? [{ kind: "machine" as const, name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some(each => each.destination === machine) }]
+    ? [{ kind: "machine" as const, name: peers.find(peer => peer.key === key)?.name || name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some(each => each.destination === machine) }]
     : []));
   return { hosts: hosts.sort((one, other) => (one.name < other.name ? -1 : one.name > other.name ? 1 : 0)) };
 }

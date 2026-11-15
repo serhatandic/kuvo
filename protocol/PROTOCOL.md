@@ -1576,6 +1576,18 @@ machines; a client that wants every computer's facts asks the box that has it as
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
     (`noteHeard`), and it's listed `connecting` for 20 seconds meanwhile. `202 {}`; `503` while this
     box is off the relay itself.
+  - **While the old app is attached** (the Mac app before 1.0, which keeps its own list of machines
+    and writes all of it back, `machines.json` and `kuvo/link/peers`, so a removal there wouldn't
+    hold): the box that writes a machine's record takes no removal, from a client of its own or
+    handed from another box: `409 {"message": "Quit the old Kuvo Code app on <Mac> first: it keeps
+    its own list of machines, and would add <machine> back."}`, and offers no `remove` meanwhile.
+    It tells its peers so with its agents (`computer.oldApp: true`, "Peers"), so they offer none
+    either, within a minute. Renaming goes on: the old app keeps a name it didn't change. The box
+    counts the app attached while it follows `kuvo/link/status/events`, which only that app does.
+  - The writer checks what's handed to it as the asking box does: a machine shared with another
+    setup is renamed and removed only from that Mac itself (`409`).
+  - Your phones are given a machine by the name you gave it (`kuvo/hosts`, from the box while the
+    old app isn't open).
   - Refused in words a client shows as they are: `400 {"message"}` for a name that isn't one, `404`
     for a key that isn't one of the computers this box lists, `409` for what isn't offered there
     (with why: a Mac, the box itself, shared with another setup, not the writer's machine, a writer

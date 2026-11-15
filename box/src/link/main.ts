@@ -210,7 +210,7 @@ export { cardNow, SETUP_CARD, writeCard } from "./setup/card";
 export { keptComputer, keptFeatures, peerOf, readPeerAgents, takeAgents, vouchedOf } from "./peers/directory";
 export { actionsOf, removeHere, renameHere, writerAct, writerOf } from "./peers/manage";
 export { askReachAgain, readTries, sendReachAgain, TRY_FOR } from "./peers/reach-again";
-export { listComputers } from "./areas/computers";
+export { listComputers, ownComputer } from "./areas/computers";
 export { composeLetter } from "./letters/letter";
 export { composeAgents } from "./peers/directory";
 export { nameAgents, namedAgents, namesIn } from "./peers/naming";

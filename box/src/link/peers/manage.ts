@@ -18,7 +18,7 @@ import { LIST_FILE } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { sharedMachine } from "../setup/settle";
-import { readLink, updateLink } from "../state";
+import { macLink, readLink, updateLink } from "../state";
 import { writePrivate } from "../files";
 import { ownName } from "../letters/start";
 import type { LinkState } from "../state";
@@ -65,12 +65,24 @@ export interface WriterFacts {
   machines: Set<string>;
   takes: boolean;
   reachable: boolean;
+  /** The old Kuvo Code app (before 1.0) is attached to the writer's box: it keeps its own list of
+   * machines and writes it back, so a removal there wouldn't hold. */
+  oldApp: boolean;
 }
+
+/** Whether the old Kuvo Code app (the Mac app before 1.0) is attached to this Mac's box now: it,
+ * and only it, follows the box's link (`kuvo/link/status/events`) for as long as it's open. */
+export const oldAppAttached = (): boolean => IS_MAC && macLink.statusFollowers.size > 0;
+
+/** Why a removal isn't taken while the old app is attached to the Mac `mac` (its name). */
+export const oldAppWords = (mac: string, name: string): string => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`;
 
 export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
   const writer = writerOf(link);
   const reachable = Boolean(writer && (writer.here || peersOf(link).some(peer => peer.key === writer.key)));
-  return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (readPeerAgents()[writer.key]?.features ?? []).includes(MANAGE_FEATURE))), reachable };
+  const told = writer && !writer.here ? readPeerAgents()[writer.key] : undefined;
+  return { writer, machines: writtenMachines(link, writer), takes: Boolean(writer && (writer.here || (told?.features ?? []).includes(MANAGE_FEATURE))), reachable,
+    oldApp: Boolean(writer && (writer.here ? oldAppAttached() : told?.computer?.oldApp === true)) };
 }
 
 /** Why `computer` can't be renamed (`rename`) or removed (`remove`) from this box, in words a client
@@ -87,6 +99,7 @@ export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | 
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
   if (!computer.key || !facts.machines.has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.takes) return `${(writer as { name: string }).name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
+  if (what === "remove" && facts.oldApp) return oldAppWords(writer.here ? here : writer.name, name);
   return null;
 }
 
@@ -171,6 +184,10 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   const writer = writerOf(link);
   if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });
   if (isApart(sender.key, link)) return answer(409, { message: "Only your own computers can rename and remove your machines." });
+  // (The same rules as the asking box's, again here: it may be older, or not say true.)
+  const target = peersOf(link).find(peer => peer.key === act.item);
+  if (target && isApart(target.key, link)) return answer(409, { message: `${target.name} is shared with another setup: only ${ownName()} itself can ${act.method === "DELETE" ? "remove" : "rename"} it.` });
+  if (target && act.method === "DELETE" && oldAppAttached()) return answer(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
