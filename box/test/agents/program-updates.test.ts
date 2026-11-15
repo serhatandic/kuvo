@@ -226,6 +226,9 @@ describe("updating the agents' programs", () => {
     codex.end({ updated: false, version: "1.0.0" })
     await ended
     expect((await box.accounts())["codex-quit-cli"].programUpdate).toMatchObject({ state: "current", version: "1.0.0" })
+    // The way a Mac of 0.7 or before asked, waiting for its answer, is no route now.
+    expect((await box.ask("integration/codex-quit-cli/update", "POST")).status).toBe(404)
+    expect(codex.updates).toBe(1)
   })
 
   test("a program its installer can't update isn't updated, alone or in Update All", async () => {

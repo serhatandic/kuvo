@@ -271,7 +271,6 @@ test("a branch prefix git can't use there is named", async () => {
   assert.equal(git(project, "worktree", "list").split("\n").length, 1 + link.readWorktrees().filter(each => each.project === project && fs.existsSync(each.root)).length, "the worktree it made for it went");
 });
 
-
 test("a session a phone makes in a worktree it asked for is told it works there", async () => {
   const made = (await ask("POST", "kuvo/worktrees", { project })).value;
   sessions.push({ id: "ses_phone", location: { directory: made.folder } });

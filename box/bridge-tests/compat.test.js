@@ -86,8 +86,8 @@ test("every marker names an item on the list, and says what it does and when it 
 
 test("an item's kind is one on the list, and its markers end as its kind does", () => {
   const known = new Set(listed);
-  assert.deepEqual([...kinds].filter(([item, kind]) => !known.has(item) || !["stays", "next"].includes(kind)), []);
-  const ends = { stays: KEPT, next: NEXT };
+  assert.deepEqual([...kinds].filter(([item, kind]) => !known.has(item) || !["stays", "next", "feed"].includes(kind)), []);
+  const ends = { stays: KEPT, next: NEXT, feed: "Goes once a release with one is the newest." };
   const wrong = markers.filter(marker => !FROZEN(marker.where.split(":")[0])).filter(marker => {
     const end = ends[kinds.get(marker.tag)];
     const rest = marker.rest.trimEnd();

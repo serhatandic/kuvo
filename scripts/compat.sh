@@ -44,7 +44,7 @@ git grep --untracked -n -I -E 'COMPAT\((0\.7|beta\.1) [a-z0-9-]+\)' -- \
     $2 " " $3 != last {
       if (last != "") print ""
       last = $2 " " $3
-      says = kinds[last] == "stays" ? "stays while a Mac from before 1.0 connects: goes on the user'"'"'s word" : kinds[last] == "next" ? "decided in #717'"'"'s next part" : ""
+      says = kinds[last] == "stays" ? "stays while a Mac from before 1.0 connects: goes on the user'"'"'s word" : kinds[last] == "next" ? "decided in #717'"'"'s next part" : kinds[last] == "feed" ? "the release feed, until a release with boxes.json is the newest" : ""
       print last (says == "" ? "" : "  (" says ")")
     }
     { printf "  %s  %s\n", $4, $5 }' protocol/compat-kinds.txt -

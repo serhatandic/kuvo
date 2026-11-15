@@ -9749,10 +9749,14 @@ a chat deleted since it was taken stays deleted. It can go three months after 0.
 
 **What else an earlier Kuvo Code left on this Mac.** A Mac with this version takes it in once. It
 can go three months after 0.8.0 ships.
-- **Still to be carried by the box's move (#713)**: these three are what the retired Mac app did
-  as it opened, and nothing in the box does them yet. They're listed here, unmarked, until the move
-  carries each ("Moving this Mac's box"):
-  - Your personalities (`personalities.json`, `personalities-removed.json` in the app's folder),
+- **The retired Mac app is the only sender of these.** Each is something an earlier version kept
+  on this Mac, which that app read as it opened and gave to this Mac's box, or to a machine's.
+  Nothing else sends them, so the box's move carries each ("Moving this Mac's box", #713), or says
+  that it doesn't:
+  - Its own group chats (`groups.json`, `groups/<id>.json`): written into the coding agents'
+    bridge's folder, with what a bot was still to be told in `groups/pending-memory.json` ("This
+    Mac's own group chats", above).
+  - Your personalities (`personalities.json`, `personalities-removed.json` in the app's folder):
     moved to the box's library.
   - Edits to machines' bots it kept while they were away (`botEditsWaiting` in its preferences, and
     `botEditOutbox`, which builds after 0.8.0-beta.1 kept): each handed to this Mac's box once
@@ -9760,6 +9764,15 @@ can go three months after 0.8.0 ships.
     another computer"), then gone from the preferences.
   - Machines' bots' keys of their own, which it kept in your Keychain: gone from the Keychain
     (bots have no keys of their own now: "Bots have no keys of their own").
+  - Settings › Git from its preferences: `POST kuvo/git/settings/move` to each box (below).
+  - Its letters and the messages kept for a machine that was away: `POST kuvo/link/letters/take`
+    (below).
+  - The worktrees it kept, and those it removed: `POST kuvo/worktrees/record` to each box ("Its
+    worktrees", above).
+  - The sites an agent may sign in to for you and their accounts (`passwords.agentSignIn`,
+    `passwords.agentSignInAccounts` in its preferences), which went into the vault.
+  - Keep This Mac Awake, off (its preferences): the box keeps this Mac awake while agents work as
+    its own setting says, which the move sets from the app's.
 - **Nothing takes these in now, and whether the move does is its inventory's to say (#713)**: what
   it kept of machines' group chats as it last saw them (`machine-groups.json` and
   `machine-groups/<id>.json`, from 0.7.0; a copy of what each machine keeps, but the last one of a

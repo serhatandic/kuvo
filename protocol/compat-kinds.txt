@@ -4,6 +4,8 @@
 #   stays  keeps a box right while a Mac from before 1.0 still connects; goes on the user's word
 #   next   no released client needs it, but the box's own tests still lean on it, or it isn't
 #          studied yet; decided in #717's next part
+#   feed   not about a Mac or its data: the release feed as it is until 1.0 is the newest release
+#          (GitHub's newest, 0.7.2, has no `boxes.json`); goes once a release with one is the newest
 # An item not named here is what an earlier version left, taken in once: it keeps its date from
 # before until the box's move carries it (#713) or it goes.
 0.7 engine-stop stays
@@ -16,6 +18,7 @@ beta.1 box-read-change stays
 beta.1 deleted-bots stays
 beta.1 mac-moves stays
 beta.1 peers-list stays
+0.7 no-boxes-json feed
 0.7 bot-json-job next
 0.7 limits-own-numbers next
 0.7 own-envelope next
