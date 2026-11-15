@@ -29,6 +29,7 @@ export const FEATURES = [
   "artifacts",
   "asks",
   "attention",
+  "auto.lists",
   "autopilot",
   "bots",
   "bots.deletes",
