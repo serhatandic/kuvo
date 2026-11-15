@@ -20749,17 +20749,8 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     return removingInTurn(tree.root, () => removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true, ...body && "was" in body ? { was: body.was } : {} }, engine, signal, bridge));
   return { status: 404, value: {} };
 }
-var removing = new Map;
-function removingInTurn(root, work) {
-  const mine = (removing.get(root) ?? Promise.resolve()).then(work, work);
-  const settled = mine.catch(() => {});
-  removing.set(root, settled);
-  settled.then(() => {
-    if (removing.get(root) === settled)
-      removing.delete(root);
-  });
-  return mine;
-}
+var removalLocks = lockedIn(path83.join(RUN, "worktree-removals"));
+var removingInTurn = (root, work) => inTurn("worktree-removals", root, work, removalLocks);
 var isArchived2 = (session) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true);
 var folderOf2 = (session) => session.location?.directory ?? session.directory;
 var snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path83.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`;
@@ -45432,7 +45423,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4e429412ce9b";
+var BRIDGE_VERSION = "04539a9e88c5";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56864,6 +56855,8 @@ function revised(row) {
   const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens };
   const governs = {
     confirmBelow: row.confirmBelow?.value,
+    min: row.min,
+    max: row.max,
     kind: row.kind,
     value: row.kind === "secret" ? undefined : row.value,
     can: can(row.can),
@@ -57214,24 +57207,32 @@ async function worktreesPage(context) {
   const listed = await asked8(context, worktreesRoute, "GET", "kuvo/worktrees");
   if (listed.status !== 200)
     return unreadPage("worktrees", "Worktrees", listed);
+  let engineRuns = false;
+  try {
+    engineRuns = Boolean(context.readEngine()?.port);
+  } catch {}
   const projects = where.value.projects ?? [];
-  const places = projects.length ? projects.map((each) => row({
+  const commonPlace = projects.length > 0 && projects.every((each) => each.folder === projects[0].folder);
+  const shownPlaces = commonPlace ? [projects.find((each) => each.inside && !each.ignored) ?? projects[0]] : projects.slice(0, 5);
+  const places = projects.length ? shownPlaces.map((each) => row({
     id: `place-${each.project}`,
-    title: projects.every((p) => p.folder === projects[0].folder) ? "New worktrees go in" : each.name,
+    title: commonPlace ? "New worktrees go in" : each.name,
     kind: "status",
     value: each.folder ?? "Known once the engine runs",
-    ...each.canMake === false ? { line: "Kuvo Code can’t create this folder. Choose another one.", tone: "warning" } : each.inside && !each.ignored ? { line: `It’s inside ${projects.every((p) => p.folder === projects[0].folder) ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" } : {}
+    ...each.exists === false && each.canMake === false ? { line: "Kuvo Code can’t create this folder. Choose another one.", tone: "warning" } : each.inside && !each.ignored ? { line: `It’s inside ${commonPlace ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" } : {}
   })) : [row({ id: "worktrees-place", title: "New worktrees go in", kind: "status", value: chosen || where.value.default })];
+  if (!commonPlace && projects.length > 5)
+    places.push(row({ id: "more-worktree-projects", title: `And ${projects.length - 5} more ${projects.length - 5 === 1 ? "project" : "projects"}`, kind: "status" }));
   return { id: "worktrees", title: "Worktrees", groups: [
-    { id: "new-projects", title: "New Projects", note: "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them.", rows: [row({ id: "projects-folder", title: "Folder", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", can: true })] },
-    { id: "new-worktrees", title: "New Worktrees", rows: [row({ id: "worktrees-folder", title: "Folder", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: "Kuvo Code’s Folder", can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }), ...places] },
+    { id: "new-projects", title: "New Projects", note: "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them.", rows: [row({ id: "projects-folder", title: "Folder", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", folder: { choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." }, can: true })] },
+    { id: "new-worktrees", title: "New Worktrees", rows: [row({ id: "worktrees-folder", title: "Folder", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: "Kuvo Code’s Folder", folder: { choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." }, can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }), ...places] },
     { id: "session-worktrees", title: "Worktrees", note: "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", rows: [row({ id: "worktrees", title: "Worktrees", kind: "list", empty: "None yet. Choose Worktree in a new session’s composer to give it one.", items: listed.value.worktrees.map((tree) => item({
       id: `tree-${tree.path}`,
       title: tree.branch,
       line: `${tree.projectName} · ${tree.sessions} ${tree.sessions === 1 ? "session" : "sessions"}`,
       kind: "actions",
       value: { record: readWorktrees().find((record) => record.root === tree.path), uncommitted: tree.uncommitted, ahead: tree.ahead },
-      actions: [{ id: "remove", title: "Remove…", style: "destructive", confirm: { title: `Remove the worktree for ${tree.branch}?`, body: worktreeRemovalWords(tree), button: "Remove" } }]
+      actions: [{ id: "remove", title: "Remove…", style: "destructive", can: tree.working ? { why: `An agent is still working in the worktree of ${tree.branch}, so it stays. Stop it first, then remove the worktree.` } : engineRuns ? true : { why: `The engine isn't running, so the worktree of ${tree.branch} stays. Try again once it's started.` }, confirm: { title: `Remove the worktree for ${tree.branch}?`, body: worktreeRemovalWords(tree), button: "Remove" } }]
     })) })] }
   ] };
 }

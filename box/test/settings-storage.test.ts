@@ -53,10 +53,16 @@ test("Storage preserves the Swift box group's words, budgets, units and confirma
   expect(row(page, "older-copies").actions[0]).toMatchObject({ title: "Clear…", confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } })
   const { revised } = await import("../src/link/areas/settings-pages")
   expect(revised({ ...budget, line: "Reworded" }).revision).toBe(budget.revision)
+  disk.free = 0
+  expect((await shown()).notes[0].words).toBe("The disk is nearly full, so only the newest version of each file keeps a copy until 10.7 GB is free again.")
 })
 
 test("Storage floors budget writes, refuses stale and wrong types; disk changes do not conflict", async () => {
   const budget = row(await shown(), "older-budget")
+  const file = join(root, "new-copy.txt")
+  writeFileSync(file, "A new copy")
+  await store.change(file, { by: { kind: "outside" }, via: "outside" })
+  expect(row(await shown(), "copies").value).toBeGreaterThan(0)
   disk.free -= 100
   expect((await change(budget, 1000.9)).status).toBe(200)
   expect(store.storage().budget).toBe(1000)

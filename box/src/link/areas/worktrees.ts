@@ -2,6 +2,7 @@
 // branch of its own, kept by this box (`box/worktrees.json`): made, named after their session,
 // listed and removed here, from a Mac (through `box route`) or a phone, with the Mac closed too.
 
+import { inTurn, lockedIn } from "../../shared/session-notes";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -17,7 +18,7 @@ import { isHiddenRun } from "../engine/sessions";
 import type { EngineSession } from "../engine/sessions";
 import { followed } from "../follow";
 import { BY_KUVO, firstCommit, gitAsked, gitIn, gitLater, sizeLater } from "../git";
-import { ENGINE_DATA, homeFolder } from "../home";
+import { ENGINE_DATA, RUN, homeFolder } from "../home";
 import type { AnswerPiece, JSONAnswer, RouteContext } from "../server/context";
 import { readProjects } from "./projects";
 import { branchPrefixHere } from "./git-words";
@@ -318,15 +319,9 @@ export async function answerWorktrees(method: string, requestPath: string, body:
   return { status: 404, value: {} };
 }
 
-// All removals of one worktree share a turn, including callers without the optional comparison.
-const removing = new Map<string, Promise<unknown>>();
-function removingInTurn<T>(root: string, work: () => Promise<T>): Promise<T> {
-  const mine = (removing.get(root) ?? Promise.resolve()).then(work, work);
-  const settled = mine.catch(() => {});
-  removing.set(root, settled);
-  void settled.then(() => { if (removing.get(root) === settled) removing.delete(root); });
-  return mine;
-}
+// All removals of one root share a turn across this box's processes, old calls included.
+const removalLocks = lockedIn(path.join(RUN, "worktree-removals"));
+const removingInTurn = <T>(root: string, work: () => Promise<T>): Promise<T> => inTurn("worktree-removals", root, work, removalLocks);
 
 /** Whether a session is archived, as a client marks it or the engine does. */
 const isArchived = (session: EngineSession) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true);

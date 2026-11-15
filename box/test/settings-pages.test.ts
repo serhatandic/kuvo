@@ -534,6 +534,8 @@ test("Worktrees words, folders and removal confirmation match Swift", async () =
   ])
   expect(rowOf(shown, "projects-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "None", value: "" })
   expect(rowOf(shown, "worktrees-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "Kuvo Code’s Folder", value: "" })
+  expect(rowOf(shown, "projects-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." })
+  expect(rowOf(shown, "worktrees-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." })
   expect(rowOf(shown, "worktrees-place").title).toBe("New worktrees go in")
   expect(rowOf(shown, "worktrees").empty).toBe("None yet. Choose Worktree in a new session’s composer to give it one.")
   const { worktreeRemovalWords, revised } = await import("../src/link/areas/settings-pages")
@@ -588,6 +590,11 @@ test("Worktrees events follow config and work settings routes", async () => {
     write(WORKTREES_FILE, { worktrees: [{ root: join(outside, "missing"), project: outside, branch: "topic" }] })
     const tree = rowOf(await events.next(), `tree-${join(outside, "missing")}`)
     expect(tree.actions[0]).toMatchObject({ title: "Remove…", confirm: { title: "Remove the worktree for topic?", button: "Remove" } })
+    expect(tree.actions[0].can.why).toBe("The engine isn't running, so the worktree of topic stays. Try again once it's started.")
+    const before = kept(WORKTREES_FILE)
+    const refused = await act("worktrees", tree, "remove")
+    expect([refused.status, refused.json.message]).toEqual([403, tree.actions[0].can.why])
+    expect(kept(WORKTREES_FILE)).toBe(before)
   } finally { events.stop() }
 })
 

@@ -8066,7 +8066,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   |---|---|---|
   | `switch` | `value`: true or false | A switch |
   | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
-  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder's opens the box's folder picker, `kuvo/folders`) |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?`, `lines?: {min, max}`, `folder?: {choose, clear, prompt, message}`, `unit?: "bytes"`, `suggestions?: [{value, title}]`, `confirmBelow?: {value, confirm}` | A field (text may request a multi-line editor with its preferred visible line range; presentation only, outside revisions; byte values use file size formatting; numeric suggestions are common values, not limits; a number below confirmBelow.value requires its confirmation, whose button appends the formatted proposed value) (a folder opens the box's picker, `kuvo/folders`, with its own choose/clear button words, picker prompt and message; clearing sends empty text) |
   | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
   | `status` | `value`: words, or a number with `unit?: "bytes"` | The words or formatted file size, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
@@ -8162,7 +8162,7 @@ The sections now:
   the fields being written, compared under the file's lock; absent `was` keeps its old behavior.
   A mismatch answers `409 {message: "It changed since you read it."}`.
   `POST kuvo/worktrees/remove` accepts optional `was: {record, uncommitted?, ahead?}`, the worktree record and git facts read;
-  removals of one root share a turn and compare the record and git facts before removal. Absent `was`
+  removals of one root share a turn across box processes and compare the record and git facts before removal. Absent `was`
   keeps its old behavior. A mismatch answers the same 409, mapped to a stale page.
 
 - **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),

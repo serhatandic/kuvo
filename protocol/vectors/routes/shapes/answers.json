@@ -13392,6 +13392,14 @@
               "max": "number"
              }
             },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
             "search?": {
              "object": {
               "placeholder": "string",
@@ -13609,6 +13617,14 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
                 }
                },
                "search?": {
@@ -13916,6 +13932,14 @@
               "max": "number"
              }
             },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
             "search?": {
              "object": {
               "placeholder": "string",
@@ -14133,6 +14157,14 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
                 }
                },
                "search?": {
@@ -14440,6 +14472,14 @@
               "max": "number"
              }
             },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
             "search?": {
              "object": {
               "placeholder": "string",
@@ -14657,6 +14697,14 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
                 }
                },
                "search?": {
@@ -14972,6 +15020,14 @@
                 "max": "number"
                }
               },
+              "folder?": {
+               "object": {
+                "choose": "string",
+                "clear": "string",
+                "prompt": "string",
+                "message": "string"
+               }
+              },
               "search?": {
                "object": {
                 "placeholder": "string",
@@ -15189,6 +15245,14 @@
                   "object": {
                    "min": "number",
                    "max": "number"
+                  }
+                 },
+                 "folder?": {
+                  "object": {
+                   "choose": "string",
+                   "clear": "string",
+                   "prompt": "string",
+                   "message": "string"
                   }
                  },
                  "search?": {
@@ -15493,6 +15557,14 @@
               "max": "number"
              }
             },
+            "folder?": {
+             "object": {
+              "choose": "string",
+              "clear": "string",
+              "prompt": "string",
+              "message": "string"
+             }
+            },
             "search?": {
              "object": {
               "placeholder": "string",
@@ -15710,6 +15782,14 @@
                 "object": {
                  "min": "number",
                  "max": "number"
+                }
+               },
+               "folder?": {
+                "object": {
+                 "choose": "string",
+                 "clear": "string",
+                 "prompt": "string",
+                 "message": "string"
                 }
                },
                "search?": {
@@ -16025,6 +16105,14 @@
                 "max": "number"
                }
               },
+              "folder?": {
+               "object": {
+                "choose": "string",
+                "clear": "string",
+                "prompt": "string",
+                "message": "string"
+               }
+              },
               "search?": {
                "object": {
                 "placeholder": "string",
@@ -16242,6 +16330,14 @@
                   "object": {
                    "min": "number",
                    "max": "number"
+                  }
+                 },
+                 "folder?": {
+                  "object": {
+                   "choose": "string",
+                   "clear": "string",
+                   "prompt": "string",
+                   "message": "string"
                   }
                  },
                  "search?": {
