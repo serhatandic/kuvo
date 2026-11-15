@@ -1,6 +1,6 @@
 // The computer's MCP servers, for the coding agents as for the engine's models: those the engine
 // has for a conversation's folder (Settings › MCP Servers and Settings › Integrations, a project's
-// own, and a bot's folder's, with its own keys), as the engine reads them, keys in. Each agent
+// own), as the engine reads them, keys in. Each agent
 // reaches them through the bridge's relay (toolrelay.ts), which starts a command's server in the
 // box's sandbox with its keys, and adds a URL's headers and sign-in on the way: the agent itself is
 // given neither.

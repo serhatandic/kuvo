@@ -63,7 +63,7 @@
   "filled": [
     { "template": "{{made}}", "vars": { "made": 3 }, "filled": 3 },
     { "template": "{{made}}", "vars": { "made": "bot_a" }, "filled": "bot_a" },
-    { "template": "kuvo/bots/{{made}}/keys", "vars": { "made": "bot_a" }, "filled": "kuvo/bots/bot_a/keys" },
+    { "template": "kuvo/bots/{{made}}/arrived", "vars": { "made": "bot_a" }, "filled": "kuvo/bots/bot_a/arrived" },
     { "template": "{{a}}-{{b}}", "vars": { "a": 1, "b": "x" }, "filled": "1-x" },
     { "template": { "path": [ "{{a}}" ], "n": "{{n}}" }, "vars": { "a": "model", "n": 2 }, "filled": { "path": [ "model" ], "n": 2 } },
     { "template": "{{nowhere}}", "vars": { "nowhere": "set" }, "filled": "set" },

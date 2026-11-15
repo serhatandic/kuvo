@@ -7,18 +7,16 @@
 // - `kuvo/box/proof` (`POST`): this Mac's proof for one of your machines, signed with its link's
 //   signing key, as a machine's vault takes one (vault.ts, `provedMac`): `{machine}` for its vault's
 //   key, `{machine, method, path, hash}` for one request. `{mac, at, nonce, proof}`.
-// - `kuvo/box/kept-keys?bot=<id>`: a machine's bot's own keys an earlier Kuvo Code kept in this
-//   Mac's Keychain, for the app to give the machine (for released Macs: `keptKeysRoute`'s marker):
-//   `GET` them (`{keys: {<variable>: <value>}}`), `DELETE` those it has (`{names}`). Only a bot that
-//   isn't this box's own: this box's bots' keys are theirs (`kuvo/bots/<id>/keys`).
+//
+// (A machine's bots' own keys an earlier Kuvo Code kept in this Mac's Keychain were handed to their
+// machines here, `kuvo/box/kept-keys`: bots have no keys of their own now, and those go with the
+// rest as the box starts, bots/own-keys.ts.)
 
 import crypto from "node:crypto";
 import { isObject, parsed } from "../../shared/json";
 import { signWith } from "../documents/format";
-import { botHere } from "../bots/here";
 import { OWN_HOME_MAC } from "../home";
-import { KeysUnavailable, linkHost } from "../host-interface";
-import { botVariable, deleteKey, keyNames, keyWork, readKey } from "../keys";
+import { linkHost } from "../host-interface";
 import { ownKey } from "../peers/known";
 import { readLink } from "../state";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -71,37 +69,4 @@ export async function* proofRoute({ request, json }: RouteContext): AsyncGenerat
     ? `kuvo-vault-request\0${given.machine}\0${at}\0${nonce}\0${asked.method}\0${asked.path}\0${asked.hash}`
     : `kuvo-vault-key\0${given.machine}\0${at}\0${nonce}`;
   return yield* json(200, { mac, at, nonce, proof: signWith(identity.sign, Buffer.from(signed)) });
-}
-
-// COMPAT(0.7 bot-keys-keychain): a machine's bots' keys this Mac's Keychain kept, handed to their machines. Goes 3 months after 0.8.0.
-/** `kuvo/box/kept-keys?bot=<id>`: the keys of its own an earlier Kuvo Code kept here for a bot on one
- * of your machines (`GET`), and those taken away once the machine has them (`DELETE {names}`). */
-export async function* keptKeysRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
-  const method = request.method.toUpperCase();
-  if (method !== "GET" && method !== "DELETE") return yield* json(405, {});
-  if (!request.fromApp) return yield* json(403, { message: ONLY_APP });
-  if (!OWN_HOME_MAC) return yield* json(409, { message: ONLY_OWN_HOME });
-  const bot = new URLSearchParams(request.path.split("?")[1] ?? "").get("bot") ?? "";
-  if (!/^bot_[A-Za-z0-9]{1,60}$/.test(bot)) return yield* json(400, { message: "Say which bot (?bot=…)." });
-  if (botHere(bot)) return yield* json(409, { message: "That bot is this box's own: its keys are at kuvo/bots/<id>/keys." });
-  const suffix = botVariable("", bot);
-  try {
-    const names = await keyNames({ suffix });
-    if (method === "GET") {
-      const keys: Record<string, string> = {};
-      for (const name of names) {
-        const value = await readKey(name);
-        if (value != null) keys[name] = value;
-      }
-      return yield* json(200, { keys });
-    }
-    const given = parsed(request.body);
-    const asked = isObject(given) && Array.isArray(given.names) ? given.names : null;
-    if (!asked || !asked.every(name => typeof name === "string" && names.includes(name))) return yield* json(400, { message: "Say which of its keys (names), as GET lists them." });
-    await keyWork(async () => { for (const name of asked as string[]) await deleteKey(name); });
-    return yield* json(200, {});
-  } catch (error) {
-    if (error instanceof KeysUnavailable) return yield* json(503, { message: error.message });
-    throw error;
-  }
 }

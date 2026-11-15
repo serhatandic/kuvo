@@ -131,7 +131,6 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
       { what: "conversation", words: "Its conversation is deleted." },
       { what: "folder", words: `Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on my-server (${path.join(home, "trash")}).` },
       { what: "wakes", words: "Its 2 wake-ups and watch are cancelled." },
-      { what: "keys", words: "Any keys of its own are removed." },
       { what: "groups", words: "It leaves the group chats on my-server." },
       { what: "sessions", words: "The sessions it started stay.", kept: true },
     ],
@@ -139,7 +138,7 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
     now: { working: 0, asking: 0 },
   });
   // One with no wake-ups or watches says nothing of them.
-  assert.deepEqual(answer.json.bots[0].deletes.map(each => each.what), ["conversation", "folder", "keys", "groups", "sessions"]);
+  assert.deepEqual(answer.json.bots[0].deletes.map(each => each.what), ["conversation", "folder", "groups", "sessions"]);
   // (A box with no link of its own can't check what it holds: neither that nor the bots elsewhere is said.)
   assert.equal("elsewhere" in answer.json || "held" in answer.json, false);
   assert.equal("personality" in answer.json.bots[1], false, "none: left out, as the Mac leaves it out");
@@ -861,9 +860,6 @@ test("with the Mac closed, a bot here is deleted from a phone as Delete Bot… d
   const scout = bot("bot_scout00001", { name: "Scout" });
   bot("bot_ada0000001", { name: "Ada" });
   bot("bot_ben0000001", { name: "Ben" });
-  const keys = path.join(home, "box", "bot-keys");
-  write(path.join(keys, "KUVO_KEY_GITHUB_TOKEN__BOT_SCOUT00001"), "its own");
-  write(path.join(keys, "KUVO_KEY_GITHUB_TOKEN__BOT_ADA0000001"), "another's");
   write(path.join(home, "box", "keys", "KUVO_KEY_GITHUB_TOKEN"), "shared");
   fs.rmSync(path.join(home, "trash"), { recursive: true, force: true });
   const engine = await makingEngine();
@@ -885,8 +881,7 @@ test("with the Mac closed, a bot here is deleted from a phone as Delete Bot… d
     assert.deepEqual(link.listBots().map(each => each.id), ["bot_ada0000001", "bot_ben0000001"]);
     // Noted for the Mac, which lets it go as it next connects.
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(bots, "deleted.json"), "utf8")), { deleted: ["bot_scout00001"] });
-    // Its keys of its own go; others' and the shared one stay.
-    assert.deepEqual(fs.readdirSync(keys).sort(), ["KUVO_KEY_GITHUB_TOKEN__BOT_ADA0000001"]);
+    // This computer's own key stays: it was never the bot's.
     assert.equal(fs.readFileSync(path.join(home, "box", "keys", "KUVO_KEY_GITHUB_TOKEN"), "utf8"), "shared");
     // Its group chat goes on without it, and its conversation is deleted.
     const left = engine.asked.filter(each => each.method === "PATCH" && each.url === `/api/kuvo/groups/${chat.json.group.id}`).at(-1);
@@ -903,7 +898,6 @@ test("with the Mac closed, a bot here is deleted from a phone as Delete Bot… d
   } finally {
     engine.close();
     fs.rmSync(path.join(home, "trash"), { recursive: true, force: true });
-    fs.rmSync(keys, { recursive: true, force: true });
   }
 });
 

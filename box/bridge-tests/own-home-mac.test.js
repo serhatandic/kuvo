@@ -13,7 +13,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { script, standInHost } from "./bot-keys-scenarios.js";
+import { script, standInHost } from "./box-stand-ins.js";
 import { integrationScenarios } from "./integrations-scenarios.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -52,7 +52,7 @@ integrationScenarios({ link, home: box, mac: true, store: {
   keep: (name, value) => host.keys.set(name, value),
 } });
 
-const fileOf = name => path.join(name.includes("__") ? botKeys : keys, name);
+const fileOf = name => path.join(keys, name);
 const read = file => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
 
 test("a key kept or removed: its host keeps it, and the box writes the engine's file beside it, only you can read", async () => {
@@ -67,7 +67,7 @@ test("a key kept or removed: its host keeps it, and the box writes the engine's 
   assert.equal(fs.existsSync(fileOf(name)), false, "its file gone with it");
 });
 
-test("as it starts, the files are what its host keeps: each written, a bot's own beside them, none it doesn't left", async () => {
+test("as it starts, the files are what its host keeps: each written, none it doesn't left, and never one a bot had of its own", async () => {
   host.keys.set("KUVO_KEY_LINEAR_TOKEN", "lin_1");
   host.keys.set("KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT", "lin_scout");
   fs.mkdirSync(keys, { recursive: true });
@@ -75,7 +75,8 @@ test("as it starts, the files are what its host keeps: each written, a bot's own
   fs.writeFileSync(fileOf("KUVO_KEY_LINEAR_TOKEN"), "an older value");
   assert.equal(await link.syncKeyFiles(), true);
   assert.equal(read(fileOf("KUVO_KEY_LINEAR_TOKEN")), "lin_1");
-  assert.equal(read(fileOf("KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT")), "lin_scout");
+  assert.equal(fs.existsSync(fileOf("KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT")), false, "a bot's own, still in the Keychain from an earlier box: no file is written for it");
+  assert.equal(fs.existsSync(botKeys), false);
   assert.equal(fs.existsSync(fileOf("KUVO_KEY_GONE")), false);
 
   // Its host not answering: nothing taken away, and it says it couldn't.
@@ -88,8 +89,33 @@ test("as it starts, the files are what its host keeps: each written, a bot's own
   assert.equal(read(fileOf("KUVO_KEY_LINEAR_TOKEN")), "lin_1", "still there");
   for (const name of ["KUVO_KEY_LINEAR_TOKEN", "KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT"]) host.keys.delete(name);
   assert.equal(await link.syncKeyFiles(), true);
-  assert.deepEqual([...fs.readdirSync(keys), ...fs.readdirSync(botKeys)].sort(), [...host.keys.keys()].sort(), "the same keys as its host, no more");
-  for (const [name, value] of host.keys) assert.equal(read(fileOf(name)), value);
+  // (But those an earlier box kept for bots, which are no key of the box's now.)
+  const kept = [...host.keys].filter(([name]) => !name.includes("__BOT_"));
+  assert.deepEqual(fs.readdirSync(keys).sort(), kept.map(([name]) => name).sort(), "the same keys as its host, no more");
+  for (const [name, value] of kept) assert.equal(read(fileOf(name)), value);
+});
+
+test("the files an earlier box wrote bots' own keys to go once the Keychain has let them go, their folder too", async () => {
+  const name = "KUVO_KEY_LINEAR_TOKEN__BOT_SCOUT";
+  host.keys.set(name, "lin_scout");
+  host.keys.set("KUVO_KEY_LINEAR_TOKEN", "lin_1");
+  await link.syncKeyFiles();
+  fs.mkdirSync(botKeys, { recursive: true });
+  fs.writeFileSync(path.join(botKeys, name), "lin_scout");
+  host.down = true;
+  try {
+    assert.equal(await link.dropBotsOwnKeys(), false);
+  } finally {
+    host.down = false;
+  }
+  assert.equal(read(path.join(botKeys, name)), "lin_scout", "its file stays while its host still keeps it");
+  assert.equal(await link.dropBotsOwnKeys(), true);
+  assert.equal(host.keys.has(name), false);
+  assert.equal(fs.existsSync(botKeys), false);
+  assert.equal(host.keys.get("KUVO_KEY_LINEAR_TOKEN"), "lin_1", "your own stays in the Keychain");
+  assert.equal(read(fileOf("KUVO_KEY_LINEAR_TOKEN")), "lin_1", "and in its file");
+  host.keys.delete("KUVO_KEY_LINEAR_TOKEN");
+  await link.syncKeyFiles();
 });
 
 test("a key its host lists but can't give now (its Keychain locked): its file stays, and it's tried again", async () => {

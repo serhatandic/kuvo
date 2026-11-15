@@ -178,7 +178,7 @@ process.stdin.on("data", (chunk) => {
       link.configure(`http://127.0.0.1:${engine.port}`, "engine-password")
       setServerSource(link)
     },
-    /** The command server, as a bot's settings name it with its own key. */
+    /** The command server, as its folder's own settings name it with another key. */
     botFiles: () => ({ files: { ...computer().files, environment: { SERVICE_KEY: KEYS.bot } } }),
     stop() {
       process.env.PATH = path

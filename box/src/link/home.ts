@@ -127,10 +127,10 @@ export const BOX = path.join(K, "box");
 const home = homeFolder();
 export const shownRoot = K.startsWith(home + "/") ? "~" + K.slice(home.length) : K;
 
-// Its integrations' keys (KUVO_KEY_…), and its bots' own.
+// Its integrations' keys (KUVO_KEY_…).
 export const BOX_KEYS = path.join(BOX, "keys");
-// Bots' own keys (`answerBotKeys`), the box's own beside its shared ones: a start from a Mac
-// replaces what it sent in `keys`, and leaves `box` alone.
+// Where an earlier box kept the keys bots had of their own, which go as this one starts
+// (`dropBotKeys`, keys.ts): nothing is kept there now.
 export const BOT_KEYS = path.join(K, "box", "bot-keys");
 // What the box's own updates keep: the files a rollback puts back, what was installed.
 export const UPDATES = path.join(K, "updates");
@@ -188,7 +188,7 @@ export const attachmentRoots = (): string[] => [path.join(K, "attachments"), ...
 // engine's folder, where they've always been, in its app's folder (KUVO_ENGINE_CONFIG, the engine's
 // XDG_CONFIG_HOME), and in `config` in a home of its own. Its keys are in the Mac's Keychain, which
 // the engine reads from files: those the app writes them to (KUVO_KEYS) in its folder, the box's
-// own (`box/keys`, `box/bot-keys`) in a home of its own. And the servers that use a Mac's own apps
+// own (`box/keys`) in a home of its own. And the servers that use a Mac's own apps
 // run here.
 // The versions of this Mac's app and of the engine it brings, as the app that started it says
 // (BoxProcess: KUVO_APP_VERSION, KUVO_ENGINE_VERSION), for what it says of itself with the app closed.
@@ -202,7 +202,7 @@ export const ENGINE_CONFIG = process.env.KUVO_ENGINE_CONFIG || (OWN_HOME_MAC ? p
 // (This Mac's box in its app's folder has them there, always: BoxProcess gives both.)
 if (IS_MAC && !ENGINE_CONFIG) throw new Error("This Mac's box was started without KUVO_ENGINE_CONFIG, the folder its engine's settings are in.");
 /** Whether the box writes the files its engine reads its integrations' keys from itself, as a
- * machine's does (`box/keys`, a bot's own in `box/bot-keys`), while their values are kept on its host
+ * machine's does (`box/keys`), while their values are kept on its host
  * (this Mac's Keychain): a Mac's box in a home of its own, which no app writes them for (KUVO_KEYS). */
 export const writesKeyFiles = (): boolean => OWN_HOME_MAC && KEYS_ON_HOST && !APP_KEY_FILES;
 

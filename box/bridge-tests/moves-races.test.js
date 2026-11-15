@@ -1263,13 +1263,18 @@ nodeTest("still in its turn after the wait: it says it's working, not that messa
   await asItWas("ses_busy1");
 });
 
-// ---- A bot's own keys ----
+// ---- A bot from a box that still kept bots' own keys ----
 
-test("a bot whose own key can't be kept here isn't set up: it's said back, and nothing of it stays", async () => {
+test("a bot that comes with keys of its own from an earlier box arrives all the same: its keys aren't kept here, its folder's settings stop naming them, and what it had one for is noted", async () => {
   const packed = fs.mkdtempSync(path.join(support, "pack-"));
   const thing = "bot_keyed1", session = "ses_keyed1";
-  fs.writeFileSync(path.join(packed, "move.json"), JSON.stringify({ kind: "bot", thing, name: "Kay", wasPaused: false, folder: thing, exports: [{ info: { id: session, title: "Kay" }, messages: [] }], keys: { "not-here": { TOKEN: "secret" } } }));
-  fs.mkdirSync(path.join(packed, thing, "workspace"), { recursive: true });
+  fs.writeFileSync(path.join(packed, "move.json"), JSON.stringify({ kind: "bot", thing, name: "Kay", wasPaused: false, folder: thing, exports: [{ info: { id: session, title: "Kay" }, messages: [] }], keys: { github: { TOKEN: "secret-of-kay" } } }));
+  // Its folder's settings as the box it lived on wrote them: GitHub's server with its own key
+  // there, beside a server you wrote by hand.
+  const notes = { type: "local", command: ["notes"] };
+  fs.mkdirSync(path.join(packed, thing, "workspace", ".opencode"), { recursive: true });
+  fs.writeFileSync(path.join(packed, thing, "workspace", ".opencode", "opencode.json"), JSON.stringify({ mcp: { servers: {
+    github: { type: "remote", url: "https://api.githubcopilot.com/mcp/", headers: { Authorization: "Bearer {file:~/.kuvo-code/box/bot-keys/KUVO_KEY_GITHUB_TOKEN__BOT_KEYED1}" } }, notes } } }));
   fs.writeFileSync(path.join(packed, thing, "bot.json"), JSON.stringify({ kuvo: 1, id: thing, name: "Kay", model: { id: "big-pickle", providerID: "opencode" } }));
   fs.writeFileSync(path.join(packed, thing, "session"), `${session}\n`);
   const file = path.join(packed, "bundle.tgz");
@@ -1278,12 +1283,15 @@ test("a bot whose own key can't be kept here isn't set up: it's said back, and n
   await say({ op: "offer", id: "mov_keyed1", kind: "bot", thing, name: "Kay", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_keyed1", hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_keyed1" && (move.op === "failed" || move.op === "arrived")));
-  const failed = told.find(move => move.id === "mov_keyed1" && move.op === "failed");
-  assert.ok(failed, "never arrived: the box it came from keeps it, with its key");
-  assert.match(failed.message, /own key for not-here couldn’t be kept there/);
-  assert.doesNotMatch(failed.message, /secret/);
-  assert.ok(!engine.sessions.has(session));
-  assert.ok(!fs.existsSync(path.join(support, "bots", thing)));
+  assert.equal(told.find(move => move.id === "mov_keyed1" && (move.op === "failed" || move.op === "arrived")).op, "arrived", JSON.stringify(told.filter(move => move.id === "mov_keyed1")));
+  assert.ok(engine.sessions.has(session));
+  const folder = path.join(support, "bots", thing);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, "workspace", ".opencode", "opencode.json"), "utf8")), { mcp: { servers: { notes } } }, "only the server that named its own key goes");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(folder, "keys-gone.json"), "utf8")), { integrations: ["github"] });
+  // Its key is kept nowhere on this box.
+  assert.equal(fs.existsSync(path.join(home, "box", "bot-keys")), false);
+  assert.equal(fs.existsSync(path.join(support, "keys", "KUVO_KEY_GITHUB_TOKEN__BOT_KEYED1")), false);
+  await say({ op: "drop", id: "mov_keyed1" });
 });
 
 // ---- What still runs ----

@@ -1,9 +1,12 @@
 // Where keys are kept (PROTOCOL.md, "Host interface"): integrations' keys by their variable's
-// name (`KUVO_KEY_<ID>_<NAME>`, a bot's own `…__<BOT>`). A machine keeps them in files only you can
-// read (its shared ones in `box/keys`, its bots' own in `box/bot-keys`); this Mac's box asks its
-// app, which keeps them in the Keychain and, for the box in its folder, writes the files its engine
-// reads them from. A Mac's box in a home of its own writes those itself, where a machine keeps its
-// keys, from what its host keeps (`writesKeyFiles`, `keepKeyFiles`).
+// name (`KUVO_KEY_<ID>_<NAME>`). A machine keeps them in files only you can read (`box/keys`); this
+// Mac's box asks its app, which keeps them in the Keychain and, for the box in its folder, writes
+// the files its engine reads them from. A Mac's box in a home of its own writes those itself, where
+// a machine keeps its keys, from what its host keeps (`writesKeyFiles`, `keepKeyFiles`).
+//
+// Bots once had keys of their own (`…__<BOT>`, a machine's in `box/bot-keys`): no longer, and the
+// ones a box still keeps go as it starts (`dropBotKeys`). Until then they're no key of the box's:
+// never listed, read or written.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +18,10 @@ import { KeysUnavailable, NOT_ANSWERING, appHost, askHost } from "./host-interfa
 /** The only names the box ever asks for. */
 export const STORED_KEY = /^KUVO_KEY_[A-Z0-9_]+$/;
 
+/** A key a bot had of its own, by its name, as an earlier box kept them: an integration's variable,
+ * then the bot's ID in capitals (`<variable>__BOT_<ID>`). */
+export const BOT_KEY = /^KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+$/;
+
 /** The app that keeps this box's keys, or null for its files; this Mac's box without its app says so. */
 function keyHost() {
   const host = appHost();
@@ -23,8 +30,8 @@ function keyHost() {
 }
 
 // Key work, one change at a time: on this Mac each key is a round trip to the app, and two changes
-// (a phone's and Edit Bot's, or a save during the refresh at start) would each write a bot's
-// settings from the names they read before the other's.
+// (a phone's and Settings', or a save as the box starts) would each go by the names they read
+// before the other's.
 let keyQueue: Promise<unknown> = Promise.resolve();
 export function keyWork<T>(work: () => T | Promise<T>): Promise<T> {
   const run = keyQueue.then(work, work);
@@ -33,12 +40,12 @@ export function keyWork<T>(work: () => T | Promise<T>): Promise<T> {
 }
 
 const checkedKeyName = (name: unknown): string => {
-  if (typeof name !== "string" || !STORED_KEY.test(name)) throw new KeysUnavailable("That isn't a key's name.");
+  if (typeof name !== "string" || !STORED_KEY.test(name) || BOT_KEY.test(name)) throw new KeysUnavailable("That isn't a key's name.");
   return name;
 };
 
-/** The file one is kept in on a machine: a bot's own beside the others, the shared ones in `box/keys`. */
-const keyFile = (name: string) => path.join(checkedKeyName(name).includes("__") ? BOT_KEYS : BOX_KEYS, name);
+/** The file one is kept in on a machine (`box/keys`). */
+const keyFile = (name: string) => path.join(BOX_KEYS, checkedKeyName(name));
 
 /** The names of the keys kept, those that begin with `prefix` and end with `suffix`, sorted. */
 export async function keyNames({ prefix = "", suffix = "" }: { prefix?: string; suffix?: string } = {}): Promise<string[]> {
@@ -49,13 +56,13 @@ export async function keyNames({ prefix = "", suffix = "" }: { prefix?: string; 
   let names: unknown[];
   if (host) {
     const answer = await askHost(host, "keys/names", { ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}) });
-    // An answer without its list isn't "no keys" (a refresh would take every bot's servers away).
+    // An answer without its list isn't "no keys".
     if (!Array.isArray(answer.names)) throw new KeysUnavailable("This Mac's keys couldn't be read.");
     names = answer.names;
   } else {
-    names = [...listOf(BOX_KEYS).filter(name => !name.includes("__")), ...listOf(BOT_KEYS).filter(name => name.includes("__"))];
+    names = listOf(BOX_KEYS);
   }
-  return [...new Set(names.filter((name): name is string => typeof name === "string" && STORED_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
+  return [...new Set(names.filter((name): name is string => typeof name === "string" && STORED_KEY.test(name) && !BOT_KEY.test(name) && name.startsWith(prefix) && name.endsWith(suffix)))].sort();
 }
 
 /** One key's value as it's kept; null for one there isn't. */
@@ -95,19 +102,33 @@ export async function deleteKey(name: string): Promise<void> {
   });
 }
 
-/** A bot's own variable for one of an integration's, as the Mac's IntegrationKeys names it. */
-export const botVariable = (variable: string, bot: string) => `${variable}__${String(bot).toUpperCase().replace(/[^\p{L}\p{N}]/gu, "_")}`;
-
-/** One key's file, where a machine keeps it (only you can read it): a shared one under the
- * settings' lock, as a Mac making the machine's settings its own copies them. */
+/** One key's file, where a machine keeps it (only you can read it), under the settings' lock, as
+ * a Mac making the machine's settings its own copies them. */
 function writeKeyFile(name: string, value: string): void {
-  if (name.includes("__")) writeSecret(keyFile(name), value);
-  else locked(CONFIG_LOCK, () => writeSecret(keyFile(name), value));
+  locked(CONFIG_LOCK, () => writeSecret(keyFile(name), value));
 }
 
 function removeKeyFile(name: string): void {
-  if (name.includes("__")) fs.rmSync(keyFile(name), { force: true });
-  else locked(CONFIG_LOCK, () => fs.rmSync(keyFile(name), { force: true }));
+  locked(CONFIG_LOCK, () => fs.rmSync(keyFile(name), { force: true }));
+}
+
+/** The keys bots had of their own (#726: bots use this box's integrations, as every session does),
+ * gone from where an earlier box kept them, every one, whichever bot's (one here, one deleted, one
+ * that moved away, a machine's an earlier Kuvo Code kept in this Mac's Keychain): a machine's files
+ * (`box/bot-keys`, and the folder), this Mac's Keychain items (through its app or its helper,
+ * `keys/delete`, which takes the app's own file of each away too), and the files a Mac's box in a
+ * home of its own wrote them to (`box/bot-keys`). Nothing else is touched: no key of the box's own
+ * has such a name. Within `keyWork`. Throws `KeysUnavailable` where its host can't be asked now
+ * (what could go has gone, and the rest goes the next time). */
+export async function dropBotKeys(): Promise<void> {
+  const host = keyHost();
+  if (host) {
+    const answer = await askHost(host, "keys/names", {});
+    if (!Array.isArray(answer.names)) throw new KeysUnavailable("This Mac's keys couldn't be read.");
+    for (const name of answer.names) if (typeof name === "string" && BOT_KEY.test(name)) await askHost(host, "keys/delete", { name });
+  }
+  // (The files only once its host has let them go: one it still keeps says so by its file.)
+  fs.rmSync(BOT_KEYS, { recursive: true, force: true });
 }
 
 // A key changed on the host and its file, one at a time across this box's processes (`serve`, a
@@ -127,7 +148,7 @@ export async function syncKeyFiles(): Promise<boolean> {
   if (!writesKeyFiles()) return false;
   let names: string[];
   try { names = await keyNames(); } catch { return false; }
-  const files = [...listOf(BOX_KEYS).filter(each => !each.includes("__")), ...listOf(BOT_KEYS).filter(each => each.includes("__"))].filter(name => STORED_KEY.test(name));
+  const files = listOf(BOX_KEYS).filter(name => STORED_KEY.test(name) && !BOT_KEY.test(name));
   let all = true;
   for (const name of [...new Set([...names, ...files])]) {
     await keyFileWork(async () => {

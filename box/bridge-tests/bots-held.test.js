@@ -482,7 +482,6 @@ test("the bots of your other computers are listed by the box asked, as each last
     { what: "conversation", words: "Its conversation is deleted." },
     { what: "folder", words: "Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on lab." },
     { what: "wakes", words: "Its wake-ups and watches are cancelled." },
-    { what: "keys", words: "Any keys of its own are removed." },
     { what: "groups", words: "It leaves the group chats on lab." },
     { what: "sessions", words: "The sessions it started stay.", kept: true },
   ]);

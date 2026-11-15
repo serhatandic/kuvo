@@ -12,7 +12,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { script, standInHost } from "./bot-keys-scenarios.js";
+import { script, standInHost } from "./box-stand-ins.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "kvh-"));

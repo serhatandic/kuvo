@@ -197,7 +197,7 @@ export function integrationScenarios({ link, home, mac, store }) {
     assert.equal(store.kept(user), "me", "the other kept");
   });
 
-  test("its keys through kuvo/keys: listed, read, set and removed, never a bot's own", async () => {
+  test("its keys through kuvo/keys: listed, read, set and removed, never one named as a bot's own once was", async () => {
     store.keep(theirs, "bots");
     const names = await route(link, "GET", "kuvo/keys");
     assert.equal(names.status, 200);
@@ -209,7 +209,7 @@ export function integrationScenarios({ link, home, mac, store }) {
       assert.equal((await route(link, "GET", `kuvo/keys/${name}`)).status, 400, name);
       assert.equal((await route(link, "PUT", `kuvo/keys/${name}`, { value: "x" })).status, 400, name);
     }
-    assert.equal(store.kept(theirs), "bots", "a bot's own, untouched");
+    assert.equal(store.kept(theirs), "bots", "untouched through these routes");
     assert.equal((await route(link, "PUT", `kuvo/keys/${shared}`, { value: "" })).status, 400);
     assert.equal((await route(link, "POST", "kuvo/keys")).status, 405);
     assert.equal((await route(link, "PUT", `kuvo/keys/${shared}`, { value: "tok_123" })).status, 200);
@@ -232,14 +232,8 @@ export function integrationScenarios({ link, home, mac, store }) {
     assert.equal(waiting.length, 0);
   });
 
-  test("removed with its keys, what its server kept, and its bots' own keys and folder settings", async () => {
+  test("removed with its keys and what its server kept; a server a bot's folder's settings name by hand stays", async () => {
     fs.mkdirSync(path.join(store.data, "todoist"), { recursive: true });
-    store.keep(theirs, "theirs");
-    store.keep("KUVO_KEY_OTHER_API_KEY__BOT_SCOUT", "stays");
-    const own = path.join(home, "bots", "bot_scout", "workspace", ".opencode");
-    fs.mkdirSync(own, { recursive: true });
-    fs.writeFileSync(path.join(own, "opencode.json"), JSON.stringify({ mcp: { servers: { todoist: { type: "local", environment: { API_KEY: `{file:${store.named}/${theirs}}` } } } } }));
-    // Another bot's, written by hand without keys of its own: it stays.
     const handWritten = path.join(home, "bots", "bot_atlas", "workspace", ".opencode");
     fs.mkdirSync(handWritten, { recursive: true });
     fs.writeFileSync(path.join(handWritten, "opencode.json"), JSON.stringify({ mcp: { servers: { todoist: { type: "remote", url: "https://example.com/mcp" } } } }));
@@ -248,9 +242,6 @@ export function integrationScenarios({ link, home, mac, store }) {
     assert.equal(settings().mcp?.servers?.todoist, undefined);
     assert.equal(store.kept(shared), null);
     assert.equal(fs.existsSync(path.join(store.data, "todoist")), false);
-    assert.equal(store.kept(theirs), null);
-    assert.equal(store.kept("KUVO_KEY_OTHER_API_KEY__BOT_SCOUT"), "stays");
-    assert.equal(fs.existsSync(own), false, "a bot's settings naming only it go, with their folder");
     assert.equal(JSON.parse(fs.readFileSync(path.join(handWritten, "opencode.json"), "utf8")).mcp.servers.todoist.type, "remote");
     assert.equal((await ask("DELETE", "kuvo/integrations/todoist")).status, 404, "nothing of it left");
     const after = (await listed()).find(each => each.id === "todoist");

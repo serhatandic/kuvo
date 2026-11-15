@@ -12,7 +12,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sshAgentsOf } from "./bot-keys-scenarios.js";
+import { sshAgentsOf } from "./box-stand-ins.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 // (Each test fails at its own time limit when what it waits for never comes, rather than holding up the run.)
 import { asked as askedAt, before, test } from "./vault-waits.js";
