@@ -47,8 +47,8 @@ test("Storage preserves the Swift box group's words, budgets, units and confirma
     ["older-copies", "Older versions", "None kept."],
   ])
   const budget = row(page, "older-budget")
-  expect([budget.kind, budget.unit, budget.min]).toEqual(["number", { name: "GB", factor: 1_000_000_000, decimals: 2, rounding: "nearest" }, 0])
-  expect(budget.suggestions.map((s: any) => s.value)).toEqual([0.25, 0.5, 1, 2, 5, 10].map(n => n * 1_000_000_000))
+  expect([budget.kind, budget.unit, budget.min]).toEqual(["number", { name: "GiB", factor: 1024 ** 3, decimals: 2, rounding: "nearest" }, 0])
+  expect(budget.suggestions.map((s: any) => s.value)).toEqual([0.25, 0.5, 1, 2, 5, 10].map(n => n * 1024 ** 3))
   expect(budget.confirmBelow.confirm.title).toBe("Keep less of older versions?")
   expect(budget.confirmBelow.confirm.body).toBe("Older versions take 0 bytes now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.")
   expect(row(page, "older-copies").actions[0]).toMatchObject({ title: "Clear…", confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } })
@@ -56,7 +56,7 @@ test("Storage preserves the Swift box group's words, budgets, units and confirma
   expect(revised({ ...budget, line: "Reworded" }).revision).toBe(budget.revision)
   expect(revised({ ...budget, confirmBelow: { ...budget.confirmBelow, confirm: { ...budget.confirmBelow.confirm, body: "A changed warning" } } }).revision).not.toBe(budget.revision)
   disk.free = 0
-  expect((await shown()).notes[0].words).toBe("The disk is nearly full, so only the newest version of each file keeps a copy until 10.7 GB is free again.")
+  expect((await shown()).notes[0].words).toBe("The disk is nearly full, so only the newest version of each file keeps a copy until 10 GiB is free again.")
 })
 
 test("Storage floors budget writes, refuses stale and wrong types; disk changes do not conflict", async () => {
@@ -179,7 +179,7 @@ test("The store itself refuses an unconfirmed shrink before writing settings or 
 })
 
 
-test("New storage budgets use the same decimal base as the box's unit and suggestions", () => {
+test("New storage budgets preserve the existing binary default and use the same base as the box's unit and suggestions", () => {
   const fresh = new ArtifactStore(join(root, `default-${serial}`), { disk: () => disk })
-  expect(fresh.storage().budget).toBe(1_000_000_000)
+  expect(fresh.storage().budget).toBe(1024 ** 3)
 })

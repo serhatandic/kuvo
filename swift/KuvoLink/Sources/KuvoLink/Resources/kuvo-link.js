@@ -2517,6 +2517,27 @@ var words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) });
 var nullable = (shape) => oneOf(shape, "null");
 var NOTHING = object({});
 var BYTES = "bytes";
+function fitsShape(shape, value) {
+  if (shape === "any")
+    return true;
+  if (shape === "null")
+    return value === null;
+  if (typeof shape === "string")
+    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
+  if ("literal" in shape)
+    return value === shape.literal;
+  if ("oneOf" in shape)
+    return shape.oneOf.some((each) => fitsShape(each, value));
+  if ("list" in shape)
+    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const fields = value;
+  if ("map" in shape)
+    return Object.values(fields).every((each) => fitsShape(shape.map, each));
+  const declared = Object.entries(shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
+}
 
 // box/src/shared/routes/projects.ts
 var PROJECT = object({
@@ -45448,7 +45469,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "982bf0a3aacd";
+var BRIDGE_VERSION = "7db7e166540f";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56864,6 +56885,75 @@ async function* appIconRoute(context) {
   yield { body: bytes };
 }
 
+// box/src/shared/routes/settings-pages.ts
+var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
+var SETTING_CAN = oneOf(literal(true), object({ why: string }));
+var SETTING_CONFIRM = object({ title: string, body: string, button: string });
+var SETTING_ACTION = object({
+  id: string,
+  title: string,
+  "style?": words("default", "destructive"),
+  "confirm?": SETTING_CONFIRM,
+  "opens?": string,
+  "can?": SETTING_CAN
+});
+var SETTING_CHOICE = object({ id: string, title: string, "line?": string });
+var SETTING_WINDOW = object({ title: string, used: number, "resets?": number });
+var ROW_FIELDS = {
+  id: string,
+  title: string,
+  "line?": string,
+  "tone?": words("quiet", "warning"),
+  kind: words(...SETTING_KINDS),
+  "value?": any,
+  "can?": SETTING_CAN,
+  revision: string,
+  "confirm?": SETTING_CONFIRM,
+  "busy?": string,
+  "choices?": list(SETTING_CHOICE),
+  "lines?": object({ min: number, max: number }),
+  "folder?": object({ choose: string, clear: string, prompt: string, message: string }),
+  "search?": object({ placeholder: string, empty: string }),
+  "unit?": object({ name: string, factor: number, decimals: number, rounding: literal("nearest") }),
+  "suggestions?": list(object({ value: number, title: string })),
+  "confirmBelow?": object({ value: number, confirm: SETTING_CONFIRM }),
+  "placeholder?": string,
+  "min?": number,
+  "max?": number,
+  "set?": bool,
+  "actions?": list(SETTING_ACTION),
+  "windows?": list(SETTING_WINDOW),
+  "section?": string,
+  "address?": string,
+  "start?": SETTING_ACTION,
+  "name?": string
+};
+var SETTING_ITEM = object(ROW_FIELDS);
+var SETTING_ROW = object({ ...ROW_FIELDS, "items?": list(SETTING_ITEM), "add?": SETTING_ACTION, "empty?": string });
+var SETTING_GROUP = object({ id: string, "title?": string, "note?": string, rows: list(SETTING_ROW) });
+var SETTING_NOTE = object({ words: string, tone: words("quiet", "warning") });
+var SETTINGS_PAGE = object({ id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE) });
+var SETTINGS_SECTION = object({ id: string, title: string, group: string, icon: string, line: string, keywords: list(string) });
+var SETTINGS_SECTIONS = object({ sections: list(SETTINGS_SECTION) });
+var SETTINGS_STALE = object({ message: string, "page?": SETTINGS_PAGE });
+var SETTINGS_CHANGE = object({ row: string, value: any, was: string, "confirmed?": bool });
+var REFUSED4 = object({ message: string });
+var SETTINGS_PAGE_ROUTES = [
+  { route: "GET kuvo/settings", answers: { 200: SETTINGS_SECTIONS } },
+  { route: "GET kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 404: REFUSED4 } },
+  { route: "GET kuvo/settings/:section/events", answers: { 200: SETTINGS_PAGE, 404: REFUSED4 } },
+  { route: "PATCH kuvo/settings/:section", body: SETTINGS_CHANGE, answers: { 200: SETTINGS_PAGE, 400: REFUSED4, 403: REFUSED4, 404: REFUSED4, 409: SETTINGS_STALE } },
+  { route: "POST kuvo/settings/:section/:row/:action", answers: { 200: SETTINGS_PAGE, 400: REFUSED4, 403: REFUSED4, 404: REFUSED4, 409: SETTINGS_STALE } }
+];
+
+// box/src/shared/artifact-budget.ts
+function budgetConfirmation(older) {
+  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+  const scale = older > 0 ? Math.min(4, Math.floor(Math.log2(older) / 10)) : 0;
+  const size = `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(older / 1024 ** scale)} ${units[scale]}`;
+  return { title: "Keep less of older versions?", body: `Older versions take ${size} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" };
+}
+
 // box/src/link/mac/keeper-runs.ts
 import fs173 from "node:fs";
 import path181 from "node:path";
@@ -57336,28 +57426,31 @@ async function worktreesAct(context, at, action) {
   return staleOrRefusal(await asked8(context, worktreesRoute, "POST", "kuvo/worktrees/remove", { path: at.id.slice(5), was: at.value }));
 }
 var fileSize = (bytes) => {
-  const units = ["bytes", "KB", "MB", "GB", "TB"];
-  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log10(bytes) / 3)) : 0;
-  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1000 ** scale)} ${units[scale]}`;
+  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log2(bytes) / 10)) : 0;
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1024 ** scale)} ${units[scale]}`;
 };
 async function storagePage(context) {
   const read = await asked8(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
   if (read.status !== 200)
     return unreadPage("storage", "Storage", read);
   const kept = read.value;
+  const unit = { name: "GiB", factor: 1024 ** 3, decimals: 2, rounding: "nearest" };
+  const scale = kept.copies > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log2(kept.copies) / 10))) : 0;
+  const copiesUnit = { name: ["bytes", "KiB", "MiB", "GiB", "TiB"][scale], factor: 1024 ** scale, decimals: 1, rounding: "nearest" };
   return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
-    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: "bytes" }),
+    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: copiesUnit }),
     row({
       id: "older-budget",
       title: "Older versions keep up to",
       line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.",
       kind: "number",
       value: kept.budget,
-      unit: "bytes",
+      unit,
       min: 0,
       can: true,
-      suggestions: [256, 512, 1024, 2048, 5120, 10240].map((mb) => ({ value: mb * 1024 ** 2, title: fileSize(mb * 1024 ** 2) })),
-      confirmBelow: { value: kept.older, confirm: { title: "Keep less of older versions?", body: `Older versions take ${fileSize(kept.older)} now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.`, button: "Keep up to" } }
+      suggestions: [0.25, 0.5, 1, 2, 5, 10].map((gb) => ({ value: gb * unit.factor, title: `${gb} ${unit.name}` })),
+      confirmBelow: { value: kept.older, confirm: budgetConfirmation(kept.older) }
     }),
     row({
       id: "older-copies",
@@ -57369,10 +57462,10 @@ async function storagePage(context) {
     })
   ] }], ...kept.low ? { notes: [{ words: `The disk is nearly full, so only the newest version of each file keeps a copy until ${fileSize(kept.floor)} is free again.`, tone: "warning" }] } : {} };
 }
-async function storageChange(context, at, value) {
+async function storageChange(context, at, value, confirmed) {
   if (at.id !== "older-budget")
     return { status: 400, message: "That isn't something to change." };
-  return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value, wasOlder: at.confirmBelow?.value }));
+  return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value, wasOlder: at.confirmBelow?.value, confirmed }));
 }
 async function storageAct(context, at, action) {
   if (at.id !== "older-copies" || action.id !== "clear")
@@ -57613,6 +57706,9 @@ async function* settingsPageRoute(context, match) {
     return yield* json(400, { message: "Name the row to change (row)." });
   if (typeof given.was !== "string")
     return yield* json(400, { message: "Send the row's revision as it was read (was)." });
+  const changeShape = SETTINGS_PAGE_ROUTES.find((route) => route.route === "PATCH kuvo/settings/:section").body;
+  if (rowPart === undefined && !fitsShape(changeShape, given))
+    return yield* json(400, { message: "Send a row, its value and revision, and confirmed only as true or false." });
   const { status, value } = await inTurn4(id, async () => {
     const page = await section.read(context);
     const at = rowsOf4(page).find((each) => each.id === rowId);
@@ -57642,7 +57738,7 @@ async function* settingsPageRoute(context, match) {
       if (at.confirmBelow && typeof given.value === "number" && given.value < at.confirmBelow.value && given.confirmed !== true) {
         return { status: 400, value: { message: at.confirmBelow.confirm.body } };
       }
-      done = await section.change(context, at, given.value);
+      done = await section.change(context, at, given.value, given.confirmed);
     }
     if (done?.stale)
       return { status: 409, value: { message: done.message, page: await section.read(context) } };

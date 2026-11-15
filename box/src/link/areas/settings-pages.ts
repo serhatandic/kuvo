@@ -498,18 +498,18 @@ async function worktreesAct(context: RouteContext, at: SettingItem, action: Sett
 // MARK: Storage (the box-backed What Agents Made group)
 
 const fileSize = (bytes: number): string => {
-  const units = ["bytes", "KB", "MB", "GB", "TB"];
-  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log10(bytes) / 3)) : 0;
-  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1000 ** scale)} ${units[scale]}`;
+  const units = ["bytes", "KiB", "MiB", "GiB", "TiB"];
+  const scale = bytes > 0 ? Math.min(4, Math.floor(Math.log2(bytes) / 10)) : 0;
+  return `${new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(bytes / 1024 ** scale)} ${units[scale]}`;
 };
 
 async function storagePage(context: RouteContext): Promise<SettingsPage> {
   const read = await asked(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
   if (read.status !== 200) return unreadPage("storage", "Storage", read);
   const kept = read.value;
-  const unit = { name: "GB", factor: 1_000_000_000, decimals: 2, rounding: "nearest" as const };
-  const scale = kept.copies > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(kept.copies) / 3))) : 0;
-  const copiesUnit = { name: ["bytes", "KB", "MB", "GB", "TB"][scale]!, factor: 1000 ** scale, decimals: 1, rounding: "nearest" as const };
+  const unit = { name: "GiB", factor: 1024 ** 3, decimals: 2, rounding: "nearest" as const };
+  const scale = kept.copies > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log2(kept.copies) / 10))) : 0;
+  const copiesUnit = { name: ["bytes", "KiB", "MiB", "GiB", "TiB"][scale]!, factor: 1024 ** scale, decimals: 1, rounding: "nearest" as const };
   return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
     row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: copiesUnit }),
     row({ id: "older-budget", title: "Older versions keep up to", line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", kind: "number", value: kept.budget, unit, min: 0, can: true,

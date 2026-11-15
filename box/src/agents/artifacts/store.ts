@@ -24,7 +24,7 @@ import { writeSecret } from "../../shared/files"
 /** The biggest file a copy is kept of (as `kuvo/file` sends at most). */
 export const copyLimit = 25 * 1024 * 1024
 /** What the copies of older versions may take on a box before the oldest go, unless you say otherwise. */
-export const defaultBudget = 1_000_000_000
+export const defaultBudget = 1024 ** 3
 /** The biggest text whose lines added and removed are counted. */
 const lineLimit = 1024 * 1024
 /** The longest change kept of a code file git tracks (its tool call's patch). */
