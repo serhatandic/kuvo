@@ -75,6 +75,8 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
         public let id: String
         /// Its button's words.
         public let label: String
+        /// The title of the sheet this action opens, supplied with sign-in actions.
+        public let sheetTitle: String?
         /// There where a client asks first, in the box's words. A client marks such a button as
         /// its platform does (an ellipsis); the label never carries one.
         public let confirm: Confirm?
@@ -82,12 +84,13 @@ public struct AccountSaid: Decodable, Sendable, Equatable {
         /// elsewhere says where instead of offering it.
         public let here: Bool
 
-        private enum CodingKeys: String, CodingKey { case id, label, confirm, here }
+        private enum CodingKeys: String, CodingKey { case id, label, sheetTitle, confirm, here }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             id = try container.decode(String.self, forKey: .id)
             label = try container.decode(String.self, forKey: .label)
+            sheetTitle = try container.decodeIfPresent(String.self, forKey: .sheetTitle)
             confirm = try container.decodeIfPresent(Confirm.self, forKey: .confirm)
             here = try container.decodeIfPresent(Bool.self, forKey: .here) ?? false
         }
