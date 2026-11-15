@@ -22,6 +22,11 @@ let hearing: "at once" | "hold" = "at once"
 let held: (() => void)[] = []
 /** A prompt the engine takes only once this is let go (a send still on its way). */
 let slow: { arrived: () => void; go: Promise<void> } | null = null
+/** The commands of yours the engine's settings have (`api/config`), by name; none: it can't say. */
+let commandsSet: Record<string, string> | null = null
+/** The conversation looked up while a send keeps its files, held until this is let go. */
+let lookHeld: { at: number; reached: () => void; go: Promise<void> } | null = null
+let looks = 0
 /** Requests a test waits for, each told once one like it comes (after it's answered, for a command). */
 let waits: { like: (each: Asked) => boolean; told: () => void }[] = []
 const whenAsked = (like: (each: Asked) => boolean) => new Promise<void>(told => { waits.push({ like, told }) })
@@ -58,10 +63,18 @@ beforeAll(async () => {
       tell(each)
       const enqueue = (item: Item) => {
         inbox.push(item)
-        const event = { type: "session.inbox.enqueued", data: { sessionID: "ses_cmd", inboxID: item.id, item: { type: "user", delivery: item.delivery, payload: item.payload } } }
+        const event = { type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_cmd", inboxID: item.id, item: { type: "user", delivery: item.delivery, payload: item.payload } } }
         return () => mod.heardCommand(event)
       }
-      if (each.path === "/api/session/ses_cmd") return session("ses_cmd")
+      if (each.path === "/api/session/ses_cmd") {
+        looks++
+        if (lookHeld && looks === lookHeld.at) {
+          lookHeld.reached()
+          await lookHeld.go
+        }
+        return session("ses_cmd")
+      }
+      if (each.path === "/api/config") return commandsSet ? Response.json([{ info: { command: Object.fromEntries(Object.entries(commandsSet).map(([name, template]) => [name, { template }])) } }]) : Response.json({ message: "Not now." }, { status: 503 })
       if (each.path === "/api/session/active") return Response.json({ data: [] })
       if (each.path === "/api/session/ses_cmd/inbox") return Response.json({ data: inbox })
       if (each.path === "/api/session/ses_cmd/message") return Response.json({ data: [] })
@@ -76,7 +89,8 @@ beforeAll(async () => {
       }
       if (each.path === "/api/session/ses_cmd/command") {
         // (The engine makes the prompt of it itself, and says nothing of which message it made.)
-        const heard = enqueue({ id: `msg_made${++made}`, type: "user", delivery: each.body.delivery ?? "steer", payload: { text: `Review the code: ${each.body.text}` } })
+        // (As one of yours with "Review the code: $ARGUMENTS" says, or the engine's own.)
+        const heard = enqueue({ id: `msg_made${++made}`, type: "user", delivery: each.body.delivery ?? "steer", payload: { text: `Review the code: ${each.body.text}`.trim() } })
         if (hearing === "at once") heard()
         else held.push(heard)
         return Response.json({})
@@ -119,6 +133,9 @@ beforeEach(async () => {
   held = []
   slow = null
   waits = []
+  commandsSet = null
+  lookHeld = null
+  looks = 0
   // (Each starts with nothing held, nothing paused.)
   await queueAsk("POST", "kuvo/sessions/ses_cmd/queue/resume", {})
 })
@@ -165,7 +182,7 @@ describe("a command's message shows as typed", () => {
     // (The engine has it, and the client reads the message, before the engine's event comes.)
     await ran
     const [made] = inbox
-    const reading = readParts({ ids: [made!.id], texts: [made!.payload.text] })
+    const reading = readParts({ ids: [made!.id], texts: [made!.payload.text], session: "ses_cmd" })
     held.forEach(heard => heard())
     expect((await reading).json.parts).toEqual([{ words: "main", keyword: "/review", command: true }])
     expect((await sending).status).toBe(200)
@@ -189,8 +206,8 @@ describe("a queued message taken back to edit keeps its keyword", () => {
     await send("ses_cmd", { id: "msg_plan", words: "sketch it", keyword: "/plan", delivery: "queue" })
     const { status, json } = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_plan", undefined)
     expect(status).toBe(200)
-    // (Its words alone go back: sent again, they shouldn't switch to Plan again.)
-    expect(json.removed).toMatchObject({ id: "msg_plan", words: "sketch it", keyword: "/plan", draft: "sketch it" })
+    // (With it in front: Edit puts back what you sent, keyword and all.)
+    expect(json.removed).toMatchObject({ id: "msg_plan", words: "sketch it", keyword: "/plan", draft: "/plan sketch it" })
   })
 
   test("a command the engine holds: as it was typed", async () => {
@@ -204,7 +221,7 @@ describe("a queued message taken back to edit keeps its keyword", () => {
     await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", {})
     await queueAsk("POST", "kuvo/sessions/ses_cmd/queue/add", { id: "msg_loop", words: "check CI", keyword: "/loop every hour", delivery: "queue" })
     const { json } = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_loop", undefined)
-    expect(json.removed).toMatchObject({ id: "msg_loop", words: "check CI", keyword: "/loop every hour", draft: "check CI" })
+    expect(json.removed).toMatchObject({ id: "msg_loop", words: "check CI", keyword: "/loop every hour", draft: "/loop every hour check CI" })
   })
 
   test("a goal: with it in front", async () => {
@@ -238,18 +255,60 @@ describe("Stop takes what's on its way with it", () => {
     expect(engineAsked.filter(each => each.path === "/api/session/ses_cmd/prompt").map(each => each.body.id)[0]).toBe("msg_late")
   })
 
-  test.each([["with words after it", "main"], ["with none", ""]])("a wake-up landing while a command %s is on its way isn't taken for the command's message", async (_, words) => {
+  test("a wake-up landing while a command is on its way isn't taken for the command's message", async () => {
     hearing = "hold"
     const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
-    const sending = send("ses_cmd", { words, command: "review" })
+    const sending = send("ses_cmd", { words: "main", command: "review" })
     await ran
-    // (Another message with no parts of the box's comes first: a wake-up, a terminal's.)
-    mod.heardCommand({ type: "session.inbox.enqueued", data: { sessionID: "ses_cmd", inboxID: "msg_wake", item: { type: "user", payload: { text: "[Wake-up] Check the deploy" } } } })
+    mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_cmd", inboxID: "msg_wake", item: { type: "user", payload: { text: "[Wake-up] Check the deploy main" } } } })
     held.forEach(heard => heard())
     await sending
     const made = inbox.find(each => each.id.startsWith("msg_made"))!
-    const { json } = await readParts({ ids: ["msg_wake", made.id], texts: ["[Wake-up] Check the deploy", made.payload.text] })
-    expect(json.parts).toEqual([{ words: "[Wake-up] Check the deploy" }, { words, keyword: "/review", command: true }])
+    const { json } = await readParts({ ids: ["msg_wake", made.id], texts: ["[Wake-up] Check the deploy main", made.payload.text] })
+    expect(json.parts).toEqual([{ words: "[Wake-up] Check the deploy main" }, { words: "main", keyword: "/review", command: true }])
+  })
+
+  test("a plain message landing during a command with nothing after it is never taken for it, and Edit keeps its words", async () => {
+    hearing = "hold"
+    const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
+    const sending = send("ses_cmd", { words: "", command: "review" })
+    await ran
+    // (Sent straight to the engine, with no parts of the box's: a terminal's, a client's from before.)
+    inbox.unshift({ id: "msg_plain", type: "user", delivery: "queue", payload: { text: "Use the staging database" } })
+    mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_cmd", inboxID: "msg_plain", item: { type: "user", payload: { text: "Use the staging database" } } } })
+    held.forEach(heard => heard())
+    await sending
+    const { json } = await readParts({ ids: ["msg_plain"], texts: ["Use the staging database"] })
+    expect(json.parts).toEqual([{ words: "Use the staging database" }])
+    const taken = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_plain", undefined)
+    expect(taken.json.removed).toMatchObject({ words: "Use the staging database", keyword: null, draft: "Use the staging database" })
+  })
+
+  test("one of yours the box can work out is matched by the very prompt it makes, with nothing after it too", async () => {
+    commandsSet = { review: "Review the code: $ARGUMENTS" }
+    hearing = "hold"
+    const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
+    const sending = send("ses_cmd", { words: "", command: "review" })
+    await ran
+    // (A message with the same words, but not the prompt: not it.)
+    mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_cmd", inboxID: "msg_other", item: { type: "user", payload: { text: "Review the code: later" } } } })
+    held.forEach(heard => heard())
+    await sending
+    const made = inbox.find(each => each.id.startsWith("msg_made"))!
+    const { json } = await readParts({ ids: ["msg_other", made.id], texts: ["Review the code: later", made.payload.text], session: "ses_cmd" })
+    expect(json.parts).toEqual([{ words: "Review the code: later" }, { words: "", keyword: "/review", command: true }])
+  })
+
+  test("one the engine made after it answered isn't the command's", async () => {
+    const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
+    hearing = "hold"
+    const answered = Date.now()
+    await send("ses_cmd", { words: "main", command: "review" })
+    await ran
+    mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now() + 1000, data: { sessionID: "ses_cmd", inboxID: "msg_later", item: { type: "user", payload: { text: "Review main again" } } } })
+    const { json } = await readParts({ ids: ["msg_later"], texts: ["Review main again"] })
+    expect(json.parts).toEqual([{ words: "Review main again" }])
+    expect(answered).toBeLessThanOrEqual(Date.now())
   })
 
   test("one the box is still sending as Stop comes reaches the engine first, and is held with the rest", async () => {
@@ -270,6 +329,38 @@ describe("Stop takes what's on its way with it", () => {
     const queued = engineAsked.findIndex(each => each.method === "PATCH" && each.path === "/api/session/ses_cmd/inbox/msg_slow")
     expect(queued).toBeGreaterThan(-1)
     expect(queued).toBeLessThan(interrupted)
+  })
+
+  test("a send slower than Stop's wait, named by it, still waits on the box as it comes", async () => {
+    const arriving = await import("../src/link/messages/arriving")
+    arriving.stopWaits.within = 0
+    try {
+      // (Its picture kept first: the conversation looked up again meanwhile, and held there.)
+      let go = () => {}
+      let reached = () => {}
+      const looking = new Promise<void>(resolve => { reached = resolve })
+      looks = 0
+      // (The first look finds the conversation; the second, while its picture is kept, is held.)
+      lookHeld = { at: 2, reached, go: new Promise<void>(resolve => { go = resolve }) }
+      const picture = `data:image/png;base64,${Buffer.from("PNG").toString("base64")}`
+      const sending = send("ses_cmd", { id: "msg_slow2", words: "like this", files: [{ uri: picture, name: "a.png" }], delivery: "steer" })
+      await looking
+      expect((await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", { items: ["msg_slow2"] })).json).toMatchObject({ paused: true })
+      go()
+      expect((await sending).json).toEqual({ waits: true })
+      expect(engineAsked.filter(each => each.path === "/api/session/ses_cmd/prompt")).toEqual([])
+      expect((await queueAsk("GET", "kuvo/sessions/ses_cmd/queue", undefined)).json.held).toEqual(["msg_slow2"])
+    } finally {
+      arriving.stopWaits.within = 10_000
+    }
+  })
+
+  test("what Stop named is kept with the queue, for a box that starts again meanwhile", async () => {
+    const { readQueues } = await import("../src/link/engine/queue")
+    await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", { items: ["msg_kept_named"] })
+    expect(Object.keys(readQueues().ses_cmd?.arriving ?? {})).toEqual(["msg_kept_named"])
+    // (Never in what a client reads.)
+    expect((await queueAsk("GET", "kuvo/sessions/ses_cmd/queue", undefined)).json.arriving).toBeUndefined()
   })
 
   test("one Stop named that comes after Resume goes as you sent it", async () => {

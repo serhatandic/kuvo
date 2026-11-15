@@ -69,19 +69,21 @@ struct MessagePartsTests {
         let unread = MessageParts.unread(messages + [("msg_kept", "kept", kept)])
         #expect(unread.map(\.id) == messages.map(\.id))
         #expect(MessageParts.of(id: "msg_0", text: messages[0].text, metadata: nil).words == messages[0].text)
-        final class Asked: @unchecked Sendable { var texts: [[String]] = []; var ids: [[String]] = [] }
+        final class Asked: @unchecked Sendable { var texts: [[String]] = []; var ids: [[String]] = []; var sessions: [String?] = [] }
         let asked = Asked()
         let answer = try JSONSerialization.data(withJSONObject: ["parts": read.map { $0["parts"]! }])
-        let any = await MessageParts.read(unread) { body in
+        let any = await MessageParts.read(unread, session: "ses_1") { body in
             let given = try JSONSerialization.jsonObject(with: body) as? [String: Any]
             asked.texts.append(given?["texts"] as? [String] ?? [])
             asked.ids.append(given?["ids"] as? [String] ?? [])
+            asked.sessions.append(given?["session"] as? String)
             return (200, answer)
         }
         #expect(any)
         #expect(asked.texts == [read.map { $0["text"] as! String }])
         // Each with its id: a command's message is read by it, as typed.
         #expect(asked.ids == [messages.map(\.id)])
+        #expect(asked.sessions == ["ses_1"], "their conversation, for a command still on its way there")
         for (index, each) in read.enumerated() {
             #expect(Self.json(encoding: MessageParts.of(id: "msg_\(index)", text: each["text"] as! String, metadata: nil)) == Self.json(each["parts"]!))
         }

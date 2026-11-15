@@ -31750,7 +31750,9 @@ var keptState = (value) => {
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
-    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {}
+    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
+    ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
+    ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
 };
 var showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length);
@@ -31769,6 +31771,10 @@ function changeQueue(files, session, change, changed) {
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
+    if (state.cameHeld)
+      state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
+    if (!state.cameHeld?.length)
+      delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
     if (!made)
       return state;
@@ -31776,7 +31782,14 @@ function changeQueue(files, session, change, changed) {
     for (const [id, each] of Object.entries(all)) {
       if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
         delete each.resumed;
-      if (!showsQueue(each) && !each.resumed)
+      if (each.arriving) {
+        for (const [message, until] of Object.entries(each.arriving))
+          if (until <= Date.now())
+            delete each.arriving[message];
+        if (!Object.keys(each.arriving).length)
+          delete each.arriving;
+      }
+      if (!showsQueue(each) && !each.resumed && !each.arriving)
         delete all[id];
     }
     try {
@@ -36555,4 +36568,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents b47b7a299ff9d398fa94e6798b3e0e7c221355f4f62b03bdf4fec70d920b8c88
+// Built from Packages/Box/src/agents 15edc1d88e6f69e282a5cd54ecb87fd0df3a2d9e1954d9c68c934306420f2148

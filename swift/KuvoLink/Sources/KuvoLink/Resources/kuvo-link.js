@@ -1409,7 +1409,7 @@ var KEPT = 2000;
 var HEARD_WITHIN = 3000;
 var WORDS_MOST = 4000;
 var commandParts = (command, words) => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true });
-var draftOf = ({ words, keyword, command }) => keyword && (command || keyword === "/goal") ? `${keyword} ${words}`.trim() : words;
+var draftOf = ({ words, keyword }) => keyword ? `${keyword} ${words}`.trim() : words;
 var kept = null;
 function readKept() {
   if (kept)
@@ -1436,9 +1436,61 @@ function keep(id, parts) {
     all.delete(old);
   writePrivate(FILE, JSON.stringify(Object.fromEntries(all)));
 }
+async function templateOf(engine, folder, name) {
+  const answer = await engineGet(engine, "api/config", folder || undefined).catch(() => {
+    return;
+  });
+  if (answer === undefined)
+    return;
+  const sources = Array.isArray(answer) ? answer : isObject(answer) && Array.isArray(answer.data) ? answer.data : [{ info: isObject(answer) ? answer.data ?? answer : answer }];
+  let template;
+  for (const source of sources) {
+    if (!isObject(source))
+      continue;
+    const info = isObject(source.info) ? source.info : {};
+    for (const list of [info.commands, info.command]) {
+      const own = isObject(list) && isObject(list[name]) ? list[name].template : undefined;
+      if (typeof own === "string" && own.trim())
+        template = own.trim();
+    }
+    if (source.type === "directory" && typeof source.path === "string" && /^[\w.-]+(\/[\w.-]+)*$/.test(name) && !name.split("/").includes("..")) {
+      for (const kept of ["command", "commands"]) {
+        const text = textOf(path8.join(source.path, kept, `${name}.md`));
+        const body = text?.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+        if (body)
+          template = body;
+      }
+    }
+  }
+  return template;
+}
+var NAMED = /\$(?:ARGUMENTS|([1-9]\d*))/g;
+var WORD = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi;
+function filledIn(template, text) {
+  const words = (text.match(WORD) ?? []).map((word) => word.replace(/^["']|["']$/g, ""));
+  const numbered = template.match(/\$([1-9]\d*)/g) ?? [];
+  const highest = Math.max(0, ...numbered.map((each) => Number(each.slice(1))));
+  const filled = template.replace(NAMED, (whole, index) => {
+    if (whole === "$ARGUMENTS")
+      return text;
+    const at = Number(index) - 1;
+    if (at >= words.length)
+      return "";
+    return Number(index) === highest ? words.slice(at).join(" ") : words[at];
+  });
+  return numbered.length === 0 && !template.includes("$ARGUMENTS") && text.trim() ? `${filled} ${text}`.trim() : filled.trim();
+}
+async function madeText(engine, folder, command, text) {
+  const template = await templateOf(engine, folder, command);
+  return template && !template.includes("!`") ? filledIn(template, text) : null;
+}
 var expected = [];
-var pending = new Set;
-var madeOf = (text, words) => words.split(/\s+/).map((word) => word.replace(/^["']+|["']+$/g, "")).filter(Boolean).every((word) => text.includes(word));
+var pending = new Map;
+var madeOf = (text, words) => {
+  const each = words.split(/\s+/).map((word) => word.replace(/^["']+|["']+$/g, "")).filter(Boolean);
+  return each.length > 0 && each.every((word) => text.includes(word));
+};
+var isMadeBy = (command, text, at) => at >= command.sentAt && (command.answeredAt === undefined || at <= command.answeredAt) && (command.made !== null ? text.trim() === command.made : madeOf(text, command.parts.words));
 function heardCommand(event) {
   if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user")
     return;
@@ -1451,18 +1503,19 @@ function heardCommand(event) {
   const text = typeof payload?.text === "string" ? payload.text : "";
   if (!writtenByYou(text, payload?.metadata))
     return;
-  const at = expected.findIndex((each) => each.session === session && madeOf(text, each.parts.words));
-  if (at < 0)
+  const at = typeof event.created === "number" ? event.created : Date.now();
+  const which = expected.findIndex((each) => each.session === session && isMadeBy(each, text, at));
+  if (which < 0)
     return;
-  const [found] = expected.splice(at, 1);
+  const [found] = expected.splice(which, 1);
   found.heard(id);
 }
-async function sendingCommand(session, parts, send, sent, within = HEARD_WITHIN) {
+async function sendingCommand(session, parts, made, send, sent, within = HEARD_WITHIN) {
   let heard = () => {};
   const message = new Promise((resolve) => {
     heard = resolve;
   });
-  const entry = { session, parts, heard };
+  const entry = { session, parts, made: made?.trim() ?? null, sentAt: Date.now(), heard };
   expected.push(entry);
   const drop = () => {
     const at = expected.indexOf(entry);
@@ -1474,8 +1527,14 @@ async function sendingCommand(session, parts, send, sent, within = HEARD_WITHIN)
     if (id)
       keep(id, parts);
   });
-  pending.add(settled);
-  settled.finally(() => pending.delete(settled));
+  const waits = pending.get(session) ?? new Set;
+  pending.set(session, waits);
+  waits.add(settled);
+  settled.finally(() => {
+    waits.delete(settled);
+    if (!waits.size && pending.get(session) === waits)
+      pending.delete(session);
+  });
   let answer;
   try {
     answer = await send();
@@ -1483,6 +1542,7 @@ async function sendingCommand(session, parts, send, sent, within = HEARD_WITHIN)
     drop();
     throw error;
   }
+  entry.answeredAt = Date.now();
   if (!sent(answer)) {
     drop();
     return answer;
@@ -1492,11 +1552,12 @@ async function sendingCommand(session, parts, send, sent, within = HEARD_WITHIN)
   return answer;
 }
 var SETTLED_WITHIN = 2000;
-async function commandsSettled(within = SETTLED_WITHIN) {
-  if (!pending.size)
+async function commandsSettled(session, within = SETTLED_WITHIN) {
+  const waits = [...pending.get(session) ?? []];
+  if (!waits.length)
     return;
   let timer;
-  await Promise.race([Promise.all([...pending]), new Promise((resolve) => {
+  await Promise.race([Promise.all(waits), new Promise((resolve) => {
     timer = setTimeout(resolve, within);
   })]);
   clearTimeout(timer);
@@ -3510,7 +3571,9 @@ var keptState = (value) => {
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
-    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {}
+    ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
+    ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
+    ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
 };
 var showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length);
@@ -3529,6 +3592,10 @@ function changeQueue(files, session, change, changed) {
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
+    if (state.cameHeld)
+      state.cameHeld = state.cameHeld.filter((id) => state.held.includes(id));
+    if (!state.cameHeld?.length)
+      delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
     if (!made)
       return state;
@@ -3536,7 +3603,14 @@ function changeQueue(files, session, change, changed) {
     for (const [id, each] of Object.entries(all)) {
       if (each.resumed && Date.now() - each.resumed >= RESUMED_FOR)
         delete each.resumed;
-      if (!showsQueue(each) && !each.resumed)
+      if (each.arriving) {
+        for (const [message, until] of Object.entries(each.arriving))
+          if (until <= Date.now())
+            delete each.arriving[message];
+        if (!Object.keys(each.arriving).length)
+          delete each.arriving;
+      }
+      if (!showsQueue(each) && !each.resumed && !each.arriving)
         delete all[id];
     }
     try {
@@ -3622,15 +3696,12 @@ function orderOf(inbox, { held, waiting = [] }) {
 var waitingFile2 = (id) => waitingFile(FILES, id);
 var keepWaiting2 = (session, message, shown = {}, place) => keepWaiting(FILES, session, message, shown, tellFollowers, place);
 var keepWaitingHeld = (session, message, words) => keepWaiting2(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
-  for (const id of heldAsTheyCame)
-    if (!state.held.includes(id))
-      heldAsTheyCame.delete(id);
+  const came = (state.cameHeld ?? []).filter((id) => id !== waiting.id);
   const held = state.held.filter((id) => id !== waiting.id);
-  const ahead = held.findIndex((id) => !heldAsTheyCame.has(id));
-  heldAsTheyCame.add(waiting.id);
-  return { ...state, held: [...held.slice(0, ahead < 0 ? held.length : ahead), waiting.id, ...held.slice(ahead < 0 ? held.length : ahead)], waiting: [...state.waiting ?? [], waiting] };
+  const ahead = held.findIndex((id) => !came.includes(id));
+  const at = ahead < 0 ? held.length : ahead;
+  return { ...state, held: [...held.slice(0, at), waiting.id, ...held.slice(at)], cameHeld: [...came, waiting.id], waiting: [...state.waiting ?? [], waiting] };
 });
-var heldAsTheyCame = new Set;
 var placedBefore = (inbox, before) => (given, item) => {
   const state = { ...given, held: given.held.filter((id) => id !== item.id) };
   const waiting = state.waiting ?? [];
@@ -3929,7 +4000,7 @@ async function takeBackFromInbox(target, session, item) {
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
-  return { id: item, text, ...files.length ? { files } : {}, delivery: entry.delivery, ...shown.from ? { from: shown.from } : {}, words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined, command: (keptParts(entry.payload?.metadata) ?? keptCommand(entry.id))?.command }), ...before ? { before } : {} };
+  return { id: item, text, ...files.length ? { files } : {}, delivery: entry.delivery, ...shown.from ? { from: shown.from } : {}, words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...before ? { before } : {} };
 }
 async function drain(target, session) {
   if (queueOf(session).paused || await isRunning(target, session))
@@ -44043,7 +44114,7 @@ import fs140 from "node:fs";
 import path149 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7969fe7c34fc";
+var BRIDGE_VERSION = "0c9b297ff392";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -49566,9 +49637,8 @@ async function* pairingRoute(context) {
 
 // box/src/link/messages/arriving.ts
 var ARRIVING_FOR = 120000;
-var SENDING_WITHIN = 1e4;
+var stopWaits = { within: 1e4 };
 var sending2 = new Map;
-var arriving = new Map;
 function underWay2(session) {
   const sends = sending2.get(session) ?? new Set;
   sending2.set(session, sends);
@@ -49584,7 +49654,7 @@ function underWay2(session) {
       sending2.delete(session);
   };
 }
-async function sendsSettled(session, within = SENDING_WITHIN) {
+async function sendsSettled(session, within = stopWaits.within) {
   const sends = [...sending2.get(session) ?? []];
   if (!sends.length)
     return;
@@ -49597,25 +49667,22 @@ async function sendsSettled(session, within = SENDING_WITHIN) {
 function holdArriving(session, items, now = Date.now()) {
   if (!items.length)
     return;
-  const held = arriving.get(session) ?? new Map;
-  for (const [id, until] of held)
-    if (until <= now)
-      held.delete(id);
-  for (const id of items)
-    held.set(id, now + ARRIVING_FOR);
-  arriving.set(session, held);
+  changeQueue2(session, (state) => ({ ...state, arriving: { ...state.arriving, ...Object.fromEntries(items.map((id) => [id, now + ARRIVING_FOR])) } }));
 }
 function forgetArriving(session) {
-  arriving.delete(session);
+  if (queueOf(session).arriving)
+    changeQueue2(session, ({ arriving: _, ...state }) => state);
 }
 function heldAsItComes(session, id, now = Date.now()) {
-  const held = arriving.get(session);
-  const until = id ? held?.get(id) : undefined;
-  if (!held || until === undefined)
+  if (!id || queueOf(session).arriving?.[id] === undefined)
     return false;
-  held.delete(id);
-  if (!held.size)
-    arriving.delete(session);
+  let until = 0;
+  changeQueue2(session, (state) => {
+    const { [id]: named, ...rest } = state.arriving ?? {};
+    until = named ?? 0;
+    const { arriving: _, ...without } = state;
+    return Object.keys(rest).length ? { ...without, arriving: rest } : without;
+  });
   return until > now;
 }
 
@@ -49700,13 +49767,13 @@ async function* sending3(context, session) {
     if (typeof asked[name] === "string")
       headers[name] = asked[name];
   const id = !command && typeof given.id === "string" && given.id ? given.id : undefined;
-  const held = heldAsItComes(session, id);
-  const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
   const typed = command && fields ? commandParts(command, fields.words) : null;
   const at = `http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`;
   const send = async () => {
     try {
       const message = fields ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null) : await sentAgain(again, files, session, target, toAgents);
+      const held = heldAsItComes(session, id);
+      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
       const body = command ? { name: command, text: message.text, ...message.files.length ? { files: message.files } : {}, ...delivery ? { delivery } : {}, ...typed && toAgents ? { metadata: withParts(undefined, typed) } : {} } : { id: id ?? messageID(), text: message.text, ...message.files.length ? { files: message.files } : {}, delivery, metadata: message.metadata };
       if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" }, typeof given.words === "string" ? given.words : fields?.words)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
@@ -49715,7 +49782,8 @@ async function* sending3(context, session) {
         const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
         return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
       };
-      const answer = typed && !toAgents ? await sendingCommand(session, typed, post, (each) => each.status >= 200 && each.status < 300) : await post();
+      const made = typed && !toAgents ? await madeText(target, folderOf4(place.data), command, message.text) : null;
+      const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, (each) => each.status >= 200 && each.status < 300) : await post();
       if (held && id && answer.status >= 200 && answer.status < 300)
         await holdQueue(target, session, undefined, [id]).catch(() => {});
       return answer;
@@ -49743,10 +49811,11 @@ async function* partsRoute(context) {
   const ids = isObject(given) && Array.isArray(given.ids) ? given.ids : null;
   if (ids && (ids.length !== texts.length || ids.some((id) => typeof id !== "string")))
     return yield* json(400, { message: "Send an id for each text (ids)." });
+  const session = isObject(given) && typeof given.session === "string" ? given.session : null;
   const kept = () => ids?.map((id) => keptCommand(id)) ?? [];
   let commands = kept();
-  if (commands.some((parts) => !parts)) {
-    await commandsSettled();
+  if (session && commands.some((parts) => !parts)) {
+    await commandsSettled(session);
     commands = kept();
   }
   return yield* json(200, { parts: texts.map((text, at) => commands[at] ?? partsOf(text)) });
@@ -49832,8 +49901,7 @@ async function* queueRoute(context, match) {
     }
     forgetSent(session, decodeURIComponent(item));
     const { from, text: words, keyword } = dropped.shown;
-    const parts = keptParts(dropped.message?.metadata);
-    const draft = from ? words : draftOf({ words, keyword, command: parts?.command });
+    const draft = from ? words : draftOf({ words, keyword });
     const removed = dropped.message ? { ...dropped.message, ...from ? { from } : {}, words, keyword: keyword ?? null, draft, ...dropped.before ? { before: dropped.before } : {} } : undefined;
     return yield* json(200, { ...shownQueue(queueOf(session)), ...removed ? { removed } : {} });
   }

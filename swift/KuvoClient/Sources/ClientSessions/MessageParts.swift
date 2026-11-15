@@ -187,13 +187,14 @@ public struct MessageParts: Codable, Hashable, Sendable {
     /// `kuvo/messages/parts` a body and gives its answer. Kept by id, for as long as the app runs.
     /// Returns whether any were read; a box that can't say leaves them as they are.
     @discardableResult
-    public static func read(_ messages: [(id: String, text: String)], ask: @Sendable (Data) async throws -> (status: Int, body: Data)) async -> Bool {
+    /// `session`: their conversation, where a command still on its way is waited for a moment.
+    public static func read(_ messages: [(id: String, text: String)], session: String? = nil, ask: @Sendable (Data) async throws -> (status: Int, body: Data)) async -> Bool {
         var any = false
         var rest = messages[...]
         while !rest.isEmpty {
             let batch = Array(rest.prefix(partsMost))
             rest = rest.dropFirst(batch.count)
-            guard let body = try? JSONEncoder().encode(Asked(texts: batch.map(\.text), ids: batch.map(\.id))),
+            guard let body = try? JSONEncoder().encode(Asked(texts: batch.map(\.text), ids: batch.map(\.id), session: session)),
                   let answer = try? await ask(body), answer.status == 200,
                   let told = try? JSONDecoder().decode(Told.self, from: answer.body), told.parts.count == batch.count else { continue }
             lock.withLock {
@@ -213,7 +214,7 @@ public struct MessageParts: Codable, Hashable, Sendable {
     /// How many texts one `kuvo/messages/parts` reads.
     static let partsMost = 500
     public static let partsRoute = "kuvo/messages/parts"
-    struct Asked: Encodable { var texts: [String]; var ids: [String] }
+    struct Asked: Encodable { var texts: [String]; var ids: [String]; var session: String? }
     struct Told: Decodable { var parts: [MessageParts] }
 
     // MARK: Sending

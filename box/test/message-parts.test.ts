@@ -65,7 +65,7 @@ beforeAll(async () => {
       if (/^\/api\/session\/ses_text\//.test(each.path)) return Response.json({ data: {} })
       if (each.path === "/api/session/ses_main/inbox") return Response.json({ data: [] })
       // (A command's prompt waits in the inbox, as the engine's events say.)
-      if (each.path === "/api/session/ses_main/command") heardCommand({ type: "session.inbox.enqueued", data: { sessionID: "ses_main", inboxID: `msg_ran${engineAsked.length}`, item: { type: "user", payload: { text: each.body.text } } } })
+      if (each.path === "/api/session/ses_main/command") heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_main", inboxID: `msg_ran${engineAsked.length}`, item: { type: "user", payload: { text: each.body.text } } } })
       if (/^\/api\/session\/ses_main\//.test(each.path)) return Response.json({ data: {} }, { status: engineAnswers })
       if (/^\/api\/session\//.test(each.path)) return Response.json({ message: "Not here." }, { status: 404 })
       return Response.json({ data: null })

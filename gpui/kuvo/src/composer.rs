@@ -655,6 +655,8 @@ impl Composer {
                 });
             }
             Target::Session { id, .. } => {
+                // (One at a time: `send` refuses another while this one's on its way.)
+                debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
                 self.on_its_way = Some(draft.id.clone());
                 self.spawn(cx, move || client.send_draft(&id, &draft, None), move |this, result, cx| {
                     this.sending = false;

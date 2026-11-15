@@ -116,8 +116,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     // What it was, whole, for Undo to add back as it was, where it was (`queue/add` with `kept`,
     // and `before`, what came after it).
     const { from, text: words, keyword } = dropped.shown;
-    const parts = keptParts(dropped.message?.metadata);
-    const draft = from ? words : draftOf({ words, keyword, command: parts?.command });
+    const draft = from ? words : draftOf({ words, keyword });
     const removed = dropped.message ? { ...dropped.message, ...(from ? { from } : {}), words, keyword: keyword ?? null, draft, ...(dropped.before ? { before: dropped.before } : {}) } : undefined;
     return yield* json(200, { ...shownQueue(queueOf(session)), ...(removed ? { removed } : {}) });
   }

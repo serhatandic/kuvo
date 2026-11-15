@@ -600,7 +600,8 @@ fn a_message_that_ran_a_command_reads_as_typed_by_its_id() {
             let body = seen.body.clone().unwrap();
             let ids: Vec<String> = serde_json::from_value(body["ids"].clone()).unwrap_or_default();
             let texts: Vec<String> = serde_json::from_value(body["texts"].clone()).unwrap();
-            if ids.len() != texts.len() {
+            // (Each with its id, and the conversation they're in.)
+            if ids.len() != texts.len() || body["session"] != json!("ses_1") {
                 return Answer::json(400, json!({ "message": "Send an id for each text (ids)." }));
             }
             Answer::json(200, json!({ "parts": ids.iter().zip(&texts).map(|(id, text)| if id == "msg_cmd" { json!({ "words": "this branch", "keyword": "/review", "command": true }) } else { json!({ "words": text }) }).collect::<Vec<_>>() }))

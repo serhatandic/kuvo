@@ -483,11 +483,14 @@ fn read_earlier(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<Conver
 /// The parts of those of `messages` from before, as their box reads them; none where it couldn't
 /// say (they show as written, and are asked again with the next read).
 fn read_parts(client: &BoxClient, shown: &Mutex<Shown>, messages: &[Message]) -> Vec<((String, String), Parts)> {
-    let unread = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).parts.unread(messages);
+    let (unread, session) = {
+        let now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        (now.parts.unread(messages), now.conversation.session.clone())
+    };
     if unread.is_empty() {
         return Vec::new();
     }
-    match client.read_parts(&unread) {
+    match client.read_parts(&session, &unread) {
         Ok(parts) => unread.into_iter().zip(parts).collect(),
         Err(_) => Vec::new(),
     }

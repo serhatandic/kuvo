@@ -1221,8 +1221,10 @@ the same for every client and with none connected, and keeps them in `run/queues
   held first, in that order, where they're waiting already, and each that comes in the next two
   minutes (`kuvo/sessions/<id>/send` with that `id`, answered `{waits: true}`) waits on the box,
   held after those that came before it, as what arrives while it's stopped does ("What arrives
-  waits"), rather than set going; once, only those named, and not once Resume or Send Now set it
-  going again. `POST …/queue/hold` (`{items?}`):
+  waits"), rather than set going, looked at as each goes (a send still keeping its files when Stop
+  came is held too); once, only those named, and not once Resume or Send Now set it going again.
+  What Stop named is kept with the queue in `run/queues.json`, so a box that starts again
+  meanwhile still holds it. `POST …/queue/hold` (`{items?}`):
   held and paused without stopping (before an undo, or a move); `items`, messages a client held
   as they went to the engine, go first, in that order. `POST …/queue/resume`: unpaused, and the
   next one goes now. `POST …/queue/<item>/now` (Send Now): unpaused, the item steered (one waiting
@@ -1236,8 +1238,8 @@ the same for every client and with none connected, and keeps them in `run/queues
   `waits: true|false`. `DELETE …/queue/<item>`: one waiting on the box taken away, its answer
   carrying it as it was, `removed: {id, text, files?, delivery, from?, words, keyword, draft, before?}` (`words`, as
   it was shown; `keyword`, as the queue's items say it, null for none; `draft`, what Edit puts in the
-  composer: a command's or a goal's words with it in front, as sending them again runs it again, any
-  other keyword's words alone, as sending those again shouldn't switch to Plan or set another loop;
+  composer: its words with the command or keyword it went with in front (`/review main`, `/plan
+  sketch it`, `/goal Ship v2`), so sending it again does what it did;
   `before`, what came after it, left out when it was last; `queue.removed.keyword`); 404 if it isn't. Undo
   adds it back with `…/queue/add` and `kept: true` (its body as it was kept, its files not kept
   again, shown with its `words`). **Undo puts it back where it was** (bridge 0.9.137): `…/queue/add`
@@ -4468,7 +4470,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   bot's /goal). Show the keyword (its parts' `keyword`) in front of the message's words, drawn as the composer draws it (its
   mark for the "/", the rest in bold, in the accent; Plan's in orange). Taken back (Undo, a failed
   send), it's the words alone, so sending them again sets no second loop; editing a queued one puts
-  back what its box says (`removed.draft`).
+  back what its box says (`removed.draft`), the keyword in front.
 - A message the box writes to an agent in its conversation (a goal starting, changed, at its
   end, declined or carrying on after a limit reset; its sessions' news to the bot that started
   them; your answer told late) is a user message to the engine, marked in its `metadata`:
@@ -6348,14 +6350,17 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   branch" as it draws a keyword, never the prompt the command made. A coding agent's keeps them
   with the message, as any message's. The engine's commands take no metadata and say no id, so
   for one of the engine's its box keeps them itself, by the message's id, once the engine's events
-  say which it made (its inbox item, an item's id being its message's: the first in that
-  conversation the box didn't mark as its own, nor someone else's (a wake-up, another agent's
-  letter), with each word typed after the command in it (quotes aside), heard
-  until 3 s after the engine's answer), the latest 2000 in
-  `run/commands.json`: `kuvo/messages/parts` takes `{texts, ids}` (an id for each text) and answers
-  those by id, waiting a moment (2 s at most) for a command still on its way, so a client that
-  sees the message first still reads it as typed; the queue's items and `removed` say them too. A
-  client sends `ids` with every text it asks about, commands' messages included, and keeps no
+  say which it made (its inbox item, an item's id being its message's), the latest 2000 in
+  `run/commands.json`. It's the first in that conversation that the box didn't mark as its own, nor
+  someone else's (a wake-up, another agent's letter), that the engine made after the command was
+  sent and before it answered, and that is the very prompt the command makes, where the box can
+  work it out (one of your commands, from the engine's settings or a command file, with no
+  `` !`…` `` step), else one with each word typed after the command in it (quotes aside); a command
+  with nothing after it that the box can't work out is never matched, and shows as the engine kept
+  it. `kuvo/messages/parts` takes `{texts, ids, session?}` (an id for each text) and answers those
+  by id; with `session`, the conversation they're in, it waits a moment (2 s at most) for a command
+  still on its way there, so a client that sees the message first still reads it as typed; the queue's items and `removed` say them too. A
+  client sends `ids` and `session` with every text it asks about, commands' messages included, and keeps no
   record of its own of which ran one. A command run before its box kept them, or one the engine
   never said of (its events down meanwhile), shows as the engine kept it.
 - Both directions: `vectors/message-parts.json` (written from the apps' Swift before this), which

@@ -118,14 +118,12 @@ export const keepWaiting = (session: string, message: Outgoing & { id: string },
  * those held as they came before it, ahead of the rest. False when the queue isn't paused (yet). */
 export const keepWaitingHeld = (session: string, message: Outgoing & { id: string }, words?: string): boolean =>
   keepWaiting(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
-    for (const id of heldAsTheyCame) if (!state.held.includes(id)) heldAsTheyCame.delete(id);
+    const came = (state.cameHeld ?? []).filter(id => id !== waiting.id);
     const held = state.held.filter(id => id !== waiting.id);
-    const ahead = held.findIndex(id => !heldAsTheyCame.has(id));
-    heldAsTheyCame.add(waiting.id);
-    return { ...state, held: [...held.slice(0, ahead < 0 ? held.length : ahead), waiting.id, ...held.slice(ahead < 0 ? held.length : ahead)], waiting: [...(state.waiting ?? []), waiting] };
+    const ahead = held.findIndex(id => !came.includes(id));
+    const at = ahead < 0 ? held.length : ahead;
+    return { ...state, held: [...held.slice(0, at), waiting.id, ...held.slice(at)], cameHeld: [...came, waiting.id], waiting: [...(state.waiting ?? []), waiting] };
   });
-// The messages held as they came after a Stop (for their order among what's held).
-const heldAsTheyCame = new Set<string>();
 
 /** Where one put back (Undo) goes: just ahead of `before`, as `orderOf` shows them with `inbox`:
  * ahead of it in what waits on the box, or in what's held, one the engine has holding what's ahead
@@ -457,7 +455,7 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
-  return { id: item, text, ...(files.length ? { files } : {}), delivery: entry.delivery, ...(shown.from ? { from: shown.from } : {}), words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined, command: (keptParts(entry.payload?.metadata) ?? keptCommand(entry.id))?.command }), ...(before ? { before } : {}) };
+  return { id: item, text, ...(files.length ? { files } : {}), delivery: entry.delivery, ...(shown.from ? { from: shown.from } : {}), words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...(before ? { before } : {}) };
 }
 
 /** `session`'s next waiting message started, unless its queue is paused or a run is under way: as
