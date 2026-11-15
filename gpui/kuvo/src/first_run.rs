@@ -467,6 +467,7 @@ impl FirstRun {
                     Ok((installed, read)) if installed.installed => {
                         // (A read asked for before the install ended is older than this one.)
                         this.accounts_asked += 1;
+                        this.checking.clear();
                         match read {
                             Some(Ok(accounts)) => this.accounts = Reading::Ready(accounts),
                             Some(Err(error)) => drop(this.problems.insert(key.clone(), format!("{name} is installed, but its account couldn’t be read again. {}", said(&error)))),

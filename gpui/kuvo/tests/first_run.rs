@@ -391,21 +391,20 @@ fn a_box_held_for_its_update_at_the_start_says_so_in_the_app(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn a_box_that_couldnt_say_once_is_asked_again_without_the_window_going_empty(cx: &mut TestAppContext) {
+fn a_box_that_couldnt_say_keeps_the_window_waiting_saying_why_until_it_can(cx: &mut TestAppContext) {
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
     stand_in.set_first_run(|first_run| first_run.setup_fails = true);
     let (workspace, cx) = starting(cx, stand_in.clone());
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    // It answered, though not what was asked: the app, as it would be.
-    assert!(shown(cx, "rail-settings") && !shown(cx, "window-waiting"));
-    // Asked again as it's next read, the window never emptied meanwhile; it says the first run
-    // hasn't been had, and that's shown.
+    // Reached, but it couldn't say: not the app (which a first run would then take away, with
+    // whatever was being typed), but why, in its words.
+    assert!(shown(cx, "window-waiting-why") && !shown(cx, "rail-settings") && !shown(cx, "first-run"));
+    // Asked again, it says the first run hasn't been had, and that's what shows.
     stand_in.set_first_run(|first_run| first_run.setup_fails = false);
-    assert!(!workspace.read_with(cx, |workspace, _| workspace.awaits_box()));
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(shown(cx, "first-run-card"));
+    assert!(shown(cx, "first-run-card") && !shown(cx, "window-waiting"));
 }
 
 #[gpui::test]

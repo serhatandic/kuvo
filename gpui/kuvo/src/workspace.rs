@@ -39,6 +39,8 @@ use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, a
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 /// How many conversations a search shows.
 const SEARCH_MOST: usize = 20;
+/// How long before a box that couldn't say whether the first run's been had is asked again.
+const WELCOME_AGAIN: Duration = Duration::from_secs(2);
 /// Narrower than this, the area's sidebar folds away (the rail stays).
 pub const NARROW: Pixels = px(820.);
 /// How far back the window remembers where it's been.
@@ -198,6 +200,8 @@ pub struct Workspace {
     /// then the window waits, saying how the box stands, rather than show the app and perhaps
     /// take it away again.
     welcome_answered: bool,
+    /// Why the box couldn't say, the last time it was asked (shown while it's asked again).
+    welcome_why: Option<String>,
     focus_landing: bool,
     _sessions: Option<Follow<ListUpdate>>,
     tasks: Vec<Task<()>>,
@@ -294,6 +298,7 @@ impl Workspace {
             // (Tests and shots hand it what to show: asked in `read_at_once`.)
             welcome: if live { Welcome::Unknown } else { Welcome::Had },
             welcome_answered: !live,
+            welcome_why: None,
             focus_landing: false,
             _sessions: None,
             tasks: Vec::new(),
@@ -472,6 +477,7 @@ impl Workspace {
     pub fn await_box(&mut self, cx: &mut Context<Self>) {
         self.welcome = Welcome::Unknown;
         self.welcome_answered = false;
+        self.welcome_why = None;
         self.box_state = BoxState::Connecting;
         cx.notify();
     }
@@ -504,8 +510,20 @@ impl Workspace {
     /// (held for its update, or not answering) is asked again once it's reached; until then the
     /// window is as it would be, saying how the box stands.
     fn take_welcomed(&mut self, said: kuvo_box::Result<bool>, cx: &mut Context<Self>) {
-        // (A box held for its update never got the question: it's still to be answered.)
-        self.welcome_answered |= !matches!(said, Err(kuvo_box::Error::NeedsUpdating { .. }));
+        // Only its word counts as an answer: a box that couldn't say (not answering just now, or
+        // held for its update, which never got the question) is asked again, the window still
+        // waiting, saying why, rather than showing the app a first run would then take away.
+        self.welcome_answered |= said.is_ok();
+        self.welcome_why = match &said {
+            Err(kuvo_box::Error::NeedsUpdating { .. }) | Ok(_) => None,
+            Err(error) => Some(kuvo_box::accounts::said(error)),
+        };
+        if self.live && self.welcome_why.is_some() {
+            self.tasks.push(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(WELCOME_AGAIN).await;
+                this.update(cx, |this, cx| this.ask_welcomed(cx)).ok();
+            }));
+        }
         match said {
             Ok(false) => {
                 let (client, live, state, name) = (self.client.clone(), self.live, self.box_state.clone(), self.box_name());
@@ -1634,8 +1652,12 @@ impl Render for Workspace {
         }
         if self.awaits_box() {
             // How the box stands, in the window's middle: being reached, or why it can't be.
-            let words: AnyElement = match &self.box_state {
-                BoxState::Unreachable(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
+            let why = match (&self.box_state, &self.welcome_why) {
+                (BoxState::Unreachable(why), _) => Some(why.clone()),
+                (_, why) => why.clone(),
+            };
+            let words: AnyElement = match why {
+                Some(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
                 _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(kuvo_ui::small::spinner("window-waiting-spinner", kuvo_ui::IconSize::Nav, c.text_muted)).child("Starting…").into_any_element(),
             };
             return div()
