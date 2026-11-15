@@ -113,6 +113,20 @@ const waitingFile = (id: string) => files.waitingFile(FILES, id);
  * false: it isn't kept. `place`: where it goes (last, else). */
 export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place): boolean => files.keepWaiting(FILES, session, message, shown, tellFollowers, place);
 
+/** A message of yours a Stop named as still on its way, as it comes (`kuvo/sessions/<id>/stop
+ * {items}`): kept on the box while the queue is paused (as what arrives then is) and held, after
+ * those held as they came before it, ahead of the rest. False when the queue isn't paused (yet). */
+export const keepWaitingHeld = (session: string, message: Outgoing & { id: string }, words?: string): boolean =>
+  keepWaiting(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
+    for (const id of heldAsTheyCame) if (!state.held.includes(id)) heldAsTheyCame.delete(id);
+    const held = state.held.filter(id => id !== waiting.id);
+    const ahead = held.findIndex(id => !heldAsTheyCame.has(id));
+    heldAsTheyCame.add(waiting.id);
+    return { ...state, held: [...held.slice(0, ahead < 0 ? held.length : ahead), waiting.id, ...held.slice(ahead < 0 ? held.length : ahead)], waiting: [...(state.waiting ?? []), waiting] };
+  });
+// The messages held as they came after a Stop (for their order among what's held).
+const heldAsTheyCame = new Set<string>();
+
 /** Where one put back (Undo) goes: just ahead of `before`, as `orderOf` shows them with `inbox`:
  * ahead of it in what waits on the box, or in what's held, one the engine has holding what's ahead
  * of it too (so they go in the same order); last when it isn't there any more. */

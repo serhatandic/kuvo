@@ -221,14 +221,35 @@ describe("a queued message taken back to edit keeps its keyword", () => {
 })
 
 describe("Stop takes what's on its way with it", () => {
-  test("a message the client named as on its way is held as it comes, not set going", async () => {
-    expect((await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", { items: ["msg_late"] })).status).toBe(200)
+  test("a message the client named as on its way is held as it comes, on the box: never set going", async () => {
+    expect((await queueAsk("POST", "kuvo/sessions/ses_cmd/stop", { items: ["msg_late", "msg_later"] })).status).toBe(200)
     expect((await send("ses_cmd", { id: "msg_late", words: "and this too", delivery: "steer" })).status).toBe(200)
-    const sent = engineAsked.find(each => each.path === "/api/session/ses_cmd/prompt")!
-    expect(sent.body.delivery).toBe("queue")
+    expect((await send("ses_cmd", { id: "msg_later", words: "and that", delivery: "steer" })).status).toBe(200)
+    // (Nothing reaches the engine, which would run all it holds with the first thing to reach it.)
+    expect(engineAsked.filter(each => each.path === "/api/session/ses_cmd/prompt")).toEqual([])
     const { json } = await queueAsk("GET", "kuvo/sessions/ses_cmd/queue?items=1", undefined)
-    expect(json).toMatchObject({ paused: true, held: ["msg_late"] })
-    expect(json.items).toEqual([expect.objectContaining({ id: "msg_late", words: "and this too", held: true, delivery: "queue" })])
+    expect(json).toMatchObject({ paused: true, held: ["msg_late", "msg_later"] })
+    expect(json.items).toEqual([
+      expect.objectContaining({ id: "msg_late", words: "and this too", held: true, on: "box" }),
+      expect.objectContaining({ id: "msg_later", words: "and that", held: true, on: "box" }),
+    ])
+    // Resume sends them, in that order.
+    await queueAsk("POST", "kuvo/sessions/ses_cmd/queue/resume", {})
+    expect(engineAsked.filter(each => each.path === "/api/session/ses_cmd/prompt").map(each => each.body.id)[0]).toBe("msg_late")
+  })
+
+  test("a wake-up landing while a command is on its way isn't taken for the command's message", async () => {
+    hearing = "hold"
+    const ran = whenAsked(each => each.path === "/api/session/ses_cmd/command")
+    const sending = send("ses_cmd", { words: "main", command: "review" })
+    await ran
+    // (Another message with no parts of the box's comes first: a wake-up, a terminal's.)
+    mod.heardCommand({ type: "session.inbox.enqueued", data: { sessionID: "ses_cmd", inboxID: "msg_wake", item: { type: "user", payload: { text: "[Wake-up] Check the deploy" } } } })
+    held.forEach(heard => heard())
+    await sending
+    const made = inbox.find(each => each.id.startsWith("msg_made"))!
+    const { json } = await readParts({ ids: ["msg_wake", made.id], texts: ["[Wake-up] Check the deploy", made.payload.text] })
+    expect(json.parts).toEqual([{ words: "[Wake-up] Check the deploy" }, { words: "main", keyword: "/review", command: true }])
   })
 
   test("one the box is still sending as Stop comes reaches the engine first, and is held with the rest", async () => {

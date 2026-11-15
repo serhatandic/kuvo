@@ -1406,42 +1406,50 @@ async function useResetTool(bridge, args, asker, ask, signal) {
 import path8 from "node:path";
 var FILE = path8.join(RUN, "commands.json");
 var KEPT = 2000;
-var HEARD_WITHIN = 1e4;
-var commandParts = (command, words) => ({ words: words.trim(), keyword: `/${command}`, command: true });
+var HEARD_WITHIN = 3000;
+var WORDS_MOST = 4000;
+var commandParts = (command, words) => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true });
 var draftOf = ({ words, keyword, command }) => keyword && (command || keyword === "/goal") ? `${keyword} ${words}`.trim() : words;
+var kept = null;
 function readKept() {
+  if (kept)
+    return kept;
+  kept = new Map;
   try {
-    const kept = JSON.parse(textOf(FILE) ?? "{}");
-    return isObject(kept) ? kept : {};
-  } catch {
-    return {};
-  }
+    const read = JSON.parse(textOf(FILE) ?? "{}");
+    if (isObject(read)) {
+      for (const [id, parts] of Object.entries(read))
+        if (isObject(parts) && typeof parts.words === "string")
+          kept.set(id, parts);
+    }
+  } catch {}
+  return kept;
 }
 function keptCommand(id) {
-  const parts = readKept()[id];
-  return isObject(parts) && typeof parts.words === "string" ? parts : null;
+  return readKept().get(id) ?? null;
 }
 function keep(id, parts) {
-  const kept = readKept();
-  delete kept[id];
-  kept[id] = parts;
-  const ids = Object.keys(kept);
-  for (const old of ids.slice(0, Math.max(0, ids.length - KEPT)))
-    delete kept[old];
-  writePrivate(FILE, JSON.stringify(kept));
+  const all = readKept();
+  all.delete(id);
+  all.set(id, parts);
+  for (const old of [...all.keys()].slice(0, Math.max(0, all.size - KEPT)))
+    all.delete(old);
+  writePrivate(FILE, JSON.stringify(Object.fromEntries(all)));
 }
 var expected = [];
 var pending = new Set;
+var madeOf = (text, words) => words.split(/\s+/).filter(Boolean).every((word) => text.includes(word));
 function heardCommand(event) {
   if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user")
     return;
   const { sessionID: session, inboxID: id } = event.data;
   if (!session || !id)
     return;
-  const metadata = event.data.item.payload?.metadata;
-  if (isObject(metadata) && metadata.kuvo !== undefined)
+  const payload = event.data.item.payload;
+  if (isObject(payload?.metadata) && payload.metadata.kuvo !== undefined)
     return;
-  const at = expected.findIndex((each) => each.session === session);
+  const text = typeof payload?.text === "string" ? payload.text : "";
+  const at = expected.findIndex((each) => each.session === session && madeOf(text, each.parts.words));
   if (at < 0)
     return;
   const [found] = expected.splice(at, 1);
@@ -3611,6 +3619,16 @@ function orderOf(inbox, { held, waiting = [] }) {
 }
 var waitingFile2 = (id) => waitingFile(FILES, id);
 var keepWaiting2 = (session, message, shown = {}, place) => keepWaiting(FILES, session, message, shown, tellFollowers, place);
+var keepWaitingHeld = (session, message, words) => keepWaiting2(session, message, words === undefined ? {} : { words: words.trim() }, (state, waiting) => {
+  for (const id of heldAsTheyCame)
+    if (!state.held.includes(id))
+      heldAsTheyCame.delete(id);
+  const held = state.held.filter((id) => id !== waiting.id);
+  const ahead = held.findIndex((id) => !heldAsTheyCame.has(id));
+  heldAsTheyCame.add(waiting.id);
+  return { ...state, held: [...held.slice(0, ahead < 0 ? held.length : ahead), waiting.id, ...held.slice(ahead < 0 ? held.length : ahead)], waiting: [...state.waiting ?? [], waiting] };
+});
+var heldAsTheyCame = new Set;
 var placedBefore = (inbox, before) => (given, item) => {
   const state = { ...given, held: given.held.filter((id) => id !== item.id) };
   const waiting = state.waiting ?? [];
@@ -7478,8 +7496,8 @@ var namespaceUnfinished = false;
 var withoutNamespace = null;
 var readOnly = true;
 var readOnlyFor = null;
-var kept = null;
-var inUse = () => kept ?? namespace;
+var kept2 = null;
+var inUse = () => kept2 ?? namespace;
 var namespaceHere = () => {
   fs24.mkdirSync(NAMESPACE_FOLDER, { recursive: true, mode: 448 });
   return triedNamespace(NAMESPACE_FOLDER);
@@ -7674,7 +7692,7 @@ function setUpFence(found) {
     return loosen("withdraw", can, "remove");
   const inEffect = platform === "linux" ? textOf(path25.join(FOLDER2, "namespace")) ?? "" : "";
   const dropping = !namespace && !namespaceUnfinished && inEffect.startsWith("/") && !mayLoosen;
-  kept = dropping ? inEffect : namespaceUnfinished && !mayLoosen ? kept : null;
+  kept2 = dropping ? inEffect : namespaceUnfinished && !mayLoosen ? kept2 : null;
   try {
     fs24.mkdirSync(path25.join(FOLDER2, "tmp"), { recursive: true, mode: 448 });
     writeTemporary();
@@ -7704,7 +7722,7 @@ function setUpFence(found) {
       checked = { able: true, ...result };
       failures = 0;
       if (dropping)
-        [namespace, namespaceKnown, withoutNamespace, kept] = [inEffect, true, null, null];
+        [namespace, namespaceKnown, withoutNamespace, kept2] = [inEffect, true, null, null];
       loosening = null;
     }
     if (!fs24.existsSync(READY))
@@ -20085,29 +20103,29 @@ var asked4 = (target, route, folder) => call(target, "GET", route, undefined, Ab
   return;
 });
 var KEPT_FOR3 = 1e4;
-var kept2 = new Map;
+var kept3 = new Map;
 function keptOr(key, read, whole) {
   const now = Date.now();
-  const before = kept2.get(key);
+  const before = kept3.get(key);
   if (before && now - before.at < KEPT_FOR3)
     return before.lists;
   const lists = read();
-  kept2.set(key, { at: now, lists });
+  kept3.set(key, { at: now, lists });
   lists.then((value) => {
-    if ((value === null || !whole(value)) && kept2.get(key)?.lists === lists)
-      kept2.delete(key);
+    if ((value === null || !whole(value)) && kept3.get(key)?.lists === lists)
+      kept3.delete(key);
   });
-  if (kept2.size > 200)
-    kept2.delete(kept2.keys().next().value);
+  if (kept3.size > 200)
+    kept3.delete(kept3.keys().next().value);
   return lists;
 }
 var CHANGES = new Set(["integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 function noteModelsEvent(event) {
   if (event.type && CHANGES.has(event.type))
-    kept2.clear();
+    kept3.clear();
 }
 function forgetModelLists() {
-  kept2.clear();
+  kept3.clear();
 }
 function forgetModelNames(restart = false) {
   if (saving) {
@@ -28508,10 +28526,10 @@ function packageName(spec) {
   return at > 0 ? spec.slice(0, at) : spec;
 }
 var leftForItsMaker = (entry, server) => entry.way === "official" && isObject(entry.settings) && Array.isArray(server.command) && server.command[0] === LAUNCHER;
-var kept3 = (server, names) => Object.fromEntries(names.filter((name) => server[name] !== undefined).map((name) => [name, server[name]]));
+var kept4 = (server, names) => Object.fromEntries(names.filter((name) => server[name] !== undefined).map((name) => [name, server[name]]));
 function broughtUpToDate(entry, server) {
   if (leftForItsMaker(entry, server))
-    return { ...entry.settings, ...kept3(server, ["disabled", "codemode"]) };
+    return { ...entry.settings, ...kept4(server, ["disabled", "codemode"]) };
   const next = { ...server };
   if (next.codemode === undefined)
     next.codemode = false;
@@ -44023,7 +44041,7 @@ import fs140 from "node:fs";
 import path149 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "87bd15b6c88d";
+var BRIDGE_VERSION = "cb7469306692";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -49685,6 +49703,9 @@ async function* sending3(context, session) {
     try {
       const message = fields ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null) : await sentAgain(again, files, session, target, toAgents);
       const body = command ? { name: command, text: message.text, ...message.files.length ? { files: message.files } : {}, ...delivery ? { delivery } : {}, ...typed && toAgents ? { metadata: withParts(undefined, typed) } : {} } : { id: id ?? messageID(), text: message.text, ...message.files.length ? { files: message.files } : {}, delivery, metadata: message.metadata };
+      if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" }, typeof given.words === "string" ? given.words : fields?.words)) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+      }
       const post = async () => {
         const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
         return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };

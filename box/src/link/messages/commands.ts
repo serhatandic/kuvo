@@ -15,11 +15,14 @@ import type { MessageParts } from "./parts";
 const FILE = path.join(RUN, "commands.json");
 /** How many commands' messages are kept. */
 const KEPT = 2000;
-/** How long a command sent waits for the engine to say which message it made (ms), at most. */
-export const HEARD_WITHIN = 10_000;
+/** How long after its answer a command waits for the engine to say which message it made (ms), at
+ * most: the engine says so before it answers, so this is only for its events being slow to come. */
+export const HEARD_WITHIN = 3000;
+/** How much of what was typed after a command is kept (characters): a long paste shows cut. */
+const WORDS_MOST = 4000;
 
 /** The parts of a message that ran `command` with `words` after its name. */
-export const commandParts = (command: string, words: string): MessageParts => ({ words: words.trim(), keyword: `/${command}`, command: true });
+export const commandParts = (command: string, words: string): MessageParts => ({ words: words.trim().slice(0, WORDS_MOST), keyword: `/${command}`, command: true });
 
 /** What goes back in the composer for a message taken back to edit (`removed.draft`): a command's
  * or a goal's words with it in front, as sending them again runs it again; another keyword's words
@@ -27,30 +30,30 @@ export const commandParts = (command: string, words: string): MessageParts => ({
 export const draftOf = ({ words, keyword, command }: Pick<MessageParts, "words" | "keyword" | "command">): string =>
   keyword && (command || keyword === "/goal") ? `${keyword} ${words}`.trim() : words;
 
-type Kept = Record<string, MessageParts>;
+// What's kept, read once (only this process writes it), oldest first.
+let kept: Map<string, MessageParts> | null = null;
 
-function readKept(): Kept {
+function readKept(): Map<string, MessageParts> {
+  if (kept) return kept;
+  kept = new Map();
   try {
-    const kept = JSON.parse(textOf(FILE) ?? "{}");
-    return isObject(kept) ? (kept as Kept) : {};
-  } catch {
-    return {};
-  }
+    const read = JSON.parse(textOf(FILE) ?? "{}");
+    if (isObject(read)) for (const [id, parts] of Object.entries(read)) if (isObject(parts) && typeof parts.words === "string") kept.set(id, parts as unknown as MessageParts);
+  } catch {}
+  return kept;
 }
 
 /** The parts kept for message `id`, which ran one of the engine's commands; null for any other. */
 export function keptCommand(id: string): MessageParts | null {
-  const parts = readKept()[id];
-  return isObject(parts) && typeof parts.words === "string" ? parts : null;
+  return readKept().get(id) ?? null;
 }
 
 function keep(id: string, parts: MessageParts): void {
-  const kept = readKept();
-  delete kept[id];
-  kept[id] = parts;
-  const ids = Object.keys(kept);
-  for (const old of ids.slice(0, Math.max(0, ids.length - KEPT))) delete kept[old];
-  writePrivate(FILE, JSON.stringify(kept));
+  const all = readKept();
+  all.delete(id);
+  all.set(id, parts);
+  for (const old of [...all.keys()].slice(0, Math.max(0, all.size - KEPT))) all.delete(old);
+  writePrivate(FILE, JSON.stringify(Object.fromEntries(all)));
 }
 
 /** A command on its way to the engine, waiting to hear which message it made. */
@@ -67,19 +70,24 @@ const pending = new Set<Promise<void>>();
 /** An engine event, as far as this reads it: a message waiting in a session's inbox. */
 export interface CommandEvent {
   type: string;
-  data?: { sessionID?: string; inboxID?: string; item?: { type?: string; payload?: { metadata?: unknown } } };
+  data?: { sessionID?: string; inboxID?: string; item?: { type?: string; payload?: { text?: unknown; metadata?: unknown } } };
 }
 
-/** Each event from the engine: a user message in the inbox that the box didn't write itself (no
- * `kuvo` in its metadata: every other message the box sends carries its parts or its note) is the
- * one the oldest command waiting in its session made. */
+/** Whether the prompt a command made, `text`, could be the one made of `words`: each word typed
+ * after the command is in it (a template takes them whole, `$ARGUMENTS`, or one by one, `$1`…). */
+const madeOf = (text: string, words: string): boolean => words.split(/\s+/).filter(Boolean).every(word => text.includes(word));
+
+/** Each event from the engine: a user message in the inbox that the box didn't mark as its own
+ * (`kuvo` in its metadata, its parts or its note), with the words typed after the command in it, is
+ * the one the oldest such command waiting in its session made. */
 export function heardCommand(event: CommandEvent): void {
   if (event.type !== "session.inbox.enqueued" || event.data?.item?.type !== "user") return;
   const { sessionID: session, inboxID: id } = event.data;
   if (!session || !id) return;
-  const metadata = event.data.item.payload?.metadata;
-  if (isObject(metadata) && metadata.kuvo !== undefined) return;
-  const at = expected.findIndex(each => each.session === session);
+  const payload = event.data.item.payload;
+  if (isObject(payload?.metadata) && payload.metadata.kuvo !== undefined) return;
+  const text = typeof payload?.text === "string" ? payload.text : "";
+  const at = expected.findIndex(each => each.session === session && madeOf(text, each.parts.words));
   if (at < 0) return;
   const [found] = expected.splice(at, 1);
   found!.heard(id);

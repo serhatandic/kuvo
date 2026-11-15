@@ -18,7 +18,7 @@ import type { PromptFile } from "../server/attached";
 import { answerHeaders, modelInput } from "../server/forward";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
-import { holdQueue } from "../engine/queue";
+import { holdQueue, keepWaitingHeld, type Outgoing } from "../engine/queue";
 import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
@@ -125,7 +125,8 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
   const asked = Object.fromEntries(Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
   for (const name of REQUEST_HEADERS) if (typeof asked[name] === "string") headers[name] = asked[name] as string;
   const id = !command && typeof given.id === "string" && given.id ? given.id : undefined;
-  // One Stop named as still on its way: queued and held as it comes, not set going.
+  // One Stop named as still on its way: held as it comes, waiting on the box (the engine would run
+  // all it holds with the first thing to reach a stopped conversation), not set going.
   const held = heldAsItComes(session, id);
   const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
   // A command's message shows as typed: its parts go with it to the coding agents' bridge, and for
@@ -142,11 +143,15 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
       const body = command
         ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
         : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
+      if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+      }
       const post = async (): Promise<SentAnswer> => {
         const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
         return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
       };
       const answer = typed && !toAgents ? await sendingCommand(session, typed, post, each => each.status >= 200 && each.status < 300) : await post();
+      // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
       if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});
       return answer;
     } catch (error) {

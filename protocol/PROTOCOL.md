@@ -1219,8 +1219,9 @@ the same for every client and with none connected, and keeps them in `run/queues
   box is still making to that conversation reaches the engine first (10 s at most) and is held with
   the rest, and `items`, the messages the client sent that may still be on their way to the box, are
   held first, in that order, where they're waiting already, and each that comes in the next two
-  minutes (`kuvo/sessions/<id>/send` with that `id`) goes to the engine queued and is held, rather
-  than set going; once, and only those named. `POST …/queue/hold` (`{items?}`):
+  minutes (`kuvo/sessions/<id>/send` with that `id`, answered `{waits: true}`) waits on the box,
+  held after those that came before it, as what arrives while it's stopped does ("What arrives
+  waits"), rather than set going; once, and only those named. `POST …/queue/hold` (`{items?}`):
   held and paused without stopping (before an undo, or a move); `items`, messages a client held
   as they went to the engine, go first, in that order. `POST …/queue/resume`: unpaused, and the
   next one goes now. `POST …/queue/<item>/now` (Send Now): unpaused, the item steered (one waiting
@@ -6346,7 +6347,9 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   branch" as it draws a keyword, never the prompt the command made. A coding agent's keeps them
   with the message, as any message's. The engine's commands take no metadata and say no id, so
   for one of the engine's its box keeps them itself, by the message's id, once the engine's events
-  say which it made (its inbox item: an item's id is its message's), the latest 2000 in
+  say which it made (its inbox item, an item's id being its message's: the first in that
+  conversation the box didn't mark as its own with each word typed after the command in it, heard
+  until 3 s after the engine's answer), the latest 2000 in
   `run/commands.json`: `kuvo/messages/parts` takes `{texts, ids}` (an id for each text) and answers
   those by id, waiting a moment (2 s at most) for a command still on its way, so a client that
   sees the message first still reads it as typed; the queue's items and `removed` say them too. A
