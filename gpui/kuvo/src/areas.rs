@@ -416,7 +416,10 @@ impl AreaView {
                 if let Some(page) = &self.page {
                     page.update(cx, |page, cx| page.set_said(said, cx));
                 }
-                if let (Some(groups), Reading::Ready(bots)) = (&self.groups, &self.bots) {
+                // (Chats that couldn't be read aren't said to be gone: what was there stays.)
+                if let (Some(groups), Reading::Ready(bots)) = (&self.groups, &self.bots)
+                    && bots.groups_failed.is_none()
+                {
                     let (chats, all) = (bots.groups.clone(), bots.bots.clone());
                     groups.update(cx, |groups, cx| groups.set_listed(chats, all, cx));
                 }

@@ -166,6 +166,16 @@ impl GroupsView {
         self.groups = groups;
         self.bots = bots;
         self.listed = true;
+        // The chat shown, listed again (back from a move, or listed later than it was made): its
+        // conversation, as it would open.
+        if let Shown::Chat(id) = self.shown.clone()
+            && !self.gone(&id)
+            && !self.chats.contains_key(&id)
+        {
+            let chat = self.open_chat(&id, cx);
+            let on = self.on_screen;
+            chat.update(cx, |chat, cx| chat.set_shown(on, cx));
+        }
         cx.notify();
     }
 

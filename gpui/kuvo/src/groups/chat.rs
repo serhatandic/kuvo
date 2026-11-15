@@ -221,6 +221,14 @@ impl GroupChatView {
         }
         // Who wrote each message is drawn from these: every row again where any of them changed,
         // the reader kept where they are.
+        // Not read yet (it couldn't be): asked again now it's listed (the app's follow retries).
+        if !self.live && !self.read {
+            let read = match self.client.group_chat(&self.id) {
+                Ok(chat) => Followed::Now(chat),
+                Err(error) => Followed::Failed(error),
+            };
+            self.take(read, cx);
+        }
         let redraw = authors(self.group.as_ref(), &self.bots) != authors(group.as_ref(), &bots);
         self.group = group;
         self.bots = bots;
@@ -691,7 +699,7 @@ impl GroupChatView {
                         .text_color(tone)
                         .when(task.state == "working" && !stopped, |d| d.child(spinner(SharedString::from(format!("task-spin-{}", task.id)), IconSize::Nav, c.text_muted)))
                         .child(state)
-                        // Its conversation resumed where it lives (one on another computer, there).
+                        // Its conversation resumed on this box (one on another computer can't be from here yet).
                         .when_some(session.filter(|_| stopped), |d, session| {
                             let view = view.clone();
                             let selector = format!("resume-{}", task.id);

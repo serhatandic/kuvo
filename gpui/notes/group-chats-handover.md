@@ -65,6 +65,15 @@ One reviewer pass; every MUST and SHOULD fixed or listed, with a scenario where 
 - NITs left: the bot picker's rows and the faces under the field aren't focusable (no keyboard
   path), as other clickable rows in the app; "You'll be asked…" kept, as Bots' page says it.
 
+Re-review of the fixes: both MUSTs confirmed fixed. Its two SHOULDs fixed: a chat listed again
+after it counted as gone (a move called off) opens its conversation, and a failed first read of the
+chats no longer says the open chat is gone (it's read again once listed;
+`a_chat_listed_again_opens_its_conversation_and_a_failed_first_read_isnt_gone`, which covers the
+second; the first has no scenario, the stand-in can't call a move off). NITs: Resume's comment
+corrected; left: a slow read of the list can briefly undo a newer followed line; the list's follow
+runs for the app's life (as the window's other follows do); "on screen" ignores whether the window
+is frontmost.
+
 ## BOX-NEEDED
 
 - **What "&" offers in a group chat**, ranked by the box: its bots, then the guests it would name

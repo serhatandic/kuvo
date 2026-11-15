@@ -316,3 +316,24 @@ fn a_bot_taken_out_and_put_back_is_no_change(cx: &mut TestAppContext) {
     assert!(stand_in.seen_at("PATCH", "kuvo/groups/grp_launch").is_empty());
     assert!(shown(cx, "group-chat"));
 }
+
+#[gpui::test]
+fn a_chat_listed_again_opens_its_conversation_and_a_failed_first_read_isnt_gone(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // The chats can't be read as Bots first opens: a chat picked isn't said to be gone.
+    stand_in.groups_readable(false);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    assert!(shown(cx, "groups-failed"));
+    let view = groups(&workspace, cx);
+    let area = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).cloned().unwrap());
+    area.update(cx, |area, cx| area.select(Some("group:grp_launch".into()), cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "group-gone"));
+    // Readable again: the list comes, and the chat shown opens its conversation.
+    stand_in.groups_readable(true);
+    click(cx, "rail-sessions");
+    click(cx, "rail-bots");
+    assert!(view.read_with(cx, |view, _| view.chat("grp_launch").is_some()));
+    assert!(shown(cx, "group-chat") && shown(cx, "author-gm_l5-Mira"));
+}
