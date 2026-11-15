@@ -7465,11 +7465,13 @@ above. Only on a Mac.
   no copy is kept: there's no `keptUntil`, and no Move Back.
 - **What it moves**: an earlier Kuvo Code's data with no box of its own (`app-07`), or a keeper
   build's box (`app-box`: `box` in the app's folder). A machine's box already in `~/.kuvo-code`
-  with an earlier Kuvo Code's data beside it (`two`) isn't put together yet: refused, saying so.
+  with an earlier Kuvo Code's data beside it (`two`) isn't put together yet: refused, saying so,
+  before anything is stopped, with nothing noted in that box's home.
 - **First**: an earlier try is finished (one stopped before `clear` goes back, and this one
   starts afresh; one at `clear` or later is carried on). A keeper build's keeper is asked to stop
-  (`POST stop` on its control, `run/keeper.json`), waited for 30 seconds, then stopped by its pid
-  where that's still a keeper (`--box` in its command line).
+  (`POST stop` on its control, `run/keeper.json`, only ever at `127.0.0.1`), waited for 30
+  seconds, then stopped by its pid; all of it only while `ps` says that pid is a keeper (`--box`
+  in its command line): a record left by one that's gone names nothing to stop.
 - **Refused**, changing nothing, each in words to show: a copy of the app into the real
   `~/.kuvo-code` (or Kuvo Code itself into another); the release not whole (each file as its
   `box.json` says, with its helper) or its engine not fetched ("Check that this Mac is online");
@@ -7503,22 +7505,28 @@ above. Only on a Mac.
     stopped as soon as it answers. It must then be of the pinned schema, and hold no fewer
     sessions, projects, messages, rules, worktrees or waiting messages than before, or the move
     goes back. (It acts on nothing it finds: a run that was cut short is marked suspended, as
-    at any start.)
+    at any start.) What the engine's own update lets go of is said (`dropped`): the rows of a
+    table that isn't there after (`session_pending`, messages waiting on a session in 2.0.32).
   - `rewrite`, `check` as above; and the counts taken after the clone hold: sessions, projects,
     messages, the engine's worktrees and the box's records of them, bots, wake-ups (a
     conversation's, a bot's), vault items, accounts added to coding agents, group chats; none
     may be fewer (`state.json`'s `counts` keeps both, for support).
   - `place`, `fix` as above.
   - `clear`: nothing is cleared. First, should anything have changed in what it cloned since
-    (a file written there: an earlier Kuvo Code still open), or a program have its database
-    open, it goes back, saying to quit it. From here it only goes forward.
+    (a file written there: an earlier Kuvo Code still open, an editor in a worktree there), or
+    a program have its database open to write in, it goes back, saying which folder and to
+    close what's using it. From here it only goes forward.
+  A failure that's the person's to act on is said as it is (`failed.message`); any other, in
+  one sentence ("Kuvo couldn't move your sessions this time, and left everything as it was.
+  Try again."), with what went wrong in `updates/rehome/run.log`.
 - **Done**, then what it owes is settled, each tried again at the next run where it couldn't be
   (`install --status` says `move` while anything is owed): `start` (`helper start`, by the link
   just put in place: `started` in the answer; in a home that isn't the real one nothing
   outside the folder is written, and nothing's owed); `keychain` (`kuvo-keys
   delete-originals`); `passwords` (below); `agent` (a keeper build's launch agent, `<ID>.box`,
   let go of with `launchctl bootout`). What the installer staged (`updates/install`) goes once
-  the box has started.
+  the box has started. Where one of these couldn't be settled yet, the answer's `message` says
+  so in a sentence (why is in `run.log`, never in the answer: it may name a site or an account).
 - **Saved sign-ins** (`passwords`): `kuvo-keys passwords` says the sign-ins an earlier Kuvo
   Code kept before the vault down its standard output, a pipe this process reads; each goes
   from memory to the box's own server on this Mac once it answers (`run/serve.json`, waited
@@ -7526,10 +7534,12 @@ above. Only on a Mac.
   named for its site, then its account, then numbered). One whose site and account the vault
   has is left as it is; one under four characters, which the vault keeps none of, is said
   (`dropped`); a site the earlier Kuvo Code let agents sign in to alone, with that account,
-  stays so (`POST kuvo/vault/grants`, everyone, `own`). Never written to a file, by either.
+  stays so (`POST kuvo/vault/grants`, everyone, `own`: asked again at a later run where the
+  sign-in is there without it). Never written to a file, by either.
 - **What the move carries** (the `upgrade` step; each reads the app's folder and its
   preferences, `~/Library/Preferences/<ID>.plist`, asked of the system for Kuvo Code itself, and
-  writes only in staging; each leaves what a box already had as it is):
+  writes only in staging; each leaves what a box already had as it is; preferences that are
+  there and can't be read stop the move, which goes back, never taken for none):
   - your projects (`projectFolders`, `projectSettings`: order, names, extra folders, Run
     commands) → `box/projects.json`; never a bot's folder or a machine's (`ssh://…`); one kept
     only for its settings stays removed;
@@ -7569,7 +7579,10 @@ above. Only on a Mac.
   websites signed in to in the app's browser; changes to a machine's bot not yet sent there
   (`botEditsWaiting`: held edits are sealed with the link's secret); a project's terminal app;
   a move left at `switched`; sign-outs and clean-ups still owed to machines that were away
-  (`machineSignOuts`, `machines.waiting`); a list the app set aside as unreadable; usage keys or a proxy set
+  (`machineSignOuts`, `machines.waiting`); what the app kept for its machines' projects and
+  worktrees (`ssh://…` entries: names, folders, Run commands, which project a worktree's
+  sessions belong to); API keys pasted into the usage panel (its own Keychain items); starred
+  models; a list the app set aside as unreadable (a file, or its machines'); usage keys or a proxy set
   up by hand (`Usage/*.json`); a group chat that couldn't be read; a machine's bot's seat in a
   group chat (it takes one again where it lives); messages for machines that were away; and,
   where new sessions ran everything without asking (`toolApproval` unset or `approveAll`),
@@ -7696,8 +7709,8 @@ words for it, `kuvo/box/rehome`'s `progress`), then `{"result", "verdict", "star
 (`app-07`, `app-box`, a move stopped part way, or one that's done and still owes something):
 `fresh`, `machine`, `two` and `back` are `refused`, saying why; `ours` with nothing owed is
 `nothing`; `waits`, exit 4. It starts `kuvo-link.js rehome <root> --run …` in a session of its
-own, its answer kept in `updates/rehome/run.out` until it's read and what it says besides in
-`updates/rehome/run.log`, and follows it: an app that quits meanwhile doesn't stop the move, and
+own, its answer kept in a file of this installer's own (`updates/rehome/run.<its pid>.out`)
+until it's read and what it says besides in `updates/rehome/run.log`, and follows it: an app that quits meanwhile doesn't stop the move, and
 at its next open `status` says `waits` (with `status.progress` to draw) while it's still at
 work, or what it came to. `status.dropped` says what wasn't carried.
 

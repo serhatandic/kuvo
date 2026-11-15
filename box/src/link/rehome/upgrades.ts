@@ -20,7 +20,9 @@ import { UsageSettings } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
 import { accountHome, homeFolder, located } from "../home";
 import { mergePersonalities } from "../personalities/library";
+import { DEFAULT_RELAY } from "../mac/link";
 import { placementOf, type MoveContext } from "./rewrite";
+import { Said } from "./said";
 import type { RunPlan } from "./state";
 
 type Prefs = Record<string, unknown>;
@@ -92,12 +94,16 @@ export function appPreferences(appFolder: string): Prefs {
   const id = path.basename(appFolder);
   const file = path.join(path.dirname(path.dirname(appFolder)), "Preferences", `${id}.plist`);
   const real = located(homeFolder()) === located(accountHome()) && id === "run.kuvo.code";
+  // (None kept at all is none, said so by the system or by there being no file: never an error.)
+  if (!real && !exists(file)) return {};
   const asked = real
-    ? spawnSync("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] })
-    : exists(file) ? spawnSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : null;
-  if (!asked || asked.status !== 0 || !asked.stdout) return {};
-  const read = parsePlist(asked.stdout);
-  return isObject(read) ? read : {};
+    ? spawnSync("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 60_000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] })
+    : spawnSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 60_000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  // Ones that are there and can't be read stop the move (it goes back, to be tried again): taken
+  // for none, your projects, machines and settings would be left behind for good, unsaid.
+  const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
+  if (!isObject(read)) throw new Said("Kuvo couldn't read the earlier Kuvo Code's settings, so nothing was moved. Try again.");
+  return read;
 }
 
 // One upgrade's world
@@ -205,7 +211,9 @@ function machines({ prefs, staged }: Upgrade): void {
 /** The engine's settings in the staged copy, as plain JSON, or null where they aren't (comments, a
  * damaged file): then nothing's written into them. */
 function settingsOf(file: string): Record<string, unknown> | null {
-  if (!exists(file)) return {};
+  let text = "";
+  try { text = fs.readFileSync(file, "utf8"); } catch { return {}; }
+  if (!text.trim()) return {};
   const read = readJSON(file);
   return isObject(read) ? read : null;
 }
@@ -279,9 +287,6 @@ function boxSettings({ prefs, staged }: Upgrade): void {
   }
 }
 
-/** The relay everyone's on, where no app of this Mac's said another (`mac/link.ts`'s). */
-const DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr";
-
 /** "Let my devices connect" as this Mac's link had it set (`phoneLink`, and a relay of your own,
  * `phoneLink.relay`), kept as the box keeps what its app said (`run/mac-link.json`). Never set, it
  * isn't written: the box's own start is on. A copy's home takes no relay it wasn't given. */
@@ -328,7 +333,7 @@ function bots({ S, staged }: Upgrade): void {
       }, null, 2));
     }
     const text = (name: string) => { try { return fs.readFileSync(path.join(folder, name), "utf8").trim(); } catch { return ""; } };
-    if (text("session") !== bot.sessionID) writeWhole(path.join(folder, "session"), bot.sessionID);
+    if (bot.sessionID && text("session") !== bot.sessionID) writeWhole(path.join(folder, "session"), bot.sessionID);
     if (!exists(path.join(folder, "directory"))) writeWhole(path.join(folder, "directory"), bot.project ?? path.join(bot.folder, "workspace"));
     if (bot.agents === true && !exists(path.join(folder, "via"))) writeWhole(path.join(folder, "via"), "bridge");
   }
@@ -387,12 +392,15 @@ function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
     writeWhole(file, JSON.stringify(Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)))));
   }
   const list = readJSON(path.join(S, "groups.json"));
-  if (!Array.isArray(list)) return;
+  if (!Array.isArray(list)) {
+    if (exists(path.join(S, "groups.json"))) dropped.push("Your group chats couldn't be read, and weren't brought along. They're still in the earlier Kuvo Code's folder (groups.json).");
+    return;
+  }
   const held = new Set((Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter(each => isObject(each) && each.kind === "group").map(each => (each as { id: unknown }).id));
   const onMachine = new Map(listedBots(S).filter(bot => bot.machine).map(bot => [bot.id, bot.machine!]));
   const before = readJSON(path.join(root, "imported.json"));
   const deleted = new Set(strings(isObject(before) ? before.ids : null));
-  let seats = 0, failed = 0;
+  let seats = 0, failed = 0, unread = 0;
   for (const chat of list) {
     if (!isObject(chat) || typeof chat.id !== "string" || !/^grp_[a-z0-9]+$/.test(chat.id)) continue;
     const folder = path.join(root, chat.id);
@@ -400,6 +408,8 @@ function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
     if (!Array.isArray(chat.members) || !chat.members.every(member => typeof member === "string")) { failed++; continue; }
     // (The old file of its messages is beside its folder now, under the same name: `<id>.json`.)
     const messages = chatMessages(path.join(S, "groups", `${chat.id}.json`));
+    const kept = readJSON(path.join(S, "groups", `${chat.id}.json`));
+    unread += Math.max(0, (Array.isArray(kept) ? kept.length : 0) - messages.length);
     const group: Record<string, unknown> = {
       id: chat.id, name: typeof chat.name === "string" && chat.name ? chat.name : "Group Chat", members: chat.members,
       seats: stringMap(chat.seats), heard: stringMap(chat.heard),
@@ -427,6 +437,7 @@ function groupChats({ S, prefs, staged, dropped }: Upgrade): void {
     fs.rmSync(path.join(root, `${chat.id}.json`), { force: true });
   }
   if (failed) dropped.push(`${failed === 1 ? "One group chat" : `${failed} group chats`} couldn't be read, and ${failed === 1 ? "wasn't" : "weren't"} brought along. ${failed === 1 ? "It's" : "They're"} still in the earlier Kuvo Code's folder (groups.json).`);
+  if (unread) dropped.push(`${unread === 1 ? "One message" : `${unread} messages`} in your group chats couldn't be read, and ${unread === 1 ? "wasn't" : "weren't"} brought along.`);
   if (seats) dropped.push(`In your group chats, ${seats === 1 ? "a bot on one of your machines takes its seat" : `${seats} bots on your machines take their seats`} again at ${seats === 1 ? "its" : "their"} next turn: the conversation ${seats === 1 ? "it" : "they"} had there before stays on that machine, unused.`);
 }
 
@@ -522,7 +533,7 @@ function said({ S, prefs, dropped }: Upgrade): void {
   const drafts = count(prefs.composerDrafts);
   if (drafts) dropped.push(`${drafts === 1 ? "A message" : `${drafts} messages`} you'd typed but not sent ${drafts === 1 ? "wasn't" : "weren't"} brought along.`);
   if (exists(path.join(S, "Browser", "history.json"))) dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.");
-  const edits = count(prefs.botEditsWaiting) + count(prefs.botEditOutbox);
+  const edits = new Set([...Object.keys(isObject(prefs.botEditsWaiting) ? prefs.botEditsWaiting : {}), ...Object.keys(isObject(prefs.botEditOutbox) ? prefs.botEditOutbox : {})]).size;
   if (edits) dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
   const terminals = isObject(prefs.projectSettings) ? Object.values(prefs.projectSettings).filter(each => isObject(each) && typeof each.terminal === "string" && each.terminal).length : 0;
   if (terminals) dropped.push(`The terminal app chosen for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept: Kuvo's own terminals open in the side panel.`);
@@ -533,6 +544,15 @@ function said({ S, prefs, dropped }: Upgrade): void {
   if (signOuts) dropped.push(`You signed out of an account while ${signOuts === 1 ? "a machine was" : `${signOuts} machines were`} away: ${signOuts === 1 ? "it" : "they"} may still be signed in to it. Sign out there too once ${signOuts === 1 ? "it's" : "they're"} connected.`);
   const cleanUps = count(prefs["machines.waiting"]);
   if (cleanUps) dropped.push(`${cleanUps === 1 ? "A machine that was away still has" : `${cleanUps} machines that were away still have`} files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.`);
+  // What the app kept for your machines (its window gave each to that machine's own as it connected).
+  const onMachine = (value: unknown) => (isObject(value) ? Object.keys(value) : strings(value)).filter(folder => folder.startsWith("ssh://")).length;
+  const theirProjects = new Set([...(isObject(prefs.projectSettings) ? Object.keys(prefs.projectSettings) : []), ...strings(prefs.projectFolders)].filter(folder => folder.startsWith("ssh://"))).size;
+  const theirWorktrees = onMachine(prefs.worktrees) + onMachine(prefs.removedWorktrees);
+  if (theirProjects) dropped.push(`${theirProjects === 1 ? "A project" : `${theirProjects} projects`} on your machines may have lost ${theirProjects === 1 ? "its" : "their"} name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.`);
+  if (theirWorktrees) dropped.push(`${theirWorktrees === 1 ? "A worktree" : `${theirWorktrees} worktrees`} on your machines may show ${theirWorktrees === 1 ? "its" : "their"} sessions under another project: the earlier Kuvo Code kept which project ${theirWorktrees === 1 ? "it" : "each"} belonged to on this Mac.`);
+  if (Object.keys(prefs).some(key => key.startsWith("machines.unreadable-"))) dropped.push("The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.");
+  if (Object.keys(prefs).some(key => key.startsWith("openusage."))) dropped.push("API keys you pasted into the usage panel aren't brought along. Paste them again where you use them.");
+  if (typeof prefs.favoriteModels === "string" && prefs.favoriteModels) dropped.push("Your starred models, and the model new sessions start with, are chosen again in the new app.");
   if (listOf(S).some(name => /\.unreadable-.*\.json$/.test(name))) dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some(name => exists(path.join(S, "Usage", name)))) dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
   if (prefs.toolApproval !== "askFirst") dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");
@@ -560,11 +580,15 @@ export function runUpgrades(run: RunPlan, move: MoveContext): string[] {
     },
     dropped: [],
   };
-  // (Places that are folders: there before what's written in them.)
-  for (const name of ["box", "run", "bots", "groups", "agents"]) fs.mkdirSync(upgrade.staged(name), { recursive: true, mode: 0o700 });
+  // (Places that are folders: there before what's written in them. Those the app never had are
+  // made here, and taken away again below where nothing was written in them: one it had, empty
+  // too, was cloned and stays, as everything cloned does.)
+  const places = ["box", "run", "bots", "groups", "agents"];
+  const madeHere = places.filter(name => !exists(upgrade.staged(name)));
+  for (const name of places) fs.mkdirSync(upgrade.staged(name), { recursive: true, mode: 0o700 });
   for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, bots, personalities, groupChats, letters, usage, said]) each(upgrade);
   enginePlugin(run.release, upgrade);
   // (A place nothing was written in isn't made: a Mac with no bots gets no bots' folder from this.)
-  for (const name of ["groups", "agents", "bots", "run"]) try { fs.rmdirSync(upgrade.staged(name)); } catch {}
+  for (const name of madeHere) if (name !== "box") try { fs.rmdirSync(upgrade.staged(name)); } catch {}
   return upgrade.dropped;
 }

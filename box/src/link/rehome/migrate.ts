@@ -11,7 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { databasesIn, KNOWN_SCHEMAS, schemaMark, tableCounts } from "./database";
+import { databasesIn, everyCount, KNOWN_SCHEMAS, schemaMark, tableCounts } from "./database";
 import { startIsolated } from "./engine-check";
 
 /** The engine databases' schemas this box's engine brings up to date itself (`<count> <last
@@ -23,7 +23,9 @@ export const MIGRATED_SCHEMAS: readonly string[] = ["50 20261010180456_project_t
 /** Whether a schema is one the move takes: the pinned engine's own, or one it brings up to date. */
 export const takenSchema = (mark: string | null): boolean => mark === null || KNOWN_SCHEMAS.includes(mark) || MIGRATED_SCHEMAS.includes(mark);
 
-export interface Migrated { database: string; from: string; to: string }
+/** A database brought up to date: from which schema to which, and what the engine's own update
+ * let go of (each table that held rows and isn't there any more, with how many). */
+export interface Migrated { database: string; from: string; to: string; gone: Record<string, number> }
 
 /** Every staged engine database not yet of the pinned engine's schema, brought to it by `engine`
  * (the release's), in `data` (the staged `XDG_DATA_HOME`, with `opencode/` in it). Throws, in
@@ -36,7 +38,7 @@ export async function migrateDatabases({ engine, data, scratch }: { engine: stri
   const other = due.find(each => path.basename(each.database) !== "opencode.db");
   if (other) throw new Error(`The engine's database ${path.basename(other.database)} is of an earlier version, and only opencode.db can be brought up to date.`);
   const [{ database, from }] = due;
-  const before = tableCounts(database);
+  const before = tableCounts(database), every = everyCount(database);
   fs.rmSync(scratch, { recursive: true, force: true });
   try {
     const started = await startIsolated({ engine, data, scratch, what: "your sessions (to bring them up to date)" });
@@ -50,5 +52,6 @@ export async function migrateDatabases({ engine, data, scratch }: { engine: stri
   const after = tableCounts(database);
   const fewer = Object.entries(before).filter(([table, count]) => table in after && after[table] < count).map(([table, count]) => `${table} (${after[table]} of ${count})`);
   if (fewer.length) throw new Error(`Bringing your sessions up to date lost some of what they held: ${fewer.join(", ")}.`);
-  return [{ database, from: from!, to }];
+  const left = everyCount(database);
+  return [{ database, from: from!, to, gone: Object.fromEntries(Object.entries(every).filter(([table, count]) => count > 0 && !(table in left))) }];
 }

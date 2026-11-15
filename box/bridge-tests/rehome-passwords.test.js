@@ -84,9 +84,15 @@ test("saved sign-ins go into the vault once this Mac's box answers: each a sign-
   // The site agents signed in to alone, with that account: still theirs; the other account of it, not.
   assert.deepEqual(vault.grants.map(grant => [grant.item, grant.how]), [[ada.id, "own"]]);
 
-  // Owed again (as a hand-over cut short would leave it): nothing is added twice.
+  // Owed again, with the sign-in there and agents not yet let use it (as a hand-over cut short
+  // between the two would leave it): nothing is added twice, and they're let use it again.
   const state = path.join(K, "updates", "rehome", "state.json");
   fs.writeFileSync(state, JSON.stringify({ ...JSON.parse(fs.readFileSync(state, "utf8")), owed: ["passwords"] }));
+  const taken = await fetch(`http://127.0.0.1:${served.port}/kuvo/vault/grants`, { method: "POST", headers: { authorization: `Basic ${Buffer.from(`opencode:${served.password}`).toString("base64")}`, "x-kuvo-from": "app", "content-type": "application/json" }, body: JSON.stringify({ item: ada.id, who: { everyone: true }, how: null }) });
+  assert.equal(taken.status, 200);
+  assert.deepEqual((await ask("kuvo/vault")).grants, []);
   assert.deepEqual((await run()).said.status.owed, []);
-  assert.equal((await ask("kuvo/vault")).items.length, 3);
+  const again = await ask("kuvo/vault");
+  assert.equal(again.items.length, 3);
+  assert.deepEqual(again.grants.map(grant => [grant.item, grant.how]), [[ada.id, "own"]]);
 });

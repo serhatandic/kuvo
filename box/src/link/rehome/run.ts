@@ -16,7 +16,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { processRuns } from "../../shared/platform";
 import { sleep } from "../../shared/wait";
 import { OWN_RUNTIME, accountHome, located } from "../home";
 import { checkedRelease } from "../install/command";
@@ -72,7 +71,7 @@ function schemaRefusal(appFolder: string, home: string): string | null {
       const copy = path.join(scratch, path.basename(database));
       for (const suffix of ["", "-wal", "-shm"]) if (exists(database + suffix)) fs.copyFileSync(database + suffix, copy + suffix, fs.constants.COPYFILE_FICLONE);
       const mark = schemaMark(copy);
-      if (!takenSchema(mark)) return `Your sessions were last used by a version of Kuvo Code that this one can't bring along yet (${mark}). Update Kuvo Code, then try again.`;
+      if (!takenSchema(mark)) return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed.`;
     }
     return null;
   } catch (error) {
@@ -95,7 +94,7 @@ function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string 
   if (!exists(appFolder)) return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
   const old = runningIn(path.join(appFolder, "box", "run"));
   if (old.length) return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}). Quit Kuvo Code wherever it's open, then try again.`;
-  if (!plan.merge && runningIn(path.join(home, "run")).length) return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
+  if (runningIn(path.join(home, "run")).length) return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
   // One disk, cloned: never copied.
   const target = nearest(home);
   if (fs.statSync(appFolder).dev !== fs.statSync(target).dev || diskKind(appFolder) !== "apfs") return "Kuvo can't move your sessions on this disk: your home folder must be on one APFS disk.";
@@ -115,9 +114,16 @@ async function stopOldKeeper(appFolder: string): Promise<void> {
   const run = path.join(appFolder, "box", "run");
   let keeper: unknown = null;
   try { keeper = JSON.parse(fs.readFileSync(path.join(run, "keeper.json"), "utf8")); } catch {}
-  const pid = isObject(keeper) && Number.isInteger(keeper.pid) ? keeper.pid as number : null;
-  const runs = () => pid !== null && processRuns(pid, "--box");
-  if (runs() && isObject(keeper) && typeof keeper.url === "string" && typeof keeper.password === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(keeper.url)) {
+  const pid = isObject(keeper) && Number.isInteger(keeper.pid) && (keeper.pid as number) > 1 ? keeper.pid as number : null;
+  // (Its own keeper by its command line, as `ps` says it now: a record left by one that's gone,
+  // whose number something else has since, names nothing to stop. Never by its number alone.)
+  const runs = () => {
+    if (pid === null) return false;
+    const asked = spawnSync("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+    return asked.status === 0 && /(^|\s)--box(\s|$)/.test(asked.stdout ?? "");
+  };
+  if (!runs()) return;
+  if (isObject(keeper) && typeof keeper.url === "string" && typeof keeper.password === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(keeper.url)) {
     try { await fetch(`${keeper.url.replace(/\/+$/, "")}/stop`, { method: "POST", headers: { authorization: `Bearer ${keeper.password}` }, signal: AbortSignal.timeout(20_000) }); } catch {}
   }
   const gone = async (limit: number) => {
@@ -173,7 +179,10 @@ function settleStart(home: string, options: Pick<RunOptions, "bundle" | "id">) {
     const keys = path.join(bundle, "Contents", "MacOS", "kuvo-keys");
     const deleted = exists(keys) ? deleteOriginalKeys(keys, home) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code" };
     if (deleted.done) settled(home, "keychain");
-    else console.error(`The Keychain's originals couldn't be taken away yet: ${deleted.why}`);
+    else {
+      console.error(`kuvo-keys delete-originals: ${deleted.why}`);
+      message ??= "Kuvo is moved and working. It couldn't finish with your Keychain yet, and tries again the next time it opens.";
+    }
   }
   return { owes, bundle, app, started, message };
 }
@@ -182,6 +191,7 @@ function settleStart(home: string, options: Pick<RunOptions, "bundle" | "id">) {
  * (`passwords.ts`): tried again at the next run where it couldn't be yet. */
 async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): Promise<RunOutcome> {
   const { owes, bundle, app, started, message } = settleStart(home, options);
+  let said = message;
   if (owes("passwords") && !owes("start")) {
     const keys = path.join(bundle, "Contents", "MacOS", "kuvo-keys");
     const record = readRecord(home);
@@ -193,7 +203,11 @@ async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">):
     if (handed.done) {
       if (handed.short) noteRecord(home, { dropped: [...(readRecord(home).dropped ?? []), `${handed.short === 1 ? "A saved password" : `${handed.short} saved passwords`} shorter than four characters ${handed.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`] });
       settled(home, "passwords");
-    } else console.error(`Your saved sign-ins couldn't be brought into the vault yet: ${handed.why}`);
+    } else {
+      // (Why goes to the move's own log, for support: it may name a site or an account.)
+      console.error(`Your saved sign-ins couldn't be brought into the vault yet: ${handed.why}`);
+      said ??= "Kuvo is moved and working. Your saved sign-ins aren't in its vault yet: it tries again the next time it opens.";
+    }
   }
   if (owes("agent")) {
     // The old keeper's launch agent, let go of: its program is gone with the app it was in.
@@ -204,7 +218,7 @@ async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">):
   // What the installer staged, once the box runs from its own (the helper the copies trust is the
   // one in its `bin` now).
   if (!owes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
-  return { result: "done", status: rehomeStatus(home), ...(started !== undefined ? { started } : {}), ...(message ? { message } : {}) };
+  return { result: "done", status: rehomeStatus(home), ...(started !== undefined ? { started } : {}), ...(said ? { message: said } : {}) };
 }
 
 /** `rehome --run`: the earlier Kuvo Code's sessions and settings in `appFolder` moved into this
@@ -219,26 +233,31 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     if (earlier && earlier.result !== "failed") return earlier.result === "done" ? settle(home, options) : earlier;
     const record = readRecord(home);
     if (record.state === "done" && record.way === "move") return settle(home, options);
+    // A machine's box here already, with an earlier Kuvo Code's data beside it (`two`): putting
+    // the two together isn't built. Said before anything is stopped, and nothing is noted in
+    // that box's home: both stay exactly as they are.
+    if (machineBoxThere(home)) return { result: "refused", message: TWO, status: rehomeStatus(home) };
     const keys = path.join(options.bundle, "Contents", "MacOS", "kuvo-keys");
     const plan: RunPlan = {
       bundle: options.bundle, id: options.id, release: path.resolve(options.release), engine: path.resolve(options.engine),
       source: appBoxThere(appFolder) ? "app-box" : "app-07",
-      ...(machineBoxThere(home) ? { merge: true } : {}),
       keys: exists(keys) ? keys : null,
     };
     if (plan.source === "app-box") await stopOldKeeper(appFolder);
     const now = Date.now();
     let pinned: string | null = null;
     try { pinned = checkedRelease(plan.release).engine; } catch {}
-    // (A machine's box here already, `two`: putting the two together isn't built. Nothing changes.)
-    const refusal = plan.merge ? TWO : runRefusal(folders, plan, pinned);
+    const refusal = runRefusal(folders, plan, pinned);
     if (refusal) {
       // (Counted, never waited for: trying again is yours.)
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: now, step: "plan", message: refusal }, asked: null });
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
     }
     // (Only this release's engine goes into the box: never a download cut short, nor another version's.)
-    for (const name of fs.readdirSync(plan.engine)) if (name !== pinned) fs.rmSync(path.join(plan.engine, name), { recursive: true, force: true });
+    // (And only where the installer stages it: never a folder named by mistake.)
+    if (located(plan.engine) === located(path.join(home, "updates", "install", "engine"))) {
+      for (const name of fs.readdirSync(plan.engine)) if (name !== pinned) fs.rmSync(path.join(plan.engine, name), { recursive: true, force: true });
+    }
     const outcome = await run({
       v: 1, way: "move", began: now, step: "plan", from: appFolder, to: home,
       ...planMove(folders, plan.release, { engine: plan.engine, whole: true }), kept: path.join(rehomeFolder(home), "kept", stamp(now)),

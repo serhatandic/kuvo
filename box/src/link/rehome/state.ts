@@ -54,9 +54,6 @@ export interface RehomeRecord extends Partial<RehomeStatus> {
   /** The app whose data a move the box ran itself took (`rehome --run`): its bundle and its ID, for
    * what's still owed to be settled at a later run. */
   app?: { bundle: string; id: string };
-  /** A merge (`two`): the earlier Kuvo Code's data went into the box that was here, which keeps
-   * its kind. Its data in the app's folder is taken, and says nothing more. */
-  mergedInto?: boolean;
   /** What each count was before and after (`rehome --run`'s check), for support. */
   counts?: Record<string, number>;
 }
@@ -109,7 +106,7 @@ export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
     asked: kept.asked ?? null,
     from: kept.from ?? underWay?.from ?? null,
     to: kept.to ?? underWay?.to ?? null,
-    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step, underWay.run.merge === true) : null,
+    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : null,
     dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each): each is string => typeof each === "string") : [],
   };
 }
@@ -129,11 +126,10 @@ const STEP_TITLES: Record<Exclude<RehomeStep, "done">, string> = {
   fix: "Reconnecting your worktrees",
   clear: "Finishing up",
 };
-const MERGE_TITLES: Partial<typeof STEP_TITLES> = { clone: "Copying both sets of sessions and settings", place: "Putting them together" };
-export function progressOf(step: RehomeStep, merge = false): NonNullable<RehomeStatus["progress"]> {
+export function progressOf(step: RehomeStep): NonNullable<RehomeStatus["progress"]> {
   const shown = STEPS.filter(each => each !== "done");
   const at = step === "done" ? "clear" : step;
-  return { step, title: (merge ? MERGE_TITLES[at] : undefined) ?? STEP_TITLES[at], index: shown.indexOf(at) + 1, of: shown.length };
+  return { step, title: STEP_TITLES[at], index: shown.indexOf(at) + 1, of: shown.length };
 }
 
 // The journal
@@ -183,9 +179,9 @@ export interface Journal {
   /** A move the box runs whole itself (`rehome --run`, #713), with no keeper before it: the app
    * that carries its release (`bundle`, and its ID), the release and the engine its installer
    * staged (`engine`: the folder its version is in), what it moves (`app-07`: an earlier Kuvo
-   * Code's data, with no box of its own; `app-box`: a keeper build's box), whether it's merged
-   * into a box that's here already (`two`), and whether the app brings `kuvo-keys`. The app's
-   * folder is never changed: nothing's cleared, and no copy is kept. */
+   * Code's data, with no box of its own; `app-box`: a keeper build's box), and the `kuvo-keys` the
+   * app brings (null: a copy of the app, which has none). The app's folder is never changed:
+   * nothing's cleared, and no copy is kept. */
   run?: RunPlan;
 }
 
@@ -195,7 +191,6 @@ export interface RunPlan {
   release: string;
   engine: string;
   source: "app-07" | "app-box";
-  merge?: boolean;
   keys: string | null;
 }
 

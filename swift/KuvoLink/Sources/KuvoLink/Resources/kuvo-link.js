@@ -474,6 +474,340 @@ function outsideSpoken(pattern, home) {
 var AGENTS_TEXT_BYTES = 200000, oneLine = (text, limit) => Array.from(String(text).replace(/[\t\r\n]/g, " ")).slice(0, limit).join(""), stamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), newID = (prefix) => prefix + Array.from(crypto3.randomBytes(10), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join(""), plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" "), cut = (text, count) => text.length <= count ? text : text.slice(0, count - 1) + "…", quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
 var init_text = () => {};
 
+// box/src/link/host-interface.ts
+import crypto4 from "node:crypto";
+import fs8 from "node:fs";
+import path7 from "node:path";
+function appHost() {
+  if (!KEYS_ON_HOST)
+    return null;
+  try {
+    const text = fs8.readFileSync(HOST_FILE, "utf8");
+    const said = JSON.parse(text);
+    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
+      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
+    }
+  } catch {}
+  return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
+}
+function openAppHost() {
+  if (!OWN_HOME_MAC)
+    return appHost();
+  try {
+    const host = JSON.parse(fs8.readFileSync(path7.join(RUN, "app.json"), "utf8"))?.host;
+    if (typeof host?.url === "string" && host.url && typeof host?.password === "string" && host.password) {
+      return { url: host.url.replace(/\/+$/, ""), password: host.password, said: `app ${host.url} ${host.password}` };
+    }
+  } catch {}
+  return null;
+}
+function helloProof(password, nonce, url) {
+  const reached = new URL(url);
+  return crypto4.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
+}
+function forgetHostProof() {
+  provenBy = null;
+  vaultProvenBy = null;
+}
+async function proveHost(host, signal) {
+  if (provenBy === host.said)
+    return;
+  const nonce = crypto4.randomBytes(32).toString("hex");
+  let proof = null;
+  try {
+    const response = await fetch(`${host.url}/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
+    });
+    const answer = await response.json().catch(() => null);
+    if (response.ok && typeof answer?.proof === "string")
+      proof = Buffer.from(answer.proof);
+  } catch {}
+  const expected = Buffer.from(helloProof(host.password, nonce, host.url));
+  if (!proof || proof.length !== expected.length || !crypto4.timingSafeEqual(proof, expected))
+    throw new KeysUnavailable(NOT_ANSWERING);
+  if (host.said.startsWith("app "))
+    return;
+  provenBy = host.said;
+}
+async function proveVaultHost(host) {
+  if (!HOST_VAULT_SECRET) {
+    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by its running box, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
+  }
+  if (vaultProvenBy === host.said)
+    return;
+  const nonce = crypto4.randomBytes(32).toString("hex");
+  let proof = null;
+  try {
+    const response = await fetch(`${host.url}/hello`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce, vault: true }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const answer = await response.json().catch(() => null);
+    if (response.ok && typeof answer?.vaultProof === "string")
+      proof = Buffer.from(answer.vaultProof);
+  } catch {}
+  const reached = new URL(host.url);
+  const expected = Buffer.from(crypto4.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
+  if (!proof || proof.length !== expected.length || !crypto4.timingSafeEqual(proof, expected))
+    throw new KeysUnavailable(NOT_ANSWERING);
+  vaultProvenBy = host.said;
+}
+async function hostTrash(folder) {
+  const host = appHost();
+  if (!host)
+    return;
+  await proveHost(host);
+  const response = await fetch(`${host.url}/trash`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
+    body: JSON.stringify({ path: folder }),
+    signal: AbortSignal.timeout(15000)
+  });
+  await response.body?.cancel().catch(() => {});
+}
+async function askHost(host, call, body, missing = false) {
+  await proveHost(host);
+  const sent = JSON.stringify(body);
+  const vault = call.startsWith("vault/");
+  if (vault)
+    await proveVaultHost(host);
+  const at = Date.now();
+  let response;
+  try {
+    response = await fetch(`${host.url}/${call}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {} },
+      body: sent,
+      signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "vault/get", "vault/set"].includes(call) ? 120000 : 15000)
+    });
+  } catch {
+    forgetHostProof();
+    throw new KeysUnavailable(NOT_ANSWERING);
+  }
+  if (missing && response.status === 404) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+  let answer = null;
+  try {
+    answer = await response.json();
+  } catch {}
+  if (response.status < 200 || response.status > 299) {
+    const said = typeof answer?.message === "string" && answer.message.trim() ? ` ${oneLine(answer.message, 300)}` : "";
+    throw new KeysUnavailable(`This Mac's keys couldn't be reached (${response.status}).${said}`);
+  }
+  return answer ?? {};
+}
+async function siteSignIns() {
+  const host = openAppHost();
+  if (!host)
+    return null;
+  try {
+    const answer = await askHost(host, "sites/signed-in", {});
+    return isObject(answer?.sites) ? answer.sites : null;
+  } catch {
+    return null;
+  }
+}
+async function linkHost(call, body) {
+  const host = appHost();
+  if (!host)
+    return null;
+  try {
+    return await askHost(host, call, body ?? {});
+  } catch {
+    return null;
+  }
+}
+var KeysUnavailable, HOST_FILE, NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.", provenBy = null, vaultProvenBy = null, vaultAuth = (call, body, at) => crypto4.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto4.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
+var init_host_interface = __esm(() => {
+  init_text();
+  init_home();
+  KeysUnavailable = class KeysUnavailable extends Error {
+  };
+  HOST_FILE = path7.join(RUN, "host.json");
+});
+
+// box/src/link/crypto/keys.ts
+import crypto5 from "node:crypto";
+var PKCS8, SPKI, EMPTY, privateKey = (raw) => crypto5.createPrivateKey({ key: Buffer.concat([PKCS8, raw]), format: "der", type: "pkcs8" }), publicKey = (raw) => crypto5.createPublicKey({ key: Buffer.concat([SPKI, raw]), format: "der", type: "spki" }), newKey = () => crypto5.generateKeyPairSync("x25519").privateKey.export({ format: "der", type: "pkcs8" }).subarray(PKCS8.length), publicOf = (raw) => crypto5.createPublicKey(privateKey(raw)).export({ format: "der", type: "spki" }).subarray(SPKI.length), dh = (raw, remote) => crypto5.diffieHellman({ privateKey: privateKey(raw), publicKey: publicKey(remote) }), addressOf = (secret) => crypto5.createHash("sha256").update("kuvo-link address v1").update(secret).digest().subarray(0, 16);
+var init_keys = __esm(() => {
+  PKCS8 = Buffer.from("302e020100300506032b656e04220420", "hex");
+  SPKI = Buffer.from("302a300506032b656e032100", "hex");
+  EMPTY = Buffer.alloc(0);
+});
+
+// box/src/link/crypto/noise.ts
+import crypto6 from "node:crypto";
+function hkdf(chainingKey, input) {
+  const temp = hmac(chainingKey, input);
+  const first = hmac(temp, Buffer.from([1]));
+  return [first, hmac(temp, Buffer.concat([first, Buffer.from([2])]))];
+}
+
+class CipherState {
+  constructor(key) {
+    this.key = key;
+    this.n = 0n;
+  }
+  nonce() {
+    const nonce = Buffer.alloc(12);
+    nonce.writeBigUInt64BE(this.n, 4);
+    return nonce;
+  }
+  encrypt(ad, plaintext) {
+    if (!this.key)
+      return plaintext;
+    const cipher = crypto6.createCipheriv("aes-256-gcm", this.key, this.nonce());
+    cipher.setAAD(ad);
+    const sealed = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
+    this.n += 1n;
+    return sealed;
+  }
+  decrypt(ad, ciphertext) {
+    if (!this.key)
+      return ciphertext;
+    if (ciphertext.length < 16)
+      throw new Error("decrypt");
+    const decipher = crypto6.createDecipheriv("aes-256-gcm", this.key, this.nonce());
+    decipher.setAAD(ad);
+    decipher.setAuthTag(ciphertext.subarray(-16));
+    let plaintext;
+    try {
+      plaintext = Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]);
+    } catch {
+      throw new Error("decrypt");
+    }
+    this.n += 1n;
+    return plaintext;
+  }
+}
+
+class SymmetricState {
+  constructor(name, prologue) {
+    const bytes = Buffer.from(name);
+    this.h = bytes.length <= 32 ? Buffer.concat([bytes, Buffer.alloc(32 - bytes.length)]) : sha256(bytes);
+    this.ck = this.h;
+    this.cipher = new CipherState;
+    this.mixHash(prologue);
+  }
+  mixKey(input) {
+    const [chainingKey, key] = hkdf(this.ck, input);
+    this.ck = chainingKey;
+    this.cipher = new CipherState(key);
+  }
+  mixHash(data) {
+    this.h = sha256(Buffer.concat([this.h, data]));
+  }
+  encryptAndHash(plaintext) {
+    const ciphertext = this.cipher.encrypt(this.h, plaintext);
+    this.mixHash(ciphertext);
+    return ciphertext;
+  }
+  decryptAndHash(ciphertext) {
+    const plaintext = this.cipher.decrypt(this.h, ciphertext);
+    this.mixHash(ciphertext);
+    return plaintext;
+  }
+  split() {
+    const [first, second] = hkdf(this.ck, EMPTY);
+    return [new CipherState(first), new CipherState(second)];
+  }
+}
+
+class IKInitiator {
+  constructor(s, rs, prologue, e = newKey()) {
+    Object.assign(this, { s, rs, e, state: new SymmetricState(IK, prologue) });
+    this.state.mixHash(rs);
+  }
+  writeMessage1(payload) {
+    const state = this.state;
+    const ephemeral = publicOf(this.e);
+    state.mixHash(ephemeral);
+    state.mixKey(dh(this.e, this.rs));
+    const s = state.encryptAndHash(publicOf(this.s));
+    state.mixKey(dh(this.s, this.rs));
+    return Buffer.concat([ephemeral, s, state.encryptAndHash(payload)]);
+  }
+  readMessage2(message) {
+    if (message.length < 48)
+      throw new Error("malformed");
+    const state = this.state;
+    const re = message.subarray(0, 32);
+    state.mixHash(re);
+    state.mixKey(dh(this.e, re));
+    state.mixKey(dh(this.s, re));
+    const payload = state.decryptAndHash(message.subarray(32));
+    const [first, second] = state.split();
+    return { payload, transport: transport(first, second, state.h) };
+  }
+}
+
+class IKResponder {
+  constructor(s, prologue, e = newKey()) {
+    Object.assign(this, { s, e, state: new SymmetricState(IK, prologue) });
+    this.state.mixHash(publicOf(s));
+  }
+  readMessage1(message) {
+    if (message.length < 96)
+      throw new Error("malformed");
+    const state = this.state;
+    this.re = message.subarray(0, 32);
+    state.mixHash(this.re);
+    state.mixKey(dh(this.s, this.re));
+    this.rs = state.decryptAndHash(message.subarray(32, 80));
+    state.mixKey(dh(this.s, this.rs));
+    return state.decryptAndHash(message.subarray(80));
+  }
+  writeMessage2(payload) {
+    const state = this.state;
+    const ephemeral = publicOf(this.e);
+    state.mixHash(ephemeral);
+    state.mixKey(dh(this.e, this.re));
+    state.mixKey(dh(this.e, this.rs));
+    const message = Buffer.concat([ephemeral, state.encryptAndHash(payload)]);
+    const [first, second] = state.split();
+    return { message, transport: transport(second, first, state.h) };
+  }
+}
+function sealOneWay(payload, s, rs, prologue = MAIL_PROLOGUE, e = newKey()) {
+  const state = new SymmetricState(ONE_WAY, prologue);
+  state.mixHash(publicOf(s));
+  state.mixHash(rs);
+  const ephemeral = publicOf(e);
+  state.mixHash(ephemeral);
+  state.mixKey(dh(e, rs));
+  state.mixKey(dh(s, rs));
+  return { message: Buffer.concat([ephemeral, state.encryptAndHash(payload)]), following: state.split()[0] };
+}
+function openOneWay(message, s, rs, prologue = MAIL_PROLOGUE) {
+  if (message.length < 48)
+    throw new Error("malformed");
+  const state = new SymmetricState(ONE_WAY, prologue);
+  state.mixHash(rs);
+  state.mixHash(publicOf(s));
+  const re = message.subarray(0, 32);
+  state.mixHash(re);
+  state.mixKey(dh(s, re));
+  state.mixKey(dh(s, rs));
+  return { payload: state.decryptAndHash(message.subarray(32)), following: state.split()[0] };
+}
+var sha256 = (data) => crypto6.createHash("sha256").update(data).digest(), hmac = (key, data) => crypto6.createHmac("sha256", key).update(data).digest(), IK = "Noise_IK_25519_AESGCM_SHA256", ONE_WAY = "Noise_K_25519_AESGCM_SHA256", PROLOGUE, MAIL_PROLOGUE, transport = (sending, receiving, hash) => ({
+  hash,
+  seal: (plaintext) => sending.encrypt(EMPTY, plaintext),
+  open: (ciphertext) => receiving.decrypt(EMPTY, ciphertext)
+});
+var init_noise = __esm(() => {
+  init_keys();
+  PROLOGUE = Buffer.from("kuvo-link v1");
+  MAIL_PROLOGUE = Buffer.from("kuvo-link mail v1");
+});
+
 // box/src/shared/documents.ts
 var DOC_KINDS;
 var init_documents = __esm(() => {
@@ -552,6 +886,1239 @@ var init_format = __esm(() => {
   ED_SPKI = Buffer.from("302a300506032b6570032100", "hex");
   signingKeys = new Map;
   heldDocs = new Map;
+});
+
+// box/src/link/moves/records.ts
+import fs14 from "node:fs";
+import path14 from "node:path";
+function readMoves() {
+  let names = [];
+  try {
+    names = fs14.readdirSync(MOVES).filter((name) => /^mov_[A-Za-z0-9]+\.json$/.test(name));
+  } catch {}
+  const records = [];
+  for (const name of names) {
+    try {
+      const record = JSON.parse(fs14.readFileSync(path14.join(MOVES, name), "utf8"));
+      if (fits(record))
+        records.push(record);
+    } catch {}
+  }
+  return records.sort((one, other) => one.started - other.started);
+}
+function movesChanged() {
+  for (const follower of [...moveFollowers])
+    try {
+      follower();
+    } catch {}
+}
+function saveMove(record) {
+  writePrivate(fileOf(record.id), JSON.stringify(record));
+  movesChanged();
+}
+function forgetMove(id) {
+  try {
+    fs14.rmSync(fileOf(id), { force: true });
+  } catch {}
+  try {
+    fs14.rmSync(bundleOf(id), { recursive: true, force: true });
+  } catch {}
+  movesChanged();
+}
+function changeMove(id, change) {
+  const record = readMove(id);
+  if (!record)
+    return null;
+  change(record);
+  saveMove(record);
+  return record;
+}
+function shownMove(record) {
+  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size } = record;
+  return { id, kind, thing, name, from, to, role, stage, sessions, ...sent !== undefined ? { sent } : {}, ...size !== undefined ? { size } : {}, ...waitingFor.has(id) ? { waiting: true } : {} };
+}
+function awaySessions(records = liveMoves()) {
+  const away = new Set;
+  for (const record of records) {
+    const switched = record.stage === "switching" || record.stage === "finishing";
+    if (record.role === "to" && !switched || record.role === "from" && switched)
+      for (const session of record.sessions)
+        away.add(session);
+  }
+  return [...away];
+}
+function frozen(records = liveMoves()) {
+  return new Set(records.filter((record) => record.step !== "check").flatMap((record) => [record.thing, ...record.sessions]));
+}
+function switchedTo(session, records = liveMoves()) {
+  return switchedMove(session, records)?.peer ?? null;
+}
+function switchedMove(session, records = liveMoves()) {
+  return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
+}
+function movedAway(now = Date.now()) {
+  try {
+    const kept = JSON.parse(fs14.readFileSync(MOVED_FILE, "utf8"));
+    if (!Array.isArray(kept))
+      return [];
+    return kept.filter((each) => isObject(each) && typeof each.session === "string" && typeof each.key === "string" && typeof each.at === "number" && now - each.at < MOVED_FOR);
+  } catch {
+    return [];
+  }
+}
+function noteMovedAway(sessions, key, now = Date.now()) {
+  const kept = movedAway(now).filter((each) => !sessions.includes(each.session));
+  writePrivate(MOVED_FILE, JSON.stringify([...kept, ...sessions.map((session) => ({ session, key, at: now }))]));
+  movesChanged();
+}
+function forgetMovedAway(sessions, now = Date.now()) {
+  const kept = movedAway(now);
+  if (!kept.some((each) => sessions.includes(each.session)))
+    return;
+  writePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session))));
+  movesChanged();
+}
+function endedAs(id, now = Date.now()) {
+  try {
+    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
+    const one = kept?.[id];
+    return keptFor(one, now) ? one.as : null;
+  } catch {
+    return null;
+  }
+}
+function endedAt(id, now = Date.now()) {
+  try {
+    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
+    const one = kept?.[id];
+    return keptFor(one, now) ? one.at : null;
+  } catch {
+    return null;
+  }
+}
+function endedLast(id, now = Date.now()) {
+  try {
+    const one = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"))?.[id];
+    return keptFor(one, now) && typeof one.last === "string" ? one.last : undefined;
+  } catch {
+    return;
+  }
+}
+function noteEnded(id, as, now = Date.now(), sessions = [], last) {
+  let kept = {};
+  try {
+    kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8")) ?? {};
+  } catch {}
+  for (const [other, one] of Object.entries(kept)) {
+    if (!keptFor(one, now))
+      delete kept[other];
+    else if (one.as === "switched" && now - one.at >= MOVED_FOR)
+      delete one.sessions;
+  }
+  kept[id] = { as, at: now, ...sessions.length ? { sessions: [...sessions] } : {}, ...last ? { last } : {} };
+  writePrivate(ENDED_FILE, JSON.stringify(kept));
+}
+function droppedHere(now = Date.now()) {
+  try {
+    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
+    return Object.values(kept ?? {}).filter((one) => keptFor(one, now) && one.as === "dropped" && Array.isArray(one.sessions)).flatMap((one) => one.sessions.filter((each) => typeof each === "string"));
+  } catch {
+    return [];
+  }
+}
+function switchedHere(now = Date.now()) {
+  try {
+    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
+    return new Set(Object.values(kept ?? {}).filter((one) => one.as === "switched" && typeof one.at === "number" && now - one.at < MOVED_FOR && Array.isArray(one.sessions)).flatMap((one) => one.sessions.filter((each) => typeof each === "string")));
+  } catch {
+    return new Set;
+  }
+}
+var MOVES, MOVED_FILE, MOVED_FOR, fileOf = (id) => path14.join(MOVES, `${id}.json`), bundleOf = (id) => path14.join(MOVES, id), fits = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping)), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, ENDED_FILE, ENDED_FOR, keptFor = (one, now) => typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped") && now - one.at < ENDED_FOR[one.as];
+var init_records = __esm(() => {
+  init_files2();
+  init_home();
+  MOVES = path14.join(RUN, "moves");
+  MOVED_FILE = path14.join(MOVES, "moved.json");
+  MOVED_FOR = 2 * 24 * 3600000;
+  moveFollowers = new Set;
+  waitingFor = new Set;
+  ENDED_FILE = path14.join(MOVES, "ended.json");
+  ENDED_FOR = { dropped: 7 * 24 * 3600000, switched: 365 * 24 * 3600000 };
+});
+
+// box/src/link/relay/dropped.ts
+import { randomBytes } from "node:crypto";
+import fs15 from "node:fs";
+function connectionStarted(address) {
+  watched.clear();
+  self = address;
+}
+function connectionEnded() {
+  watched.clear();
+  self = null;
+}
+function sendingTo(to) {
+  if (watched.size)
+    watched.delete(to.toString("base64url"));
+}
+function fenceBefore() {
+  if (!self)
+    return null;
+  const fence = randomBytes(8).toString("hex");
+  return { fence, to: self, payload: Buffer.concat([FENCE, Buffer.from(fence)]) };
+}
+function watchCall(to, file, fence) {
+  watched.set(to, { file, fence, back: false });
+}
+function fenceBack(payload) {
+  if (payload.length <= FENCE.length || !payload.subarray(0, FENCE.length).equals(FENCE))
+    return;
+  const fence = payload.subarray(FENCE.length).toString();
+  for (const each of watched.values())
+    if (each.fence === fence)
+      each.back = true;
+}
+function noteDropped(to) {
+  const key = to.toString("base64url");
+  const call = watched.get(key);
+  if (!call?.back)
+    return;
+  watched.delete(key);
+  if (fs15.existsSync(call.file))
+    try {
+      writePrivate(droppedMark(call.file), "{}");
+    } catch {}
+}
+var FENCE, self = null, watched, droppedMark = (file) => file.replace(/\.json$/, ".dropped");
+var init_dropped = __esm(() => {
+  init_files2();
+  FENCE = Buffer.from("kuvo-fence:");
+  watched = new Map;
+});
+
+// box/src/link/relay/frames.ts
+function readRelay(bytes) {
+  const kind = bytes[0];
+  const address = bytes.subarray(1, 17);
+  if (kind === 1 && bytes.length === 17)
+    return { kind: "welcome", address };
+  if (kind === 2 && bytes.length >= 17)
+    return { kind: "deliver", address, payload: bytes.subarray(17) };
+  if (kind === 3 && bytes.length === 17)
+    return { kind: "unreachable", address };
+  if (kind === 6 && bytes.length === 18)
+    return { kind: "pushed", address, status: bytes[17] };
+  if (kind === 7 && bytes.length === 18)
+    return { kind: "gone", address, reason: bytes[17] === 0 ? "replaced" : "left" };
+  return null;
+}
+function frame(kind, session, body = EMPTY) {
+  const header = Buffer.alloc(5);
+  header[0] = kind;
+  header.writeUInt32BE(session, 1);
+  return Buffer.concat([header, body]);
+}
+function readFrame(bytes) {
+  if (bytes.length < 5 || bytes[0] < 1 || bytes[0] > 5)
+    return null;
+  return { kind: bytes[0], session: bytes.readUInt32BE(1), body: bytes.subarray(5) };
+}
+function encodeMessage(head, body = EMPTY) {
+  const json = Buffer.from(sortedJSON(head));
+  const length = Buffer.alloc(2);
+  length.writeUInt16BE(json.length);
+  return Buffer.concat([length, json, body]);
+}
+function decodeMessage(bytes) {
+  if (bytes.length < 2)
+    return null;
+  const length = bytes.readUInt16BE(0);
+  if (bytes.length < 2 + length)
+    return null;
+  try {
+    return { head: JSON.parse(bytes.subarray(2, 2 + length).toString("utf8")), body: bytes.subarray(2 + length) };
+  } catch {
+    return null;
+  }
+}
+function pieces(head, body, end) {
+  if (Buffer.byteLength(sortedJSON(head)) > 60000)
+    throw new Error("head too long");
+  const out = [];
+  let current = { ...head, end: false };
+  let offset = 0;
+  do {
+    const room = MAX_MESSAGE - 2 - Buffer.byteLength(sortedJSON(current)) - 8;
+    out.push([current, body.subarray(offset, offset + room)]);
+    offset += room;
+    current = { t: "data", id: head.id, end: false };
+  } while (offset < body.length);
+  out[out.length - 1][0].end = end;
+  return out.map(([h, b]) => encodeMessage(h, b));
+}
+var Frame, MAX_MESSAGE, relayHello = (secret) => Buffer.concat([Buffer.from([1]), secret]), relaySend = (to, payload) => {
+  sendingTo(to);
+  return Buffer.concat([Buffer.from([2]), to, payload]);
+}, relayPush = (to, payload) => Buffer.concat([Buffer.from([5]), to, payload]);
+var init_frames = __esm(() => {
+  init_keys();
+  init_dropped();
+  Frame = { handshake1: 1, handshake2: 2, transport: 3, close: 4, mail: 5 };
+  MAX_MESSAGE = 65535 - 16;
+});
+
+// box/src/link/setup/record.ts
+import crypto8 from "node:crypto";
+function setupOf(body) {
+  const setup = isObject(body) && isObject(body.setup) ? body.setup : null;
+  if (!setup || typeof setup.id !== "string" || !SETUP_ID.test(setup.id) || !Number.isSafeInteger(setup.epoch) || setup.epoch < 1 || typeof setup.primary !== "string" || !STATIC_KEY.test(setup.primary))
+    return null;
+  return { id: setup.id, epoch: setup.epoch, primary: setup.primary };
+}
+function ledSetup(doc) {
+  if (doc?.kind !== "peers")
+    return null;
+  const setup = setupOf(doc.body);
+  if (!setup)
+    return null;
+  const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
+  return boxes.some((box) => isObject(box) && box.key === setup.primary && box.sign === doc.origin && box.kind === "mac") ? setup : null;
+}
+function followedSetup(link) {
+  const setup = link?.setup;
+  if (!setup || setup.aside)
+    return null;
+  if (setup.role === "primary") {
+    let own = null;
+    try {
+      own = publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
+    } catch {}
+    if (setup.primary !== own)
+      return null;
+  }
+  return setup;
+}
+function setupDoc(link) {
+  const setup = followedSetup(link);
+  return setup?.role === "member" ? held(link.docs?.[docKey(setup.sign, "peers")]) : null;
+}
+function lowerEpoch(link, doc) {
+  const kept = link?.setup;
+  const said = doc.kind === "peers" ? setupOf(doc.body) : null;
+  return Boolean(kept && said && said.id === kept.id && said.epoch < kept.epoch);
+}
+function startsFromOthers(link) {
+  const value = link?.startsFromOthers === "on" || link?.startsFromOthers === "off" ? link.startsFromOthers : null;
+  const setup = followedSetup(link);
+  const main = setup ? setup.role === "primary" : IS_MAC;
+  return { value, default: main ? "off" : "on" };
+}
+var SETUP_ID, STATIC_KEY, newSetupID = () => `set_${crypto8.randomBytes(16).toString("base64url")}`;
+var init_record = __esm(() => {
+  init_keys();
+  init_format();
+  init_home();
+  SETUP_ID = /^set_[A-Za-z0-9_-]{22}$/;
+  STATIC_KEY = /^[A-Za-z0-9_-]{43}$/;
+});
+
+// box/src/link/state.ts
+import fs16 from "node:fs";
+import path15 from "node:path";
+function migratedLink(link) {
+  if (!isObject(link) || !(link.peersFrom || link.vouched || link.macAts))
+    return link;
+  for (const [mac, given] of Object.entries(link.peersFrom ?? {})) {
+    if (!macSign(link, mac) && isObject(given)) {
+      link.legacy ??= {};
+      link.legacy[mac] ??= { at: given.at ?? 0, peers: Array.isArray(given.peers) ? given.peers : [], moved: given.moved ?? [] };
+    }
+  }
+  delete link.peersFrom;
+  delete link.vouched;
+  delete link.macAts;
+  return link;
+}
+function readLink() {
+  let link = null;
+  try {
+    link = migratedLink(JSON.parse(fs16.readFileSync(LINK_FILE, "utf8")));
+  } catch {}
+  if (IS_MAC && macLink.overlay)
+    return { phones: [], ...link ?? {}, ...macLink.overlay };
+  return link;
+}
+function writeLink(link) {
+  const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
+  writeSecret(LINK_FILE, JSON.stringify(kept, null, 2));
+  for (const then of written)
+    then(link);
+}
+function updateLink(change) {
+  return locked(LOCK, () => {
+    const changed = change(readLink());
+    if (changed)
+      writeLink(changed);
+    return changed ?? null;
+  });
+}
+var MAC_OVERLAY, macLink, written, onLinkWritten = (then) => {
+  written.push(then);
+}, macSign = (link, mac) => typeof link?.macSigns?.[mac] === "string" && SIGN.test(link.macSigns[mac]) ? link.macSigns[mac] : null, LOCK;
+var init_state = __esm(() => {
+  init_format();
+  init_files2();
+  init_home();
+  MAC_OVERLAY = ["key", "secret", "sign", "relay", "name"];
+  macLink = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set, phoneFollowers: new Set };
+  written = [];
+  LOCK = path15.join(RUN, ".link.lock");
+});
+
+// box/src/link/peers/known.ts
+import fs17 from "node:fs";
+import path16 from "node:path";
+function countAway(link, now) {
+  const seen = Object.values(link.macSeen ?? {});
+  const last = notedOnline() ?? (seen.length ? Math.max(...seen) : undefined);
+  const away = last === undefined ? 0 : now - last;
+  if (Math.abs(away) > AWAY_AFTER && link.macSeen)
+    for (const mac of Object.keys(link.macSeen))
+      link.macSeen[mac] += away;
+  writeOnline(now);
+}
+function noteOnline(now = Date.now()) {
+  const last = notedOnline();
+  if (last !== undefined && Math.abs(now - last) <= AWAY_AFTER) {
+    if (now - last >= AWAY_AFTER / 2)
+      writeOnline(now);
+    return;
+  }
+  updateLink((link) => {
+    if (!link || !macsOf(link).length)
+      return void writeOnline(now);
+    countAway(link, now);
+    return link;
+  });
+}
+function forgetOldMacs(link, keep, now = Date.now()) {
+  countAway(link, now);
+  link.macSeen ??= {};
+  for (const mac of macsOf(link))
+    link.macSeen[mac] ??= now;
+  if (keep)
+    link.macSeen[keep] = now;
+  const gone = macsOf(link).filter((mac) => mac !== keep && now - link.macSeen[mac] > MAC_GONE_AFTER);
+  if (!gone.length)
+    return;
+  for (const mac of gone)
+    leaveMac(link, mac);
+  if (gone.includes(link.mac))
+    link.mac = keep;
+}
+function macDoc(link, mac, kind) {
+  const sign = macSign(link, mac);
+  return sign ? held(link.docs?.[docKey(sign, kind)]) : null;
+}
+function leaveMac(link, mac) {
+  link.macs = macsOf(link).filter((each) => each !== mac);
+  if (link.mac === mac) {
+    if (link.macs.length)
+      link.mac = link.macs[0];
+    else
+      delete link.mac;
+  }
+  for (const field of ["macSeen", "macSigns", "macNames", "legacy"])
+    if (link[field])
+      delete link[field][mac];
+  link.phones = (link.phones ?? []).filter((phone) => !(phone.from === "mac" && phone.mac === mac));
+  if (link.setup?.role === "member" && link.setup.primary === mac)
+    delete link.setup;
+}
+function takeLegacyPeers(link, mac, peers, at, moved = []) {
+  if (macSign(link, mac) || !Array.isArray(peers) || typeof at !== "number")
+    return false;
+  link.legacy ??= {};
+  if (at <= (link.legacy[mac]?.at ?? 0))
+    return false;
+  link.legacy[mac] = { at, peers: peers.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer), moved: cleanMoved(moved) };
+  return true;
+}
+function macWords(link) {
+  const setup = setupDoc(link);
+  if (setup)
+    return [{ boxes: Array.isArray(setup.body.boxes) ? setup.body.boxes.slice(0, MOST_PEERS) : [], moved: setup.body.moved }];
+  return macsOf(link).map((mac) => {
+    const doc = macDoc(link, mac, "peers");
+    if (doc)
+      return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
+    return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
+  }).filter(Boolean);
+}
+function movedOf(link) {
+  const moved = new Map;
+  if (IS_MAC)
+    for (const { session, key } of cleanMoved(link?.macMoved))
+      moved.set(session, key);
+  else
+    for (const word of macWords(link))
+      for (const { session, key } of cleanMoved(word.moved))
+        moved.set(session, key);
+  const now = Date.now();
+  for (const { session, key } of [...movedAway(now), ...movesTold(link, now)].sort((one, other) => one.at - other.at))
+    moved.set(session, key);
+  return moved;
+}
+function movesTold(link, now = Date.now()) {
+  const words = [];
+  const peers = new Set(peersOf(link).map((peer) => peer.key));
+  const own = new Set(ownListed().map((agent) => agent.session));
+  try {
+    const told = JSON.parse(fs17.readFileSync(path16.join(RUN, "peer-agents.json"), "utf8"));
+    for (const [peer, each] of Object.entries(told ?? {})) {
+      if (!peers.has(peer) || !Array.isArray(each?.moved))
+        continue;
+      words.push(...each.moved.filter((one) => isObject(one) && typeof one.session === "string" && typeof one.key === "string" && typeof one.at === "number" && now - one.at < MOVED_FOR && !own.has(one.session)));
+    }
+  } catch {}
+  return words;
+}
+function removedBoxes(link) {
+  const setup = setupDoc(link);
+  const left = IS_MAC ? Array.isArray(link?.left) ? link.left : [] : (setup ? [setup] : macsOf(link).map((mac) => macDoc(link, mac, "peers"))).flatMap((doc) => {
+    const named = doc?.body.left;
+    return Array.isArray(named) ? named.filter((key) => typeof key === "string") : [];
+  });
+  const peers = new Set(peersOf(link).map((peer) => peer.key));
+  return new Set(left.filter((key) => !peers.has(key)));
+}
+function ownListed() {
+  try {
+    const listed = JSON.parse(fs17.readFileSync(path16.join(RUN, "agents.json"), "utf8"));
+    return (listed?.agents ?? []).filter((agent) => (agent?.machine ?? null) === (listed?.machine ?? null)).map((agent) => ({ session: String(agent?.session), name: typeof agent?.name === "string" ? agent.name : null }));
+  } catch {
+    return [];
+  }
+}
+function peersOf(link) {
+  if (!link)
+    return [];
+  if (IS_MAC)
+    return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map((peer) => renamed(link, peer));
+  const own = ownKey(link);
+  const byKey = new Map;
+  for (const word of macWords(link)) {
+    for (const peer of word.boxes)
+      if (fitsPeer(peer) && peer.key !== own && !byKey.has(peer.key))
+        byKey.set(peer.key, cleanPeer(peer));
+  }
+  return [...byKey.values()];
+}
+function namedBoxes(link) {
+  if (!link || IS_MAC)
+    return [];
+  const byKey = new Map;
+  for (const word of macWords(link))
+    for (const box of word.boxes)
+      if (fitsPeer(box) && !byKey.has(box.key))
+        byKey.set(box.key, cleanPeer(box));
+  return [...byKey.values()];
+}
+function ownKey(link) {
+  try {
+    return publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
+  } catch {
+    return null;
+  }
+}
+function openMail(body, link, vouched = () => []) {
+  if (!link?.key)
+    return null;
+  const key = Buffer.from(link.key, "base64url");
+  const senders = [...macsOf(link).map((mac) => ({ key: mac, kind: "mac" })), ...peersOf(link).filter((peer) => !macsOf(link).includes(peer.key))];
+  for (const sender of senders) {
+    try {
+      const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
+      return isObject(payload) ? { sender: peersOf(link).find((peer) => peer.key === sender.key) ?? sender, payload } : null;
+    } catch {}
+  }
+  for (const sender of vouched()) {
+    try {
+      const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
+      return isObject(payload) ? { sender, payload, vouched: true } : null;
+    } catch {}
+  }
+  return null;
+}
+function mailFor(peer, payload, link) {
+  if (!peer.address)
+    return null;
+  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(payload)), Buffer.from(link.key, "base64url"), Buffer.from(peer.key, "base64url")).message);
+  if (sealed.length > MAX_MAIL)
+    return null;
+  return relaySend(Buffer.from(peer.address, "base64url"), sealed);
+}
+var KEY, ADDRESS, macsOf = (link) => [...new Set([...Array.isArray(link?.macs) ? link.macs : [], ...typeof link?.mac === "string" ? [link.mac] : []])], ONLINE_FILE, AWAY_AFTER, notedOnline = () => {
+  try {
+    const at = Number(fs17.readFileSync(ONLINE_FILE, "utf8"));
+    return Number.isFinite(at) && at > 0 ? at : undefined;
+  } catch {
+    return;
+  }
+}, writeOnline = (now) => {
+  try {
+    fs17.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs17.writeFileSync(`${ONLINE_FILE}.${process.pid}.tmp`, String(now), { mode: 384 });
+    fs17.renameSync(`${ONLINE_FILE}.${process.pid}.tmp`, ONLINE_FILE);
+  } catch {}
+}, MAC_GONE_AFTER, MOST_PEERS = 64, fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine"), cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} }), cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key })), renamed = (link, peer) => {
+  const name = link.peerNames?.[peer.key];
+  return typeof name === "string" && name ? { ...peer, name } : peer;
+}, MAX_MAIL;
+var init_known = __esm(() => {
+  init_text();
+  init_keys();
+  init_noise();
+  init_format();
+  init_home();
+  init_records();
+  init_frames();
+  init_record();
+  init_state();
+  KEY = /^[A-Za-z0-9_-]{43}$/;
+  ADDRESS = /^[A-Za-z0-9_-]{22}$/;
+  ONLINE_FILE = path16.join(RUN, "online");
+  AWAY_AFTER = 5 * 60000;
+  MAC_GONE_AFTER = 30 * 24 * 3600 * 1000;
+  MAX_MAIL = 65600 - 17;
+});
+
+// box/src/shared/shape.ts
+function fitsShape(shape, value) {
+  if (shape === "any")
+    return true;
+  if (shape === "null")
+    return value === null;
+  if (typeof shape === "string")
+    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
+  if ("literal" in shape)
+    return value === shape.literal;
+  if ("oneOf" in shape)
+    return shape.oneOf.some((each) => fitsShape(each, value));
+  if ("list" in shape)
+    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const fields = value;
+  if ("map" in shape)
+    return Object.values(fields).every((each) => fitsShape(shape.map, each));
+  const declared = Object.entries(shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
+}
+var string = "string", number = "number", bool = "bool", any = "any", list = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
+var init_shape = __esm(() => {
+  NOTHING = object({});
+});
+
+// box/src/shared/routes/projects.ts
+var PROJECT, PROJECTS, PROJECT_ROUTES;
+var init_projects = __esm(() => {
+  init_shape();
+  PROJECT = object({
+    directory: string,
+    "name?": string,
+    folders: list(string),
+    "run?": string,
+    "removed?": bool,
+    "madeBy?": object({ bot: string, name: string, at: number }),
+    "addedByBox?": bool
+  });
+  PROJECTS = object({ projects: list(PROJECT), worktrees: map(string) });
+  PROJECT_ROUTES = [
+    { route: "GET kuvo/projects", answers: { 200: PROJECTS } },
+    { route: "PUT kuvo/projects", answers: { 200: object({ project: PROJECT }) } },
+    { route: "DELETE kuvo/projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } }
+  ];
+});
+
+// box/src/shared/routes/work.ts
+var LIMITS, WORKS_FOR, ANSWER, WORK_ACCOUNT, WORK_SESSION, WORK_ASK, WORK_ASKS, WORK_ASK_ANSWERED, WORK_SETTINGS, UNANSWERING, UNANSWERING_LIST, WORK, OVERSIGHT_MARK, OVERSIGHT, WORK_CHANGED, BACKGROUND_LIST, GOAL_APP, GOAL_STEP, GOAL_CHECK, GOAL_WAITING, GOAL_DECIDED, GOAL_SPEND, GOAL_FOLDER, GOAL_PLAN, GOAL_PLANS, REFUSED, WORK_ROUTES;
+var init_work = __esm(() => {
+  init_shape();
+  init_projects();
+  LIMITS = object({ "atOnce?": number, "perDay?": number, "depth?": number, "tokensPerDay?": number });
+  WORKS_FOR = object({ bot: string, name: string });
+  ANSWER = object({
+    "session?": string,
+    ask: string,
+    "call?": string,
+    what: string,
+    decision: words("allow", "deny", "answer"),
+    reason: string,
+    by: object({ "bot?": string, name: string }),
+    at: number
+  });
+  WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
+  WORK_SESSION = object({
+    session: string,
+    title: string,
+    folder: string,
+    "project?": string,
+    startedBy: string,
+    depth: number,
+    "model?": object({ id: string, providerID: string, "variant?": string }),
+    "mode?": string,
+    "account?": WORK_ACCOUNT,
+    state: words("working", "asking", "finished", "failed", "stopped", "idle"),
+    "asks?": string,
+    started: number,
+    tokens: number,
+    "cost?": number,
+    "lastReply?": string
+  });
+  WORK_ASK = object({
+    id: string,
+    action: words("makeProject", "cloneProject", "resetLimits"),
+    session: string,
+    name: string,
+    "bot?": string,
+    project: string,
+    "clone?": string,
+    folderName: string,
+    folder: nullable(string),
+    "suggested?": string,
+    "reset?": object({ row: string, account: string, service: string, count: number, "refills?": list(string), "on?": string }),
+    "words?": object({ title: string, body: string }),
+    at: number
+  });
+  WORK_ASKS = object({ asks: list(WORK_ASK) });
+  WORK_ASK_ANSWERED = object({ answer: words("allow", "always", "deny"), text: string, isError: bool });
+  WORK_SETTINGS = object({ projectsFolder: nullable(string), "suggested?": string, "keepsAwake?": bool, "awakeNow?": bool });
+  UNANSWERING = object({ provider: string, "model?": string, "only?": words("paid", "free"), "models?": list(string), why: string, since: number, until: number });
+  UNANSWERING_LIST = object({ held: list(UNANSWERING) });
+  WORK = object({
+    bot: string,
+    sessions: list(WORK_SESSION),
+    answered: list(ANSWER),
+    today: object({ started: number, working: number, tokens: number, "cost?": number }),
+    limits: nullable(LIMITS),
+    "asks?": list(WORK_ASK),
+    "projects?": list(PROJECT)
+  });
+  OVERSIGHT_MARK = object({ id: string, bot: string, session: string, kind: words("started", "told", "read", "answered", "stopped", "finished"), at: number });
+  OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
+  WORK_CHANGED = object({ changed: map(number) });
+  BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
+  GOAL_APP = object({ name: string, "id?": string });
+  GOAL_STEP = object({
+    id: string,
+    text: string,
+    state: words("todo", "doing", "done", "waiting", "paused", "skipped"),
+    "progress?": number,
+    "note?": string,
+    "detail?": string,
+    "phase?": string,
+    "site?": string,
+    "app?": GOAL_APP,
+    "after?": list(string),
+    "sessions?": list(string),
+    "resumes?": number,
+    "until?": number,
+    "began?": number,
+    "ended?": number
+  });
+  GOAL_CHECK = object({
+    id: string,
+    text: string,
+    "detail?": string,
+    state: words("ok", "needs", "failed"),
+    by: words("bot", "box"),
+    "site?": string,
+    "action?": object({ kind: words("open", "projectsFolder"), label: string, "url?": string })
+  });
+  GOAL_WAITING = object({
+    id: string,
+    kind: words("you", "judgment", "outside", "ask"),
+    text: string,
+    "detail?": string,
+    "url?": string,
+    "site?": string,
+    "app?": GOAL_APP,
+    "session?": string,
+    "step?": string,
+    at: number
+  });
+  GOAL_DECIDED = object({
+    id: string,
+    text: string,
+    choice: string,
+    "why?": string,
+    "options?": list(string),
+    "multiple?": bool,
+    "session?": string,
+    at: number,
+    "yours?": object({ choice: string, at: number })
+  });
+  GOAL_SPEND = object({ what: string, cap: number, currency: string, per: words("day", "week", "month", "goal"), spent: number, "until?": number });
+  GOAL_FOLDER = object({ project: string, folder: nullable(string), shown: nullable(string), "there?": bool });
+  GOAL_PLAN = object({
+    id: string,
+    bot: string,
+    name: string,
+    session: string,
+    goal: string,
+    "title?": string,
+    state: words("proposed", "running", "done", "stopped", "declined"),
+    steps: list(GOAL_STEP),
+    checks: list(GOAL_CHECK),
+    spend: list(GOAL_SPEND),
+    public: list(object({ id: string, text: string, on: bool })),
+    projects: list(string),
+    wake: bool,
+    digest: words("day", "week", "milestones", "none"),
+    "ends?": number,
+    proposed: number,
+    "started?": number,
+    "ended?": number,
+    waiting: list(GOAL_WAITING),
+    paused: list(object({ why: string, "until?": number, "session?": string })),
+    waited: number,
+    watching: list(string),
+    "next?": number,
+    "lastDigest?": object({ at: number, text: string }),
+    "report?": string,
+    mode: words("interactive", "autopilot"),
+    decided: list(GOAL_DECIDED),
+    alone: bool,
+    "folders?": list(GOAL_FOLDER)
+  });
+  GOAL_PLANS = object({ goals: list(GOAL_PLAN) });
+  REFUSED = object({ message: string });
+  WORK_ROUTES = [
+    { route: "GET kuvo/work", answers: { 200: WORK, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
+    { route: "GET kuvo/work/events", answers: { 200: WORK_CHANGED } },
+    { route: "GET kuvo/work/background", answers: { 200: BACKGROUND_LIST } },
+    { route: "GET kuvo/work/background/events", answers: { 200: BACKGROUND_LIST } },
+    { route: "POST kuvo/bots/:id/stop-all", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
+    { route: "GET kuvo/work/oversight", answers: { 200: OVERSIGHT } },
+    { route: "GET kuvo/work/oversight/events", answers: { 200: OVERSIGHT } },
+    { route: "GET kuvo/work/asks", answers: { 200: WORK_ASKS } },
+    { route: "GET kuvo/work/asks/events", answers: { 200: WORK_ASKS } },
+    { route: "POST kuvo/work/asks/:id", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED, 404: REFUSED } },
+    { route: "GET kuvo/work/settings", answers: { 200: WORK_SETTINGS } },
+    { route: "PATCH kuvo/work/settings", answers: { 200: WORK_SETTINGS, 400: REFUSED, 409: REFUSED } },
+    { route: "GET kuvo/work/unanswering", answers: { 200: UNANSWERING_LIST } },
+    { route: "GET kuvo/work/goals", answers: { 200: GOAL_PLANS } },
+    { route: "GET kuvo/work/goals/events", answers: { 200: GOAL_PLANS } },
+    { route: "POST kuvo/work/goals/ask", answers: { 200: object({ text: string }), 400: REFUSED, 404: REFUSED, 409: REFUSED } },
+    { route: "POST kuvo/work/goals/:id", answers: { 200: object({ goal: GOAL_PLAN }), 400: REFUSED, 404: REFUSED, 409: REFUSED, 502: REFUSED } },
+    { route: "GET kuvo/work/apps/icon", answers: { 200: BYTES, 400: REFUSED, 404: REFUSED } },
+    { route: "POST kuvo/projects/new", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED, 403: object({ message: string, needs: string }), 409: REFUSED, 502: REFUSED } }
+  ];
+});
+
+// box/src/shared/routes/sessions.ts
+var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, MODELS_OFFERED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
+var init_sessions = __esm(() => {
+  init_shape();
+  CARRIED = object({ session: string });
+  STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
+  SESSION_MOVED = object({ session: string, directory: string, "info?": any });
+  CONFIRM = object({ title: string, message: string, label: string });
+  SESSION_ACTION = object({
+    id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
+    label: string,
+    "destructive?": literal(true),
+    "confirm?": CONFIRM
+  });
+  SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
+  SESSION_CHANGED = object({ session: string, info: any });
+  LIVES_ELSEWHERE = object({ message: string, "computer?": string });
+  TOOL_ANSWER = object({ text: string, isError: bool });
+  REFUSED2 = object({ message: string });
+  WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
+  QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING) });
+  ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), waits: bool });
+  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
+  QUEUE_ITEM = object({
+    id: string,
+    words: string,
+    files: list(string),
+    keyword: nullable(string),
+    from: nullable(string),
+    on: words("engine", "box"),
+    delivery: words("steer", "queue"),
+    held: bool
+  });
+  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), items: nullable(list(QUEUE_ITEM)) });
+  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "items?": nullable(list(QUEUE_ITEM)) });
+  ASK_CHOICE = object({
+    answer: words("once", "always", "reject", "instead"),
+    title: string,
+    named: nullable(string),
+    placeholder: nullable(string),
+    help: nullable(string),
+    spoken: nullable(string),
+    "after?": string,
+    "item?": string,
+    "confirm?": bool
+  });
+  PERMISSION_ASK = object({
+    id: string,
+    kind: literal("permission"),
+    session: string,
+    title: string,
+    message: nullable(string),
+    command: nullable(string),
+    files: list(object({ file: string, patch: string, additions: number, deletions: number, status: nullable(words("added", "deleted", "modified")) })),
+    resources: list(string),
+    choices: list(ASK_CHOICE)
+  });
+  ASKED_QUESTION = object({
+    key: string,
+    title: nullable(string),
+    question: string,
+    options: list(object({ value: string, label: string, description: nullable(string) })),
+    multiple: bool,
+    custom: bool,
+    required: bool
+  });
+  QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
+  SANDBOX_ASK_SHOWN = object({
+    id: string,
+    kind: literal("sandbox"),
+    session: string,
+    title: string,
+    message: string,
+    command: string,
+    stopped: list(object({ label: string, detail: string })),
+    error: nullable(string),
+    asker: string,
+    why: string,
+    choices: list(ASK_CHOICE)
+  });
+  VAULT_ASK_SHOWN = object({
+    id: string,
+    kind: literal("vault"),
+    session: string,
+    need: words("use", "item"),
+    title: string,
+    message: nullable(string),
+    site: nullable(string),
+    note: nullable(string),
+    choices: list(ASK_CHOICE)
+  });
+  OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
+  SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
+  SESSION_ASKS = object({ asks: list(SESSION_ASK) });
+  MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
+  MENTIONS = object({ mentions: list(MENTION) });
+  GLANCE_CHECKS = object({ passed: number, failed: number, pending: number });
+  GLANCE_PULL = object({
+    number,
+    url: string,
+    "state?": words("open", "draft", "merged", "closed"),
+    "additions?": number,
+    "deletions?": number,
+    "checks?": GLANCE_CHECKS
+  });
+  GLANCE = object({
+    "branch?": string,
+    "additions?": number,
+    "deletions?": number,
+    "pull?": GLANCE_PULL,
+    "account?": object({ name: string, "label?": string }),
+    "asked?": number
+  });
+  GLANCES = object({ sessions: map(GLANCE) });
+  MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "choose"), label: string, help: string });
+  SESSION_MODEL = object({
+    model: nullable(object({ providerID: string, id: string, "variant?": string })),
+    "name?": string,
+    runs: bool,
+    "missing?": words("model", "signIn", "key", "install", "gone"),
+    "account?": object({ id: string, name: string, "label?": string }),
+    "plan?": object({ name: string, agent: string, provider: string }),
+    "connects?": bool,
+    "refusal?": string,
+    "choose?": bool,
+    "action?": MODEL_ACTION
+  });
+  SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
+  MODEL_REF = object({ providerID: string, id: string, "variant?": string });
+  MODELS_OFFERED = object({
+    models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
+    known: object({ engine: bool, agents: bool }),
+    "listing?": list(string),
+    "starting?": nullable(MODEL_REF)
+  });
+  SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
+  SESSION_FACTS = object({
+    kind: words(...SESSION_KINDS),
+    "project?": string,
+    directory: string,
+    "title?": string,
+    created: number,
+    updated: number,
+    "parent?": string,
+    "pinned?": bool,
+    "archived?": bool,
+    "running?": bool,
+    "asked?": number,
+    "away?": bool,
+    "bot?": string
+  });
+  LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+  ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
+  NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
+  BOT_NOW = object({ working: number, asking: number, "finished?": number });
+  WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
+  SESSION_LIST = object({
+    at: string,
+    "full?": bool,
+    sessions: map(SESSION_FACTS),
+    "gone?": list(string),
+    projects: map(LISTED_PROJECT),
+    needsYou: list(NEEDS_YOU),
+    "pending?": list(string)
+  });
+  SESSION_ROUTES = [
+    { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
+    { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/deletes", answers: { 200: CONFIRM, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/archive", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/pin", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/rename", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "DELETE kuvo/sessions/:id", answers: { 200: object({ session: string }), 400: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions", answers: { 200: STARTED, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED2, 502: object({ message: string, "session?": string }), 503: REFUSED2 } },
+    { route: "POST kuvo/agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED2 } },
+    { route: "GET kuvo/sessions/queues/events", answers: { 200: object({ queues: map(QUEUE) }) } },
+    { route: "GET kuvo/sessions/glance", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/read", answers: { 200: object({ read: number }), 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/glance/events", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/list", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/list/events", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
+    { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
+    { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },
+    { route: "GET kuvo/sessions/:id/queue/events", answers: { 200: QUEUE_SHOWN } },
+    { route: "GET kuvo/sessions/:id/asks", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/:id/asks/events", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 423: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/queue/resume", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/queue/:item/now", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/queue/add", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "DELETE kuvo/sessions/:id/queue/:item", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
+  ];
+});
+
+// box/src/shared/routes/bots.ts
+var LOOKS, LOOK, MODEL, DELETES, BOT, BOT_ELSEWHERE, HELD_EDIT, REFUSED_EDIT, BOTS2, HELD, TEMPLATES, MADE, CHANGED;
+var init_bots = __esm(() => {
+  init_shape();
+  init_work();
+  init_sessions();
+  LOOKS = {
+    colors: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
+    shapes: ["round", "squircle", "pebble", "gem", "bloom"],
+    faces: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
+  };
+  LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOKS.shapes), face: words(...LOOKS.faces) });
+  MODEL = object({ id: string, providerID: string, "variant?": string });
+  DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
+  BOT = object({
+    id: string,
+    session: string,
+    name: string,
+    look: LOOK,
+    "machine?": string,
+    job: string,
+    jobDetails: string,
+    paused: bool,
+    "wakes?": number,
+    watching: number,
+    agents: bool,
+    "personality?": string,
+    "model?": MODEL,
+    folder: string,
+    "project?": string,
+    "created?": string,
+    "limits?": LIMITS,
+    "allowed?": list(words("makeProject", "cloneProject")),
+    "now?": BOT_NOW,
+    deletes: DELETES
+  });
+  BOT_ELSEWHERE = object({
+    id: string,
+    "session?": string,
+    "name?": string,
+    "look?": LOOK,
+    "job?": string,
+    box: string,
+    computer: string,
+    "kind?": words("mac", "machine"),
+    "deletes?": DELETES,
+    "waiting?": literal(true),
+    "refused?": literal(true),
+    "unlisted?": literal(true)
+  });
+  HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
+  REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
+  BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
+  HELD = object({ held: HELD_EDIT });
+  TEMPLATES = object({
+    templates: list(object({ id: string, name: string, job: string, instructions: string, look: LOOK, "personality?": string, wantsProject: bool })),
+    personalities: list(object({ id: string, name: string, description: string, "custom?": bool })),
+    looks: object({ colors: list(string), shapes: list(string), faces: list(string) }),
+    startingModel: map(nullable(MODEL)),
+    projects: list(object({ directory: string, name: string, "machine?": string }))
+  });
+  MADE = object({ bot: BOT, firstMessage: nullable(string) });
+  CHANGED = object({ bot: nullable(BOT) });
+});
+
+// box/src/link/peers/directory.ts
+import fs18 from "node:fs";
+import path17 from "node:path";
+function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
+  if (!isObject(given) || typeof given.at !== "number" || !Array.isArray(given.list))
+    return false;
+  return locked(lock, () => {
+    let all = {};
+    try {
+      all = JSON.parse(fs18.readFileSync(file, "utf8"));
+    } catch {}
+    if (given.at <= (all[sender.key]?.at ?? 0)) {
+      if (all[sender.key]) {
+        all[sender.key].heard = Date.now();
+        writePrivate(file, JSON.stringify(all));
+      }
+      return false;
+    }
+    const computer = keptComputer(given.computer);
+    all[sender.key] = {
+      at: given.at,
+      heard: Date.now(),
+      kind: sender.kind,
+      ...sender.id ? { id: sender.id } : {},
+      list: given.list.filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
+      ...Array.isArray(given.features) ? { features: keptFeatures(given.features), ...featuresCut(given.features) ? { featuresCut: true } : {} } : {},
+      ...Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {},
+      ...Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {},
+      ...typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {},
+      ...given.shared === true ? { shared: true } : {},
+      ...given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {},
+      ...computer ? { computer } : {}
+    };
+    writePrivate(file, JSON.stringify(all));
+    return true;
+  });
+}
+function keptComputer(given) {
+  if (!isObject(given))
+    return;
+  const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
+  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 1e4 ? given.working : undefined;
+  return {
+    ...version ? { version } : {},
+    ...engine ? { engine } : {},
+    ...system ? { system } : {},
+    ...working !== undefined ? { working } : {},
+    ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {},
+    ...given.oldApp === true ? { oldApp: true } : {}
+  };
+}
+function vouchedOf(link, told) {
+  if (!link)
+    return [];
+  const own = ownKey(link);
+  const peers = peersOf(link);
+  let stamp = `${own}|${peers.map((peer) => peer.key).join(",")}|`;
+  if (!told) {
+    try {
+      const file = fs18.statSync(PEER_AGENTS_FILE);
+      stamp += `${file.mtimeMs}:${file.size}`;
+    } catch {
+      stamp += "none";
+    }
+    if (vouchedKept?.stamp === stamp)
+      return vouchedKept.vouched;
+  }
+  const known = new Set(peers.map((peer) => peer.key));
+  const vouched = new Map;
+  for (const peer of peers) {
+    for (const box of (told ?? (told = readPeerAgents()))[peer.key]?.boxes?.slice(0, VOUCHED_EACH) ?? []) {
+      if (!fitsPeer(box) || box.key === own || known.has(box.key) || vouched.has(box.key))
+        continue;
+      vouched.set(box.key, cleanPeer(box));
+    }
+  }
+  const list = [...vouched.values()].slice(0, MOST_PEERS);
+  if (!stamp.endsWith("|"))
+    vouchedKept = { stamp, vouched: list };
+  return list;
+}
+function readPeerAgents(file = PEER_AGENTS_FILE) {
+  let all = {};
+  try {
+    all = JSON.parse(fs18.readFileSync(file, "utf8")) ?? {};
+  } catch {}
+  return all;
+}
+function peerOf(session, peers, told, moved = new Map) {
+  if (moved.has(session))
+    return peers.find((peer) => peer.key === moved.get(session)) ?? null;
+  const listing = peers.filter((peer) => (told[peer.key]?.list ?? []).some((agent) => agent.session === session));
+  if (listing.length <= 1)
+    return listing[0] ?? null;
+  const macs = listing.filter((peer) => peer.kind === "mac");
+  return macs.length === 1 ? macs[0] : null;
+}
+function composeAgents(own, ownID, peers, told, moved = new Map) {
+  const agents = own.map((agent) => ({ ...keptAgent({ ...agent, machine: undefined }), ...ownID ? { machine: ownID } : {} }));
+  const seen = new Set(agents.map((agent) => agent.session));
+  for (const peer of peers) {
+    for (const agent of told[peer.key]?.list ?? []) {
+      if (seen.has(agent.session) || peerOf(agent.session, peers, told, moved)?.key !== peer.key)
+        continue;
+      seen.add(agent.session);
+      const { machine, ...rest } = agent;
+      agents.push(peer.kind === "machine" ? { ...rest, ...peer.id ? { machine: peer.id } : {} } : { ...rest, ...machine ? { machine } : {} });
+    }
+  }
+  return { machine: ownID ?? null, agents };
+}
+var PEER_AGENTS_FILE, MAC_AGENTS_FILE, AGENTS_FILE, PEER_LOCK, MOST_AGENTS = 120, fitsAgent = (agent) => isObject(agent) && typeof agent.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(agent.session) && typeof agent.name === "string" && (agent.kind === "bot" || agent.kind === "session"), LOOKS2, PLAIN_LOOK, keptLook = (look) => isObject(look) ? Object.fromEntries(Object.keys(LOOKS2).map((key) => [key, LOOKS2[key].includes(look[key]) ? look[key] : PLAIN_LOOK[key]])) : undefined, keptAgent = ({ session, name, kind, project, about, machine, id, look }) => ({
+  session,
+  name: plainName(name).slice(0, 200),
+  kind,
+  ...kind === "bot" && typeof id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(id) ? { id } : {},
+  ...kind === "bot" && keptLook(look) ? { look: keptLook(look) } : {},
+  ...typeof project === "string" && project ? { project: project.slice(0, 200) } : {},
+  ...typeof about === "string" && about ? { about: about.slice(0, 500) } : {},
+  ...typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}
+}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), keptBoxes = (boxes) => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name })), VOUCHED_EACH = 16, vouchedKept = null, isPutAway = (session) => session?.metadata?.["kuvo.archived"] === true || Boolean(session?.metadata?.kuvo?.archived) || Boolean(session?.time?.archived);
+var init_directory = __esm(() => {
+  init_text();
+  init_files2();
+  init_home();
+  init_known();
+  init_record();
+  init_bots();
+  PEER_AGENTS_FILE = path17.join(RUN, "peer-agents.json");
+  MAC_AGENTS_FILE = path17.join(RUN, "mac-agents.json");
+  AGENTS_FILE = path17.join(RUN, "agents.json");
+  PEER_LOCK = path17.join(RUN, ".peers.lock");
+  LOOKS2 = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
+  PLAIN_LOOK = { color: "graphite", shape: "round", face: "calm" };
 });
 
 // box/src/link/personalities/library.ts
@@ -645,6 +2212,1050 @@ var init_library = __esm(() => {
   personalityFollowers = new Set;
   PERSONALITY_ID = /^custom\.[A-Za-z0-9._-]{1,80}$/;
   MOST_COUNT = 2 ** 52;
+});
+
+// box/src/link/documents/changed.ts
+import fs67 from "node:fs";
+import path73 from "node:path";
+function noteDocsChanged() {
+  if (IS_MAC)
+    return changedHere();
+  try {
+    fs67.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs67.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
+  } catch {}
+}
+function docsNoted() {
+  try {
+    fs67.rmSync(DOCS_CHANGED);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var DOCS_CHANGED, changedHere = () => {}, onDocsChanged = (then) => {
+  changedHere = then;
+};
+var init_changed = __esm(() => {
+  init_home();
+  DOCS_CHANGED = path73.join(RUN, "docs.changed");
+});
+
+// box/src/link/setup/settle.ts
+function sharedMachine(link) {
+  if (IS_MAC || !link)
+    return false;
+  const macs = macsOf(link);
+  if (macs.length < 2)
+    return false;
+  const setup = link.setup?.role === "member" ? link.setup : null;
+  const doc = setup ? macDoc(link, setup.primary, "peers") ?? setupDoc(link) : null;
+  const named = doc && setup ? new Set([setup.primary, ...macsNamed(doc)]) : new Set;
+  return !macs.every((mac) => named.has(mac));
+}
+function settleSetup(link) {
+  if (IS_MAC)
+    return;
+  const macs = macsOf(link);
+  if (!macs.length) {
+    if (link.setup?.role === "member")
+      delete link.setup;
+    return;
+  }
+  if (link.setup?.role === "primary")
+    delete link.setup;
+  const offers = macs.map((mac) => ({ mac, doc: macDoc(link, mac, "peers") })).map(({ mac, doc }) => ({ mac, doc, setup: ledSetup(doc) })).filter((each) => each.setup && each.setup.primary === each.mac);
+  const kept = link.setup;
+  if (kept && macSign(link, kept.primary))
+    kept.sign = macSign(link, kept.primary);
+  if (kept) {
+    const own = offers.find((each) => each.mac === kept.primary);
+    const doc = macDoc(link, kept.primary, "peers");
+    if (own && (own.setup.id !== kept.id || own.setup.epoch >= kept.epoch)) {
+      if (own.setup.id !== kept.id || own.setup.epoch !== kept.epoch)
+        delete kept.conflict;
+      kept.id = own.setup.id;
+      kept.epoch = own.setup.epoch;
+      delete kept.aside;
+    } else if (doc && !ledSetup(doc))
+      kept.aside = true;
+  } else if (offers.length === 1) {
+    const { setup, doc } = offers[0];
+    link.setup = { id: setup.id, epoch: setup.epoch, primary: setup.primary, sign: doc.origin, role: "member" };
+  }
+  if (link.setup && sharedMachine(link))
+    link.setup.aside = true;
+}
+function noteConflict(link, doc) {
+  const setup = followedSetup(link);
+  const said = ledSetup(doc);
+  if (setup?.role !== "member" || !said || said.id !== setup.id || said.epoch !== setup.epoch || said.primary === setup.primary)
+    return;
+  if (!macsOf(link).includes(said.primary) || macSign(link, said.primary) !== doc.origin)
+    return;
+  setup.conflict = { primary: said.primary, epoch: said.epoch };
+}
+var macsNamed = (doc) => (Array.isArray(doc?.body.boxes) ? doc.body.boxes : []).filter((box) => isObject(box) && box.kind === "mac" && typeof box.key === "string").map((box) => box.key);
+var init_settle = __esm(() => {
+  init_home();
+  init_known();
+  init_state();
+  init_record();
+});
+
+// box/src/link/setup/main-only.ts
+function mainElsewhere(link) {
+  const setup = link?.setup;
+  if (!setup || setup.role !== "member" || typeof setup.primary !== "string")
+    return null;
+  return { key: setup.primary, name: macName(link, setup.primary) };
+}
+function macName(link, mac) {
+  const doc = macDoc(link, mac, "peers") ?? (link?.setup?.primary === mac ? setupDoc(link) : null);
+  const named = (Array.isArray(doc?.body.boxes) ? doc.body.boxes : []).find((box) => isObject(box) && box.key === mac);
+  return String(isObject(named) && typeof named.name === "string" && named.name || link?.macNames?.[mac] || "").slice(0, 100);
+}
+function memberHosts(link) {
+  if (IS_MAC || !mainElsewhere(link) || !link?.relay || sharedMachine(link))
+    return null;
+  const doc = setupDoc(link) ?? (link.setup.aside && macsOf(link).length === 1 ? macDoc(link, link.setup.primary, "peers") : null);
+  if (!doc)
+    return null;
+  const hosts = [];
+  for (const box of Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []) {
+    if (!isObject(box) || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some((each) => each.key === box.key))
+      continue;
+    const name = String(box.name ?? "").slice(0, 100);
+    hosts.push({ kind: "machine", name, address: box.address, key: box.key, relay: link.relay, machine: typeof box.id === "string" && box.id ? box.id : name, anotherMac: false, removed: false });
+  }
+  return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
+}
+var named = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named(main)}.`, primary: main.key });
+var init_main_only = __esm(() => {
+  init_home();
+  init_known();
+  init_record();
+  init_settle();
+});
+
+// box/src/link/phones.ts
+import crypto24 from "node:crypto";
+function authorizePhone(key, hello, address) {
+  const encoded = key.toString("base64url");
+  if (!hello?.pair)
+    return Boolean(readLink()?.phones?.some((phone) => phone.key === encoded));
+  let paired = false;
+  updateLink((link) => {
+    const given = Buffer.from(String(hello.pair), "base64url");
+    const slot = ["pairing", "appPairing"].find((name) => {
+      const pairing = link?.[name];
+      if (!pairing || Date.now() > pairing.expires)
+        return false;
+      const expected = Buffer.from(pairing.token, "base64url");
+      return given.length === expected.length && crypto24.timingSafeEqual(given, expected);
+    });
+    if (!slot)
+      return null;
+    if (mainElsewhere(link)) {
+      delete link[slot];
+      return link;
+    }
+    pairPhone(link, { key: encoded, name: String(hello.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing(), ...hello.client === "desktop" ? { kind: "desktop" } : {} });
+    delete link[slot];
+    paired = true;
+    return link;
+  });
+  if (paired)
+    noteDocsChanged();
+  return paired || Boolean(readLink()?.phones?.some((phone) => phone.key === encoded));
+}
+function noteRemoved(link, key, pairing) {
+  link.removed ??= [];
+  if (!removedAlready(link, key, pairing))
+    link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT);
+}
+function blockVoucher(link, phone, now) {
+  if (!phone.by)
+    return;
+  for (const other of link.phones ?? [])
+    if (other.by === phone.by && other.key !== phone.key)
+      noteRemoved(link, other.key, other.pairing ?? "");
+  link.phones = (link.phones ?? []).filter((each) => each.by !== phone.by);
+  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+}
+function allowVouching(link, key) {
+  if (!vouchBlockOf(link, key))
+    return false;
+  link.vouchBlocked = link.vouchBlocked.filter((each) => each.key !== key);
+  if (!link.vouchBlocked.length)
+    delete link.vouchBlocked;
+  return true;
+}
+function takeOff(link, key, pairing, now = Date.now()) {
+  const current = (link.phones ?? []).find((phone) => phone.key === key);
+  const which = pairing == null ? current?.pairing ?? "" : String(pairing);
+  noteRemoved(link, key, which);
+  if (!current || (current.pairing ?? "") !== which)
+    return;
+  link.phones = link.phones.filter((phone) => phone.key !== key);
+  blockVoucher(link, current, now);
+}
+function pairPhone(link, phone) {
+  link.phones = [...(link.phones ?? []).filter((each) => each.key !== phone.key), phone];
+}
+function pairDevice(link, device, now = Date.now()) {
+  const known = (link.phones ?? []).find((phone) => phone.key === device.key);
+  if (known)
+    return { pairing: known.pairing ?? "" };
+  if ((link.removed ?? []).some((each) => each.key === device.key))
+    return { removed: true };
+  const blocked = vouchBlockOf(link, device.by);
+  if (blocked)
+    return { blocked: { device: blocked.device } };
+  if ((link.phones ?? []).filter((phone) => phone.kind === "desktop").length >= MOST_DESKTOPS)
+    return { full: true };
+  const pairing = newPairing();
+  pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop", ...device.by ? { by: device.by } : {} });
+  return { pairing };
+}
+function removeAsMac(link, entries) {
+  const macs = macsOf(link);
+  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every((entry) => fits2(entry, macs)))
+    return false;
+  for (const entry of entries)
+    takeOff(link, entry.key, entry.pairing);
+  return true;
+}
+function removePhones(link, by, entries) {
+  const macs = macsOf(link);
+  const allowed = new Set([...(link.phones ?? []).map((phone) => phone.key), ...macs]);
+  if (!allowed.has(by) || !Array.isArray(entries) || !entries.length || entries.length > MOST_AT_ONCE)
+    return false;
+  if (!entries.every((entry) => fits2(entry, macs)))
+    return false;
+  for (const entry of entries)
+    takeOff(link, entry.key, entry.pairing);
+  return true;
+}
+function foldPhones(link, now = Date.now()) {
+  const macs = macsOf(link);
+  for (const doc of phoneDocs(link)) {
+    for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT) : []) {
+      if (fits2(entry, macs) && typeof entry.pairing === "string")
+        noteRemoved(link, entry.key, entry.pairing);
+    }
+  }
+  for (const phone of [...link.phones ?? []]) {
+    if (phone.from === "pair" && link.phones.includes(phone) && removedAlready(link, phone.key, phone.pairing ?? ""))
+      blockVoucher(link, phone, now);
+  }
+  const known = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
+  const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
+  const listed = [];
+  const add = (phone) => {
+    if (!fits2(phone, macs) || removedAlready(link, phone.key, phone.pairing ?? "") || listed.some((each) => each.key === phone.key))
+      return;
+    listed.push(phone);
+  };
+  for (const mac of macs) {
+    const doc = macDoc(link, mac, "phones");
+    if (!doc) {
+      for (const phone of link.phones ?? [])
+        if (phone.from === "mac" && phone.mac === mac)
+          add(phone);
+      continue;
+    }
+    for (const phone of Array.isArray(doc.body.phones) ? doc.body.phones.slice(0, 64) : []) {
+      if (!isObject(phone))
+        continue;
+      add({
+        key: phone.key,
+        name: String(phone.name ?? "").slice(0, 100),
+        added: known.get(phone.key)?.added ?? Math.floor(now / 1000),
+        from: "mac",
+        mac,
+        address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key)?.address,
+        pairing: typeof phone.pairing === "string" ? phone.pairing : "",
+        ...phone.kind === "desktop" ? { kind: "desktop" } : {}
+      });
+    }
+  }
+  if (!signed.length) {
+    for (const phone of link.phones ?? [])
+      if (phone.from === "mac" && phone.mac == null)
+        add(phone);
+  }
+  for (const phone of link.phones ?? [])
+    if (phone.from === "pair")
+      add(phone);
+  link.phones = listed;
+}
+function confirmPhone(phone) {
+  const where = phone.address?.toString("base64url");
+  const known = readLink()?.phones?.find((each) => each.key === phone.key.toString("base64url"));
+  if (!known || !where || known.address === where)
+    return;
+  updateLink((link) => {
+    const known = link?.phones?.find((each) => each.key === phone.key.toString("base64url"));
+    if (!known || !where || known.address === where)
+      return null;
+    known.address = where;
+    return link;
+  });
+}
+function pairingLink(link) {
+  const query = new URLSearchParams({
+    v: "1",
+    relay: link.relay,
+    host: addressOf(Buffer.from(link.secret, "base64url")).toString("base64url"),
+    key: publicOf(Buffer.from(link.key, "base64url")).toString("base64url"),
+    token: link.pairing.token,
+    name: link.name
+  });
+  return `kuvo-link://pair?${query}`;
+}
+var PAIRING, MOST_AT_ONCE = 16, MOST_KEPT = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto24.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, ownPhones = (link) => ({
+  phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {} })),
+  removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing }))
+}), PAIRING_MINUTES = 10, newPairingToken = () => ({ token: crypto24.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000 }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
+var init_phones = __esm(() => {
+  init_keys();
+  init_changed();
+  init_main_only();
+  init_format();
+  init_known();
+  init_state();
+  PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
+});
+
+// box/src/link/documents/parts.ts
+import crypto25 from "node:crypto";
+function assemble(parts, from, part, most = MOST_PARTS) {
+  if (!fitsPart(part, most))
+    return null;
+  const key = `${from} ${part.whole}`;
+  let pending = parts.get(key);
+  if (!pending || pending.of !== part.of) {
+    const theirs = [...parts.keys()].filter((each) => each.startsWith(`${from} `));
+    if (theirs.length >= 4)
+      parts.delete(theirs[0]);
+    pending = { of: part.of, s: part.s, pieces: new Map };
+    parts.set(key, pending);
+  }
+  pending.pieces.set(part.i, part.d);
+  if (pending.pieces.size < part.of)
+    return null;
+  parts.delete(key);
+  const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
+  if (crypto25.createHash("sha256").update(d).digest("base64url") !== part.whole)
+    return null;
+  return { d, s: pending.s };
+}
+var fitsPart = (part, most) => isObject(part) && typeof part.whole === "string" && Number.isInteger(part.i) && Number.isInteger(part.of) && part.of >= 2 && part.of <= most && part.i >= 0 && part.i < part.of && typeof part.d === "string" && part.d.length <= DOC_PART && typeof part.s === "string";
+var init_parts = __esm(() => {
+  init_format();
+});
+
+// box/src/link/documents/work.ts
+import crypto26 from "node:crypto";
+function takesFrom(link, origin, kind) {
+  const macs = macsOf(link).map((mac) => macSign(link, mac)).filter(Boolean);
+  const setup = followedSetup(link);
+  if (kind === "peers")
+    return setup?.role === "member" ? origin === setup.sign : macs.includes(origin) || IS_MAC && origin === ownSign(link);
+  return macs.includes(origin) || origin === ownSign(link) || peersOf(link).some((peer) => peer.sign === origin);
+}
+function takenBy(link, to, origin, kind) {
+  if (IS_MAC) {
+    const peers = peersOf(link);
+    return peers.some((peer) => peer.key === to) && (origin === ownSign(link) || kind !== "peers" && peers.some((peer) => peer.sign === origin));
+  }
+  const setup = setupDoc(link);
+  for (const doc of setup ? [setup] : macsOf(link).map((mac) => macDoc(link, mac, "peers"))) {
+    const boxes = Array.isArray(doc?.body.boxes) ? doc.body.boxes : [];
+    if (!boxes.some((box) => box?.key === to))
+      continue;
+    if (origin === doc.origin || kind !== "peers" && boxes.some((box) => box?.sign === origin))
+      return true;
+  }
+  return false;
+}
+function takeDoc(link, envelope) {
+  const doc = readDoc(envelope);
+  if (!doc)
+    return null;
+  if (!takesFrom(link, doc.origin, doc.kind)) {
+    if (doc.kind === "peers")
+      noteConflict(link, doc);
+    return null;
+  }
+  if (lowerEpoch(link, doc))
+    return null;
+  if (doc.origin === ownSign(link)) {
+    if (doc.kind === "peers" && !IS_MAC || doc.n > MOST_COUNT)
+      return null;
+    const had = link.own?.[doc.kind];
+    if (had && (doc.n < had.n || doc.n === had.n && doc.h === had.h))
+      return null;
+    link.own = { ...link.own ?? {}, [doc.kind]: { n: Math.max(doc.n, had?.n ?? 0), h: doc.h, b: bodyHash(doc.body) } };
+    return { ...doc, mine: true };
+  }
+  const newer = (had) => !had || doc.n > had.n || doc.n === had.n && doc.h < had.h;
+  if (doc.kind === "personalities") {
+    if (!newer(link.views?.[doc.origin]))
+      return null;
+    link.views = { ...link.views ?? {}, [doc.origin]: { n: doc.n, h: doc.h } };
+    return doc;
+  }
+  const key = docKey(doc.origin, doc.kind);
+  if (!newer(held(link.docs?.[key])))
+    return null;
+  link.docs = { ...link.docs ?? {}, [key]: doc.envelope };
+  return doc;
+}
+function pruneDocs(link) {
+  for (const kind of DOC_KINDS) {
+    for (const [key, envelope] of Object.entries(link.docs ?? {})) {
+      const doc = held(envelope);
+      if (!doc)
+        delete link.docs[key];
+      else if (doc.kind === kind && !takesFrom(link, doc.origin, doc.kind))
+        delete link.docs[key];
+    }
+  }
+  for (const origin of Object.keys(link.views ?? {}))
+    if (!takesFrom(link, origin, "personalities"))
+      delete link.views[origin];
+}
+function ownDoc(link, kind, body) {
+  if (!ownSign(link))
+    return null;
+  const b = bodyHash(body);
+  const had = link.own?.[kind];
+  const changed = !had || had.b !== b;
+  const n = changed ? (had?.n ?? 0) + 1 : had.n;
+  const envelope = signDoc(link.sign, kind, n, body);
+  if (changed)
+    link.own = { ...link.own ?? {}, [kind]: { n, h: shortHash(Buffer.from(envelope.d, "base64url")), b } };
+  return { envelope, changed };
+}
+function ownDocs(state) {
+  const docs = {};
+  if (IS_MAC) {
+    const peers = ownDoc(state.link, "peers", macPeersBody(state.link));
+    if (peers)
+      docs.peers = peers;
+  }
+  const phones = IS_MAC && !macLink.config?.phones ? null : ownDoc(state.link, "phones", ownPhones(state.link));
+  if (phones)
+    docs.phones = phones;
+  const library = mergePersonalities(state.library);
+  if (Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
+    const personalities = ownDoc(state.link, "personalities", library);
+    if (personalities)
+      docs.personalities = personalities;
+  }
+  return docs;
+}
+function macPeersBody(link) {
+  const peers = peersOf(link).filter((peer) => typeof peer.sign === "string");
+  let address = null;
+  try {
+    address = addressOf(Buffer.from(link.secret, "base64url")).toString("base64url");
+  } catch {}
+  const me = { key: ownKey(link), sign: ownSign(link), address, name: String(link.name ?? "Mac").slice(0, 100), kind: "mac" };
+  const current = new Set(peers.map((peer) => peer.key));
+  const setup = followedSetup(link);
+  const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
+  return {
+    boxes: [me, ...peers.map((peer) => ({ ...peer, kind: "machine" }))],
+    moved: cleanMoved(link.macMoved),
+    left: (Array.isArray(link.left) ? link.left : []).filter((key) => !current.has(key)),
+    ...leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary } } : {}
+  };
+}
+function digestOf(link) {
+  const have = [];
+  for (const envelope of Object.values(link?.docs ?? {})) {
+    const doc = held(envelope);
+    if (doc)
+      have.push([doc.origin, doc.kind, doc.n, doc.h]);
+  }
+  for (const [origin, seen] of Object.entries(link?.views ?? {}))
+    have.push([origin, "personalities", seen.n, seen.h]);
+  const own = ownSign(link);
+  if (own) {
+    for (const kind of ownKinds())
+      if (link.own?.[kind])
+        have.push([own, kind, link.own[kind].n, link.own[kind].h]);
+  }
+  return have;
+}
+function docMails(docs) {
+  const mails = [];
+  let give = [], size = 0;
+  for (const envelope of docs.give ?? []) {
+    const length = envelope.d.length + envelope.s.length + 16;
+    if (length > 48000) {
+      const whole = crypto26.createHash("sha256").update(envelope.d).digest("base64url");
+      const of = Math.ceil(envelope.d.length / DOC_PART);
+      for (let i = 0;i < of; i++)
+        mails.push({ part: { whole, i, of, d: envelope.d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: envelope.s } });
+      continue;
+    }
+    if (size + length > 48000 && give.length) {
+      mails.push({ give });
+      give = [];
+      size = 0;
+    }
+    give.push(envelope);
+    size += length;
+  }
+  if (give.length)
+    mails.push({ give });
+  if (docs.have)
+    mails.push({ have: docs.have, ...docs.reply ? { reply: true } : {} });
+  return mails;
+}
+function docsWork(state, sender, docs, { stay = null } = {}) {
+  const { link } = state;
+  const sends = new Map;
+  const to = (peer, change) => {
+    const docs = sends.get(peer.key) ?? { peer, give: [] };
+    change(docs);
+    sends.set(peer.key, docs);
+  };
+  const given = Array.isArray(docs?.give) ? docs.give.slice(0, 64) : [];
+  settleSetup(link);
+  if (isObject(docs?.part)) {
+    state.parts ??= new Map;
+    const whole = assemble(state.parts, sender.key, docs.part);
+    if (whole)
+      given.push(whole);
+  }
+  const took = [];
+  for (const kind of DOC_KINDS) {
+    for (const envelope of given) {
+      const peeked = held(envelope);
+      if (peeked?.kind !== kind)
+        continue;
+      const doc = takeDoc(link, envelope);
+      if (doc)
+        took.push(doc);
+    }
+  }
+  const left = [];
+  const own = ownKey(link);
+  for (const doc of took) {
+    if (doc.kind !== "peers")
+      continue;
+    const mac = macsOf(link).find((each) => macSign(link, each) === doc.origin);
+    const named = Array.isArray(doc.body.boxes) && doc.body.boxes.some((box) => box?.key === own);
+    if (mac && !named && Array.isArray(doc.body.left) && doc.body.left.includes(own))
+      left.push(mac);
+  }
+  for (const mac of left.filter((each) => each !== stay))
+    leaveMac(link, mac);
+  settleSetup(link);
+  pruneDocs(link);
+  foldPhones(link);
+  const personalities = took.filter((doc) => doc.kind === "personalities").map((doc) => doc.body);
+  if (personalities.length)
+    state.library = mergePersonalities(state.library, ...personalities);
+  let ask = false;
+  if (Array.isArray(docs?.have)) {
+    const theirs = new Map;
+    for (const entry of docs.have.slice(0, 512)) {
+      if (Array.isArray(entry) && typeof entry[0] === "string" && DOC_KINDS.includes(entry[1]) && Number.isSafeInteger(entry[2]))
+        theirs.set(docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
+    }
+    const self = ownSign(link);
+    for (const kind of ownKinds()) {
+      const there = self && theirs.get(docKey(self, kind));
+      if (there && there.n <= MOST_COUNT && there.n > (link.own?.[kind]?.n ?? 0))
+        link.own = { ...link.own ?? {}, [kind]: { n: there.n, h: there.h, b: "" } };
+    }
+    const senderSign = sender.sign ?? macSign(link, sender.key);
+    const behind = (key, n, h) => {
+      const there = theirs.get(key);
+      return !there || there.n < n || there.n === n && there.h > h;
+    };
+    for (const envelope of Object.values(link.docs ?? {})) {
+      const doc = held(envelope);
+      if (doc && behind(docKey(doc.origin, doc.kind), doc.n, doc.h) && takenBy(link, sender.key, doc.origin, doc.kind))
+        to(sender, (docs) => docs.give.push(envelope));
+    }
+    if (!docs.reply) {
+      for (const [key, there] of theirs) {
+        const [origin, kind] = key.split(" ");
+        if (origin === self || kind === "personalities" && origin !== senderSign || !takesFrom(link, origin, kind))
+          continue;
+        const have = kind === "personalities" ? link.views?.[origin] : held(link.docs?.[key]);
+        if (!have || have.n < there.n || have.n === there.n && have.h > there.h)
+          ask = true;
+      }
+    }
+    state.theirs = theirs;
+  }
+  const ownNow = ownDocs(state);
+  const peers = docPeers(link);
+  const mine = ownSign(link);
+  for (const doc of took.filter((doc) => doc.kind !== "personalities" && !doc.mine)) {
+    for (const peer of peers) {
+      if (peer.key !== sender.key && peer.sign !== doc.origin && takenBy(link, peer.key, doc.origin, doc.kind))
+        to(peer, (docs) => docs.give.push(doc.envelope));
+    }
+  }
+  for (const made of Object.values(ownNow)) {
+    if (made.changed) {
+      for (const peer of peers)
+        if (takenBy(link, peer.key, mine, "phones"))
+          to(peer, (docs) => docs.give.push(made.envelope));
+    }
+  }
+  if (state.theirs) {
+    const senderPeer = peers.find((peer) => peer.key === sender.key);
+    for (const [kind, made] of Object.entries(ownNow)) {
+      const record = link.own[kind];
+      const there = state.theirs.get(docKey(mine, kind));
+      if (senderPeer && !made.changed && (!there || there.n < record.n || there.n === record.n && there.h > record.h))
+        to(senderPeer, (docs) => docs.give.push(made.envelope));
+    }
+    delete state.theirs;
+  }
+  if (ask) {
+    const senderPeer = peers.find((peer) => peer.key === sender.key) ?? sender;
+    to(senderPeer, (docs) => {
+      docs.have = digestOf(link);
+      docs.reply = true;
+    });
+  }
+  return {
+    took,
+    left: left.filter((each) => each !== stay),
+    send: [...sends.values()].filter((docs) => docs.give.length || docs.have).map(({ peer, ...docs }) => ({ to: peer, docs: { ...docs, give: dedupe(docs.give) } }))
+  };
+}
+function greetWork(state) {
+  ownDocs(state);
+  const have = digestOf(state.link);
+  return { send: docPeers(state.link).map((peer) => ({ to: peer, docs: { have } })) };
+}
+function changedWork(state, tell = false) {
+  const made = Object.values(ownDocs(state)).filter((each) => each.changed).map((each) => each.envelope);
+  const mine = ownSign(state.link);
+  const have = tell ? digestOf(state.link) : null;
+  return {
+    send: docPeers(state.link).filter((peer) => takenBy(state.link, peer.key, mine, "phones")).map((peer) => ({ to: peer, docs: { give: made, ...have ? { have } : {} } })).filter((each) => each.docs.give.length || each.docs.have)
+  };
+}
+function currentDigest() {
+  const library = readPersonalities();
+  let have = null;
+  updateLink((link) => {
+    if (!link?.sign)
+      return null;
+    const before = JSON.stringify(link.own ?? {});
+    greetWork({ link, library });
+    have = digestOf(link);
+    return JSON.stringify(link.own ?? {}) === before ? null : link;
+  });
+  return have;
+}
+var docPeers = (link) => peersOf(link).filter((peer) => typeof peer.sign === "string"), ownKinds = () => IS_MAC ? DOC_KINDS : ["phones", "personalities"], dedupe = (envelopes) => [...new Map(envelopes.map((envelope) => [envelope.d, envelope])).values()];
+var init_work2 = __esm(() => {
+  init_documents();
+  init_keys();
+  init_home();
+  init_known();
+  init_library();
+  init_phones();
+  init_record();
+  init_settle();
+  init_state();
+  init_format();
+  init_parts();
+});
+
+// box/src/link/mac/app-route.ts
+async function appAnswer(request, phone, signal) {
+  const host = openAppHost();
+  if (!host)
+    return null;
+  let response;
+  try {
+    await proveHost(host, signal);
+    response = await fetch(`${host.url}/link/route`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        method: request.method,
+        path: request.path,
+        headers: request.headers ?? {},
+        body: Buffer.from(request.body ?? EMPTY).toString("base64"),
+        phone: phone?.key?.toString("base64url") ?? null
+      }),
+      signal
+    });
+  } catch {
+    if (!signal?.aborted)
+      forgetHostProof();
+    return null;
+  }
+  if (response.headers.get("x-kuvo-answer") === "1")
+    return response;
+  await response.body?.cancel().catch(() => {});
+  return null;
+}
+async function* passedOn(response, signal) {
+  const headers = { "content-type": response.headers.get("content-type") ?? "application/json" };
+  const cache = response.headers.get("cache-control");
+  if (cache)
+    headers["cache-control"] = cache;
+  yield { head: { status: response.status, headers } };
+  if (!response.body)
+    return;
+  for await (const chunk of response.body) {
+    if (signal?.aborted)
+      break;
+    yield { body: Buffer.from(chunk) };
+  }
+}
+var init_app_route = __esm(() => {
+  init_keys();
+  init_host_interface();
+});
+
+// box/src/link/mac/machines.ts
+import fs101 from "node:fs";
+import path105 from "node:path";
+function keptHosts() {
+  try {
+    return JSON.parse(fs101.readFileSync(PHONE_LINK_FILE, "utf8")).machines ?? {};
+  } catch (error) {
+    return error.code === "ENOENT" ? undefined : null;
+  }
+}
+function savedMachines(kept = keptHosts()) {
+  let text;
+  try {
+    text = fs101.readFileSync(LIST_FILE, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      return null;
+    return kept === undefined || kept && !Object.keys(kept).length ? [] : null;
+  }
+  try {
+    const saved = JSON.parse(text);
+    return Array.isArray(saved) && saved.every((machine) => typeof machine?.destination === "string") ? saved : null;
+  } catch {
+    return null;
+  }
+}
+function anyMachines() {
+  const saved = savedMachines();
+  return saved === null || saved.length > 0;
+}
+function machinesWithoutApp(now = Date.now()) {
+  const saved = savedMachines();
+  if (!saved)
+    return null;
+  const peers = peersOf(readLink());
+  const told = readPeerAgents();
+  return {
+    machines: saved.map(({ destination, otherAddresses }) => {
+      const peer = peers.find((each) => each.id === destination);
+      const last = peer ? told[peer.key] : undefined;
+      const heard = !peer ? "" : now - (last?.heard ?? last?.at ?? 0) < HEARD_LATELY ? "Running · " : "Not heard from lately · ";
+      return { id: destination, name: destination, otherAddresses: Array.isArray(otherAddresses) ? otherAddresses : [], connection: "notConnected", status: heard + notOpen() };
+    }),
+    hosts: []
+  };
+}
+function hostsWithoutApp() {
+  const kept = keptHosts();
+  const saved = savedMachines(kept);
+  const relay = macLink.config?.relay;
+  if (!saved || !relay || kept === null || kept === undefined && saved.length)
+    return null;
+  const peers = peersOf(readLink());
+  const hosts = Object.entries(kept ?? {}).flatMap(([machine, { name, address, key, anotherMac }]) => typeof name === "string" && typeof address === "string" && typeof key === "string" ? [{ kind: "machine", name: peers.find((peer) => peer.key === key)?.name || name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some((each) => each.destination === machine) }] : []);
+  return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
+}
+async function appWithin(request, phone, signal, wait) {
+  const late = new AbortController;
+  const timer = setTimeout(() => late.abort(), wait);
+  const response = await appAnswer(request, phone, signal ? AbortSignal.any([signal, late.signal]) : late.signal);
+  clearTimeout(timer);
+  return response;
+}
+async function* machinesFollowed(request, phone, signal, timing) {
+  const head = { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  let started = false;
+  let last = "";
+  while (!signal?.aborted) {
+    const response = await appWithin(request, phone, signal, timing.wait);
+    if (response?.status === 200 && response.body) {
+      if (!started)
+        yield head;
+      started = true;
+      let ended = true;
+      try {
+        for await (const chunk of response.body) {
+          if (signal?.aborted)
+            return;
+          yield { body: Buffer.from(chunk) };
+          ended = chunk[chunk.length - 1] === 10;
+        }
+      } catch {}
+      if (!ended)
+        yield { body: Buffer.from(`
+`) };
+      last = "";
+    } else {
+      await response?.body?.cancel().catch(() => {});
+    }
+    if (signal?.aborted)
+      return;
+    const own = machinesWithoutApp();
+    if (!own)
+      return started ? undefined : yield* answer3(503, { message: UNREADABLE });
+    if (!started)
+      yield head;
+    started = true;
+    const line = JSON.stringify(own);
+    if (line !== last) {
+      yield { body: Buffer.from(line + `
+`) };
+      last = line;
+    }
+    await pause2(timing.look, signal);
+  }
+}
+async function* machinesRoute(request, phone, signal, route, timing = TIMING) {
+  const read = request.method.toUpperCase() === "GET";
+  const main = read ? null : mainElsewhere(readLink());
+  if (main)
+    return yield* answer3(409, addElsewhere(main));
+  if (read && route === "kuvo/machines/events")
+    return yield* machinesFollowed(request, phone, signal, timing);
+  const response = read ? await appWithin(request, phone, signal, timing.wait) : await appAnswer(request, phone, signal);
+  const own = read ? OWN_ANSWERS[route] : undefined;
+  if (response && (!own || response.status === 200))
+    return yield* passedOn(response, signal);
+  await response?.body?.cancel().catch(() => {});
+  if (signal?.aborted)
+    return;
+  if (own) {
+    const said = own();
+    return yield* answer3(said ? 200 : 503, said ?? { message: UNREADABLE });
+  }
+  yield* answer3(503, { message: `${notOpen()}. Open it there, then try again.` });
+}
+var LIST_FILE, PHONE_LINK_FILE, HEARD_LATELY, TIMING, macName2 = () => macLink.config?.name || "this Mac", notOpen = () => `Kuvo Code isn’t open on ${macName2()}`, UNREADABLE = "This Mac’s list of machines can’t be read right now.", answer3 = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }], pause2 = (ms, signal) => new Promise((done) => {
+  const finish = () => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", finish);
+    done();
+  };
+  const timer = setTimeout(finish, ms);
+  signal?.addEventListener("abort", finish, { once: true });
+}), OWN_ANSWERS, isMachinesRoute = (route) => /^kuvo\/(machines|hosts)(\/|$)/.test(route);
+var init_machines = __esm(() => {
+  init_home();
+  init_directory();
+  init_known();
+  init_main_only();
+  init_state();
+  init_app_route();
+  LIST_FILE = path105.join(K, "machines.json");
+  PHONE_LINK_FILE = path105.join(APP_FOLDER ?? K, "phone-link.json");
+  HEARD_LATELY = 30 * 60000;
+  TIMING = { wait: 5000, look: 1e4 };
+  OWN_ANSWERS = { "kuvo/machines": machinesWithoutApp, "kuvo/hosts": hostsWithoutApp };
+});
+
+// box/src/link/mac/link.ts
+import { spawnSync as spawnSync8 } from "node:child_process";
+import fs102 from "node:fs";
+import os11 from "node:os";
+import path106 from "node:path";
+function macNeeded(link, now = Date.now()) {
+  const config = macLink.config;
+  if (!config)
+    return false;
+  if (config.machines)
+    return true;
+  const pairing = ["pairing", "appPairing"].some((slot) => link?.[slot] && now < link[slot].expires);
+  return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
+}
+function saveMacConfig(config) {
+  const { phones, relay, name, app } = config;
+  try {
+    writePrivate(MAC_LINK_FILE, JSON.stringify({ phones, relay, name, app }));
+  } catch (error) {
+    console.error(`This Mac's link settings couldn't be kept: ${error.message}`);
+  }
+}
+function savedMacConfig(file = MAC_LINK_FILE) {
+  let kept;
+  try {
+    kept = JSON.parse(fs102.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject(kept) || typeof kept.phones !== "boolean" || typeof kept.relay !== "string")
+    return null;
+  try {
+    if (!["ws:", "wss:"].includes(new URL(kept.relay).protocol))
+      return null;
+  } catch {
+    return null;
+  }
+  return {
+    phones: kept.phones,
+    machines: anyMachines(),
+    relay: kept.relay,
+    name: typeof kept.name === "string" ? kept.name : "Mac",
+    app: MAC_APP_VERSION ?? (typeof kept.app === "string" ? kept.app : "")
+  };
+}
+function computerName2() {
+  if (process.platform === "darwin") {
+    const asked = spawnSync8("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const said = asked.status === 0 ? plainName(asked.stdout).slice(0, 100) : "";
+    if (said)
+      return said;
+  }
+  return plainName(os11.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
+}
+function ownMacConfig() {
+  if (!OWN_HOME_MAC)
+    return null;
+  const real = located(K) === located(path106.join(accountHome(), ".kuvo-code"));
+  let relay = real ? DEFAULT_RELAY : null;
+  try {
+    const given = real ? undefined : process.env.KUVO_TEST_RELAY;
+    if (given && ["ws:", "wss:"].includes(new URL(given).protocol))
+      relay = given.replace(/\/$/, "");
+  } catch {}
+  if (!relay)
+    return null;
+  return { phones: true, machines: anyMachines(), relay, name: computerName2(), app: MAC_APP_VERSION ?? "" };
+}
+function macLinkCheck() {
+  if (macLink.host && !macNeeded(readLink()))
+    macLink.host.disconnect?.();
+}
+function setLinkStatus(state, reason) {
+  const next = reason ? { state, reason } : { state };
+  if (JSON.stringify(next) === JSON.stringify(macLink.status))
+    return;
+  macLink.status = next;
+  for (const tell of macLink.statusFollowers)
+    tell();
+}
+function macLinkWait(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      if (macLink.wake === done)
+        macLink.wake = null;
+      resolve();
+    }
+    macLink.wake = done;
+  });
+}
+async function macKeys({ needed = false } = {}) {
+  const config = macLink.config;
+  if (macLink.overlay || !config || !(needed || config.phones || config.machines))
+    return true;
+  const given = await linkHost("link/identity", {});
+  if (!given || !["key", "secret", "sign"].every((name) => KEY_TEXT.test(given[name] ?? ""))) {
+    if (config.phones || config.machines)
+      setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
+    return false;
+  }
+  macLink.overlay = { key: given.key, secret: given.secret, sign: given.sign, relay: macLink.config.relay, name: macLink.config.name };
+  if (macLink.status.state === "failed")
+    setLinkStatus(macNeeded(readLink()) ? "connecting" : "off");
+  return true;
+}
+function tellGone(gone) {
+  if (!gone.length)
+    return;
+  const went = sendGone(gone);
+  const left = gone.filter((peer) => !went.includes(peer.key));
+  updateLink((link) => {
+    if (!link)
+      return null;
+    const untold = (Array.isArray(link.untold) ? link.untold : []).filter((peer) => !gone.some((each) => each.key === peer.key));
+    if (!left.length && untold.length === (link.untold?.length ?? 0))
+      return null;
+    link.untold = [...untold, ...left].slice(-64);
+    if (!link.untold.length)
+      delete link.untold;
+    return link;
+  });
+}
+function sendGone(gone) {
+  const host = macLink.host;
+  if (!host?.welcomed)
+    return [];
+  let envelope = null;
+  const link = updateLink((link) => {
+    const made = link?.sign ? ownDoc(link, "peers", macPeersBody(link)) : null;
+    envelope = made?.envelope ?? null;
+    return made?.changed ? link : null;
+  }) ?? readLink();
+  if (!envelope || !link?.key)
+    return [];
+  const went = [];
+  for (const peer of gone) {
+    if (!peer.sign) {
+      went.push(peer.key);
+      continue;
+    }
+    const bytes = mailFor(peer, { docs: { give: [envelope] }, at: Date.now() }, link);
+    try {
+      if (bytes && host.send(bytes))
+        went.push(peer.key);
+    } catch {}
+  }
+  return went;
+}
+function tellUntold() {
+  const link = readLink();
+  const untold = (Array.isArray(link?.untold) ? link.untold : []).filter(fitsPeer);
+  const again = untold.filter((peer) => peersOf(link).some((each) => each.key === peer.key));
+  if (again.length) {
+    updateLink((link) => {
+      if (!link?.untold)
+        return null;
+      link.untold = link.untold.filter((peer) => !again.some((each) => each.key === peer.key));
+      return link;
+    });
+  }
+  tellGone(untold.filter((peer) => !again.includes(peer)).map(cleanPeer));
+}
+function stopMacLink() {
+  macLink.stopped = true;
+  macLink.host?.disconnect?.();
+  macLink.wake?.();
+}
+var MAC_LINK_FILE, DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr", KEY_TEXT;
+var init_link = __esm(() => {
+  init_work2();
+  init_files2();
+  init_text();
+  init_home();
+  init_host_interface();
+  init_known();
+  init_state();
+  init_machines();
+  MAC_LINK_FILE = path106.join(RUN, "mac-link.json");
+  KEY_TEXT = /^[A-Za-z0-9_-]{43}$/;
 });
 
 // box/src/agents/usage/notices.ts
@@ -1473,6 +4084,14 @@ function tableCounts(file) {
     db.close();
   }
 }
+function everyCount(file) {
+  const db = open2(file, true);
+  try {
+    return Object.fromEntries([...tables(db)].map((table) => [table, Number(db.query(`SELECT count(*) AS n FROM "${table}"`).get().n)]));
+  } finally {
+    db.close();
+  }
+}
 function databaseFolders(file) {
   const db = open2(file, true);
   try {
@@ -1698,6 +4317,13 @@ async function startIsolated({ engine, data, scratch, what }) {
 var START_LIMIT = 120000, ANSWER_LIMIT = 60000, SAMPLE = 25;
 var init_engine_check = __esm(() => {
   init_database();
+});
+
+// box/src/link/rehome/said.ts
+var Said;
+var init_said = __esm(() => {
+  Said = class Said extends Error {
+  };
 });
 
 // box/src/shared/engines.ts
@@ -2721,11 +5347,13 @@ function appPreferences2(appFolder) {
   const id = path168.basename(appFolder);
   const file = path168.join(path168.dirname(path168.dirname(appFolder)), "Preferences", `${id}.plist`);
   const real = located(homeFolder()) === located(accountHome()) && id === "run.kuvo.code";
-  const asked = real ? spawnSync13("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 30000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : exists4(file) ? spawnSync13("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 30000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : null;
-  if (!asked || asked.status !== 0 || !asked.stdout)
+  if (!real && !exists4(file))
     return {};
-  const read = parsePlist(asked.stdout);
-  return isObject(read) ? read : {};
+  const asked = real ? spawnSync13("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : spawnSync13("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
+  if (!isObject(read))
+    throw new Said("Kuvo couldn't read the earlier Kuvo Code's settings, so nothing was moved. Try again.");
+  return read;
 }
 function projects({ prefs, staged, S }) {
   const order = strings(prefs.projectFolders);
@@ -2808,7 +5436,13 @@ function machines({ prefs, staged }) {
   writeWhole(file, JSON.stringify(list));
 }
 function settingsOf(file) {
-  if (!exists4(file))
+  let text = "";
+  try {
+    text = fs160.readFileSync(file, "utf8");
+  } catch {
+    return {};
+  }
+  if (!text.trim())
     return {};
   const read = readJSON2(file);
   return isObject(read) ? read : null;
@@ -2904,7 +5538,7 @@ function link2({ prefs, staged, home }) {
   if (!relay && !real)
     return;
   const named = spawnSync13("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-  writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY2, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
+  writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
 }
 function listedBots(S) {
   const list = readJSON2(path168.join(S, "bots.json"));
@@ -2939,7 +5573,7 @@ function bots({ S, staged }) {
         return "";
       }
     };
-    if (text("session") !== bot.sessionID)
+    if (bot.sessionID && text("session") !== bot.sessionID)
       writeWhole(path168.join(folder, "session"), bot.sessionID);
     if (!exists4(path168.join(folder, "directory")))
       writeWhole(path168.join(folder, "directory"), bot.project ?? path168.join(bot.folder, "workspace"));
@@ -2996,13 +5630,16 @@ function groupChats({ S, prefs, staged, dropped }) {
     writeWhole(file, JSON.stringify(Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)))));
   }
   const list = readJSON2(path168.join(S, "groups.json"));
-  if (!Array.isArray(list))
+  if (!Array.isArray(list)) {
+    if (exists4(path168.join(S, "groups.json")))
+      dropped.push("Your group chats couldn't be read, and weren't brought along. They're still in the earlier Kuvo Code's folder (groups.json).");
     return;
+  }
   const held = new Set((Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter((each) => isObject(each) && each.kind === "group").map((each) => each.id));
   const onMachine = new Map(listedBots(S).filter((bot) => bot.machine).map((bot) => [bot.id, bot.machine]));
   const before = readJSON2(path168.join(root, "imported.json"));
   const deleted = new Set(strings(isObject(before) ? before.ids : null));
-  let seats = 0, failed = 0;
+  let seats = 0, failed = 0, unread = 0;
   for (const chat of list) {
     if (!isObject(chat) || typeof chat.id !== "string" || !/^grp_[a-z0-9]+$/.test(chat.id))
       continue;
@@ -3014,6 +5651,8 @@ function groupChats({ S, prefs, staged, dropped }) {
       continue;
     }
     const messages = chatMessages(path168.join(S, "groups", `${chat.id}.json`));
+    const kept = readJSON2(path168.join(S, "groups", `${chat.id}.json`));
+    unread += Math.max(0, (Array.isArray(kept) ? kept.length : 0) - messages.length);
     const group = {
       id: chat.id,
       name: typeof chat.name === "string" && chat.name ? chat.name : "Group Chat",
@@ -3045,6 +5684,8 @@ function groupChats({ S, prefs, staged, dropped }) {
   }
   if (failed)
     dropped.push(`${failed === 1 ? "One group chat" : `${failed} group chats`} couldn't be read, and ${failed === 1 ? "wasn't" : "weren't"} brought along. ${failed === 1 ? "It's" : "They're"} still in the earlier Kuvo Code's folder (groups.json).`);
+  if (unread)
+    dropped.push(`${unread === 1 ? "One message" : `${unread} messages`} in your group chats couldn't be read, and ${unread === 1 ? "wasn't" : "weren't"} brought along.`);
   if (seats)
     dropped.push(`In your group chats, ${seats === 1 ? "a bot on one of your machines takes its seat" : `${seats} bots on your machines take their seats`} again at ${seats === 1 ? "its" : "their"} next turn: the conversation ${seats === 1 ? "it" : "they"} had there before stays on that machine, unused.`);
 }
@@ -3148,7 +5789,7 @@ function said6({ S, prefs, dropped }) {
     dropped.push(`${drafts === 1 ? "A message" : `${drafts} messages`} you'd typed but not sent ${drafts === 1 ? "wasn't" : "weren't"} brought along.`);
   if (exists4(path168.join(S, "Browser", "history.json")))
     dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.");
-  const edits = count(prefs.botEditsWaiting) + count(prefs.botEditOutbox);
+  const edits = new Set([...Object.keys(isObject(prefs.botEditsWaiting) ? prefs.botEditsWaiting : {}), ...Object.keys(isObject(prefs.botEditOutbox) ? prefs.botEditOutbox : {})]).size;
   if (edits)
     dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
   const terminals = isObject(prefs.projectSettings) ? Object.values(prefs.projectSettings).filter((each) => isObject(each) && typeof each.terminal === "string" && each.terminal).length : 0;
@@ -3157,6 +5798,25 @@ function said6({ S, prefs, dropped }) {
   const moves = (Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter((each) => isObject(each) && each.stage === "switched").length;
   if (moves)
     dropped.push(`${moves === 1 ? "A move" : `${moves} moves`} to another computer that hadn't finished cleaning up left ${moves === 1 ? "its" : "their"} original folder where it was.`);
+  const signOuts = count(prefs.machineSignOuts);
+  if (signOuts)
+    dropped.push(`You signed out of an account while ${signOuts === 1 ? "a machine was" : `${signOuts} machines were`} away: ${signOuts === 1 ? "it" : "they"} may still be signed in to it. Sign out there too once ${signOuts === 1 ? "it's" : "they're"} connected.`);
+  const cleanUps = count(prefs["machines.waiting"]);
+  if (cleanUps)
+    dropped.push(`${cleanUps === 1 ? "A machine that was away still has" : `${cleanUps} machines that were away still have`} files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.`);
+  const onMachine = (value) => (isObject(value) ? Object.keys(value) : strings(value)).filter((folder) => folder.startsWith("ssh://")).length;
+  const theirProjects = new Set([...isObject(prefs.projectSettings) ? Object.keys(prefs.projectSettings) : [], ...strings(prefs.projectFolders)].filter((folder) => folder.startsWith("ssh://"))).size;
+  const theirWorktrees = onMachine(prefs.worktrees) + onMachine(prefs.removedWorktrees);
+  if (theirProjects)
+    dropped.push(`${theirProjects === 1 ? "A project" : `${theirProjects} projects`} on your machines may have lost ${theirProjects === 1 ? "its" : "their"} name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.`);
+  if (theirWorktrees)
+    dropped.push(`${theirWorktrees === 1 ? "A worktree" : `${theirWorktrees} worktrees`} on your machines may show ${theirWorktrees === 1 ? "its" : "their"} sessions under another project: the earlier Kuvo Code kept which project ${theirWorktrees === 1 ? "it" : "each"} belonged to on this Mac.`);
+  if (Object.keys(prefs).some((key) => key.startsWith("machines.unreadable-")))
+    dropped.push("The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.");
+  if (Object.keys(prefs).some((key) => key.startsWith("openusage.")))
+    dropped.push("API keys you pasted into the usage panel aren't brought along. Paste them again where you use them.");
+  if (typeof prefs.favoriteModels === "string" && prefs.favoriteModels)
+    dropped.push("Your starred models, and the model new sessions start with, are chosen again in the new app.");
   if (listOf8(S).some((name) => /\.unreadable-.*\.json$/.test(name)))
     dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some((name) => exists4(path168.join(S, "Usage", name))))
@@ -3184,15 +5844,18 @@ function runUpgrades(run, move) {
     },
     dropped: []
   };
-  for (const name of ["box", "run", "bots", "groups", "agents"])
+  const places = ["box", "run", "bots", "groups", "agents"];
+  const madeHere = places.filter((name) => !exists4(upgrade.staged(name)));
+  for (const name of places)
     fs160.mkdirSync(upgrade.staged(name), { recursive: true, mode: 448 });
   for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link2, bots, personalities, groupChats, letters, usage, said6])
     each(upgrade);
   enginePlugin(run.release, upgrade);
-  for (const name of ["groups", "agents", "bots", "run"])
-    try {
-      fs160.rmdirSync(upgrade.staged(name));
-    } catch {}
+  for (const name of madeHere)
+    if (name !== "box")
+      try {
+        fs160.rmdirSync(upgrade.staged(name));
+      } catch {}
   return upgrade.dropped;
 }
 var exists4 = (file) => {
@@ -3221,12 +5884,14 @@ var exists4 = (file) => {
     return;
   }
 }, strings = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [], stringMap = (value) => isObject(value) ? Object.fromEntries(Object.entries(value).filter((each) => typeof each[1] === "string")) : {}, here = (folder) => typeof folder === "string" && path168.isAbsolute(folder) ? folder : null, writeSettings3 = (file, settings) => writeWhole(file, JSON.stringify(settings, null, 2) + `
-`), DEFAULT_RELAY2 = "wss://kuvolink.porigam.com.tr", isDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)$/.test(value) && Number.isFinite(Date.parse(value)), KINDS5, STATES4;
+`), isDate = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)$/.test(value) && Number.isFinite(Date.parse(value)), KINDS5, STATES4;
 var init_upgrades = __esm(() => {
   init_settings();
   init_home();
   init_library();
+  init_link();
   init_rewrite();
+  init_said();
   KINDS5 = ["message", "wrapUp", "note", "meeting"];
   STATES4 = ["proposed", "waiting", "working", "done", "failed"];
 });
@@ -4007,171 +6672,9 @@ init_home();
 init_files();
 init_files2();
 init_home();
+init_host_interface();
 import fs9 from "node:fs";
 import path8 from "node:path";
-
-// box/src/link/host-interface.ts
-init_text();
-init_home();
-import crypto4 from "node:crypto";
-import fs8 from "node:fs";
-import path7 from "node:path";
-
-class KeysUnavailable extends Error {
-}
-var HOST_FILE = path7.join(RUN, "host.json");
-var NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.";
-function appHost() {
-  if (!KEYS_ON_HOST)
-    return null;
-  try {
-    const text = fs8.readFileSync(HOST_FILE, "utf8");
-    const said = JSON.parse(text);
-    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
-      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
-    }
-  } catch {}
-  return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
-}
-function openAppHost() {
-  if (!OWN_HOME_MAC)
-    return appHost();
-  try {
-    const host = JSON.parse(fs8.readFileSync(path7.join(RUN, "app.json"), "utf8"))?.host;
-    if (typeof host?.url === "string" && host.url && typeof host?.password === "string" && host.password) {
-      return { url: host.url.replace(/\/+$/, ""), password: host.password, said: `app ${host.url} ${host.password}` };
-    }
-  } catch {}
-  return null;
-}
-function helloProof(password, nonce, url) {
-  const reached = new URL(url);
-  return crypto4.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
-}
-var provenBy = null;
-var vaultProvenBy = null;
-function forgetHostProof() {
-  provenBy = null;
-  vaultProvenBy = null;
-}
-async function proveHost(host, signal) {
-  if (provenBy === host.said)
-    return;
-  const nonce = crypto4.randomBytes(32).toString("hex");
-  let proof = null;
-  try {
-    const response = await fetch(`${host.url}/hello`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000)
-    });
-    const answer = await response.json().catch(() => null);
-    if (response.ok && typeof answer?.proof === "string")
-      proof = Buffer.from(answer.proof);
-  } catch {}
-  const expected = Buffer.from(helloProof(host.password, nonce, host.url));
-  if (!proof || proof.length !== expected.length || !crypto4.timingSafeEqual(proof, expected))
-    throw new KeysUnavailable(NOT_ANSWERING);
-  if (host.said.startsWith("app "))
-    return;
-  provenBy = host.said;
-}
-async function proveVaultHost(host) {
-  if (!HOST_VAULT_SECRET) {
-    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by its running box, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
-  }
-  if (vaultProvenBy === host.said)
-    return;
-  const nonce = crypto4.randomBytes(32).toString("hex");
-  let proof = null;
-  try {
-    const response = await fetch(`${host.url}/hello`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce, vault: true }),
-      signal: AbortSignal.timeout(15000)
-    });
-    const answer = await response.json().catch(() => null);
-    if (response.ok && typeof answer?.vaultProof === "string")
-      proof = Buffer.from(answer.vaultProof);
-  } catch {}
-  const reached = new URL(host.url);
-  const expected = Buffer.from(crypto4.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
-  if (!proof || proof.length !== expected.length || !crypto4.timingSafeEqual(proof, expected))
-    throw new KeysUnavailable(NOT_ANSWERING);
-  vaultProvenBy = host.said;
-}
-var vaultAuth = (call, body, at) => crypto4.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto4.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
-async function hostTrash(folder) {
-  const host = appHost();
-  if (!host)
-    return;
-  await proveHost(host);
-  const response = await fetch(`${host.url}/trash`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
-    body: JSON.stringify({ path: folder }),
-    signal: AbortSignal.timeout(15000)
-  });
-  await response.body?.cancel().catch(() => {});
-}
-async function askHost(host, call, body, missing = false) {
-  await proveHost(host);
-  const sent = JSON.stringify(body);
-  const vault = call.startsWith("vault/");
-  if (vault)
-    await proveVaultHost(host);
-  const at = Date.now();
-  let response;
-  try {
-    response = await fetch(`${host.url}/${call}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {} },
-      body: sent,
-      signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "vault/get", "vault/set"].includes(call) ? 120000 : 15000)
-    });
-  } catch {
-    forgetHostProof();
-    throw new KeysUnavailable(NOT_ANSWERING);
-  }
-  if (missing && response.status === 404) {
-    await response.body?.cancel().catch(() => {});
-    return null;
-  }
-  let answer = null;
-  try {
-    answer = await response.json();
-  } catch {}
-  if (response.status < 200 || response.status > 299) {
-    const said = typeof answer?.message === "string" && answer.message.trim() ? ` ${oneLine(answer.message, 300)}` : "";
-    throw new KeysUnavailable(`This Mac's keys couldn't be reached (${response.status}).${said}`);
-  }
-  return answer ?? {};
-}
-async function siteSignIns() {
-  const host = openAppHost();
-  if (!host)
-    return null;
-  try {
-    const answer = await askHost(host, "sites/signed-in", {});
-    return isObject(answer?.sites) ? answer.sites : null;
-  } catch {
-    return null;
-  }
-}
-async function linkHost(call, body) {
-  const host = appHost();
-  if (!host)
-    return null;
-  try {
-    return await askHost(host, call, body ?? {});
-  } catch {
-    return null;
-  }
-}
-
-// box/src/link/keys.ts
 var LEGACY_KEYS = path8.join(K, "keys");
 var STORED_KEY = /^KUVO_KEY_[A-Z0-9_]+$/;
 var BOT_KEY = /^KUVO_KEY_[A-Z0-9_]+__BOT_[A-Z0-9]+$/;
@@ -5245,1420 +7748,8 @@ async function commandsSettled(session, within = SETTLED_WITHIN) {
   })]);
   clearTimeout(timer);
 }
-// box/src/link/peers/directory.ts
-init_text();
-init_files2();
-init_home();
-import fs18 from "node:fs";
-import path17 from "node:path";
-
-// box/src/link/peers/known.ts
-init_text();
-
-// box/src/link/crypto/keys.ts
-import crypto5 from "node:crypto";
-var PKCS8 = Buffer.from("302e020100300506032b656e04220420", "hex");
-var SPKI = Buffer.from("302a300506032b656e032100", "hex");
-var EMPTY = Buffer.alloc(0);
-var privateKey = (raw) => crypto5.createPrivateKey({ key: Buffer.concat([PKCS8, raw]), format: "der", type: "pkcs8" });
-var publicKey = (raw) => crypto5.createPublicKey({ key: Buffer.concat([SPKI, raw]), format: "der", type: "spki" });
-var newKey = () => crypto5.generateKeyPairSync("x25519").privateKey.export({ format: "der", type: "pkcs8" }).subarray(PKCS8.length);
-var publicOf = (raw) => crypto5.createPublicKey(privateKey(raw)).export({ format: "der", type: "spki" }).subarray(SPKI.length);
-var dh = (raw, remote) => crypto5.diffieHellman({ privateKey: privateKey(raw), publicKey: publicKey(remote) });
-var addressOf = (secret) => crypto5.createHash("sha256").update("kuvo-link address v1").update(secret).digest().subarray(0, 16);
-
-// box/src/link/crypto/noise.ts
-import crypto6 from "node:crypto";
-var sha256 = (data) => crypto6.createHash("sha256").update(data).digest();
-var hmac = (key, data) => crypto6.createHmac("sha256", key).update(data).digest();
-function hkdf(chainingKey, input) {
-  const temp = hmac(chainingKey, input);
-  const first = hmac(temp, Buffer.from([1]));
-  return [first, hmac(temp, Buffer.concat([first, Buffer.from([2])]))];
-}
-
-class CipherState {
-  constructor(key) {
-    this.key = key;
-    this.n = 0n;
-  }
-  nonce() {
-    const nonce = Buffer.alloc(12);
-    nonce.writeBigUInt64BE(this.n, 4);
-    return nonce;
-  }
-  encrypt(ad, plaintext) {
-    if (!this.key)
-      return plaintext;
-    const cipher = crypto6.createCipheriv("aes-256-gcm", this.key, this.nonce());
-    cipher.setAAD(ad);
-    const sealed = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
-    this.n += 1n;
-    return sealed;
-  }
-  decrypt(ad, ciphertext) {
-    if (!this.key)
-      return ciphertext;
-    if (ciphertext.length < 16)
-      throw new Error("decrypt");
-    const decipher = crypto6.createDecipheriv("aes-256-gcm", this.key, this.nonce());
-    decipher.setAAD(ad);
-    decipher.setAuthTag(ciphertext.subarray(-16));
-    let plaintext;
-    try {
-      plaintext = Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]);
-    } catch {
-      throw new Error("decrypt");
-    }
-    this.n += 1n;
-    return plaintext;
-  }
-}
-
-class SymmetricState {
-  constructor(name, prologue) {
-    const bytes = Buffer.from(name);
-    this.h = bytes.length <= 32 ? Buffer.concat([bytes, Buffer.alloc(32 - bytes.length)]) : sha256(bytes);
-    this.ck = this.h;
-    this.cipher = new CipherState;
-    this.mixHash(prologue);
-  }
-  mixKey(input) {
-    const [chainingKey, key] = hkdf(this.ck, input);
-    this.ck = chainingKey;
-    this.cipher = new CipherState(key);
-  }
-  mixHash(data) {
-    this.h = sha256(Buffer.concat([this.h, data]));
-  }
-  encryptAndHash(plaintext) {
-    const ciphertext = this.cipher.encrypt(this.h, plaintext);
-    this.mixHash(ciphertext);
-    return ciphertext;
-  }
-  decryptAndHash(ciphertext) {
-    const plaintext = this.cipher.decrypt(this.h, ciphertext);
-    this.mixHash(ciphertext);
-    return plaintext;
-  }
-  split() {
-    const [first, second] = hkdf(this.ck, EMPTY);
-    return [new CipherState(first), new CipherState(second)];
-  }
-}
-var IK = "Noise_IK_25519_AESGCM_SHA256";
-var ONE_WAY = "Noise_K_25519_AESGCM_SHA256";
-var PROLOGUE = Buffer.from("kuvo-link v1");
-var MAIL_PROLOGUE = Buffer.from("kuvo-link mail v1");
-var transport = (sending, receiving, hash) => ({
-  hash,
-  seal: (plaintext) => sending.encrypt(EMPTY, plaintext),
-  open: (ciphertext) => receiving.decrypt(EMPTY, ciphertext)
-});
-
-class IKInitiator {
-  constructor(s, rs, prologue, e = newKey()) {
-    Object.assign(this, { s, rs, e, state: new SymmetricState(IK, prologue) });
-    this.state.mixHash(rs);
-  }
-  writeMessage1(payload) {
-    const state = this.state;
-    const ephemeral = publicOf(this.e);
-    state.mixHash(ephemeral);
-    state.mixKey(dh(this.e, this.rs));
-    const s = state.encryptAndHash(publicOf(this.s));
-    state.mixKey(dh(this.s, this.rs));
-    return Buffer.concat([ephemeral, s, state.encryptAndHash(payload)]);
-  }
-  readMessage2(message) {
-    if (message.length < 48)
-      throw new Error("malformed");
-    const state = this.state;
-    const re = message.subarray(0, 32);
-    state.mixHash(re);
-    state.mixKey(dh(this.e, re));
-    state.mixKey(dh(this.s, re));
-    const payload = state.decryptAndHash(message.subarray(32));
-    const [first, second] = state.split();
-    return { payload, transport: transport(first, second, state.h) };
-  }
-}
-
-class IKResponder {
-  constructor(s, prologue, e = newKey()) {
-    Object.assign(this, { s, e, state: new SymmetricState(IK, prologue) });
-    this.state.mixHash(publicOf(s));
-  }
-  readMessage1(message) {
-    if (message.length < 96)
-      throw new Error("malformed");
-    const state = this.state;
-    this.re = message.subarray(0, 32);
-    state.mixHash(this.re);
-    state.mixKey(dh(this.s, this.re));
-    this.rs = state.decryptAndHash(message.subarray(32, 80));
-    state.mixKey(dh(this.s, this.rs));
-    return state.decryptAndHash(message.subarray(80));
-  }
-  writeMessage2(payload) {
-    const state = this.state;
-    const ephemeral = publicOf(this.e);
-    state.mixHash(ephemeral);
-    state.mixKey(dh(this.e, this.re));
-    state.mixKey(dh(this.e, this.rs));
-    const message = Buffer.concat([ephemeral, state.encryptAndHash(payload)]);
-    const [first, second] = state.split();
-    return { message, transport: transport(second, first, state.h) };
-  }
-}
-function sealOneWay(payload, s, rs, prologue = MAIL_PROLOGUE, e = newKey()) {
-  const state = new SymmetricState(ONE_WAY, prologue);
-  state.mixHash(publicOf(s));
-  state.mixHash(rs);
-  const ephemeral = publicOf(e);
-  state.mixHash(ephemeral);
-  state.mixKey(dh(e, rs));
-  state.mixKey(dh(s, rs));
-  return { message: Buffer.concat([ephemeral, state.encryptAndHash(payload)]), following: state.split()[0] };
-}
-function openOneWay(message, s, rs, prologue = MAIL_PROLOGUE) {
-  if (message.length < 48)
-    throw new Error("malformed");
-  const state = new SymmetricState(ONE_WAY, prologue);
-  state.mixHash(rs);
-  state.mixHash(publicOf(s));
-  const re = message.subarray(0, 32);
-  state.mixHash(re);
-  state.mixKey(dh(s, re));
-  state.mixKey(dh(s, rs));
-  return { payload: state.decryptAndHash(message.subarray(32)), following: state.split()[0] };
-}
-
-// box/src/link/peers/known.ts
-init_format();
-init_home();
-import fs17 from "node:fs";
-import path16 from "node:path";
-
-// box/src/link/moves/records.ts
-init_files2();
-init_home();
-import fs14 from "node:fs";
-import path14 from "node:path";
-var MOVES = path14.join(RUN, "moves");
-var MOVED_FILE = path14.join(MOVES, "moved.json");
-var MOVED_FOR = 2 * 24 * 3600000;
-var fileOf = (id) => path14.join(MOVES, `${id}.json`);
-var bundleOf = (id) => path14.join(MOVES, id);
-var fits = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions);
-function readMoves() {
-  let names = [];
-  try {
-    names = fs14.readdirSync(MOVES).filter((name) => /^mov_[A-Za-z0-9]+\.json$/.test(name));
-  } catch {}
-  const records = [];
-  for (const name of names) {
-    try {
-      const record = JSON.parse(fs14.readFileSync(path14.join(MOVES, name), "utf8"));
-      if (fits(record))
-        records.push(record);
-    } catch {}
-  }
-  return records.sort((one, other) => one.started - other.started);
-}
-var readMove = (id) => readMoves().find((record) => record.id === id) ?? null;
-var liveMoves = (records = readMoves()) => records.filter((record) => !record.failed);
-var listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping));
-var moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null;
-var moveFollowers = new Set;
-function movesChanged() {
-  for (const follower of [...moveFollowers])
-    try {
-      follower();
-    } catch {}
-}
-function saveMove(record) {
-  writePrivate(fileOf(record.id), JSON.stringify(record));
-  movesChanged();
-}
-function forgetMove(id) {
-  try {
-    fs14.rmSync(fileOf(id), { force: true });
-  } catch {}
-  try {
-    fs14.rmSync(bundleOf(id), { recursive: true, force: true });
-  } catch {}
-  movesChanged();
-}
-function changeMove(id, change) {
-  const record = readMove(id);
-  if (!record)
-    return null;
-  change(record);
-  saveMove(record);
-  return record;
-}
-function shownMove(record) {
-  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size } = record;
-  return { id, kind, thing, name, from, to, role, stage, sessions, ...sent !== undefined ? { sent } : {}, ...size !== undefined ? { size } : {}, ...waitingFor.has(id) ? { waiting: true } : {} };
-}
-var waitingFor = new Set;
-function awaySessions(records = liveMoves()) {
-  const away = new Set;
-  for (const record of records) {
-    const switched = record.stage === "switching" || record.stage === "finishing";
-    if (record.role === "to" && !switched || record.role === "from" && switched)
-      for (const session of record.sessions)
-        away.add(session);
-  }
-  return [...away];
-}
-function frozen(records = liveMoves()) {
-  return new Set(records.filter((record) => record.step !== "check").flatMap((record) => [record.thing, ...record.sessions]));
-}
-function switchedTo(session, records = liveMoves()) {
-  return switchedMove(session, records)?.peer ?? null;
-}
-function switchedMove(session, records = liveMoves()) {
-  return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
-}
-function movedAway(now = Date.now()) {
-  try {
-    const kept = JSON.parse(fs14.readFileSync(MOVED_FILE, "utf8"));
-    if (!Array.isArray(kept))
-      return [];
-    return kept.filter((each) => isObject(each) && typeof each.session === "string" && typeof each.key === "string" && typeof each.at === "number" && now - each.at < MOVED_FOR);
-  } catch {
-    return [];
-  }
-}
-function noteMovedAway(sessions, key, now = Date.now()) {
-  const kept = movedAway(now).filter((each) => !sessions.includes(each.session));
-  writePrivate(MOVED_FILE, JSON.stringify([...kept, ...sessions.map((session) => ({ session, key, at: now }))]));
-  movesChanged();
-}
-function forgetMovedAway(sessions, now = Date.now()) {
-  const kept = movedAway(now);
-  if (!kept.some((each) => sessions.includes(each.session)))
-    return;
-  writePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session))));
-  movesChanged();
-}
-var ENDED_FILE = path14.join(MOVES, "ended.json");
-var ENDED_FOR = { dropped: 7 * 24 * 3600000, switched: 365 * 24 * 3600000 };
-var keptFor = (one, now) => typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped") && now - one.at < ENDED_FOR[one.as];
-function endedAs(id, now = Date.now()) {
-  try {
-    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
-    const one = kept?.[id];
-    return keptFor(one, now) ? one.as : null;
-  } catch {
-    return null;
-  }
-}
-function endedAt(id, now = Date.now()) {
-  try {
-    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
-    const one = kept?.[id];
-    return keptFor(one, now) ? one.at : null;
-  } catch {
-    return null;
-  }
-}
-function endedLast(id, now = Date.now()) {
-  try {
-    const one = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"))?.[id];
-    return keptFor(one, now) && typeof one.last === "string" ? one.last : undefined;
-  } catch {
-    return;
-  }
-}
-function noteEnded(id, as, now = Date.now(), sessions = [], last) {
-  let kept = {};
-  try {
-    kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8")) ?? {};
-  } catch {}
-  for (const [other, one] of Object.entries(kept)) {
-    if (!keptFor(one, now))
-      delete kept[other];
-    else if (one.as === "switched" && now - one.at >= MOVED_FOR)
-      delete one.sessions;
-  }
-  kept[id] = { as, at: now, ...sessions.length ? { sessions: [...sessions] } : {}, ...last ? { last } : {} };
-  writePrivate(ENDED_FILE, JSON.stringify(kept));
-}
-function droppedHere(now = Date.now()) {
-  try {
-    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
-    return Object.values(kept ?? {}).filter((one) => keptFor(one, now) && one.as === "dropped" && Array.isArray(one.sessions)).flatMap((one) => one.sessions.filter((each) => typeof each === "string"));
-  } catch {
-    return [];
-  }
-}
-function switchedHere(now = Date.now()) {
-  try {
-    const kept = JSON.parse(fs14.readFileSync(ENDED_FILE, "utf8"));
-    return new Set(Object.values(kept ?? {}).filter((one) => one.as === "switched" && typeof one.at === "number" && now - one.at < MOVED_FOR && Array.isArray(one.sessions)).flatMap((one) => one.sessions.filter((each) => typeof each === "string")));
-  } catch {
-    return new Set;
-  }
-}
-// box/src/link/relay/dropped.ts
-init_files2();
-import { randomBytes } from "node:crypto";
-import fs15 from "node:fs";
-var FENCE = Buffer.from("kuvo-fence:");
-var self = null;
-var watched = new Map;
-var droppedMark = (file) => file.replace(/\.json$/, ".dropped");
-function connectionStarted(address) {
-  watched.clear();
-  self = address;
-}
-function connectionEnded() {
-  watched.clear();
-  self = null;
-}
-function sendingTo(to) {
-  if (watched.size)
-    watched.delete(to.toString("base64url"));
-}
-function fenceBefore() {
-  if (!self)
-    return null;
-  const fence = randomBytes(8).toString("hex");
-  return { fence, to: self, payload: Buffer.concat([FENCE, Buffer.from(fence)]) };
-}
-function watchCall(to, file, fence) {
-  watched.set(to, { file, fence, back: false });
-}
-function fenceBack(payload) {
-  if (payload.length <= FENCE.length || !payload.subarray(0, FENCE.length).equals(FENCE))
-    return;
-  const fence = payload.subarray(FENCE.length).toString();
-  for (const each of watched.values())
-    if (each.fence === fence)
-      each.back = true;
-}
-function noteDropped(to) {
-  const key = to.toString("base64url");
-  const call = watched.get(key);
-  if (!call?.back)
-    return;
-  watched.delete(key);
-  if (fs15.existsSync(call.file))
-    try {
-      writePrivate(droppedMark(call.file), "{}");
-    } catch {}
-}
-
-// box/src/link/relay/frames.ts
-var Frame = { handshake1: 1, handshake2: 2, transport: 3, close: 4, mail: 5 };
-var MAX_MESSAGE = 65535 - 16;
-var relayHello = (secret) => Buffer.concat([Buffer.from([1]), secret]);
-var relaySend = (to, payload) => {
-  sendingTo(to);
-  return Buffer.concat([Buffer.from([2]), to, payload]);
-};
-var relayPush = (to, payload) => Buffer.concat([Buffer.from([5]), to, payload]);
-function readRelay(bytes) {
-  const kind = bytes[0];
-  const address = bytes.subarray(1, 17);
-  if (kind === 1 && bytes.length === 17)
-    return { kind: "welcome", address };
-  if (kind === 2 && bytes.length >= 17)
-    return { kind: "deliver", address, payload: bytes.subarray(17) };
-  if (kind === 3 && bytes.length === 17)
-    return { kind: "unreachable", address };
-  if (kind === 6 && bytes.length === 18)
-    return { kind: "pushed", address, status: bytes[17] };
-  if (kind === 7 && bytes.length === 18)
-    return { kind: "gone", address, reason: bytes[17] === 0 ? "replaced" : "left" };
-  return null;
-}
-function frame(kind, session, body = EMPTY) {
-  const header = Buffer.alloc(5);
-  header[0] = kind;
-  header.writeUInt32BE(session, 1);
-  return Buffer.concat([header, body]);
-}
-function readFrame(bytes) {
-  if (bytes.length < 5 || bytes[0] < 1 || bytes[0] > 5)
-    return null;
-  return { kind: bytes[0], session: bytes.readUInt32BE(1), body: bytes.subarray(5) };
-}
-function encodeMessage(head, body = EMPTY) {
-  const json = Buffer.from(sortedJSON(head));
-  const length = Buffer.alloc(2);
-  length.writeUInt16BE(json.length);
-  return Buffer.concat([length, json, body]);
-}
-function decodeMessage(bytes) {
-  if (bytes.length < 2)
-    return null;
-  const length = bytes.readUInt16BE(0);
-  if (bytes.length < 2 + length)
-    return null;
-  try {
-    return { head: JSON.parse(bytes.subarray(2, 2 + length).toString("utf8")), body: bytes.subarray(2 + length) };
-  } catch {
-    return null;
-  }
-}
-function pieces(head, body, end) {
-  if (Buffer.byteLength(sortedJSON(head)) > 60000)
-    throw new Error("head too long");
-  const out = [];
-  let current = { ...head, end: false };
-  let offset = 0;
-  do {
-    const room = MAX_MESSAGE - 2 - Buffer.byteLength(sortedJSON(current)) - 8;
-    out.push([current, body.subarray(offset, offset + room)]);
-    offset += room;
-    current = { t: "data", id: head.id, end: false };
-  } while (offset < body.length);
-  out[out.length - 1][0].end = end;
-  return out.map(([h, b]) => encodeMessage(h, b));
-}
-
-// box/src/link/setup/record.ts
-import crypto8 from "node:crypto";
-init_format();
-init_home();
-var SETUP_ID = /^set_[A-Za-z0-9_-]{22}$/;
-var STATIC_KEY = /^[A-Za-z0-9_-]{43}$/;
-var newSetupID = () => `set_${crypto8.randomBytes(16).toString("base64url")}`;
-function setupOf(body) {
-  const setup = isObject(body) && isObject(body.setup) ? body.setup : null;
-  if (!setup || typeof setup.id !== "string" || !SETUP_ID.test(setup.id) || !Number.isSafeInteger(setup.epoch) || setup.epoch < 1 || typeof setup.primary !== "string" || !STATIC_KEY.test(setup.primary))
-    return null;
-  return { id: setup.id, epoch: setup.epoch, primary: setup.primary };
-}
-function ledSetup(doc) {
-  if (doc?.kind !== "peers")
-    return null;
-  const setup = setupOf(doc.body);
-  if (!setup)
-    return null;
-  const boxes = Array.isArray(doc.body.boxes) ? doc.body.boxes : [];
-  return boxes.some((box) => isObject(box) && box.key === setup.primary && box.sign === doc.origin && box.kind === "mac") ? setup : null;
-}
-function followedSetup(link) {
-  const setup = link?.setup;
-  if (!setup || setup.aside)
-    return null;
-  if (setup.role === "primary") {
-    let own = null;
-    try {
-      own = publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
-    } catch {}
-    if (setup.primary !== own)
-      return null;
-  }
-  return setup;
-}
-function setupDoc(link) {
-  const setup = followedSetup(link);
-  return setup?.role === "member" ? held(link.docs?.[docKey(setup.sign, "peers")]) : null;
-}
-function lowerEpoch(link, doc) {
-  const kept = link?.setup;
-  const said = doc.kind === "peers" ? setupOf(doc.body) : null;
-  return Boolean(kept && said && said.id === kept.id && said.epoch < kept.epoch);
-}
-function startsFromOthers(link) {
-  const value = link?.startsFromOthers === "on" || link?.startsFromOthers === "off" ? link.startsFromOthers : null;
-  const setup = followedSetup(link);
-  const main = setup ? setup.role === "primary" : IS_MAC;
-  return { value, default: main ? "off" : "on" };
-}
-
-// box/src/link/state.ts
-init_format();
-init_files2();
-init_home();
-import fs16 from "node:fs";
-import path15 from "node:path";
-var MAC_OVERLAY = ["key", "secret", "sign", "relay", "name"];
-var macLink = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set, phoneFollowers: new Set };
-var written = [];
-var onLinkWritten = (then) => {
-  written.push(then);
-};
-var macSign = (link, mac) => typeof link?.macSigns?.[mac] === "string" && SIGN.test(link.macSigns[mac]) ? link.macSigns[mac] : null;
-function migratedLink(link) {
-  if (!isObject(link) || !(link.peersFrom || link.vouched || link.macAts))
-    return link;
-  for (const [mac, given] of Object.entries(link.peersFrom ?? {})) {
-    if (!macSign(link, mac) && isObject(given)) {
-      link.legacy ??= {};
-      link.legacy[mac] ??= { at: given.at ?? 0, peers: Array.isArray(given.peers) ? given.peers : [], moved: given.moved ?? [] };
-    }
-  }
-  delete link.peersFrom;
-  delete link.vouched;
-  delete link.macAts;
-  return link;
-}
-function readLink() {
-  let link = null;
-  try {
-    link = migratedLink(JSON.parse(fs16.readFileSync(LINK_FILE, "utf8")));
-  } catch {}
-  if (IS_MAC && macLink.overlay)
-    return { phones: [], ...link ?? {}, ...macLink.overlay };
-  return link;
-}
-function writeLink(link) {
-  const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
-  writeSecret(LINK_FILE, JSON.stringify(kept, null, 2));
-  for (const then of written)
-    then(link);
-}
-var LOCK = path15.join(RUN, ".link.lock");
-function updateLink(change) {
-  return locked(LOCK, () => {
-    const changed = change(readLink());
-    if (changed)
-      writeLink(changed);
-    return changed ?? null;
-  });
-}
-
-// box/src/link/peers/known.ts
-var KEY = /^[A-Za-z0-9_-]{43}$/;
-var ADDRESS = /^[A-Za-z0-9_-]{22}$/;
-var macsOf = (link) => [...new Set([...Array.isArray(link?.macs) ? link.macs : [], ...typeof link?.mac === "string" ? [link.mac] : []])];
-var ONLINE_FILE = path16.join(RUN, "online");
-var AWAY_AFTER = 5 * 60000;
-var notedOnline = () => {
-  try {
-    const at = Number(fs17.readFileSync(ONLINE_FILE, "utf8"));
-    return Number.isFinite(at) && at > 0 ? at : undefined;
-  } catch {
-    return;
-  }
-};
-var writeOnline = (now) => {
-  try {
-    fs17.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs17.writeFileSync(`${ONLINE_FILE}.${process.pid}.tmp`, String(now), { mode: 384 });
-    fs17.renameSync(`${ONLINE_FILE}.${process.pid}.tmp`, ONLINE_FILE);
-  } catch {}
-};
-function countAway(link, now) {
-  const seen = Object.values(link.macSeen ?? {});
-  const last = notedOnline() ?? (seen.length ? Math.max(...seen) : undefined);
-  const away = last === undefined ? 0 : now - last;
-  if (Math.abs(away) > AWAY_AFTER && link.macSeen)
-    for (const mac of Object.keys(link.macSeen))
-      link.macSeen[mac] += away;
-  writeOnline(now);
-}
-function noteOnline(now = Date.now()) {
-  const last = notedOnline();
-  if (last !== undefined && Math.abs(now - last) <= AWAY_AFTER) {
-    if (now - last >= AWAY_AFTER / 2)
-      writeOnline(now);
-    return;
-  }
-  updateLink((link) => {
-    if (!link || !macsOf(link).length)
-      return void writeOnline(now);
-    countAway(link, now);
-    return link;
-  });
-}
-var MAC_GONE_AFTER = 30 * 24 * 3600 * 1000;
-function forgetOldMacs(link, keep, now = Date.now()) {
-  countAway(link, now);
-  link.macSeen ??= {};
-  for (const mac of macsOf(link))
-    link.macSeen[mac] ??= now;
-  if (keep)
-    link.macSeen[keep] = now;
-  const gone = macsOf(link).filter((mac) => mac !== keep && now - link.macSeen[mac] > MAC_GONE_AFTER);
-  if (!gone.length)
-    return;
-  for (const mac of gone)
-    leaveMac(link, mac);
-  if (gone.includes(link.mac))
-    link.mac = keep;
-}
-function macDoc(link, mac, kind) {
-  const sign = macSign(link, mac);
-  return sign ? held(link.docs?.[docKey(sign, kind)]) : null;
-}
-function leaveMac(link, mac) {
-  link.macs = macsOf(link).filter((each) => each !== mac);
-  if (link.mac === mac) {
-    if (link.macs.length)
-      link.mac = link.macs[0];
-    else
-      delete link.mac;
-  }
-  for (const field of ["macSeen", "macSigns", "macNames", "legacy"])
-    if (link[field])
-      delete link[field][mac];
-  link.phones = (link.phones ?? []).filter((phone) => !(phone.from === "mac" && phone.mac === mac));
-  if (link.setup?.role === "member" && link.setup.primary === mac)
-    delete link.setup;
-}
-var MOST_PEERS = 64;
-var fitsPeer = (peer) => isObject(peer) && typeof peer.key === "string" && KEY.test(peer.key) && typeof peer.address === "string" && ADDRESS.test(peer.address) && (peer.kind === "mac" || peer.kind === "machine");
-var cleanPeer = ({ key, address, name, kind, id, sign }) => ({ key, address, kind, name: plainName(name).slice(0, 100), ...typeof id === "string" ? { id: id.slice(0, 200) } : {}, ...typeof sign === "string" && SIGN.test(sign) ? { sign } : {} });
-var cleanMoved = (moved) => (Array.isArray(moved) ? moved : []).filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key)).slice(0, 500).map(({ session, key }) => ({ session, key }));
-function takeLegacyPeers(link, mac, peers, at, moved = []) {
-  if (macSign(link, mac) || !Array.isArray(peers) || typeof at !== "number")
-    return false;
-  link.legacy ??= {};
-  if (at <= (link.legacy[mac]?.at ?? 0))
-    return false;
-  link.legacy[mac] = { at, peers: peers.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer), moved: cleanMoved(moved) };
-  return true;
-}
-function macWords(link) {
-  const setup = setupDoc(link);
-  if (setup)
-    return [{ boxes: Array.isArray(setup.body.boxes) ? setup.body.boxes.slice(0, MOST_PEERS) : [], moved: setup.body.moved }];
-  return macsOf(link).map((mac) => {
-    const doc = macDoc(link, mac, "peers");
-    if (doc)
-      return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
-    return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
-  }).filter(Boolean);
-}
-function movedOf(link) {
-  const moved = new Map;
-  if (IS_MAC)
-    for (const { session, key } of cleanMoved(link?.macMoved))
-      moved.set(session, key);
-  else
-    for (const word of macWords(link))
-      for (const { session, key } of cleanMoved(word.moved))
-        moved.set(session, key);
-  const now = Date.now();
-  for (const { session, key } of [...movedAway(now), ...movesTold(link, now)].sort((one, other) => one.at - other.at))
-    moved.set(session, key);
-  return moved;
-}
-function movesTold(link, now = Date.now()) {
-  const words = [];
-  const peers = new Set(peersOf(link).map((peer) => peer.key));
-  const own = new Set(ownListed().map((agent) => agent.session));
-  try {
-    const told = JSON.parse(fs17.readFileSync(path16.join(RUN, "peer-agents.json"), "utf8"));
-    for (const [peer, each] of Object.entries(told ?? {})) {
-      if (!peers.has(peer) || !Array.isArray(each?.moved))
-        continue;
-      words.push(...each.moved.filter((one) => isObject(one) && typeof one.session === "string" && typeof one.key === "string" && typeof one.at === "number" && now - one.at < MOVED_FOR && !own.has(one.session)));
-    }
-  } catch {}
-  return words;
-}
-function removedBoxes(link) {
-  const setup = setupDoc(link);
-  const left = IS_MAC ? Array.isArray(link?.left) ? link.left : [] : (setup ? [setup] : macsOf(link).map((mac) => macDoc(link, mac, "peers"))).flatMap((doc) => {
-    const named = doc?.body.left;
-    return Array.isArray(named) ? named.filter((key) => typeof key === "string") : [];
-  });
-  const peers = new Set(peersOf(link).map((peer) => peer.key));
-  return new Set(left.filter((key) => !peers.has(key)));
-}
-function ownListed() {
-  try {
-    const listed = JSON.parse(fs17.readFileSync(path16.join(RUN, "agents.json"), "utf8"));
-    return (listed?.agents ?? []).filter((agent) => (agent?.machine ?? null) === (listed?.machine ?? null)).map((agent) => ({ session: String(agent?.session), name: typeof agent?.name === "string" ? agent.name : null }));
-  } catch {
-    return [];
-  }
-}
-function peersOf(link) {
-  if (!link)
-    return [];
-  if (IS_MAC)
-    return (Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map((peer) => renamed(link, peer));
-  const own = ownKey(link);
-  const byKey = new Map;
-  for (const word of macWords(link)) {
-    for (const peer of word.boxes)
-      if (fitsPeer(peer) && peer.key !== own && !byKey.has(peer.key))
-        byKey.set(peer.key, cleanPeer(peer));
-  }
-  return [...byKey.values()];
-}
-var renamed = (link, peer) => {
-  const name = link.peerNames?.[peer.key];
-  return typeof name === "string" && name ? { ...peer, name } : peer;
-};
-function namedBoxes(link) {
-  if (!link || IS_MAC)
-    return [];
-  const byKey = new Map;
-  for (const word of macWords(link))
-    for (const box of word.boxes)
-      if (fitsPeer(box) && !byKey.has(box.key))
-        byKey.set(box.key, cleanPeer(box));
-  return [...byKey.values()];
-}
-function ownKey(link) {
-  try {
-    return publicOf(Buffer.from(link.key, "base64url")).toString("base64url");
-  } catch {
-    return null;
-  }
-}
-function openMail(body, link, vouched = () => []) {
-  if (!link?.key)
-    return null;
-  const key = Buffer.from(link.key, "base64url");
-  const senders = [...macsOf(link).map((mac) => ({ key: mac, kind: "mac" })), ...peersOf(link).filter((peer) => !macsOf(link).includes(peer.key))];
-  for (const sender of senders) {
-    try {
-      const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
-      return isObject(payload) ? { sender: peersOf(link).find((peer) => peer.key === sender.key) ?? sender, payload } : null;
-    } catch {}
-  }
-  for (const sender of vouched()) {
-    try {
-      const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
-      return isObject(payload) ? { sender, payload, vouched: true } : null;
-    } catch {}
-  }
-  return null;
-}
-function mailFor(peer, payload, link) {
-  if (!peer.address)
-    return null;
-  const sealed = frame(Frame.mail, 0, sealOneWay(Buffer.from(JSON.stringify(payload)), Buffer.from(link.key, "base64url"), Buffer.from(peer.key, "base64url")).message);
-  if (sealed.length > MAX_MAIL)
-    return null;
-  return relaySend(Buffer.from(peer.address, "base64url"), sealed);
-}
-var MAX_MAIL = 65600 - 17;
-
-// box/src/shared/shape.ts
-var string = "string";
-var number = "number";
-var bool = "bool";
-var any = "any";
-var list = (of) => ({ list: of });
-var map = (of) => ({ map: of });
-var object = (fields) => ({ object: fields });
-var oneOf = (...of) => ({ oneOf: of });
-var literal = (value) => ({ literal: value });
-var words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) });
-var nullable = (shape) => oneOf(shape, "null");
-var NOTHING = object({});
-var BYTES = "bytes";
-function fitsShape(shape, value) {
-  if (shape === "any")
-    return true;
-  if (shape === "null")
-    return value === null;
-  if (typeof shape === "string")
-    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
-  if ("literal" in shape)
-    return value === shape.literal;
-  if ("oneOf" in shape)
-    return shape.oneOf.some((each) => fitsShape(each, value));
-  if ("list" in shape)
-    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const fields = value;
-  if ("map" in shape)
-    return Object.values(fields).every((each) => fitsShape(shape.map, each));
-  const declared = Object.entries(shape.object);
-  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
-}
-
-// box/src/shared/routes/projects.ts
-var PROJECT = object({
-  directory: string,
-  "name?": string,
-  folders: list(string),
-  "run?": string,
-  "removed?": bool,
-  "madeBy?": object({ bot: string, name: string, at: number }),
-  "addedByBox?": bool
-});
-var PROJECTS = object({ projects: list(PROJECT), worktrees: map(string) });
-var PROJECT_ROUTES = [
-  { route: "GET kuvo/projects", answers: { 200: PROJECTS } },
-  { route: "PUT kuvo/projects", answers: { 200: object({ project: PROJECT }) } },
-  { route: "DELETE kuvo/projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } }
-];
-
-// box/src/shared/routes/work.ts
-var LIMITS = object({ "atOnce?": number, "perDay?": number, "depth?": number, "tokensPerDay?": number });
-var WORKS_FOR = object({ bot: string, name: string });
-var ANSWER = object({
-  "session?": string,
-  ask: string,
-  "call?": string,
-  what: string,
-  decision: words("allow", "deny", "answer"),
-  reason: string,
-  by: object({ "bot?": string, name: string }),
-  at: number
-});
-var WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
-var WORK_SESSION = object({
-  session: string,
-  title: string,
-  folder: string,
-  "project?": string,
-  startedBy: string,
-  depth: number,
-  "model?": object({ id: string, providerID: string, "variant?": string }),
-  "mode?": string,
-  "account?": WORK_ACCOUNT,
-  state: words("working", "asking", "finished", "failed", "stopped", "idle"),
-  "asks?": string,
-  started: number,
-  tokens: number,
-  "cost?": number,
-  "lastReply?": string
-});
-var WORK_ASK = object({
-  id: string,
-  action: words("makeProject", "cloneProject", "resetLimits"),
-  session: string,
-  name: string,
-  "bot?": string,
-  project: string,
-  "clone?": string,
-  folderName: string,
-  folder: nullable(string),
-  "suggested?": string,
-  "reset?": object({ row: string, account: string, service: string, count: number, "refills?": list(string), "on?": string }),
-  "words?": object({ title: string, body: string }),
-  at: number
-});
-var WORK_ASKS = object({ asks: list(WORK_ASK) });
-var WORK_ASK_ANSWERED = object({ answer: words("allow", "always", "deny"), text: string, isError: bool });
-var WORK_SETTINGS = object({ projectsFolder: nullable(string), "suggested?": string, "keepsAwake?": bool, "awakeNow?": bool });
-var UNANSWERING = object({ provider: string, "model?": string, "only?": words("paid", "free"), "models?": list(string), why: string, since: number, until: number });
-var UNANSWERING_LIST = object({ held: list(UNANSWERING) });
-var WORK = object({
-  bot: string,
-  sessions: list(WORK_SESSION),
-  answered: list(ANSWER),
-  today: object({ started: number, working: number, tokens: number, "cost?": number }),
-  limits: nullable(LIMITS),
-  "asks?": list(WORK_ASK),
-  "projects?": list(PROJECT)
-});
-var OVERSIGHT_MARK = object({ id: string, bot: string, session: string, kind: words("started", "told", "read", "answered", "stopped", "finished"), at: number });
-var OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
-var WORK_CHANGED = object({ changed: map(number) });
-var BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
-var GOAL_APP = object({ name: string, "id?": string });
-var GOAL_STEP = object({
-  id: string,
-  text: string,
-  state: words("todo", "doing", "done", "waiting", "paused", "skipped"),
-  "progress?": number,
-  "note?": string,
-  "detail?": string,
-  "phase?": string,
-  "site?": string,
-  "app?": GOAL_APP,
-  "after?": list(string),
-  "sessions?": list(string),
-  "resumes?": number,
-  "until?": number,
-  "began?": number,
-  "ended?": number
-});
-var GOAL_CHECK = object({
-  id: string,
-  text: string,
-  "detail?": string,
-  state: words("ok", "needs", "failed"),
-  by: words("bot", "box"),
-  "site?": string,
-  "action?": object({ kind: words("open", "projectsFolder"), label: string, "url?": string })
-});
-var GOAL_WAITING = object({
-  id: string,
-  kind: words("you", "judgment", "outside", "ask"),
-  text: string,
-  "detail?": string,
-  "url?": string,
-  "site?": string,
-  "app?": GOAL_APP,
-  "session?": string,
-  "step?": string,
-  at: number
-});
-var GOAL_DECIDED = object({
-  id: string,
-  text: string,
-  choice: string,
-  "why?": string,
-  "options?": list(string),
-  "multiple?": bool,
-  "session?": string,
-  at: number,
-  "yours?": object({ choice: string, at: number })
-});
-var GOAL_SPEND = object({ what: string, cap: number, currency: string, per: words("day", "week", "month", "goal"), spent: number, "until?": number });
-var GOAL_FOLDER = object({ project: string, folder: nullable(string), shown: nullable(string), "there?": bool });
-var GOAL_PLAN = object({
-  id: string,
-  bot: string,
-  name: string,
-  session: string,
-  goal: string,
-  "title?": string,
-  state: words("proposed", "running", "done", "stopped", "declined"),
-  steps: list(GOAL_STEP),
-  checks: list(GOAL_CHECK),
-  spend: list(GOAL_SPEND),
-  public: list(object({ id: string, text: string, on: bool })),
-  projects: list(string),
-  wake: bool,
-  digest: words("day", "week", "milestones", "none"),
-  "ends?": number,
-  proposed: number,
-  "started?": number,
-  "ended?": number,
-  waiting: list(GOAL_WAITING),
-  paused: list(object({ why: string, "until?": number, "session?": string })),
-  waited: number,
-  watching: list(string),
-  "next?": number,
-  "lastDigest?": object({ at: number, text: string }),
-  "report?": string,
-  mode: words("interactive", "autopilot"),
-  decided: list(GOAL_DECIDED),
-  alone: bool,
-  "folders?": list(GOAL_FOLDER)
-});
-var GOAL_PLANS = object({ goals: list(GOAL_PLAN) });
-var REFUSED = object({ message: string });
-var WORK_ROUTES = [
-  { route: "GET kuvo/work", answers: { 200: WORK, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
-  { route: "GET kuvo/work/events", answers: { 200: WORK_CHANGED } },
-  { route: "GET kuvo/work/background", answers: { 200: BACKGROUND_LIST } },
-  { route: "GET kuvo/work/background/events", answers: { 200: BACKGROUND_LIST } },
-  { route: "POST kuvo/bots/:id/stop-all", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
-  { route: "GET kuvo/work/oversight", answers: { 200: OVERSIGHT } },
-  { route: "GET kuvo/work/oversight/events", answers: { 200: OVERSIGHT } },
-  { route: "GET kuvo/work/asks", answers: { 200: WORK_ASKS } },
-  { route: "GET kuvo/work/asks/events", answers: { 200: WORK_ASKS } },
-  { route: "POST kuvo/work/asks/:id", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED, 404: REFUSED } },
-  { route: "GET kuvo/work/settings", answers: { 200: WORK_SETTINGS } },
-  { route: "PATCH kuvo/work/settings", answers: { 200: WORK_SETTINGS, 400: REFUSED, 409: REFUSED } },
-  { route: "GET kuvo/work/unanswering", answers: { 200: UNANSWERING_LIST } },
-  { route: "GET kuvo/work/goals", answers: { 200: GOAL_PLANS } },
-  { route: "GET kuvo/work/goals/events", answers: { 200: GOAL_PLANS } },
-  { route: "POST kuvo/work/goals/ask", answers: { 200: object({ text: string }), 400: REFUSED, 404: REFUSED, 409: REFUSED } },
-  { route: "POST kuvo/work/goals/:id", answers: { 200: object({ goal: GOAL_PLAN }), 400: REFUSED, 404: REFUSED, 409: REFUSED, 502: REFUSED } },
-  { route: "GET kuvo/work/apps/icon", answers: { 200: BYTES, 400: REFUSED, 404: REFUSED } },
-  { route: "POST kuvo/projects/new", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED, 403: object({ message: string, needs: string }), 409: REFUSED, 502: REFUSED } }
-];
-
-// box/src/shared/routes/sessions.ts
-var CARRIED = object({ session: string });
-var STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
-var SESSION_MOVED = object({ session: string, directory: string, "info?": any });
-var CONFIRM = object({ title: string, message: string, label: string });
-var SESSION_ACTION = object({
-  id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
-  label: string,
-  "destructive?": literal(true),
-  "confirm?": CONFIRM
-});
-var SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
-var SESSION_CHANGED = object({ session: string, info: any });
-var LIVES_ELSEWHERE = object({ message: string, "computer?": string });
-var TOOL_ANSWER = object({ text: string, isError: bool });
-var REFUSED2 = object({ message: string });
-var WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
-var QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING) });
-var ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), waits: bool });
-var REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
-var QUEUE_ITEM = object({
-  id: string,
-  words: string,
-  files: list(string),
-  keyword: nullable(string),
-  from: nullable(string),
-  on: words("engine", "box"),
-  delivery: words("steer", "queue"),
-  held: bool
-});
-var QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), items: nullable(list(QUEUE_ITEM)) });
-var QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "items?": nullable(list(QUEUE_ITEM)) });
-var ASK_CHOICE = object({
-  answer: words("once", "always", "reject", "instead"),
-  title: string,
-  named: nullable(string),
-  placeholder: nullable(string),
-  help: nullable(string),
-  spoken: nullable(string),
-  "after?": string,
-  "item?": string,
-  "confirm?": bool
-});
-var PERMISSION_ASK = object({
-  id: string,
-  kind: literal("permission"),
-  session: string,
-  title: string,
-  message: nullable(string),
-  command: nullable(string),
-  files: list(object({ file: string, patch: string, additions: number, deletions: number, status: nullable(words("added", "deleted", "modified")) })),
-  resources: list(string),
-  choices: list(ASK_CHOICE)
-});
-var ASKED_QUESTION = object({
-  key: string,
-  title: nullable(string),
-  question: string,
-  options: list(object({ value: string, label: string, description: nullable(string) })),
-  multiple: bool,
-  custom: bool,
-  required: bool
-});
-var QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
-var SANDBOX_ASK_SHOWN = object({
-  id: string,
-  kind: literal("sandbox"),
-  session: string,
-  title: string,
-  message: string,
-  command: string,
-  stopped: list(object({ label: string, detail: string })),
-  error: nullable(string),
-  asker: string,
-  why: string,
-  choices: list(ASK_CHOICE)
-});
-var VAULT_ASK_SHOWN = object({
-  id: string,
-  kind: literal("vault"),
-  session: string,
-  need: words("use", "item"),
-  title: string,
-  message: nullable(string),
-  site: nullable(string),
-  note: nullable(string),
-  choices: list(ASK_CHOICE)
-});
-var OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
-var SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
-var SESSION_ASKS = object({ asks: list(SESSION_ASK) });
-var MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
-var MENTIONS = object({ mentions: list(MENTION) });
-var GLANCE_CHECKS = object({ passed: number, failed: number, pending: number });
-var GLANCE_PULL = object({
-  number,
-  url: string,
-  "state?": words("open", "draft", "merged", "closed"),
-  "additions?": number,
-  "deletions?": number,
-  "checks?": GLANCE_CHECKS
-});
-var GLANCE = object({
-  "branch?": string,
-  "additions?": number,
-  "deletions?": number,
-  "pull?": GLANCE_PULL,
-  "account?": object({ name: string, "label?": string }),
-  "asked?": number
-});
-var GLANCES = object({ sessions: map(GLANCE) });
-var MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "choose"), label: string, help: string });
-var SESSION_MODEL = object({
-  model: nullable(object({ providerID: string, id: string, "variant?": string })),
-  "name?": string,
-  runs: bool,
-  "missing?": words("model", "signIn", "key", "install", "gone"),
-  "account?": object({ id: string, name: string, "label?": string }),
-  "plan?": object({ name: string, agent: string, provider: string }),
-  "connects?": bool,
-  "refusal?": string,
-  "choose?": bool,
-  "action?": MODEL_ACTION
-});
-var SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
-var MODEL_REF = object({ providerID: string, id: string, "variant?": string });
-var MODELS_OFFERED = object({
-  models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
-  known: object({ engine: bool, agents: bool }),
-  "listing?": list(string),
-  "starting?": nullable(MODEL_REF)
-});
-var SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
-var SESSION_FACTS = object({
-  kind: words(...SESSION_KINDS),
-  "project?": string,
-  directory: string,
-  "title?": string,
-  created: number,
-  updated: number,
-  "parent?": string,
-  "pinned?": bool,
-  "archived?": bool,
-  "running?": bool,
-  "asked?": number,
-  "away?": bool,
-  "bot?": string
-});
-var LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
-var ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
-var NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
-var BOT_NOW = object({ working: number, asking: number, "finished?": number });
-var WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
-var SESSION_LIST = object({
-  at: string,
-  "full?": bool,
-  sessions: map(SESSION_FACTS),
-  "gone?": list(string),
-  projects: map(LISTED_PROJECT),
-  needsYou: list(NEEDS_YOU),
-  "pending?": list(string)
-});
-var SESSION_ROUTES = [
-  { route: "POST kuvo/sessions/:id/agents", answers: { 200: CARRIED } },
-  { route: "POST kuvo/sessions/:id/folders", answers: { 200: object({ session: string }), 404: REFUSED2, 405: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/move", answers: { 200: SESSION_MOVED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/deletes", answers: { 200: CONFIRM, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/:id/actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/archive", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/pin", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/rename", answers: { 200: SESSION_CHANGED, 400: REFUSED2, 404: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "DELETE kuvo/sessions/:id", answers: { 200: object({ session: string }), 400: REFUSED2, 405: REFUSED2, 409: LIVES_ELSEWHERE, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions", answers: { 200: STARTED, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED2, 502: object({ message: string, "session?": string }), 503: REFUSED2 } },
-  { route: "POST kuvo/agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED2 } },
-  { route: "GET kuvo/sessions/queues/events", answers: { 200: object({ queues: map(QUEUE) }) } },
-  { route: "GET kuvo/sessions/glance", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/read", answers: { 200: object({ read: number }), 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/glance/events", answers: { 200: GLANCES, 400: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/list", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/list/events", answers: { 200: SESSION_LIST, 405: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
-  { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
-  { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },
-  { route: "GET kuvo/sessions/:id/queue/events", answers: { 200: QUEUE_SHOWN } },
-  { route: "GET kuvo/sessions/:id/asks", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/:id/asks/events", answers: { 200: SESSION_ASKS, 404: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/asks/:ask", answers: { 200: NOTHING, 400: REFUSED2, 403: REFUSED2, 404: REFUSED2, 423: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "GET kuvo/sessions/:id/mentions", answers: { 200: MENTIONS, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/stop", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/queue/resume", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/queue/:item/now", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "POST kuvo/sessions/:id/queue/add", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-  { route: "DELETE kuvo/sessions/:id/queue/:item", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
-];
-
-// box/src/shared/routes/bots.ts
-var LOOKS = {
-  colors: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
-  shapes: ["round", "squircle", "pebble", "gem", "bloom"],
-  faces: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
-};
-var LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOKS.shapes), face: words(...LOOKS.faces) });
-var MODEL = object({ id: string, providerID: string, "variant?": string });
-var DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
-var BOT = object({
-  id: string,
-  session: string,
-  name: string,
-  look: LOOK,
-  "machine?": string,
-  job: string,
-  jobDetails: string,
-  paused: bool,
-  "wakes?": number,
-  watching: number,
-  agents: bool,
-  "personality?": string,
-  "model?": MODEL,
-  folder: string,
-  "project?": string,
-  "created?": string,
-  "limits?": LIMITS,
-  "allowed?": list(words("makeProject", "cloneProject")),
-  "now?": BOT_NOW,
-  deletes: DELETES
-});
-var BOT_ELSEWHERE = object({
-  id: string,
-  "session?": string,
-  "name?": string,
-  "look?": LOOK,
-  "job?": string,
-  box: string,
-  computer: string,
-  "kind?": words("mac", "machine"),
-  "deletes?": DELETES,
-  "waiting?": literal(true),
-  "refused?": literal(true),
-  "unlisted?": literal(true)
-});
-var HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
-var REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
-var BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
-var HELD = object({ held: HELD_EDIT });
-var TEMPLATES = object({
-  templates: list(object({ id: string, name: string, job: string, instructions: string, look: LOOK, "personality?": string, wantsProject: bool })),
-  personalities: list(object({ id: string, name: string, description: string, "custom?": bool })),
-  looks: object({ colors: list(string), shapes: list(string), faces: list(string) }),
-  startingModel: map(nullable(MODEL)),
-  projects: list(object({ directory: string, name: string, "machine?": string }))
-});
-var MADE = object({ bot: BOT, firstMessage: nullable(string) });
-var CHANGED = object({ bot: nullable(BOT) });
-
-// box/src/link/peers/directory.ts
-var PEER_AGENTS_FILE = path17.join(RUN, "peer-agents.json");
-var MAC_AGENTS_FILE = path17.join(RUN, "mac-agents.json");
-var AGENTS_FILE = path17.join(RUN, "agents.json");
-var PEER_LOCK = path17.join(RUN, ".peers.lock");
-var MOST_AGENTS = 120;
-var fitsAgent = (agent) => isObject(agent) && typeof agent.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(agent.session) && typeof agent.name === "string" && (agent.kind === "bot" || agent.kind === "session");
-var LOOKS2 = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
-var PLAIN_LOOK = { color: "graphite", shape: "round", face: "calm" };
-var keptLook = (look) => isObject(look) ? Object.fromEntries(Object.keys(LOOKS2).map((key) => [key, LOOKS2[key].includes(look[key]) ? look[key] : PLAIN_LOOK[key]])) : undefined;
-var keptAgent = ({ session, name, kind, project, about, machine, id, look }) => ({
-  session,
-  name: plainName(name).slice(0, 200),
-  kind,
-  ...kind === "bot" && typeof id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(id) ? { id } : {},
-  ...kind === "bot" && keptLook(look) ? { look: keptLook(look) } : {},
-  ...typeof project === "string" && project ? { project: project.slice(0, 200) } : {},
-  ...typeof about === "string" && about ? { about: about.slice(0, 500) } : {},
-  ...typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}
-});
-var MOST_FEATURES = 300;
-var keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [];
-var featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES;
-var keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at }));
-function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
-  if (!isObject(given) || typeof given.at !== "number" || !Array.isArray(given.list))
-    return false;
-  return locked(lock, () => {
-    let all = {};
-    try {
-      all = JSON.parse(fs18.readFileSync(file, "utf8"));
-    } catch {}
-    if (given.at <= (all[sender.key]?.at ?? 0)) {
-      if (all[sender.key]) {
-        all[sender.key].heard = Date.now();
-        writePrivate(file, JSON.stringify(all));
-      }
-      return false;
-    }
-    const computer = keptComputer(given.computer);
-    all[sender.key] = {
-      at: given.at,
-      heard: Date.now(),
-      kind: sender.kind,
-      ...sender.id ? { id: sender.id } : {},
-      list: given.list.filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
-      ...Array.isArray(given.features) ? { features: keptFeatures(given.features), ...featuresCut(given.features) ? { featuresCut: true } : {} } : {},
-      ...Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {},
-      ...Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {},
-      ...typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {},
-      ...given.shared === true ? { shared: true } : {},
-      ...given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {},
-      ...computer ? { computer } : {}
-    };
-    writePrivate(file, JSON.stringify(all));
-    return true;
-  });
-}
-var short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined;
-var MOST_AT_WORK = 20;
-var keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} }));
-function keptComputer(given) {
-  if (!isObject(given))
-    return;
-  const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
-  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 1e4 ? given.working : undefined;
-  return {
-    ...version ? { version } : {},
-    ...engine ? { engine } : {},
-    ...system ? { system } : {},
-    ...working !== undefined ? { working } : {},
-    ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {},
-    ...given.oldApp === true ? { oldApp: true } : {}
-  };
-}
-var keptBoxes = (boxes) => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
-function vouchedOf(link, told) {
-  if (!link)
-    return [];
-  const own = ownKey(link);
-  const peers = peersOf(link);
-  let stamp = `${own}|${peers.map((peer) => peer.key).join(",")}|`;
-  if (!told) {
-    try {
-      const file = fs18.statSync(PEER_AGENTS_FILE);
-      stamp += `${file.mtimeMs}:${file.size}`;
-    } catch {
-      stamp += "none";
-    }
-    if (vouchedKept?.stamp === stamp)
-      return vouchedKept.vouched;
-  }
-  const known = new Set(peers.map((peer) => peer.key));
-  const vouched = new Map;
-  for (const peer of peers) {
-    for (const box of (told ?? (told = readPeerAgents()))[peer.key]?.boxes?.slice(0, VOUCHED_EACH) ?? []) {
-      if (!fitsPeer(box) || box.key === own || known.has(box.key) || vouched.has(box.key))
-        continue;
-      vouched.set(box.key, cleanPeer(box));
-    }
-  }
-  const list = [...vouched.values()].slice(0, MOST_PEERS);
-  if (!stamp.endsWith("|"))
-    vouchedKept = { stamp, vouched: list };
-  return list;
-}
-var VOUCHED_EACH = 16;
-var vouchedKept = null;
-function readPeerAgents(file = PEER_AGENTS_FILE) {
-  let all = {};
-  try {
-    all = JSON.parse(fs18.readFileSync(file, "utf8")) ?? {};
-  } catch {}
-  return all;
-}
-function peerOf(session, peers, told, moved = new Map) {
-  if (moved.has(session))
-    return peers.find((peer) => peer.key === moved.get(session)) ?? null;
-  const listing = peers.filter((peer) => (told[peer.key]?.list ?? []).some((agent) => agent.session === session));
-  if (listing.length <= 1)
-    return listing[0] ?? null;
-  const macs = listing.filter((peer) => peer.kind === "mac");
-  return macs.length === 1 ? macs[0] : null;
-}
-var isPutAway = (session) => session?.metadata?.["kuvo.archived"] === true || Boolean(session?.metadata?.kuvo?.archived) || Boolean(session?.time?.archived);
-function composeAgents(own, ownID, peers, told, moved = new Map) {
-  const agents = own.map((agent) => ({ ...keptAgent({ ...agent, machine: undefined }), ...ownID ? { machine: ownID } : {} }));
-  const seen = new Set(agents.map((agent) => agent.session));
-  for (const peer of peers) {
-    for (const agent of told[peer.key]?.list ?? []) {
-      if (seen.has(agent.session) || peerOf(agent.session, peers, told, moved)?.key !== peer.key)
-        continue;
-      seen.add(agent.session);
-      const { machine, ...rest } = agent;
-      agents.push(peer.kind === "machine" ? { ...rest, ...peer.id ? { machine: peer.id } : {} } : { ...rest, ...machine ? { machine } : {} });
-    }
-  }
-  return { machine: ownID ?? null, agents };
-}
-
 // box/src/link/peers/naming.ts
+init_directory();
 function messageBlock(start, end, headings) {
   const find = (text) => {
     const body = text.replace(/\s+$/u, "");
@@ -8052,6 +9143,7 @@ import fs135 from "node:fs";
 import path140 from "node:path";
 init_files2();
 init_home();
+init_records();
 
 // box/src/link/peers/agents.ts
 import fs134 from "node:fs";
@@ -8260,6 +9352,7 @@ var FEATURES = [
 ];
 
 // box/src/shared/routes/mac.ts
+init_shape();
 var MAC_FEATURES = [
   "accounts.ended",
   "hosts",
@@ -11748,6 +12841,7 @@ import path35 from "node:path";
 init_files2();
 init_home();
 init_library();
+init_state();
 
 // box/src/link/zone/setting.ts
 init_zone();
@@ -12114,6 +13208,9 @@ function answerOnce() {
   answersOnce = true;
 }
 var answeringOnce = () => answersOnce;
+
+// box/src/link/areas/integrations.ts
+init_host_interface();
 
 // box/src/link/browser/sites.ts
 init_files2();
@@ -12665,6 +13762,7 @@ init_text();
 init_files2();
 init_home();
 init_zone();
+init_state();
 var UPDATE_KEYS = ["iLSFoygG8wg+r2yj+/qnoMHpZIhPKRNLlf9vpEKmx0A="];
 var UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
 var UPDATE_STATE = path40.join(RUN, "update.json");
@@ -13396,6 +14494,7 @@ import fs37 from "node:fs";
 import path41 from "node:path";
 
 // box/src/shared/routes/settings.ts
+init_shape();
 var CONFIG = map(any);
 var CONFIG_APPLIED = object({
   made: list(object({ path: list(string), value: any })),
@@ -13818,6 +14917,7 @@ async function* integrationsRoute(context) {
 // box/src/link/bots/own-keys.ts
 init_files2();
 init_home();
+init_host_interface();
 
 // box/src/link/rehome/state.ts
 import fs39 from "node:fs";
@@ -13876,7 +14976,7 @@ function rehomeStatus(home, now = Date.now()) {
     asked: kept.asked ?? null,
     from: kept.from ?? underWay?.from ?? null,
     to: kept.to ?? underWay?.to ?? null,
-    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step, underWay.run.merge === true) : null,
+    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : null,
     dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each) => typeof each === "string") : []
   };
 }
@@ -13893,11 +14993,10 @@ var STEP_TITLES = {
   fix: "Reconnecting your worktrees",
   clear: "Finishing up"
 };
-var MERGE_TITLES = { clone: "Copying both sets of sessions and settings", place: "Putting them together" };
-function progressOf(step, merge = false) {
+function progressOf(step) {
   const shown = STEPS.filter((each) => each !== "done");
   const at = step === "done" ? "clear" : step;
-  return { step, title: (merge ? MERGE_TITLES[at] : undefined) ?? STEP_TITLES[at], index: shown.indexOf(at) + 1, of: shown.length };
+  return { step, title: STEP_TITLES[at], index: shown.indexOf(at) + 1, of: shown.length };
 }
 var journalFile = (home) => path43.join(rehomeFolder(home), "journal.json");
 var actsFile = (home) => path43.join(rehomeFolder(home), "journal.acts");
@@ -14501,6 +15600,7 @@ import path119 from "node:path";
 var PAUSED_BY_YOU = "You paused it.";
 
 // box/src/link/work/goals.ts
+init_records();
 init_files2();
 init_home();
 
@@ -15906,6 +17006,7 @@ import fs49 from "node:fs";
 import path52 from "node:path";
 
 // box/src/shared/routes/browser.ts
+init_shape();
 var SEARCH_ENGINES = [
   { id: "google", title: "Google", url: "https://www.google.com/search?q=%s" },
   { id: "duckDuckGo", title: "DuckDuckGo", url: "https://duckduckgo.com/?q=%s" },
@@ -16466,6 +17567,8 @@ import fs54 from "node:fs";
 import path57 from "node:path";
 init_files2();
 init_home();
+init_known();
+init_state();
 
 // box/src/link/vault/store.ts
 init_text();
@@ -16474,6 +17577,7 @@ import fs53 from "node:fs";
 import path56 from "node:path";
 
 // box/src/shared/routes/vault.ts
+init_shape();
 var ITEM_KINDS = ["login", "key", "file", "note"];
 var GRANT_HOWS = ["own", "ask"];
 var VAULT_ITEM = object({
@@ -16553,6 +17657,7 @@ var VAULT_FILL = object({ item: object({ id: string, name: string }), "username?
 // box/src/link/vault/store.ts
 init_files2();
 init_home();
+init_host_interface();
 
 // box/src/link/vault/gate.ts
 init_home();
@@ -17760,6 +18865,8 @@ import crypto19 from "node:crypto";
 import fs59 from "node:fs";
 import path64 from "node:path";
 init_files2();
+init_records();
+init_directory();
 
 // box/src/link/work/oversight.ts
 init_files2();
@@ -18800,6 +19907,8 @@ init_home();
 init_text();
 init_files2();
 init_home();
+init_records();
+init_known();
 import crypto20 from "node:crypto";
 import fs62 from "node:fs";
 import path67 from "node:path";
@@ -18807,6 +19916,8 @@ import path67 from "node:path";
 // box/src/link/peers/reach.ts
 init_files2();
 init_home();
+init_state();
+init_known();
 import fs60 from "node:fs";
 import path65 from "node:path";
 var PEER_REACH = path65.join(RUN, "peer-reach.json");
@@ -18867,10 +19978,15 @@ function noteHeard(key) {
 var awaySince = (key, reach = readReach()) => reach[key] ?? null;
 var lastFoundAway = (key, checked = readReach(PEER_CHECKED)) => checked[key] ?? null;
 
+// box/src/link/work/elsewhere.ts
+init_directory();
+
 // box/src/link/work/homes.ts
 import fs61 from "node:fs";
 import path66 from "node:path";
 init_files2();
+init_records();
+init_known();
 var WORK_HOMES = path66.join(WORK_FOLDER, "homes.json");
 var LOCK8 = path66.join(WORK_FOLDER, ".homes.lock");
 var readHomes = () => {
@@ -19242,6 +20358,7 @@ var idOf2 = (leads) => "rws_" + crypto20.createHash("sha256").update(JSON.string
 // box/src/link/work-queue/numbers.ts
 init_home();
 init_files2();
+init_known();
 import crypto23 from "node:crypto";
 import fs66 from "node:fs";
 import path72 from "node:path";
@@ -19249,6 +20366,7 @@ import path72 from "node:path";
 // box/src/link/work-queue/told.ts
 init_text();
 init_files2();
+init_known();
 import fs65 from "node:fs";
 import path71 from "node:path";
 
@@ -20280,6 +21398,8 @@ var forgetTold = (key) => {
 };
 
 // box/src/link/work-queue/numbers.ts
+init_record();
+init_state();
 var NUMBERS_FILE = path72.join(WORK_QUEUE2, "numbers.json");
 var BLOCK = 50;
 var LOW = 15;
@@ -20814,35 +21934,12 @@ function blockArrived(give, primary, options = {}) {
   return true;
 }
 
-// box/src/link/documents/changed.ts
-init_home();
-import fs67 from "node:fs";
-import path73 from "node:path";
-var DOCS_CHANGED = path73.join(RUN, "docs.changed");
-var changedHere = () => {};
-var onDocsChanged = (then) => {
-  changedHere = then;
-};
-function noteDocsChanged() {
-  if (IS_MAC)
-    return changedHere();
-  try {
-    fs67.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs67.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
-  } catch {}
-}
-function docsNoted() {
-  try {
-    fs67.rmSync(DOCS_CHANGED);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // box/src/link/setup/lead.ts
+init_changed();
 init_format();
 init_home();
+init_known();
+init_state();
 
 // box/src/link/setup/card.ts
 init_files2();
@@ -20855,642 +21952,18 @@ import fs69 from "node:fs";
 import path75 from "node:path";
 init_text();
 init_home();
-// box/src/link/documents/work.ts
-init_documents();
-import crypto26 from "node:crypto";
-init_home();
-init_library();
-
-// box/src/link/phones.ts
-import crypto24 from "node:crypto";
-
-// box/src/link/setup/main-only.ts
-init_home();
-
-// box/src/link/setup/settle.ts
-init_home();
-var macsNamed = (doc) => (Array.isArray(doc?.body.boxes) ? doc.body.boxes : []).filter((box) => isObject(box) && box.kind === "mac" && typeof box.key === "string").map((box) => box.key);
-function sharedMachine(link) {
-  if (IS_MAC || !link)
-    return false;
-  const macs = macsOf(link);
-  if (macs.length < 2)
-    return false;
-  const setup = link.setup?.role === "member" ? link.setup : null;
-  const doc = setup ? macDoc(link, setup.primary, "peers") ?? setupDoc(link) : null;
-  const named = doc && setup ? new Set([setup.primary, ...macsNamed(doc)]) : new Set;
-  return !macs.every((mac) => named.has(mac));
-}
-function settleSetup(link) {
-  if (IS_MAC)
-    return;
-  const macs = macsOf(link);
-  if (!macs.length) {
-    if (link.setup?.role === "member")
-      delete link.setup;
-    return;
-  }
-  if (link.setup?.role === "primary")
-    delete link.setup;
-  const offers = macs.map((mac) => ({ mac, doc: macDoc(link, mac, "peers") })).map(({ mac, doc }) => ({ mac, doc, setup: ledSetup(doc) })).filter((each) => each.setup && each.setup.primary === each.mac);
-  const kept = link.setup;
-  if (kept && macSign(link, kept.primary))
-    kept.sign = macSign(link, kept.primary);
-  if (kept) {
-    const own = offers.find((each) => each.mac === kept.primary);
-    const doc = macDoc(link, kept.primary, "peers");
-    if (own && (own.setup.id !== kept.id || own.setup.epoch >= kept.epoch)) {
-      if (own.setup.id !== kept.id || own.setup.epoch !== kept.epoch)
-        delete kept.conflict;
-      kept.id = own.setup.id;
-      kept.epoch = own.setup.epoch;
-      delete kept.aside;
-    } else if (doc && !ledSetup(doc))
-      kept.aside = true;
-  } else if (offers.length === 1) {
-    const { setup, doc } = offers[0];
-    link.setup = { id: setup.id, epoch: setup.epoch, primary: setup.primary, sign: doc.origin, role: "member" };
-  }
-  if (link.setup && sharedMachine(link))
-    link.setup.aside = true;
-}
-function noteConflict(link, doc) {
-  const setup = followedSetup(link);
-  const said = ledSetup(doc);
-  if (setup?.role !== "member" || !said || said.id !== setup.id || said.epoch !== setup.epoch || said.primary === setup.primary)
-    return;
-  if (!macsOf(link).includes(said.primary) || macSign(link, said.primary) !== doc.origin)
-    return;
-  setup.conflict = { primary: said.primary, epoch: said.epoch };
-}
-
-// box/src/link/setup/main-only.ts
-function mainElsewhere(link) {
-  const setup = link?.setup;
-  if (!setup || setup.role !== "member" || typeof setup.primary !== "string")
-    return null;
-  return { key: setup.primary, name: macName(link, setup.primary) };
-}
-function macName(link, mac) {
-  const doc = macDoc(link, mac, "peers") ?? (link?.setup?.primary === mac ? setupDoc(link) : null);
-  const named = (Array.isArray(doc?.body.boxes) ? doc.body.boxes : []).find((box) => isObject(box) && box.key === mac);
-  return String(isObject(named) && typeof named.name === "string" && named.name || link?.macNames?.[mac] || "").slice(0, 100);
-}
-var named = (main) => main.name || "your main computer";
-var pairElsewhere = (main) => ({ message: `Pair new phones from ${named(main)}.`, primary: main.key });
-var addElsewhere = (main) => ({ message: `Add and remove computers from ${named(main)}.`, primary: main.key });
-function memberHosts(link) {
-  if (IS_MAC || !mainElsewhere(link) || !link?.relay || sharedMachine(link))
-    return null;
-  const doc = setupDoc(link) ?? (link.setup.aside && macsOf(link).length === 1 ? macDoc(link, link.setup.primary, "peers") : null);
-  if (!doc)
-    return null;
-  const hosts = [];
-  for (const box of Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []) {
-    if (!isObject(box) || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some((each) => each.key === box.key))
-      continue;
-    const name = String(box.name ?? "").slice(0, 100);
-    hosts.push({ kind: "machine", name, address: box.address, key: box.key, relay: link.relay, machine: typeof box.id === "string" && box.id ? box.id : name, anotherMac: false, removed: false });
-  }
-  return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
-}
-
-// box/src/link/phones.ts
-init_format();
-function authorizePhone(key, hello, address) {
-  const encoded = key.toString("base64url");
-  if (!hello?.pair)
-    return Boolean(readLink()?.phones?.some((phone) => phone.key === encoded));
-  let paired = false;
-  updateLink((link) => {
-    const given = Buffer.from(String(hello.pair), "base64url");
-    const slot = ["pairing", "appPairing"].find((name) => {
-      const pairing = link?.[name];
-      if (!pairing || Date.now() > pairing.expires)
-        return false;
-      const expected = Buffer.from(pairing.token, "base64url");
-      return given.length === expected.length && crypto24.timingSafeEqual(given, expected);
-    });
-    if (!slot)
-      return null;
-    if (mainElsewhere(link)) {
-      delete link[slot];
-      return link;
-    }
-    pairPhone(link, { key: encoded, name: String(hello.name ?? "").slice(0, 100), added: Math.floor(Date.now() / 1000), from: "pair", address: address?.toString("base64url"), pairing: newPairing(), ...hello.client === "desktop" ? { kind: "desktop" } : {} });
-    delete link[slot];
-    paired = true;
-    return link;
-  });
-  if (paired)
-    noteDocsChanged();
-  return paired || Boolean(readLink()?.phones?.some((phone) => phone.key === encoded));
-}
-var PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
-var MOST_AT_ONCE = 16;
-var MOST_KEPT = 256;
-var removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing);
-function noteRemoved(link, key, pairing) {
-  link.removed ??= [];
-  if (!removedAlready(link, key, pairing))
-    link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT);
-}
-var MOST_BLOCKED = 64;
-function blockVoucher(link, phone, now) {
-  if (!phone.by)
-    return;
-  for (const other of link.phones ?? [])
-    if (other.by === phone.by && other.key !== phone.key)
-      noteRemoved(link, other.key, other.pairing ?? "");
-  link.phones = (link.phones ?? []).filter((each) => each.by !== phone.by);
-  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
-}
-var vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined;
-function allowVouching(link, key) {
-  if (!vouchBlockOf(link, key))
-    return false;
-  link.vouchBlocked = link.vouchBlocked.filter((each) => each.key !== key);
-  if (!link.vouchBlocked.length)
-    delete link.vouchBlocked;
-  return true;
-}
-var fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing));
-function takeOff(link, key, pairing, now = Date.now()) {
-  const current = (link.phones ?? []).find((phone) => phone.key === key);
-  const which = pairing == null ? current?.pairing ?? "" : String(pairing);
-  noteRemoved(link, key, which);
-  if (!current || (current.pairing ?? "") !== which)
-    return;
-  link.phones = link.phones.filter((phone) => phone.key !== key);
-  blockVoucher(link, current, now);
-}
-var newPairing = () => crypto24.randomBytes(12).toString("base64url");
-function pairPhone(link, phone) {
-  link.phones = [...(link.phones ?? []).filter((each) => each.key !== phone.key), phone];
-}
-var MOST_DESKTOPS = 16;
-function pairDevice(link, device, now = Date.now()) {
-  const known = (link.phones ?? []).find((phone) => phone.key === device.key);
-  if (known)
-    return { pairing: known.pairing ?? "" };
-  if ((link.removed ?? []).some((each) => each.key === device.key))
-    return { removed: true };
-  const blocked = vouchBlockOf(link, device.by);
-  if (blocked)
-    return { blocked: { device: blocked.device } };
-  if ((link.phones ?? []).filter((phone) => phone.kind === "desktop").length >= MOST_DESKTOPS)
-    return { full: true };
-  const pairing = newPairing();
-  pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop", ...device.by ? { by: device.by } : {} });
-  return { pairing };
-}
-function removeAsMac(link, entries) {
-  const macs = macsOf(link);
-  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every((entry) => fits2(entry, macs)))
-    return false;
-  for (const entry of entries)
-    takeOff(link, entry.key, entry.pairing);
-  return true;
-}
-function removePhones(link, by, entries) {
-  const macs = macsOf(link);
-  const allowed = new Set([...(link.phones ?? []).map((phone) => phone.key), ...macs]);
-  if (!allowed.has(by) || !Array.isArray(entries) || !entries.length || entries.length > MOST_AT_ONCE)
-    return false;
-  if (!entries.every((entry) => fits2(entry, macs)))
-    return false;
-  for (const entry of entries)
-    takeOff(link, entry.key, entry.pairing);
-  return true;
-}
-function foldPhones(link, now = Date.now()) {
-  const macs = macsOf(link);
-  for (const doc of phoneDocs(link)) {
-    for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT) : []) {
-      if (fits2(entry, macs) && typeof entry.pairing === "string")
-        noteRemoved(link, entry.key, entry.pairing);
-    }
-  }
-  for (const phone of [...link.phones ?? []]) {
-    if (phone.from === "pair" && link.phones.includes(phone) && removedAlready(link, phone.key, phone.pairing ?? ""))
-      blockVoucher(link, phone, now);
-  }
-  const known = new Map((link.phones ?? []).map((phone) => [phone.key, phone]));
-  const signed = macs.filter((mac) => macDoc(link, mac, "phones"));
-  const listed = [];
-  const add = (phone) => {
-    if (!fits2(phone, macs) || removedAlready(link, phone.key, phone.pairing ?? "") || listed.some((each) => each.key === phone.key))
-      return;
-    listed.push(phone);
-  };
-  for (const mac of macs) {
-    const doc = macDoc(link, mac, "phones");
-    if (!doc) {
-      for (const phone of link.phones ?? [])
-        if (phone.from === "mac" && phone.mac === mac)
-          add(phone);
-      continue;
-    }
-    for (const phone of Array.isArray(doc.body.phones) ? doc.body.phones.slice(0, 64) : []) {
-      if (!isObject(phone))
-        continue;
-      add({
-        key: phone.key,
-        name: String(phone.name ?? "").slice(0, 100),
-        added: known.get(phone.key)?.added ?? Math.floor(now / 1000),
-        from: "mac",
-        mac,
-        address: typeof phone.address === "string" && ADDRESS.test(phone.address) ? phone.address : known.get(phone.key)?.address,
-        pairing: typeof phone.pairing === "string" ? phone.pairing : "",
-        ...phone.kind === "desktop" ? { kind: "desktop" } : {}
-      });
-    }
-  }
-  if (!signed.length) {
-    for (const phone of link.phones ?? [])
-      if (phone.from === "mac" && phone.mac == null)
-        add(phone);
-  }
-  for (const phone of link.phones ?? [])
-    if (phone.from === "pair")
-      add(phone);
-  link.phones = listed;
-}
-var ownPhones = (link) => ({
-  phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {} })),
-  removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing }))
-});
-function confirmPhone(phone) {
-  const where = phone.address?.toString("base64url");
-  const known = readLink()?.phones?.find((each) => each.key === phone.key.toString("base64url"));
-  if (!known || !where || known.address === where)
-    return;
-  updateLink((link) => {
-    const known = link?.phones?.find((each) => each.key === phone.key.toString("base64url"));
-    if (!known || !where || known.address === where)
-      return null;
-    known.address = where;
-    return link;
-  });
-}
-var PAIRING_MINUTES = 10;
-var newPairingToken = () => ({ token: crypto24.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000 });
-function pairingLink(link) {
-  const query = new URLSearchParams({
-    v: "1",
-    relay: link.relay,
-    host: addressOf(Buffer.from(link.secret, "base64url")).toString("base64url"),
-    key: publicOf(Buffer.from(link.key, "base64url")).toString("base64url"),
-    token: link.pairing.token,
-    name: link.name
-  });
-  return `kuvo-link://pair?${query}`;
-}
-var phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
-
-// box/src/link/documents/work.ts
-init_format();
-
-// box/src/link/documents/parts.ts
-init_format();
-import crypto25 from "node:crypto";
-var fitsPart = (part, most) => isObject(part) && typeof part.whole === "string" && Number.isInteger(part.i) && Number.isInteger(part.of) && part.of >= 2 && part.of <= most && part.i >= 0 && part.i < part.of && typeof part.d === "string" && part.d.length <= DOC_PART && typeof part.s === "string";
-function assemble(parts, from, part, most = MOST_PARTS) {
-  if (!fitsPart(part, most))
-    return null;
-  const key = `${from} ${part.whole}`;
-  let pending = parts.get(key);
-  if (!pending || pending.of !== part.of) {
-    const theirs = [...parts.keys()].filter((each) => each.startsWith(`${from} `));
-    if (theirs.length >= 4)
-      parts.delete(theirs[0]);
-    pending = { of: part.of, s: part.s, pieces: new Map };
-    parts.set(key, pending);
-  }
-  pending.pieces.set(part.i, part.d);
-  if (pending.pieces.size < part.of)
-    return null;
-  parts.delete(key);
-  const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
-  if (crypto25.createHash("sha256").update(d).digest("base64url") !== part.whole)
-    return null;
-  return { d, s: pending.s };
-}
-
-// box/src/link/documents/work.ts
-function takesFrom(link, origin, kind) {
-  const macs = macsOf(link).map((mac) => macSign(link, mac)).filter(Boolean);
-  const setup = followedSetup(link);
-  if (kind === "peers")
-    return setup?.role === "member" ? origin === setup.sign : macs.includes(origin) || IS_MAC && origin === ownSign(link);
-  return macs.includes(origin) || origin === ownSign(link) || peersOf(link).some((peer) => peer.sign === origin);
-}
-function takenBy(link, to, origin, kind) {
-  if (IS_MAC) {
-    const peers = peersOf(link);
-    return peers.some((peer) => peer.key === to) && (origin === ownSign(link) || kind !== "peers" && peers.some((peer) => peer.sign === origin));
-  }
-  const setup = setupDoc(link);
-  for (const doc of setup ? [setup] : macsOf(link).map((mac) => macDoc(link, mac, "peers"))) {
-    const boxes = Array.isArray(doc?.body.boxes) ? doc.body.boxes : [];
-    if (!boxes.some((box) => box?.key === to))
-      continue;
-    if (origin === doc.origin || kind !== "peers" && boxes.some((box) => box?.sign === origin))
-      return true;
-  }
-  return false;
-}
-var docPeers = (link) => peersOf(link).filter((peer) => typeof peer.sign === "string");
-function takeDoc(link, envelope) {
-  const doc = readDoc(envelope);
-  if (!doc)
-    return null;
-  if (!takesFrom(link, doc.origin, doc.kind)) {
-    if (doc.kind === "peers")
-      noteConflict(link, doc);
-    return null;
-  }
-  if (lowerEpoch(link, doc))
-    return null;
-  if (doc.origin === ownSign(link)) {
-    if (doc.kind === "peers" && !IS_MAC || doc.n > MOST_COUNT)
-      return null;
-    const had = link.own?.[doc.kind];
-    if (had && (doc.n < had.n || doc.n === had.n && doc.h === had.h))
-      return null;
-    link.own = { ...link.own ?? {}, [doc.kind]: { n: Math.max(doc.n, had?.n ?? 0), h: doc.h, b: bodyHash(doc.body) } };
-    return { ...doc, mine: true };
-  }
-  const newer = (had) => !had || doc.n > had.n || doc.n === had.n && doc.h < had.h;
-  if (doc.kind === "personalities") {
-    if (!newer(link.views?.[doc.origin]))
-      return null;
-    link.views = { ...link.views ?? {}, [doc.origin]: { n: doc.n, h: doc.h } };
-    return doc;
-  }
-  const key = docKey(doc.origin, doc.kind);
-  if (!newer(held(link.docs?.[key])))
-    return null;
-  link.docs = { ...link.docs ?? {}, [key]: doc.envelope };
-  return doc;
-}
-function pruneDocs(link) {
-  for (const kind of DOC_KINDS) {
-    for (const [key, envelope] of Object.entries(link.docs ?? {})) {
-      const doc = held(envelope);
-      if (!doc)
-        delete link.docs[key];
-      else if (doc.kind === kind && !takesFrom(link, doc.origin, doc.kind))
-        delete link.docs[key];
-    }
-  }
-  for (const origin of Object.keys(link.views ?? {}))
-    if (!takesFrom(link, origin, "personalities"))
-      delete link.views[origin];
-}
-function ownDoc(link, kind, body) {
-  if (!ownSign(link))
-    return null;
-  const b = bodyHash(body);
-  const had = link.own?.[kind];
-  const changed = !had || had.b !== b;
-  const n = changed ? (had?.n ?? 0) + 1 : had.n;
-  const envelope = signDoc(link.sign, kind, n, body);
-  if (changed)
-    link.own = { ...link.own ?? {}, [kind]: { n, h: shortHash(Buffer.from(envelope.d, "base64url")), b } };
-  return { envelope, changed };
-}
-function ownDocs(state) {
-  const docs = {};
-  if (IS_MAC) {
-    const peers = ownDoc(state.link, "peers", macPeersBody(state.link));
-    if (peers)
-      docs.peers = peers;
-  }
-  const phones = IS_MAC && !macLink.config?.phones ? null : ownDoc(state.link, "phones", ownPhones(state.link));
-  if (phones)
-    docs.phones = phones;
-  const library = mergePersonalities(state.library);
-  if (Buffer.byteLength(JSON.stringify(library)) <= MOST_DOC - 4096) {
-    const personalities = ownDoc(state.link, "personalities", library);
-    if (personalities)
-      docs.personalities = personalities;
-  }
-  return docs;
-}
-var ownKinds = () => IS_MAC ? DOC_KINDS : ["phones", "personalities"];
-function macPeersBody(link) {
-  const peers = peersOf(link).filter((peer) => typeof peer.sign === "string");
-  let address = null;
-  try {
-    address = addressOf(Buffer.from(link.secret, "base64url")).toString("base64url");
-  } catch {}
-  const me = { key: ownKey(link), sign: ownSign(link), address, name: String(link.name ?? "Mac").slice(0, 100), kind: "mac" };
-  const current = new Set(peers.map((peer) => peer.key));
-  const setup = followedSetup(link);
-  const leads = setup?.role === "primary" && setup.primary === me.key && setup.sign === me.sign;
-  return {
-    boxes: [me, ...peers.map((peer) => ({ ...peer, kind: "machine" }))],
-    moved: cleanMoved(link.macMoved),
-    left: (Array.isArray(link.left) ? link.left : []).filter((key) => !current.has(key)),
-    ...leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary } } : {}
-  };
-}
-function digestOf(link) {
-  const have = [];
-  for (const envelope of Object.values(link?.docs ?? {})) {
-    const doc = held(envelope);
-    if (doc)
-      have.push([doc.origin, doc.kind, doc.n, doc.h]);
-  }
-  for (const [origin, seen] of Object.entries(link?.views ?? {}))
-    have.push([origin, "personalities", seen.n, seen.h]);
-  const own = ownSign(link);
-  if (own) {
-    for (const kind of ownKinds())
-      if (link.own?.[kind])
-        have.push([own, kind, link.own[kind].n, link.own[kind].h]);
-  }
-  return have;
-}
-function docMails(docs) {
-  const mails = [];
-  let give = [], size = 0;
-  for (const envelope of docs.give ?? []) {
-    const length = envelope.d.length + envelope.s.length + 16;
-    if (length > 48000) {
-      const whole = crypto26.createHash("sha256").update(envelope.d).digest("base64url");
-      const of = Math.ceil(envelope.d.length / DOC_PART);
-      for (let i = 0;i < of; i++)
-        mails.push({ part: { whole, i, of, d: envelope.d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: envelope.s } });
-      continue;
-    }
-    if (size + length > 48000 && give.length) {
-      mails.push({ give });
-      give = [];
-      size = 0;
-    }
-    give.push(envelope);
-    size += length;
-  }
-  if (give.length)
-    mails.push({ give });
-  if (docs.have)
-    mails.push({ have: docs.have, ...docs.reply ? { reply: true } : {} });
-  return mails;
-}
-function docsWork(state, sender, docs, { stay = null } = {}) {
-  const { link } = state;
-  const sends = new Map;
-  const to = (peer, change) => {
-    const docs = sends.get(peer.key) ?? { peer, give: [] };
-    change(docs);
-    sends.set(peer.key, docs);
-  };
-  const given = Array.isArray(docs?.give) ? docs.give.slice(0, 64) : [];
-  settleSetup(link);
-  if (isObject(docs?.part)) {
-    state.parts ??= new Map;
-    const whole = assemble(state.parts, sender.key, docs.part);
-    if (whole)
-      given.push(whole);
-  }
-  const took = [];
-  for (const kind of DOC_KINDS) {
-    for (const envelope of given) {
-      const peeked = held(envelope);
-      if (peeked?.kind !== kind)
-        continue;
-      const doc = takeDoc(link, envelope);
-      if (doc)
-        took.push(doc);
-    }
-  }
-  const left = [];
-  const own = ownKey(link);
-  for (const doc of took) {
-    if (doc.kind !== "peers")
-      continue;
-    const mac = macsOf(link).find((each) => macSign(link, each) === doc.origin);
-    const named = Array.isArray(doc.body.boxes) && doc.body.boxes.some((box) => box?.key === own);
-    if (mac && !named && Array.isArray(doc.body.left) && doc.body.left.includes(own))
-      left.push(mac);
-  }
-  for (const mac of left.filter((each) => each !== stay))
-    leaveMac(link, mac);
-  settleSetup(link);
-  pruneDocs(link);
-  foldPhones(link);
-  const personalities = took.filter((doc) => doc.kind === "personalities").map((doc) => doc.body);
-  if (personalities.length)
-    state.library = mergePersonalities(state.library, ...personalities);
-  let ask = false;
-  if (Array.isArray(docs?.have)) {
-    const theirs = new Map;
-    for (const entry of docs.have.slice(0, 512)) {
-      if (Array.isArray(entry) && typeof entry[0] === "string" && DOC_KINDS.includes(entry[1]) && Number.isSafeInteger(entry[2]))
-        theirs.set(docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
-    }
-    const self = ownSign(link);
-    for (const kind of ownKinds()) {
-      const there = self && theirs.get(docKey(self, kind));
-      if (there && there.n <= MOST_COUNT && there.n > (link.own?.[kind]?.n ?? 0))
-        link.own = { ...link.own ?? {}, [kind]: { n: there.n, h: there.h, b: "" } };
-    }
-    const senderSign = sender.sign ?? macSign(link, sender.key);
-    const behind = (key, n, h) => {
-      const there = theirs.get(key);
-      return !there || there.n < n || there.n === n && there.h > h;
-    };
-    for (const envelope of Object.values(link.docs ?? {})) {
-      const doc = held(envelope);
-      if (doc && behind(docKey(doc.origin, doc.kind), doc.n, doc.h) && takenBy(link, sender.key, doc.origin, doc.kind))
-        to(sender, (docs) => docs.give.push(envelope));
-    }
-    if (!docs.reply) {
-      for (const [key, there] of theirs) {
-        const [origin, kind] = key.split(" ");
-        if (origin === self || kind === "personalities" && origin !== senderSign || !takesFrom(link, origin, kind))
-          continue;
-        const have = kind === "personalities" ? link.views?.[origin] : held(link.docs?.[key]);
-        if (!have || have.n < there.n || have.n === there.n && have.h > there.h)
-          ask = true;
-      }
-    }
-    state.theirs = theirs;
-  }
-  const ownNow = ownDocs(state);
-  const peers = docPeers(link);
-  const mine = ownSign(link);
-  for (const doc of took.filter((doc) => doc.kind !== "personalities" && !doc.mine)) {
-    for (const peer of peers) {
-      if (peer.key !== sender.key && peer.sign !== doc.origin && takenBy(link, peer.key, doc.origin, doc.kind))
-        to(peer, (docs) => docs.give.push(doc.envelope));
-    }
-  }
-  for (const made of Object.values(ownNow)) {
-    if (made.changed) {
-      for (const peer of peers)
-        if (takenBy(link, peer.key, mine, "phones"))
-          to(peer, (docs) => docs.give.push(made.envelope));
-    }
-  }
-  if (state.theirs) {
-    const senderPeer = peers.find((peer) => peer.key === sender.key);
-    for (const [kind, made] of Object.entries(ownNow)) {
-      const record = link.own[kind];
-      const there = state.theirs.get(docKey(mine, kind));
-      if (senderPeer && !made.changed && (!there || there.n < record.n || there.n === record.n && there.h > record.h))
-        to(senderPeer, (docs) => docs.give.push(made.envelope));
-    }
-    delete state.theirs;
-  }
-  if (ask) {
-    const senderPeer = peers.find((peer) => peer.key === sender.key) ?? sender;
-    to(senderPeer, (docs) => {
-      docs.have = digestOf(link);
-      docs.reply = true;
-    });
-  }
-  return {
-    took,
-    left: left.filter((each) => each !== stay),
-    send: [...sends.values()].filter((docs) => docs.give.length || docs.have).map(({ peer, ...docs }) => ({ to: peer, docs: { ...docs, give: dedupe(docs.give) } }))
-  };
-}
-var dedupe = (envelopes) => [...new Map(envelopes.map((envelope) => [envelope.d, envelope])).values()];
-function greetWork(state) {
-  ownDocs(state);
-  const have = digestOf(state.link);
-  return { send: docPeers(state.link).map((peer) => ({ to: peer, docs: { have } })) };
-}
-function changedWork(state, tell = false) {
-  const made = Object.values(ownDocs(state)).filter((each) => each.changed).map((each) => each.envelope);
-  const mine = ownSign(state.link);
-  const have = tell ? digestOf(state.link) : null;
-  return {
-    send: docPeers(state.link).filter((peer) => takenBy(state.link, peer.key, mine, "phones")).map((peer) => ({ to: peer, docs: { give: made, ...have ? { have } : {} } })).filter((each) => each.docs.give.length || each.docs.have)
-  };
-}
-function currentDigest() {
-  const library = readPersonalities();
-  let have = null;
-  updateLink((link) => {
-    if (!link?.sign)
-      return null;
-    const before = JSON.stringify(link.own ?? {});
-    greetWork({ link, library });
-    have = digestOf(link);
-    return JSON.stringify(link.own ?? {}) === before ? null : link;
-  });
-  return have;
-}
+init_known();
+init_record();
 
 // box/src/link/setup/view.ts
+init_work2();
 init_home();
+init_known();
 
 // box/src/link/setup/held.ts
 init_home();
+init_known();
+init_record();
 function heldBy(link, now = Date.now()) {
   if (!IS_MAC || !link)
     return [];
@@ -21526,6 +21999,7 @@ function setWelcomed(welcomed) {
 }
 
 // box/src/link/setup/view.ts
+init_record();
 function setupView(link) {
   const setup = followedSetup(link);
   const own = link ? ownKey(link) : null;
@@ -21768,6 +22242,9 @@ function hereNow(root, appBox = process.env.KUVO_HOME, home = homeFolder(), engi
 var ATTACHED_FILE = "app-attached.json";
 
 // box/src/link/setup/card.ts
+init_known();
+init_directory();
+init_state();
 var SETUP_CARD = path76.join(RUN, "setup-card.json");
 function cardNow() {
   const link = readLink();
@@ -21803,6 +22280,8 @@ function writeCard() {
 }
 
 // box/src/link/setup/lead.ts
+init_record();
+init_settle();
 function leadsNow(link, now = Date.now()) {
   if (!IS_MAC)
     return !macsOf(link).length && "self" in rankedPrimary(link, undefined, now);
@@ -21871,6 +22350,11 @@ import path108 from "node:path";
 // box/src/link/peers/computer-name.ts
 init_text();
 var computerName = (peer) => peer.kind === "mac" ? plainName(peer.name) || "the Mac" : peer.id || plainName(peer.name) || "another computer";
+
+// box/src/link/work-queue/across.ts
+init_directory();
+init_known();
+init_state();
 
 // box/src/link/work-queue/ops.ts
 init_text();
@@ -22553,6 +23037,7 @@ function agoWords(at, now = Date.now()) {
 var nameOf = (item) => item.source ? `${item.source.ref} "${seenOf(item.source)?.value?.title ?? item.title}"` : item.number !== undefined ? `#${item.number} "${item.title}"` : `"${item.title}" (${item.id}, no number yet${item.wanted ? `: asked for #${item.wanted}` : ""})`;
 
 // box/src/link/work-queue/ops.ts
+init_records();
 var LINKS_EACH = 3;
 var MOST_PROGRESS_NOTE = 300;
 var refuse = (words) => {
@@ -23030,6 +23515,10 @@ import path102 from "node:path";
 
 // box/src/link/letters/tools.ts
 init_home();
+init_directory();
+init_known();
+init_records();
+init_state();
 
 // box/src/link/letters/conversation.ts
 var READ_LIMIT = 24000;
@@ -23201,6 +23690,7 @@ init_home();
 import crypto29 from "node:crypto";
 import fs74 from "node:fs";
 import path80 from "node:path";
+init_state();
 var RELAY_DOWN = path80.join(RUN, "relay-down");
 var DOWN_AFTER = 30000;
 function noteRelay(online, since, now = Date.now()) {
@@ -23415,6 +23905,7 @@ function markChatOn(target, type, data, signal) {
 
 // box/src/link/letters/start.ts
 init_home();
+init_state();
 init_text();
 
 // box/src/link/areas/worktree-records.ts
@@ -24348,6 +24839,9 @@ async function* worktreesRoute(context) {
 init_text();
 import fs81 from "node:fs";
 init_files2();
+init_directory();
+init_known();
+init_state();
 // box/src/link/letters/note.ts
 function noteOf(value) {
   if (!isObject(value) || typeof value.from !== "string" || !value.from.trim() || typeof value.words !== "string")
@@ -24362,6 +24856,7 @@ function noteOf(value) {
 var deliverNote = (target, session, id, text, note) => sendInto(target, session, { id, text, delivery: note.delivery, ...note.line !== undefined ? { metadata: boxNote(note.from, note.line) } : {} }, { from: note.from, words: note.words });
 
 // box/src/link/letters/take.ts
+init_records();
 var endedAfter = (messages, id) => messages.some((message) => message.id > id && message.type === "idle");
 function answerAfter(messages, id) {
   const replies = [];
@@ -28660,6 +29155,9 @@ import fs90 from "node:fs";
 import path94 from "node:path";
 init_files2();
 init_home();
+init_directory();
+init_known();
+init_state();
 var START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review"];
 var START_FEATURE = "work.elsewhere.start";
 var OPEN_TOOLS = ["start_session", "list_models", "list_projects"];
@@ -29543,6 +30041,7 @@ function agentsDown() {
 
 // box/src/link/server/naming.ts
 import fs94 from "node:fs";
+init_directory();
 async function namedIn(body, session, naming) {
   if (!naming)
     return body;
@@ -29683,6 +30182,7 @@ async function* groupsRoute(context) {
 // box/src/link/bots/edit.ts
 init_files2();
 init_home();
+init_host_interface();
 init_library();
 
 // box/src/link/bots/make.ts
@@ -30721,9 +31221,16 @@ async function agentTool(name, args, session, place) {
   }
 }
 
+// box/src/link/work-queue/hand.ts
+init_records();
+init_known();
+init_state();
+
 // box/src/link/work-queue/parts.ts
-import crypto31 from "node:crypto";
+init_parts();
 init_format();
+init_known();
+import crypto31 from "node:crypto";
 var MOST_PARTS2 = 200;
 function mailsFor(peer, payload, link, now = Date.now()) {
   const one = mailFor(peer, { workQueue: payload, at: now }, link);
@@ -31059,6 +31566,7 @@ function elsewhereOf2(session, link = readLink()) {
 // box/src/link/work-queue/acts.ts
 import fs99 from "node:fs";
 import path103 from "node:path";
+init_records();
 var GITHUB_WAIT = 3000;
 var YOU = { user: true };
 
@@ -31187,7 +31695,11 @@ init_files2();
 import crypto33 from "node:crypto";
 import fs100 from "node:fs";
 import path104 from "node:path";
+init_directory();
+init_known();
 init_home();
+init_settle();
+init_state();
 var FORWARD_FEATURE = "work-queue.forward";
 var takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature);
 var AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" };
@@ -31498,9 +32010,20 @@ var actOf = (given) => {
 
 // box/src/link/peers/devices.ts
 init_text();
+init_changed();
+init_work2();
 init_home();
+init_phones();
+init_main_only();
+init_record();
+init_settle();
+init_state();
 
 // box/src/link/peers/apart.ts
+init_record();
+init_settle();
+init_state();
+init_directory();
 var saysShared = (key, told = readPeerAgents()) => told[key]?.shared === true || toldShared(key) === true;
 function saysApart(key, given, link = readLink()) {
   const setup = followedSetup(link);
@@ -31512,6 +32035,8 @@ function isApart(key, link = readLink(), told = readPeerAgents()) {
 }
 
 // box/src/link/peers/devices.ts
+init_directory();
+init_known();
 var DEVICES_FEATURE = "devices.pair";
 var namedDevice = (device) => device || "Kuvo Code's app";
 var blockedVouch = (device, computer, here) => ({
@@ -31619,10 +32144,12 @@ import fs104 from "node:fs";
 
 // box/src/link/documents/exchange.ts
 init_home();
+init_known();
 init_library();
 
 // box/src/link/personalities/take.ts
 import crypto34 from "node:crypto";
+init_changed();
 init_files2();
 init_home();
 init_library();
@@ -31729,6 +32256,8 @@ function answerPersonalities(method, id, body, file = PERSONALITIES_FILE, lock =
 }
 
 // box/src/link/documents/exchange.ts
+init_state();
+init_work2();
 var docParts = new Map;
 function sendDocs(host, link, sends) {
   if (!host || !link?.key)
@@ -31797,386 +32326,23 @@ function macDocsChanged() {
 
 // box/src/link/peers/manage.ts
 init_home();
-
-// box/src/link/mac/link.ts
-import { spawnSync as spawnSync8 } from "node:child_process";
-import fs102 from "node:fs";
-import os11 from "node:os";
-import path106 from "node:path";
-init_files2();
-init_text();
-init_home();
-
-// box/src/link/mac/machines.ts
-init_home();
-import fs101 from "node:fs";
-import path105 from "node:path";
-
-// box/src/link/mac/app-route.ts
-async function appAnswer(request, phone, signal) {
-  const host = openAppHost();
-  if (!host)
-    return null;
-  let response;
-  try {
-    await proveHost(host, signal);
-    response = await fetch(`${host.url}/link/route`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
-      body: JSON.stringify({
-        method: request.method,
-        path: request.path,
-        headers: request.headers ?? {},
-        body: Buffer.from(request.body ?? EMPTY).toString("base64"),
-        phone: phone?.key?.toString("base64url") ?? null
-      }),
-      signal
-    });
-  } catch {
-    if (!signal?.aborted)
-      forgetHostProof();
-    return null;
-  }
-  if (response.headers.get("x-kuvo-answer") === "1")
-    return response;
-  await response.body?.cancel().catch(() => {});
-  return null;
-}
-async function* passedOn(response, signal) {
-  const headers = { "content-type": response.headers.get("content-type") ?? "application/json" };
-  const cache = response.headers.get("cache-control");
-  if (cache)
-    headers["cache-control"] = cache;
-  yield { head: { status: response.status, headers } };
-  if (!response.body)
-    return;
-  for await (const chunk of response.body) {
-    if (signal?.aborted)
-      break;
-    yield { body: Buffer.from(chunk) };
-  }
-}
-
-// box/src/link/mac/machines.ts
-var LIST_FILE = path105.join(K, "machines.json");
-var PHONE_LINK_FILE = path105.join(APP_FOLDER ?? K, "phone-link.json");
-var HEARD_LATELY = 30 * 60000;
-var TIMING = { wait: 5000, look: 1e4 };
-var macName2 = () => macLink.config?.name || "this Mac";
-var notOpen = () => `Kuvo Code isn’t open on ${macName2()}`;
-var UNREADABLE = "This Mac’s list of machines can’t be read right now.";
-function keptHosts() {
-  try {
-    return JSON.parse(fs101.readFileSync(PHONE_LINK_FILE, "utf8")).machines ?? {};
-  } catch (error) {
-    return error.code === "ENOENT" ? undefined : null;
-  }
-}
-function savedMachines(kept = keptHosts()) {
-  let text;
-  try {
-    text = fs101.readFileSync(LIST_FILE, "utf8");
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      return null;
-    return kept === undefined || kept && !Object.keys(kept).length ? [] : null;
-  }
-  try {
-    const saved = JSON.parse(text);
-    return Array.isArray(saved) && saved.every((machine) => typeof machine?.destination === "string") ? saved : null;
-  } catch {
-    return null;
-  }
-}
-function anyMachines() {
-  const saved = savedMachines();
-  return saved === null || saved.length > 0;
-}
-function machinesWithoutApp(now = Date.now()) {
-  const saved = savedMachines();
-  if (!saved)
-    return null;
-  const peers = peersOf(readLink());
-  const told = readPeerAgents();
-  return {
-    machines: saved.map(({ destination, otherAddresses }) => {
-      const peer = peers.find((each) => each.id === destination);
-      const last = peer ? told[peer.key] : undefined;
-      const heard = !peer ? "" : now - (last?.heard ?? last?.at ?? 0) < HEARD_LATELY ? "Running · " : "Not heard from lately · ";
-      return { id: destination, name: destination, otherAddresses: Array.isArray(otherAddresses) ? otherAddresses : [], connection: "notConnected", status: heard + notOpen() };
-    }),
-    hosts: []
-  };
-}
-function hostsWithoutApp() {
-  const kept = keptHosts();
-  const saved = savedMachines(kept);
-  const relay = macLink.config?.relay;
-  if (!saved || !relay || kept === null || kept === undefined && saved.length)
-    return null;
-  const peers = peersOf(readLink());
-  const hosts = Object.entries(kept ?? {}).flatMap(([machine, { name, address, key, anotherMac }]) => typeof name === "string" && typeof address === "string" && typeof key === "string" ? [{ kind: "machine", name: peers.find((peer) => peer.key === key)?.name || name, address, key, relay, machine, anotherMac: anotherMac === true, removed: !saved.some((each) => each.destination === machine) }] : []);
-  return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
-}
-var answer3 = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
-async function appWithin(request, phone, signal, wait) {
-  const late = new AbortController;
-  const timer = setTimeout(() => late.abort(), wait);
-  const response = await appAnswer(request, phone, signal ? AbortSignal.any([signal, late.signal]) : late.signal);
-  clearTimeout(timer);
-  return response;
-}
-var pause2 = (ms, signal) => new Promise((done) => {
-  const finish = () => {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", finish);
-    done();
-  };
-  const timer = setTimeout(finish, ms);
-  signal?.addEventListener("abort", finish, { once: true });
-});
-async function* machinesFollowed(request, phone, signal, timing) {
-  const head = { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  let started = false;
-  let last = "";
-  while (!signal?.aborted) {
-    const response = await appWithin(request, phone, signal, timing.wait);
-    if (response?.status === 200 && response.body) {
-      if (!started)
-        yield head;
-      started = true;
-      let ended = true;
-      try {
-        for await (const chunk of response.body) {
-          if (signal?.aborted)
-            return;
-          yield { body: Buffer.from(chunk) };
-          ended = chunk[chunk.length - 1] === 10;
-        }
-      } catch {}
-      if (!ended)
-        yield { body: Buffer.from(`
-`) };
-      last = "";
-    } else {
-      await response?.body?.cancel().catch(() => {});
-    }
-    if (signal?.aborted)
-      return;
-    const own = machinesWithoutApp();
-    if (!own)
-      return started ? undefined : yield* answer3(503, { message: UNREADABLE });
-    if (!started)
-      yield head;
-    started = true;
-    const line = JSON.stringify(own);
-    if (line !== last) {
-      yield { body: Buffer.from(line + `
-`) };
-      last = line;
-    }
-    await pause2(timing.look, signal);
-  }
-}
-var OWN_ANSWERS = { "kuvo/machines": machinesWithoutApp, "kuvo/hosts": hostsWithoutApp };
-var isMachinesRoute = (route) => /^kuvo\/(machines|hosts)(\/|$)/.test(route);
-async function* machinesRoute(request, phone, signal, route, timing = TIMING) {
-  const read = request.method.toUpperCase() === "GET";
-  const main = read ? null : mainElsewhere(readLink());
-  if (main)
-    return yield* answer3(409, addElsewhere(main));
-  if (read && route === "kuvo/machines/events")
-    return yield* machinesFollowed(request, phone, signal, timing);
-  const response = read ? await appWithin(request, phone, signal, timing.wait) : await appAnswer(request, phone, signal);
-  const own = read ? OWN_ANSWERS[route] : undefined;
-  if (response && (!own || response.status === 200))
-    return yield* passedOn(response, signal);
-  await response?.body?.cancel().catch(() => {});
-  if (signal?.aborted)
-    return;
-  if (own) {
-    const said = own();
-    return yield* answer3(said ? 200 : 503, said ?? { message: UNREADABLE });
-  }
-  yield* answer3(503, { message: `${notOpen()}. Open it there, then try again.` });
-}
-
-// box/src/link/mac/link.ts
-function macNeeded(link, now = Date.now()) {
-  const config = macLink.config;
-  if (!config)
-    return false;
-  if (config.machines)
-    return true;
-  const pairing = ["pairing", "appPairing"].some((slot) => link?.[slot] && now < link[slot].expires);
-  return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
-}
-var MAC_LINK_FILE = path106.join(RUN, "mac-link.json");
-function saveMacConfig(config) {
-  const { phones, relay, name, app } = config;
-  try {
-    writePrivate(MAC_LINK_FILE, JSON.stringify({ phones, relay, name, app }));
-  } catch (error) {
-    console.error(`This Mac's link settings couldn't be kept: ${error.message}`);
-  }
-}
-function savedMacConfig(file = MAC_LINK_FILE) {
-  let kept;
-  try {
-    kept = JSON.parse(fs102.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-  if (!isObject(kept) || typeof kept.phones !== "boolean" || typeof kept.relay !== "string")
-    return null;
-  try {
-    if (!["ws:", "wss:"].includes(new URL(kept.relay).protocol))
-      return null;
-  } catch {
-    return null;
-  }
-  return {
-    phones: kept.phones,
-    machines: anyMachines(),
-    relay: kept.relay,
-    name: typeof kept.name === "string" ? kept.name : "Mac",
-    app: MAC_APP_VERSION ?? (typeof kept.app === "string" ? kept.app : "")
-  };
-}
-var DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr";
-function computerName2() {
-  if (process.platform === "darwin") {
-    const asked = spawnSync8("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-    const said = asked.status === 0 ? plainName(asked.stdout).slice(0, 100) : "";
-    if (said)
-      return said;
-  }
-  return plainName(os11.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
-}
-function ownMacConfig() {
-  if (!OWN_HOME_MAC)
-    return null;
-  const real = located(K) === located(path106.join(accountHome(), ".kuvo-code"));
-  let relay = real ? DEFAULT_RELAY : null;
-  try {
-    const given = real ? undefined : process.env.KUVO_TEST_RELAY;
-    if (given && ["ws:", "wss:"].includes(new URL(given).protocol))
-      relay = given.replace(/\/$/, "");
-  } catch {}
-  if (!relay)
-    return null;
-  return { phones: true, machines: anyMachines(), relay, name: computerName2(), app: MAC_APP_VERSION ?? "" };
-}
-function macLinkCheck() {
-  if (macLink.host && !macNeeded(readLink()))
-    macLink.host.disconnect?.();
-}
-function setLinkStatus(state, reason) {
-  const next = reason ? { state, reason } : { state };
-  if (JSON.stringify(next) === JSON.stringify(macLink.status))
-    return;
-  macLink.status = next;
-  for (const tell of macLink.statusFollowers)
-    tell();
-}
-function macLinkWait(ms) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, ms);
-    function done() {
-      clearTimeout(timer);
-      if (macLink.wake === done)
-        macLink.wake = null;
-      resolve();
-    }
-    macLink.wake = done;
-  });
-}
-var KEY_TEXT = /^[A-Za-z0-9_-]{43}$/;
-async function macKeys({ needed = false } = {}) {
-  const config = macLink.config;
-  if (macLink.overlay || !config || !(needed || config.phones || config.machines))
-    return true;
-  const given = await linkHost("link/identity", {});
-  if (!given || !["key", "secret", "sign"].every((name) => KEY_TEXT.test(given[name] ?? ""))) {
-    if (config.phones || config.machines)
-      setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
-    return false;
-  }
-  macLink.overlay = { key: given.key, secret: given.secret, sign: given.sign, relay: macLink.config.relay, name: macLink.config.name };
-  if (macLink.status.state === "failed")
-    setLinkStatus(macNeeded(readLink()) ? "connecting" : "off");
-  return true;
-}
-function tellGone(gone) {
-  if (!gone.length)
-    return;
-  const went = sendGone(gone);
-  const left = gone.filter((peer) => !went.includes(peer.key));
-  updateLink((link) => {
-    if (!link)
-      return null;
-    const untold = (Array.isArray(link.untold) ? link.untold : []).filter((peer) => !gone.some((each) => each.key === peer.key));
-    if (!left.length && untold.length === (link.untold?.length ?? 0))
-      return null;
-    link.untold = [...untold, ...left].slice(-64);
-    if (!link.untold.length)
-      delete link.untold;
-    return link;
-  });
-}
-function sendGone(gone) {
-  const host = macLink.host;
-  if (!host?.welcomed)
-    return [];
-  let envelope = null;
-  const link = updateLink((link) => {
-    const made = link?.sign ? ownDoc(link, "peers", macPeersBody(link)) : null;
-    envelope = made?.envelope ?? null;
-    return made?.changed ? link : null;
-  }) ?? readLink();
-  if (!envelope || !link?.key)
-    return [];
-  const went = [];
-  for (const peer of gone) {
-    if (!peer.sign) {
-      went.push(peer.key);
-      continue;
-    }
-    const bytes = mailFor(peer, { docs: { give: [envelope] }, at: Date.now() }, link);
-    try {
-      if (bytes && host.send(bytes))
-        went.push(peer.key);
-    } catch {}
-  }
-  return went;
-}
-function tellUntold() {
-  const link = readLink();
-  const untold = (Array.isArray(link?.untold) ? link.untold : []).filter(fitsPeer);
-  const again = untold.filter((peer) => peersOf(link).some((each) => each.key === peer.key));
-  if (again.length) {
-    updateLink((link) => {
-      if (!link?.untold)
-        return null;
-      link.untold = link.untold.filter((peer) => !again.some((each) => each.key === peer.key));
-      return link;
-    });
-  }
-  tellGone(untold.filter((peer) => !again.includes(peer)).map(cleanPeer));
-}
-function stopMacLink() {
-  macLink.stopped = true;
-  macLink.host?.disconnect?.();
-  macLink.wake?.();
-}
+init_link();
+init_machines();
 
 // box/src/link/mac/routes.ts
+init_machines();
 import fs103 from "node:fs";
 import path107 from "node:path";
 init_format();
+init_work2();
 init_files2();
 init_home();
+init_directory();
+init_known();
 init_library();
+init_state();
+init_link();
+init_main_only();
 var macPhones = () => {
   const link = readLink();
   return {
@@ -32417,7 +32583,12 @@ async function* linkRoute(context) {
 }
 
 // box/src/link/peers/manage.ts
+init_main_only();
+init_settle();
+init_state();
 init_files2();
+init_directory();
+init_known();
 var MANAGE_FEATURE = "computers.manage";
 var MOST_NAME3 = 100;
 function writerOf(link) {
@@ -32577,6 +32748,7 @@ async function writerAct(sender, act) {
 }
 
 // box/src/link/work-queue/across.ts
+init_settle();
 init_files2();
 var QUEUES_FEATURE = "work-queue.elsewhere";
 var takesQueues = (key) => (readPeerAgents()[key]?.features ?? []).includes(QUEUES_FEATURE);
@@ -32900,12 +33072,17 @@ var newer = (a, aAt, b, bAt) => a.updated.at > b.updated.at || a.updated.at === 
 
 // box/src/link/bots/held.ts
 init_text();
+init_bots();
 import crypto36 from "node:crypto";
 import fs106 from "node:fs";
 import path109 from "node:path";
 
 // box/src/link/bots/elsewhere.ts
 init_text();
+init_bots();
+init_directory();
+init_known();
+init_state();
 
 // box/src/link/bots/deletes.ts
 var counted2 = (count, one, many) => count === 1 ? one : `${count} ${many}`;
@@ -32993,6 +33170,10 @@ function elsewhereSaid(listed, held, refused) {
 // box/src/link/bots/held.ts
 init_files2();
 init_home();
+init_directory();
+init_known();
+init_settle();
+init_state();
 var HELD_FEATURE = "bots.held";
 var HELD3 = path109.join(RUN, "bots-held");
 var LOCK14 = path109.join(RUN, ".bots-held.lock");
@@ -33755,15 +33936,24 @@ class NoticeHold {
   }
 }
 
+// box/src/link/mac/peers.ts
+init_known();
+
 // box/src/link/peers/seats.ts
 init_text();
 init_format();
+init_parts();
 import crypto37 from "node:crypto";
 import fs108 from "node:fs";
 import os12 from "node:os";
 import path113 from "node:path";
 init_files2();
 init_home();
+init_state();
+init_directory();
+init_known();
+init_record();
+init_settle();
 var SEAT_WHOLE = 48000;
 var seatParts = new Map;
 var bridgeClock = {
@@ -34041,6 +34231,9 @@ import fs112 from "node:fs";
 import path117 from "node:path";
 init_files2();
 init_home();
+init_directory();
+init_known();
+init_state();
 
 // box/src/link/moves/bundle.ts
 import { spawn as spawn10 } from "node:child_process";
@@ -34048,6 +34241,8 @@ import crypto38 from "node:crypto";
 import fs109 from "node:fs";
 import path114 from "node:path";
 init_home();
+init_host_interface();
+init_records();
 var MOST_BUNDLE = 1e9;
 var ENGINE_WAIT = 2 * 60000;
 var EXPORT_WAIT = 10 * 60000;
@@ -34332,6 +34527,9 @@ async function groupAction(bridge, group, action) {
 // box/src/link/moves/elsewhere.ts
 init_text();
 init_files2();
+init_known();
+init_state();
+init_records();
 import fs110 from "node:fs";
 import path115 from "node:path";
 var FILE4 = path115.join(MOVES, "elsewhere.json");
@@ -34445,6 +34643,7 @@ function movesElsewhere(peers = peersOf(readLink()), now = Date.now()) {
 // box/src/link/moves/left.ts
 init_files2();
 init_home();
+init_records();
 import fs111 from "node:fs";
 import path116 from "node:path";
 var KEEP_LEFT = 7 * 24 * 3600000;
@@ -34496,6 +34695,7 @@ function removeTrashed(trash) {
 }
 
 // box/src/link/moves/move.ts
+init_records();
 var PART_BYTES = 30000;
 var IN_FLIGHT = 16;
 var PART_AGAIN = 20000;
@@ -36109,6 +36309,7 @@ function watchMoves(host, signal) {
 }
 
 // box/src/link/mac/peers.ts
+init_state();
 function macAttendPeers(body, given) {
   const host = macLink.host;
   const link = readLink();
@@ -36221,6 +36422,12 @@ function macLetterAnswer(id, signal, most = LETTER_WAIT, cut) {
 }
 
 // box/src/link/letters/calls.ts
+init_records();
+init_directory();
+init_known();
+init_dropped();
+init_frames();
+init_state();
 var CALL_TOOLS = ["list_sessions", "stop_session", "compact_session", "answer_ask", "start_session", "list_models", "list_projects", "stop_work"];
 var isCallTool = (name) => CALL_TOOLS.includes(name);
 var CALLS_FEATURE = "work.elsewhere";
@@ -39241,8 +39448,10 @@ async function* sessionWakesRoute(context, wakes) {
 // box/src/link/bots/list.ts
 init_files2();
 init_home();
-import path123 from "node:path";
+init_host_interface();
 init_text();
+init_state();
+import path123 from "node:path";
 function listBots(machine) {
   const bots = [];
   const computer = (IS_MAC ? plainName(macLink.config?.name) : machine) || HERE;
@@ -39810,8 +40019,14 @@ linkedFollowers.add(() => {
 });
 
 // box/src/link/peers/agents.ts
+init_work2();
 init_files2();
 init_home();
+init_records();
+init_state();
+init_directory();
+init_known();
+init_record();
 
 // box/src/shared/account-names.ts
 var short4 = {
@@ -39846,6 +40061,7 @@ init_files2();
 init_home();
 import fs122 from "node:fs";
 import path129 from "node:path";
+init_records();
 
 // box/src/link/glance/asked.ts
 init_files2();
@@ -41358,6 +41574,9 @@ async function* listRoute(context, match) {
 }
 
 // box/src/link/areas/computers.ts
+init_directory();
+init_keys();
+init_known();
 init_text();
 
 // box/src/link/add/flow.ts
@@ -41367,6 +41586,11 @@ import fs132 from "node:fs";
 init_format();
 init_files2();
 init_home();
+init_link();
+init_machines();
+init_known();
+init_main_only();
+init_state();
 
 // box/src/link/add/address.ts
 init_home();
@@ -41599,6 +41823,7 @@ import { spawnSync as spawnSync9 } from "node:child_process";
 import fs126 from "node:fs";
 import path133 from "node:path";
 init_home();
+init_known();
 
 // box/src/link/serve-kept.ts
 import fs125 from "node:fs";
@@ -41649,6 +41874,7 @@ async function* serveRoute({ request, json }) {
 }
 
 // box/src/link/uninstall.ts
+init_state();
 var LAUNCH_AGENT = "run.kuvo.code.machine";
 var REBOOT_TAG = "# kuvo-code: starts its engine again after a restart";
 function launchTools() {
@@ -43567,11 +43793,19 @@ function sshActions(computer, here) {
   ];
 }
 
+// box/src/link/areas/computers.ts
+init_phones();
+init_main_only();
+init_record();
+
 // box/src/link/server/context.ts
 var fromLocalApp = (request) => request.served === true && (request.fromApp === true || request.fromMac === true);
 var fromAPhone = (request) => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
 
 // box/src/link/areas/computers.ts
+init_state();
+init_settle();
+init_state();
 var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 var MOST_HERE = 100;
 var HEARD_LATELY2 = 30 * 60000;
@@ -43829,6 +44063,7 @@ async function* computersRoute(context, match) {
 }
 
 // box/src/link/peers/agents.ts
+init_settle();
 function forgetMacsAgents(mac, link) {
   const keep = new Set(peersOf(link).map((peer) => peer.key));
   locked(PEER_LOCK, () => {
@@ -43976,6 +44211,9 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
 }
 
 // box/src/link/letters/outbox.ts
+init_directory();
+init_known();
+init_state();
 var introducing = new Map;
 var INTRODUCING_FOR = 60000;
 var notesWaiting = new Map;
@@ -44484,6 +44722,7 @@ function sendOutbox(host, link = readLink(), now = Date.now(), offline = 0, ask 
 }
 
 // box/src/link/work/asks.ts
+init_records();
 var WORK_ASKS2 = path141.join(WORK_FOLDER, "asks.json");
 var LOCK17 = path141.join(WORK_FOLDER, ".asks.lock");
 var WORK_ACTIONS = ["makeProject", "cloneProject", "resetLimits"];
@@ -44732,6 +44971,7 @@ async function watchWorkAsks(tell, { signal, every = 2000, read = workAsks, answ
 // box/src/link/areas/box-keys.ts
 init_files2();
 init_home();
+init_host_interface();
 import fs137 from "node:fs";
 import path142 from "node:path";
 async function answerKeys(method, route, body) {
@@ -45492,7 +45732,11 @@ function adoptBox(seed) {
 }
 
 // box/src/link/main.ts
+init_keys();
+init_noise();
+init_changed();
 init_format();
+init_work2();
 
 // box/src/link/engine/compatibility.ts
 import fs141 from "node:fs";
@@ -46116,6 +46360,7 @@ import crypto52 from "node:crypto";
 import fs144 from "node:fs";
 import path151 from "node:path";
 init_home();
+init_records();
 init_text();
 async function attachedIn(body, session, modelInput, joinsNote = false, toAgents = false) {
   let prompt;
@@ -51337,6 +51582,7 @@ function helperCommand(args) {
 
 // box/src/link/install/command.ts
 init_home();
+init_link();
 
 // box/src/link/rehome/move.ts
 import { spawnSync as spawnSync15 } from "node:child_process";
@@ -51346,7 +51592,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "75d55413eaff";
+var BRIDGE_VERSION = "a9c4237fe230";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -51373,7 +51619,7 @@ async function migrateDatabases({ engine, data, scratch }) {
   if (other)
     throw new Error(`The engine's database ${path164.basename(other.database)} is of an earlier version, and only opencode.db can be brought up to date.`);
   const [{ database, from }] = due;
-  const before = tableCounts(database);
+  const before = tableCounts(database), every = everyCount(database);
   fs156.rmSync(scratch, { recursive: true, force: true });
   try {
     const started = await startIsolated({ engine, data, scratch, what: "your sessions (to bring them up to date)" });
@@ -51388,10 +51634,12 @@ async function migrateDatabases({ engine, data, scratch }) {
   const fewer = Object.entries(before).filter(([table, count]) => (table in after) && after[table] < count).map(([table, count]) => `${table} (${after[table]} of ${count})`);
   if (fewer.length)
     throw new Error(`Bringing your sessions up to date lost some of what they held: ${fewer.join(", ")}.`);
-  return [{ database, from, to }];
+  const left = everyCount(database);
+  return [{ database, from, to, gone: Object.fromEntries(Object.entries(every).filter(([table, count]) => count > 0 && !(table in left))) }];
 }
 
 // box/src/link/rehome/run-steps.ts
+init_said();
 init_rewrite();
 var HELPER_NAME2 = "Kuvo Helper";
 var exists5 = (file) => {
@@ -51447,13 +51695,16 @@ function handOverKeys(run, home) {
         continue;
     }
     if (reason === "refused")
-      throw new Error(LOCKED2);
-    throw new Error(`Kuvo couldn't take this Mac's keys along (${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "kuvo-keys said nothing"}). Try again.`);
+      throw new Said(LOCKED2);
+    console.error(`kuvo-keys copy: ${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "it said nothing"}`);
+    throw new Said("Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.");
   }
   const checked = tool(helperProgram2(helper), ["keys", "check", "--home", home]);
   if (checked.status !== 0) {
     const unreadable = Array.isArray(checked.said?.unreadable) ? checked.said.unreadable.length : 0;
-    throw new Error(unreadable ? `Kuvo couldn't read ${unreadable === 1 ? "one of this Mac's keys" : `${unreadable} of this Mac's keys`} back after copying ${unreadable === 1 ? "it" : "them"}. Try again.` : `Kuvo couldn't check this Mac's keys after copying them (${checked.errors || "its helper said nothing"}). Try again.`);
+    if (!unreadable)
+      console.error(`Kuvo Helper keys check: ${checked.errors || "it said nothing"}`);
+    throw new Said(unreadable ? `Kuvo couldn't read ${unreadable === 1 ? "one of this Mac's keys" : `${unreadable} of this Mac's keys`} back after copying ${unreadable === 1 ? "it" : "them"}. Try again.` : "Kuvo couldn't check this Mac's keys after copying them, so nothing was moved. Try again.");
   }
 }
 function takeBackKeys(run, home) {
@@ -51489,12 +51740,12 @@ function heldOpen(folder) {
 }
 function heldRefusal(appFolder) {
   const held = heldOpen(path169.join(appFolder, "opencode", "data", "opencode"));
-  return held.length ? `An earlier Kuvo Code is still running on this Mac (${held.join(", ")}). Quit Kuvo Code wherever it's open, then try again.` : null;
+  return held.length ? `Your sessions are still open in another program on this Mac (${held.join(", ")}). Quit Kuvo Code wherever it's open, then try again.` : null;
 }
 function beforeForward(_run, appFolder) {
   const held = heldRefusal(appFolder);
   if (held)
-    throw new Error(held);
+    throw new Said(held);
 }
 async function migrateStaged(_run, move) {
   const data = placementOf(move, "data");
@@ -51502,8 +51753,11 @@ async function migrateStaged(_run, move) {
     return;
   const engine = stagedEngine(move);
   if (!engine)
-    throw new Error("Kuvo's engine isn't here to bring your sessions up to date with. Check that this Mac is online, then try again.");
-  await migrateDatabases({ engine, data: data.staged, scratch: path169.join(move.work, "migrate") });
+    throw new Said("Kuvo's engine isn't here to bring your sessions up to date with. Check that this Mac is online, then try again.");
+  const migrated = await migrateDatabases({ engine, data: data.staged, scratch: path169.join(move.work, "migrate") });
+  const waiting = migrated.reduce((sum, each) => sum + (each.gone.session_pending ?? 0), 0);
+  if (waiting)
+    noteRecord(move.home, { dropped: [...readRecord(move.home).dropped ?? [], `${waiting === 1 ? "A message" : `${waiting} messages`} still waiting to reach an agent when the earlier Kuvo Code last quit ${waiting === 1 ? "wasn't" : "weren't"} kept: send ${waiting === 1 ? "it" : "them"} again.`] });
 }
 async function upgradeStaged(run, move) {
   await Promise.resolve().then(() => init_upgrades());
@@ -51547,16 +51801,17 @@ function countsHold(move) {
   try {
     before = JSON.parse(fs161.readFileSync(countsFile2(move), "utf8"));
   } catch {
-    throw new Error("What your sessions and settings held wasn't counted before they were copied.");
+    throw new Error("the counts taken after the clone can't be read");
   }
   const after = stagedCounts(move);
   const fewer = Object.keys(before).filter((name) => (after[name] ?? 0) < before[name]);
   if (fewer.length)
-    throw new Error(`Something went missing as your sessions and settings were copied (${fewer.map((name) => `${name}: ${after[name] ?? 0} of ${before[name]}`).join(", ")}), so nothing was changed.`);
+    throw new Said(`Something went missing as your sessions and settings were copied (${fewer.map((name) => `${name}: ${after[name] ?? 0} of ${before[name]}`).join(", ")}), so nothing was changed.`);
   return Object.fromEntries(Object.keys(after).flatMap((name) => [[`${name}Before`, before[name] ?? 0], [name, after[name]]]));
 }
 
 // box/src/link/rehome/move.ts
+init_said();
 init_rewrite();
 var BESIDE = [
   ["data", "opencode/data"],
@@ -52097,7 +52352,7 @@ async function carryOn2(journal, rewriter) {
         const sources = journal.placements.filter((each) => !each.installed).map((each) => each.from);
         const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path170.join(journal.from, "box", "run")) : null;
         if (changed)
-          throw new Error(`${changed} changed while your sessions were being copied. Quit Kuvo Code wherever it's still open, then try again.`);
+          throw new Said(`Something changed in ${changed} while your sessions were being copied. Close what's using that folder (Kuvo Code, an editor, a terminal), then try again.`);
         beforeForward(journal.run, journal.from);
       }
     }
@@ -52165,7 +52420,11 @@ function failed2(journal, error, now = Date.now()) {
     } catch (problem) {
       console.error(`This Mac's keys couldn't be taken back: ${problem.message}`);
     }
-  const message = error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  const plain = !journal.run || error instanceof Said;
+  if (!plain)
+    console.error(`The move stopped at ${step}: ${raw}`);
+  const message = plain ? raw : "Kuvo couldn't move your sessions this time, and left everything as it was. Try again.";
   const record = readRecord(home);
   const counted = record.counted === journal.began;
   if (journal.way === "back")
@@ -52213,7 +52472,7 @@ async function resumed(home, rewriter) {
   if (!journal || journal.step === "done")
     return null;
   if (!forwardOnly(journal.step)) {
-    const message = failed2(journal, new Error(`It stopped part way (${journal.step}), so it went back.`));
+    const message = failed2(journal, new Said(journal.run ? "Kuvo was stopped while moving your sessions, and left everything as it was." : `It stopped part way (${journal.step}), so it went back.`));
     return { result: "failed", message, status: rehomeStatus(home) };
   }
   return carried(journal, rewriter);
@@ -52715,6 +52974,16 @@ var NOT_MOVED2 = {
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
   waits: "Another move is under way."
 };
+var processAlive = (pid) => {
+  if (!Number.isInteger(pid) || pid <= 1)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+};
 async function moved({ home, root, bundle, release, engine }, judged, say) {
   const before = judged();
   if (before.verdict === "waits")
@@ -52724,8 +52993,10 @@ async function moved({ home, root, bundle, release, engine }, judged, say) {
   checkedRelease(release);
   const folder = rehomeFolder(home);
   fs164.mkdirSync(folder, { recursive: true, mode: 448 });
-  const out = path172.join(folder, "run.out"), log = path172.join(folder, "run.log");
-  fs164.rmSync(out, { force: true });
+  const out = path172.join(folder, `run.${process.pid}.out`), log = path172.join(folder, "run.log");
+  for (const left of fs164.readdirSync(folder))
+    if (/^run\.(\d+\.)?out$/.test(left) && left !== path172.basename(out) && !processAlive(Number(left.split(".")[1])))
+      fs164.rmSync(path172.join(folder, left), { force: true });
   const outTo = fs164.openSync(out, "w", 384), logTo = fs164.openSync(log, "a", 384);
   let child;
   try {
@@ -52909,10 +53180,10 @@ init_home();
 import path175 from "node:path";
 
 // box/src/link/rehome/run.ts
+init_home();
 import { spawnSync as spawnSync18 } from "node:child_process";
 import fs166 from "node:fs";
 import path174 from "node:path";
-init_home();
 init_database();
 init_rewrite();
 
@@ -52951,8 +53222,7 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
 `).pop() ?? "");
   } catch {}
   if (read.status !== 0 || !isObject(said) || !Array.isArray(said.logins)) {
-    return { done: false, why: isObject(said) && typeof said.error === "string" ? said.error : (read.stderr ?? "").trim().split(`
-`).pop() || "kuvo-keys said nothing", added: 0, short: 0 };
+    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`})`, added: 0, short: 0 };
   }
   const logins = said.logins.filter((each) => isObject(each) && typeof each.host === "string" && each.host.length > 0 && typeof each.account === "string" && typeof each.password === "string");
   if (!logins.length)
@@ -52972,27 +53242,33 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
   try {
     const vault = await ask("GET", "kuvo/vault");
     if (vault.status !== 200)
-      return { done: false, why: typeof vault.value.message === "string" ? vault.value.message : `the vault answered ${vault.status}`, added, short };
+      return { done: false, why: `the vault answered ${vault.status}`, added, short };
     const items = (Array.isArray(vault.value.items) ? vault.value.items : []).filter(isObject);
     const taken = new Set(items.map((item) => String(item.name ?? "").toLowerCase()));
-    const has = (login) => items.some((item) => item.kind === "login" && Array.isArray(item.sites) && item.sites.includes(login.host) && (typeof item.username === "string" ? item.username : "") === login.account);
+    const itemOf = (login) => items.find((item) => item.kind === "login" && Array.isArray(item.sites) && item.sites.includes(login.host) && (typeof item.username === "string" ? item.username : "") === login.account);
+    const granted = new Set((Array.isArray(vault.value.grants) ? vault.value.grants : []).filter(isObject).filter((grant) => isObject(grant.who) && grant.who.everyone === true).map((grant) => grant.item));
     for (const login of logins) {
-      if (has(login))
-        continue;
-      if (login.password.length < 4) {
-        short++;
-        continue;
+      let item = itemOf(login);
+      if (!item) {
+        if (login.password.length < 4) {
+          short++;
+          continue;
+        }
+        const name = freeName2(login.host, login.account, taken);
+        const made = await ask("POST", "kuvo/vault/items", { kind: "login", name, sites: [login.host], ...login.account ? { username: login.account } : {}, signInOnly: true, values: { password: login.password } });
+        item = isObject(made.value.item) ? made.value.item : undefined;
+        if (made.status !== 200 || !item || typeof item.id !== "string")
+          return { done: false, why: `the vault answered ${made.status} to a sign-in`, added, short };
+        added++;
+        taken.add(name.toLowerCase());
+        items.push(item);
       }
-      const name = freeName2(login.host, login.account, taken);
-      const made = await ask("POST", "kuvo/vault/items", { kind: "login", name, sites: [login.host], ...login.account ? { username: login.account } : {}, signInOnly: true, values: { password: login.password } });
-      const item = isObject(made.value.item) ? made.value.item : null;
-      if (made.status !== 200 || !item || typeof item.id !== "string")
-        return { done: false, why: typeof made.value.message === "string" ? made.value.message : `the vault answered ${made.status}`, added, short };
-      added++;
-      taken.add(name.toLowerCase());
-      items.push(item);
-      if (agentSites.includes(login.host) && agentAccounts[login.host] === login.account)
-        await ask("POST", "kuvo/vault/grants", { item: item.id, who: { everyone: true }, how: "own" });
+      if (agentSites.includes(login.host) && agentAccounts[login.host] === login.account && !granted.has(item.id)) {
+        const grant = await ask("POST", "kuvo/vault/grants", { item: item.id, who: { everyone: true }, how: "own" });
+        if (grant.status !== 200)
+          return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short };
+        granted.add(item.id);
+      }
     }
   } catch (error) {
     return { done: false, why: error.message, added, short };
@@ -53038,7 +53314,7 @@ function schemaRefusal2(appFolder, home) {
           fs166.copyFileSync(database + suffix, copy + suffix, fs166.constants.COPYFILE_FICLONE);
       const mark = schemaMark(copy);
       if (!takenSchema(mark))
-        return `Your sessions were last used by a version of Kuvo Code that this one can't bring along yet (${mark}). Update Kuvo Code, then try again.`;
+        return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed.`;
     }
     return null;
   } catch (error) {
@@ -53062,7 +53338,7 @@ function runRefusal({ appFolder, home }, plan, pinned) {
   const old = runningIn(path174.join(appFolder, "box", "run"));
   if (old.length)
     return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}). Quit Kuvo Code wherever it's open, then try again.`;
-  if (!plan.merge && runningIn(path174.join(home, "run")).length)
+  if (runningIn(path174.join(home, "run")).length)
     return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
   const target = nearest(home);
   if (fs166.statSync(appFolder).dev !== fs166.statSync(target).dev || diskKind(appFolder) !== "apfs")
@@ -53080,9 +53356,16 @@ async function stopOldKeeper(appFolder) {
   try {
     keeper = JSON.parse(fs166.readFileSync(path174.join(run, "keeper.json"), "utf8"));
   } catch {}
-  const pid = isObject(keeper) && Number.isInteger(keeper.pid) ? keeper.pid : null;
-  const runs = () => pid !== null && processRuns(pid, "--box");
-  if (runs() && isObject(keeper) && typeof keeper.url === "string" && typeof keeper.password === "string" && /^http:\/\/127\.0\.0\.1:\d+/.test(keeper.url)) {
+  const pid = isObject(keeper) && Number.isInteger(keeper.pid) && keeper.pid > 1 ? keeper.pid : null;
+  const runs = () => {
+    if (pid === null)
+      return false;
+    const asked = spawnSync18("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    return asked.status === 0 && /(^|\s)--box(\s|$)/.test(asked.stdout ?? "");
+  };
+  if (!runs())
+    return;
+  if (isObject(keeper) && typeof keeper.url === "string" && typeof keeper.password === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(keeper.url)) {
     try {
       await fetch(`${keeper.url.replace(/\/+$/, "")}/stop`, { method: "POST", headers: { authorization: `Bearer ${keeper.password}` }, signal: AbortSignal.timeout(20000) });
     } catch {}
@@ -53152,13 +53435,16 @@ function settleStart(home, options) {
     const deleted = exists8(keys) ? deleteOriginalKeys(keys, home) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code" };
     if (deleted.done)
       settled2(home, "keychain");
-    else
-      console.error(`The Keychain's originals couldn't be taken away yet: ${deleted.why}`);
+    else {
+      console.error(`kuvo-keys delete-originals: ${deleted.why}`);
+      message ??= "Kuvo is moved and working. It couldn't finish with your Keychain yet, and tries again the next time it opens.";
+    }
   }
   return { owes, bundle, app, started, message };
 }
 async function settle5(home, options) {
   const { owes, bundle, app, started, message } = settleStart(home, options);
+  let said = message;
   if (owes("passwords") && !owes("start")) {
     const keys = path174.join(bundle, "Contents", "MacOS", "kuvo-keys");
     const record = readRecord(home);
@@ -53170,8 +53456,10 @@ async function settle5(home, options) {
       if (handed.short)
         noteRecord(home, { dropped: [...readRecord(home).dropped ?? [], `${handed.short === 1 ? "A saved password" : `${handed.short} saved passwords`} shorter than four characters ${handed.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`] });
       settled2(home, "passwords");
-    } else
+    } else {
       console.error(`Your saved sign-ins couldn't be brought into the vault yet: ${handed.why}`);
+      said ??= "Kuvo is moved and working. Your saved sign-ins aren't in its vault yet: it tries again the next time it opens.";
+    }
   }
   if (owes("agent")) {
     const tools = launchTools();
@@ -53181,7 +53469,7 @@ async function settle5(home, options) {
   }
   if (!owes("start"))
     fs166.rmSync(path174.join(home, "updates", "install"), { recursive: true, force: true });
-  return { result: "done", status: rehomeStatus(home), ...started !== undefined ? { started } : {}, ...message ? { message } : {} };
+  return { result: "done", status: rehomeStatus(home), ...started !== undefined ? { started } : {}, ...said ? { message: said } : {} };
 }
 async function rehomeRun(folders, options) {
   const { appFolder, home } = folders;
@@ -53194,6 +53482,8 @@ async function rehomeRun(folders, options) {
     const record = readRecord(home);
     if (record.state === "done" && record.way === "move")
       return settle5(home, options);
+    if (machineBoxThere(home))
+      return { result: "refused", message: TWO, status: rehomeStatus(home) };
     const keys = path174.join(options.bundle, "Contents", "MacOS", "kuvo-keys");
     const plan = {
       bundle: options.bundle,
@@ -53201,7 +53491,6 @@ async function rehomeRun(folders, options) {
       release: path174.resolve(options.release),
       engine: path174.resolve(options.engine),
       source: appBoxThere(appFolder) ? "app-box" : "app-07",
-      ...machineBoxThere(home) ? { merge: true } : {},
       keys: exists8(keys) ? keys : null
     };
     if (plan.source === "app-box")
@@ -53211,14 +53500,16 @@ async function rehomeRun(folders, options) {
     try {
       pinned = checkedRelease(plan.release).engine;
     } catch {}
-    const refusal = plan.merge ? TWO : runRefusal(folders, plan, pinned);
+    const refusal = runRefusal(folders, plan, pinned);
     if (refusal) {
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: now, step: "plan", message: refusal }, asked: null });
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
     }
-    for (const name of fs166.readdirSync(plan.engine))
-      if (name !== pinned)
-        fs166.rmSync(path174.join(plan.engine, name), { recursive: true, force: true });
+    if (located(plan.engine) === located(path174.join(home, "updates", "install", "engine"))) {
+      for (const name of fs166.readdirSync(plan.engine))
+        if (name !== pinned)
+          fs166.rmSync(path174.join(plan.engine, name), { recursive: true, force: true });
+    }
     const outcome = await run5({
       v: 1,
       way: "move",
@@ -53334,6 +53625,10 @@ async function rehomeCommand(root, args) {
   }
 }
 
+// box/src/link/main.ts
+init_main_only();
+init_link();
+
 // box/src/link/mac/notices.ts
 import fs167 from "node:fs";
 init_files2();
@@ -53342,9 +53637,12 @@ init_files2();
 import path176 from "node:path";
 init_files2();
 init_home();
+init_state();
 
 // box/src/link/notices/notice.ts
 init_text();
+init_noise();
+init_frames();
 var NOTICE_LIMIT = 2500;
 function noticeJSON(notice) {
   const value = { t: "notify", title: cut(masked(String(notice.title ?? "")), 200), category: notice.category, thread: String(notice.thread ?? ""), data: notice.data ?? {} };
@@ -53417,6 +53715,7 @@ function notePushed(address, status, now = Date.now(), link = readLink()) {
 }
 
 // box/src/link/mac/notices.ts
+init_state();
 function macNoticeHold(clock = {}) {
   let held = [];
   try {
@@ -53455,6 +53754,11 @@ function macTell(notice) {
 // box/src/link/mac/relay.ts
 import os24 from "node:os";
 // box/src/link/peers/mail.ts
+init_records();
+init_state();
+init_settle();
+init_directory();
+init_known();
 var answeringAsk = null;
 var asksFrom = new Map;
 function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: true })) {
@@ -53572,7 +53876,13 @@ function heardFromMac(mac, payload, now = Date.now()) {
     writeAgents(changed);
 }
 
+// box/src/link/mac/relay.ts
+init_phones();
+
 // box/src/link/relay/connection.ts
+init_keys();
+init_dropped();
+init_frames();
 function fromRelay(host, message, self) {
   if (message.address.equals(self)) {
     if (message.kind === "deliver")
@@ -53660,6 +53970,9 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
 }
 
 // box/src/link/relay/host.ts
+init_keys();
+init_noise();
+init_frames();
 var requestOf = (head, body) => ({
   method: typeof head.m === "string" ? head.m : "GET",
   path: typeof head.p === "string" ? head.p : "",
@@ -53920,6 +54233,7 @@ async function* startRoute(context) {
 // box/src/link/areas/session-move.ts
 import fs168 from "node:fs";
 import path177 from "node:path";
+init_records();
 var SESSION_MOVE_ROUTE = /^kuvo\/sessions\/([^/]+)\/move$/;
 var SESSION_FOLDERS_ROUTE = /^kuvo\/sessions\/([^/]+)\/folders$/;
 async function read4(target, id, signal) {
@@ -54001,6 +54315,9 @@ import fs169 from "node:fs";
 import path178 from "node:path";
 init_text();
 init_home();
+init_records();
+init_known();
+init_state();
 var DELETES_ROUTE = "kuvo/sessions/deletes";
 async function* deletesRoute(context) {
   const { request, signal, json } = context;
@@ -54634,9 +54951,12 @@ init_files2();
 init_home();
 import fs171 from "node:fs";
 import path180 from "node:path";
+init_main_only();
+init_settle();
 
 // box/src/link/server/forward.ts
 init_home();
+init_records();
 // box/src/link/server/sent-once.ts
 var BUSY = "This computer is busy: its engine didn't answer in time. Try again in a moment.";
 var SENDING_PATIENCE = { ms: 120000 };
@@ -54939,6 +55259,9 @@ async function* engineRoute(context) {
   }
   return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine));
 }
+
+// box/src/link/areas/setup.ts
+init_state();
 // box/src/link/areas/sign-in.ts
 init_text();
 
@@ -56105,6 +56428,8 @@ function bundleBuild(file) {
 init_engines();
 init_files2();
 init_home();
+init_known();
+init_state();
 
 // box/src/link/rehome/route.ts
 init_home();
@@ -56247,6 +56572,9 @@ function pieces2(engine, engineRuns) {
 }
 
 // box/src/link/areas/named.ts
+init_directory();
+init_known();
+init_state();
 async function* namedRoute(context) {
   const { request, readEngine, json } = context;
   if (request.method.toUpperCase() !== "GET")
@@ -56307,8 +56635,13 @@ async function* personalityRoute(context, personality) {
     retellBots([id], readEngine, readBridge).catch(() => {});
   return yield* json(status, value);
 }
+
 // box/src/link/areas/phones.ts
+init_changed();
 init_home();
+init_phones();
+init_main_only();
+init_state();
 async function* phonesRoute(context) {
   const { phone, json } = context;
   const link = readLink();
@@ -56371,6 +56704,9 @@ async function* devicesPairRoute(context) {
   const done = await pairDeviceFromHere(parsed(request.body), signal);
   return yield* json(done.status, done.value);
 }
+// box/src/link/areas/queue.ts
+init_records();
+
 // box/src/link/messages/arriving.ts
 var ARRIVING_FOR = 120000;
 var stopWaits = { within: 1e4 };
@@ -56422,6 +56758,7 @@ function heldAsItComes(session, id, now = Date.now()) {
   return until > now;
 }
 // box/src/link/areas/messages.ts
+init_records();
 var SEND_ROUTE = /^kuvo\/sessions\/([^/]+)\/send$/;
 var PARTS_ROUTE = "kuvo/messages/parts";
 var PARTS_MOST = 500;
@@ -56970,6 +57307,7 @@ function askHolder(request, signal) {
   });
 }
 // box/src/link/areas/sandbox.ts
+init_state();
 var NOT_OPEN = "This computer's box isn't running its own process: try again in a moment.";
 var NOT_CALLING = "Only a conversation's own tool call can ask, and this one isn't running in it.";
 var NOT_ON = "Commands aren't in the sandbox on this computer now, so there's nothing to ask: run the command with your shell tool.";
@@ -57139,6 +57477,7 @@ async function* sandboxRoute(context) {
 // box/src/link/areas/vault.ts
 init_text();
 import crypto62 from "node:crypto";
+init_state();
 
 // box/src/link/vault/fill.ts
 init_text();
@@ -58939,6 +59278,8 @@ async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
 // box/src/link/areas/work-queue.ts
 import fs183 from "node:fs";
 import path192 from "node:path";
+init_records();
+init_settle();
 
 // box/src/link/work-queue/import.ts
 init_text();
@@ -59200,8 +59541,13 @@ function importWords(outcome, skipped, names) {
   ].filter(Boolean).join(" ");
 }
 
+// box/src/link/areas/work-queue.ts
+init_state();
+init_known();
+
 // box/src/link/work-queue/tools.ts
 init_home();
+init_directory();
 var said7 = (text) => ({ text, isError: false });
 var refused7 = (text) => ({ text, isError: true });
 var ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
@@ -61634,6 +61980,7 @@ async function* appIconRoute(context) {
   yield { body: bytes };
 }
 // box/src/shared/routes/settings-pages.ts
+init_shape();
 var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
 var SETTING_CAN = oneOf(literal(true), object({ why: string }));
 var SETTING_CONFIRM = object({ title: string, body: string, button: string });
@@ -61708,6 +62055,7 @@ function budgetConfirmation(older) {
 }
 
 // box/src/link/areas/settings-pages.ts
+init_shape();
 init_home();
 
 // box/src/link/mac/keeper-runs.ts
@@ -61733,6 +62081,8 @@ function keeperRuns2() {
 }
 
 // box/src/link/areas/settings-pages.ts
+init_settle();
+init_state();
 init_zone();
 var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
 var SECTIONS = [
@@ -62504,6 +62854,9 @@ async function* settingsPageRoute(context, match) {
 
 // box/src/link/areas/moves.ts
 init_text();
+init_records();
+init_known();
+init_state();
 var KINDS6 = ["bot", "chat", "group"];
 var movesNow = () => {
   const peers = peersOf(readLink());
@@ -62560,6 +62913,9 @@ async function* movePlacesRoute(context) {
     return yield* json(404, { message: "It isn’t on this computer any more." });
   return yield* json(200, places);
 }
+
+// box/src/link/server/router.ts
+init_machines();
 
 // box/src/link/permissions.ts
 import { spawnSync as spawnSync19 } from "node:child_process";
@@ -62618,6 +62974,7 @@ import fs192 from "node:fs";
 import path199 from "node:path";
 init_files();
 init_home();
+init_host_interface();
 var APP_FILE = () => path199.join(RUN, "app.json");
 var OPENING_FILE = () => path199.join(RUN, "app-opening.json");
 var FAILED_FILE = () => path199.join(RUN, "app-open-failed.json");
@@ -62910,6 +63267,9 @@ async function* appOpenRoute({ request, json, signal }) {
 // box/src/link/mac/app-keys.ts
 init_format();
 init_home();
+init_host_interface();
+init_known();
+init_state();
 import crypto64 from "node:crypto";
 var ONLY_APP = "Only Kuvo Code on this Mac can ask for that.";
 var ONLY_OWN_HOME = "Only a Mac's box in a home of its own does this for its app.";
@@ -63089,6 +63449,11 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
 
 // box/src/link/mac/relay.ts
 init_home();
+init_host_interface();
+init_state();
+init_app_route();
+init_link();
+init_machines();
 var MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
 var macAppAnswers = (route) => MAC_APP_ROUTES.some((area) => route === area || route.startsWith(`${area}/`));
 var APP_NOT_ANSWERING = "Kuvo Code on this Mac isn't answering. Try again in a moment.";
@@ -63185,7 +63550,9 @@ async function runMacLink() {
 }
 
 // box/src/link/main.ts
+init_known();
 init_library();
+init_phones();
 
 // box/src/link/browser/websocket.ts
 import crypto65 from "node:crypto";
@@ -63421,6 +63788,9 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os25.
   return server;
 }
 
+// box/src/link/main.ts
+init_state();
+
 // box/src/link/areas/group-settings.ts
 init_library();
 function rulesHere() {
@@ -63495,12 +63865,16 @@ function keepGroupSettings(bridge = bridgeTarget, every = (round) => {
 }
 
 // box/src/link/main.ts
+init_keys();
+init_noise();
+init_frames();
 init_format();
 init_home();
 
 // box/src/link/places.ts
 import path200 from "node:path";
 init_home();
+init_machines();
 function boxPlaces() {
   return {
     layout: APP_FOLDER ? "app" : "own",
@@ -63539,7 +63913,18 @@ function boxPlaces() {
 }
 
 // box/src/link/main.ts
+init_state();
 init_library();
+init_known();
+init_changed();
+init_phones();
+init_work2();
+init_settle();
+init_record();
+init_directory();
+init_directory();
+init_phones();
+init_link();
 scriptIs(fileURLToPath4(import.meta.url));
 onDocsChanged(macDocsChanged);
 zoneFollowers.add(() => {

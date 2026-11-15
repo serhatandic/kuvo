@@ -357,6 +357,16 @@ export function tableCounts(file: string): Record<string, number> {
   }
 }
 
+/** How many rows each of a database's tables holds. */
+export function everyCount(file: string): Record<string, number> {
+  const db = open(file, true);
+  try {
+    return Object.fromEntries([...tables(db)].map(table => [table, Number(db.query(`SELECT count(*) AS n FROM "${table}"`).get().n)]));
+  } finally {
+    db.close();
+  }
+}
+
 /** Every folder a database names: its projects', worktrees' and sessions'. */
 export function databaseFolders(file: string): string[] {
   const db = open(file, true);

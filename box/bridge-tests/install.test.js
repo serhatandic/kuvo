@@ -405,6 +405,21 @@ test("a move launchd wouldn't start is finished by running it again: until then 
   assert.equal(install(where, "status").said.verb, null);
 });
 
+test("a Mac that's one of your machines too is told so in words by the installer, and nothing is moved or stopped", { skip: !mac && "a Mac's app folder" }, () => {
+  const where = computer();
+  write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
+  // A machine's box in its home, as another Mac set it up.
+  write(path.join(where.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700);
+  write(path.join(where.K, "run", "link.json"), JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] }));
+  assert.deepEqual({ verdict: install(where, "status").said.verdict, verb: install(where, "status").said.verb }, { verdict: "two", verb: null });
+  const refused = install(where, "move");
+  assert.equal(refused.status, 1);
+  assert.deepEqual({ result: refused.said.result, verdict: refused.said.verdict, message: refused.said.message }, { result: "refused", verdict: "two", message: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." });
+  assert.equal(exists(path.join(where.K, "box", "kind")), false);
+  assert.equal(exists(path.join(where.K, "chats")), false);
+  assert.equal(exists(path.join(where.home, "launchctl-asked")), false);
+});
+
 test("on Linux there's nothing to move: said, and nothing made", { skip: mac && "Linux has no app's folder" }, () => {
   const where = computer();
   const refused = install(where, "move");

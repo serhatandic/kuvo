@@ -12,6 +12,8 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { databaseCounts, databasesIn, tableCounts } from "./database";
 import { migrateDatabases } from "./migrate";
+import { Said } from "./said";
+import { noteRecord, readRecord } from "./state";
 import { placementOf, stagedEngine, type MoveContext } from "./rewrite";
 import type { RunPlan } from "./state";
 
@@ -60,13 +62,16 @@ export function handOverKeys(run: RunPlan, home: string): void {
       const cleared = tool(helperProgram(helper), ["keys", reason === "leftovers" ? "clear" : "uncopy", "--home", home]);
       if (cleared.status === 0) continue;
     }
-    if (reason === "refused") throw new Error(LOCKED);
-    throw new Error(`Kuvo couldn't take this Mac's keys along (${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "kuvo-keys said nothing"}). Try again.`);
+    if (reason === "refused") throw new Said(LOCKED);
+    // (What it said goes to the move's own log, for support: it may name an item.)
+    console.error(`kuvo-keys copy: ${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "it said nothing"}`);
+    throw new Said("Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.");
   }
   const checked = tool(helperProgram(helper), ["keys", "check", "--home", home]);
   if (checked.status !== 0) {
     const unreadable = Array.isArray(checked.said?.unreadable) ? checked.said.unreadable.length : 0;
-    throw new Error(unreadable ? `Kuvo couldn't read ${unreadable === 1 ? "one of this Mac's keys" : `${unreadable} of this Mac's keys`} back after copying ${unreadable === 1 ? "it" : "them"}. Try again.` : `Kuvo couldn't check this Mac's keys after copying them (${checked.errors || "its helper said nothing"}). Try again.`);
+    if (!unreadable) console.error(`Kuvo Helper keys check: ${checked.errors || "it said nothing"}`);
+    throw new Said(unreadable ? `Kuvo couldn't read ${unreadable === 1 ? "one of this Mac's keys" : `${unreadable} of this Mac's keys`} back after copying ${unreadable === 1 ? "it" : "them"}. Try again.` : "Kuvo couldn't check this Mac's keys after copying them, so nothing was moved. Try again.");
   }
 }
 
@@ -112,13 +117,13 @@ export function heldOpen(folder: string): string[] {
 /** Why a move can't go on while something has the earlier Kuvo Code's database open, or null. */
 export function heldRefusal(appFolder: string): string | null {
   const held = heldOpen(path.join(appFolder, "opencode", "data", "opencode"));
-  return held.length ? `An earlier Kuvo Code is still running on this Mac (${held.join(", ")}). Quit Kuvo Code wherever it's open, then try again.` : null;
+  return held.length ? `Your sessions are still open in another program on this Mac (${held.join(", ")}). Quit Kuvo Code wherever it's open, then try again.` : null;
 }
 
 /** Looked at once more before the move goes forward: nothing has its database open. */
 export function beforeForward(_run: RunPlan, appFolder: string): void {
   const held = heldRefusal(appFolder);
-  if (held) throw new Error(held);
+  if (held) throw new Said(held);
 }
 
 // The engine's database
@@ -128,8 +133,12 @@ export async function migrateStaged(_run: RunPlan, move: MoveContext): Promise<v
   const data = placementOf(move, "data");
   if (!data || !databasesIn(path.join(data.staged, "opencode")).length) return;
   const engine = stagedEngine(move);
-  if (!engine) throw new Error("Kuvo's engine isn't here to bring your sessions up to date with. Check that this Mac is online, then try again.");
-  await migrateDatabases({ engine, data: data.staged, scratch: path.join(move.work, "migrate") });
+  if (!engine) throw new Said("Kuvo's engine isn't here to bring your sessions up to date with. Check that this Mac is online, then try again.");
+  const migrated = await migrateDatabases({ engine, data: data.staged, scratch: path.join(move.work, "migrate") });
+  // What the engine's own update let go of is said: messages that were waiting on a session when
+  // the earlier Kuvo Code last quit (its engine kept them in a table the pinned one has no more).
+  const waiting = migrated.reduce((sum, each) => sum + (each.gone.session_pending ?? 0), 0);
+  if (waiting) noteRecord(move.home, { dropped: [...(readRecord(move.home).dropped ?? []), `${waiting === 1 ? "A message" : `${waiting} messages`} still waiting to reach an agent when the earlier Kuvo Code last quit ${waiting === 1 ? "wasn't" : "weren't"} kept: send ${waiting === 1 ? "it" : "them"} again.`] });
 }
 
 // The upgrades
@@ -190,10 +199,10 @@ export function noteCounts(move: MoveContext, _when: "before"): void {
 export function countsHold(move: MoveContext): Record<string, number> {
   let before: Record<string, number> = {};
   try { before = JSON.parse(fs.readFileSync(countsFile(move), "utf8")); } catch {
-    throw new Error("What your sessions and settings held wasn't counted before they were copied.");
+    throw new Error("the counts taken after the clone can't be read");
   }
   const after = stagedCounts(move);
   const fewer = Object.keys(before).filter(name => (after[name] ?? 0) < before[name]);
-  if (fewer.length) throw new Error(`Something went missing as your sessions and settings were copied (${fewer.map(name => `${name}: ${after[name] ?? 0} of ${before[name]}`).join(", ")}), so nothing was changed.`);
+  if (fewer.length) throw new Said(`Something went missing as your sessions and settings were copied (${fewer.map(name => `${name}: ${after[name] ?? 0} of ${before[name]}`).join(", ")}), so nothing was changed.`);
   return Object.fromEntries(Object.keys(after).flatMap(name => [[`${name}Before`, before[name] ?? 0], [name, after[name]]]));
 }

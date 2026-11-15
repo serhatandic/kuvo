@@ -16,7 +16,7 @@ import Security
 /// helper signed by that team, in the box's `bin` or the release its move unpacked
 /// (`updates/install`).
 ///
-/// **What that holds against, and what it doesn't (#713 piece 4 settles the rest; until then no
+/// **What that holds against, and what it doesn't (left for a decision, #713 §8e; until then no
 /// `kuvo-keys` is signed with a real identity, scripts/build-helper.sh):** all of it rests on the
 /// box's home being closed to whoever asks, which is true only of a command under the sandbox,
 /// and of another user. A program of yours outside the sandbox can write the move's lock itself
@@ -82,7 +82,7 @@ public enum KeysTool {
                 // (never one signed ad hoc, which anything could be, but in the tests' own build).
                 // And only one in the box's `bin` or the release its move unpacked, where no command
                 // under the sandbox can put another in its place between this check and the copies
-                // being made. (A program of yours outside the sandbox can: piece 4's to close.)
+                // being made. (A program of yours outside the sandbox can: left for a decision, #713 §8e.)
                 guard let helperBundle, helperBundle.hasPrefix("/"), let trusted = inside(home, helperBundle, under: ["bin", "updates/install"]),
                       BoxHelperBundle.isGenuine(trusted, identifier: helper, adHocMatch: !pinned), let seal = BoxHelperBundle.cdhash(trusted) else {
                     usage("Copying needs \(BoxHelperBundle.name) itself, in this Mac’s box and signed by Kuvo Code’s team: --helper <its bundle>.")

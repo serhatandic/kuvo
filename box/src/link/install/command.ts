@@ -184,6 +184,11 @@ const NOT_MOVED: Partial<Record<InstallVerdict, string>> = {
   waits: "Another move is under way.",
 };
 
+const processAlive = (pid: number): boolean => {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
 /** An earlier Kuvo Code's sessions and settings moved by the box itself (`rehome --run`, "Moving
  * this Mac's box"), started in a session of its own so that the app quitting doesn't stop it,
  * and followed: a line for each step as it's reached (`{step, title, index, of}`, the box's own
@@ -196,8 +201,9 @@ async function moved({ home, root, bundle, release, engine }: { home: string; ro
   checkedRelease(release);
   const folder = rehomeFolder(home);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
-  const out = path.join(folder, "run.out"), log = path.join(folder, "run.log");
-  fs.rmSync(out, { force: true });
+  // (Its answer in a file of this installer's own: two at once never read each other's.)
+  const out = path.join(folder, `run.${process.pid}.out`), log = path.join(folder, "run.log");
+  for (const left of fs.readdirSync(folder)) if (/^run\.(\d+\.)?out$/.test(left) && left !== path.basename(out) && !processAlive(Number(left.split(".")[1]))) fs.rmSync(path.join(folder, left), { force: true });
   const outTo = fs.openSync(out, "w", 0o600), logTo = fs.openSync(log, "a", 0o600);
   let child: ReturnType<typeof spawn>;
   try {

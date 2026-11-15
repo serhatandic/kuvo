@@ -130,6 +130,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   const state = readJSON(join(K, "updates", "rehome", "state.json"))
   expect(state.dropped).toEqual([
     "One group chat couldn't be read, and wasn't brought along. It's still in the earlier Kuvo Code's folder (groups.json).",
+    "One message in your group chats couldn't be read, and wasn't brought along.",
     "In your group chats, a bot on one of your machines takes its seat again at its next turn: the conversation it had there before stays on that machine, unused.",
     "A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along.",
     "2 messages you'd typed but not sent weren't brought along.",
@@ -138,6 +139,9 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
     "The terminal app chosen for a project isn't kept: Kuvo's own terminals open in the side panel.",
     "You signed out of an account while a machine was away: it may still be signed in to it. Sign out there too once it's connected.",
     "2 machines that were away still have files of something you removed here (a bot, or Kuvo Code itself): remove them from there once connected.",
+    "A project on your machines may have lost its name, extra folders or Run command, which the earlier Kuvo Code kept on this Mac. Set them again in each project's settings.",
+    "A worktree on your machines may show its sessions under another project: the earlier Kuvo Code kept which project it belonged to on this Mac.",
+    "API keys you pasted into the usage panel aren't brought along. Paste them again where you use them.",
   ])
   expect(state.counts).toMatchObject({ sessions: 5, bots: 1, botsBefore: 1, wakeUps: 2, wakeUpsBefore: 2, groupChats: 1, groupChatsBefore: 0, worktreeRecords: 1, worktreeRecordsBefore: 0 })
   expect(moved.said!.status.dropped).toEqual(state.dropped)

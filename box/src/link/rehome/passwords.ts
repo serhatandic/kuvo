@@ -55,7 +55,8 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
   let said: unknown = null;
   try { said = JSON.parse((read.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
   if (read.status !== 0 || !isObject(said) || !Array.isArray(said.logins)) {
-    return { done: false, why: isObject(said) && typeof said.error === "string" ? said.error : (read.stderr ?? "").trim().split("\n").pop() || "kuvo-keys said nothing", added: 0, short: 0 };
+    // (Only its one word for why: what it says besides may name a site or an account.)
+    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`})`, added: 0, short: 0 };
   }
   const logins = said.logins.filter((each): each is Login => isObject(each) && typeof each.host === "string" && each.host.length > 0 && typeof each.account === "string" && typeof each.password === "string");
   if (!logins.length) return { done: true, added: 0, short: 0 };
@@ -70,22 +71,31 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
   let added = 0, short = 0;
   try {
     const vault = await ask("GET", "kuvo/vault");
-    if (vault.status !== 200) return { done: false, why: typeof vault.value.message === "string" ? vault.value.message : `the vault answered ${vault.status}`, added, short };
+    if (vault.status !== 200) return { done: false, why: `the vault answered ${vault.status}`, added, short };
     const items = (Array.isArray(vault.value.items) ? vault.value.items : []).filter(isObject);
     const taken = new Set(items.map(item => String(item.name ?? "").toLowerCase()));
-    const has = (login: Login) => items.some(item => item.kind === "login" && Array.isArray(item.sites) && item.sites.includes(login.host) && (typeof item.username === "string" ? item.username : "") === login.account);
+    const itemOf = (login: Login) => items.find(item => item.kind === "login" && Array.isArray(item.sites) && item.sites.includes(login.host) && (typeof item.username === "string" ? item.username : "") === login.account);
+    const granted = new Set((Array.isArray(vault.value.grants) ? vault.value.grants : []).filter(isObject).filter(grant => isObject(grant.who) && grant.who.everyone === true).map(grant => grant.item));
     for (const login of logins) {
-      if (has(login)) continue;
-      // (The vault keeps no value under four characters: it couldn't hide one from agents.)
-      if (login.password.length < 4) { short++; continue; }
-      const name = freeName(login.host, login.account, taken);
-      const made = await ask("POST", "kuvo/vault/items", { kind: "login", name, sites: [login.host], ...(login.account ? { username: login.account } : {}), signInOnly: true, values: { password: login.password } });
-      const item = isObject(made.value.item) ? made.value.item : null;
-      if (made.status !== 200 || !item || typeof item.id !== "string") return { done: false, why: typeof made.value.message === "string" ? made.value.message : `the vault answered ${made.status}`, added, short };
-      added++;
-      taken.add(name.toLowerCase());
-      items.push(item);
-      if (agentSites.includes(login.host) && agentAccounts[login.host] === login.account) await ask("POST", "kuvo/vault/grants", { item: item.id, who: { everyone: true }, how: "own" });
+      let item = itemOf(login);
+      if (!item) {
+        // (The vault keeps no value under four characters: it couldn't hide one from agents.)
+        if (login.password.length < 4) { short++; continue; }
+        const name = freeName(login.host, login.account, taken);
+        const made = await ask("POST", "kuvo/vault/items", { kind: "login", name, sites: [login.host], ...(login.account ? { username: login.account } : {}), signInOnly: true, values: { password: login.password } });
+        item = isObject(made.value.item) ? made.value.item : undefined;
+        if (made.status !== 200 || !item || typeof item.id !== "string") return { done: false, why: `the vault answered ${made.status} to a sign-in`, added, short };
+        added++;
+        taken.add(name.toLowerCase());
+        items.push(item);
+      }
+      // A site agents signed in to by themselves, with that account, stays so: asked again where
+      // a hand-over cut short left the sign-in without it.
+      if (agentSites.includes(login.host) && agentAccounts[login.host] === login.account && !granted.has(item.id)) {
+        const grant = await ask("POST", "kuvo/vault/grants", { item: item.id, who: { everyone: true }, how: "own" });
+        if (grant.status !== 200) return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short };
+        granted.add(item.id);
+      }
     }
   } catch (error) {
     return { done: false, why: (error as Error).message, added, short };

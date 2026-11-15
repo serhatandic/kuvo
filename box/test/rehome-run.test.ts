@@ -1,7 +1,7 @@
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
@@ -129,7 +129,7 @@ test.if(mac)("an earlier Kuvo Code that still has its database open refuses the 
     const refused = run(m)
     expect(refused.status).toBe(1)
     expect(refused.said).toMatchObject({ result: "refused", status: { state: "failed", tries: 1, nextTry: null } })
-    expect(refused.said!.message).toMatch(/^An earlier Kuvo Code is still running on this Mac \(.+\)\. Quit Kuvo Code wherever it's open, then try again\.$/)
+    expect(refused.said!.message).toMatch(/^Your sessions are still open in another program on this Mac \(.+\)\. Quit Kuvo Code wherever it's open, then try again\.$/)
     expect(existsSync(join(m.K, "box"))).toBe(false)
     expect(snapshot(m.S)).toEqual(before)
   } finally {
@@ -198,7 +198,7 @@ test.if(mac)("sessions last used by an engine nobody tried are refused before an
   })
   const before = snapshot(m.S)
   const refused = run(m)
-  expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one can't bring along yet (51 20270101000000_later). Update Kuvo Code, then try again." })
+  expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (51 20270101000000_later). Nothing was changed." })
   expect(snapshot(m.S)).toEqual(before)
   expect(existsSync(join(m.K, "updates", "rehome", "plan-database"))).toBe(false)
 }, LIMIT)
@@ -208,7 +208,9 @@ test.if(mac && !REAL_ENGINE)("an engine that can't bring the sessions up to date
   const before = snapshot(m.S)
   const stopped = run(m)
   expect(stopped.status).toBe(1)
-  expect(stopped.said).toMatchObject({ result: "failed", status: { state: "failed", failed: { step: "database" } } })
+  // (Nothing of the person's to act on: said in one plain sentence, never the move's workings.)
+  expect(stopped.said).toMatchObject({ result: "failed", message: "Kuvo couldn't move your sessions this time, and left everything as it was. Try again.", status: { state: "failed", failed: { step: "database" } } })
+  expect(stopped.errors).toContain("The move stopped at database:")
   expect(snapshot(m.S)).toEqual(before)
   expect(existsSync(join(m.K, "box"))).toBe(false)
   expect(existsSync(join(m.keychain, "helper"))).toBe(false)
@@ -219,7 +221,7 @@ test.if(mac)("something written in the earlier Kuvo Code's folder while it's cop
   const written = join(m.S, "Chats", "c1", "written-meanwhile.md")
   const stopped = run(m, { KUVO_TEST_REHOME_WRITE_AT: "after-check", KUVO_TEST_REHOME_WRITE_FILE: written, KUVO_TEST_REHOME_WRITE_TEXT: "new" })
   expect(stopped.status).toBe(1)
-  expect(stopped.said!.message).toBe(`${join(m.S, "Chats", "c1")} changed while your sessions were being copied. Quit Kuvo Code wherever it's still open, then try again.`)
+  expect(stopped.said!.message).toBe(`Something changed in ${join(m.S, "Chats", "c1")} while your sessions were being copied. Close what's using that folder (Kuvo Code, an editor, a terminal), then try again.`)
   expect(existsSync(join(m.K, "box"))).toBe(false)
   // The next try takes what was written too.
   expect(run(m).said).toMatchObject({ result: "done" })
@@ -379,11 +381,48 @@ test.if(mac)("a Mac that's one of your machines already, with an earlier Kuvo Co
     put(join(m.K, "chats", "theirs", "notes.md"), "the machine's own")
   })
   expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "two", verb: null })
-  const before = { S: snapshot(m.S), K: snapshot(m.K, relative => relative === "updates/rehome") }
+  const before = { S: snapshot(m.S), K: snapshot(m.K) }
   const refused = run(m)
   expect(refused.status).toBe(1)
   expect(refused.said).toMatchObject({ result: "refused", message: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet." })
-  expect({ S: snapshot(m.S), K: snapshot(m.K, relative => relative === "updates/rehome") }).toEqual(before)
+  // (Nothing noted in that box's home either: only the move's own empty folder is new.)
+  expect({ S: snapshot(m.S), K: snapshot(m.K, relative => relative === "updates/rehome") }).toEqual({ ...before, K: Object.fromEntries(Object.entries(before.K).filter(([name]) => name !== "updates/rehome" && !name.startsWith("updates/rehome/"))) })
+  expect(readdirSync(join(m.K, "updates", "rehome"))).toEqual([])
   expect(existsSync(join(m.keychain, "helper"))).toBe(false)
   expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "two", verb: null })
+}, LIMIT)
+
+test.if(mac)("folders the earlier Kuvo Code left empty (its last bot deleted, no group chat left) come along empty: they never stop the move", () => {
+  const m = mac07(root, m => { for (const name of ["bots", "groups", "agents", "wakes"]) mkdirSync(join(m.S, name), { recursive: true }) })
+  const before = snapshot(m.S)
+  const moved = run(m)
+  expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+  expect(moved.said).toMatchObject({ result: "done", status: { tries: 0 } })
+  for (const name of ["bots", "groups", "agents", "wakes"]) expect(readdirSync(join(m.K, name)), name).toEqual([])
+  expect(snapshot(m.S)).toEqual(before)
+}, LIMIT)
+
+test.if(mac)("settings of the earlier Kuvo Code that are there and can't be read stop the move, which goes back: never moved without them", () => {
+  const m = mac07(root, m => put(join(m.home, "Library", "Preferences", "run.kuvo.code.trial713.plist"), "bplist00 cut short"))
+  const stopped = run(m)
+  expect(stopped.status).toBe(1)
+  expect(stopped.said).toMatchObject({ result: "failed", message: "Kuvo couldn't read the earlier Kuvo Code's settings, so nothing was moved. Try again.", status: { state: "failed", failed: { step: "upgrade" } } })
+  expect(existsSync(join(m.K, "box"))).toBe(false)
+  expect(existsSync(join(m.keychain, "helper"))).toBe(false)
+  // Readable again (none at all is none), it moves.
+  rmSync(join(m.home, "Library", "Preferences", "run.kuvo.code.trial713.plist"))
+  expect(run(m).said).toMatchObject({ result: "done" })
+}, LIMIT)
+
+test.if(mac)("a message still waiting on a session in the earlier engine's own table, which the pinned engine lets go of, is said: never dropped unsaid", () => {
+  const m = mac07(root, m => {
+    const file = join(m.S, "opencode", "data", "opencode", "opencode.db")
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(file + suffix, { force: true })
+    const sql = recorded("engine-2.0.32", m)
+    const session = /INSERT INTO session_v2 VALUES\('(ses_[A-Za-z0-9]+)'/.exec(sql)![1]
+    databaseWithLog(file, sql + `\nINSERT INTO session_pending VALUES('msg_waiting0000000000000001', '${session}', 'user', '{"text":"still to send"}', 'queue', 1, 1);`, join(m.home, "tmp", "make-db"))
+  })
+  const moved = run(m)
+  expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+  expect(moved.said!.status.dropped).toContain("A message still waiting to reach an agent when the earlier Kuvo Code last quit wasn't kept: send it again.")
 }, LIMIT)

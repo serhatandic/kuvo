@@ -355,7 +355,7 @@ in no release.
 
 ### #713 rehome inventory: Q1 (engine facts per release) and Q5 (the old keeper's move)
 
-Worktree: `/Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/shiny-squid`.
+Worktree: `<worktree>`.
 S = `~/Library/Application Support/run.kuvo.code` (`AppInfo.supportDirectory` =
 `URL.applicationSupportDirectory.appending(path: Bundle.main.bundleIdentifier ?? "run.kuvo.code")`,
 `v0.6.6:KuvoCode/App/AppInfo.swift:44-47`; only `isBeta` was added to that file by v0.8.0-beta.1).

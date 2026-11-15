@@ -22,6 +22,7 @@ import { BRIDGE_VERSION } from "../version";
 import { setKeepsAwake } from "../work/settings";
 import { undoKeychain } from "./outside";
 import { beforeForward, countsHold, handOverKeys, migrateStaged, noteCounts, takeBackKeys, upgradeStaged } from "./run-steps";
+import { Said } from "./said";
 import { PATH_REWRITER, pathMap, type MoveContext, type PathMap, type Rewriter } from "./rewrite";
 import {
   AFTER_A_FAILURE, KEPT_FOR, MOST_TRIES, forgetJournal, forwardOnly, giveLock, holdsLock, journalAct, noteRecord, readActs, readJournal,
@@ -594,7 +595,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
       if (journal.run) {
         const sources = journal.placements.filter(each => !each.installed).map(each => each.from);
         const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path.join(journal.from, "box", "run")) : null;
-        if (changed) throw new Error(`${changed} changed while your sessions were being copied. Quit Kuvo Code wherever it's still open, then try again.`);
+        if (changed) throw new Said(`Something changed in ${changed} while your sessions were being copied. Close what's using that folder (Kuvo Code, an editor, a terminal), then try again.`);
         beforeForward(journal.run, journal.from);
       }
     }
@@ -664,7 +665,12 @@ function failed(journal: Journal, error: unknown, now = Date.now()): string {
   // (A move the box runs itself: the Keychain's copies it made for the helper taken away again.
   // One that can't be now stays journaled there, and is taken away before the next copy.)
   if (journal.run) try { takeBackKeys(journal.run, home); } catch (problem) { console.error(`This Mac's keys couldn't be taken back: ${(problem as Error).message}`); }
-  const message = error instanceof Error ? error.message : String(error);
+  const raw = error instanceof Error ? error.message : String(error);
+  // (A move the box runs itself is read by the person at the Mac: what's theirs to act on is said
+  // as it is; anything else in one plain sentence, with what went wrong kept for support.)
+  const plain = !journal.run || error instanceof Said;
+  if (!plain) console.error(`The move stopped at ${step}: ${raw}`);
+  const message = plain ? raw : "Kuvo couldn't move your sessions this time, and left everything as it was. Try again.";
   const record = readRecord(home);
   // A move back that didn't: the box stays moved, as it was (Move Back tried again by asking again).
   // (Its try counted once, should it stop before the journal goes and be undone again.)
@@ -739,7 +745,7 @@ export async function resumed(home: string, rewriter: Rewriter): Promise<RehomeO
   }
   if (!journal || journal.step === "done") return null;
   if (!forwardOnly(journal.step)) {
-    const message = failed(journal, new Error(`It stopped part way (${journal.step}), so it went back.`));
+    const message = failed(journal, new Said(journal.run ? "Kuvo was stopped while moving your sessions, and left everything as it was." : `It stopped part way (${journal.step}), so it went back.`));
     return { result: "failed", message, status: rehomeStatus(home) };
   }
   return carried(journal, rewriter);
