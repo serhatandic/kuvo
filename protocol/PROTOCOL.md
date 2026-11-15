@@ -8109,7 +8109,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
   list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why; action confirmations, so a growing destructive warning makes a reading stale), never its display words: the same value set
   again, a computer renamed or a line reworded leaves it.
-- `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
+- `PATCH kuvo/settings/<section> {row, value, was, confirmed?}`: one row changed, `was` its `revision` as read.
+  For a row with `confirmBelow`, a numeric value strictly below `confirmBelow.value` requires
+  `confirmed: true`, sent only after accepting `confirmBelow.confirm` in the box's words.
+  Without it the box returns `400 {message: confirmBelow.confirm.body}` before changing anything.
+  At or above the threshold no confirmation is required. Cancel sends nothing.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
   doesn't fit (a switch's isn't true or false, a choice's isn't one of its choices) or a body without
   `row` or `was`; `403` where `can` says why not (that `why`); `404` for a row not on the page now;
@@ -8188,7 +8192,8 @@ The sections now:
 - **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
   older-budget (number in bytes, with the Swift page's common budgets and confirmation when
   lowering below what older copies take), and older-copies (Clear…, with confirmation).
-  `POST kuvo/artifacts/storage {budget, was?}` compares optional `was` with the budget before
+  `POST kuvo/artifacts/storage {budget, was?, wasOlder?}` compares optional `was` with the budget
+  and `wasOlder` with older copies’ bytes atomically before
   setting it; `POST kuvo/artifacts/storage/clear {was?}` compares with older copies' bytes before
   clearing. Mismatches answer `409 {message: "It changed since you read it."}`. Both checks and
   writes run synchronously in the bridge's event loop. Without `was`, both behave as before.

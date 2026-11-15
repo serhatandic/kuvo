@@ -95,6 +95,9 @@ export const SETTINGS_SECTIONS = object({ sections: list(SETTINGS_SECTION) });
  * without one is the route underneath refusing (a settings file that can't be used), in words. */
 export const SETTINGS_STALE = object({ message: string, "page?": SETTINGS_PAGE });
 
+/** A row change; confirmed is true only after accepting its conditional confirmation. */
+export const SETTINGS_CHANGE = object({ row: string, value: any, was: string, "confirmed?": bool });
+
 const REFUSED = object({ message: string });
 
 export type SettingKind = (typeof SETTING_KINDS)[number];

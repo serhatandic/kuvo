@@ -1,4 +1,5 @@
 import "./safety"
+import confirmationVectors from "../../protocol/vectors/routes/settings-confirmation.json"
 import { afterAll, beforeEach, expect, test } from "bun:test"
 import { mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -53,6 +54,7 @@ test("Storage preserves the Swift box group's words, budgets, units and confirma
   expect(row(page, "older-copies").actions[0]).toMatchObject({ title: "Clear…", confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } })
   const { revised } = await import("../src/link/areas/settings-pages")
   expect(revised({ ...budget, line: "Reworded" }).revision).toBe(budget.revision)
+  expect(revised({ ...budget, confirmBelow: { ...budget.confirmBelow, confirm: { ...budget.confirmBelow.confirm, body: "A changed warning" } } }).revision).not.toBe(budget.revision)
   disk.free = 0
   expect((await shown()).notes[0].words).toBe("The disk is nearly full, so only the newest version of each file keeps a copy until 10.7 GB is free again.")
 })
@@ -116,4 +118,33 @@ test("Storage does not invent rows when the bridge is unavailable", async () => 
   const page = (await ask(offline, "GET", "kuvo/settings/storage")).json
   expect(page.groups).toEqual([])
   expect(page.notes[0].tone).toBe("warning")
+})
+
+
+test("Storage requires explicit confirmation below the threshold before deleting copies", async () => {
+  await older()
+  const at = row(await shown(), "older-budget")
+  const before = store.storage()
+  for (const confirmed of [undefined, ...confirmationVectors.cases.filter(each => each.status === 400).map(each => each.confirmed)]) {
+    const answer = await ask(handler, "PATCH", "kuvo/settings/storage", { row: at.id, was: at.revision, value: 0, confirmed })
+    expect(answer.status).toBe(400)
+    expect(answer.json.message).toBe(at.confirmBelow.confirm.body)
+    expect(store.storage()).toEqual(before)
+  }
+  expect((await change(at, at.confirmBelow.value + 100)).status).toBe(200)
+  expect((await change(row(await shown(), "older-budget"), at.confirmBelow.value)).status).toBe(200)
+  expect(store.storage().older).toBe(before.older)
+  const current = row(await shown(), "older-budget")
+  expect((await ask(handler, "PATCH", "kuvo/settings/storage", { row: current.id, was: current.revision, value: 0, confirmed: true })).status).toBe(200)
+  expect(store.storage().older).toBe(0)
+})
+
+
+test("Storage atomically refuses budget changes when the warning's older count changed", async () => {
+  const read = store.storage()
+  await older()
+  const before = store.storage()
+  const answer = await ask(handler, "POST", "kuvo/artifacts/storage", { budget: 0, was: read.budget, wasOlder: read.older })
+  expect(answer.status).toBe(409)
+  expect(store.storage()).toEqual(before)
 })

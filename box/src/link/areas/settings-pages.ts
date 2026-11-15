@@ -83,7 +83,7 @@ export function revised<Row extends Omit<SettingItem, "revision"> & { items?: re
   const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
   const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
-    confirmBelow: row.confirmBelow?.value, min: row.min, max: row.max,
+    confirmBelow: row.confirmBelow, min: row.min, max: row.max,
     kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: can(row.can), set: row.set,
     choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
     start: action(row.start), section: row.section, address: row.address, name: row.name,
@@ -518,7 +518,7 @@ async function storagePage(context: RouteContext): Promise<SettingsPage> {
 
 async function storageChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
   if (at.id !== "older-budget") return { status: 400, message: "That isn't something to change." };
-  return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value }));
+  return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value, wasOlder: at.confirmBelow?.value }));
 }
 
 async function storageAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
@@ -776,6 +776,9 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       const why = whyNot(at.can);
       if (why) return { status: 403, value: { message: why } };
       if (!("value" in given) || !fits(at, given.value)) return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : (at.kind === "text" || at.kind === "folder") ? "Send text." : at.kind === "number" ? "Send a number within its limits." : "Send true or false." } };
+      if (at.confirmBelow && typeof given.value === "number" && given.value < at.confirmBelow.value && given.confirmed !== true) {
+        return { status: 400, value: { message: at.confirmBelow.confirm.body } };
+      }
       done = await section.change(context, at, given.value);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
