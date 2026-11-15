@@ -134,4 +134,8 @@ test("on Linux a box's start script alone says a machine's box is there, but one
   expect(judgeInstall(bare.K, null).verdict).toBe(mac ? "fresh" : "machine")
   bare.put(join(bare.K, "updates", "install", "making"), "1\n")
   expect(judgeInstall(bare.K, null)).toMatchObject({ verdict: "fresh", verb: "new" })
+  // (Whatever its start left before it failed, keys and a link too: not running, it isn't a box.)
+  machineBox(bare)
+  bare.put(join(bare.K, "box", "keys", "k"), "x")
+  expect(judgeInstall(bare.K, null)).toMatchObject(mac ? { verdict: "machine" } : { verdict: "fresh", verb: "new" })
 })

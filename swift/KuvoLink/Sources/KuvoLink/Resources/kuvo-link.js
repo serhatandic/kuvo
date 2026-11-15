@@ -48387,7 +48387,7 @@ import fs159 from "node:fs";
 import path167 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c6cf7a259a7b";
+var BRIDGE_VERSION = "f24fdab69348";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync12 } from "node:child_process";
@@ -50916,9 +50916,11 @@ function machineBoxThere(home, linux = process.platform !== "darwin") {
   const kind = recordedKind(path168.join(home, "box", "kind"));
   if (kind === "mac" || runsAt(home) === "gone")
     return false;
+  if (linux && exists5(path168.join(home, MAKING2)))
+    return runningIn(path168.join(home, "run")).length > 0;
   if (foundAt2(home, false) !== null || kind === "machine" || exists5(path168.join(home, "box", "keys")))
     return true;
-  return linux && !exists5(path168.join(home, MAKING2));
+  return linux;
 }
 function judgeInstall(home, appFolder, { helperInPlace = () => null } = {}) {
   const status = rehomeStatus(home);
@@ -51062,6 +51064,8 @@ var clearStaging2 = (home) => fs161.rmSync(path169.join(home, "updates", "instal
 function tidyStaging(home, { verdict, verb }, release) {
   if (verb !== null || !["ours", "machine", "two"].includes(verdict) || !release)
     return;
+  if (verdict !== "ours")
+    fs161.rmSync(path169.join(home, MAKING2), { force: true });
   try {
     const box = JSON.parse(fs161.readFileSync(path169.join(release, "box.json"), "utf8"));
     const version = isObject(box) && typeof box.engine === "string" && /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) ? box.engine : null;
@@ -51074,6 +51078,14 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   if (before.verdict !== "fresh" && before.verdict !== "ours")
     return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: NOT_NEW[before.verdict] };
   let made = false;
+  const earlier = () => {
+    try {
+      return fs161.readdirSync(path169.join(home, "trash")).filter((name) => name.startsWith("earlier-box-"));
+    } catch {
+      return [];
+    }
+  };
+  const asideBefore = new Set(earlier());
   const pinned = checkedRelease(release).engine;
   if (before.verdict === "fresh") {
     if (!fs161.existsSync(path169.join(engine, pinned, "opencode")))
@@ -51091,9 +51103,11 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   const after = judged();
   if (after.verdict !== "ours")
     return { result: "failed", verdict: after.verdict, message: "This Mac's box couldn't be made." };
+  const asideNow = earlier().filter((name) => !asideBefore.has(name)).sort().pop();
+  const setAside = asideNow ? { setAside: path169.join(home, "trash", asideNow) } : {};
   if (!launchTools()) {
     clearStaging2(home);
-    return { result: made ? "done" : "nothing", verdict: "ours", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
+    return { result: made ? "done" : "nothing", verdict: "ours", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code.", ...setAside };
   }
   const engines = fs161.readdirSync(path169.join(home, "engine")).filter((name) => fs161.existsSync(path169.join(home, "engine", name, "opencode"))).sort();
   const version = engines.includes(pinned) ? pinned : engines.pop();
@@ -51112,15 +51126,15 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   const message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran?.stderr ?? "").trim().split(`
 `).pop() || "it said nothing"}.`;
   if (!started)
-    return { result: "failed", verdict: "ours", started, message };
+    return { result: "failed", verdict: "ours", started, message, ...setAside };
   clearStaging2(home);
-  return { result: made ? "done" : "nothing", verdict: "ours", started, ...message ? { message } : {} };
+  return { result: made ? "done" : "nothing", verdict: "ours", started, ...message ? { message } : {}, ...setAside };
 }
 async function newMachine({ home, release, engine }, judged) {
   const refusal = () => {
     const now = judged();
     if (now.verdict === "fresh")
-      return null;
+      return runningIn(path169.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped." } : null;
     return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
   };
   const before = refusal();
@@ -51147,6 +51161,7 @@ async function newMachine({ home, release, engine }, judged) {
       fs161.mkdirSync(path169.dirname(path169.join(aside, name)), { recursive: true, mode: 448 });
       fs161.renameSync(path169.join(home, name), path169.join(aside, name));
     }
+    const setAside = there.length ? { setAside: aside } : {};
     const engineAt = path169.join(home, "engine", engineVersion, "opencode");
     fs161.mkdirSync(path169.dirname(engineAt), { recursive: true, mode: 448 });
     fs161.copyFileSync(staged, `${engineAt}.new`);
@@ -51163,7 +51178,7 @@ async function newMachine({ home, release, engine }, judged) {
     const tools = launchTools();
     if (!tools) {
       clearStaging2(home);
-      return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
+      return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code.", ...setAside };
     }
     const standIns = path169.dirname(tools.crontab);
     const ran = spawnSync14("sh", ["-c", start(engineVersion, computerName2(), "{}")], {
@@ -51176,9 +51191,9 @@ async function newMachine({ home, release, engine }, judged) {
     const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
     if (!started)
       return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split(`
-`).pop() || "it said nothing"}. Try again.` };
+`).pop() || "it said nothing"}. Try again.`, ...setAside };
     clearStaging2(home);
-    return { result: "done", verdict: judged().verdict, started };
+    return { result: "done", verdict: judged().verdict, started, ...setAside };
   } finally {
     giveLock(home);
   }

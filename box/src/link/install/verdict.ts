@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { recordedKind } from "../home";
-import { makingCutShort } from "../rehome/move";
+import { makingCutShort, runningIn } from "../rehome/move";
 import { forwardOnly, heldByAnother, readJournal, readRecord, rehomeStatus } from "../rehome/state";
 import { foundAt, OWN_BOX_RAN, runsAt } from "../setup/judge";
 import type { RehomeStatus } from "../../shared/routes/box";
@@ -50,13 +50,16 @@ export const MAKING = path.join("updates", "install", "making");
 
 /** Whether a machine's box is in `home`: one the computer that set it up hasn't removed (`runsAt`:
  * `gone`, with no way to start or turned off, is no box), with a card or a link, keys of its own,
- * or its kind said. On Linux, where no box is a Mac's own, its start script there is enough. */
+ * or its kind said. On Linux, where no box is a Mac's own, its start script there is enough; and
+ * under the installer's mark (`MAKING`) whatever is there is a making that never finished (its
+ * keys and link too, where its start failed after writing them), unless it runs: then it started,
+ * and only the mark was left. */
 export function machineBoxThere(home: string, linux = process.platform !== "darwin"): boolean {
   const kind = recordedKind(path.join(home, "box", "kind"));
   if (kind === "mac" || runsAt(home) === "gone") return false;
+  if (linux && exists(path.join(home, MAKING))) return runningIn(path.join(home, "run")).length > 0;
   if (foundAt(home, false) !== null || kind === "machine" || exists(path.join(home, "box", "keys"))) return true;
-  // (But one the installer was cut short making, `MAKING`: its files there, never started.)
-  return linux && !exists(path.join(home, MAKING));
+  return linux;
 }
 
 export interface Judgement {

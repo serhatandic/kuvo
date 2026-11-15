@@ -9,7 +9,7 @@
 // Run with `node --test box/bridge-tests/install.test.js`.
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -57,7 +57,7 @@ for (const file of ["box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", 
   write(path.join(sources, file), fs.readFileSync(path.join(checkout, file)));
 }
 write(path.join(sources, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
-write(path.join(sources, "box/src/keeper/kuvo-start"), `#!/bin/sh\n# A stand-in for the keeper, for engine @ENGINE@: it notes what it's asked.\necho "$*" >>"$HOME/keeper-asked"\n`);
+write(path.join(sources, "box/src/keeper/kuvo-start"), `#!/bin/sh\n# A stand-in for the keeper, for engine @ENGINE@: it notes what it's asked.\necho "$*" >>"$HOME/keeper-asked"\nif [ -f "$HOME/keeper-fails" ]; then mkdir -p "$HOME/.kuvo-code/box/keys" "$HOME/.kuvo-code/run"; echo '{"mac":"${"A".repeat(43)}","macs":["${"A".repeat(43)}"],"phones":[]}' >"$HOME/.kuvo-code/run/link.json"; echo "its engine didn't come up" >"$HOME/.kuvo-code/run/engine.log"; exit 3; fi\n`);
 const build = { url: pathToFileURL(engineTar).href, integrity: "sha512-" + crypto.createHash("sha512").update(engineBytes).digest("base64") };
 write(path.join(sources, "box/src/shared/engine-pin.json"), JSON.stringify({ version: ENGINE, linux: { x86_64: build, aarch64: build }, darwin: { x86_64: build, aarch64: build } }));
 
@@ -100,7 +100,7 @@ function computer({ app = APP_ID } = {}) {
  * one its answer. A KUVO_ variable of the app's own never reaches the box's commands. */
 function install(where, verb, { from = release, args = mac ? ["--app", where.bundle] : [], env = {} } = {}) {
   const ran = spawnSync("sh", [path.join(from, "kuvo-install"), verb, ...args], {
-    env: { PATH: process.env.PATH, HOME: where.home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_TEST_UNINSTALL_TOOLS: where.tools, KUVO_BOX: "mac", KUVO_HOME: "/nowhere", ...env },
+    env: { PATH: process.env.PATH, HOME: where.home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_TEST_UNINSTALL_TOOLS: where.tools, KUVO_TEST_INSTALL_FILE_ENGINE: "1", KUVO_BOX: "mac", KUVO_HOME: "/nowhere", ...env },
     encoding: "utf8", timeout: 240_000,
   });
   const lines = ran.stdout.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
@@ -128,6 +128,32 @@ test("status on a new computer: the pack checked and unpacked, the release's eng
   assert.equal(again.status, 0, again.stderr);
   assert.deepEqual(again.steps, []);
   assert.equal(again.said.verdict, "fresh");
+});
+
+test("two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away", async () => {
+  const where = computer();
+  const run = () => new Promise(resolve => {
+    const child = spawn("sh", [path.join(release, "kuvo-install"), "status", ...(mac ? ["--app", where.bundle] : [])], {
+      env: { PATH: process.env.PATH, HOME: where.home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_TEST_UNINSTALL_TOOLS: where.tools, KUVO_TEST_INSTALL_FILE_ENGINE: "1" }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout.on("data", chunk => { out += chunk; });
+    child.once("exit", status => resolve({ status, said: JSON.parse(out.trim().split("\n").pop() || "{}") }));
+  });
+  const all = await Promise.all([run(), run(), run(), run()]);
+  for (const each of all) assert.deepEqual({ status: each.status, verdict: each.said.verdict }, { status: 0, verdict: "fresh" }, JSON.stringify(each.said));
+  assert.deepEqual(fs.readdirSync(staging(where)).sort(), ["engine", "release"], "no scratch copy left");
+  assert.equal(fs.readdirSync(path.join(staging(where), "release")).some(name => name.startsWith("release")), false, "nor one inside the other");
+  assert.deepEqual(fs.readdirSync(path.join(staging(where), "engine")), [ENGINE]);
+  assert.equal(read(path.join(staging(where), "release", "bin", "box-version")), VERSION);
+});
+
+test("an engine named as a file is only ever a test's: without a test's say-so the release is refused as damaged, and no engine is taken", () => {
+  const where = computer();
+  const refused = install(where, "status", { env: { KUVO_TEST_INSTALL_FILE_ENGINE: "" } });
+  assert.equal(refused.status, 1);
+  assert.deepEqual(refused.said, { result: "failed", message: "This copy of Kuvo Code is damaged. Download it again, then try again." });
+  assert.deepEqual(everything(path.join(staging(where), "engine")), []);
 });
 
 test("a damaged copy is refused in words before anything of it runs: a pack that isn't what boxes.json says, an engine that isn't what the release says", () => {
@@ -247,6 +273,9 @@ test("a Mac's install cut short is made again: what a making left, and a box mad
   const made = install(cut, "new");
   assert.equal(made.status, 0, made.stderr + JSON.stringify(made.lines));
   assert.equal(made.said.result, "done");
+  // What the making cut short left is set aside, and the answer says where.
+  assert.match(made.said.setAside, new RegExp(`^${cut.K}/trash/earlier-box-`));
+  assert.equal(read(path.join(made.said.setAside, "bin", "kuvo-link.js")), "// half of it");
   assert.deepEqual(fs.readFileSync(path.join(cut.K, "bin", "kuvo-link.js")), fs.readFileSync(script), "the release's, whole");
   assert.equal(exists(path.join(cut.K, "bin.new")), false);
   assert.equal(read(path.join(cut.K, "box", "kind")), "mac\n");
@@ -308,17 +337,23 @@ test("a Mac that holds an earlier Kuvo Code's sessions gets no new box beside th
   assert.equal(read(path.join(where.S, "opencode", "data", "opencode", "opencode.db")), "sessions");
 });
 
-test("a copy of the app never judges or installs for the real one: Kuvo Code's own ID goes with ~/.kuvo-code alone", { skip: !mac && "a Mac's app" }, () => {
-  const where = computer({ app: "run.kuvo.code" });
-  const refused = install(where, "new");
-  assert.equal(refused.status, 1);
-  assert.equal(refused.said.result, "refused");
-  assert.equal(refused.said.message, "Kuvo Code itself installs its box in ~/.kuvo-code only.");
-  assert.deepEqual(fs.readdirSync(where.K), ["updates"]);
-  // And with no app named, a Mac's installer says what it needs.
-  const unnamed = install(computer(), "status", { args: [] });
-  assert.equal(unnamed.status, 1);
-  assert.match(unnamed.said.message, /needs the app it's run from/);
+test("a copy of the app never judges or installs for the real one, and is refused before anything is written: Kuvo Code's own ID goes with ~/.kuvo-code alone", { skip: !mac && "a Mac's app" }, () => {
+  for (const verb of ["status", "new", "move"]) {
+    const where = computer({ app: "run.kuvo.code" });
+    const refused = install(where, verb);
+    assert.equal(refused.status, 1);
+    assert.deepEqual(refused.said, { result: "refused", message: "Kuvo Code itself installs its box in ~/.kuvo-code only." });
+    assert.equal(exists(where.K), false, "nothing written, not even its folder");
+    assert.deepEqual(fs.readdirSync(where.home).sort(), ["Applications", "tools"]);
+  }
+  // And with no app named, or one that isn't an app, a Mac's installer says what it needs.
+  const unnamed = computer();
+  for (const args of [[], ["--app", path.join(unnamed.home, "No Such.app")]]) {
+    const asked = install(unnamed, "status", { args });
+    assert.equal(asked.status, 1);
+    assert.deepEqual(asked.said, { result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
+    assert.equal(exists(unnamed.K), false);
+  }
 });
 
 test("new on Linux: a machine's box in ~/.kuvo-code, its files and engine in place and started as a computer that's added is; one cut short is made again", { skip: mac && "a Linux computer's box" }, () => {
@@ -377,11 +412,59 @@ test("new on Linux: a machine's box in ~/.kuvo-code, its files and engine in pla
   assert.equal(anew.said.verdict, "machine");
   const aside = fs.readdirSync(path.join(removed.K, "trash")).filter(name => name.startsWith("earlier-box-"));
   assert.equal(aside.length, 1);
+  assert.equal(anew.said.setAside, path.join(removed.K, "trash", aside[0]), "the answer says where it went");
+  assert.equal(made.said.setAside, undefined, "and says nothing where nothing was there");
   assert.equal(read(path.join(removed.K, "trash", aside[0], "chats", "c1", "notes.md")), "kept");
   assert.equal(exists(path.join(removed.K, "trash", aside[0], "run", "link.json")), true, "its old link with it, never the new box's");
   assert.equal(exists(path.join(removed.K, "run", "off")), false);
   assert.equal(exists(path.join(removed.K, "chats")), false);
   assert.equal(read(path.join(removed.K, "desktop", "identity")), "the app's own");
+});
+
+test("on Linux nothing is made or set aside under something that still runs in the folder", { skip: mac && "a Linux computer's box" }, async () => {
+  // A box turned off whose keeper still runs (it's ending): by its record and its command line.
+  const where = computer();
+  const keeper = spawn(process.execPath, ["-e", "process.stdin.resume()", "kuvo-start"], { stdio: ["pipe", "ignore", "ignore"] });
+  try {
+    write(path.join(where.K, "run", "off"), "");
+    write(path.join(where.K, "run", "box.pid"), `${keeper.pid}\n`);
+    write(path.join(where.K, "chats", "c1", "notes.md"), "kept");
+    const refused = install(where, "new");
+    assert.equal(refused.status, 1);
+    assert.equal(refused.said.result, "refused");
+    assert.equal(refused.said.message, "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped.");
+    assert.equal(read(path.join(where.K, "chats", "c1", "notes.md")), "kept");
+    assert.equal(exists(path.join(where.K, "trash")), false);
+    assert.equal(exists(path.join(where.K, "bin")), false);
+  } finally {
+    const gone = new Promise(resolve => keeper.once("exit", resolve));
+    keeper.kill();
+    await gone;
+  }
+  // Once it's stopped, it's made.
+  const made = install(where, "new");
+  assert.equal(made.status, 0, made.stderr + JSON.stringify(made.lines));
+  assert.equal(read(path.join(made.said.setAside, "chats", "c1", "notes.md")), "kept");
+});
+
+test("on Linux a start that fails after its keeper wrote keys and a link is still not a box: `new` is what to run, and it's made again whole", { skip: mac && "a Linux computer's box" }, () => {
+  const where = computer();
+  write(path.join(where.home, "keeper-fails"), "");
+  const failed = install(where, "new");
+  assert.equal(failed.status, 1);
+  assert.equal(failed.said.result, "failed");
+  assert.equal(failed.said.started, false);
+  assert.match(failed.said.message, /couldn't be started: its engine didn't come up\. Try again\.$/);
+  assert.equal(exists(path.join(where.K, "run", "link.json")), true, "what its start left");
+  const status = install(where, "status");
+  assert.deepEqual({ verdict: status.said.verdict, verb: status.said.verb }, { verdict: "fresh", verb: "new" });
+  fs.rmSync(path.join(where.home, "keeper-fails"));
+  const made = install(where, "new");
+  assert.equal(made.status, 0, made.stderr + JSON.stringify(made.lines));
+  assert.deepEqual({ result: made.said.result, verdict: made.said.verdict, started: made.said.started }, { result: "done", verdict: "machine", started: true });
+  assert.equal(exists(path.join(where.K, "run", "link.json")), false, "the half-made one's link set aside with it");
+  assert.equal(exists(path.join(made.said.setAside, "run", "link.json")), true);
+  assert.equal(install(where, "status").said.verdict, "machine");
 });
 
 // (What the pack's box.json names, for the Linux test: read from the pack itself.)
