@@ -4547,6 +4547,7 @@ var FEATURES = [
   "computers.reach",
   "config",
   "config.apply",
+  "devices.allow",
   "devices.pair",
   "engine.restart",
   "engine.start",
@@ -17830,13 +17831,30 @@ function noteRemoved(link, key, pairing) {
   if (!removedAlready(link, key, pairing))
     link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT);
 }
+var MOST_BLOCKED = 64;
+function blockVoucher(link, phone, now) {
+  if (!phone.by)
+    return;
+  link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+}
+var vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined;
+function allowVouching(link, key) {
+  if (!vouchBlockOf(link, key))
+    return false;
+  link.vouchBlocked = link.vouchBlocked.filter((each) => each.key !== key);
+  if (!link.vouchBlocked.length)
+    delete link.vouchBlocked;
+  return true;
+}
 var fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing));
-function takeOff(link, key, pairing) {
+function takeOff(link, key, pairing, now = Date.now()) {
   const current = (link.phones ?? []).find((phone) => phone.key === key);
   const which = pairing == null ? current?.pairing ?? "" : String(pairing);
   noteRemoved(link, key, which);
-  if (current && (current.pairing ?? "") === which)
-    link.phones = link.phones.filter((phone) => phone.key !== key);
+  if (!current || (current.pairing ?? "") !== which)
+    return;
+  blockVoucher(link, current, now);
+  link.phones = link.phones.filter((phone) => phone.key !== key);
 }
 var newPairing = () => crypto24.randomBytes(12).toString("base64url");
 function pairPhone(link, phone) {
@@ -17849,10 +17867,13 @@ function pairDevice(link, device, now = Date.now()) {
     return { pairing: known.pairing ?? "" };
   if ((link.removed ?? []).some((each) => each.key === device.key))
     return { removed: true };
+  const blocked = vouchBlockOf(link, device.by);
+  if (blocked)
+    return { blocked: { device: blocked.device } };
   if ((link.phones ?? []).filter((phone) => phone.kind === "desktop").length >= MOST_DESKTOPS)
     return { full: true };
   const pairing = newPairing();
-  pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop" });
+  pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop", ...device.by ? { by: device.by } : {} });
   return { pairing };
 }
 function removeAsMac(link, entries) {
@@ -17921,6 +17942,9 @@ function foldPhones(link, now = Date.now()) {
   for (const phone of link.phones ?? [])
     if (phone.from === "pair")
       add(phone);
+  for (const phone of link.phones ?? [])
+    if (phone.from === "pair" && removedAlready(link, phone.key, phone.pairing ?? ""))
+      blockVoucher(link, phone, now);
   link.phones = listed;
 }
 var ownPhones = (link) => ({
@@ -28236,6 +28260,12 @@ function isApart(key, link = readLink(), told = readPeerAgents()) {
 
 // box/src/link/peers/devices.ts
 var DEVICES_FEATURE = "devices.pair";
+var namedDevice = (device) => device || "Kuvo Code's app";
+var blockedVouch = (device, computer, here) => ({
+  message: `${namedDevice(device)} on ${computer} was removed from your devices, so ${computer} can't add Kuvo Code's app by itself now. Allow it again from ${here} or one of your devices: Computers, ${computer}.`,
+  reason: "blocked"
+});
+var blockedWords = (device, computer) => `${namedDevice(device)} was removed from your devices. ${computer} can't add Kuvo Code's app again until you allow it.`;
 var MOST_NAME2 = 100;
 function givenDevice(given, link = readLink()) {
   if (!isObject(given) || given.kind !== "desktop" || typeof given.name !== "string" || given.name.length > MOST_NAME2)
@@ -28250,7 +28280,7 @@ var REMOVED2 = { message: "This app was removed from your devices.", reason: "re
 var NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
 var switchOff = () => IS_MAC && !macLink.config?.phones;
 var switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` });
-function pairHere(device) {
+function pairHere(device, by) {
   if (switchOff())
     return answer2(409, switchOffWords());
   let made = null;
@@ -28259,7 +28289,7 @@ function pairHere(device) {
     if (!link?.relay || !link.secret)
       return null;
     const before = (link.phones ?? []).length;
-    made = pairDevice(link, device);
+    made = pairDevice(link, { ...device, ...by ? { by: by.key } : {} });
     fresh = (link.phones ?? []).length !== before;
     return fresh ? link : null;
   });
@@ -28268,6 +28298,8 @@ function pairHere(device) {
     return answer2(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
   if ("removed" in paired)
     return answer2(409, REMOVED2);
+  if ("blocked" in paired)
+    return answer2(409, blockedVouch(paired.blocked.device, by?.name || "that computer", ownName()));
   if ("full" in paired)
     return answer2(409, { message: "You have as many desktop apps among your devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
   if (fresh) {
@@ -28288,7 +28320,7 @@ async function deviceAct(sender, act) {
     return answer2(409, { message: `${here} isn't your setup's main computer, so it adds no devices for your other computers.` });
   if (sharedMachine(link) || isApart(sender.key, link) || !ownMachines(link).has(sender.key))
     return answer2(409, { message: `Only computers in ${here}'s own setup can add your devices.` });
-  return pairHere(device);
+  return pairHere(device, { key: sender.key, name: peersOf(link).find((peer) => peer.key === sender.key)?.name || "that computer" });
 }
 async function pairDeviceFromHere(given, signal) {
   const link = readLink();
@@ -28324,8 +28356,8 @@ async function pairDeviceFromHere(given, signal) {
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string")
     return answer2(200, { paired: true, pairing: said.pairing });
-  const message = typeof said.message === "string" && said.message ? said.message.slice(0, 300) : `${named} didn't add this app to your devices.`;
-  return answer2(409, { message, ...said.reason === "removed" ? { reason: "removed" } : {} });
+  const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;
+  return answer2(409, { message, ...said.reason === "removed" || said.reason === "blocked" ? { reason: said.reason } : {} });
 }
 
 // box/src/link/peers/manage.ts
@@ -29154,6 +29186,9 @@ function actionsOf(computer, here, trying, link = readLink(), facts = writerFact
   if (!whyNot(computer, "remove", here, link, facts)) {
     const waits = waitsFor(computer, here, facts);
     actions.push({ id: "remove", label: "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
+  }
+  if (computer.vouching?.blocked) {
+    actions.push({ id: "allow-devices", label: "Allow Its App Again", confirm: { title: `Let ${name} add Kuvo Code's app again?`, message: `Kuvo Code on ${name} can add itself to your devices again, and reach every computer of yours. What you removed stays removed.`, label: "Allow" } });
   }
   return actions;
 }
@@ -38028,8 +38063,12 @@ async function* listRoute(context, match) {
   }
 }
 
+// box/src/link/server/context.ts
+var fromLocalApp = (request) => request.served === true && (request.fromApp === true || request.fromMac === true);
+var fromAPhone = (request) => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
+
 // box/src/link/areas/computers.ts
-var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect)?)?$/;
+var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 var MOST_HERE = 100;
 var HEARD_LATELY2 = 30 * 60000;
 function systemName(platform = process.platform, read = (file) => fs122.readFileSync(file, "utf8")) {
@@ -38140,6 +38179,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     return withActions();
   const peers = peersOf(link);
   const reach = readReach();
+  const leads = followedSetup(link)?.role === "primary";
   const apart = new Set(peers.filter((peer) => isApart(peer.key, link, told)).map((peer) => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
@@ -38148,6 +38188,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
     const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
     const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
+    const blocked = vouchBlockOf(link, peer.key);
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -38161,7 +38202,8 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {} } : {},
       ...features ? { features } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
-      limits: limits.get(peer.key) ?? []
+      limits: limits.get(peer.key) ?? [],
+      ...leads && blocked && !apart.has(peer.key) ? { vouching: { blocked: true, words: blockedWords(blocked.device, peer.name) } } : {}
     });
   }
   for (const box of byName(vouchedOf(link, told))) {
@@ -38179,9 +38221,12 @@ var mtime = (file) => {
     return 0;
   }
 };
-async function* manage(context, key, connect) {
+async function* manage(context, key, action) {
   const { request, signal, json, info } = context;
   const method = request.method.toUpperCase();
+  if (action === "/allow-devices")
+    return yield* allowDevices(context, key);
+  const connect = action === "/connect";
   const what = connect ? method === "POST" ? "connect" : null : method === "PATCH" ? "rename" : method === "DELETE" ? "remove" : null;
   if (!what)
     return yield* json(405, { message: connect ? "Only POST." : "Rename (PATCH) or remove (DELETE)." });
@@ -38222,10 +38267,36 @@ async function* manage(context, key, connect) {
     return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
 }
+async function* allowDevices(context, key) {
+  const { request, phone, signal, json, info } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, { message: "Only POST." });
+  const link = readLink();
+  const asking = phone?.key?.toString("base64url");
+  const paired = asking !== undefined && (link?.phones ?? []).some((each) => each.key === asking);
+  if (!paired && !fromLocalApp(request))
+    return yield* json(403, { message: "Only Kuvo Code on this computer, or one of your devices, allows a computer to add your devices again." });
+  const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
+  const computer = computers.find((each) => each.key === key);
+  if (!computer)
+    return yield* json(404, { message: "That isn't one of your computers." });
+  const here = computers[0].name;
+  const main = mainElsewhere(link);
+  if (main)
+    return yield* json(409, { message: `Allow it from ${main.name || peersOf(link).find((peer) => peer.key === main.key)?.name || "your main computer"}.`, primary: main.key });
+  if (followedSetup(link)?.role !== "primary")
+    return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
+  if (computer.here)
+    return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
+  if (computer.apart || computer.via !== "relay")
+    return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
+  updateLink((kept) => kept && allowVouching(kept, key) ? kept : null);
+  return yield* json(200, {});
+}
 async function* computersRoute(context, match) {
   const { request, signal, json, info, bridge } = context;
   if (match[2])
-    return yield* manage(context, match[2], Boolean(match[3]));
+    return yield* manage(context, match[2], match[3]);
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, { message: "Only GET." });
   await listNow(context, signal ?? undefined).catch(() => null);
@@ -45576,7 +45647,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1597e7ea1ca4";
+var BRIDGE_VERSION = "f21535c918b4";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -51098,10 +51169,6 @@ async function* personalityRoute(context, personality) {
     retellBots([id], readEngine, readBridge).catch(() => {});
   return yield* json(status, value);
 }
-
-// box/src/link/server/context.ts
-var fromLocalApp = (request) => request.served === true && (request.fromApp === true || request.fromMac === true);
-var fromAPhone = (request) => request.fromMac !== true && request.fromApp !== true && request.desktop !== true;
 
 // box/src/link/areas/phones.ts
 async function* phonesRoute(context) {
