@@ -260,7 +260,7 @@ fn ring_button(ix: usize, account: &Account, now: f64, cx: &mut Context<Rings>) 
     // The box's rings (`rows[].rings`): its short window outside and its long one inside, one
     // where it says one; each by its own share, coloured by the box's level. A plan with no
     // window has an empty track.
-    let rings = account.rings(now);
+    let rings = account.rings();
     let card = account.clone();
     let arcs_drawn: Vec<AnyElement> = if rings.is_empty() {
         vec![arcs(RING, STROKE, 0., c.text_muted, c.border).into_any_element()]
@@ -364,10 +364,10 @@ fn arcs(size: Pixels, stroke: Pixels, used: f32, color: Hsla, track: Hsla) -> im
 /// What resting on a ring shows: the account, its plan, and each window with when it starts over.
 fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
     let c = cx.theme().colors.clone();
-    let title = account.title();
+    let title = account.title.clone();
     let windows = account.windows.iter().map(|window| {
-        // A window whose time has passed has started over: not read since, not used (PROTOCOL.md).
-        let over = window.resets_at.is_some_and(|at| at <= now);
+        // A window that started over, as the box says: not read since, not used (PROTOCOL.md).
+        let over = window.expired;
         let color = level_color(window.level, cx);
         // (A level this app doesn't know is drawn as quietly as a calm one.)
         let calm = matches!(window.level, Level::Calm | Level::Unknown);
@@ -384,7 +384,7 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
                     .justify_between()
                     .gap(space::S2)
                     .text_ui(TypeSize::Small)
-                    .child(div().min_w_0().truncate().text_color(c.text).child(window.title()))
+                    .child(div().min_w_0().truncate().text_color(c.text).child(window.title.clone()))
                     .child(div().flex_none().text_color(if calm { c.text_muted } else { color }).when(!calm, |d| d.medium()).child(said)),
             )
             .child(

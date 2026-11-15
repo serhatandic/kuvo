@@ -249,6 +249,12 @@ pub struct LimitWindow {
     /// How close it is to its limit, in the box's word.
     #[serde(default)]
     pub level: Level,
+    /// Its name, as the box says it (`title`): "Session", "Weekly", "Sonnet", "Premium requests".
+    #[serde(default)]
+    pub title: String,
+    /// It started over since it was read, as the box says (`expired`): not read since, `used` 0.
+    #[serde(default)]
+    pub expired: bool,
 }
 
 /// A ring a newer box may say in a way this doesn't know: none, not the whole account.
@@ -263,9 +269,10 @@ pub struct Account {
     /// Its mark and colour: `claude`, `codex`, `grok`, `cursor`, `antigravity`, `copilot`,
     /// `openrouter`, `zai`, `ollama`, `opencode`.
     pub service: String,
-    /// The row's own name, where the box gives one (two accounts it tells apart).
+    /// Its name, as the box says it (`title`): "Claude", "Claude · Work", "ChatGPT", told apart from
+    /// another row of that name ("Claude · hetzner").
     #[serde(default)]
-    pub name: Option<String>,
+    pub title: String,
     /// The coding agent whose sign-in it is (`claude`…); none for the engine's.
     #[serde(default)]
     pub agent: Option<String>,
@@ -287,67 +294,16 @@ pub(crate) fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::Deseriali
 }
 
 impl Account {
-    /// Its name, as KuvoClient's `LimitsAccount.title` says it: the row's own, else its coding
-    /// agent's or its service's, with what you called it ("Claude · Work").
-    pub fn title(&self) -> String {
-        if let Some(name) = &self.name {
-            return name.clone();
-        }
-        let base = match &self.agent {
-            Some(agent) => agent_name(agent).map(str::to_owned).unwrap_or_else(|| capitalized(agent)),
-            None => service_name(&self.service).map(str::to_owned).unwrap_or_else(|| capitalized(&self.service)),
-        };
-        match self.label.as_deref().map(str::trim).filter(|label| !label.is_empty()) {
-            Some(label) => format!("{base} · {label}"),
-            None => base,
-        }
-    }
-
     /// The rings to draw, outside first, each as its share and level: the box's short ring, then
-    /// its long one (one where it says one, none where none). One whose time has passed since it
-    /// was read keeps its place, empty: what's used now isn't known (PROTOCOL.md, "Rings and levels").
-    pub fn rings(&self, now: f64) -> Vec<(f32, Level)> {
-        [&self.rings.short, &self.rings.long]
-            .into_iter()
-            .flatten()
-            .map(|ring| (if ring.resets_at.is_some_and(|at| at <= now) { 0. } else { ring.used }, ring.level))
-            .collect()
+    /// its long one (one where it says one, none where none). One whose window started over is
+    /// empty, in its place, as the box says it (PROTOCOL.md, "Rings and levels").
+    pub fn rings(&self) -> Vec<(f32, Level)> {
+        [&self.rings.short, &self.rings.long].into_iter().flatten().map(|ring| (ring.used, ring.level)).collect()
     }
 }
 
-impl LimitWindow {
-    /// Its name, as KuvoClient's `LimitsWindow.title`: "Session", "Weekly", "Sonnet", "Premium requests".
-    pub fn title(&self) -> String {
-        if let Some(name) = self.name.as_ref().filter(|name| !name.is_empty()) {
-            return name.clone();
-        }
-        if let Some(model) = self.model.as_ref().filter(|model| !model.is_empty()) {
-            return model.clone();
-        }
-        match self.minutes {
-            Some(300) => "Session".into(),
-            Some(10_080) => "Weekly".into(),
-            Some(minutes) if (40_000..=45_000).contains(&minutes) => "Monthly".into(),
-            Some(minutes) if minutes >= 1_440 => format!("{}-day", minutes / 1_440),
-            Some(minutes) if minutes >= 60 => format!("{}-hour", minutes / 60),
-            _ => "Limit".into(),
-        }
-    }
-}
-
-/// The coding agents by their own names (KuvoClient's `AccountNames.agents`).
-fn agent_name(agent: &str) -> Option<&'static str> {
-    Some(match agent {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        "grok" => "Grok",
-        "cursor" => "Cursor",
-        "antigravity" => "Antigravity",
-        _ => return None,
-    })
-}
-
-/// The engine's services by their plans' names (KuvoClient's `AccountNames.services`).
+/// The engine's services by their plans' names (KuvoClient's `AccountNames.services`), for the
+/// services a computer reads the limits of (`kuvo/computers`' `limits`, which says only their ids).
 pub fn service_name(service: &str) -> Option<&'static str> {
     Some(match service {
         "codex" => "ChatGPT",
@@ -359,12 +315,6 @@ pub fn service_name(service: &str) -> Option<&'static str> {
         "opencode" => "OpenCode Go",
         _ => return None,
     })
-}
-
-/// Swift's `capitalized` for one word.
-fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    chars.next().map(|first| first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect()).unwrap_or_default()
 }
 
 // MARK: What waits on you
@@ -470,20 +420,12 @@ mod tests {
         assert_eq!((newer.windows.len(), newer.windows[0].level, newer.rings.short.map(|ring| ring.level)), (1, Level::Unknown, Some(Level::Unknown)));
     }
 
-    /// Held to KuvoClient's `LimitsAccount.title` and `LimitsWindow.title`.
+    /// Every name is the box's (`limits.titles`): drawn as it says, with no table of its own.
     #[test]
-    fn accounts_and_windows_are_named_as_kuvoclient_does() {
-        let row = |json: &str| serde_json::from_str::<Account>(json).unwrap();
-        assert_eq!(row(r#"{"service":"claude","agent":"claude","label":"Work"}"#).title(), "Claude · Work");
-        assert_eq!(row(r#"{"service":"codex"}"#).title(), "ChatGPT", "the engine's ChatGPT sign-in");
-        assert_eq!(row(r#"{"service":"codex","agent":"codex"}"#).title(), "Codex");
-        assert_eq!(row(r#"{"service":"opencode"}"#).title(), "OpenCode Go");
-        assert_eq!(row(r#"{"service":"claude","agent":"claude","name":"Claude (studio)","label":"Work"}"#).title(), "Claude (studio)");
-        let window = |minutes: Option<u32>, model: Option<&str>, name: Option<&str>| LimitWindow { id: "w".into(), used: 0., resets_at: None, minutes, model: model.map(str::to_owned), name: name.map(str::to_owned), level: Level::Calm };
-        assert_eq!(window(Some(300), None, None).title(), "Session");
-        assert_eq!(window(Some(10_080), Some("Sonnet"), None).title(), "Sonnet");
-        assert_eq!(window(Some(43_200), None, None).title(), "Monthly");
-        assert_eq!(window(None, None, Some("Premium requests")).title(), "Premium requests");
+    fn accounts_and_windows_are_named_as_the_box_says() {
+        let row: Account = serde_json::from_str(r#"{"service":"claude","agent":"claude","label":"Work","title":"Claude · hetzner","windows":[{"id":"five_hour","title":"Session","used":0.4,"level":"calm"},{"id":"x","title":"Premium requests","used":0,"expired":true}]}"#).unwrap();
+        assert_eq!(row.title, "Claude · hetzner");
+        assert_eq!(row.windows.iter().map(|window| (window.title.as_str(), window.expired)).collect::<Vec<_>>(), vec![("Session", false), ("Premium requests", true)]);
     }
 
     /// The rings are the box's: its short one outside and its long one inside, each with its level;
@@ -493,19 +435,19 @@ mod tests {
         let row = |json: &str| serde_json::from_str::<Account>(json).unwrap();
         // The fullest window is a model's: it's no ring, as the box didn't pick it.
         let both = row(r#"{"service":"claude","windows":[{"id":"week","used":0.2,"level":"calm","span":"long"},{"id":"model","used":0.95,"level":"over"},{"id":"five","used":0.75,"level":"near","span":"short"}],"rings":{"short":{"window":"five","used":0.75,"level":"near"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
-        assert_eq!(both.rings(0.), vec![(0.75, Level::Near), (0.2, Level::Calm)], "the short window outside, the long inside");
+        assert_eq!(both.rings(), vec![(0.75, Level::Near), (0.2, Level::Calm)], "the short window outside, the long inside");
         let one = row(r#"{"service":"grok","windows":[{"id":"week","used":0.2,"level":"calm","span":"long"}],"rings":{"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
-        assert_eq!(one.rings(0.), vec![(0.2, Level::Calm)]);
+        assert_eq!(one.rings(), vec![(0.2, Level::Calm)]);
         let none = row(r#"{"service":"ollama","windows":[],"rings":{}}"#);
-        assert!(none.rings(0.).is_empty());
-        let started_over = row(r#"{"service":"codex","rings":{"short":{"window":"five","used":0.5,"resetsAt":10,"level":"calm"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
-        assert_eq!(started_over.rings(20.), vec![(0., Level::Calm), (0.2, Level::Calm)], "one that started over keeps its place, empty");
+        assert!(none.rings().is_empty());
+        let started_over = row(r#"{"service":"codex","rings":{"short":{"window":"five","used":0,"level":"calm"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
+        assert_eq!(started_over.rings(), vec![(0., Level::Calm), (0.2, Level::Calm)], "one that started over keeps its place, empty, as the box says");
         // A level a newer box names keeps its ring, uncoloured; a ring this can't read at all
         // leaves the account, with its other ring.
         let newer = row(r#"{"service":"claude","rings":{"short":{"window":"x","used":0.3,"level":"dire"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
-        assert_eq!(newer.rings(0.), vec![(0.3, Level::Unknown), (0.2, Level::Calm)]);
+        assert_eq!(newer.rings(), vec![(0.3, Level::Unknown), (0.2, Level::Calm)]);
         let unread = row(r#"{"service":"claude","rings":{"short":{"window":"x","used":"most"},"long":{"window":"week","used":0.2,"level":"calm"}}}"#);
-        assert_eq!(unread.rings(0.), vec![(0.2, Level::Calm)]);
+        assert_eq!(unread.rings(), vec![(0.2, Level::Calm)]);
     }
 
     #[test]
