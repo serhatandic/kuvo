@@ -2611,7 +2611,7 @@ before it uses it, and meanwhile says so. A box is older than a client needs whe
 `git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
 `models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
-`sessions.start.empty`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
+`sessions.start.empty`, `settings`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
 `waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
@@ -6505,6 +6505,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
+| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, Permissions and Browser first ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
@@ -7755,6 +7756,99 @@ answers in time. A machine's start scripts run it once before starting the engin
 it read in `run/login-path`, which the link and the coding agents' bridge go by; the bridge reads it
 again only after it installs or updates an agent (a .bashrc that starts an `ssh-agent` when there's
 none would leave one running with each read). This Mac's app reads its own shell's for its engine.
+
+### A box's settings
+
+A box describes its own settings (`settings`, #727), so every client (the desktop app, the phone,
+a Linux or Windows client later) draws each of them by its kind, in the box's words, and writes
+no settings page of its own. Every box answers it alike, a Mac's and a machine's. Each page is made
+from the box's existing routes, and each change goes through them as a client of them would
+(`kuvo/approval`, `kuvo/sandbox`, `kuvo/sandbox/allowed`, `kuvo/config`, `kuvo/browser/settings`),
+so a client still on those (the phone) sees every change kept just as they keep it. Shapes:
+`box/src/shared/routes/settings-pages.ts`.
+
+- `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
+  the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
+  client has; one a client hasn't, it draws with its own), and the words search finds it by besides
+  its title and line. Today `permissions` and `browser`; the rest come page by page.
+- `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
+  this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
+  under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
+  read, said plainly, and what isn't on the page yet. A row is `{id, title, line?, tone?, kind,
+  value?, can?, revision, confirm?, busy?}` and its kind's fields:
+
+  | `kind` | Its fields | What a client draws |
+  |---|---|---|
+  | `switch` | `value`: true or false | A switch |
+  | `choice` | `value`: a choice's `id`; `choices: [{id, title, line?}]` | A menu |
+  | `text`, `number`, `folder` | `value`, `placeholder?`, `min?`, `max?` | A field (a folder's opens the box's folder picker, `kuvo/folders`) |
+  | `secret` | `set`: whether one is set; never its value | A field written only; Replace and Remove once set |
+  | `status` | `value`: words | The words, on the right |
+  | `actions` | `actions` | Buttons (past one, a menu) |
+  | `list` | `items`: rows; `add?`: an action; `empty?`: words for none | The rows in its card, or its `empty` words |
+  | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
+  | `open` | `section` (this box's) or `address` | A row with › |
+  | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
+  | `custom` | `name` | What only an installed app draws; any other client shows its `can`'s why |
+
+  `can` is `true` where it can be changed from here, or `{why}`, in words to show beside it (it's
+  still drawn, never hidden); a row with nothing to change (a `status`) has none, or `{why}` where
+  what it shows is changed elsewhere (a settings file written by hand). An action is
+  `{id, title, style?, confirm?, opens?, can?}`: `style` `destructive`; `confirm` `{title, body,
+  button}`, asked first in the box's words (a row's own `confirm` is asked before a change to it);
+  `opens` an address the client opens itself, sending nothing (an address of the box's own computer,
+  its Software Update, is only given to the app beside it, `fromApp`; any other client gets `can:
+  {why}` instead); `can` absent where it can be done. `busy` says in words that a change is under
+  way there. A box newer than a client may send a kind the client doesn't know: it draws the row's
+  title and line, and says a newer Kuvo Code changes it. `revision` is a hash of what the row is
+  and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
+  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why), never its words: the same value set
+  again, a computer renamed or a line reworded leaves it.
+- `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
+  The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
+  doesn't fit (a switch's isn't true or false, a choice's isn't one of its choices) or a body without
+  `row` or `was`; `403` where `can` says why not (that `why`); `404` for a row not on the page now;
+  `409 {message: "It changed since you read it.", page}` where the row changed since (by another
+  client, an agent, a route of its own): only that row's revision counts, so a change to one row
+  never refuses another's. A refusal of the route underneath passes on with its status and words; a
+  `409` without `page` is one of those (a settings file that can't be used), never a stale reading:
+  `page` is what marks a stale answer, and its `message` is words to show.
+  A box makes one change to a section at a time, each checked against the page as it is then, in
+  its long-running process whichever process is asked (`box route` over SSH passes a change on to
+  it, as it does Also Allowed; on a machine with none running, reached over SSH alone, the process
+  asked makes it).
+- `POST kuvo/settings/<section>/<row>/<action> {was}`: what a row (or a list's item) offers, the
+  same answers; `400` for one that `opens`, which the client opens itself.
+- `GET kuvo/settings/<section>/events`: the page, a line now and one each time it changes (a change
+  here, another process's to the files it's made from, and every fifteen seconds for the rest),
+  never twice the same.
+- Who's asking: the box treats every client alike, but for what opens only on its own computer
+  (above), offered only to a request from the app beside its box (`x-kuvo-from: app`, over its own
+  server). Nothing in a page depends on which client asks otherwise.
+
+The sections now:
+
+- **Permissions** (`permissions`): Approval (`default-mode`, the mode a new conversation starts in,
+  a `status`; `full-access`, a `switch` turned off here, asked first, and turned on only in a
+  conversation, its `can` saying so; `auto-held-engine`, `auto-held-agents`, why Auto asks first for
+  now; `other-computers`, `kuvo/approval`'s `otherComputers`), When the Agent Wants To (`when-<kind>`
+  for `edit`, `shell`, `read`, `external_directory`, `webfetch`, `websearch`, `subagent` and `skill`:
+  a `choice` of `allow`, `ask` or `deny`, the one that applies with no rule titled `(Default)`: a rule
+  for everything at the front of the engine's `permissions` in `kuvo/config`, the rest left as they
+  are; picking the default takes that rule away (none is ever written for it, so the engine's own,
+  Plan mode not editing, still apply), and picking what applies already writes nothing. A rule of
+  yours that says what applies anyway (it holds in Plan mode too) is titled `(Your Rule)`, with
+  `default` beside it to take it away),
+  Sandbox (`sandbox`: its state, and its button as `kuvo/sandbox` names it, done by the route it
+  names: `retry` and `fix` check it again; `restartEngine` restarts the engine, asked first where
+  that stops work, on a Mac only while its keeper runs the box, the app restarting it otherwise
+  (`can` says so); `help` and `softwareUpdate` open their page), and Also Allowed (`allowed`, a `list` of `allowed-<id>`, each
+  with `remove`). Rules for particular commands or files, approvals saved with Always and blocks
+  aren't on it yet.
+- **Browser** (`browser`): `search-engine` (a `choice`), `tidies` and `offers` (`switch`es), and
+  Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
+  site out and leaves the rest as they are then): `kuvo/browser/settings`,
+  the box's browser. How the side panel's own browser keeps its data is each client's.
 
 ### Personalities
 

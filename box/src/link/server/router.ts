@@ -53,6 +53,7 @@ import { providerModelsRoute } from "../areas/providers";
 import { SIGN_IN_ACCOUNTS_ROUTE, SIGN_IN_METHODS_ROUTE, SIGN_IN_START_ROUTE, SIGN_IN_STATUS_ROUTE, signInRoute } from "../areas/sign-in";
 import { answerProjects } from "../areas/projects";
 import { settingsRoute } from "../areas/settings";
+import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
 import { skillsRoute } from "../areas/skills";
 import { moveEventsRoute, movePlacesRoute, movesRoute } from "../areas/moves";
 import { sessionWakesRoute, wakeEventsRoute, wakesRoute } from "../areas/wakes";
@@ -124,6 +125,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/providers/models", answer: providerModelsRoute },
   { when: (route, request) => /^kuvo\/(skills|skill-library|skill-trash)(\/|\?|$)/.test(request.path), answer: skillsRoute },
   { when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
+  // The box's settings as it describes them, for any client to draw (PROTOCOL.md, "A box's settings").
+  { when: route => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
   { when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed", answer: setupRoute },
   // (A Mac's box answers these with its app, before this: `macFront`.)
   { when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },

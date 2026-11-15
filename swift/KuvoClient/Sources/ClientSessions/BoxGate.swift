@@ -36,6 +36,8 @@ public enum BoxGate {
     /// Then #733's, the facts a first run draws, which no client works out: `folders.suggested`,
     /// `models.offered.free`, `setup.welcomed` and `sign-in.accounts.plan` (with a key-only
     /// account's Add Key).
+    /// Then #727's `settings`: a box describes its own settings (`kuvo/settings`), so no client
+    /// writes a computer's settings pages itself.
     public static let required: [String] = [
         "agent-tools.own",
         "bots.deletes",
@@ -74,6 +76,7 @@ public enum BoxGate {
         "sessions.models",
         "sessions.needsYou",
         "sessions.start.empty",
+        "settings",
         "setup.welcomed",
         "sign-in.accounts.kinds",
         "sign-in.accounts.plan",

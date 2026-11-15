@@ -13,6 +13,8 @@ import { BROWSER_FOLDER } from "./history";
 
 const settingsFile = (folder: string) => path.join(folder, "settings.json");
 const keepsTabsFile = (folder: string) => path.join(folder, "keeps-agent-tabs");
+/** The files the settings are kept in: a client follows them changing (`kuvo/settings`). */
+export const browserSettingsFiles = (folder = BROWSER_FOLDER): string[] => [settingsFile(folder), keepsTabsFile(folder)];
 
 /** What `settings.json` keeps: each setting changed from its default. */
 interface Kept {
@@ -79,4 +81,15 @@ export function changeBrowserSettings(change: unknown, folder = BROWSER_FOLDER):
   if (change.tidiesAgentTabs === true) fs.rmSync(keepsTabsFile(folder), { force: true });
   if (change.tidiesAgentTabs === false) writePrivate(keepsTabsFile(folder), "");
   return null;
+}
+
+/** A site you said Never to offered again: that one taken out of the list, the rest as they are
+ * now (read and written at once). False where it wasn't there. */
+export function offerAgain(site: string, folder = BROWSER_FOLDER): boolean {
+  const kept = readKept(folder);
+  const never = Array.isArray(kept.never) ? kept.never : [];
+  if (!never.includes(site)) return false;
+  kept.never = never.filter(each => each !== site);
+  writePrivate(settingsFile(folder), JSON.stringify(kept));
+  return true;
 }

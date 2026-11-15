@@ -36,6 +36,7 @@ pub mod search;
 pub mod session_actions;
 pub mod sessions;
 pub mod settings;
+pub mod settings_pages;
 pub mod setup;
 pub mod ssh;
 pub mod transport;
