@@ -7,8 +7,8 @@ import { run } from "../proc"
 import { isoTime } from "./cursor-plan"
 
 const specs = [
-  ["gemini-5h", "Session", 300], ["gemini-weekly", "Weekly", 10080],
-  ["3p-5h", "Claude", 300], ["3p-weekly", "Claude Weekly", 10080],
+  ["gemini-5h", "Gemini · 5-hour", 300], ["gemini-weekly", "Gemini · Weekly", 10080],
+  ["3p-5h", "Claude and GPT · 5-hour", 300], ["3p-weekly", "Claude and GPT · Weekly", 10080],
 ] as const
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
 const text = (v: unknown): string | undefined => typeof v === "string" && v.trim() ? v.trim() : undefined
@@ -32,7 +32,7 @@ export function antigravitySummary(bodies: any[]): LimitReading["windows"] | und
     const b = weekly[0]
     if (weekly.length !== 1 || !text(b?.bucketId) || specs.some(([id]) => id === b.bucketId) || (b.disabled != null && typeof b.disabled !== "boolean") || b.disabled === true || !finite(b.remainingFraction)) continue
     const index = windows.findIndex(w => w.id === "3p-5h" || w.id === "3p-weekly")
-    windows.splice(index < 0 ? windows.length : index, 0, windowOf("argon-weekly", "Argon Weekly", 10080, b.remainingFraction, b.resetTime))
+    windows.splice(index < 0 ? windows.length : index, 0, windowOf("argon-weekly", "Gemini 4 Argon · Weekly", 10080, b.remainingFraction, b.resetTime))
     break
   }
   return windows
