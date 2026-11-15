@@ -1736,7 +1736,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     `failed` or `done`; `steps` are `[{id, title, state, detail?, sent?, total?}]`, each
     `waiting`, `now`, `done` or `failed`, with `sent` of `total` bytes while it copies (and
     `detail` saying the same in words, "41 of 98 MB"). Adding
-    and setting up again have `checking`, `files`, `engine`, `starting`, `joining`; uninstalling
+    and setting up again have `checking`, `files`, `engine`, `starting`, `seeding`, `joining`; uninstalling
     `checking`, `removing`, `forgetting`. `failure` is `{title, message, again}` (`again`: trying
     again could go otherwise); `computer` `{key, name}` once it's one of yours (`known`: it was
     here already, at another address, which is kept as one of its addresses: told by its
@@ -1772,13 +1772,29 @@ machines; a client that wants every computer's facts asks the box that has it as
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
     Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
-    downloads no code); then, in one script, the computer's settings made its own (nothing of the
-    box's is copied), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
+    downloads no code); then, in one script, the computer's settings made its own (one with none starts
+    with the box's, below), how its keeper starts it (`run/launch.env`: the session's PATH, shell and
     language and its name; no password or key), its `machine-id` made once, the `@reboot` line and a Mac's launch agent, and
     `kuvo-start start`: its own keeper starts its engine, with a port and passwords that never
     leave it; then `kuvo-link.js setup` there with this box's keys and documents, its answer
     written as the box's own record of it (its peers document, `machines.json`, and
     `phone-link.json` for `kuvo/hosts`).
+  - **What a new computer starts with** (`seeding`), once, as it's added, and only one that had
+    no Kuvo Code: a copy of the box's engine settings (not its shell or worktrees' folder, nor
+    the integrations that use a Mac's own apps) and of its integrations' keys (not a bot's own),
+    which go with its start on the script's standard input and are taken by `box adopt` there
+    ("Settings per box"); and of its accounts' sign-ins in use that stay the same (a provider's
+    API key, GitHub Copilot's sign-in), taken by `kuvo-link.js box seed` there (`{credentials:
+    [{integrationID, label, value}]}` on its standard input; it answers `{status, taken}`, how
+    many and never what), which stores each in its engine unless it has one for that account,
+    and notes it took them (`run/seeded.json`: never twice). A sign-in that renews itself (one
+    with a refresh token, but GitHub Copilot's: ChatGPT's, GitLab's) is never given, nor an
+    integration's server's own sign-in: each computer signs in to those itself, and the step
+    says how many weren't copied. None of it is in a script's arguments, a try's words,
+    `run/adding.json` or a log; there it's in files and an engine only you can read. A part the
+    box can't read now (its engine not answering, its Keychain not reachable) is left out, and
+    the computer is added all the same. One that had Kuvo Code keeps its own ("It keeps its
+    own"), and so does every computer set up again.
   - `POST kuvo/computers/<key>/setup` → `202 {try}`: the same at the address it was added under
     (Set Up Again), which brings an older Kuvo Code there up to this box's. `POST
     kuvo/computers/<key>/uninstall` → `202 {try}`: over SSH the computer lets this box go

@@ -127,7 +127,7 @@ fn step(id: &str, title: &str, state: &str) -> Value {
 
 /// A try's steps for adding, the first `done` of them done and the next `now` (none: all waiting after).
 fn add_steps(done: usize, now: Option<Value>) -> Vec<Value> {
-    let titles = [("checking", "Checking it"), ("files", "Copying Kuvo Code"), ("engine", "Copying the engine"), ("starting", "Starting Kuvo Code there"), ("joining", "Adding it to your computers")];
+    let titles = [("checking", "Checking it"), ("files", "Copying Kuvo Code"), ("engine", "Copying the engine"), ("starting", "Starting Kuvo Code there"), ("seeding", "Copying your keys and sign-ins"), ("joining", "Adding it to your computers")];
     titles.iter().enumerate().map(|(ix, (id, title))| if ix < done { step(id, title, "done") } else if ix == done { now.clone().unwrap_or_else(|| step(id, title, "waiting")) } else { step(id, title, "waiting") }).collect()
 }
 
@@ -243,6 +243,9 @@ pub fn adding_goes_on(areas: &mut Areas) -> bool {
         let again = tried["kind"] == json!("setup");
         for step in tried["steps"].as_array_mut().into_iter().flatten() {
             step["state"] = json!("done");
+            if step["id"] == json!("seeding") {
+                step["detail"] = json!(if again { "It keeps its own".to_owned() } else { format!("Copied 3 keys and 2 accounts. One sign-in renews itself, so sign in to it on {name}.") });
+            }
             if let Some(step) = step.as_object_mut() {
                 step.remove("sent");
                 step.remove("total");

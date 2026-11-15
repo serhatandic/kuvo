@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -60,7 +61,22 @@ const fakeEngine = path.join(fake, "engine.mjs");
 fs.writeFileSync(fakeEngine, `
 import fs from "node:fs"; import http from "node:http";
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
-const server = http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? {} : [] })); });
+// (Its sign-ins, kept as an engine keeps them: listed, and stored as they're given.)
+const kept = ${JSON.stringify(path.join(there, "engine-credentials.json"))};
+const credentials = () => { try { return JSON.parse(fs.readFileSync(kept, "utf8")); } catch { return []; } };
+const server = http.createServer((request, response) => {
+  const chunks = [];
+  request.on("data", chunk => chunks.push(chunk));
+  request.on("end", () => {
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/api/credential" && request.method === "POST") {
+      const given = JSON.parse(Buffer.concat(chunks).toString());
+      fs.writeFileSync(kept, JSON.stringify([...credentials(), { id: "cred_" + credentials().length, integrationID: given.integrationID, label: given.label, value: given.value, active: given.activate }]), { mode: 0o600 });
+      return response.end("{}");
+    }
+    response.end(JSON.stringify({ data: request.url === "/api/credential" ? credentials() : request.url.startsWith("/api/session/active") ? {} : [] }));
+  });
+});
 server.listen(port, "127.0.0.1", () => console.log("server listening on http://127.0.0.1:" + port));
 setInterval(() => { if (!fs.existsSync(${JSON.stringify(there)})) process.exit(0); }, 300);
 `);
@@ -153,6 +169,48 @@ fs.writeFileSync(path.join(base, "here", ".ssh", "config"), "Host studio\n  Host
 // (The keeper's own tools there, where its PATH starts: none of the system's is reached.)
 for (const tool of ["pkill", "caffeinate"]) write(path.join(remote, "bin", tool), `#!/bin/sh\nexit 0\n`, 0o755);
 
+// What this box has to give a new computer: its settings, an integration's key (in the Keychain,
+// through its helper, a stand-in here), and its engine's accounts, a stand-in too: a provider's API
+// key, GitHub Copilot's sign-in (which stays the same), ChatGPT's (which renews itself), an
+// integration's own sign-in, and a second key that isn't the one in use.
+const mine = {
+  keys: { KUVO_KEY_NOTION_TOKEN: "secret-notion-token", KUVO_KEY_NOTION_TOKEN__BOT_ABC: "a-bots-own", KUVO_KEY_APPLE_CALENDAR_KEY: "this-macs-own" },
+  integrations: [{ id: "anthropic" }, { id: "github-copilot" }, { id: "openai" }, { id: "notion-mcp", metadata: { source: "mcp" } }],
+  credentials: [
+    { id: "c1", integrationID: "anthropic", label: "Work", active: true, value: { type: "api", key: "sk-ant-secret-key" } },
+    { id: "c2", integrationID: "anthropic", label: "Old", active: false, value: { type: "api", key: "sk-ant-old-key" } },
+    { id: "c3", integrationID: "github-copilot", label: "me", active: true, value: { type: "oauth", refresh: "gho_stays_the_same", access: "gho_stays_the_same", expires: 0 } },
+    { id: "c4", integrationID: "openai", label: "me@example.com", active: true, value: { type: "oauth", refresh: "rt-renews-itself", access: "at", expires: 1 } },
+    { id: "c5", integrationID: "notion-mcp", label: "Notion", active: true, value: { type: "oauth", access: "mcp-sign-in" } },
+  ],
+};
+const here = http.createServer((request, response) => {
+  const chunks = [];
+  request.on("data", chunk => chunks.push(chunk));
+  request.on("end", () => {
+    const given = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    const json = value => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
+    if (request.url === "/hello") return json({ proof: crypto.createHmac("sha256", "host-password").update(`kuvo-host-hello\u0000${given.nonce}\u0000127.0.0.1:${here.address().port}`).digest("hex") });
+    if (request.url === "/keys/names") return json({ names: Object.keys(mine.keys) });
+    if (request.url === "/keys/get") return given.name in mine.keys ? json({ value: mine.keys[given.name] }) : response.writeHead(404).end();
+    if (request.url === "/api/integration") return json({ data: mine.integrations });
+    if (request.url === "/api/credential") return json({ data: mine.credentials });
+    response.writeHead(404).end();
+  });
+});
+await new Promise(resolve => here.listen(0, "127.0.0.1", resolve));
+atEnd(() => { here.closeAllConnections(); here.close(); });
+write(path.join(home, "run", "host.json"), JSON.stringify({ url: `http://127.0.0.1:${here.address().port}`, password: "host-password" }), 0o600);
+write(path.join(home, "run", "engine.json"), JSON.stringify({ pid: process.pid, port: here.address().port, password: "pw", version: engineVersion }), 0o600);
+write(path.join(home, "config", "opencode", "opencode.json"), JSON.stringify({
+  $schema: "https://opencode.ai/config.json", shell: "/bin/zsh", model: "anthropic/claude-opus-5-5",
+  mcp: {
+    notion: { type: "local", command: ["notion-mcp"], environment: { NOTION_TOKEN: `{file:${path.join(home, "keys")}/KUVO_KEY_NOTION_TOKEN}` } },
+    "chrome-devtools": { type: "local", command: ["chrome-devtools-mcp"] },
+  },
+}));
+const secrets = ["secret-notion-token", "sk-ant-secret-key", "gho_stays_the_same", "rt-renews-itself", "a-bots-own", "this-macs-own", "mcp-sign-in"];
+
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const k = key => key.toString("base64url");
 const mac = link.newKey();
@@ -244,7 +302,7 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   assert.equal((await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: asking.question.at })).status, 200);
   const done = await over(id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
-  assert.deepEqual(steps(done), ["checking:done", "files:done", "engine:done", "starting:done", "joining:done"]);
+  assert.deepEqual(steps(done), ["checking:done", "files:done", "engine:done", "starting:done", "seeding:done", "joining:done"]);
   assert.equal(done.title, "studio is one of your computers");
 
   // Its key, in the box's own file; yours untouched.
@@ -271,6 +329,26 @@ test("adding a computer: the box shows a host key it doesn't know, and on Trust 
   assert.match(env, /^PATH=/m);
   assert.doesNotMatch(env, /PASSWORD|KUVO_KEY/, "no secret in how it starts again");
   assert.ok(alive(Number(fs.readFileSync(path.join(remote, "run", "box.pid"), "utf8"))), "its keeper keeps it from here on");
+  // What it starts with, once: this box's settings and its integration's key, in its own box; and
+  // its accounts' key and the sign-in that stays the same, in its own engine. Never the sign-in
+  // that renews itself, an integration's own sign-in, a bot's key, or what only this Mac can use.
+  assert.equal(done.steps.find(step => step.id === "seeding").detail, "Copied 1 key and 2 accounts. One sign-in renews itself, so sign in to it on studio.");
+  const settings = read(path.join(remote, "box", "opencode.json"));
+  assert.equal(settings.model, "anthropic/claude-opus-5-5");
+  assert.deepEqual(settings.mcp.notion.environment, { NOTION_TOKEN: "{file:~/.kuvo-code/box/keys/KUVO_KEY_NOTION_TOKEN}" });
+  assert.deepEqual([settings.shell, settings.$schema, settings.mcp["chrome-devtools"]], [undefined, undefined, undefined]);
+  assert.deepEqual(fs.readdirSync(path.join(remote, "box", "keys")), ["KUVO_KEY_NOTION_TOKEN"]);
+  assert.equal(fs.readFileSync(path.join(remote, "box", "keys", "KUVO_KEY_NOTION_TOKEN"), "utf8"), "secret-notion-token");
+  assert.equal((fs.statSync(path.join(remote, "box", "keys", "KUVO_KEY_NOTION_TOKEN")).mode & 0o777).toString(8), "600");
+  const accounts = read(path.join(there, "engine-credentials.json"));
+  assert.deepEqual(accounts.map(each => [each.integrationID, each.label, each.value, each.active]), [
+    ["anthropic", "Work", { type: "api", key: "sk-ant-secret-key" }, true],
+    ["github-copilot", "me", { type: "oauth", refresh: "gho_stays_the_same", access: "gho_stays_the_same", expires: 0 }, true],
+  ]);
+  // None of it is written anywhere but there: not in what's said of the try, how it starts again, or its logs.
+  const said = [fs.readFileSync(path.join(home, "run", "adding.json"), "utf8"), JSON.stringify(done), env, fs.readFileSync(path.join(fake, "log"), "utf8"),
+    ...["launch.notes", "engine.log", "link.log"].map(name => { try { return fs.readFileSync(path.join(remote, "run", name), "utf8"); } catch { return ""; } })].join("\n");
+  for (const secret of secrets) assert.equal(said.includes(secret), false, secret);
   // And after a restart.
   assert.match(fs.readFileSync(crontabFile, "utf8"), /^@reboot sh "\$HOME\/\.kuvo-code\/bin\/kuvo-start" >\/dev\/null 2>&1 # kuvo-code: starts its engine again after a restart$/m);
   if (process.platform === "darwin") assert.ok(fs.existsSync(path.join(there, "Library", "LaunchAgents", "run.kuvo.code.machine.plist")), "a Mac's launch agent");
@@ -316,7 +394,7 @@ test("a host that can't be reached, one that refuses your keys, and one whose ke
   const fails = async destination => over((await ask("POST", "kuvo/computers/add", { destination })).body.try.id);
   const nowhere = await fails("nowhere");
   assert.equal(nowhere.state, "failed");
-  assert.deepEqual(steps(nowhere), ["checking:failed", "files:waiting", "engine:waiting", "starting:waiting", "joining:waiting"]);
+  assert.deepEqual(steps(nowhere), ["checking:failed", "files:waiting", "engine:waiting", "starting:waiting", "seeding:waiting", "joining:waiting"]);
   assert.equal(nowhere.failure.message, "Couldn’t reach nowhere. ssh: Could not resolve hostname nowhere: Name or service not known.");
   assert.equal(nowhere.failure.again, true);
 
@@ -382,8 +460,10 @@ test("setting a computer up again finds its files in place and leaves its runnin
   const begun = await ask("POST", `kuvo/computers/${peer.key}/setup`);
   const done = await over(begun.body.try.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
-  assert.deepEqual(done.steps.map(step => [step.id, step.detail]), [["checking", "Connecting to studio"], ["files", "It has them already"], ["engine", "It has it already"], ["starting", undefined], ["joining", undefined]]);
+  assert.deepEqual(done.steps.map(step => [step.id, step.detail]), [["checking", "Connecting to studio"], ["files", "It has them already"], ["engine", "It has it already"], ["starting", undefined], ["seeding", "It keeps its own"], ["joining", undefined]]);
   assert.equal(read(path.join(remote, "run", "engine.json")).pid, engine, "the engine at work wasn't started over");
+  // What's there is its own from then on: nothing of this box's is given again.
+  assert.equal(read(path.join(there, "engine-credentials.json")).length, 2);
   assert.equal(link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine").key, peer.key, "the same computer, once");
 });
 

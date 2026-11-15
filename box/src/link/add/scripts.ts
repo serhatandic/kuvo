@@ -146,8 +146,9 @@ if [ "$(uname -s)" = Darwin ] && [ ! -f "$HOME/Library/LaunchAgents/${LAUNCH_AGE
   mkdir -p "$HOME/Library/LaunchAgents" && printf '%s\n' ${quote(LAUNCH_AGENT_PLIST)} >"$HOME/Library/LaunchAgents/${LAUNCH_AGENT}.plist"
 fi`;
 
-/** Starts the box there, to keep itself from then on: its settings made its own (nothing of this
- * computer's goes there), how its keeper starts its engine noted once (the session's PATH, shell
+/** Starts the box there, to keep itself from then on: its settings made its own (on a computer
+ * with none, from what's on its standard input, `{settings, keys}`, which never shows anywhere
+ * else: `seeded` is said then; one with its own keeps them), how its keeper starts its engine noted once (the session's PATH, shell
  * and language, which cron doesn't give it, and the name you know it by), its start after a
  * restart, and then its own keeper's start, which gives its engine a port and passwords of its own.
  * All in one script, so a removal is never between its parts. Its id (`id <32 hex>`, made here
@@ -158,8 +159,10 @@ export const start = (version: string, name: string, notes: string): string => `
 mkdir -p "$R" && chmod 700 "$R"
 ${engineOf(version)}
 [ -x "$E" ] || { echo "It has no engine yet." >&2; exit 3; }
-${link("box adopt")} </dev/null >/dev/null 2>"$R/.adopt.err" || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
+adopted=$(${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
 rm -f "$R/.adopt.err"
+case "$adopted" in *'"seeded":true'*) echo seeded ;; esac
+unset adopted
 if [ ! -f "$R/launch.env" ]; then
   (umask 077; { env | grep -E '^(PATH|SHELL|LANG|LC_[A-Z_]+)='; printf '%s\\n' ${quote(`KUVO_MACHINE_NAME=${name}`)} 'OPENCODE_CLIENT=desktop'; } | grep -v '^$' >"$R/launch.env.new" && mv -f "$R/launch.env.new" "$R/launch.env")
 fi
@@ -173,7 +176,7 @@ if [ ! -s "$F" ]; then
   rm -f "$T"
 fi
 rm -f "$R/off"
-if sh "$K/bin/kuvo-start" start >/dev/null 2>&1; then
+if sh "$K/bin/kuvo-start" start </dev/null >/dev/null 2>&1; then
   [ -f "$R/off" ] && exit 7
   echo "id $(cat "$F")"
   echo started
@@ -187,6 +190,12 @@ fi`;
 export const join = (version: string): string => `${K}
 ${engineOf(version)}
 ${link("setup")}`;
+
+/** The accounts a computer starts with, on its standard input (`{credentials}`), taken by its own
+ * box (`kuvo-link.js box seed`): its answer is the last line, which says how many, never what. */
+export const seed = (version: string): string => `${K}
+${engineOf(version)}
+${link("box seed")}`;
 
 /** One request to the box there, answered once (`kuvo-link.js box route`, the request on its
  * standard input): its answer is the last line, `{status, body}`. */

@@ -29,6 +29,7 @@ import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
+import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 
@@ -200,8 +201,8 @@ function stopFrom(tell: Telling): void {
   stoppers.get(tell)?.();
 }
 
-const SETUP_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Starting Kuvo Code there"], ["joining", "Adding it to your computers"]] as const;
-const AGAIN_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo Code there"], ["joining", "Adding it to your computers"]] as const;
+const SETUP_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Starting Kuvo Code there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Adding it to your computers"]] as const;
+const AGAIN_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo Code there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Adding it to your computers"]] as const;
 const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and removing Kuvo Code"], ["forgetting", "Taking it off your computers"]] as const;
 
 /** The key this box is known by on the computers it starts (its engine launches' notes there):
@@ -235,7 +236,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     if (same) {
       const peer = itsPeer;
       writePrivate(LIST_FILE, JSON.stringify(saved.map(each => (each === same ? { ...each, otherAddresses: [...new Set([...(each.otherAddresses ?? []), destination])] } : each)), null, 2));
-      for (const id of ["files", "engine", "starting", "joining"]) tell.skip(id, `It’s ${peer?.name ?? same.destination}, already one of your computers`);
+      for (const id of ["files", "engine", "starting", "seeding", "joining"]) tell.skip(id, `It’s ${peer?.name ?? same.destination}, already one of your computers`);
       tell.rename(peer?.name ?? same.destination);
       if (peer) tell.came({ key: peer.key, name: peer.name }, true);
       return;
@@ -286,7 +287,10 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     tell.step("starting");
     const own = link ? ownKey(link) : null;
     const notes = JSON.stringify({ mac: own ? launcherID(own) : "", macName: ownName().replace(/[{}"\\]/g, ""), box: mine });
-    const started = await reach.run(scripts.start(ENGINE_VERSION, name, notes), { most: 600_000 });
+    // (What a computer with no Kuvo Code starts with goes with its start, on its standard input:
+    // this box's settings and integrations' keys. One that has its own keeps them.)
+    const given = found ? null : await gatherSeed();
+    const started = await reach.run(scripts.start(ENGINE_VERSION, name, notes), { most: 600_000, ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}) });
     if (started.status === 7) throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
     if (started.status === 6) throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
     if (started.status !== 0) throw new Failed(`Kuvo Code didn’t start on ${name}. ${lastLine(started.stderr)}`.trim(), true, `Kuvo Code didn’t start on ${name}`);
@@ -296,6 +300,23 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     if (tell.signal.aborted && own && !found) {
       const undone = await reach.run(scripts.uninstall(ENGINE_VERSION, own, true), { most: 600_000, anyway: true }).catch(() => null);
       if (undone?.status !== 0) throw new Failed(`Kuvo Code had started on ${name} when this was stopped, and couldn’t be stopped there again. Add ${name} again, then uninstall it from its page.`, true, `${name} is still running Kuvo Code`);
+    }
+    // Its accounts, once: the keys and the sign-ins that stay the same. Never what renews itself.
+    const renewing = given?.renewing ? ` ${given.renewing === 1 ? "One sign-in renews itself" : `${given.renewing} sign-ins renew themselves`}, so sign in to ${given.renewing === 1 ? "it" : "those"} on ${name}.` : "";
+    if (!given) tell.skip("seeding", "It keeps its own");
+    else {
+      tell.step("seeding");
+      const settings = /^seeded$/m.test(started.stdout);
+      let taken = 0;
+      if (given.credentials.length) {
+        const ran = await reach.run(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({ credentials: given.credentials })), most: 300_000 });
+        let said: unknown = null;
+        try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
+        taken = isObject(said) && typeof said.taken === "number" ? said.taken : 0;
+      }
+      const keys = settings ? Object.keys(given.keys).length : 0;
+      const copied = [keys ? `${keys} ${keys === 1 ? "key" : "keys"}` : "", taken ? `${taken} ${taken === 1 ? "account" : "accounts"}` : ""].filter(Boolean).join(" and ");
+      tell.skip("seeding", `${copied ? `Copied ${copied}.` : settings ? "Copied your settings." : "Nothing to copy."}${renewing}`);
     }
     tell.step("joining");
     const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;

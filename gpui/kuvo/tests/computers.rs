@@ -112,7 +112,7 @@ fn adding_a_machine_asks_about_its_key_then_shows_each_step_until_its_one_of_you
     assert_eq!(stand_in.seen_at("POST", &format!("kuvo/computers/add/{}/answer", tried.id)).last().and_then(|seen| seen.body.clone()), Some(serde_json::json!({ "answer": "trust", "at": question.at })));
     // Copying: each step as the box says it stands, the one under way with how far it's got.
     let tried = page.read_with(cx, |page, _| page.tries_drawn()).pop().expect("the try");
-    assert_eq!(tried.steps.iter().map(|step| step.state.as_str()).collect::<Vec<_>>(), ["done", "done", "now", "waiting", "waiting"]);
+    assert_eq!(tried.steps.iter().map(|step| step.state.as_str()).collect::<Vec<_>>(), ["done", "done", "now", "waiting", "waiting", "waiting"]);
     assert!(!shown(cx, "add-question") && shown(cx, "add-step-engine") && shown(cx, "add-try-cancel"));
     assert!(!shown(cx, "computers-row-key_added_mac-mini"));
     // Done: it's one of your computers, and Show opens its page, with what the box offers for it.

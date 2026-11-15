@@ -15,6 +15,7 @@
 // is kuvo-ai's protocol/PROTOCOL.md, with the same in Swift (swift/KuvoLink) for the Mac and
 // the phone.
 
+import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -254,6 +255,7 @@ export { LETTER_WAIT, macSendOutbox, runMacPeers, stopMacPeers } from "./mac/pee
 export { setMacPeers } from "./mac/routes";
 // Adding a computer over SSH (the bridge's tests').
 export { allTries, forgetTries } from "./add/tries";
+export { renewsItself, seedCredentials, seedSettings } from "./add/seed";
 export { adding } from "./areas/computers-add";
 export { KNOWN_HOSTS, fingerprintOf } from "./add/ssh";
 export { RELEASE_FILES } from "./add/files";
@@ -616,6 +618,10 @@ async function box(command: string): Promise<void> {
       // (Checked there.)
       return say(ownsSettings() ? changeSettings(given?.changes) : { status: 409, message: "This machine's settings aren't its own yet." });
     }
+    // The accounts a computer starts with, from the box that adds it (`add/seed.ts`): on its standard
+    // input, never in its arguments.
+    case "seed":
+      return say(await takeSeed(await input()));
     case "key": {
       const name = process.argv[4];
       const value = await input();
