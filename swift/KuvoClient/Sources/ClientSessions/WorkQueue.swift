@@ -9,20 +9,41 @@ import ClientText
 /// Where an item stands, as the box lists them (its `statuses`: Needs you, In review, Waiting, Todo,
 /// Backlog, Done, Canceled; In progress is drawn as its own section, `WorkQueue.inProgressID`). The
 /// name is from when the box kept categories (#674): a section of the list is still one of these.
-/// None is yours to rename or remove (`builtIn`).
+/// None is yours to rename or remove (`builtIn`). Which are closed is the box's word (`closed`):
+/// no client keeps its own list of them.
 public struct WorkCategory: Codable, Hashable, Sendable, Identifiable {
     public var id: String
     public var name: String
     public var builtIn: Bool
+    /// An item here is finished (Done, Canceled), as the box's `statuses` say.
+    public var closed: Bool
 
-    public init(id: String, name: String, builtIn: Bool) {
+    public init(id: String, name: String, builtIn: Bool, closed: Bool = false) {
         self.id = id
         self.name = name
         self.builtIn = builtIn
+        self.closed = closed
     }
 
+    private enum Keys: String, CodingKey { case id, name, builtIn, closed }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        self.init(id: try container.decode(String.self, forKey: .id), name: try container.decode(String.self, forKey: .name),
+                  builtIn: try container.decode(Bool.self, forKey: .builtIn), closed: try container.decode(Bool.self, forKey: .closed))
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: Keys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(builtIn, forKey: .builtIn)
+        try container.encode(closed, forKey: .closed)
+    }
+
+    /// The Done status's id: what a client draws its own mark for (a check), never what decides
+    /// whether an item is closed (`closed` does).
     public static let done = "done"
-    public static let canceled = "canceled"
 }
 
 /// A label, as the box lists them: what kind of work an item is; `color` a look's name.
@@ -296,8 +317,9 @@ public struct WorkItem: Hashable, Sendable, Decodable, Identifiable {
     public var doneAt: Double?
     public var removed: WorkStamp?
 
-    /// Closed: Done or Canceled.
-    public var isDone: Bool { category == WorkCategory.done || category == WorkCategory.canceled }
+    /// Closed (Done, Canceled), as the box's statuses said when its view was read
+    /// (`WorkQueueView.isClosed`, which a client that changes an item's status goes by).
+    public var isDone: Bool = false
     /// An outside source's name ("app#12"), "#243", or "New" while it waits for its number.
     public var name: String { source?.shownName ?? number.map { "#\($0)" } ?? "New" }
 
@@ -459,33 +481,60 @@ public struct WorkQueueView: Hashable, Sendable, Decodable {
     public var owners: [WorkOwner]
     public var removed: [WorkItem]
     public var computers: [Told]
+    /// The statuses the box says are closed (Done, Canceled): In progress is never one.
+    public var closed: Set<String>
+    /// The box's counts of what it lists, where they were asked for (`counts=1`).
+    public var counts: Counts?
 
-    public init(owner: String, categories: [WorkCategory] = [], labels: [WorkLabel] = [], items: [WorkItem] = [], owners: [WorkOwner] = [], removed: [WorkItem] = [], computers: [Told] = []) {
+    /// A view's counts, as the box counted them: how many of its items are open.
+    public struct Counts: Hashable, Sendable, Decodable {
+        public var open: Int
+        public init(open: Int) { self.open = open }
+    }
+
+    public init(owner: String, categories: [WorkCategory] = [], labels: [WorkLabel] = [], items: [WorkItem] = [], owners: [WorkOwner] = [], removed: [WorkItem] = [], computers: [Told] = [], counts: Counts? = nil) {
         self.owner = owner
         self.categories = categories
         self.labels = labels
-        self.items = items
         self.owners = owners
-        self.removed = removed
         self.computers = computers
+        self.counts = counts
+        closed = Set(categories.filter(\.closed).map(\.id))
+        self.items = items
+        self.removed = removed
+        marksClosed()
     }
 
-    private enum Keys: String, CodingKey { case owner, statuses, labels, items, owners, removed, computers }
+    private enum Keys: String, CodingKey { case owner, statuses, labels, items, owners, removed, computers, counts }
     private struct Status: Decodable {
         var id: String
         var name: String
+        var closed: Bool
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: Keys.self)
         owner = try container.decode(String.self, forKey: .owner)
-        categories = try container.decode([Status].self, forKey: .statuses).filter { $0.id != WorkQueue.inProgressID }.map { WorkCategory(id: $0.id, name: $0.name, builtIn: true) }
+        let statuses = try container.decode([Status].self, forKey: .statuses)
+        closed = Set(statuses.filter(\.closed).map(\.id))
+        categories = statuses.filter { $0.id != WorkQueue.inProgressID }.map { WorkCategory(id: $0.id, name: $0.name, builtIn: true, closed: $0.closed) }
         labels = (try? container.decodeIfPresent([WorkLabel].self, forKey: .labels)) ?? []
         items = try container.decode([WorkItem].self, forKey: .items)
         owners = try container.decode([WorkOwner].self, forKey: .owners)
         removed = try container.decodeIfPresent([WorkItem].self, forKey: .removed) ?? []
         // (A box from before piece 3 has none.)
         computers = (try? container.decodeIfPresent([Told].self, forKey: .computers)) ?? []
+        counts = try container.decodeIfPresent(Counts.self, forKey: .counts)
+        marksClosed()
+    }
+
+    /// Whether an item in `status` is closed, as the box's statuses say.
+    public func isClosed(_ status: String) -> Bool { closed.contains(status) }
+
+    // (Each item's `isDone`, from the box's word on its status.)
+    private mutating func marksClosed() {
+        for index in items.indices { items[index].isDone = closed.contains(items[index].category) }
+        for index in removed.indices { removed[index].isDone = closed.contains(removed[index].category) }
     }
 
     public static let all = "all"
@@ -589,12 +638,15 @@ public enum WorkQueue {
         /// The category items here are kept in; nil for In progress, which isn't one.
         public var category: String?
         public var items: [WorkItem]
+        /// Its category is a closed one (Done, Canceled), as the box says.
+        public var closed: Bool
 
-        public init(id: String, name: String, category: String?, items: [WorkItem]) {
+        public init(id: String, name: String, category: String?, items: [WorkItem], closed: Bool = false) {
             self.id = id
             self.name = name
             self.category = category
             self.items = items
+            self.closed = closed
         }
     }
 
@@ -608,7 +660,7 @@ public enum WorkQueue {
     /// linked to the session whose view it is, not Done. The box shows those in its view, to see
     /// only; they go first, under Working on (one that's Done goes with the Done ones).
     public static func isWorkingOn(_ item: WorkItem, in view: WorkQueueView) -> Bool {
-        view.owner != WorkQueueView.all && item.owner != view.owner && !item.isDone && item.sessions.contains { $0.session == view.owner }
+        view.owner != WorkQueueView.all && item.owner != view.owner && !view.isClosed(item.category) && item.sessions.contains { $0.session == view.owner }
     }
 
     /// The view's sections: Working on first when the view has any (what this session works on
@@ -621,16 +673,17 @@ public enum WorkQueue {
         sections.append(Section(id: inProgressID, name: "In progress", category: nil, items: rest.filter(isInProgress)))
         let kept = rest.filter { !isInProgress($0) }
         for category in view.categories {
-            sections.append(Section(id: category.id, name: category.name, category: category.id, items: kept.filter { $0.category == category.id }))
+            sections.append(Section(id: category.id, name: category.name, category: category.id, items: kept.filter { $0.category == category.id }, closed: category.closed))
         }
         return sections
     }
 
-    /// The items `filter` keeps, in the list's order: Working on and In progress first under All.
-    /// Each item is under one filter but All, so the others' counts add up to All's.
+    /// The items `filter` keeps, in the list's order: Working on and In progress first under All
+    /// (without the closed ones, Done and Canceled, unless `showsDone`). Each item is under one
+    /// filter but All, so the others' counts add up to All's.
     public static func items(_ view: WorkQueueView, _ filter: Filter, showsDone: Bool = true) -> [WorkItem] {
         switch filter {
-        case .all: return sections(view).filter { showsDone || $0.category != WorkCategory.done }.flatMap(\.items)
+        case .all: return sections(view).filter { showsDone || !$0.closed }.flatMap(\.items)
         default: return section(for: filter, in: view)?.items ?? []
         }
     }
@@ -654,9 +707,11 @@ public enum WorkQueue {
         view.items.count
     }
 
-    /// How many items are open (not Done): the tab's "24 open".
+    /// How many items are open (neither Done nor Canceled): the tab's "24 open". The box's count
+    /// (`counts.open`); a view read without `counts=1` (the retired Mac app's) by the box's word on
+    /// which statuses are closed.
     public static func openCount(_ view: WorkQueueView) -> Int {
-        view.items.count { !$0.isDone }
+        view.counts?.open ?? view.items.count { !view.isClosed($0.category) }
     }
 
     /// "24 items", "1 item", "No items".
@@ -697,7 +752,7 @@ public enum WorkQueue {
     /// where it wouldn't move.
     public static func place(of item: WorkItem, at index: Int, in section: Section) -> Place? {
         // (An issue's Done is its source's: it's never moved there, nor one its source made Done.)
-        guard let category = section.category, canMove(item), canClose(item) || !isClosing(category) else { return nil }
+        guard let category = section.category, canMove(item), canClose(item) || !section.closed else { return nil }
         let index = min(max(index, 0), section.items.count)
         // Where it is now, in this list: dropped just above or below itself, it stays.
         if let from = section.items.firstIndex(where: { $0.id == item.id }), index == from || index == from + 1 { return nil }
@@ -741,6 +796,7 @@ public enum WorkQueue {
         var moved = view.items.first { $0.id == item.id } ?? item
         view.items.removeAll { $0.id == item.id }
         moved.category = place.category
+        moved.isDone = view.isClosed(place.category)
         // (No move goes to In progress: it's that only while its status is.)
         moved.inProgress = place.category == inProgressID
         // (Sections take each category's items in the list's order: where among the others it's put
@@ -814,14 +870,13 @@ public enum WorkQueue {
     /// done; neither Done nor Canceled where it can't be closed here (an issue's, closed on GitHub).
     public static func moveTargets(for item: WorkItem, in categories: [WorkCategory]) -> [WorkCategory] {
         guard canMove(item) else { return [] }
-        return categories.filter { $0.id != item.category && (canClose(item) || !isClosing($0.id)) }
+        return categories.filter { $0.id != item.category && (canClose(item) || !$0.closed) }
     }
 
     /// Whether you can move it at all, as the box says (`can.set`): not where it says nothing.
     public static func canMove(_ item: WorkItem) -> Bool { item.can?.set == true }
     /// Whether it may be closed here (Done, Canceled), as the box says (`can.close`).
     public static func canClose(_ item: WorkItem) -> Bool { item.can?.close == true }
-    static func isClosing(_ category: String) -> Bool { category == WorkCategory.done || category == WorkCategory.canceled }
 }
 
 /// What both apps draw an item's name with, in a list or a chip: the mark of the service its source

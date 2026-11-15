@@ -75,8 +75,8 @@ public extension WorkQueue {
                 let back = categoryName(kept, in: view.categories)
                 properties.append(Property(kind: .category(item.category), words: words,
                                            help: item.isGone ? "If GitHub shows it again, it’s back in \(back)." : "If it’s reopened there, it’s back in \(back)."))
-            } else if item.isDone {
-                let closed = item.category == WorkCategory.canceled ? "Canceled" : "Done"
+            } else if view.isClosed(item.category) {
+                let closed = categoryName(item.category, in: view.categories)
                 properties.append(Property(kind: .category(item.category), words: closed, help: item.doneAt.map { "\(closed) \(ago(Date(timeIntervalSince1970: $0 / 1000), now: now, calendar: calendar, locale: locale))" }))
             } else {
                 // (Its status, by the name the box gives it: "Todo", "Needs you".)
@@ -206,7 +206,7 @@ public extension WorkQueue {
         }
         // (Done, from when it was done, where the box kept no word of it then: an item from before,
         // or one done again on a box that keeps none.)
-        if item.isDone, item.keptIn == nil, let doneAt = item.doneAt, !detail.events.contains(where: { $0.kind == "done" && $0.at >= doneAt - 1000 }) {
+        if view.isClosed(item.category), item.keptIn == nil, let doneAt = item.doneAt, !detail.events.contains(where: { $0.kind == "done" && $0.at >= doneAt - 1000 }) {
             // (Who marked it done is kept only as its last change, when that's the same moment.)
             let by = abs(item.updated.at - doneAt) < 1000 ? item.updated.by : nil
             lines.append(Activity(id: "done", kind: .done, who: by, whoWords: by.map { capitalized($0.words) } ?? "", what: by == nil ? "Marked done" : "marked it done", at: doneAt))
@@ -277,7 +277,7 @@ public extension WorkQueue {
     /// sign-in, Work item 551, in progress, Writing the tests, Kuvo Foreman, on lab, updated 12m ago".
     static func spokenRow(_ item: WorkItem, in view: WorkQueueView, now: Date = .now, calendar: Calendar = .current, locale: Locale = .current) -> String {
         var parts = [item.title, item.spokenName]
-        if item.isDone { parts.append(item.isGone ? "done, gone" : "done") } else if isInProgress(item) { parts.append("in progress") }
+        if view.isClosed(item.category) { parts.append(item.isGone ? "done, gone" : "done") } else if isInProgress(item) { parts.append("in progress") }
         if isInProgress(item), let note = progressNote(item) { parts.append(note) }
         parts += eyebrow(of: item, in: view)
         parts.append(updated(item.updated.date, now: now, calendar: calendar, locale: locale).lowercased())
