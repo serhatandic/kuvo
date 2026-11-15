@@ -45448,7 +45448,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a3b6ba878096";
+var BRIDGE_VERSION = "982bf0a3aacd";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56928,7 +56928,7 @@ function revised(row) {
   const can = (value) => value === undefined ? undefined : value === true;
   const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
-    confirmBelow: row.confirmBelow?.value,
+    confirmBelow: row.confirmBelow,
     min: row.min,
     max: row.max,
     kind: row.kind,
@@ -57372,7 +57372,7 @@ async function storagePage(context) {
 async function storageChange(context, at, value) {
   if (at.id !== "older-budget")
     return { status: 400, message: "That isn't something to change." };
-  return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value }));
+  return staleOrRefusal(await asked8(context, artifactsRoute, "POST", "kuvo/artifacts/storage", { budget: Math.floor(Number(value)), was: at.value, wasOlder: at.confirmBelow?.value }));
 }
 async function storageAct(context, at, action) {
   if (at.id !== "older-copies" || action.id !== "clear")
@@ -57639,6 +57639,9 @@ async function* settingsPageRoute(context, match) {
         return { status: 403, value: { message: why } };
       if (!("value" in given) || !fits4(at, given.value))
         return { status: 400, value: { message: at.kind === "choice" ? "Pick one of its choices." : at.kind === "text" || at.kind === "folder" ? "Send text." : at.kind === "number" ? "Send a number within its limits." : "Send true or false." } };
+      if (at.confirmBelow && typeof given.value === "number" && given.value < at.confirmBelow.value && given.confirmed !== true) {
+        return { status: 400, value: { message: at.confirmBelow.confirm.body } };
+      }
       done = await section.change(context, at, given.value);
     }
     if (done?.stale)

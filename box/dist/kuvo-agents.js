@@ -29177,6 +29177,8 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
         return message(400, "Say the budget for older versions, in bytes (budget).");
       if ("was" in given && given.was !== store.storage().budget)
         return message(409, "It changed since you read it.");
+      if ("wasOlder" in given && given.wasOlder !== store.storage().older)
+        return message(409, "It changed since you read it.");
       store.setBudget(budget);
       return json11(store.storage());
     }
@@ -36770,4 +36772,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 976076faace17a4d2c5a5ffc9122b81db76ce0009cf5b596114e7cef41455f3d
+// Built from Packages/Box/src/agents 240831f763516ff7aa17d362c7ff5e2e01094ac3b827b68070c9df7d17bbee73
