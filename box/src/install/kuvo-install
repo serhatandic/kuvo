@@ -1,0 +1,143 @@
+#!/bin/sh
+# Installs this computer's box from the release an app carries (protocol/PROTOCOL.md, "Installing
+# this computer's box"): run from the folder that holds it, beside `boxes.json` and the pack.
+#   sh kuvo-install status|new|move [--app <bundle>] [--root <name>]
+#     status   what this computer holds (a verdict), and what to run next
+#     new      a new box, made in its home and started
+#     move     the old app's box and data moved into its home
+#   --app <bundle>   the app that runs it (a Mac's: its bundle says whose folder holds the old data)
+#   --root <name>    the box's home in your home folder (default .kuvo-code; a demo copy's own)
+# On a new computer nothing runs JavaScript yet, so the first steps are shell: the pack checked
+# against boxes.json and unpacked into <home>/updates/install/release, the engine for this system
+# taken beside it (one fetched before, the box's own of that version, else downloaded and checked
+# against the release's npm integrity), then the release's `kuvo-link.js install` on that engine.
+# It prints JSON lines: {"step": …} while it works, and the answer last. Exit: 0 done; 1 refused or
+# failed, said in words; 2 not asked as above; 4 another move holds the lock.
+# Platform: macOS and Linux, in the one script (the tools' names differ). It needs sh, tar, sed,
+# od, base64 (or openssl), a SHA tool (sha256sum and sha512sum, or shasum), and curl or wget to
+# fetch an engine. It writes only in <home>/updates/install.
+set -u
+
+usage() {
+    echo "Usage: sh kuvo-install status|new|move [--app <bundle>] [--root <name>]" >&2
+    exit 2
+}
+# (Its words hold no quotes or backslashes, so they're JSON as they are.)
+fail() {
+    printf '{"result":"failed","message":"%s"}\n' "$1"
+    exit 1
+}
+step() { printf '{"step":"%s"}\n' "$1"; }
+
+VERB=${1:-}
+case "$VERB" in status | new | move) shift ;; *) usage ;; esac
+APP="" ROOT=.kuvo-code
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --app) [ $# -ge 2 ] || usage; APP=$2; shift 2 ;;
+        --root) [ $# -ge 2 ] || usage; ROOT=$2; shift 2 ;;
+        *) usage ;;
+    esac
+done
+case "$ROOT" in '' | . | .. | *[!A-Za-z0-9._-]*) usage ;; esac
+case "$APP" in '' | /*) ;; *) usage ;; esac
+[ -n "${HOME:-}" ] && [ -d "$HOME" ] || fail "Your home folder couldn't be found."
+
+if [ "$(uname -s)" = Darwin ]; then SYSTEM=darwin HERE="this Mac"; else SYSTEM=linux HERE="this computer"; fi
+[ "$SYSTEM" = darwin ] || [ "$(uname -s)" = Linux ] || fail "Kuvo Code's box runs on macOS and Linux only."
+case "$(uname -m)" in
+    x86_64 | amd64) MACHINE=x86_64 ;;
+    arm64 | aarch64) MACHINE=aarch64 ;;
+    *) fail "Kuvo Code has no engine for this kind of computer." ;;
+esac
+
+DAMAGED="This copy of Kuvo Code is damaged. Download it again, then try again."
+D=$(cd "$(dirname "$0")" && pwd -P) || fail "$DAMAGED"
+[ -f "$D/boxes.json" ] || fail "$DAMAGED"
+
+sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+sum512_of() { if command -v sha512sum >/dev/null 2>&1; then sha512sum "$1" | cut -d' ' -f1; else shasum -a 512 "$1" | cut -d' ' -f1; fi; }
+# Base64 read, by whichever tool is there (a Mac's and Linux's name the option their own ways).
+decoded() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" | base64 -d 2>/dev/null || printf '%s' "$1" | openssl base64 -d -A 2>/dev/null; }
+
+# The manifest (scripts/sign-box.mjs writes it: one line of JSON, its fields in one order).
+manifest=$(decoded "$(sed -n 's|.*"manifest":"\([A-Za-z0-9+/=]*\)".*|\1|p' "$D/boxes.json")") || fail "$DAMAGED"
+field() { printf '%s' "$manifest" | sed -n "s|.*\"$1\":\"\([^\"]*\)\".*|\1|p"; }
+VERSION=$(field version) ENGINE=$(field engine) PACK_SUM=$(field sha256)
+# (Each names a file or a folder: nothing but what a version is written with.)
+case "$VERSION" in '' | *[!0-9a-z.-]* | .* | *..*) fail "$DAMAGED" ;; esac
+case "$ENGINE" in '' | *[!0-9A-Za-z.-]* | .* | *..*) fail "$DAMAGED" ;; esac
+case "$PACK_SUM" in *[!0-9a-f]*) fail "$DAMAGED" ;; esac
+[ ${#PACK_SUM} -eq 64 ] || fail "$DAMAGED"
+PACK="$D/box-$VERSION.tar.gz"
+[ -f "$PACK" ] || fail "$DAMAGED"
+
+K="$HOME/$ROOT"
+I="$K/updates/install"
+R="$I/release"
+(umask 077 && mkdir -p "$I") || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+
+# What it was started with never reaches the box's own commands (an older app's, a shell's), but a
+# test's own stand-ins.
+for name in $(env | sed -n 's/^\(KUVO_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    case "$name" in KUVO_TEST_*) ;; *) unset "$name" ;; esac
+done
+
+# The release, unpacked whole: beside it first, then renamed, with the pack's own sum as its mark,
+# so one cut short is never taken for one that's there.
+if [ ! -f "$R/.whole" ] || [ "$(cat "$R/.whole" 2>/dev/null)" != "$PACK_SUM" ]; then
+    step checking
+    [ "$(sum_of "$PACK")" = "$PACK_SUM" ] || fail "$DAMAGED"
+    rm -rf "$R" "$R.new"
+    mkdir "$R.new" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+    tar xzf "$PACK" -C "$R.new" 2>/dev/null || { rm -rf "$R.new"; fail "Kuvo Code's files couldn't be unpacked. Check that $HERE has room, then try again."; }
+    [ -f "$R.new/bin/kuvo-link.js" ] && [ -f "$R.new/box.json" ] || { rm -rf "$R.new"; fail "$DAMAGED"; }
+    printf '%s\n' "$PACK_SUM" >"$R.new/.whole"
+    mv "$R.new" "$R" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+fi
+
+# The engine for this system: the one fetched before; the box's own of this version (to ask how
+# things stand with; a new box takes a copy); else downloaded, checked, and run once.
+E="$I/engine/$ENGINE/opencode"
+OWN="$K/engine/$ENGINE/opencode"
+if [ ! -x "$E" ] && [ -x "$OWN" ] && [ "$VERB" = status ]; then
+    E=$OWN
+elif [ ! -x "$E" ]; then
+    S="$I/engine/.fetch.$$"
+    rm -rf "$I"/engine/.fetch.*
+    mkdir -p "$S" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+    trap 'rm -rf "$S"' EXIT
+    if [ -x "$OWN" ]; then
+        cp -p "$OWN" "$S/opencode" || fail "The engine couldn't be copied. Check that $HERE has room, then try again."
+    else
+        # (This system's builds, then this machine's, its two fields in whichever order.)
+        build=$(printf '%s' "$manifest" | sed -n "s|.*\"$SYSTEM\":{\(.*\)|\1|p" | sed 's|}}.*||' | sed -n "s|.*\"$MACHINE\":{\([^}]*\).*|\1|p")
+        URL=$(printf '%s' "$build" | sed -n 's|.*"url":"\([^"]*\)".*|\1|p')
+        INTEGRITY=$(printf '%s' "$build" | sed -n 's|.*"integrity":"sha512-\([A-Za-z0-9+/=]*\)".*|\1|p')
+        case "$URL" in https://* | file:///*) ;; *) fail "This Kuvo Code has no engine for this kind of computer." ;; esac
+        want=$(decoded "$INTEGRITY" | od -An -v -tx1 | tr -d ' \n')
+        [ ${#want} -eq 128 ] || fail "$DAMAGED"
+        step engine
+        OFFLINE="The engine couldn't be downloaded. Check that $HERE is online, then try again."
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL --proto '=https,file' --retry 2 --connect-timeout 30 --max-time 900 -o "$S/engine.tgz" "$URL" 2>/dev/null || fail "$OFFLINE"
+        elif command -v wget >/dev/null 2>&1; then
+            case "$URL" in https://*) ;; *) fail "$OFFLINE" ;; esac
+            wget -q -T 60 -O "$S/engine.tgz" "$URL" 2>/dev/null || fail "$OFFLINE"
+        else
+            fail "The engine couldn't be downloaded: $HERE has neither curl nor wget."
+        fi
+        [ "$(sum512_of "$S/engine.tgz")" = "$want" ] || fail "The engine that was downloaded isn't what this Kuvo Code's release says. Try again."
+        tar xzf "$S/engine.tgz" -C "$S" package/bin/opencode 2>/dev/null && mv "$S/package/bin/opencode" "$S/opencode" || fail "The engine couldn't be unpacked. Check that $HERE has room, then try again."
+    fi
+    chmod 755 "$S/opencode"
+    "$S/opencode" --version >/dev/null 2>&1 || fail "Kuvo Code's engine doesn't run on $HERE."
+    mkdir -p "$I/engine/$ENGINE" && mv -f "$S/opencode" "$E" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+    rm -rf "$S"
+    trap - EXIT
+fi
+
+# The rest is the box's own (box/src/link/install): the verdict, and what's made.
+cd "$K" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+if [ -n "$APP" ]; then set -- --app "$APP"; else set --; fi
+KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 exec "$E" --config=/dev/null --no-env-file "$R/bin/kuvo-link.js" install "--$VERB" --root "$ROOT" --release "$R" --engine "$I/engine" "$@"

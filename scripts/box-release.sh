@@ -7,7 +7,8 @@
 # scripts/build-helper.sh) as `bin/<name>.app`, packed as `box-<version>.tar.gz`, and
 # `boxes.json`, its manifest, signed (scripts/sign-box.mjs). The release workflow publishes both,
 # for boxes to update themselves with; an app that carries them offers them to the box on its
-# computer (`kuvo/box/update {from}`).
+# computer (`kuvo/box/update {from}`), and installs a computer's first box from them with
+# `kuvo-install` (box/src/install), written beside them.
 #   scripts/box-release.sh --files <version> <folder>
 #       Only the files, laid out as ~/.kuvo-code is, into <folder> (new or empty). No key.
 #   KUVO_BOX_SIGNING_KEY=<PEM> scripts/box-release.sh <version> <pack's URL> <folder> [<bundle>.app…]
@@ -98,7 +99,7 @@ fi
 # (Without the last slash a Mac's temporary folder ends in.)
 temporary=${TMPDIR:-/tmp}
 work=$(mktemp -d "${temporary%/}/kuvo-box-release.XXXXXXXX")
-trap 'rm -rf "$work"; rm -f "$OUT/box-$VERSION.tar.gz.new" "$OUT/boxes.json.new"' EXIT
+trap 'rm -rf "$work"; rm -f "$OUT/box-$VERSION.tar.gz.new" "$OUT/boxes.json.new" "$OUT/kuvo-install.new"' EXIT
 box="$work/box"
 files "$box"
 
@@ -169,4 +170,10 @@ fi
 "$NODE" scripts/sign-box.mjs "$VERSION" "$pack.new" "$URL" "$box/box.json" > "$OUT/boxes.json.new"
 mv -f "$pack.new" "$pack"
 mv -f "$OUT/boxes.json.new" "$OUT/boxes.json"
+# The installer beside them, for an app that carries the release to run on a computer with no box
+# yet (`sh kuvo-install status|new`, PROTOCOL.md, "Installing this computer's box"). Never in the
+# pack: a box that updates itself has no use for it.
+cp box/src/install/kuvo-install "$OUT/kuvo-install.new"
+chmod 755 "$OUT/kuvo-install.new"
+mv -f "$OUT/kuvo-install.new" "$OUT/kuvo-install"
 echo "Packed the box's $VERSION release into $OUT"

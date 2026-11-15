@@ -458,7 +458,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
       // set aside in its trash first, nothing deleted.
       const aside = path.join(home, "trash", `earlier-box-${stamp(journal.began)}`);
       const there = listOf(home).filter(name => name !== "updates").map(name => path.join(home, name))
-        .concat(listOf(path.join(home, "updates")).filter(name => name !== "rehome").map(name => path.join(home, "updates", name)));
+        .concat(listOf(path.join(home, "updates")).filter(name => name !== "rehome" && name !== "install").map(name => path.join(home, "updates", name)));
       for (const file of there.sort()) {
         if (file === path.join(home, "trash") || !exists(file)) continue;
         madeFolder(home, path.dirname(path.join(aside, path.relative(home, file))));
@@ -709,7 +709,7 @@ export async function rehome(folders: Folders, options: MoveOptions = {}): Promi
 /** Why a new Mac's box can't be made in `home` from the start, or null: its release's files, the
  * engine the app downloaded, no box of the app's own ever in its folder (that one moves instead), and
  * none in `home` (one its Mac removed is set aside). */
-function newRefusal({ appFolder, home }: Folders, { release, engineData }: { release: string | null | undefined; engineData: string | undefined }): string | null {
+function newRefusal({ appFolder, home }: Folders, { release, engineData, engine = path.join(appFolder, "engine") }: { release: string | null | undefined; engineData: string | undefined; engine?: string }): string | null {
   if (release !== undefined) {
     const refusal = releaseRefusal(release);
     if (refusal) return refusal;
@@ -722,7 +722,7 @@ function newRefusal({ appFolder, home }: Folders, { release, engineData }: { rel
   const someones = foundAt(home, false) !== null || recordedKind(path.join(home, "box", "kind")) === "machine" || exists(path.join(home, "box", "keys"));
   if (there !== "gone" && (there === "running" || someones)) return "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are.";
   if (runningIn(path.join(home, "run")).length) return "Something is running in this Mac's ~/.kuvo-code: it's made there once that's stopped.";
-  if (!listOf(path.join(appFolder, "engine")).length) return "The engine isn't downloaded yet: this Mac's box is made once it is.";
+  if (!listOf(engine).length) return "The engine isn't downloaded yet: this Mac's box is made once it is.";
   return null;
 }
 
@@ -732,7 +732,7 @@ function newMarker(home: string): string { return path.join(rehomeFolder(home), 
 /** Whether a new Mac's box's making was cut short in `home`: its mark there, with no move ever (no
  * state, no journal). Once a move has been there, the mark says nothing (left over, the move's
  * install step sets it aside), so a box there is never taken for a making cut short. */
-function makingCutShort(home: string): boolean {
+export function makingCutShort(home: string): boolean {
   if (!exists(newMarker(home))) return false;
   if (exists(path.join(rehomeFolder(home), "journal.json"))) return false;
   if (readRecord(home).state != null) return false;
@@ -756,17 +756,19 @@ export function newReadiness(folders: Folders, { engineData }: { engineData?: st
 /** `rehome --new`: a new Mac's box, made in its home of its own from the start (#333 §3.7, §4.2), with
  * nothing to move: what's in `home` that isn't a box set aside in its trash (nothing deleted; what a
  * making cut short left, taken away), the release's files put in `bin`, the engine the app
- * downloaded cloned beside them, Keep This Mac Awake as the app has it, and `box/kind` last. The
- * app's folder isn't changed. Made already, `nothing`. */
-export async function rehomeNew(folders: Folders, options: MoveOptions & { engineData?: string } = {}): Promise<RehomeOutcome> {
+ * downloaded cloned beside them (or the installer's, `engine`: the folder its versions are in,
+ * #713), Keep This Mac Awake as the app has it, and `box/kind` last. The app's folder isn't
+ * changed, nor what the installer staged (`updates/install`). Made already, `nothing`. */
+export async function rehomeNew(folders: Folders, options: MoveOptions & { engineData?: string; engine?: string } = {}): Promise<RehomeOutcome> {
   const { appFolder, home } = folders;
+  const engineFrom = options.engine ? path.resolve(options.engine) : path.join(appFolder, "engine");
   if (process.platform !== "darwin") return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
   const release = options.release ? path.resolve(options.release) : null;
   // (Asked first without its lock, which makes its home: a Mac whose box moves instead gets none from asking.)
   const why = (): RehomeOutcome | null => {
     if (moveUnderWay(home)) return { result: "refused", message: "A move of this Mac's box is under way: it's finished first.", status: rehomeStatus(home) };
     if (recordedKind(path.join(home, "box", "kind")) === "mac" && !makingCutShort(home)) return { result: "nothing", status: rehomeStatus(home) };
-    const refusal = newRefusal(folders, { release, engineData: options.engineData });
+    const refusal = newRefusal(folders, { release, engineData: options.engineData, engine: engineFrom });
     return refusal ? { result: "refused", message: refusal, status: rehomeStatus(home) } : null;
   };
   const before = why();
@@ -798,7 +800,7 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
     for (const scratch of ["bin.new", "engine.new"]) fs.rmSync(path.join(home, scratch), { recursive: true, force: true });
     const aside = path.join(home, "trash", `earlier-box-${stamp(now)}`);
     const there = listOf(home).filter(name => name !== "updates" && name !== "trash").map(name => path.join(home, name))
-      .concat(listOf(path.join(home, "updates")).filter(name => name !== "rehome").map(name => path.join(home, "updates", name)))
+      .concat(listOf(path.join(home, "updates")).filter(name => name !== "rehome" && name !== "install").map(name => path.join(home, "updates", name)))
       .concat(listOf(path.join(home, "trash")).filter(name => !name.startsWith("earlier-box-")).map(name => path.join(home, "trash", name)));
     for (const file of there.sort()) {
       fs.mkdirSync(path.dirname(path.join(aside, path.relative(home, file))), { recursive: true, mode: 0o700 });
@@ -812,9 +814,9 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
     // The engine: cloned (moments, almost no room), copied where the disk can't clone.
     const engine = path.join(home, "engine");
     fs.rmSync(`${engine}.new`, { recursive: true, force: true });
-    if (ran("/bin/cp", ["-cRPp", path.join(appFolder, "engine"), `${engine}.new`], CLONE_LIMIT).status !== 0) {
+    if (ran("/bin/cp", ["-cRPp", engineFrom, `${engine}.new`], CLONE_LIMIT).status !== 0) {
       fs.rmSync(`${engine}.new`, { recursive: true, force: true });
-      clone(path.join(appFolder, "engine"), `${engine}.new`, true);
+      clone(engineFrom, `${engine}.new`, true);
     }
     fs.renameSync(`${engine}.new`, engine);
     const box = path.join(home, "box");

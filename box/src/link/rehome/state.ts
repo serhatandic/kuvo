@@ -252,8 +252,15 @@ const holderOf = (lock: string): number | null => {
     return null;
   }
 };
-// (A holder by its command line: `kuvo-link.js rehome`, or its source's.)
-const holds = (pid: number) => pid === process.pid || processRuns(pid, "rehome");
+// (A holder by its command line: `kuvo-link.js rehome`, or its source's; or the installer's
+// `kuvo-link.js install`, which makes a new box under the same lock.)
+const holds = (pid: number) => pid === process.pid || processRuns(pid, "rehome")
+  || (processRuns(pid, "install") && (processRuns(pid, "kuvo-link.js") || processRuns(pid, "main.ts")));
+/** Whether another process holds the move's lock now (one that's gone holds nothing). */
+export const heldByAnother = (home: string): boolean => {
+  const holder = holderOf(lockFolder(home));
+  return holder !== null && holder !== process.pid && holds(holder);
+};
 
 /** Takes the move's lock once it's free (a holder that's gone leaves it free), saying once that it
  * waits (`waiting`); false once `most` ms have gone by. One held by this process is taken again. */

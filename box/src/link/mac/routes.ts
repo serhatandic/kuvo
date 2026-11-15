@@ -118,7 +118,7 @@ function savedIds(): Set<string> {
  * for the machine to let go. `again`: the key of a machine set up again, no longer one this Mac
  * removed. Null while this Mac's link has no keys. */
 export async function setupGift(again: string | null): Promise<{ mac: string | null; macSign: string | null; docs: SignedDoc[]; replaces: string[] } | null> {
-  await macKeys();
+  await macKeys({ needed: true });
   const library = readPersonalities();
   let docs: SignedDoc[] = [];
   const link = updateLink(link => {

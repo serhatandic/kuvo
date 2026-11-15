@@ -63,6 +63,7 @@ import { browserStatus, installBrowser, startBrowserInstall } from "./browser/in
 import { foldHistory } from "./browser/history";
 import { takeInAppBrowserData, thisMacsAppFolder } from "./browser/from-app";
 import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, VERSION_FILE } from "./home";
+import { installCommand } from "./install/command";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
 import { isBridge, keepKeeper, needed, noLongerNeeded, runningBridge, startBridge } from "./keeper";
@@ -249,7 +250,7 @@ export { peerMail, receiveMail } from "./peers/mail";
 export { pairingLink } from "./phones";
 export { ownRefreshed } from "./server/naming";
 export { FROM_PHONE, fromPhone } from "./server/forward";
-export { MAC_LINK_FILE, savedMacConfig, stopMacLink } from "./mac/link";
+export { DEFAULT_RELAY, MAC_LINK_FILE, ownMacConfig, savedMacConfig, stopMacLink } from "./mac/link";
 export { macNoticeHold, macTell } from "./mac/notices";
 export { LETTER_WAIT, macSendOutbox, runMacPeers, stopMacPeers } from "./mac/peers";
 export { setMacPeers } from "./mac/routes";
@@ -1227,6 +1228,11 @@ if (main) {
   else if (mode === "rehome") {
     process.exitCode = await rehomeCommand(argument, process.argv.slice(4));
   }
+  // This computer's box installed from the release an app carries (PROTOCOL.md, "Installing this
+  // computer's box"): `install --status | --new | --move`, which `kuvo-install` hands over to.
+  else if (mode === "install") {
+    process.exitCode = await installCommand(process.argv.slice(3));
+  }
   // Removing Kuvo Code from this computer (PROTOCOL.md, "Uninstalling"): `uninstall [--check]`,
   // from the app or a Terminal line.
   else if (mode === "uninstall") {
@@ -1242,7 +1248,7 @@ if (main) {
     console.log(ok ? "ok" : "failed");
     process.exit(ok ? 0 : 1);
   } else {
-    console.error("Usage: kuvo-link.js run | serve [--kept] | setup | pair [relay] | box <command> | leave <mac> | here <root> | rehome <root> | uninstall [--check] | helper install|start|status | engine-config | login-path | update [--now] | browser install|start|status|fold|take-in | selftest");
+    console.error("Usage: kuvo-link.js run | serve [--kept] | setup | pair [relay] | box <command> | leave <mac> | here <root> | rehome <root> | install --status|--new|--move | uninstall [--check] | helper install|start|status | engine-config | login-path | update [--now] | browser install|start|status|fold|take-in | selftest");
     process.exit(2);
   }
 }

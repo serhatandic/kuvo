@@ -24,7 +24,7 @@ import { boxAnswers } from "./keeper-runs";
 import { openAppHost } from "../host-interface";
 import { macLink, readLink } from "../state";
 import { appAnswer, passedOn } from "./app-route";
-import { macKeys, macLinkCheck, macLinkWait, macNeeded, savedMacConfig, setLinkStatus, tellUntold } from "./link";
+import { macKeys, macLinkCheck, macLinkWait, macNeeded, ownMacConfig, savedMacConfig, setLinkStatus, tellUntold } from "./link";
 import { isMachinesRoute, machinesRoute } from "./machines";
 import type { AppTiming } from "./machines";
 import type { EngineRecord } from "../../shared/records";
@@ -74,7 +74,8 @@ export async function runMacLink(): Promise<void> {
   let attempt = 0;
   macLink.stopped = false;
   // As its app last said, until it says again: the link comes back after a restart, the app closed.
-  macLink.config ??= savedMacConfig();
+  // In a home of its own with nothing an app said, the box's own (`ownMacConfig`).
+  macLink.config ??= savedMacConfig() ?? ownMacConfig();
   while (!macLink.stopped) {
     try {
       const config = macLink.config;
