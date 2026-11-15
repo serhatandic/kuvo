@@ -21,6 +21,7 @@ import { claudeCodeRoute } from "../areas/claude-code";
 import { engineControlRoute, signInReturnRoute } from "../areas/engine";
 import { fileAt } from "../areas/file";
 import { folderTreeRoute, foldersRoute } from "../areas/folders";
+import { FOLDERS_SUGGESTED_ROUTE, foldersSuggestedRoute } from "../areas/folders-suggested";
 import { ARTIFACT_ROUTE, artifactsRoute } from "../areas/artifacts";
 import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
 import { infoRoute } from "../areas/info";
@@ -109,18 +110,21 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/box/kept-keys", answer: keptKeysRoute },
   // (A machine's: this Mac's agents browse in its app's panel.)
   { when: route => !IS_MAC && route === "kuvo/browser", answer: browserRoute },
-  // Its browser's history, sites with data, and settings: every box's own (PROTOCOL.md, "The browser's data").
+  // Its browser's live view, a machine's (PROTOCOL.md, "The browser's live view"): a Mac's box says
+  // in words why it has none.
   { when: route => route === "kuvo/browser/view", answer: browserViewRoute },
+  // Its browser's history, sites with data, and settings: every box's own (PROTOCOL.md, "The browser's data").
   { when: route => route.match(BROWSER_DATA_ROUTE), answer: browserDataRoute },
   { when: (route, request) => /^kuvo\/integrations(\/|\?|$)/.test(request.path), answer: integrationsRoute },
   { when: route => route === "kuvo/folders", answer: foldersRoute },
   { when: route => route === "kuvo/folders/tree", answer: folderTreeRoute },
+  { when: route => route === FOLDERS_SUGGESTED_ROUTE, answer: foldersSuggestedRoute },
   { when: route => route === "kuvo/plugins/search", answer: pluginSearchRoute },
   { when: route => route === "kuvo/programs", answer: programsRoute },
   { when: route => route === "kuvo/providers/models", answer: providerModelsRoute },
   { when: (route, request) => /^kuvo\/(skills|skill-library|skill-trash)(\/|\?|$)/.test(request.path), answer: skillsRoute },
   { when: (route, request) => /^kuvo\/(config|mcp\/catalog|keys)(\/|\?|$)/.test(request.path), answer: settingsRoute },
-  { when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached", answer: setupRoute },
+  { when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed", answer: setupRoute },
   // (A Mac's box answers these with its app, before this: `macFront`.)
   { when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
   { when: route => route === "kuvo/phones", answer: phonesRoute },

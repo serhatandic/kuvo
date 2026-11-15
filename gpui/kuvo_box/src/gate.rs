@@ -15,6 +15,7 @@ pub const REQUIRED: &[&str] = &[
     "bots.now",
     "computers",
     "file.text",
+    "folders.suggested",
     "folders.tree",
     "git.branches",
     "git.branches.pullRequest",
@@ -30,6 +31,7 @@ pub const REQUIRED: &[&str] = &[
     "messages.send",
     "models.offered",
     "models.offered.folder",
+    "models.offered.free",
     "models.offered.sides",
     "models.readiness",
     "queue.items",
@@ -42,7 +44,9 @@ pub const REQUIRED: &[&str] = &[
     "sessions.models",
     "sessions.needsYou",
     "sessions.start.empty",
+    "setup.welcomed",
     "sign-in.accounts.kinds",
+    "sign-in.accounts.plan",
     "sign-in.accounts.state",
     "sign-in.codes",
     "typed",
@@ -52,9 +56,6 @@ pub const REQUIRED: &[&str] = &[
     "work-queue.counts",
     "work-queue.edit",
 ];
-
-/// The state's title, wherever it shows.
-pub const UPDATING: &str = "Updating…";
 
 /// What `features` lack of [`REQUIRED`], in its order: none when the box is up to date.
 pub fn missing<S: AsRef<str>>(features: &[S]) -> Vec<String> {

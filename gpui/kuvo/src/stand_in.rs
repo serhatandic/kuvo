@@ -67,6 +67,7 @@ struct State {
     at: u64,
     /// It stands in for a box on another computer.
     elsewhere: bool,
+    older: bool,
     sessions: BTreeMap<String, Value>,
     projects: BTreeMap<String, Value>,
     /// Each conversation's engine messages, oldest first.
@@ -141,6 +142,25 @@ impl StandIn {
         StandIn { inner: Arc::new(Inner { state: Mutex::new(State { at: 1, next: 1, areas, queue: queue::Queue::none(), ..State::default() }), replies }) }
     }
 
+    /// A box from before the features required by the desktop app.
+    pub fn held_older(replies: Replies) -> StandIn {
+        let stand_in = Self::empty(replies);
+        stand_in.state().older = true;
+        stand_in
+    }
+
+    /// An older Linux machine reached remotely.
+    pub fn held_machine(replies: Replies) -> StandIn {
+        let stand_in = Self::held_older(replies);
+        stand_in.set_elsewhere(true);
+        stand_in
+    }
+
+    /// Change the compatibility answer without replacing the transport.
+    pub fn set_older(&self, older: bool) {
+        self.state().older = older;
+    }
+
     /// Whether its Work Queue can be read (else 503).
     pub fn queue_readable(&self, readable: bool) {
         self.state().queue.down = !readable;
@@ -175,9 +195,27 @@ impl StandIn {
         state.queue.add_newer_status(now);
     }
 
+    /// Its Work Queue lists a closed status and a label colour this app has never heard of (a
+    /// newer box's), with an item in that status.
+    pub fn newer_closed_status(&self) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.queue.add_newer_closed(now);
+    }
+
     /// Its Work Queue has many more labels than a menu shows at once.
     pub fn many_labels(&self) {
         self.state().queue.add_many_labels();
+    }
+
+    /// Its list of computers has this computer alone.
+    pub fn computers_alone(&self) {
+        self.state().areas.computers_alone = true;
+    }
+
+    /// `more` machines listed after the sample's (a long list).
+    pub fn more_computers(&self, more: usize) {
+        self.state().areas.more_computers = more;
     }
 
     /// Whether its list of computers can be read (else 503, as a box that isn't answering).
@@ -852,7 +890,8 @@ impl StandIn {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
                 features.extend(["queue", "asks"]);
                 features.extend(state.queue.features());
-                answer(200, json!({ "kind": "mac", "name": NAME, "app": "1.0.0", "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
+                if state.older { features.clear(); }
+                answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": if state.elsewhere { "build-linux" } else { NAME }, "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
             ("GET", ["kuvo", "search"]) => {

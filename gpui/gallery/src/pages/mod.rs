@@ -7,6 +7,7 @@ mod icons;
 mod markdown;
 mod menus;
 mod rows;
+mod selection;
 mod small;
 mod text_field;
 mod theme;
@@ -22,11 +23,12 @@ pub struct Demos {
     pub menus: menus::Menus,
     pub settings: small::Settings,
     pub drafts: Entity<crate::drafts::Picker>,
+    pub selections: selection::Demos,
 }
 
 impl Demos {
     pub fn new(_window: &mut Window, cx: &mut Context<Gallery>) -> Self {
-        Self { fields: text_field::Fields::new(cx), chats: chat_list::Chats::new(cx), menus: menus::Menus::new(cx), settings: Default::default(), drafts: cx.new(|_| crate::drafts::Picker::new()) }
+        Self { fields: text_field::Fields::new(cx), chats: chat_list::Chats::new(cx), menus: menus::Menus::new(cx), settings: Default::default(), drafts: cx.new(|_| crate::drafts::Picker::new()), selections: selection::Demos::new(cx) }
     }
 }
 
@@ -42,6 +44,7 @@ pub(crate) fn shot_height(block: Block) -> f32 {
         Block::TextField => 1000.,
         Block::ChatList => 840.,
         Block::Markdown => 900.,
+        Block::Selection => 1000.,
         Block::CodeBlocks => 1250.,
         Block::Menus => 900.,
         Block::Rows => 760.,
@@ -63,6 +66,7 @@ pub(crate) fn render(
         Block::TextField => text_field::page(&demos.fields, window, cx),
         Block::ChatList => chat_list::page(&demos.chats, window, cx),
         Block::Markdown => markdown::page(window, cx),
+        Block::Selection => selection::page(&demos.selections, window, cx),
         Block::CodeBlocks => code_blocks::page(window, cx),
         Block::Menus => menus::page(&demos.menus, window, cx),
         Block::Rows => rows::page(window, cx),

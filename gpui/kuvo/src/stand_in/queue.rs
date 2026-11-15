@@ -26,6 +26,9 @@ pub struct Queue {
     pub starts: Option<(String, String)>,
     /// It lists a status this app has never heard of (a newer box's), with an item in it.
     pub newer_status: bool,
+    /// It lists a closed status this app has never heard of (Shelved), and a label colour (teal):
+    /// a newer box's, with an item in it.
+    pub newer_closed: bool,
     /// The moment it was last asked at: what "today" is, for what's overdue.
     at: f64,
     /// The day it says it is, where a test says otherwise than that moment's (a box's day is its
@@ -51,8 +54,9 @@ fn there(computer: (&str, &str, &str)) -> Value {
 }
 
 /// The statuses, the same on every box, in the order a client shows them; with `newer`, one a
-/// newer box would list, which this app has no mark for.
-fn statuses(newer: bool) -> Value {
+/// newer box would list, which this app has no mark for; with `shelved`, a closed one a newer box
+/// would list.
+fn statuses(newer: bool, shelved: bool) -> Value {
     let mut statuses = vec![
         json!({ "id": "needs-you", "name": "Needs you", "closed": false }),
         json!({ "id": "in-review", "name": "In review", "closed": false }),
@@ -65,6 +69,9 @@ fn statuses(newer: bool) -> Value {
     ];
     if newer {
         statuses.insert(4, json!({ "id": "blocked", "name": "Blocked", "closed": false }));
+    }
+    if shelved {
+        statuses.push(json!({ "id": "shelved", "name": "Shelved", "closed": true }));
     }
     json!(statuses)
 }
@@ -99,7 +106,7 @@ fn named(list: &Value, said: &str) -> Option<String> {
 }
 
 fn closed(status: &str) -> bool {
-    matches!(status, "done" | "canceled")
+    matches!(status, "done" | "canceled" | "shelved")
 }
 
 fn refuse(message: impl Into<String>) -> (u16, Value) {
@@ -308,6 +315,26 @@ impl Queue {
         }));
     }
 
+    /// It lists a closed status (Shelved) and a label colour (teal) a newer box would, with an item
+    /// in Shelved.
+    pub fn add_newer_closed(&mut self, now: f64) {
+        self.newer_closed = true;
+        self.items.push(json!({
+            "id": "wqi_225", "number": 225, "owner": "ses_mira", "title": "Rework the onboarding emails", "status": "shelved", "order": 1, "priority": "normal", "labels": [],
+            "sessions": [], "created": { "at": now - 3.0 * DAY, "by": { "user": true } }, "updated": { "at": now - DAY, "by": { "user": true } }, "doneAt": now - DAY,
+            "body": "", "notes": [], "events": [], "files": [], "links": [], "handed": [],
+        }));
+    }
+
+    /// The colours a label may be, in the order a picker offers them.
+    fn colors(&self) -> Vec<&'static str> {
+        let mut colors = COLORS.to_vec();
+        if self.newer_closed {
+            colors.push("teal");
+        }
+        colors
+    }
+
     /// One of its items stands in a status its view doesn't list (kept as it came from a newer box).
     pub fn add_unlisted_status(&mut self, now: f64) {
         self.items.push(json!({
@@ -407,7 +434,7 @@ impl Queue {
     /// The view of every queue: the items in the statuses' order, then each one's own; with `q`,
     /// only those its words are in, and the counts of those.
     fn view(&self, q: Option<&str>, filters: &Filters, now: f64) -> Value {
-        let statuses = statuses(self.newer_status);
+        let statuses = statuses(self.newer_status, self.newer_closed);
         let place = |item: &Value| statuses.as_array().and_then(|statuses| statuses.iter().position(|status| status["id"] == item["status"])).unwrap_or(usize::MAX);
         let takes = |item: &&Value| q.is_none_or(|q| self.has(item, q)) && filters.keeps(item);
         let mut items: Vec<&Value> = self.items.iter().filter(takes).collect();
@@ -456,6 +483,7 @@ impl Queue {
             "statuses": statuses,
             "priorities": priorities(),
             "labels": self.labels,
+            "colors": self.colors(),
             "assignees": assignees(),
             // What an item added with nothing said starts as.
             "new": { "status": self.starts().0, "priority": self.starts().1 },
@@ -558,7 +586,7 @@ impl Queue {
             return refuse("An item needs a title.");
         }
         let status = match body["status"].as_str() {
-            Some(said) => match named(&statuses(self.newer_status), said) {
+            Some(said) => match named(&statuses(self.newer_status, self.newer_closed), said) {
                 Some(status) => status,
                 None => return refuse(format!("There’s no status called {said}.")),
             },
@@ -637,7 +665,7 @@ impl Queue {
             item["body"] = json!(text);
         }
         if let Some(said) = body["status"].as_str() {
-            let Some(status) = named(&statuses(self.newer_status), said) else { return refuse(format!("There’s no status called {said}.")) };
+            let Some(status) = named(&statuses(self.newer_status, self.newer_closed), said) else { return refuse(format!("There’s no status called {said}.")) };
             let was = item["status"].as_str().unwrap_or_default().to_owned();
             if issue && (closed(&status) || closed(&was)) {
                 return refuse("This one is closed when its issue is closed on GitHub.");
@@ -699,8 +727,9 @@ impl Queue {
     }
 
     fn change_labels(&mut self, body: &Value) -> (u16, Value) {
+        let colors = self.colors();
         let color_said = |body: &Value| match body["color"].as_str() {
-            Some(color) if COLORS.contains(&color) => Ok(Some(color.to_owned())),
+            Some(color) if colors.contains(&color) => Ok(Some(color.to_owned())),
             Some(color) => Err(refuse(format!("There’s no colour called {color}."))),
             None => Ok(None),
         };
@@ -719,7 +748,7 @@ impl Queue {
             }
             let color = match color_said(body) {
                 // (The colour the fewest labels have, unless said.)
-                Ok(color) => color.unwrap_or_else(|| COLORS.iter().min_by_key(|color| self.labels.iter().filter(|label| label["color"] == json!(color)).count()).unwrap_or(&"graphite").to_string()),
+                Ok(color) => color.unwrap_or_else(|| self.colors().into_iter().min_by_key(|color| self.labels.iter().filter(|label| label["color"] == json!(color)).count()).unwrap_or("graphite").to_string()),
                 Err(refusal) => return refusal,
             };
             let made = json!({ "id": format!("lbl_n{}", self.next_label), "name": name, "color": color });

@@ -137,6 +137,10 @@ pub struct OfferedModel {
     /// Its agent keeps it out of its picker: a picker leaves it out.
     #[serde(default)]
     pub hidden: bool,
+    /// It needs no account (OpenCode Zen's free models, a local one's), as the box says
+    /// (`models.offered.free`): left out, it needs one.
+    #[serde(default)]
+    pub free: bool,
 }
 
 impl OfferedModel {
@@ -165,7 +169,7 @@ pub struct Known {
 }
 
 /// The models offered, in the order a picker draws them, and the one a new session starts on.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Offered {
     pub models: Vec<OfferedModel>,
     #[serde(default)]

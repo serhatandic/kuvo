@@ -203,13 +203,14 @@ export type ModelAction = Infer<typeof MODEL_ACTION>;
  * that runs now (`retiring`: its provider is retiring it; `hidden`: its agent keeps it out of its
  * picker; a picker leaves either out, though a conversation on it carries on; `side`, where a
  * conversation on it runs, the engine or the coding agents' bridge, Custom Auto's too; `efforts`, its
- * variants; `aliases`, other ids a conversation may name it by); whether the engine's and the coding agents' could be said
+ * variants; `aliases`, other ids a conversation may name it by; `free`, it needs no account:
+ * OpenCode Zen's free models); whether the engine's and the coding agents' could be said
  * (`known`); the coding agents' accounts still listing theirs (`listing`: one of theirs not
  * listed may still run); and the model a new session starts on, for the one wanted (`starting`: null for none
  * that runs; left out while the engine can't say). */
 const MODEL_REF = object({ providerID: string, id: string, "variant?": string });
 export const MODELS_OFFERED = object({
-  models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool })),
+  models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
   known: object({ engine: bool, agents: bool }),
   "listing?": list(string),
   "starting?": nullable(MODEL_REF),

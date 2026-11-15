@@ -52,7 +52,7 @@ fn run(arguments: &[String], stand_in: Option<&StandIn>) -> Result<(), kuvo_box:
         match update {
             ListUpdate::Listing(listing) => print(&listing),
             ListUpdate::Waiting(why) => println!("Loading sessions… {why}"),
-            ListUpdate::Held { missing } => println!("{} (it lacks {})", kuvo_box::gate::UPDATING, missing.join(", ")),
+            ListUpdate::Held { missing } => println!("This computer’s Kuvo is older than this app (it lacks {})", missing.join(", ")),
             ListUpdate::Failed(error) => println!("{error}"),
         }
     }

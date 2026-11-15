@@ -78,8 +78,23 @@ pub enum Lists {
 pub enum BoxState {
     Connecting,
     Connected,
-    Updating,
+    Held,
     Unreachable(String),
+}
+
+/// What's said of a computer whose box the update gate holds: its title, and what brings it up to
+/// date. `name`: the computer's (none: "This computer"); `here`: it's this Mac's own box. The window's
+/// notice and the Computers area's page say it in the same words.
+pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
+    let subject = name.filter(|name| !name.is_empty()).unwrap_or("This computer");
+    let title = format!("{subject}’s Kuvo is older than this app");
+    let next = if here {
+        "It updates with Kuvo 1.0.".to_owned()
+    } else {
+        let computer = if subject == "This computer" { "this computer" } else { subject };
+        format!("Update Kuvo on {computer} to use it here.")
+    };
+    (title, next)
 }
 
 enum Open {
@@ -185,6 +200,7 @@ impl Workspace {
             cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
                 Go::Session(session) => this.open_session_now(session, window, cx),
+                Go::Sessions => this.show_area(Area::Sessions, window, cx),
             })
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
@@ -311,6 +327,7 @@ impl Workspace {
                 listing.take(line);
                 ListUpdate::Listing(listing)
             }
+            Err(kuvo_box::Error::NeedsUpdating { missing }) => ListUpdate::Held { missing },
             Err(error) => ListUpdate::Failed(error),
         };
         self.take_list(update, cx);
@@ -351,16 +368,22 @@ impl Workspace {
 
     /// What `kuvo/info` said, or why it couldn't be read.
     pub fn connected(&mut self, result: kuvo_box::Result<BoxInfo>, cx: &mut Context<Self>) {
+        let was_held = matches!(self.box_state, BoxState::Held);
         match result {
             Ok(info) => {
                 self.info = Some(info);
-                self.box_state = BoxState::Connected;
+                self.box_state = if self.client.gate().is_held() { BoxState::Held } else { BoxState::Connected };
                 let name = self.box_name();
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
                 for (_, view) in self.areas.clone() {
                     view.update(cx, |view, cx| {
                         view.set_this_box(name.clone(), &kind, cx);
                     });
+                }
+                if was_held && !self.client.gate().is_held()
+                    && let Some(view) = self.area_view(self.area).cloned()
+                {
+                    view.update(cx, |view, cx| view.shown(cx));
                 }
                 // Reached (perhaps updated since): what it says of its accounts is asked again, and
                 // of your computers where they aren't followed.
@@ -371,7 +394,7 @@ impl Workspace {
                     }
                 }
             }
-            Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Updating,
+            Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Held,
             Err(error) => self.box_state = BoxState::Unreachable(error.to_string()),
         }
         cx.notify();
@@ -381,10 +404,16 @@ impl Workspace {
     pub fn take_list(&mut self, update: ListUpdate, cx: &mut Context<Self>) {
         match update {
             ListUpdate::Listing(listing) => {
+                let was_held = matches!(self.box_state, BoxState::Held);
                 self.listing = listing;
                 self.lists = Lists::Ready;
-                if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Updating) {
+                if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Held) {
                     self.box_state = BoxState::Connected;
+                }
+                if was_held && !self.client.gate().is_held()
+                    && let Some(view) = self.area_view(self.area).cloned()
+                {
+                    view.update(cx, |view, cx| view.shown(cx));
                 }
                 // Where a new one starts: set once, as the list is first read.
                 if self.landing_place.is_none() {
@@ -419,7 +448,7 @@ impl Workspace {
             ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
             ListUpdate::Held { .. } => {
                 self.lists = Lists::Held;
-                self.box_state = BoxState::Updating;
+                self.box_state = BoxState::Held;
             }
             ListUpdate::Failed(error) => {
                 if !self.listing.is_read() {
@@ -450,9 +479,18 @@ impl Workspace {
     /// The box's name as the sidebar's foot says it: "This Mac" for this Mac's own.
     pub fn box_name(&self) -> SharedString {
         match &self.info {
-            Some(info) if !info.is_mac() => info.name.clone().into(),
+            Some(info) if !info.is_mac() || !self.client.here() => info.name.clone().into(),
             _ => "This Mac".into(),
         }
+    }
+
+    /// The gate supplies the held fact; this window supplies the computer and update path.
+    pub fn held_notice(&self) -> Option<(String, String)> {
+        if !self.client.gate().is_held() {
+            return None;
+        }
+        let name = self.info.as_ref().map(|_| self.box_name().to_string());
+        Some(held_words(name.as_deref(), self.client.here()))
     }
 
     pub fn now(&self) -> f64 {
@@ -665,6 +703,9 @@ impl Workspace {
 
     /// The landing view, for a new conversation in `project` (or the one picked last).
     pub fn new_session(&mut self, project: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.client.gate().is_held() {
+            return;
+        }
         self.area = Area::Sessions;
         self.record(Nav::Landing);
         if let Some(project) = project {
@@ -1430,7 +1471,11 @@ impl Render for Workspace {
         self.narrow = narrow;
 
         let sessions = self.area == Area::Sessions;
-        let content: AnyElement = match (&self.open, self.area_view(self.area)) {
+        let held_content = self.client.gate().is_held()
+            && (self.area != Area::Sessions && self.area != Area::Settings || self.area == Area::Sessions && matches!(self.open, Open::Conversation { .. }));
+        let content: AnyElement = if held_content {
+            div().debug_selector(|| "held-area".into()).size_full().into_any_element()
+        } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
                 (None, Some(settings), _) => settings.clone().into_any_element(),
@@ -1439,12 +1484,12 @@ impl Render for Workspace {
             },
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
             _ => landing::render(self, window, cx),
-        };
+        } };
         let sidebar: Option<AnyElement> = self.sidebar_shown().then(|| match self.area_view(self.area) {
             Some(view) if !sessions => view.clone().into_any_element(),
             _ => sidebar::render(self, window, cx),
         });
-        let panel = (sessions && self.panel_open).then(|| self.panel_card(window, cx));
+        let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
         div()
             .key_context("Workspace")
             .track_focus(&self.focus)
@@ -1502,6 +1547,12 @@ impl Render for Workspace {
             .text_ui(TypeSize::Small)
             .text_color(c.text)
             .child(title_bar::render(self, cx))
+            .children(self.held_notice().map(|(title, next)| {
+                div().debug_selector(|| "held-box-notice".into()).flex_none().px(space::S4).py(space::S3)
+                    .bg(c.surface).border_b_1().border_color(c.border).flex().flex_col().gap(space::S1)
+                    .child(div().medium().text_color(c.text).child(title))
+                    .child(div().text_color(c.text_muted).child(next))
+            }))
             .child(
                 div().flex_1().min_h_0().flex().child(rail::render(self, cx)).child(
                     // The area's sidebar and its main view share one raised panel, its corner

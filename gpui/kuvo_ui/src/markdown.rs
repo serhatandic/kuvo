@@ -8,14 +8,14 @@
 use std::ops::Range;
 
 use gpui::{
-    AnyElement, App, ElementId, FontStyle, FontWeight, Hsla, InteractiveText, IntoElement,
-    ParentElement, RenderOnce, SharedString, StrikethroughStyle, Styled, StyledText, TextRun,
-    Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, ElementId, FontStyle, FontWeight, Hsla, IntoElement, ParentElement, RenderOnce,
+    SharedString, StrikethroughStyle, Styled, TextRun, Window, div, prelude::FluentBuilder as _, px,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::{
     code_block::CodeBlock,
+    selection::{Lead, Path, SelectableText, SelectionState, Unit, UnitId},
     icon::{Icon, IconName},
     theme::{ActiveTheme, Colors, MEDIUM, MONO_FONT, REGULAR, StyledType, TypeSize, UI_FONT, radius, space},
 };
@@ -285,11 +285,40 @@ pub fn opens(url: &str) -> bool {
 pub struct Markdown {
     id: ElementId,
     blocks: Vec<Block>,
+    selectable: Option<Selectable>,
+}
+
+/// Where a markdown's text sits in its transcript's selection: the state, the row, and the path
+/// its blocks' paths go under ([`units`] gives the same paths).
+#[derive(Clone)]
+pub struct Selectable {
+    pub state: SelectionState,
+    pub row: SharedString,
+    pub base: Path,
+}
+
+impl Selectable {
+    pub fn new(state: SelectionState, row: impl Into<SharedString>, base: &[u32]) -> Self {
+        Self { state, row: row.into(), base: Path::from_slice(base) }
+    }
+
+    /// The unit at `path` under this one.
+    pub fn unit(&self, path: &[u32]) -> (SelectionState, UnitId) {
+        let mut full = self.base.clone();
+        full.extend_from_slice(path);
+        (self.state.clone(), UnitId { row: self.row.clone(), path: full })
+    }
 }
 
 impl Markdown {
     pub fn new(id: impl Into<ElementId>, source: &str) -> Self {
-        Self { id: id.into(), blocks: parse(source) }
+        Self { id: id.into(), blocks: parse(source), selectable: None }
+    }
+
+    /// Its text selectable in a transcript.
+    pub fn selectable(mut self, selectable: Selectable) -> Self {
+        self.selectable = Some(selectable);
+        self
     }
 }
 
@@ -297,9 +326,77 @@ impl RenderOnce for Markdown {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors.clone();
         let mut path = Vec::new();
-        blocks(&self.id, &mut path, &self.blocks, &colors, TextLevel::Normal)
+        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref() };
+        blocks(&draw, &mut path, &self.blocks, TextLevel::Normal)
             .text_ui(TypeSize::Body)
             .text_color(colors.text)
+    }
+}
+
+/// What every block is drawn with.
+struct Draw<'a> {
+    id: &'a ElementId,
+    c: &'a Colors,
+    sel: Option<&'a Selectable>,
+}
+
+impl Draw<'_> {
+    fn unit(&self, path: &[u32]) -> Option<(SelectionState, UnitId)> {
+        self.sel.map(|sel| sel.unit(path))
+    }
+}
+
+/// The selectable text of markdown `source`, as [`Markdown`] draws it with `base`, in reading
+/// order, for copying: a unit for each paragraph, heading, code block and table cell.
+pub fn units(source: &str, base: &[u32]) -> Vec<Unit> {
+    let mut out = Vec::new();
+    let mut path: Vec<u32> = base.to_vec();
+    collect(&parse(source), &mut path, Lead::Paragraph, Lead::Paragraph, 0, &mut out);
+    out
+}
+
+/// `blocks`' units: the first block joins with `first`, the rest with `rest`; lists in them are
+/// nested `depth` deep.
+fn collect(blocks: &[Block], path: &mut Vec<u32>, first: Lead, rest: Lead, depth: usize, out: &mut Vec<Unit>) {
+    for (ix, block) in blocks.iter().enumerate() {
+        path.push(ix as u32);
+        let lead = if ix == 0 { first.clone() } else { rest.clone() };
+        match block {
+            Block::Paragraph(inline) | Block::Heading(_, inline) => out.push(Unit::new(path, inline.text.clone(), lead)),
+            Block::Code { code, .. } => out.push(Unit::new(path, code.trim_end_matches('\n'), lead)),
+            Block::Quote(inner) => collect(inner, path, lead, Lead::Paragraph, depth, out),
+            Block::List { start, items } => {
+                for (n, item) in items.iter().enumerate() {
+                    path.push(n as u32);
+                    let marker = match (item.task, start) {
+                        (Some(true), _) => "- [x] ".to_owned(),
+                        (Some(false), _) => "- [ ] ".to_owned(),
+                        (None, Some(start)) => format!("{}. ", start + n as u64),
+                        (None, None) => "- ".to_owned(),
+                    };
+                    collect(&item.blocks, path, Lead::Item { depth, marker }, Lead::Line, depth + 1, out);
+                    path.pop();
+                }
+            }
+            Block::Table { header, rows } => {
+                for (r, row) in std::iter::once(header).chain(rows).enumerate() {
+                    path.push(r as u32);
+                    for (col, cell) in row.iter().enumerate() {
+                        path.push(col as u32);
+                        let lead = match (r, col) {
+                            (0, 0) => lead.clone(),
+                            (_, 0) => Lead::Line,
+                            _ => Lead::Cell,
+                        };
+                        out.push(Unit::new(path, cell.text.clone(), lead));
+                        path.pop();
+                    }
+                    path.pop();
+                }
+            }
+            Block::Rule => {}
+        }
+        path.pop();
     }
 }
 
@@ -309,29 +406,30 @@ enum TextLevel {
     Quoted,
 }
 
-fn blocks(id: &ElementId, path: &mut Vec<usize>, blocks: &[Block], c: &Colors, level: TextLevel) -> gpui::Div {
+fn blocks(d: &Draw, path: &mut Vec<u32>, blocks: &[Block], level: TextLevel) -> gpui::Div {
     let mut column = div().flex().flex_col().gap(space::S3).min_w_0();
     for (ix, block) in blocks.iter().enumerate() {
-        path.push(ix);
+        path.push(ix as u32);
         let first = ix == 0;
-        column = column.child(self::block(id, path, block, c, level, first));
+        column = column.child(self::block(d, path, block, level, first));
         path.pop();
     }
     column
 }
 
-fn element_id(id: &ElementId, path: &[usize]) -> ElementId {
+fn element_id(id: &ElementId, path: &[u32]) -> ElementId {
     let key: SharedString = path.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(".").into();
     ElementId::NamedChild(std::sync::Arc::new(id.clone()), key)
 }
 
-fn block(id: &ElementId, path: &mut Vec<usize>, block: &Block, c: &Colors, level: TextLevel, first: bool) -> AnyElement {
+fn block(d: &Draw, path: &mut Vec<u32>, block: &Block, level: TextLevel, first: bool) -> AnyElement {
+    let (id, c) = (d.id, d.c);
     let text_color = match level {
         TextLevel::Normal => c.text,
         TextLevel::Quoted => c.text_muted,
     };
     match block {
-        Block::Paragraph(inline) => text(id, path, inline, c, text_color, REGULAR).into_any_element(),
+        Block::Paragraph(inline) => text(d, path, inline, text_color, REGULAR),
         Block::Heading(n, inline) => {
             let (size, color) = match n {
                 1 => (TypeSize::Title, c.text),
@@ -341,13 +439,13 @@ fn block(id: &ElementId, path: &mut Vec<usize>, block: &Block, c: &Colors, level
             div()
                 .when(!first, |d| d.pt(if *n <= 2 { space::S3 } else { space::S1 }))
                 .text_ui(size)
-                .child(text(id, path, inline, c, color, MEDIUM))
+                .child(text(d, path, inline, color, MEDIUM))
                 .into_any_element()
         }
         Block::List { start, items } => {
             let mut list = div().flex().flex_col().gap(space::S1_5);
             for (ix, item) in items.iter().enumerate() {
-                path.push(ix);
+                path.push(ix as u32);
                 let marker: AnyElement = match (item.task, start) {
                     (Some(done), _) => checkbox(done, c).into_any_element(),
                     (None, Some(n)) => div().text_color(c.text_muted).child(format!("{}.", n + ix as u64)).into_any_element(),
@@ -357,7 +455,7 @@ fn block(id: &ElementId, path: &mut Vec<usize>, block: &Block, c: &Colors, level
                     div()
                         .flex()
                         .child(div().flex().flex_none().w(px(22.)).child(marker))
-                        .child(div().flex_1().min_w_0().child(blocks(id, path, &item.blocks, c, level).gap(space::S1_5))),
+                        .child(div().flex_1().min_w_0().child(blocks(d, path, &item.blocks, level).gap(space::S1_5))),
                 );
                 path.pop();
             }
@@ -367,10 +465,10 @@ fn block(id: &ElementId, path: &mut Vec<usize>, block: &Block, c: &Colors, level
             .flex()
             .gap(space::S3)
             .child(div().w(px(2.)).flex_none().rounded(px(1.)).bg(c.border_strong))
-            .child(div().flex_1().min_w_0().child(blocks(id, path, inner, c, TextLevel::Quoted)))
+            .child(div().flex_1().min_w_0().child(blocks(d, path, inner, TextLevel::Quoted)))
             .into_any_element(),
         Block::Code { language, code } => {
-            CodeBlock::new(element_id(id, path), code.clone()).language(language.clone()).into_any_element()
+            CodeBlock::new(element_id(id, path), code.clone()).language(language.clone()).selectable(d.unit(path)).into_any_element()
         }
         Block::Rule => div().h(px(1.)).my(space::S1).bg(c.border).into_any_element(),
         Block::Table { header, rows } => {
@@ -388,8 +486,8 @@ fn block(id: &ElementId, path: &mut Vec<usize>, block: &Block, c: &Colors, level
                     (longest as f32).clamp(6., 48.)
                 })
                 .collect();
-            let cell = |path: &mut Vec<usize>, col: usize, inline: &Inline, weight: FontWeight| {
-                let mut cell = div().min_w_0().px(space::S3).py(space::S1_5).child(text(id, path, inline, c, c.text, weight));
+            let cell = |path: &mut Vec<u32>, col: usize, inline: &Inline, weight: FontWeight| {
+                let mut cell = div().min_w_0().px(space::S3).py(space::S1_5).child(text(d, path, inline, c.text, weight));
                 let style = cell.style();
                 style.flex_grow = Some(shares.get(col).copied().unwrap_or(6.));
                 style.flex_shrink = Some(1.);
@@ -407,17 +505,17 @@ fn block(id: &ElementId, path: &mut Vec<usize>, block: &Block, c: &Colors, level
             path.push(0);
             let mut head = div().flex().bg(c.sunken).border_b_1().border_color(c.border);
             for (ix, inline) in header.iter().enumerate() {
-                path.push(ix);
+                path.push(ix as u32);
                 head = head.child(cell(path, ix, inline, MEDIUM));
                 path.pop();
             }
             path.pop();
             table = table.child(head);
             for (r, row) in rows.iter().enumerate() {
-                path.push(r + 1);
+                path.push(r as u32 + 1);
                 let mut line = div().flex().when(r + 1 != rows.len(), |d| d.border_b_1().border_color(c.border));
                 for (ix, inline) in row.iter().enumerate() {
-                    path.push(ix);
+                    path.push(ix as u32);
                     line = line.child(cell(path, ix, inline, REGULAR));
                     path.pop();
                 }
@@ -444,7 +542,8 @@ fn checkbox(done: bool, c: &Colors) -> impl IntoElement {
     }
 }
 
-/// Runs for an inline: the UI font, with bold, italic, struck, linked and code stretches.
+/// Runs for an inline: the UI font, with bold, italic, struck, linked and code stretches. (Inline
+/// code's fill is painted as a chip by [`SelectableText`], under a selection: see [`code_chips`].)
 pub fn inline_runs(inline: &Inline, c: &Colors, color: Hsla, weight: FontWeight) -> Vec<TextRun> {
     let base = gpui::Font { family: UI_FONT.into(), weight, ..gpui::font(UI_FONT) };
     let mut runs = Vec::new();
@@ -480,7 +579,7 @@ pub fn inline_runs(inline: &Inline, c: &Colors, color: Hsla, weight: FontWeight)
             len: range.end - range.start,
             font,
             color: if style.link { c.accent } else { color },
-            background_color: style.code.then_some(c.inline_code),
+            background_color: None,
             underline: None,
             strikethrough: style.strike.then(|| StrikethroughStyle { thickness: px(1.), color: Some(color) }),
         });
@@ -492,24 +591,18 @@ pub fn inline_runs(inline: &Inline, c: &Colors, color: Hsla, weight: FontWeight)
     runs
 }
 
-fn text(id: &ElementId, path: &[usize], inline: &Inline, c: &Colors, color: Hsla, weight: FontWeight) -> AnyElement {
-    let runs = inline_runs(inline, c, color, weight);
-    let styled = StyledText::new(inline.text.clone()).with_runs(runs);
-    if inline.links.is_empty() {
-        return styled.into_any_element();
-    }
-    let ranges: Vec<Range<usize>> = inline.links.iter().map(|(r, _)| r.clone()).collect();
-    let urls: Vec<String> = inline.links.iter().map(|(_, u)| u.clone()).collect();
-    let links = inline.links.clone();
-    InteractiveText::new(element_id(id, path), styled)
-        .on_click(ranges, move |ix, _, cx| cx.open_url(&urls[ix]))
-        // Where a link goes, shown before it's clicked.
-        .tooltip(move |ix, _, cx| {
-            links
-                .iter()
-                .find(|(range, _)| range.contains(&ix))
-                .map(|(_, url)| crate::menu::Tooltip::new(url.clone()).build(cx))
-        })
+/// The stretches of inline code, each on its fill.
+pub fn code_chips(inline: &Inline, c: &Colors) -> Vec<(Range<usize>, Hsla)> {
+    inline.spans.iter().filter(|(_, style)| style.code).map(|(range, _)| (range.clone(), c.inline_code)).collect()
+}
+
+fn text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: FontWeight) -> AnyElement {
+    let runs = inline_runs(inline, d.c, color, weight);
+    SelectableText::new(element_id(d.id, path), inline.text.clone())
+        .runs(runs)
+        .chips(code_chips(inline, d.c))
+        .links(inline.links.clone(), |url, _, cx| cx.open_url(url))
+        .selectable(d.unit(path))
         .into_any_element()
 }
 
@@ -570,6 +663,20 @@ mod tests {
         // The others are drawn as plain text, not as links.
         let start = p.text.find("app").unwrap();
         assert!(!p.spans.iter().any(|(r, s)| r.start == start && s.link));
+    }
+
+    /// A reply's selectable text comes out in reading order, at the paths it's drawn with, and
+    /// copies whole as plain text that keeps its shape.
+    #[test]
+    fn a_replys_units_follow_its_blocks_and_copy_as_plain_text() {
+        use crate::selection::{Order, Spot, copy_text};
+        let source = "# Plan\n\nRun `cargo test` first.\n\n1. Keep **what** was typed\n2. Show it\n   - [x] under the field\n\n> Quoted\n\n```rs\nfn a() {}\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let units = units(source, &[3]);
+        let paths: Vec<Vec<u32>> = units.iter().map(|unit| unit.path.to_vec()).collect();
+        assert_eq!(paths, vec![vec![3, 0], vec![3, 1], vec![3, 2, 0, 0], vec![3, 2, 1, 0], vec![3, 2, 1, 1, 0, 0], vec![3, 3, 0], vec![3, 4], vec![3, 5, 0, 0], vec![3, 5, 0, 1], vec![3, 5, 1, 0], vec![3, 5, 1, 1]]);
+        let order = Order::new(["m"]);
+        let text = copy_text(&order, [("m".into(), units)], &Spot::row_start("m"), &Spot::row_end("m"));
+        assert_eq!(text, "Plan\n\nRun cargo test first.\n\n1. Keep what was typed\n2. Show it\n  - [x] under the field\n\nQuoted\n\nfn a() {}\n\nA\tB\n1\t2");
     }
 
     /// Half a message, as it arrives while streaming, still parses and shows what's there.

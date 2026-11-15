@@ -44,6 +44,28 @@ test("serve upgrades only the view path with its password", async t => {
   assert.equal(socketAllowed("kuvo/browser/%2e%2e/view"), false);
 });
 
+// (#731) A Mac's box has no browser of its own: the view isn't opened, and it says why in words.
+test("a Mac's box answers the view with why it has none, never opening it", async t => {
+  const server = http.createServer();
+  let connections = 0;
+  viewUpgrade(server, "paired-secret", events => {
+    connections++;
+    queueMicrotask(events.open);
+    return { send() {}, close() {} };
+  }, false);
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => server.close());
+  const socket = net.createConnection(server.address().port, "127.0.0.1");
+  t.after(() => socket.destroy());
+  socket.write(`GET /kuvo/browser/view HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Basic ${Buffer.from("opencode:paired-secret").toString("base64")}\r\n\r\n`);
+  // (Its first word, so a box that opened the socket fails here rather than waiting on it.)
+  let said = String((await once(socket, "data"))[0]);
+  assert.match(said, /^HTTP\/1\.1 404/);
+  for await (const chunk of socket) said += chunk;
+  assert.match(JSON.parse(said.slice(said.indexOf("\r\n\r\n") + 4)).message, /no browser of its own/);
+  assert.equal(connections, 0);
+});
+
 test("an unpaired relay client cannot open the browser socket", async () => {
   const crypto = await import("node:crypto");
   const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");

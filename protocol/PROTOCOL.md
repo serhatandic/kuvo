@@ -283,8 +283,8 @@ computer. Changing the main computer and joining two setups come later: #183.)
   until they're joined in one setup.
 - **`GET kuvo/setup`** (and `kuvo/setup/events`, a line now and one at each change), on every box,
   for every client: `{setup, epoch, primary: {key, name, kind}, you: {key, role}, computers: [{key,
-  name, kind, role, app}], conflict?, startsFromOthers: {value, default}, heldBy: [key]}`. Facts only, the same on
-  every box of one setup: `kind` is `mac` for a Mac with the app (`app`), `machine` otherwise; in no
+  name, kind, role, app}], conflict?, startsFromOthers: {value, default}, heldBy: [key], welcomed}`. Facts only, the same on
+  every box of one setup (but `welcomed`, this box's own): `kind` is `mac` for a Mac with the app (`app`), `machine` otherwise; in no
   setup, `setup`, `epoch`, `primary` and `you.role` are null and `computers` is empty.
   `startsFromOthers` is the #181 switch (not built yet): `value` as you set it (`link.json`'s
   `startsFromOthers`, `on` or `off`), or null, and `default`, what it is then: off on the main
@@ -294,6 +294,12 @@ computer. Changing the main computer and joining two setups come later: #183.)
   earlier Mac doesn't lead either, with none of them named. Once it leads, a machine not heard from
   for days stays gone until it's heard from again (so a Mac back from a long sleep doesn't step
   aside while the relay hasn't looked again).
+  `welcomed` (`setup.welcomed`, #733): whether you've had Kuvo Code's first run with this box (each
+  box its own: a client asks the box it opens with, its own computer's), kept on it
+  (`run/welcomed.json`), so every client of it agrees and one installed again doesn't
+  welcome you again. **`POST kuvo/setup/welcomed {"welcomed": true | false}`** sets it (`false`:
+  the first run is to be had again), from any client of the box, and answers `{"welcomed"}`
+  (`kuvo/setup/events` says it too); `400` without a yes or no, `405` for anything but `POST`.
 - **Only the main computer adds and pairs** (`setup.mainOnly`). A member (a box whose setup names
   another computer as main, kept aside too: a shared machine, or its main computer not naming it
   now) answers, with `primary` the main computer's static key and words naming it for a client to
@@ -1538,10 +1544,16 @@ the same number and counts nothing.
   under their bots (not archived, this box's own copy), so the number is what a client's rows of
   waiting sessions show and a client adds nothing to it; `bots`, the bots that live here with a session waiting on you
   (`now.asking`, below; a session here working for a bot on another computer is that computer's
-  to count); `queue`, the Work Queue's items here (not Done or Canceled, not deleted) that a session linked to
-  them (not archived, this box's own copy) waits on you for. All zero while the engine can't be read. `405` for anything but `GET`.
+  to count); `queue`, the Work Queue's items here that need you (#729), each once: open (not in a
+  status the view says is `closed`) and not deleted, and either in the status Needs you
+  (`needs-you`: someone said it waits on you) or with a session linked to it (not archived, this
+  box's own copy) that asks now, whatever its status still says (its agent waits on you before it
+  could say so). One rule, the box's; a client counts nothing. So the badge can be more than the
+  Needs you status's count (`counts.statuses`): an item in another status whose session asks is in
+  the badge, under its own status in a list (a view says which items' sessions ask: none yet). While the engine can't be read, `sessions` and `bots` are zero
+  and `queue` counts only the items in Needs you. `405` for anything but `GET`.
 - `GET kuvo/waiting/events` (ndjson): the same now, and a line each time it changes (an ask comes
-  or is answered, a bot or an item changes); through `box route` it answers its first line, and a
+  or is answered, a bot or an item changes, an item's status among them); through `box route` it answers its first line, and a
   client asks again as that box's session list changes.
 - Each box counts its own: a client that shows several computers adds theirs up (a view). The three
   are counts of three areas, never added to each other: a bot's helper that asks is in `sessions`
@@ -1723,7 +1735,7 @@ the same, and a new conversation, a new bot and a lead's session started from an
 start on a model by the same rule.
 
 - `GET kuvo/models/offered[?folder=<path>][&provider=<id>&model=<id>&variant=<effort>]` → `{"models":
-  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?}], "known": {"engine", "agents"}, "listing"?: [<account id>],
+  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?}], "known": {"engine", "agents"}, "listing"?: [<account id>],
   "starting"?: {providerID, id, variant?} | null}`. `405` for anything but `GET`; `503` with
   neither the engine nor the coding agents' bridge running.
 - `folder` (`models.offered.folder`): a project's folder, or a conversation's, as a full path: the
@@ -1745,7 +1757,11 @@ start on a model by the same rule.
   `kuvo/sessions/<id>/agents`. `efforts`: its efforts (variants) as its side lists them, none for
   one that has none. `aliases`: other ids a conversation may name it by (Claude Code's `default`,
   the model it stands for now). A box says these with `models.offered.sides`, which the update gate
-  requires.
+  requires. `free: true` (`models.offered.free`, #733): it needs no account, so a client can say
+  "free models" without knowing the engine's providers: OpenCode Zen's that cost nothing by its
+  prices, which run signed out. Never a coding agent's, one that costs nothing only with its
+  account (Copilot's included models), nor a provider of your own (one listing no prices reads as
+  costing nothing, though it may be a paid gateway).
 - `known`: whether the engine's models, and the coding agents' with Custom Auto's lists, could be
   said. One that couldn't (not answering, an engine that hasn't loaded yet, or the bridge not
   running: starting, or started again) has none in `models`, rather than none at all: a client
@@ -2589,13 +2605,13 @@ new version without cutting a turn:
 A client never keeps an older box's way of doing something (#679): it brings a box up to date
 before it uses it, and meanwhile says so. A box is older than a client needs when its `kuvo/info`
 `features` lack any name the client uses with no way around it (or it has no `kuvo/info`): today
-`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.tree`, `git.branches`,
+`agent-tools.own`, `bots.deletes`, `bots.effort`, `bots.elsewhere`, `bots.held`, `bots.now`, `computers`, `file.text`, `folders.suggested`, `folders.tree`, `git.branches`,
 `git.branches.pullRequest`, `git.branches.worktree`, `git.changes.binary`, `git.changes.path`,
 `git.files`, `git.files.does`, `git.merge`, `git.pull-request`,
 `git.status`, `limits.rings`, `messages.send`, `models.offered`, `models.offered.folder`,
-`models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
+`models.offered.free`, `models.offered.sides`, `models.readiness`, `queue.items`, `sandbox.opens`, `sandbox.words`, `sessions.actions`, `sessions.asks`,
 `sessions.list`, `sessions.mentions`, `sessions.models`, `sessions.needsYou`,
-`sessions.start.empty`, `sign-in.accounts.kinds`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
+`sessions.start.empty`, `setup.welcomed`, `sign-in.accounts.kinds`, `sign-in.accounts.plan`, `sign-in.accounts.state`, `sign-in.codes`, `typed`, `usage.notices`,
 `waiting`, `waiting.cards`, `work-queue.counts` and `work-queue.edit`
 (KuvoClient's `BoxGate.required`, and the same list in every client, gpui's `kuvo_box` too, so
 every client holds the same boxes; a box with `messages.send` has what came before it too,
@@ -3377,7 +3393,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     "Login with" said "Sign in with"; plain "Sign in" where its words only name the account
     again), else "API key" for a key, else "Connect".
   - `GET kuvo/sign-in/accounts[?agents=1]` → `{"accounts": [{id, methods, environment, hint, kind,
-    listed, service?, state, line, connections, actions, added?}]}`:
+    listed, plan, service?, state, line, connections, actions, added?}]}`:
     every account the engine (or the bridge) lists, each with the same answer. Accounts goes by it
     on every client: what an account offers is its `actions`, and the line under its name is its
     `line`.
@@ -3429,6 +3445,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       kuvo/agents/api/integration/<id>/disconnect`; `rename` and `remove` (an account you added
       beside an agent's own) are `PATCH` and `DELETE kuvo/agents/api/kuvo/accounts/<id>`. A
       client draws the ids it has a control for and leaves out one it doesn't know.
+      Keys are entered, never signed into: an account whose only ways in are keys (`methods` all
+      `key`) words `signIn`, `signInAgain` and `addAnother` "Add Key", "Replace Key" and "Add
+      Another Key" (#733); every other one "Sign In", "Sign In Again" and "Add Another Account".
     - `added: true` for an account you added beside a coding agent's own sign-in: a client lists
       it with its agent whether or not it's signed in.
     Not said here yet, so still each client's: an account Custom Auto holds at its usage limit,
@@ -3446,6 +3465,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `anthropic` and `claude-agent` `claude`, `opencode` and `opencode-go` `opencode`, `zai` and
     `zai-coding-plan` `zai`, `ollama` and `ollama-cloud` `ollama`, `openrouter` its own; left out
     for one with no mark, which a client draws by its name's first letter.
+    `plan` (`sign-in.accounts.plan`, #733): whether it's a plan you sign in to (one of its
+    `methods` is `oauth`, its sign-in page: every coding agent's, ChatGPT's, Copilot's), rather
+    than an account you enter a key or the computer's credentials for (OpenAI's, whose ChatGPT
+    plan comes through Codex; DeepSeek's; Amazon Bedrock's). A first run lists plans and keeps
+    keys apart by it, so no client works it out from `methods`. It means something for a
+    `provider` alone: an MCP server's sign-in has a sign-in page too, and isn't listed.
   - `POST kuvo/sign-in/start?integration=<id>[&agents=1]` `{methodID, answer?}`
     (`sign-in.codes`, #711): starts a sign-in in the browser as the engine's (or the bridge's) own
     `api/integration/<id>/connect/oauth` does, and answers what that answered (`attemptID`, `url`,
@@ -4073,6 +4098,21 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   list that puts the newest first. A request no one waits for any longer stops git and the walk
   (`503 {"message"}`, which no one reads). `path` is needed (`~/` starts at the home folder); refused as
   `kuvo/folders` refuses, with `reason`.
+- `GET kuvo/folders/suggested` (`folders.suggested`, #733): folders worth starting in on this box's
+  computer, for a first run's or a new session's folder picker → `{"home", "folders": [{path, name,
+  repository?, seen}]}`: first the projects its agents worked in lately (each project session's
+  project folder, a worktree's session's the project it's of, the engine's and the coding agents',
+  not archived; never a chat's, a bot's or a subagent's, the home folder itself, the box's own
+  folder or its chats folder, nor one gone since; compared as the system names them, so a home
+  reached through a link lists each once, and `home` and every path are said that way too), the latest first, twelve at most, `seen` when a session
+  there last changed (ms); then the git repositories directly in `~/Projects` and `~/Developer`
+  (one level, never deeper, hidden ones left out, the first 500 entries of each read), the one
+  changed latest first, `seen` null; 20 in all at most, each once. `repository: true` for a git
+  repository (a linked worktree's too); on a Mac a folder in the home folder's Desktop,
+  Documents, Downloads, Library, Movies, Music or Pictures, or on another disk (`/Volumes`), isn't
+  looked into (macOS would ask): suggested as the session had it, without `repository`, and a link
+  in `~/Projects` or `~/Developer` leading there isn't followed. Each box says its own computer's;
+  `kuvo/folders` still browses any other.
 - `GET kuvo/programs?name=<program>` (`programs`): whether the box has a program an MCP server's
   command names, found on its PATH as its engine finds it (a name like `npx`, or a path, `~/`
   from the home folder) → `{"name", "path"}`, `path` null when it hasn't; `"unknown": true` (and
@@ -5557,7 +5597,8 @@ everyone too. An item of a status a box doesn't know is kept as it came, and lis
 queue (60 at most), none built in: `{id, name, color}` (`lbl_…`, or `cat_…` for one that was a
 custom category; `color` one of `coral`, `orange`, `amber`, `lime`, `mint`, `sky`, `indigo`,
 `violet`, `pink`, `graphite`, the bots' looks' names, a client drawing one it doesn't know as
-graphite), in the order they were made. You and your agents make, rename, recolour and remove
+graphite; a view lists them as `colors`, in the order a picker offers them, so no client keeps its
+own list), in the order they were made. You and your agents make, rename, recolour and remove
 them; removing one takes it off every item on that box first (then off the list: cut off between
 the two, it's a label no item has, which removing it again finishes). Each box takes the labels of the
 primary it numbers from as it tells them (its list, order, names and colours; a label of the same
@@ -5636,7 +5677,10 @@ before (a linked item is its owner's to change). A client shows them first, as "
 (`item.owner` isn't the view's `owner`, and the item's `sessions` include it).
 
 - `GET kuvo/work-queue?owner=<ses_…|grp_…|usr_you>` → `{owner, statuses, priorities, labels,
-  assignees, new, today, items, owners, removed, computers}`: `new` (`{status, priority}`) is what an item
+  colors, assignees, new, today, items, owners, removed, computers}`: `statuses` say which are
+  `closed` (Done, Canceled): what a client folds, counts as not open and offers only where an item's
+  `can.close` says, never a list of its own (the first closed one, Done, is what finishing an item
+  sets: a client's one Mark button); `colors` the colours a label may be; `new` (`{status, priority}`) is what an item
   added with nothing said starts as, for a client's form to show; `today` (`YYYY-MM-DD`) the day it
   is on the box asked, which `overdue` goes by and a client counts days from ("Tomorrow", "Yesterday"),
   never its own clock; `items` in the statuses' order, then this box's first and each other computer's
@@ -6378,6 +6422,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `file.text` | `GET kuvo/file/text`: a file's text, or that it isn't text, for a viewer (#708) |
 | `folders` | `kuvo/folders` |
 | `folders.files` | `kuvo/folders?files=1`: a folder's files too, and `reason` on a refusal |
+| `folders.suggested` | `GET kuvo/folders/suggested`: folders worth starting in, where agents worked lately and the repositories in ~/Projects and ~/Developer (#733) |
 | `folders.tree` | `GET kuvo/folders/tree`: every file under a folder, for a file filter and "@" (#660) |
 | `git` | `kuvo/git/…`: Changes (bridge 0.9.94) |
 | `git.backups` | `kuvo/git/backups…`: branch backups, and taking one back (bridge 0.9.182) |
@@ -6416,6 +6461,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
 | `models.offered.folder` | `kuvo/models/offered?folder=<path>`: what's offered in a project's folder, its own settings' models too ("The models offered") |
+| `models.offered.free` | `free` on each model in `kuvo/models/offered` that needs no account ("The models offered", #733) |
 | `models.offered.sides` | `kuvo/models/offered` says each model's `side`, `efforts` and `aliases` ("The models offered") |
 | `models.readiness` | `kuvo/sessions/models` says `refusal`, `choose` and `action`, and the typed send decides a model's refusal itself ("A session's model") |
 | `moves` | `kuvo/moves`, `…/places`, `…/events`: Move to Computer, done by the boxes (bridge 0.9.108) |
@@ -6461,8 +6507,10 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
+| `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
 | `shell.stop` | `POST kuvo/shell/<id>/stop` |
 | `sign-in.accounts.kinds` | `kind`, `listed` and `service` on each account in `GET kuvo/sign-in/accounts`: which are providers Accounts lists, and each one's mark ("Signing in", #711) |
+| `sign-in.accounts.plan` | `plan` on each account in `GET kuvo/sign-in/accounts`: a plan you sign in to, or an account you enter a key or credentials for; and a key-only account's buttons say Add Key ("Signing in", #733) |
 | `sign-in.accounts.state` | `state`, `line`, `connections` and `actions` on each account in `GET kuvo/sign-in/accounts`: how it stands, the line under its name, each of its sign-ins' own line, and what can be done with it, each with its button's words and its confirm's ("Signing in", #668), and `added` on one you added |
 | `sign-in.codes` | `POST kuvo/sign-in/start`, and `userCode` wherever a sign-in has a device code, the engine's own plans too ("Signing in", #711) |
 | `sign-in.methods` | `GET kuvo/sign-in/methods`, `GET kuvo/sign-in/accounts` and `GET kuvo/sign-in/status`: the ways to sign in, in the box's order and words, and what to say when a sign-in didn't work ("Signing in") |
@@ -6483,7 +6531,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
 | `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
-| `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
+| `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
@@ -9318,8 +9366,11 @@ The apps read Antigravity only from the box, with no older-box fallback (#679 up
 
 ## The browser's live view
 
-Feature `browser.view`. Every box's keeper owns its Chrome and page state. No client needs
-CDP to draw it. The Swift Mac app remains on its existing raw-CDP stream.
+Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's
+agents browse in Kuvo Code's panel on that Mac, so a Mac's box doesn't list the feature). Its keeper
+owns its Chrome and page state. No client needs CDP to draw it. The Swift Mac app remains on its
+existing raw-CDP stream. A Mac's box answers `GET kuvo/browser/view`, opened as a socket or not,
+`404 {message}` saying why, and opens nothing.
 
 Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with its
 `Authorization: Basic <base64(opencode:password)>` header; through the relay, a WebSocket
@@ -9352,8 +9403,13 @@ newline JSON stream, including raw CDP compatibility.
 | box → client | `Kuvo.dialog` | `{targetId,type,message,defaultPrompt?,url?,...}`, Chrome's dialog facts |
 | client → box | `Kuvo.dialogAnswer` | `{targetId,accept,promptText?}`, boolean accept and optional text |
 | box → client | `Kuvo.viewQuality` | `{targetId,quality,scale,reason:"oversize" \| "recovery"}`, reduced picture settings |
+| box → client | `Kuvo.status` | `{working,tool?,pages:[targetId],workers:[{targetId,session}]}`: the pages agents are at work in, as it changes |
+| box → client | `Kuvo.pointer` | `{targetId,action,rect}`: where an agent is about to act in a page, for the pointer drawn over it |
+| box → client | `Kuvo.cursor` | `{targetId,...}`: kept as each page's latest, like the pointer; no keeper sends it yet |
 
-The keeper also forwards its existing hello, ask, download, status and pointer facts.
+The keeper also forwards its existing hello, ask, download, status and pointer facts. Through the
+relay, `Kuvo.pages`, `Kuvo.status`, `Kuvo.viewport`, `Kuvo.pointer` and `Kuvo.cursor` are state: a newer
+one for the same page replaces one not yet sent.
 Pages are announced when Chrome reports creation, navigation, title, loading or destruction,
 and when agent status changes, only if the facts changed. The address comes from these facts even when an agent navigates.
 A tab's name is its nonempty title, else its address's host without `www.`, else “New Tab”.

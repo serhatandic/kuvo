@@ -721,3 +721,29 @@ fn a_sessions_menu_is_what_its_box_says_and_does() {
         other => panic!("refused in the box's words, not {other:?}"),
     }
 }
+
+/// What a first run reads from the box (#733), as the box says it: the folders worth starting in
+/// and whether you've been welcomed, and saying the first run is done.
+#[test]
+fn a_first_run_reads_the_boxs_folders_and_says_when_its_done() {
+    let stand_in = StandInBox::start(|seen| match seen.route() {
+        "kuvo/info" => Answer::json(200, mac_info(current_features())),
+        "kuvo/folders/suggested" => Answer::json(200, json!({ "home": "/Users/sam", "folders": [
+            { "path": "/Users/sam/Projects/website", "name": "website", "repository": true, "seen": 1_794_000_000_000_u64 },
+            { "path": "/Users/sam/Documents/notes", "name": "notes", "seen": 1_793_000_000_000_u64 },
+            { "path": "/Users/sam/Developer/dotfiles", "name": "dotfiles", "repository": true, "seen": null },
+        ] })),
+        "kuvo/setup" => Answer::json(200, json!({ "setup": null, "epoch": null, "primary": null, "you": { "key": null, "role": null }, "computers": [], "startsFromOthers": { "value": null, "default": "off" }, "heldBy": [], "welcomed": false })),
+        "kuvo/setup/welcomed" => Answer::json(200, json!({ "welcomed": true })),
+        _ => Answer::json(404, json!({})),
+    });
+    let (_home, _serve, client) = this_mac(&stand_in);
+    client.connect().unwrap();
+    let suggested = client.suggested_folders().unwrap();
+    assert_eq!(suggested.home, "/Users/sam");
+    assert_eq!(suggested.folders.iter().map(|folder| (folder.name.as_str(), folder.repository, folder.seen)).collect::<Vec<_>>(), vec![("website", true, Some(1_794_000_000_000)), ("notes", false, Some(1_793_000_000_000)), ("dotfiles", true, None)]);
+    assert!(!client.welcomed().unwrap());
+    assert!(client.set_welcomed(true).unwrap());
+    let said: Vec<_> = stand_in.seen().into_iter().filter(|seen| seen.route() == "kuvo/setup/welcomed").collect();
+    assert_eq!((said[0].method.as_str(), said[0].body.clone()), ("POST", Some(json!({ "welcomed": true }))));
+}

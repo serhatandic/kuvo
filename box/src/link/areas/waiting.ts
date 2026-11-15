@@ -1,6 +1,6 @@
 // What waits on you in each area, across the box (PROTOCOL.md, "What waits on you", `kuvo/waiting`):
-// the sessions "Needs you" lists, the bots with a session waiting, and the Work Queue's items a
-// session linked to them waits for. Counted from the box's session list (`lists/sessions.ts`), so
+// the sessions "Needs you" lists, the bots with a session waiting, and the Work Queue's items that
+// need you (`needsYouIn`). Counted from the box's session list (`lists/sessions.ts`), so
 // every client's badges say the same, and none counts.
 
 import { botsNow, waitingSessions } from "../lists/rule";
@@ -8,8 +8,8 @@ import { keepsList, keptList, listFollowers, listNow, type Kept } from "../lists
 import path from "node:path";
 import { botFollowers, botHere } from "../bots/here";
 import { followed, followersOf } from "../follow";
-import { allItems, queueFollowers, WORK_QUEUE } from "../work-queue/store";
-import { isClosed } from "../work-queue/statuses";
+import { allItems, queueFollowers, WORK_QUEUE, type Item } from "../work-queue/store";
+import { isClosed, NEEDS_YOU } from "../work-queue/statuses";
 import type { BotNow, SessionFacts, WaitingOnYou } from "../../shared/routes/sessions";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -33,10 +33,15 @@ export function waitingOf(list: Kept | null): WaitingOnYou {
     // Every session that waits, a bot's own conversation too: what a client's rows of them show.
     sessions: waitingSessions(facts),
     bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
-    // (The queues are read only while something waits at all.)
-    queue: asking.size ? allItems().filter(item => !item.removed && !isClosed(item.status) && item.sessions.some(linked => asking.has(linked.session))).length : 0,
+    queue: needsYouIn(allItems(), asking),
   };
 }
+
+/** How many of `items` need you (the Work Queue's one rule, PROTOCOL.md "What waits on you"): open
+ * and not deleted, and either in the status Needs you (someone said so) or with a linked session
+ * that `asking` has (its agent asks now, whatever its status still says). Each item once. */
+export const needsYouIn = (items: readonly Item[], asking: ReadonlySet<string>): number =>
+  items.filter(item => !item.removed && !isClosed(item.status) && (item.status === NEEDS_YOU || item.sessions.some(linked => asking.has(linked.session)))).length;
 
 /** What of the list this counts from: looked at again only when it changed (the list changes with
  * every step of a run). */

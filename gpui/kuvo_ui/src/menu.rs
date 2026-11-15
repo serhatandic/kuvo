@@ -405,6 +405,11 @@ struct OpenMenus(Vec<(FocusHandle, Option<FocusHandle>)>);
 
 impl gpui::Global for OpenMenus {}
 
+/// Whether a menu has the keyboard (a selection it was opened over still shows as in use).
+pub fn is_menu_focused(window: &Window, cx: &App) -> bool {
+    cx.try_global::<OpenMenus>().is_some_and(|menus| menus.0.iter().any(|(menu, _)| menu.contains_focused(window, cx)))
+}
+
 impl OpenMenus {
     fn return_target(focused: Option<FocusHandle>, cx: &mut App) -> Option<FocusHandle> {
         let focused = focused?;
@@ -503,6 +508,7 @@ pub struct ContextMenuArea {
     id: ElementId,
     child: AnyElement,
     menu: MenuBuilder,
+    fill: bool,
 }
 
 #[derive(Clone, Default)]
@@ -514,7 +520,13 @@ impl ContextMenuArea {
         child: impl IntoElement,
         menu: impl Fn(&mut Window, &mut App) -> Entity<Menu> + 'static,
     ) -> Self {
-        Self { id: id.into(), child: child.into_any_element(), menu: Rc::new(menu) }
+        Self { id: id.into(), child: child.into_any_element(), menu: Rc::new(menu), fill: false }
+    }
+
+    /// Takes all the room it's given (around a list that fills its place).
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
     }
 }
 
@@ -527,6 +539,7 @@ impl RenderOnce for ContextMenuArea {
         let open = state.1.menu();
         div()
             .id(self.id)
+            .when(self.fill, |d| d.size_full())
             .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                 window.prevent_default();
                 *opener.0.borrow_mut() = Some(event.position);

@@ -16,6 +16,8 @@ use kuvo_box::BoxClient;
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     chat_list::{ChatListState, chat_list},
+    menu::{ContextMenuArea, Menu, MenuEntry},
+    selection::{self, SelectionArea, SelectionState},
     small::spinner,
     theme::{radius, space},
 };
@@ -69,6 +71,9 @@ pub struct ConversationView {
     card_took_keys: bool,
     /// The whole conversation's, so the card can tell the keyboard is somewhere in it.
     focus: FocusHandle,
+    /// What's selected in its messages, and the keyboard for it (⌘C, ⌘A) once you select there.
+    selection: SelectionState,
+    transcript: FocusHandle,
     client: BoxClient,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
@@ -110,6 +115,8 @@ impl ConversationView {
             asks_failed: None,
             card_took_keys: false,
             focus: cx.focus_handle(),
+            selection: SelectionState::new(),
+            transcript: cx.focus_handle(),
             client: client.clone(),
             live,
             _queue_follow: None,
@@ -181,6 +188,69 @@ impl ConversationView {
 
     pub fn list(&self) -> &ChatListState {
         &self.list
+    }
+
+    pub fn selection(&self) -> &SelectionState {
+        &self.selection
+    }
+
+    /// What's selected, as it's copied (empty: nothing is).
+    pub fn selected_text(&self) -> String {
+        let Some((start, end)) = self.selection.range() else { return String::new() };
+        let order = self.selection.order();
+        let rows = self.entries.iter().filter(|entry| {
+            let at = selection::Spot::row_start(entry.key().to_owned());
+            order.cmp(&at, &selection::Spot::row_start(start.unit.row.clone())) != Some(std::cmp::Ordering::Less)
+                && order.cmp(&at, &selection::Spot::row_start(end.unit.row.clone())) != Some(std::cmp::Ordering::Greater)
+        });
+        selection::copy_text(&order, rows.map(|entry| (SharedString::from(entry.key().to_owned()), entries::units(entry, &self.open))), &start, &end)
+    }
+
+    /// The rows' text as copying sees it (for shots and tests to select in).
+    pub fn units(&self) -> Vec<(SharedString, Vec<selection::Unit>)> {
+        self.entries.iter().map(|entry| (SharedString::from(entry.key().to_owned()), entries::units(entry, &self.open))).collect()
+    }
+
+    /// Selects from the first `from` to the end of the first `to` after it (for shots and tests).
+    pub fn select_text(&mut self, from: &str, to: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let found = self.selection.select_text(&self.units(), from, to);
+        window.focus(&self.transcript, cx);
+        cx.notify();
+        found
+    }
+
+    fn copy(&mut self, _: &selection::Copy, _: &mut Window, cx: &mut Context<Self>) {
+        selection::copy_to_clipboard(self.selected_text(), cx);
+    }
+
+    fn select_all(&mut self, _: &selection::SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        // From the first row with text to the last (not "Working…", which goes when the turn ends).
+        let rows: Vec<&str> = self.entries.iter().filter(|entry| !entries::units(entry, &self.open).is_empty()).map(Entry::key).collect();
+        if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
+            self.selection.select_all(first, last);
+            cx.notify();
+        }
+    }
+
+    /// What a right-click in the messages offers: the link's address (on a link), Copy, Select All.
+    fn transcript_menu(view: &Entity<ConversationView>, window: &mut Window, cx: &mut App) -> Entity<Menu> {
+        let selection = view.read(cx).selection.clone();
+        let link = selection.link_at(window.mouse_position());
+        let has_selection = !selection.is_empty();
+        let (copy_view, all_view) = (view.clone(), view.clone());
+        cx.new(|cx| {
+            let mut menu = Menu::new(cx);
+            if let Some(link) = link {
+                menu = menu.entry(MenuEntry::new("Copy Link").on_select(move |_, cx| selection::copy_to_clipboard(link.clone(), cx))).separator();
+            }
+            menu.entry(MenuEntry::new("Copy").shortcut(selection::COPY_KEYS).disabled(!has_selection).on_select(move |_, cx| {
+                let text = copy_view.read(cx).selected_text();
+                selection::copy_to_clipboard(text, cx);
+            }))
+            .entry(MenuEntry::new("Select All").shortcut(selection::SELECT_ALL_KEYS).on_select(move |window, cx| {
+                all_view.update(cx, |this, cx| this.select_all(&selection::SelectAll, window, cx));
+            }))
+        })
     }
 
     /// Why the page before couldn't be read, while that's said.
@@ -321,6 +391,7 @@ impl ConversationView {
     fn show(&mut self, new: Vec<Entry>, revisions: Vec<u64>) {
         let old = std::mem::replace(&mut self.entries, new);
         let old_revisions = std::mem::replace(&mut self.revisions, revisions);
+        self.selection.set_rows(self.entries.iter().map(Entry::key));
         let new = &self.entries;
         if old.is_empty() {
             self.list.reset(new.len());
@@ -556,16 +627,29 @@ impl Render for ConversationView {
             let asking = self.asks.read(cx).is_asking() && !self.asks.read(cx).leaves_composer();
             centred(if asking { "Nothing here yet.".into() } else { "Nothing here yet. Write below to start.".into() }, false, cx)
         } else {
-            chat_list(&self.list, move |ix, _window, cx| {
+            let list_view = view.clone();
+            let list = chat_list(&self.list, move |ix, _window, cx| {
                 let cx: &App = cx;
-                let this = view.read(cx);
+                let this = list_view.read(cx);
                 let Some(entry) = this.entries.get(ix) else { return div().into_any_element() };
-                let earlier = if matches!(entry, Entry::Earlier) { this.earlier_row(&view, cx) } else { div().into_any_element() };
-                let toggle_view = view.clone();
+                let earlier = if matches!(entry, Entry::Earlier) { this.earlier_row(&list_view, cx) } else { div().into_any_element() };
+                let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
-                entries::render(ix, entry, &this.open, toggle, earlier, cx)
-            })
-            .into_any_element()
+                entries::render(ix, entry, &this.open, toggle, earlier, &this.selection, cx)
+            });
+            // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
+            // and ⌘C, and a right-click's Copy.
+            let scroller = self.list.clone();
+            let area = SelectionArea::new(self.selection.clone(), self.transcript.clone(), list).on_scroll(move |by, _, _| scroller.scroll_by(by));
+            let menu_view = view.clone();
+            div()
+                .key_context(selection::CONTEXT)
+                .track_focus(&self.transcript)
+                .on_action(cx.listener(Self::copy))
+                .on_action(cx.listener(Self::select_all))
+                .size_full()
+                .child(ContextMenuArea::new("transcript-menu", area, move |window, cx| Self::transcript_menu(&menu_view, window, cx)).fill())
+                .into_any_element()
         };
         // A problem while it's shown: said above the composer; it's tried again meanwhile.
         let banner = match (&self.problem, self.read) {

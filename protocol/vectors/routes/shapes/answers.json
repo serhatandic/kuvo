@@ -3900,6 +3900,9 @@
             "literal": "folders.files"
            },
            {
+            "literal": "folders.suggested"
+           },
+           {
             "literal": "folders.tree"
            },
            {
@@ -4003,6 +4006,9 @@
            },
            {
             "literal": "models.offered.folder"
+           },
+           {
+            "literal": "models.offered.free"
            },
            {
             "literal": "models.offered.sides"
@@ -4140,10 +4146,16 @@
             "literal": "setup.mainOnly"
            },
            {
+            "literal": "setup.welcomed"
+           },
+           {
             "literal": "shell.stop"
            },
            {
             "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.accounts.plan"
            },
            {
             "literal": "sign-in.accounts.state"
@@ -4488,6 +4500,9 @@
             "literal": "folders.files"
            },
            {
+            "literal": "folders.suggested"
+           },
+           {
             "literal": "folders.tree"
            },
            {
@@ -4591,6 +4606,9 @@
            },
            {
             "literal": "models.offered.folder"
+           },
+           {
+            "literal": "models.offered.free"
            },
            {
             "literal": "models.offered.sides"
@@ -4728,10 +4746,16 @@
             "literal": "setup.mainOnly"
            },
            {
+            "literal": "setup.welcomed"
+           },
+           {
             "literal": "shell.stop"
            },
            {
             "literal": "sign-in.accounts.kinds"
+           },
+           {
+            "literal": "sign-in.accounts.plan"
            },
            {
             "literal": "sign-in.accounts.state"
@@ -6147,7 +6171,8 @@
       },
       "heldBy": {
        "list": "string"
-      }
+      },
+      "welcomed": "bool"
      }
     }
    }
@@ -6281,7 +6306,8 @@
       },
       "heldBy": {
        "list": "string"
-      }
+      },
+      "welcomed": "bool"
      }
     }
    }
@@ -6436,6 +6462,21 @@
    "answers": {
     "200": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/setup/welcomed",
+   "answers": {
+    "200": {
+     "object": {
+      "welcomed": "bool"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
     }
    }
   },
@@ -9150,6 +9191,31 @@
    }
   },
   {
+   "route": "GET kuvo/folders/suggested",
+   "answers": {
+    "200": {
+     "object": {
+      "home": "string",
+      "folders": {
+       "list": {
+        "object": {
+         "path": "string",
+         "name": "string",
+         "repository?": "bool",
+         "seen": {
+          "oneOf": [
+           "number",
+           "null"
+          ]
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/folders/tree",
    "answers": {
     "200": {
@@ -9330,6 +9396,7 @@
           ]
          },
          "listed": "bool",
+         "plan": "bool",
          "service?": "string",
          "state": {
           "oneOf": [
@@ -11475,7 +11542,8 @@
           "list": "string"
          },
          "retiring?": "bool",
-         "hidden?": "bool"
+         "hidden?": "bool",
+         "free?": "bool"
         }
        }
       },
@@ -15315,6 +15383,9 @@
         }
        }
       },
+      "colors": {
+       "list": "string"
+      },
       "assignees": {
        "list": {
         "object": {
@@ -15881,6 +15952,9 @@
          "color": "string"
         }
        }
+      },
+      "colors": {
+       "list": "string"
       },
       "assignees": {
        "list": {

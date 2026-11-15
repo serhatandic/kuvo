@@ -28,8 +28,12 @@ export const PRIORITIES: readonly Priority[] = [
 export const STATUS_ID = /^(?:needs-you|in-review|in-progress|waiting|todo|backlog|done|canceled)$/;
 export const PRIORITY_ID = /^(?:urgent|high|normal|low)$/;
 
+/** The status an item waiting on you is in: what the Needs you tab lists, and one way an item
+ * counts in `kuvo/waiting`'s `queue` (`areas/waiting.ts`). */
+export const NEEDS_YOU = "needs-you";
+
 /** Whether a status is a closed one (Done or Canceled). */
-export const isClosed = (status: string): boolean => status === "done" || status === "canceled";
+export const isClosed = (status: string): boolean => STATUSES.some(each => each.id === status && each.closed);
 
 /** A status's name, as it's said (its id for one this box doesn't know). */
 export const statusName = (id: string): string => STATUSES.find(each => each.id === id)?.name ?? id;

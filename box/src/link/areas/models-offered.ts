@@ -10,7 +10,7 @@ import { keptList } from "../lists/sessions";
 import { readProjects } from "./projects";
 import { readWorktrees } from "./worktree-records";
 import { targetsOf } from "../letters/tools";
-import { listsHere, offeredHere, startingModel, stillListing, type Lists, type Ref } from "../work/model-rule";
+import { listsHere, needsNoAccount, offeredHere, startingModel, stillListing, type Lists, type Ref } from "../work/model-rule";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const MODELS_OFFERED_ROUTE = "kuvo/models/offered";
@@ -66,8 +66,9 @@ export function offeredAnswer(lists: Lists, wanted: Ref | null) {
   return {
     // `side`: where a conversation on it runs (the engine, or the coding agents' bridge, Custom
     // Auto's lists too), so a client offers in place only its own side's; `efforts`, its variants;
-    // `aliases`, other ids a conversation may name it by (Claude Code's `default`).
-    models: offeredHere(lists).map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}) })),
+    // `aliases`, other ids a conversation may name it by (Claude Code's `default`); `free`, it
+    // needs no account (OpenCode Zen's free models).
+    models: offeredHere(lists).map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
     // (The bridge not running is one that can't say yet: it's starting, or started again.)
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...(listing.length ? { listing } : {}),

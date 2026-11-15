@@ -1,4 +1,5 @@
-// A box's folders to choose one from (PROTOCOL.md, `kuvo/folders`), every file under one
+// A box's folders to choose one from (PROTOCOL.md, `kuvo/folders`), those worth starting in
+// (`kuvo/folders/suggested`), every file under one
 // (`kuvo/folders/tree`), npm's plugins its engine can
 // load (`kuvo/plugins/search`), an MCP server's program (`kuvo/programs`), a provider of your
 // own's models (`kuvo/providers/models`), a sign-in's return loaded on the computer it's for
@@ -21,6 +22,11 @@ export const FOLDER_LIST = object({
  * "@" list them: git's list in a repository (`git`), else a walk that skips the usual heavy folders;
  * asked with `dated=1`, when each last changed (milliseconds since 1970, null where it can't say). */
 export const FOLDER_TREE = object({ path: string, files: list(string), git: bool, "modified?": list(nullable(number)) });
+/** Folders worth starting in on this box's computer (`kuvo/folders/suggested`): the home folder,
+ * and each folder's full path, its name, `repository` where it's a git repository, and when an
+ * agent last worked there (`seen`, ms; null for a repository in ~/Projects or ~/Developer no
+ * session here worked in), those worked in first, newest first. */
+export const FOLDERS_SUGGESTED = object({ home: string, folders: list(object({ path: string, name: string, "repository?": bool, seen: nullable(number) })) });
 /** Why a folder couldn't be read, as the computer says it ("Permission denied"). */
 export const FOLDER_REFUSED = object({ message: string, "reason?": string });
 /** A new folder, made where it was asked. */
@@ -76,7 +82,7 @@ const SIGN_IN_STATE = {
   connections: list(object({ "id?": string, state: words("signedIn", "ended", "problem"), line: string })),
   "added?": literal(true),
 } as const;
-export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...SIGN_IN_WAYS, kind: words("provider", "search", "mcp", "agentDuplicate"), listed: bool, "service?": string, ...SIGN_IN_STATE })) });
+export const SIGN_IN_ACCOUNTS = object({ accounts: list(object({ id: string, ...SIGN_IN_WAYS, kind: words("provider", "search", "mcp", "agentDuplicate"), listed: bool, plan: bool, "service?": string, ...SIGN_IN_STATE })) });
 
 /** A sign-in started in the browser (`POST kuvo/sign-in/start`): what the engine (or the coding
  * agents' bridge) answered (`attemptID`, its page's `url`, `instructions`, how it ends: `mode`), and
@@ -96,6 +102,7 @@ export const SIGN_IN_STATUS = object({
 
 export type FolderList = Infer<typeof FOLDER_LIST>;
 export type FolderMade = Infer<typeof FOLDER_MADE>;
+export type FoldersSuggested = Infer<typeof FOLDERS_SUGGESTED>;
 export type FolderRefused = Infer<typeof FOLDER_REFUSED>;
 export type PluginSearch = Infer<typeof PLUGIN_SEARCH>;
 export type ProgramFound = Infer<typeof PROGRAM_FOUND>;
@@ -117,6 +124,7 @@ export type SearchFound = Infer<typeof SEARCH_FOUND>;
 export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/folders", answers: { 200: FOLDER_LIST, 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED } },
   { route: "POST kuvo/folders", answers: { 200: FOLDER_MADE } },
+  { route: "GET kuvo/folders/suggested", answers: { 200: FOLDERS_SUGGESTED } },
   { route: "GET kuvo/folders/tree", answers: { 200: FOLDER_TREE, 400: object({ message: string }), 403: FOLDER_REFUSED, 404: FOLDER_REFUSED, 500: FOLDER_REFUSED, 503: object({ message: string }) } },
   { route: "GET kuvo/plugins/search", answers: { 200: PLUGIN_SEARCH } },
   { route: "GET kuvo/programs", answers: { 200: PROGRAM_FOUND } },

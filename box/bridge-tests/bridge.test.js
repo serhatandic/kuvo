@@ -1582,6 +1582,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "file.text": ["GET", "kuvo/file/text"],
     folders: ["DELETE", "kuvo/folders"],
     "folders.files": ["GET", "kuvo/folders?files=1"],
+    "folders.suggested": ["GET", "kuvo/folders/suggested"],
     "folders.tree": ["GET", "kuvo/folders/tree?path=/kuvo-none"],
     git: ["POST", "kuvo/git/changes"],
     "git.backups": ["GET", "kuvo/git/backups?folder=/"],
@@ -1630,6 +1631,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "models.offered": ["GET", "kuvo/models/offered"],
     // (A project's own, its folder asked; each model's side, efforts and aliases; on the same route.)
     "models.offered.folder": ["GET", "kuvo/models/offered?folder=%2F"],
+    "models.offered.free": ["GET", "kuvo/models/offered"],
     "models.offered.sides": ["GET", "kuvo/models/offered"],
     // (What a model that can't run means for a composer, on kuvo/sessions/models.)
     "models.readiness": ["GET", "kuvo/sessions/models?sessions=ses_x"],
@@ -1688,8 +1690,10 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
     "setup.mainOnly": ["GET", "kuvo/setup"],
+    "setup.welcomed": ["GET", "kuvo/setup"],
     "shell.stop": ["POST", "kuvo/shell/sh_none/stop"],
     "sign-in.accounts.kinds": ["GET", "kuvo/sign-in/accounts"],
+    "sign-in.accounts.plan": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.accounts.state": ["GET", "kuvo/sign-in/accounts"],
     "sign-in.codes": ["GET", "kuvo/sign-in/start?integration=openai"],
     "sign-in.methods": ["GET", "kuvo/sign-in/methods?integration=openai"],
