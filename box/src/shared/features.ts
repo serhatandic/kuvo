@@ -185,6 +185,7 @@ export const FEATURES = [
   "wakes.events",
   "work",
   "work-queue",
+  "work-queue.anywhere",
   "work-queue.counts",
   "work-queue.edit",
   "work-queue.elsewhere",
