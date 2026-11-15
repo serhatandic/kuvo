@@ -1566,6 +1566,16 @@ sessions").
   sidebar a client draws from them (KuvoClient's `SessionListsTests`): a client in another language
   checks itself against it.
 
+### Computer display words (`computers.words`)
+
+Each `kuvo/computers` row has `title`, the display title of its `reach` value.
+For an unavailable reach (`away`, `connecting`, `unknown`), `detail` gives a short
+explanation and `notice: {title, detail}` supplies the named notice shown in Computers
+and Settings. Connected computers have no notice. `workingTitle`, present whenever
+`working` is present, words that count (including zero), such as “1 session at work”.
+Clients draw these words; `reach` and `working` remain the values used for behavior.
+The same fields are sent in `kuvo/computers/events` snapshots.
+
 ### Box display names (`names.titles`)
 
 Computers include `limitServices: [{id, title}]` alongside the legacy `limits` ids. Clients draw each title unchanged. The box names known services by their plan (ChatGPT, SuperGrok, Copilot, OpenRouter, Z.ai, Ollama, OpenCode Go); unknown service ids have their initial letter capitalized.
@@ -3540,7 +3550,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     inbox, and it's never held or paused for. 400 `{"message"}` is a sentence to show: nothing to summarize yet, a subagent's,
     an agent that can't be asked (Cursor, Antigravity), or on the agents an undo staged. On the
     engine an undo staged is made final by it, as by a message. It shows as the engine's own does, a
-    `compaction` message with `reason: "manual"` and `session.compaction.started`, `.ended` or
+    `compaction` message with a required `title` (the box’s words for its status) and,
+    while running, required `workingTitle` (`messages.compaction-words`) ("Summarizing the conversation…") for the working row.
+    These fields are supplied on both engine and agents message reads, including older stored
+    records; compaction events cause the client to read these messages again (`api/event`,
+    `kuvo/agents/api/event`). Clients draw the fields without a local status word table.
+    It has `reason: "manual"` and `session.compaction.started`, `.ended` or
     `.failed`, then `idle`. It adds no reply, and what's there stays. Its `status` says how it went:
     the engine's `idle` and run end say `succeeded` even for one that failed.
     Only one that ran at rest is a turn of its own (an `idle` before it, `box/src/shared/summaries.ts`):
@@ -4921,7 +4936,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   the same way. `POST kuvo/groups/<id>` writes to it (`{"text"}`; 400 `{"message"}` for `/compact`, which a chat of several has no one conversation for); `…/stop`, `…/keep-going`
   and `…/viewed` do what they say; `…/undo` (`{"message"}`) takes a message of yours back and
   answers with what was taken. A wrap-up can carry `tasks`, who does what: each with `id`, `bot`,
-  `task`, `state` (`proposed`, `waiting`, `working`, `done` or `failed`), `started`/`finished`,
+  `task`, `state` (`proposed`, `waiting`, `working`, `done` or `failed`), `title` (`groups.task-title`: the box’s display words for that state, including a working task waiting on a stopped conversation, drawn as sent), `started`/`finished`,
   and `after` (the bots whose parts come first; it waits for them);
   `…/start` (`{"message"}`, the wrap-up) hands each proposed part to its bot's own conversation.
   One chat's `stopped` lists the bots whose `working` part waits on their own conversation, its

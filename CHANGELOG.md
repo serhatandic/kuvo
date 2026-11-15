@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Computers, group task states and conversation summaries use display words supplied by the box, shared across clients.
+
 - A computer’s time zone is under Settings › Clock. Git and Worktrees stay under Projects, and Archived Sessions and Storage stay under System with their own icons.
 
 - Settings › Storage shows decimal GB and MB, like macOS, while keeping your existing storage budget unchanged.

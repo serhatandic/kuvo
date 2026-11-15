@@ -1,3 +1,4 @@
+import { compactionPage } from "../../shared/compaction-words";
 // Forwarding to the engine
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
 // a phone's prompts with who they name told, and that they're from a phone.
@@ -207,6 +208,13 @@ export async function* forward(target: Target, path: string, request: LinkReques
       // Archived while it waits on you: it stops, as a Mac's Archive has it.
       if (archived) await stopIfWaiting(target, decodeURIComponent(changed[1]!));
     }
+  }
+  if (method === "GET" && response.ok && /^\/?api\/session\/[^/]+\/message(?:\/[^/?]+)?(?:\?|$)/.test(path)) {
+    const body = Buffer.from(JSON.stringify(compactionPage(await response.json())));
+    delete out["content-length"];
+    yield { head: { status: response.status, headers: out } };
+    yield { body };
+    return;
   }
   yield { head: { status: response.status, headers: out } };
   if (!response.body) return;

@@ -34,7 +34,7 @@ async function fakeBridge() {
     request.on("end", () => {
       asked.push({ method: request.method, url: request.url, auth: request.headers.authorization, directory: request.headers["x-opencode-directory"], body });
       response.writeHead(200, { "content-type": "application/json", "set-cookie": "no=thanks" });
-      response.end(JSON.stringify({ url: request.url }));
+      response.end(JSON.stringify(request.url === "/api/session/ses_1/message" ? { data: [{ type: "compaction", status: "running", id: "cmp_1" }] } : { url: request.url }));
     });
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -66,6 +66,13 @@ test("the coding agents' bridge gets what a phone asks, with its password; where
 
   // An agent's update too: the phone is yours.
   assert.equal((await ask(handle, "POST", "kuvo/agents/api/kuvo/updates/claude-code", { body: "{}" })).status, 200);
+
+  const engineHandle = link.engineHandler(() => ({ port: bridge.port, password: "engine", version: "2.0.32" }), { name: "my-server" }, () => record);
+  for (const route of ["api/session/ses_1/message", "kuvo/agents/api/session/ses_1/message"]) {
+    const messages = await ask(engineHandle, "GET", route);
+    assert.equal(messages.json.data[0].title, "Compacting conversation…");
+    assert.equal(messages.json.data[0].workingTitle, "Summarizing the conversation…");
+  }
 
   const before = bridge.asked.length;
   for (const [method, p] of [["PUT", "kuvo/agents/api/kuvo/engine"], ["PUT", "kuvo/agents/api/kuvo/%65ngine"], ["POST", "kuvo/agents/api/kuvo/groups/grp_x/release"],

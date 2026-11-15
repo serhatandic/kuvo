@@ -22,6 +22,7 @@ extension BoxGate {
         "computers.facts", // #735: what each computer answers, which of its sessions are at work
         "computers.manage", // #735: renaming, removing and reaching one again from any box, as its `actions` say
         "computers.reach", // #742: where each of your computers is reached, for a client that connects to each directly
+        "computers.words",
         "devices.allow", // #742: a computer whose app was removed adds none until you allow it again
         "devices.pair", // #742: the desktop app pairs through the box on its own computer
         "file.text", // #708, the side panel and the sandbox's row work nothing out from what the box lists
@@ -38,10 +39,12 @@ extension BoxGate {
         "git.pull-request",
         "git.status",
         "groups.mentions", // #736: a group chat's "&" lists what the box offers there (its bots, then guests); no client filters
+        "groups.task-title",
         "limits.bar", // #668: the ring one bar shows, and a window that started over, as the box says
         "limits.rings", // #711
         "limits.titles", // #668: every account and window named by the box
         "messages.commands", // #668: a command's message read as typed, by its id
+        "messages.compaction-words",
         "messages.send", // #668 item 3, a message sent as fields; a box with it has what came before it too (`sessions.list`, `typed`, plan limits' `rows`, `kuvo/updates`, Cursor's limits, `kuvo/sessions/read`)
         "models.offered",
         "models.offered.folder",

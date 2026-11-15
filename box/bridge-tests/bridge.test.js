@@ -1593,6 +1593,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "computers.manage": ["DELETE", "kuvo/computers/none"],
     // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
     "computers.reach": ["GET", "kuvo/computers"],
+    "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
     // (A computer let add Kuvo Code's app to your devices again, on the main computer: a GET is the wrong method.)
@@ -1639,6 +1640,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "groups.mentions": ["GET", "kuvo/groups/grp_none/mentions"],
     // (Its turns for chats on other computers, which kuvo/groups/joinable shows from theirs.)
     "groups.seats": ["GET", "kuvo/groups/joinable"],
+    "groups.task-title": ["GET", "kuvo/groups"],
     handoff: ["POST", "kuvo/agents/api/kuvo/handoff/ses_none"],
     integrations: ["GET", "kuvo/integrations"],
     keys: ["GET", "kuvo/keys"],
@@ -1657,6 +1659,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (And kuvo/sessions/<id>/send, which the same box answers.)
     // (A command's message read as typed, by its id.)
     "messages.commands": ["POST", "kuvo/messages/parts"],
+    "messages.compaction-words": ["GET", "api/session/none/message"],
     "messages.send": ["POST", "kuvo/messages/parts"],
     "models.offered": ["GET", "kuvo/models/offered"],
     // (A project's own, its folder asked; each model's side, efforts and aliases; on the same route.)
