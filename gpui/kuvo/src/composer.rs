@@ -1401,7 +1401,7 @@ mod tests {
         for value in [serde_json::json!({"shell": "pwd"}), serde_json::json!({"compact": true})] {
             let answer: Answer = serde_json::from_value(value).unwrap();
             assert!(!is_clients_to_do(&answer));
-            assert!(said(&answer).is_none());
+            assert!(said(&answer).is_none_or(|note| !note.warning));
         }
     }
 

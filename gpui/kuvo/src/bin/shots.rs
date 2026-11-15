@@ -949,7 +949,7 @@ fn main() -> anyhow::Result<()> {
             }
             let client = BoxClient::new(stand_in);
             if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
-                let text = if screen.slug == "composer-shell" { "! cargo test" } else { "/compact" };
+                let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
                 client.send_draft("ses_signup", &kuvo_box::Draft::new("shot-command", text), None)?;
             }
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
