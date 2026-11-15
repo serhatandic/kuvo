@@ -43948,7 +43948,7 @@ import fs140 from "node:fs";
 import path148 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fe3a5942cdf8";
+var BRIDGE_VERSION = "a1a140c5c016";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -50316,6 +50316,7 @@ function rankFiles(query, files, limit) {
     return at === null ? [] : [{ file, at, size: length(file.path) }];
   }).sort((a, b) => a.at - b.at || a.file.folder - b.file.folder || a.size - b.size || (a.file.path < b.file.path ? -1 : a.file.path > b.file.path ? 1 : 0)).slice(0, limit).map((each) => each.file);
 }
+var queryOf = (route) => new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
 var folded3 = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 function rankAgents(query, agents, limit) {
   const typed = folded3(query);
@@ -50389,7 +50390,7 @@ async function* mentionsRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = queryOf(request.path);
   const kind = query.get("for");
   if (kind !== "files" && kind !== "agents")
     return yield* json(400, { message: `Say what's suggested: for=files ("@") or for=agents ("&").` });
@@ -50443,7 +50444,7 @@ async function* groupMentionsRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = queryOf(request.path);
   const typed = query.get("q") ?? "";
   const asked = Number.parseInt(query.get("limit") ?? "", 10);
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
@@ -53062,7 +53063,7 @@ var ONLY_CLIENTS = "Only Kuvo Code on your Mac or iPhone can do this: agents cha
 var NOT_PROVED = "This machine couldn't tell the request was from the Mac that set it up (its proof was missing or too old; check both computers' clocks): try again.";
 var notClient = ({ request }) => request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS;
 var fromClient = ({ request, phone }) => Boolean(phone?.key || request.fromApp || request.fromMac && provedRequest(request));
-var queryOf = (request) => new URLSearchParams(request.path.split("?")[1] ?? "");
+var queryOf2 = (request) => new URLSearchParams(request.path.split("?")[1] ?? "");
 function says2(q, item, names) {
   const text = [item.title, item.number !== undefined ? `#${item.number}` : "", item.source?.ref ?? "", item.source?.name ?? "", ...item.labels.map((each) => names.get(each) ?? ""), item.body ?? "", ...(item.notes ?? []).map((each) => each.text), item.lastNote?.text ?? ""].join(`
 `).toLowerCase();
@@ -53187,7 +53188,7 @@ async function* workQueueRoute(context, match) {
   if (part === "refs") {
     if (method !== "GET" && method !== "POST")
       return yield* json(405, {});
-    const listed = method === "POST" ? Array.isArray(given.refs) ? given.refs : [] : (queryOf(request).get("refs") ?? "").split(",");
+    const listed = method === "POST" ? Array.isArray(given.refs) ? given.refs : [] : (queryOf2(request).get("refs") ?? "").split(",");
     const wanted = listed.filter((each) => typeof each === "string").map((each) => each.trim()).filter((each) => each && each.length <= 300).slice(0, 200);
     const items = allItems();
     const facts = await factsOf(targets, signal ?? undefined);
@@ -53257,13 +53258,13 @@ async function* workQueueRoute(context, match) {
   if (part === "events" || part === undefined) {
     if (method !== "GET")
       return yield* json(405, {});
-    const owner = queryOf(request).get("owner") ?? "";
+    const owner = queryOf2(request).get("owner") ?? "";
     if (!OWNER2.test(owner) && owner !== ALL)
       return yield* json(400, { message: "Say whose queue (owner): a conversation's address, a group chat's id, or all." });
-    const glance = queryOf(request).get("glance") === "1";
-    const counts = queryOf(request).get("counts") === "1";
-    const q = (queryOf(request).get("q") ?? "").trim().slice(0, 200);
-    const filters = filtersOf(queryOf(request));
+    const glance = queryOf2(request).get("glance") === "1";
+    const counts = queryOf2(request).get("counts") === "1";
+    const q = (queryOf2(request).get("q") ?? "").trim().slice(0, 200);
+    const filters = filtersOf(queryOf2(request));
     if (part === undefined)
       return yield* json(200, withCounts(await viewOf2(owner, targets, undefined, signal ?? undefined, undefined, glance ? null : GITHUB_WAIT, q, filters), counts));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };

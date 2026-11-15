@@ -76,6 +76,9 @@ export function rankFiles(query: string, files: MentionableFile[], limit: number
     .map(each => each.file);
 }
 
+/** What's asked after a route's first "?": a "?" typed in what's asked is part of it. */
+const queryOf = (route: string) => new URLSearchParams(route.includes("?") ? route.slice(route.indexOf("?") + 1) : "");
+
 /** A name as "&" matches it: case and accents aside. */
 const folded = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
@@ -156,7 +159,7 @@ export function filesFor(roots: string[], dated: boolean, signal?: AbortSignal):
 export async function* mentionsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = queryOf(request.path);
   const kind = query.get("for");
   if (kind !== "files" && kind !== "agents") return yield* json(400, { message: "Say what's suggested: for=files (\"@\") or for=agents (\"&\")." });
   const typed = query.get("q") ?? "";
@@ -214,7 +217,7 @@ export function rankGroupMentions(query: string, members: readonly GroupMember[]
 export async function* groupMentionsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const query = queryOf(request.path);
   const typed = query.get("q") ?? "";
   const asked = Number.parseInt(query.get("limit") ?? "", 10);
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;

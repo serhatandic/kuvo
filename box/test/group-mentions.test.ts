@@ -73,6 +73,8 @@ test("what's typed ranks each part, the chat's bots still first", async () => {
   expect((await offered("q=ma")).map((each: any) => each.title)).toEqual(["Max", "Mapping work", "Max’s notes"])
   expect((await offered("q=max%E2%80%99s")).map((each: any) => each.title)).toEqual(["Max’s notes"])
   expect(await offered("q=zed")).toEqual([])
+  // A "?" typed in the name is part of it, as a client sends it unescaped.
+  expect(await offered("q=?ma")).toEqual([])
   // At most what's asked, in all.
   expect((await offered("q=&limit=3")).map((each: any) => each.title)).toEqual(["Mira", "Max", "Otto"])
 })
