@@ -165,19 +165,27 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
-    Screen { slug: "settings-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
-    Screen { slug: "settings-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
-    Screen { slug: "settings-usage", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
-    Screen { slug: "settings-models", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
-    Screen { slug: "settings-permissions", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
-    // On, on a machine whose commands can still reach your login's services: the box's words and page.
-    Screen { slug: "settings-permissions-services", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
-    Screen { slug: "settings-notifications", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(notifications) },
-    Screen { slug: "settings-browser", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(browser) },
-    Screen { slug: "settings-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(settings_search) },
-    Screen { slug: "settings-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(elsewhere) },
-    Screen { slug: "settings-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
-    Screen { slug: "settings-narrow", width: 760., height: 760., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(browser) },
+    Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
+    Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
+    Screen { slug: "settings-a-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
+    Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "settings-a-models", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
+    Screen { slug: "settings-a-permissions", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
+    Screen { slug: "settings-a-permissions-services", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
+    Screen { slug: "settings-a-browser", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(browser) },
+    Screen { slug: "settings-a-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(elsewhere) },
+    Screen { slug: "settings-a-machine", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(machine) },
+    Screen { slug: "settings-a-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(picker) },
+    Screen { slug: "settings-a-away", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(away) },
+    Screen { slug: "settings-a-older", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(older) },
+    Screen { slug: "settings-a-unreached", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(machine) },
+    Screen { slug: "settings-a-search-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(search_yours) },
+    Screen { slug: "settings-a-search-computer", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(search_computer) },
+    Screen { slug: "settings-a-stale", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(stale) },
+    Screen { slug: "settings-a-kinds", width: 1280., height: 1500., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(kinds) },
+    Screen { slug: "settings-a-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "settings-a-narrow", width: 760., height: 760., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(browser) },
     Screen { slug: "sign-in-choose", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_choose) },
     Screen { slug: "sign-in-key", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_key) },
     Screen { slug: "sign-in-form", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sign_in_form) },
@@ -482,6 +490,13 @@ fn settings(workspace: &mut Workspace, section: &str, window: &mut Window, cx: &
     workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned()).expect("Settings")
 }
 
+fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/appearance", window, cx);
+}
+/// One of your own sections that isn't in the desktop app yet.
+fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/shortcuts", window, cx);
+}
 fn general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "General", window, cx);
 }
@@ -494,24 +509,56 @@ fn models(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
 fn permissions(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Permissions", window, cx);
 }
-fn notifications(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    settings(w, "Notifications", window, cx);
-}
 fn browser(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Browser", window, cx);
 }
-/// A section that isn't in this app yet.
+/// A computer's section that isn't in the desktop app yet.
 fn elsewhere(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Git", window, cx);
 }
-/// "sign" typed in Settings' search.
-fn settings_search(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+/// A machine's settings, the window still on this Mac.
+fn machine(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "box/key_devbox/permissions", window, cx);
+}
+/// The computer picker, open.
+fn picker(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "box/key_devbox/permissions", window, cx);
+    view.update(cx, |view, cx| view.open_picker(window, cx));
+}
+/// A computer that's away, and one on an older Kuvo.
+fn away(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "box/key_studio/general", window, cx);
+}
+fn older(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "box/key_old/general", window, cx);
+}
+/// "notice" typed in your settings' search: what it finds on the computer's side is listed too.
+fn search_yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "yours/appearance", window, cx);
+    let field = view.read(cx).search_field().clone();
+    field.update(cx, |field, cx| field.set_text("the", cx));
+    window.focus(&field.focus_handle(cx), cx);
+}
+/// "sign" typed in a computer's search.
+fn search_computer(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "Browser", window, cx);
     let field = view.read(cx).search_field().clone();
     field.update(cx, |field, cx| field.set_text("sign", cx));
     window.focus(&field.focus_handle(cx), cx);
 }
-
+/// A switch flipped after another app changed it: the box turns it down, and says what's there.
+fn stale(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "Browser", window, cx);
+    let row = w.client().settings_page("browser").ok().and_then(|page| page.row("tidies").cloned());
+    let _ = w.client().set_browser_settings(serde_json::json!({ "tidiesAgentTabs": false }));
+    if let Some(row) = row {
+        view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { section: "browser".into(), row: Box::new(row), value: serde_json::json!(false), asked: false }, cx));
+    }
+}
+/// A row of every kind a box may describe.
+fn kinds(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "samples", window, cx);
+}
 /// Signing in to `account`, its sheet open.
 fn signing_in(w: &mut Workspace, side: Side, account: &str, name: &str, window: &mut Window, cx: &mut Context<Workspace>) -> gpui::Entity<SignIn> {
     let view = settings(w, "Accounts", window, cx);
@@ -718,7 +765,14 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computers-many" {
                 stand_in.more_computers(40);
             }
-            if screen.slug == "settings-permissions-services" {
+            if screen.slug == "settings-a-kinds" {
+                let (section, page) = kuvo::stand_in::settings::every_kind();
+                stand_in.add_settings_section(section, page);
+            }
+            if screen.slug == "settings-a-unreached" {
+                stand_in.forget_peers();
+            }
+            if screen.slug == "settings-a-permissions-services" {
                 stand_in.set_sandbox(serde_json::json!({ "on": true, "needsYou": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox" }));
             }
             if screen.slug == "bot-waiting" {

@@ -209,6 +209,12 @@ impl Workspace {
                         this.read_computers(cx);
                     }
                 }
+                Go::AddMachine => {
+                    if let Some(view) = this.area_view(Area::Computers).cloned() {
+                        view.update(cx, |view, cx| view.select(Some("add".into()), cx));
+                    }
+                    this.show_area(Area::Computers, window, cx);
+                }
             })
         }));
         // The Bots list as it's read again (a bot's conversation may be another session by then).
@@ -1279,8 +1285,11 @@ impl Workspace {
         let computers = areas::reading(read, &self.computers);
         if self.computers != computers {
             self.computers = computers.clone();
-            if let Some(view) = self.area_view(Area::Computers).cloned() {
-                view.update(cx, |view, cx| view.set_computers(computers, cx));
+            for area in [Area::Computers, Area::Settings] {
+                if let Some(view) = self.area_view(area).cloned() {
+                    let computers = computers.clone();
+                    view.update(cx, |view, cx| view.set_computers(computers, cx));
+                }
             }
             cx.notify();
         }
@@ -1440,7 +1449,7 @@ impl Workspace {
     pub fn title(&self, cx: &App) -> (Option<SharedString>, Option<SharedString>) {
         if self.area != Area::Sessions {
             let Some(view) = self.area_view(self.area) else { return (None, None) };
-            let title = view.read(cx).title();
+            let title = view.read(cx).title(cx);
             let area = self.area.name();
             let beside = (title.as_ref() != area).then(|| SharedString::from(area));
             return (Some(title), beside);
@@ -1506,7 +1515,7 @@ impl Render for Workspace {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
                 (None, Some(settings), _) => settings.clone().into_any_element(),
                 (None, None, Some(main)) => main.into_any_element(),
-                (None, None, None) => areas::placeholder(self.area, view.read(cx).title(), cx),
+                (None, None, None) => areas::placeholder(self.area, view.read(cx).title(cx), cx),
             },
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
             _ => landing::render(self, window, cx),
