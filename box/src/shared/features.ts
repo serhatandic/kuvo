@@ -66,6 +66,7 @@ export const FEATURES = [
   "computers.reach",
   "config",
   "config.apply",
+  "devices.pair",
   "engine.restart",
   "engine.start",
   "file",

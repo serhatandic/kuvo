@@ -1593,6 +1593,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "computers.reach": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
+    // (Kuvo Code's desktop app paired as one of your devices, only from the app on this computer: a GET is the wrong method.)
+    "devices.pair": ["GET", "kuvo/devices/pair"],
     "engine.restart": ["GET", "kuvo/engine/restart"],
     "engine.start": ["GET", "kuvo/engine/start"],
     file: ["GET", "kuvo/file"],

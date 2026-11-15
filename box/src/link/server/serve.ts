@@ -69,7 +69,7 @@ export function serveBox(password: string, handle: LinkHandler = engineHandler(r
       const from = request.headers["x-kuvo-from"];
       const fromApp = from === "app";
       const fromMac = from === "mac";
-      for await (const part of handle({ method: request.method ?? "GET", path: sent, headers: request.headers, body: Buffer.concat(chunks), fromApp, fromMac }, {}, abort.signal) as AsyncIterable<AnyPiece>) {
+      for await (const part of handle({ method: request.method ?? "GET", path: sent, headers: request.headers, body: Buffer.concat(chunks), fromApp, fromMac, served: true }, {}, abort.signal) as AsyncIterable<AnyPiece>) {
         if (abort.signal.aborted) break;
         if (part.head && !headed) {
           quiet();

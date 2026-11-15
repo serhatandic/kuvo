@@ -94,10 +94,31 @@ export function pairPhone(link: LinkState, phone: Phone): void {
   link.phones = [...(link.phones ?? []).filter(each => each.key !== phone.key), phone];
 }
 
+/** What `kuvo/devices/pair` came to here: the pairing the device has now, or that it was removed. */
+export type DevicePaired = { pairing: string } | { removed: true };
+
+// Kuvo Code's desktop app paired here with no token (`kuvo/devices/pair`: asked by the app beside
+// this box, or vouched for by a member's box, PROTOCOL.md "Paired phones"), in place, under
+// link.json's lock: one let in already keeps the pairing it has (asked again, nothing new is
+// made); one removed, by any pairing, stays out, as only a pairing by token brings a removed
+// device back; else it's in, with a pairing of its own. Never touches a pairing link that waits
+// (`pairing`, `appPairing`).
+export function pairDevice(link: LinkState, device: { key: string; name: string }, now = Date.now()): DevicePaired {
+  const known = (link.phones ?? []).find(phone => phone.key === device.key);
+  if (known) return { pairing: known.pairing ?? "" };
+  if ((link.removed ?? []).some(each => each.key === device.key)) return { removed: true };
+  const pairing = newPairing();
+  pairPhone(link, { key: device.key, name: device.name, added: Math.floor(now / 1000), from: "pair", pairing, kind: "desktop" });
+  return { pairing };
+}
+
 // Phones this Mac removes (its own box, from its app): Settings › Phone, or the removals a
-// machine's phones document brought. Only phones; false, changing nothing, for anything else.
+// machine's phones document brought; and those Kuvo Code on any computer removes on the box beside
+// it. Only phones; false, changing nothing, for anything else.
 export function removeAsMac(link: LinkState, entries: unknown): boolean {
-  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every(entry => fits(entry, []))) return false;
+  // (On a machine, as Kuvo Code beside its box removes: never one of the Macs that set it up.)
+  const macs = macsOf(link);
+  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT || !entries.every(entry => fits(entry, macs))) return false;
   for (const entry of entries) takeOff(link, entry.key, entry.pairing);
   return true;
 }

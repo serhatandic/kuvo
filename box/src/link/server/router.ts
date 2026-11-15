@@ -28,7 +28,7 @@ import { integrationsRoute } from "../areas/integrations";
 import { namedRoute } from "../areas/named";
 import { noticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
-import { pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
+import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
@@ -134,6 +134,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/phones", answer: phonesRoute },
   { when: route => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { when: route => route === "kuvo/phones/pair", answer: pairingRoute },
+  { when: route => route === "kuvo/devices/pair", answer: devicesPairRoute },
   { when: route => route === "kuvo/link" || route.startsWith("kuvo/link/"), answer: linkRoute },
   { when: route => route === "kuvo/attention/notice" || route === "kuvo/attention/answered", answer: appNoticeRoute },
   { when: route => route === "kuvo/attention", answer: attentionRoute },

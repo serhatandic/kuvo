@@ -1,5 +1,6 @@
 // The phones paired with this box (PROTOCOL.md, "Paired phones"): listed, removed, and a link to
-// pair another.
+// pair another; and Kuvo Code's desktop app on this computer paired as one of your devices
+// (`kuvo/devices/pair`, peers/devices.ts).
 
 import { parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -9,6 +10,8 @@ import { noteDocsChanged } from "../documents/changed";
 import { IS_MAC } from "../home";
 import { newPairingToken, pairingLink, removeAsMac, removePhones } from "../phones";
 import { mainElsewhere, pairElsewhere } from "../setup/main-only";
+import { pairDeviceFromHere } from "../peers/devices";
+import { fromLocalApp } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { macLink, readLink, updateLink } from "../state";
 import type { LinkState, Pairing } from "../state";
@@ -26,14 +29,16 @@ export async function* phonesRoute(context: RouteContext): AsyncGenerator<Answer
   });
 }
 
-// Removing some, by a phone paired here, or this Mac's app.
+// Removing some, by a device paired here (a phone, or the desktop app over the link), or Kuvo Code's
+// app on this computer, beside any box.
 export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, phone, phonesChanged, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const given = parsed(request.body) as Body<"phones">;
   // This Mac's app removes as the Mac does (Settings › Phone, or a removal a machine's
-  // document brought).
-  const asMac = IS_MAC && request.fromApp;
+  // document brought), and so does Kuvo Code beside a machine's box, over its own server: any
+  // device, never one of the Macs that set the machine up.
+  const asMac = (IS_MAC && request.fromApp === true) || fromLocalApp(request);
   // On this Mac, one before any phone's paired here (no link file yet) is kept all the same,
   // so the phone stays out once it's taken.
   const changed = updateLink(kept => {
@@ -75,4 +80,17 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
   macLink.wake?.();
   // (A box with a relay to pair through has its keys and name too.)
   return yield* json(200, { link: pairingLink({ ...link, pairing: link[slot] } as LinkState & { relay: string; secret: string; key: string; name: string; pairing: Pairing }), ends: Math.floor(link[slot]!.expires / 1000) } satisfies Infer<typeof PAIRING>);
+}
+
+// `POST kuvo/devices/pair {key, name, kind: "desktop"}`: Kuvo Code's desktop app on this computer
+// paired as one of your devices, with no link to paste: here where this box pairs phones, else by
+// the setup's main computer, which this box vouches to (peers/devices.ts). Only for the app beside
+// this box, over the box's own server (`fromLocalApp`): never a client over the relay, nor `box
+// route`, which an agent's command here could run. It uses no pairing token, and ends none.
+export async function* devicesPairRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  if (!fromLocalApp(request)) return yield* json(403, { message: "Only Kuvo Code on this computer adds itself to your devices." });
+  const done = await pairDeviceFromHere(parsed(request.body), signal);
+  return yield* json(done.status, done.value);
 }
