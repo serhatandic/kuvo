@@ -1642,7 +1642,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "limits.resets": ["POST", "kuvo/agents/api/kuvo/limits/reset"],
     "limits.rings": ["GET", "kuvo/agents/api/kuvo/limits"],
     // (Each row's, account's and window's name, in the limits' answer.)
-    "names.titles": ["GET", "kuvo/computers"],
     "limits.titles": ["GET", "kuvo/agents/api/kuvo/limits"],
     "mcp.catalog": ["GET", "kuvo/mcp/catalog"],
     // (And kuvo/sessions/<id>/send, which the same box answers.)
@@ -1662,6 +1661,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (The check before a move holds anything, which a box asks of another in its mail.)
     "moves.check": ["GET", "kuvo/moves/places?kind=bot&id=bot_none"],
     named: ["GET", "kuvo/named"],
+    "names.titles": ["GET", "kuvo/computers"],
     personalities: ["GET", "kuvo/personalities"],
     "personalities.events": ["POST", "kuvo/personalities/events"],
     phones: ["GET", "kuvo/phones"],
