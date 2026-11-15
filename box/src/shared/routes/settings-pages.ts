@@ -39,7 +39,7 @@ const ROW_FIELDS = {
   "value?": any,
   /** Absent for a row with nothing to change (a `status`). */
   "can?": SETTING_CAN,
-  /** A hash of the row as the box gave it, sent back as `was` with a change to it. */
+  /** A hash of the row, including action confirmation words, sent back as `was` with a change to it. */
   revision: string,
   "confirm?": SETTING_CONFIRM,
   /** A change under way there, in words ("Restarting…"), until the page's events say it's done. */

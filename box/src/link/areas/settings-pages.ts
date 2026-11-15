@@ -18,7 +18,7 @@ import { sessionActionRoute, SESSION_ACTION_ROUTE, deletesRoute } from "./sessio
 import { artifactsRoute } from "./artifacts";
 import { homeFolder } from "../home";
 import { workAsksRoute, WORK_ASKS_ROUTE } from "./work";
-import { PROJECTS_FILE } from "./projects";
+import { PROJECTS_FILE, readProjects } from "./projects";
 import { WORK_SETTINGS_FILE } from "../work/settings";
 import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
 import { worktreesRoute } from "./worktrees";
@@ -76,12 +76,12 @@ const SECTIONS: SettingsSection[] = [
 // MARK: Rows
 
 /** A row's revision: a hash of what it is and what governs whether it can be changed (its value,
- * `can`, its choices' and actions' ids, a list's items' revisions), never its words, so a computer
+ * `can`, its choices' and actions' ids, a list's items' revisions), never its display words (confirmation words do count), so a computer
  * renamed or a line reworded changes none. A `secret`'s, of whether one is set (it has no value). */
 export function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
   // (Whether it can be, not why not: a why names the computer.)
   const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
-  const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens };
+  const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
     confirmBelow: row.confirmBelow?.value, min: row.min, max: row.max,
     kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: can(row.can), set: row.set,
@@ -397,7 +397,7 @@ async function browserAct(context: RouteContext, at: SettingItem, action: Settin
 // MARK: Git
 
 const GIT_ROWS = [
-  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session's own branch in a worktree starts.", placeholder: "None" },
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
   { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
   { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
 ] as const;
@@ -475,11 +475,13 @@ export function worktreeRemovalWords(tree: { uncommitted?: boolean; ahead?: numb
   return note + (tree.ahead && tree.ahead > 0 ? ` ${tree.branch} keeps its ${tree.ahead} ${tree.ahead === 1 ? "commit" : "commits"} not merged yet.` : "") + " Its sessions stay, without a folder to run in.";
 }
 
-async function worktreesChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+export async function worktreesChange(context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
   const typed = String(value).trim();
   if (at.id === "projects-folder") return staleOrRefusal(await asked(context, workAnswer, "PATCH", "kuvo/work/settings", { projectsFolder: typed || null, was: { projectsFolder: at.value || null } }));
+  if (at.id !== "worktrees-folder") return { status: 400, message: "That isn't something to change." };
   const config = await asked(context, settingsRoute, "GET", "kuvo/config");
   if (config.status !== 200) return refusal(config);
+  if ((config.value.worktree?.directory ?? "") !== at.value) return STALE;
   const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
   if (folder && !path.isAbsolute(folder)) return { status: 400, message: "Give a full path to the folder." };
   return staleOrRefusal(await asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
@@ -533,15 +535,16 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
   const read = await asked(context, sessionsAnswer, "GET", "kuvo/sessions/list");
   if (read.status !== 200) return unreadPage("archived", "Archived Sessions", read);
   if (read.value.pending?.length) return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
-  const archived = Object.entries(read.value.sessions as Record<string, any>).filter(([, facts]) => facts.archived && !facts.parent && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
+  const archived = Object.entries(read.value.sessions as Record<string, any>).filter(([, facts]) => facts.archived && ["project", "chat", "bot"].includes(facts.kind) && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
   const groups = new Map<string, SettingItem[]>();
+  const chats = new Set<string>();
   let held: string | undefined;
-  const states: { id: string; was: { updated: number; archived: boolean } }[] = [];
+  const states: { id: string; was: { updated: number; archived: boolean; confirm: unknown } }[] = [];
   for (const [id, facts] of archived) {
     const menu = await asked(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
     if (menu.status !== 200) return unreadPage("archived", "Archived Sessions", menu);
     held ??= menu.value.held;
-    const was = { updated: facts.updated, archived: true };
+    const was = { updated: facts.updated, archived: true, confirm: menu.value.actions.find((each: any) => each.id === "delete")?.confirm };
     states.push({ id, was });
     const actions: SettingAction[] = menu.value.actions.map((each: any) => ({
       id: each.id, title: each.label, ...(each.destructive ? { style: "destructive" } : {}),
@@ -549,15 +552,18 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
       ...(menu.value.held ? { can: { why: menu.value.held } } : {}),
     }));
     const project = facts.project ?? facts.directory;
+    if (facts.kind === "chat") chats.add(project);
     const rows = groups.get(project) ?? [];
     rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
     groups.set(project, rows);
   }
   const all = states.length ? await asked(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map(each => each.id) }) : null;
   if (all && all.status !== 200) return unreadPage("archived", "Archived Sessions", all);
+  const projects = readProjects();
+  const projectTitle = (project: string) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find(each => each.directory === project)?.name ?? path.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
     { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
-    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: read.value.projects[project]?.name ?? path.basename(project), rows: [row({ id: `archived-${project}`, title: read.value.projects[project]?.name ?? path.basename(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
+    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
   ], ...(states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" as const }] }) };
 }
 

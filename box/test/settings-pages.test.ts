@@ -503,7 +503,7 @@ test("Git wording and multi-line hints match its Swift sections", async () => {
     ["pull-requests", "Pull Requests", "Added when Create Pull Request writes the title and description."],
   ])
   expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.title, r.line, r.placeholder, r.lines]))).toEqual([
-    ["Branch prefix", "How a session's own branch in a worktree starts.", "None", undefined],
+    ["Branch prefix", "How a session’s own branch in a worktree starts.", "None", undefined],
     ["Instructions", undefined, "For example: Start with the area changed, like “ui: …”, and never mention tickets.", { min: 3, max: 8 }],
     ["Instructions", undefined, "For example: Add a Testing section, and link the issue if the branch names one.", { min: 3, max: 8 }],
   ])
@@ -626,4 +626,17 @@ test("Worktrees events follow old record and removal routes, with optional stale
     expect((await ask(live, "POST", "kuvo/worktrees/remove", { path: root })).status).toBe(200)
     expect(rowOf(await events.next(), "worktrees").items).toEqual([])
   } finally { events.stop(); fake.stop(true) }
+})
+
+test("Worktree folder changes refuse a config edit after the page read", async () => {
+  const original = rowOf(await page("worktrees"), "worktrees-folder")
+  write(CONFIG_FILE, { worktree: { directory: outside } })
+  const before = kept(CONFIG_FILE)
+  const { worktreesChange } = await import("../src/link/areas/settings-pages")
+  const context = { request: { fromApp: true }, info: {}, readEngine: noEngine, bridge: () => null,
+    json: (status: number, value: unknown) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+  } as any
+  expect(await worktreesChange(context, original, "")).toMatchObject({ status: 409, stale: true })
+  expect(await worktreesChange(context, { ...original, id: "unexpected" }, "")).toMatchObject({ status: 400 })
+  expect(kept(CONFIG_FILE)).toBe(before)
 })

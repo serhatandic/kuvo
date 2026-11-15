@@ -6714,7 +6714,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.needsYou` | `needsYou`, each project's `asking` and `working`, and each session's `bot`, in `kuvo/sessions/list` ("Session lists", #711) |
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
-| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser and Git ("A box's settings", #727) |
+| `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser, Git, Worktrees, Storage and Archived Sessions ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.welcomed` | `welcomed` in `kuvo/setup`, and `POST kuvo/setup/welcomed`: whether you've had the first run with this box ("Your setup", #733) |
@@ -8086,7 +8086,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   way there. A box newer than a client may send a kind the client doesn't know: it draws the row's
   title and line, and says a newer Kuvo Code changes it. `revision` is a hash of what the row is
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
-  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why), never its words: the same value set
+  list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why; action confirmations, so a growing destructive warning makes a reading stale), never its display words: the same value set
   again, a computer renamed or a line reworded leaves it.
 - `PATCH kuvo/settings/<section> {row, value, was}`: one row changed, `was` its `revision` as read.
   The answer is the page again (`200`), or a refusal in the box's words: `400` for a value that
@@ -8182,7 +8182,8 @@ The sections now:
   `POST kuvo/sessions/deletes`; confirmed deletion calls each existing session DELETE route.
   No session rules are added here. A list may offer `search: {placeholder, empty}` for client-side
   filtering by list title and item title and line (`{query}` in empty is replaced with the query). A missing source gives no rows and a warning.
-  Session archive/pin and DELETE routes accept optional `was: {updated, archived}` compared
+  Session archive/pin routes accept optional `was: {updated, archived}`; DELETE additionally
+  requires the current Delete `confirm: {title, message, label}` in `was`. These are compared
   inside the existing session turn before mutation. Mismatch answers `409 {message:
   "It changed since you read it."}`; absent `was` preserves old calls. Page events poll every
   second, covering session lists, live session actions, moves, worktree confirmations and time zone.

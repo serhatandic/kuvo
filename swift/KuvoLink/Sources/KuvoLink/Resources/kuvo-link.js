@@ -45423,7 +45423,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d347e09b6a4b";
+var BRIDGE_VERSION = "6ae165684f14";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -48690,9 +48690,9 @@ class Moving extends Error {
 
 class Stale extends Error {
 }
-var sessionActionState = (session) => ({ updated: session.time.updated, archived: isArchived3(session) });
+var sessionActionState = (session, confirm) => ({ updated: session.time.updated, archived: isArchived3(session), ...confirm === undefined ? {} : { confirm } });
 var checkWas = (given, session) => {
-  if ("was" in given && (!session?.id || sortedJSON(given.was) !== sortedJSON(sessionActionState(session))))
+  if ("was" in given && (!session?.id || sortedJSON(isObject(given.was) ? { updated: given.was.updated, archived: given.was.archived } : given.was) !== sortedJSON(sessionActionState(session))))
     throw new Stale;
 };
 function livesElsewhere(session) {
@@ -48817,7 +48817,7 @@ async function* sessionActionRoute(context, match) {
     if (record?.port && !context.bridge())
       return yield* json(503, { message: "The coding agents on this computer are starting. Try again in a moment." });
     if (action === null)
-      return yield* json(200, { session: id });
+      return yield* "was" in given ? json(409, { message: CHANGED_SINCE }) : json(200, { session: id });
     return yield* json(404, { message: "That conversation isn't here." });
   }
   const { target } = place;
@@ -48842,8 +48842,19 @@ async function* sessionActionRoute(context, match) {
         if (frozen().has(id))
           throw new Moving;
         if ("was" in given) {
-          const now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
-          checkWas(given, now);
+          let now;
+          try {
+            now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+          } catch (error) {
+            if (error.status === 404)
+              throw new Stale;
+            throw error;
+          }
+          if (!now?.id)
+            throw new Stale;
+          const confirm = await deleteConfirm([{ id, directory: now.location?.directory ?? now.directory ?? "", title: now.title }], context, signal);
+          if (sortedJSON(given.was) !== sortedJSON(sessionActionState(now, confirm)))
+            throw new Stale;
         }
         return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
       }, signal);
@@ -48866,8 +48877,6 @@ async function* sessionActionRoute(context, match) {
         return call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal);
       }, signal);
     } catch (error) {
-      if (error instanceof Stale)
-        return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving)
         return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be renamed: ${String(error?.message ?? error)}` });
@@ -56852,7 +56861,7 @@ var SECTIONS = [
 ];
 function revised(row) {
   const can = (value) => value === undefined ? undefined : value === true;
-  const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens };
+  const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
   const governs = {
     confirmBelow: row.confirmBelow?.value,
     min: row.min,
@@ -57149,7 +57158,7 @@ async function browserAct(context, at, action) {
   return null;
 }
 var GIT_ROWS = [
-  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session's own branch in a worktree starts.", placeholder: "None" },
+  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
   { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
   { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." }
 ];
@@ -57244,9 +57253,13 @@ async function worktreesChange(context, at, value) {
   const typed = String(value).trim();
   if (at.id === "projects-folder")
     return staleOrRefusal(await asked8(context, workAnswer, "PATCH", "kuvo/work/settings", { projectsFolder: typed || null, was: { projectsFolder: at.value || null } }));
+  if (at.id !== "worktrees-folder")
+    return { status: 400, message: "That isn't something to change." };
   const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
   if (config.status !== 200)
     return refusal4(config);
+  if ((config.value.worktree?.directory ?? "") !== at.value)
+    return STALE;
   const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
   if (folder && !path182.isAbsolute(folder))
     return { status: 400, message: "Give a full path to the folder." };
@@ -57309,8 +57322,9 @@ async function archivedPage(context) {
     return unreadPage("archived", "Archived Sessions", read);
   if (read.value.pending?.length)
     return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
-  const archived = Object.entries(read.value.sessions).filter(([, facts]) => facts.archived && !facts.parent && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
+  const archived = Object.entries(read.value.sessions).filter(([, facts]) => facts.archived && ["project", "chat", "bot"].includes(facts.kind) && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
   const groups = new Map;
+  const chats = new Set;
   let held;
   const states = [];
   for (const [id, facts] of archived) {
@@ -57318,7 +57332,7 @@ async function archivedPage(context) {
     if (menu.status !== 200)
       return unreadPage("archived", "Archived Sessions", menu);
     held ??= menu.value.held;
-    const was = { updated: facts.updated, archived: true };
+    const was = { updated: facts.updated, archived: true, confirm: menu.value.actions.find((each) => each.id === "delete")?.confirm };
     states.push({ id, was });
     const actions = menu.value.actions.map((each) => ({
       id: each.id,
@@ -57328,6 +57342,8 @@ async function archivedPage(context) {
       ...menu.value.held ? { can: { why: menu.value.held } } : {}
     }));
     const project = facts.project ?? facts.directory;
+    if (facts.kind === "chat")
+      chats.add(project);
     const rows = groups.get(project) ?? [];
     rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
     groups.set(project, rows);
@@ -57335,9 +57351,11 @@ async function archivedPage(context) {
   const all = states.length ? await asked8(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map((each) => each.id) }) : null;
   if (all && all.status !== 200)
     return unreadPage("archived", "Archived Sessions", all);
+  const projects = readProjects();
+  const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path182.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
     { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Right-click a session in the sidebar and choose Archive to put it away." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
-    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: read.value.projects[project]?.name ?? path182.basename(project), rows: [row({ id: `archived-${project}`, title: read.value.projects[project]?.name ?? path182.basename(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
+    ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
   ], ...states.length ? {} : { notes: [{ words: "None yet. Right-click a session in the sidebar and choose Archive to put it away.", tone: "quiet" }] } };
 }
 async function archivedAct(context, at, action) {

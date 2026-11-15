@@ -20,6 +20,7 @@ const wakes = join(kuvo, "wakes")
 type Session = { id: string; title?: string; location: { directory: string }; time: { created: number; updated: number }; metadata?: Record<string, any>; parentID?: string }
 
 /** A place keeping sessions as the engine does: what it deleted, and what it was asked to interrupt. */
+const vanishAfterRead = new Set<string>()
 function place(name: string) {
   const sessions = new Map<string, Session>()
   const deleted: string[] = []
@@ -46,7 +47,9 @@ function place(name: string) {
         if (body.metadata !== undefined) session.metadata = body.metadata
         session.time.updated += 1
       }
-      return Response.json({ data: session })
+      const response = Response.json({ data: session })
+      if (request.method === "GET" && vanishAfterRead.delete(session.id)) sessions.delete(session.id)
+      return response
     },
   })
   return { server, sessions, deleted, interrupted, asking }
@@ -72,6 +75,7 @@ let clock = 1000
 const session = (id: string, title: string, directory = root, metadata?: Record<string, any>): Session => ({ id, title, location: { directory }, time: { created: ++clock, updated: clock }, ...(metadata ? { metadata } : {}) })
 
 beforeEach(() => {
+  vanishAfterRead.clear()
   for (const each of [engine, bridge]) { each.sessions.clear(); each.deleted.length = 0; each.interrupted.length = 0; each.asking.clear() }
   rmSync(wakes, { recursive: true, force: true })
   rmSync(join(kuvo, "run", "moves"), { recursive: true, force: true })
@@ -379,4 +383,65 @@ test("Archived Settings warns without rows when its source cannot be read", asyn
   const page = (await ask(noSource, "GET", "kuvo/settings/archived")).json
   expect(page.groups).toEqual([])
   expect(page.notes[0].tone).toBe("warning")
+})
+
+
+test("Archived Settings excludes archived seats and hidden runs", async () => {
+  putAway()
+  engine.sessions.set("ses_seat", session("ses_seat", "Seat", root, { "kuvo.archived": true, kuvo: { seat: "grp_1" } }))
+  engine.sessions.set("ses_run", session("ses_run", "Hidden", root, { "kuvo.archived": true, kuvo: { engineFor: "ses_plan" } }))
+  const page = await archivedPage()
+  expect(archivedRow(page, "session-ses_plan")).toBeDefined()
+  expect(archivedRow(page, "session-ses_seat")).toBeUndefined()
+  expect(archivedRow(page, "session-ses_run")).toBeUndefined()
+})
+
+test("Delete revisions and route states include changing worktree confirmation words", async () => {
+  const tree = join(root, "confirm-change")
+  mkdirSync(tree, { recursive: true })
+  spawnSync("git", ["init", "-q", tree])
+  engine.sessions.get("ses_plan")!.location.directory = tree
+  putAway()
+  writeFileSync(join(kuvo, "box", "worktrees.json"), JSON.stringify({ worktrees: [{ project: root, root: tree, folder: tree, branch: "topic" }] }))
+  const first = await archivedPage()
+  const original = archivedRow(first, "session-ses_plan")
+  const all = archivedRow(first, "delete-all")
+  expect(original.value.confirm.message).toBe("Its worktree is deleted too.")
+  writeFileSync(join(tree, "uncommitted.txt"), "keep this")
+  const next = await archivedPage()
+  expect(archivedRow(next, "session-ses_plan").revision).not.toBe(original.revision)
+  expect(archivedRow(next, "delete-all").revision).not.toBe(all.revision)
+  expect((await settingsAct(original, "delete")).status).toBe(409)
+  expect((await ask(handler, "DELETE", "kuvo/sessions/ses_plan", { was: original.value })).status).toBe(409)
+  expect(readFileSync(join(tree, "uncommitted.txt"), "utf8")).toBe("keep this")
+  expect(engine.deleted).toEqual([])
+})
+
+test("DELETE with was refuses sessions gone before lookup or during its turn", async () => {
+  putAway()
+  const row = archivedRow(await archivedPage(), "session-ses_plan")
+  vanishAfterRead.add("ses_plan")
+  const during = await ask(handler, "DELETE", "kuvo/sessions/ses_plan", { was: row.value })
+  expect([during.status, during.json.message]).toEqual([409, "It changed since you read it."])
+  const gone = await ask(handler, "DELETE", "kuvo/sessions/ses_plan", { was: row.value })
+  expect([gone.status, gone.json.message]).toEqual([409, "It changed since you read it."])
+  expect((await ask(handler, "DELETE", "kuvo/sessions/ses_plan")).status).toBe(200)
+  engine.sessions.set("ses_plan", session("ses_plan", "Restored", root, { "kuvo.archived": true }))
+  const fresh = archivedRow(await archivedPage(), "session-ses_plan")
+  expect((await ask(handler, "DELETE", "kuvo/sessions/ses_plan", { was: fresh.value })).status).toBe(200)
+})
+
+test("Archived group titles retain Chats and removed project names", async () => {
+  const { PROJECTS_FILE } = await import("../src/link/areas/projects")
+  const chats = join(kuvo, "chats")
+  engine.sessions.set("ses_chat", session("ses_chat", "Chat", chats, { "kuvo.archived": true }))
+  putAway()
+  const before = existsSync(PROJECTS_FILE) ? readFileSync(PROJECTS_FILE) : null
+  mkdirSync(join(kuvo, "box"), { recursive: true })
+  writeFileSync(PROJECTS_FILE, JSON.stringify({ projects: [{ directory: root, name: "Named Project", folders: [], removed: true }] }))
+  try {
+    const page = await archivedPage()
+    expect(page.groups.find((g: any) => g.id === `project-${chats}`).title).toBe("Chats")
+    expect(page.groups.find((g: any) => g.id === `project-${root}`).title).toBe("Named Project")
+  } finally { if (before) writeFileSync(PROJECTS_FILE, before); else rmSync(PROJECTS_FILE, { force: true }) }
 })

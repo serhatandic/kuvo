@@ -67,9 +67,9 @@ class Moving extends Error {}
 class Stale extends Error {}
 
 /** Optional state comparison for settings actions, checked inside the session's existing turn. */
-export const sessionActionState = (session: EngineSession) => ({ updated: session.time.updated, archived: isArchived(session) });
+export const sessionActionState = (session: EngineSession, confirm?: unknown) => ({ updated: session.time.updated, archived: isArchived(session), ...(confirm === undefined ? {} : { confirm }) });
 const checkWas = (given: Record<string, unknown>, session: EngineSession | null) => {
-  if ("was" in given && (!session?.id || sortedJSON(given.was) !== sortedJSON(sessionActionState(session)))) throw new Stale();
+  if ("was" in given && (!session?.id || sortedJSON(isObject(given.was) ? { updated: given.was.updated, archived: given.was.archived } : given.was) !== sortedJSON(sessionActionState(session)))) throw new Stale();
 };
 
 /** Where a session that isn't here lives now, in words, and that computer's key: one moved away
@@ -200,7 +200,7 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
     try { record = context.readBridge(); } catch {}
     if (record?.port && !context.bridge()) return yield* json(503, { message: "The coding agents on this computer are starting. Try again in a moment." });
     // Deleted already (from another client while this one wasn't listening): done.
-    if (action === null) return yield* json(200, { session: id });
+    if (action === null) return yield* ("was" in given ? json(409, { message: CHANGED_SINCE }) : json(200, { session: id }));
     return yield* json(404, { message: "That conversation isn't here." });
   }
   const { target } = place;
@@ -223,8 +223,12 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
       await inTurnOn(target, id, async () => {
         if (frozen().has(id)) throw new Moving();
         if ("was" in given) {
-          const now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal) as EngineSession;
-          checkWas(given, now);
+          let now: EngineSession | null;
+          try { now = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal) as EngineSession; }
+          catch (error) { if ((error as { status?: number }).status === 404) throw new Stale(); throw error; }
+          if (!now?.id) throw new Stale();
+          const confirm = await deleteConfirm([{ id, directory: now.location?.directory ?? now.directory ?? "", title: now.title }], context, signal);
+          if (sortedJSON(given.was) !== sortedJSON(sessionActionState(now, confirm))) throw new Stale();
         }
         return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
       }, signal);
@@ -246,7 +250,6 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
         return call(target, "PATCH", `/api/session/${encodeURIComponent(id)}`, { title }, signal);
       }, signal);
     } catch (error) {
-      if (error instanceof Stale) return yield* json(409, { message: CHANGED_SINCE });
       if (error instanceof Moving) return yield* json(409, { message: MOVING });
       return yield* json(502, { message: `It couldn't be renamed: ${String((error as Error | null)?.message ?? error)}` });
     }
