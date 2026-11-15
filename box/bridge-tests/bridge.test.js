@@ -1587,6 +1587,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "computers.facts": ["GET", "kuvo/computers"],
     // (Renaming, removing and reaching one again: kuvo/computers/<key>, which says one isn't there.)
     "computers.manage": ["DELETE", "kuvo/computers/none"],
+    // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
+    "computers.reach": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],
     "engine.restart": ["GET", "kuvo/engine/restart"],

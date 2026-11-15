@@ -282,14 +282,15 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
  * there, its engine's and its system, as it said them; what its box answers (`features`, as it
  * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by
- * another computer's word alone, `through` that one); how many of its sessions are at work and
+ * another computer's word alone, `through` that one); where a client of your own reaches its box
+ * itself (`address`, on the relay, and `relay`, its URL: only on your own computers); how many of its sessions are at work and
  * which (the first few, by id and title), where it said; the services whose plan limits it reads;
  * and what can be done with it from here (`actions`). */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
-  via: words("here", "relay", "peer"), "through?": string,
+  via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION),
 });

@@ -1,7 +1,8 @@
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
 // peers (the boxes its Macs name), and the boxes those vouch for (plan limits only). What each is,
-// whether it's heard from, what it runs and answers, which of its sessions are at work, which
+// whether it's heard from, where a client of your own reaches it (its address and relay), what it
+// runs and answers, which of its sessions are at work, which
 // services' plan limits it reads, and what can be done with it from here: renamed, removed
 // (`peers/manage.ts`, handed to the box that writes its record) or reached again
 // (`peers/reach-again.ts`). Every box answers it alike, a Mac's and a machine's, with no client
@@ -22,7 +23,8 @@ import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home"
 import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { isApart } from "../peers/apart";
-import { namedBoxes, ownKey, peersOf } from "../peers/known";
+import { addressOf } from "../crypto/keys";
+import { ADDRESS, namedBoxes, ownKey, peersOf } from "../peers/known";
 import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
@@ -32,6 +34,7 @@ import { ownName } from "../letters/start";
 import { forwardAct } from "../work-queue/forward";
 import { sharedMachine } from "../setup/settle";
 import { macLink, readLink } from "../state";
+import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -116,6 +119,19 @@ async function limitsRead(bridge: Target | null, signal?: AbortSignal): Promise<
   return read;
 }
 
+/** This box's own address on the relay, from its relay secret; none without one. */
+function ownAddress(link: LinkState | null): string | undefined {
+  try { return link?.secret ? addressOf(Buffer.from(link.secret, "base64url")).toString("base64url") : undefined; } catch { return undefined; }
+}
+
+/** Where a client reaches one of your own computers' boxes itself (`computers.reach`): its address
+ * on the relay, and the relay this box reaches it through. Nothing for a machine shared with
+ * another setup, or while this box has no relay or doesn't know the address. */
+function reachOf(link: LinkState | null, address: string | undefined): { address?: string; relay?: string } {
+  if (!link?.relay || !address || !ADDRESS.test(address) || sharedMachine(link)) return {};
+  return { address, relay: link.relay };
+}
+
 /** Your computers: this box first, then its peers by name, then the boxes they vouch for, each
  * with what can be done with it from here. */
 export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now()): Promise<ListedComputer[]> {
@@ -138,6 +154,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     shared: sharedMachine(link),
     reach: "connected",
     via: "here",
+    ...reachOf(link, ownAddress(link)),
     ...(version ? { version } : {}),
     ...(engine ? { engine } : {}),
     ...(runs ? { system: runs } : {}),
@@ -177,6 +194,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       // (Not heard from since this box knew of it, and not found away: still being reached.)
       reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected",
       via: "relay",
+      // (Where a client of your own reaches it itself: never one that isn't yours.)
+      ...(apart.has(peer.key) ? {} : reachOf(link, peer.address)),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}) } : {}),
       ...(features ? { features } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said

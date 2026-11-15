@@ -62,6 +62,7 @@ export const FEATURES = [
   "computers",
   "computers.facts",
   "computers.manage",
+  "computers.reach",
   "config",
   "config.apply",
   "engine.restart",
