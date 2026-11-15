@@ -4929,6 +4929,9 @@
          "list": {
           "oneOf": [
            {
+            "literal": "account-action-sheet-title"
+           },
+           {
             "literal": "accounts.credentials"
            },
            {
@@ -5603,6 +5606,9 @@
         "features": {
          "list": {
           "oneOf": [
+           {
+            "literal": "account-action-sheet-title"
+           },
            {
             "literal": "accounts.credentials"
            },

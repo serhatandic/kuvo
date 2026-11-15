@@ -9172,6 +9172,7 @@ import path138 from "node:path";
 
 // box/src/shared/features.ts
 var FEATURES = [
+  "account-action-sheet-title",
   "accounts.credentials",
   "accounts.ended",
   "accounts.found",
@@ -51652,7 +51653,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "669b7db42978";
+var BRIDGE_VERSION = "9dcce991521f";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -55479,6 +55480,14 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     }
   })();
   const actions = [];
+  const finish = () => {
+    for (const action of actions) {
+      if (["signIn", "signInAgain", "addAnother"].includes(action.id)) {
+        action.sheetTitle = words === SIGN_IN_WORDS ? `Sign In to ${name}` : `${action.label} · ${name}`;
+      }
+    }
+    return { state, line, actions, connections, ...added ? { added: true } : {} };
+  };
   const here = agents && meta.remoteSignIn !== true ? { here: true } : {};
   const remove = {
     id: "remove",
@@ -55498,12 +55507,12 @@ function accountState(account, offered, { agents = false, ended, computer }) {
       actions.push({ id: "signOut", label: "Sign Out" });
     if (added)
       actions.push({ id: "rename", label: "Rename" }, remove);
-    return { state, line, actions, connections, ...added ? { added: true } : {} };
+    return finish();
   }
   if (!said.length) {
     if (signsIn)
       actions.push({ id: "signIn", label: words.first });
-    return { state, line, actions, connections };
+    return finish();
   }
   if (signsIn) {
     if (state === "ended" || state === "problem" || said.some((each) => each.state === "ended"))
@@ -55515,7 +55524,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     const message = stays.length ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.` : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
     actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
   }
-  return { state, line, actions, connections };
+  return finish();
 }
 
 // box/src/link/areas/sign-in.ts
