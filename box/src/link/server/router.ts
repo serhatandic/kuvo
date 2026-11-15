@@ -64,6 +64,7 @@ import { readBridgeFile, readEngineFile } from "../engine/client";
 import { isMachinesRoute } from "../mac/machines";
 import { linkRoute } from "../mac/routes";
 import { boxUpdateRoute, updateRoute } from "../updates/update";
+import { permissionsRoute } from "../permissions";
 import { rehomeRoute } from "../rehome/route";
 import { appOpenRoute, appRoute } from "../mac/app";
 import { keptKeysRoute, proofRoute } from "../mac/app-keys";
@@ -101,6 +102,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/box/update", answer: boxUpdateRoute },
   // Moving this Mac's box into a home of its own (PROTOCOL.md, "Moving this Mac's box").
   { when: route => route === "kuvo/box/rehome", answer: rehomeRoute },
+  // What macOS allows the program this Mac's box runs under (PROTOCOL.md, "What macOS allows").
+  { when: route => route === "kuvo/box/permissions", answer: permissionsRoute },
   // This Mac's app, registered with a Mac's box in a home of its own, and opened for its browser
   // (PROTOCOL.md, "This Mac's app"); the box's server kept for clients ("Kept for clients").
   { when: route => route === "kuvo/box/app", answer: appRoute },

@@ -18,6 +18,8 @@ import Security
 ///   to `updates/rehome/passwords.json` for the box to take into its vault, then delete.
 ///
 /// One line of JSON on stdout. 0: done. 1: not done, with `error` (and `reason`). 2: asked wrongly.
+///
+/// COMPAT(0.7 kuvo-keys): hands the Keychain items and saved sign-ins Kuvo Code 0.5 to 0.7.2 and 0.8.0-beta.1 made to this Mac's box as it moves into its own home. Goes on the user's word, once no 0.7 Mac is expected to update.
 public enum KeysTool {
     /// 'KUVO', the creator code on every sign-in Kuvo Code 0.7 saved.
     static let creator: OSType = 0x4B55_564F

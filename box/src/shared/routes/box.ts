@@ -107,6 +107,18 @@ export const REHOME = object({
   to: nullable(string),
 });
 
+/** What macOS allows the program this Mac's box runs under (`kuvo/box/permissions`, PROTOCOL.md,
+ * "What macOS allows"): whether there's such a program here (`applies`: a Mac's own box in a home of
+ * its own; never on Linux) and its name as System Settings lists it, whether it runs and has said
+ * (`known`), and each permission macOS can be asked about, null where that isn't known. */
+export const BOX_PERMISSIONS = object({
+  applies: bool,
+  name: nullable(string),
+  known: bool,
+  screenRecording: nullable(bool),
+  accessibility: nullable(bool),
+});
+
 /** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This Mac's app"): where it's
  * installed, as it last registered; whether it's open (its tools answer), quits to install an update
  * now, is being opened for a browser call; and the last opening that failed, within its five-minute
@@ -240,6 +252,7 @@ export type UpdateStatus = Infer<typeof UPDATE>;
 export type UpdateStep = Infer<typeof STEP>;
 export type LastUpdate = Infer<typeof LAST_UPDATE>;
 export type RehomeStatus = Infer<typeof REHOME>;
+export type BoxPermissions = Infer<typeof BOX_PERMISSIONS>;
 export type RehomeStep = Infer<typeof REHOME_STEP>;
 export type BrowserStatus = Infer<typeof BROWSER>;
 export type BoxApp = Infer<typeof BOX_APP>;
@@ -300,6 +313,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/box/update", answers: { 202: UPDATE } },
   { route: "GET kuvo/box/rehome", answers: { 200: REHOME } },
   { route: "POST kuvo/box/rehome", answers: { 200: REHOME } },
+  { route: "GET kuvo/box/permissions", answers: { 200: BOX_PERMISSIONS } },
   { route: "GET kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app/open", answers: { 200: BOX_APP } },

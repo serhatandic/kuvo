@@ -21,7 +21,7 @@ const listed = [...section.matchAll(/<!-- compat: (0\.7|beta\.1) ([a-z0-9-]+) --
 
 // The code of every side, as written: not what's built from it (a bundle leaves comments out),
 // nor the tests.
-const ROOTS = ["box/src", "swift/KuvoCode", "swift/OpenCodeKit/Sources", "swift/KuvoClient/Sources", "swift/KuvoLink/Sources", "scripts"];
+const ROOTS = ["box/src", "mac/helper/Sources", "swift/KuvoCode", "swift/OpenCodeKit/Sources", "swift/KuvoClient/Sources", "swift/KuvoLink/Sources", "scripts"];
 const BUILT = new Set(["box/dist/kuvo-agents.js", "box/dist/kuvo-browser.js", "scripts/compat.sh"]);
 const CODE = /\.(swift|ts|js|mjs|sh|py)$/;
 function* files(folder) {
@@ -55,7 +55,7 @@ test("every item for released Macs is marked in the code", () => {
 // When each version's paths go: beta.1's when 0.8.0 ships (a Mac's own data from it, which it
 // takes in as it starts, three months after), 0.7's three months after.
 const GOES = {
-  "0.7": ["Goes 3 months after 0.8.0.", "Goes once a release with one is the newest.", "Goes once a box tells its news without its bridge."],
+  "0.7": ["Goes 3 months after 0.8.0.", "Goes once a release with one is the newest.", "Goes once a box tells its news without its bridge.", "Goes on the user's word, once no 0.7 Mac is expected to update."],
   "beta.1": ["Goes when 0.8.0 ships.", "Goes 3 months after 0.8.0."],
 };
 

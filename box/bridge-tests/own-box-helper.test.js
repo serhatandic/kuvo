@@ -1,7 +1,8 @@
-// This Mac's box's helper, Kuvo Code Box (#333 piece 4; PROTOCOL.md, "This Mac's box: its helper"):
+// This Mac's box's helper, Kuvo Helper (#333 piece 4; PROTOCOL.md, "This Mac's box: its helper"):
 // the launch agent that starts it at login (`kuvo-link.js helper install [--load]`, `helper status`),
 // and a Mac's box in a home of its own saying where its server answers (`run/serve.json`), as its
-// helper starts it. The real box script, in homes of the test's own, with a stand-in for `launchctl`
+// helper starts it; `helper start` opening the helper itself where Login Items is off for it; and
+// what macOS allows the helper, as the box says it (`kuvo/box/permissions`). The real box script, in homes of the test's own, with a stand-in for `launchctl`
 // and a stand-in helper: never this computer's launchd, which a test's home leaves alone without them.
 //
 // Run with `node --test box/bridge-tests/own-box-helper.test.js`.
@@ -31,7 +32,7 @@ function home(kind, { helper = true } = {}) {
   const K = path.join(folder, ".kuvo-code");
   if (kind) write(path.join(K, "box", "kind"), `${kind}\n`);
   fs.mkdirSync(path.join(K, "run"), { recursive: true });
-  if (helper) write(path.join(K, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box"), "#!/bin/sh\nexit 0\n", 0o755);
+  if (helper) write(path.join(K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "#!/bin/sh\nexit 0\n", 0o755);
   const tools = path.join(folder, "tools");
   // launchctl: notes what it's asked; `print` says it's loaded once it was bootstrapped.
   write(path.join(tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${folder}/launchctl"\ncase "$1" in print) [ -f "${folder}/loaded" ] ;; bootstrap) touch "${folder}/loaded" ;; bootout) rm -f "${folder}/loaded" ;; esac\n`, 0o755);
@@ -44,13 +45,13 @@ const helper = (where, args, more) => {
 };
 const plistOf = where => path.join(where.home, "Library", "LaunchAgents", "run.kuvo.code.machine.plist");
 
-test("helper install: the launch agent starts Kuvo Code Box at login, with this box's folder, under Kuvo Code in Login Items", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, () => {
+test("helper install: the launch agent starts Kuvo Helper at login, with this box's folder, under Kuvo Code in Login Items", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, () => {
   const where = home("mac");
   const done = helper(where, ["install", "--app", "run.kuvo.code.trial4"]);
   assert.equal(done.status, 0, done.stderr);
-  assert.deepEqual(done.said, { written: true, loaded: false, message: "Kuvo Code Box starts this Mac's box at login." });
+  assert.deepEqual(done.said, { written: true, loaded: false, message: "Kuvo Helper starts this Mac's box at login." });
   const plist = read(plistOf(where));
-  const program = path.join(where.K, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box");
+  const program = path.join(where.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
   assert.match(plist, /<key>Label<\/key><string>run\.kuvo\.code\.machine<\/string>/);
   assert.ok(plist.includes(`<array><string>${program}</string><string>keep</string><string>--home</string><string>${where.K}</string></array>`), plist);
   assert.match(plist, /<key>RunAtLoad<\/key><true\/>/);
@@ -101,7 +102,7 @@ test("helper install: a path with characters XML reserves is written as launchd 
   removeAtEnd(folder);
   const where = { home: folder, K: path.join(folder, ".kuvo-code"), run: path.join(folder, ".kuvo-code", "run"), tools: path.join(folder, "tools") };
   write(path.join(where.K, "box", "kind"), "mac\n");
-  write(path.join(where.K, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box"), "#!/bin/sh\n", 0o755);
+  write(path.join(where.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "#!/bin/sh\n", 0o755);
   write(path.join(where.tools, "launchctl"), "#!/bin/sh\n", 0o755);
   assert.equal(helper(where, ["install"]).status, 0);
   const listed = spawnSync("plutil", ["-extract", "ProgramArguments.3", "raw", plistOf(where)], { encoding: "utf8" });
@@ -115,11 +116,11 @@ test("helper start: the whole start through the helper, its launch agent put in 
   // Not in place: written and loaded.
   const first = helper(where, ["start", "--app", "run.kuvo.code.trial5"]);
   assert.equal(first.status, 0, first.stderr);
-  assert.deepEqual(first.said, { started: true, mac: true, message: "Kuvo Code Box runs this Mac's box now, and at login." });
+  assert.deepEqual(first.said, { started: true, mac: true, message: "Kuvo Helper runs this Mac's box now, and at login." });
   assert.match(read(plistOf(where)), /<string>run\.kuvo\.code\.trial5<\/string>/);
   assert.equal(asked().filter(line => line.startsWith("bootstrap")).length, 1);
   // Loaded: started if it isn't running (kickstart leaves one running as it is).
-  assert.deepEqual(helper(where, ["start"]).said, { started: true, mac: true, message: "Kuvo Code Box runs this Mac's box." });
+  assert.deepEqual(helper(where, ["start"]).said, { started: true, mac: true, message: "Kuvo Helper runs this Mac's box." });
   assert.deepEqual(asked(), [`print gui/${uid}/run.kuvo.code.machine`, `kickstart gui/${uid}/run.kuvo.code.machine`]);
   // In place but not loaded: loaded, then started.
   fs.rmSync(path.join(where.home, "loaded"));
@@ -131,12 +132,37 @@ test("helper start: the whole start through the helper, its launch agent put in 
   assert.equal(left.status, 0);
   assert.equal(left.said.left, true);
   assert.deepEqual(asked().filter(line => !line.startsWith("print")), []);
-  // Switched off in Login Items: launchd won't load it, and it says so plainly.
+  // launchd won't load it, for a reason that isn't Login Items: said, and nothing opened.
   fs.rmSync(path.join(where.home, "loaded"), { force: true });
+  write(path.join(where.tools, "open"), `#!/bin/sh\nprintf '%s\\n' "$@" >"${where.home}/opened"\n[ ! -f "${where.home}/open-fails" ] || { echo "The application cannot be opened." >&2; exit 1; }\n`, 0o755);
+  write(path.join(where.tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${where.home}/launchctl"\ncase "$1" in print) exit 113 ;; bootstrap) echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;; print-disabled) printf '\\t"run.kuvo.code.machine" => enabled\\n' ;; esac\n`, 0o755);
+  const refusedByLaunchd = helper(where, ["start"]);
+  assert.equal(refusedByLaunchd.status, 1);
+  assert.deepEqual(refusedByLaunchd.said, { started: false, mac: true, message: "launchd didn't load Kuvo Helper: Bootstrap failed: 5: Input/output error." });
+  assert.equal(exists(path.join(where.home, "opened")), false);
+  // Switched off in Login Items: launchd won't, so the box opens the helper itself, as its own
+  // program (in the background, a new one, keeping this box), and says it's only for now.
   write(path.join(where.tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${where.home}/launchctl"\ncase "$1" in print) exit 113 ;; bootstrap) echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;; print-disabled) printf '\\t"run.kuvo.code.machine" => disabled\\n' ;; esac\n`, 0o755);
   const off = helper(where, ["start"]);
-  assert.equal(off.status, 1);
-  assert.deepEqual(off.said, { started: false, mac: true, disabled: true, message: "Kuvo Code Box is turned off in System Settings › General › Login Items. Turn it on, then try again." });
+  assert.equal(off.status, 0, off.stderr);
+  assert.deepEqual(off.said, { started: true, mac: true, disabled: true, opened: true, message: "Kuvo Helper is turned off in System Settings › General › Login Items, so it was opened for now: it runs this Mac's box until you log out. Turn it on there to start it at login." });
+  assert.deepEqual(read(path.join(where.home, "opened")).trim().split("\n"), ["-g", "-j", "-n", path.join(where.K, "bin", "Kuvo Helper.app"), "--args", "keep", "--home", where.K]);
+  // --if-missing leaves one switched off as it is: not opened.
+  fs.rmSync(path.join(where.home, "opened"));
+  assert.equal(helper(where, ["start", "--if-missing"]).said.left, true);
+  assert.equal(exists(path.join(where.home, "opened")), false);
+  // macOS won't open it either: said, with what to do.
+  write(path.join(where.home, "open-fails"), "");
+  const unopened = helper(where, ["start"]);
+  assert.equal(unopened.status, 1);
+  assert.deepEqual(unopened.said, { started: false, mac: true, disabled: true, message: "Kuvo Helper is turned off in System Settings › General › Login Items, and macOS didn't open it: The application cannot be opened.. Turn it on there, then try again." });
+  // Its launch agent's file gone too (taken away by hand) while it's switched off: put back, and opened.
+  fs.rmSync(path.join(where.home, "open-fails"));
+  fs.rmSync(plistOf(where));
+  const again = helper(where, ["start"]);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.said.opened, true);
+  assert.equal(exists(plistOf(where)), true);
   // A Mac's box with no helper in its bin: says why, which the app shows.
   const bare = home("mac", { helper: false });
   const refused = helper(bare, ["start"]);
@@ -206,4 +232,62 @@ test("a Mac's box in a home of its own says where its server answers, as its hel
   child.stdin.end();
   assert.equal(await ended, 0);
   assert.equal(exists(recordFile), false);
+});
+
+/** `serve` for the box at `where`, as its helper starts it: where it answers, and its end. */
+async function served(where) {
+  const password = "p".repeat(48);
+  const child = spawn(process.execPath, [script, "serve"], { env: envOf(where, { KUVO_TEST_NO_PEERS: "1" }), stdio: ["pipe", "pipe", "pipe"] });
+  atEnd(() => child.kill());
+  const ended = new Promise(resolve => child.on("exit", code => resolve(code)));
+  child.stdin.write(JSON.stringify({ password, hostVaultSecret: "s".repeat(64) }) + "\n");
+  const { url } = await new Promise((resolve, reject) => {
+    let out = "";
+    child.stdout.on("data", chunk => {
+      out += chunk;
+      if (out.includes("\n")) resolve(JSON.parse(out.split("\n")[0]));
+    });
+    ended.then(code => reject(new Error(`serve ended (${code})`)));
+  });
+  const ask = async (route, method = "GET") => {
+    const answer = await fetch(`${url}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64") } });
+    return { status: answer.status, body: await answer.json().catch(() => null) };
+  };
+  return { ask, stop: async () => { child.stdin.end(); await ended; } };
+}
+
+test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running this box noted it", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, async () => {
+  const where = home("mac");
+  const box = await served(where);
+  const facts = path.join(where.run, "permissions.json");
+  const unknown = { applies: true, name: "Kuvo Helper", known: false, screenRecording: null, accessibility: null };
+  // No helper has said: it applies here, and nothing's known.
+  assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: unknown });
+  // The helper running this box (a stand-in: this test's own process) noted what it's allowed.
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: false }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body, { applies: true, name: "Kuvo Helper", known: true, screenRecording: true, accessibility: false });
+  // Granted since: the helper notes it again, and the box says it as it's asked.
+  write(facts, JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true }));
+  assert.equal((await box.ask("kuvo/box/permissions")).body.accessibility, true);
+  // A note left by a helper that's gone (it ended without taking it away) says nothing of now.
+  const gone = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
+  write(facts, JSON.stringify({ v: 1, pid: Number(gone.stdout.trim()), screenRecording: true, accessibility: true }));
+  assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown);
+  // Nor one that isn't the helper's (half written, another version's, not facts).
+  for (const text of ["{", "[]", JSON.stringify({ v: 2, pid: process.pid, screenRecording: true, accessibility: true }), JSON.stringify({ v: 1, pid: process.pid, screenRecording: "yes", accessibility: true }), JSON.stringify({ v: 1, pid: 0, screenRecording: true, accessibility: true })]) {
+    write(facts, text);
+    assert.deepEqual((await box.ask("kuvo/box/permissions")).body, unknown, text);
+  }
+  // Read only: nothing here grants anything.
+  assert.equal((await box.ask("kuvo/box/permissions", "POST")).status, 405);
+  await box.stop();
+});
+
+test("kuvo/box/permissions: a machine's box runs under no such program, and says so", async () => {
+  const where = home("machine", { helper: false });
+  // (Whatever a file there says: nothing here is the helper's word.)
+  write(path.join(where.run, "permissions.json"), JSON.stringify({ v: 1, pid: process.pid, screenRecording: true, accessibility: true }));
+  const box = await served(where);
+  assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: { applies: false, name: null, known: false, screenRecording: null, accessibility: null } });
+  await box.stop();
 });

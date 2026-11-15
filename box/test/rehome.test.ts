@@ -203,7 +203,7 @@ function world(given: (w: World) => void = () => {}, { appFolder = "App Support"
   // The box's own files, as the app brings them.
   put(join(w.release, "bin", "kuvo-start"), "#!/bin/sh\n")
   put(join(w.release, "bin", "kuvo-link.js"), "// the link")
-  put(join(w.release, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box"), "the helper")
+  put(join(w.release, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "the helper")
   given(w)
   return w
 }
@@ -403,7 +403,7 @@ test.if(mac)("the move puts this Mac's box in a home of its own, laid out as a m
   // Its run state, not its processes' records; its files from its release, not the app's bin.
   expect(readdirSync(join(K, "run")).sort()).toEqual(["fence", "link.json", "mac-link.json", "setup-card.json"])
   // (With what the app put in its box's bin that the release doesn't bring: its catalog.)
-  expect(readdirSync(join(K, "bin")).sort()).toEqual(["Kuvo Code Box.app", "kuvo-link.js", "kuvo-start", "mcp-catalog.json"])
+  expect(readdirSync(join(K, "bin")).sort()).toEqual(["Kuvo Helper.app", "kuvo-link.js", "kuvo-start", "mcp-catalog.json"])
   // The app's folder keeps only what's the app's; the originals are kept, for 30 days.
   expect(readdirSync(w.S).sort()).toEqual(["Browser", "bots.json"])
   const kept = moved.said!.status
@@ -498,7 +498,7 @@ function newMac(given: (w: World) => void = () => {}): World {
   put(join(S, "Browser", "x"), "browser")
   put(join(w.release, "bin", "kuvo-start"), "#!/bin/sh\n")
   put(join(w.release, "bin", "kuvo-link.js"), "// the link")
-  put(join(w.release, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box"), "the helper")
+  put(join(w.release, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "the helper")
   given(w)
   return w
 }
@@ -515,7 +515,7 @@ test.if(mac)("a new Mac's box is made in its home of its own from the start, wit
   expect(made.said).toMatchObject({ result: "done", status: { state: null } })
   expect(readFileSync(join(w.K, "box", "kind"), "utf8")).toBe("mac\n")
   expect(readFileSync(join(w.K, "bin", "kuvo-start"), "utf8")).toBe("#!/bin/sh\n")
-  expect(readFileSync(join(w.K, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box"), "utf8")).toBe("the helper")
+  expect(readFileSync(join(w.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "utf8")).toBe("the helper")
   expect(existsSync(join(w.K, "engine", "2.2.6", "opencode"))).toBe(true)
   expect(JSON.parse(readFileSync(join(w.K, "box", "work.json"), "utf8"))).toMatchObject({ keepsAwake: false })
   const [aside] = readdirSync(join(w.K, "trash")).filter(name => name.startsWith("earlier-box-"))
@@ -546,8 +546,8 @@ test.if(mac)("a Mac whose app's box ran in its folder, or a box already in ~/.ku
   expect(rehome(noEngine, ["--new", "--release", noEngine.release]).said).toMatchObject({ result: "refused" })
   expect(existsSync(noEngine.K)).toBe(false)
   // A release without the helper that would start it there: never made.
-  const noHelper = newMac(w => rmSync(join(w.release, "bin", "Kuvo Code Box.app"), { recursive: true }))
-  expect(rehome(noHelper, ["--new", "--release", noHelper.release]).said).toMatchObject({ result: "refused", message: "Kuvo Code Box isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home." })
+  const noHelper = newMac(w => rmSync(join(w.release, "bin", "Kuvo Helper.app"), { recursive: true }))
+  expect(rehome(noHelper, ["--new", "--release", noHelper.release]).said).toMatchObject({ result: "refused", message: "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home." })
   expect(existsSync(noHelper.K)).toBe(false)
 }, 60_000)
 

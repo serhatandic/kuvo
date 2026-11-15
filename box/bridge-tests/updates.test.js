@@ -113,7 +113,7 @@ function machine() {
 
 // A release of 0.10.0 (engine 1.1.0), signed with `key`, served here, and kept in a folder as Kuvo
 // Code carries it (`folder`: boxes.json and the pack beside it). `tamper` changes what's packed;
-// `bundle` adds a Mac bundle by its files (`{name: text}`, in `bin/Kuvo Code Box.app`, named in
+// `bundle` adds a Mac bundle by its files (`{name: text}`, in `bin/Kuvo Helper.app`, named in
 // box.json's `bundles`); `extra` adds files to the pack that box.json doesn't name, `link` a link
 // in the bundle.
 const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
@@ -141,14 +141,14 @@ function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_
   const box = { version, engine: "1.1.0", files: {} };
   for (const file of ["bin/box-version", "bin/kuvo-start", "bin/kuvo-link.js", "bin/kuvo-wake"]) box.files[file] = sha256(fs.readFileSync(path.join(files, file)));
   if (bundle) {
-    const listed = box.bundles = { "bin/Kuvo Code Box.app": {} };
+    const listed = box.bundles = { "bin/Kuvo Helper.app": {} };
     for (const [name, text] of Object.entries(bundle)) {
-      write(path.join(files, "bin", "Kuvo Code Box.app", name), text, name.includes("MacOS/") ? 0o755 : 0o644);
-      listed["bin/Kuvo Code Box.app"][name] = sha256(Buffer.from(text));
+      write(path.join(files, "bin", "Kuvo Helper.app", name), text, name.includes("MacOS/") ? 0o755 : 0o644);
+      listed["bin/Kuvo Helper.app"][name] = sha256(Buffer.from(text));
     }
   }
   for (const [name, text] of Object.entries(extra ?? {})) write(path.join(files, name), text);
-  if (link) fs.symlinkSync("/etc/hosts", path.join(files, "bin", "Kuvo Code Box.app", "Contents", "hosts"));
+  if (link) fs.symlinkSync("/etc/hosts", path.join(files, "bin", "Kuvo Helper.app", "Contents", "hosts"));
   write(path.join(files, "box.json"), JSON.stringify(box));
   const pack = path.join(scratch, `pack-${crypto.randomUUID()}.tgz`);
   spawnSync("tar", ["czf", pack, "-C", files, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
@@ -556,11 +556,11 @@ test("an offered release that doesn't come up is taken back and goes; one the bo
   assert.equal(fs.existsSync(offered), false);
 });
 
-const helper = { "Contents/Info.plist": "<plist>the new helper</plist>\n", "Contents/MacOS/Kuvo Code Box": "#!/bin/sh\necho the new helper\n", "Contents/_CodeSignature/CodeResources": "the new seal\n" };
+const helper = { "Contents/Info.plist": "<plist>the new helper</plist>\n", "Contents/MacOS/Kuvo Helper": "#!/bin/sh\necho the new helper\n", "Contents/_CodeSignature/CodeResources": "the new seal\n" };
 function oldHelper() {
-  const bundle = path.join(home, "bin", "Kuvo Code Box.app");
+  const bundle = path.join(home, "bin", "Kuvo Helper.app");
   write(path.join(bundle, "Contents", "Info.plist"), "<plist>the old helper</plist>\n");
-  write(path.join(bundle, "Contents", "MacOS", "Kuvo Code Box"), "#!/bin/sh\necho the old helper\n", 0o755);
+  write(path.join(bundle, "Contents", "MacOS", "Kuvo Helper"), "#!/bin/sh\necho the old helper\n", 0o755);
   write(path.join(bundle, "Contents", "Resources", "only-the-old-one-had.txt"), "old\n");
   return bundle;
 }
@@ -608,14 +608,14 @@ test("a release's bundle (the box's helper) is swapped whole on a Mac, and left 
   // Never noted as installed: the helper's own keeper may put its own back, which isn't drift.
   assert.equal(Object.keys(installed).some(file => file.includes(".app")), false);
   if (process.platform === "darwin") {
-    assert.equal(fs.readFileSync(path.join(bundle, "Contents", "MacOS", "Kuvo Code Box"), "utf8"), helper["Contents/MacOS/Kuvo Code Box"]);
-    assert.equal(fs.statSync(path.join(bundle, "Contents", "MacOS", "Kuvo Code Box")).mode & 0o777, 0o755, "with its own mode");
+    assert.equal(fs.readFileSync(path.join(bundle, "Contents", "MacOS", "Kuvo Helper"), "utf8"), helper["Contents/MacOS/Kuvo Helper"]);
+    assert.equal(fs.statSync(path.join(bundle, "Contents", "MacOS", "Kuvo Helper")).mode & 0o777, 0o755, "with its own mode");
     assert.equal(fs.readFileSync(path.join(bundle, "Contents", "_CodeSignature", "CodeResources"), "utf8"), "the new seal\n");
     assert.equal(fs.existsSync(path.join(bundle, "Contents", "Resources")), false, "whole: nothing of the old one left in it");
   } else {
     assert.equal(fs.readFileSync(path.join(bundle, "Contents", "Info.plist"), "utf8"), "<plist>the old helper</plist>\n", "a Mac's alone");
   }
-  assert.deepEqual(fs.readdirSync(path.join(home, "bin")).filter(name => name.includes(".app")), ["Kuvo Code Box.app"], "no copy left beside it");
+  assert.deepEqual(fs.readdirSync(path.join(home, "bin")).filter(name => name.includes(".app")), ["Kuvo Helper.app"], "no copy left beside it");
   assert.equal(link.confirmUpdate(), true);
   assert.equal(link.checkDrift(), false, "what's there is what it installed");
 });
@@ -629,8 +629,8 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   engines.add(read(engineFile).pid);
   assert.equal(fs.readFileSync(path.join(bundle, "Contents", "Info.plist"), "utf8"), "<plist>the old helper</plist>\n");
   assert.equal(fs.readFileSync(path.join(bundle, "Contents", "Resources", "only-the-old-one-had.txt"), "utf8"), "old\n");
-  assert.equal(fs.statSync(path.join(bundle, "Contents", "MacOS", "Kuvo Code Box")).mode & 0o777, 0o755);
-  assert.deepEqual(fs.readdirSync(path.join(home, "bin")).filter(name => name.includes(".app")), ["Kuvo Code Box.app"]);
+  assert.equal(fs.statSync(path.join(bundle, "Contents", "MacOS", "Kuvo Helper")).mode & 0o777, 0o755);
+  assert.deepEqual(fs.readdirSync(path.join(home, "bin")).filter(name => name.includes(".app")), ["Kuvo Helper.app"]);
 
   // A new bundle where there was none goes again, as it came. (Each offered again a day after the
   // one before didn't come up.)
@@ -645,7 +645,7 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   assert.equal(fs.existsSync(bundle), false);
 
   const odds = [
-    [{ extra: { "bin/Kuvo Code Box.app/Contents/MacOS/unnamed": "not in box.json" } }, /aren't what it says/],
+    [{ extra: { "bin/Kuvo Helper.app/Contents/MacOS/unnamed": "not in box.json" } }, /aren't what it says/],
     [{ link: true }, /aren't what it says/],
     [{ bundle: { ".hidden/x": "y" } }, /outside the box/],
   ];
@@ -696,7 +696,7 @@ test("`kuvo-link.js update --from` takes a release from a folder there", async (
   assert.equal(JSON.parse(said).result, "updated", said);
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.10.0");
-  assert.equal(fs.existsSync(path.join(home, "bin", "Kuvo Code Box.app")), process.platform === "darwin");
+  assert.equal(fs.existsSync(path.join(home, "bin", "Kuvo Helper.app")), process.platform === "darwin");
 });
 
 test("`kuvo-link.js update --offered` takes the offered release in a process of its own, and with no bridge to start again confirms it itself", async () => {
@@ -737,10 +737,10 @@ test("scripts/pack-box.sh packs a built app's box release with its helper, signe
   write(path.join(app, "Contents", "MacOS", "Kuvo Code"), `#!/bin/sh\n[ "$1" = --write-box-files ] || exit 64\nmkdir -p "$2" && cp -Rp ${JSON.stringify(files)}/. "$2"/\n`, 0o755);
   // Its helper, signed as the build signs it (on a Mac, a program signed ad hoc, as packing checks
   // the signature where codesign is).
-  const appHelper = path.join(app, "Contents", "Helpers", "Kuvo Code Box.app");
-  const program = path.join(appHelper, "Contents", "MacOS", "Kuvo Code Box");
+  const appHelper = path.join(app, "Contents", "Helpers", "Kuvo Helper.app");
+  const program = path.join(appHelper, "Contents", "MacOS", "Kuvo Helper");
   if (process.platform === "darwin") {
-    write(path.join(appHelper, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Kuvo Code Box</string><key>CFBundleIdentifier</key><string>run.kuvo.code.tests.box</string></dict></plist>\n`);
+    write(path.join(appHelper, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Kuvo Helper</string><key>CFBundleIdentifier</key><string>run.kuvo.code.tests.box</string></dict></plist>\n`);
     fs.mkdirSync(path.dirname(program), { recursive: true });
     fs.copyFileSync("/usr/bin/true", program);
     fs.chmodSync(program, 0o755);
@@ -771,7 +771,7 @@ test("scripts/pack-box.sh packs a built app's box release with its helper, signe
   const packedBox = read(path.join(unpacked, "box.json"));
   const before = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
   assert.deepEqual(Object.keys(packedBox.files).filter(file => !before.test(file)), []);
-  assert.deepEqual(Object.keys(packedBox.bundles["bin/Kuvo Code Box.app"]).sort(), Object.keys(helper).sort());
+  assert.deepEqual(Object.keys(packedBox.bundles["bin/Kuvo Helper.app"]).sort(), Object.keys(helper).sort());
 
   assert.deepEqual(offer(out), { status: 202, version: "0.10.0" });
   assert.equal((await take()).result, "updated");
@@ -779,14 +779,14 @@ test("scripts/pack-box.sh packs a built app's box release with its helper, signe
   assert.equal(boxVersion(), "0.10.0");
   assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-browser.js"), "utf8"), "// kuvo-browser.js\n");
   if (process.platform === "darwin") {
-    assert.ok(fs.readFileSync(path.join(home, "bin", "Kuvo Code Box.app", "Contents", "MacOS", "Kuvo Code Box")).equals(fs.readFileSync(program)));
-    const verified = spawnSync("codesign", ["--verify", "--strict", "--deep", path.join(home, "bin", "Kuvo Code Box.app")], { encoding: "utf8" });
+    assert.ok(fs.readFileSync(path.join(home, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper")).equals(fs.readFileSync(program)));
+    const verified = spawnSync("codesign", ["--verify", "--strict", "--deep", path.join(home, "bin", "Kuvo Helper.app")], { encoding: "utf8" });
     assert.equal(verified.status, 0, `signed as it was, in the box: ${verified.stderr}`);
   }
   assert.equal(link.confirmUpdate(), true);
 
   // A bundle a box couldn't take (a link in it) isn't packed.
-  fs.symlinkSync("/etc/hosts", path.join(app, "Contents", "Helpers", "Kuvo Code Box.app", "Contents", "hosts"));
+  fs.symlinkSync("/etc/hosts", path.join(app, "Contents", "Helpers", "Kuvo Helper.app", "Contents", "hosts"));
   const linked = pack(app, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"));
   assert.equal(linked.status, 1);
   assert.match(linked.stderr, /can't take .*hosts/);
@@ -797,7 +797,7 @@ test("scripts/pack-box.sh packs a built app's box release with its helper, signe
     fs.appendFileSync(path.join(appHelper, "Contents", "Info.plist"), "\n");
     const broken = pack(app, "0.10.0", "https://example.invalid/box-0.10.0.tar.gz", path.join(scratch, "never"));
     assert.equal(broken.status, 1);
-    assert.match(broken.stderr, /Kuvo Code Box\.app isn't signed as it was/);
+    assert.match(broken.stderr, /Kuvo Helper\.app isn't signed as it was/);
     assert.deepEqual(fs.readdirSync(path.join(scratch, "never")), [], "nothing left there");
   }
 });
