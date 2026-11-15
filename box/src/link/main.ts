@@ -41,6 +41,7 @@ import { finishDeletes } from "./bots/edit";
 import { dropBotsOwnKeys, dropBotsOwnServers, keepBotsOwnKeysGone } from "./bots/own-keys";
 import { keepJobs } from "./bots/jobs";
 import { forgetOldKit, readKit } from "./bots/kit";
+import { keepZone, zoneFollowers } from "./zone/setting";
 import { adoptBox } from "./compat/adopt-settings";
 import { LaunchLockBusy } from "./compat/launch-lock";
 import { forgetPhones } from "./compat/leave-running";
@@ -188,6 +189,7 @@ export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
 export { botInstructions, botTemplates, readKit, readWords } from "./bots/kit";
+export { applyZone, readZoneSetting, setZone, takeZone, zoneHere, zoneMail } from "./zone/setting";
 export { freshenBot, freshenBots, refreshedRules, settleBot } from "./bots/tell";
 export { makeBot } from "./bots/make";
 export { carryToAgents } from "./areas/carry";
@@ -261,6 +263,12 @@ scriptIs(fileURLToPath(import.meta.url));
 // ---- What follows a change to link.json (./state), or to this box's documents ----
 
 onDocsChanged(macDocsChanged);
+
+// Your time zone changed here (a pick, a peer's, an older Mac's kit): your other computers hear at once.
+zoneFollowers.add(() => {
+  const host = IS_MAC ? macLink.host : liveHost;
+  if (host?.welcomed) announce(host, readEngineFile).catch(() => {});
+});
 
 onLinkWritten(link => {
   // The setup it follows, or whether Macs of two setups share it, changed: its bridge and its peers
@@ -434,6 +442,8 @@ async function run(): Promise<void> {
   // not sent yet go to the Mac.
   let lastWelcomed = Date.now();
   refreshOwn(readEngineFile).catch(() => {});
+  // Your time zone in its bots' and conversations' folders, kept so as it runs.
+  keepZone();
   // Updates: the new bridge, once one put it here, says it's well (after the relay's welcome, or
   // three minutes); each night's window, one, when nothing runs; a release Kuvo Code here offered,
   // at the first round nothing runs (PROTOCOL.md, "Updates").
@@ -826,6 +836,8 @@ async function serve(): Promise<void> {
   // And their conversations and places in group chats, where those weren't answering.
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});
   keepBridgeAnswering();
+  // Your time zone in its bots' and conversations' folders, kept so as it runs.
+  keepZone();
   // Its wake-ups and watches, sent while it runs, with the app's window closed too.
   sendWakes();
   // This Mac's link to your phones and machines, as its app last said it's wanted (kept in

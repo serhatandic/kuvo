@@ -246,10 +246,8 @@ export async function giveFolders(target: Target, session: string, { signal, fol
   return false;
 }
 
-/** The projects New Bot offers here, `{directory, name}` each: the box's own, once it keeps them;
- * before, those its Mac named in the kit. */
-export function boxProjects(kit: { projects?: OfferedProject[] } | null | undefined, file = PROJECTS_FILE): OfferedProject[] {
-  if (!fs.existsSync(file)) return kit?.projects ?? [];
+/** The projects New Bot offers here, `{directory, name}` each: the box's own. */
+export function boxProjects(file = PROJECTS_FILE): OfferedProject[] {
   return readProjects(file).filter(each => !each.removed).map(each => ({ directory: each.directory, name: each.name ?? path.basename(each.directory) }));
 }
 

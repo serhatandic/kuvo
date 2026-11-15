@@ -1,4 +1,50 @@
 // @bun
+// box/src/shared/zone.ts
+import fs from "fs";
+import path from "path";
+var zoneFileIn = (home) => path.join(home, "box", "time-zone.json");
+function knownZone(name) {
+  if (typeof name !== "string" || !name || name.length > 64)
+    return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
+}
+var cached = null;
+function settingZone(file) {
+  let mtime = 0;
+  try {
+    mtime = fs.statSync(file).mtimeMs;
+  } catch {
+    return;
+  }
+  if (cached && cached.file === file && cached.mtime === mtime)
+    return cached.zone;
+  let zone;
+  try {
+    const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (knownZone(kept?.zone))
+      zone = kept.zone;
+  } catch {}
+  cached = { file, mtime, zone };
+  return zone;
+}
+var boxHome = process.env.KUVO_HOME;
+var boxGiven;
+function boxZoneIs(zone) {
+  boxGiven = knownZone(zone) ? zone : undefined;
+}
+function yourZone(home = boxHome) {
+  const set = (home ? settingZone(zoneFileIn(home)) : undefined) ?? boxGiven;
+  if (set)
+    return set;
+  const given = process.env.KUVO_TZ;
+  return knownZone(given) ? given : undefined;
+}
+
 // box/src/agents/main.ts
 import { mkdirSync as mkdirSync28, readdirSync as readdirSync22, readFileSync as readFileSync40, rmSync as rmSync18 } from "fs";
 import { basename as basename13, dirname as dirname24, join as join42 } from "path";
@@ -198,7 +244,7 @@ import { readdirSync as readdirSync4, readFileSync as readFileSync4, statSync as
 import { join as join7, relative as relative2, sep as sep5 } from "path";
 
 // box/src/shared/watch.ts
-import fs from "fs";
+import fs2 from "fs";
 var WATCH_LOOKS_AGAIN = [250, 1000];
 var watching = new Set;
 var looks = new Map;
@@ -222,7 +268,7 @@ function startedOrStopped() {
   }
 }
 function watchFolder(folder, changed, { recursive = false, missed = () => changed() } = {}) {
-  const watcher = fs.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
+  const watcher = fs2.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
   const look = () => missed();
   watching.add(look);
   startedOrStopped();
@@ -766,8 +812,8 @@ async function ownArgsLater(args, cwd) {
 
 // box/src/shared/platform.ts
 import { execFile as execFile2, execFileSync, spawn } from "child_process";
-import fs2 from "fs";
-import path from "path";
+import fs3 from "fs";
+import path2 from "path";
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -780,9 +826,9 @@ function processRuns(pid, name, proc = "/proc") {
   if (!Number.isInteger(pid) || pid <= 1 || !alive(pid))
     return false;
   try {
-    return fs2.readFileSync(`${proc}/${pid}/cmdline`, "utf8").includes(name);
+    return fs3.readFileSync(`${proc}/${pid}/cmdline`, "utf8").includes(name);
   } catch {
-    if (fs2.existsSync(proc))
+    if (fs3.existsSync(proc))
       return false;
     if (process.env.KUVO_BOX === "mac" || process.env.KUVO_AGENTS_HOME && !process.env.KUVO_AGENTS_REMOTE)
       return true;
@@ -807,15 +853,15 @@ function commandLine(pid) {
 }
 function commandLineOf(pid, proc = "/proc") {
   try {
-    return fs2.readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\x00").join(" ").trim();
+    return fs3.readFileSync(`${proc}/${pid}/cmdline`, "utf8").split("\x00").join(" ").trim();
   } catch {
-    if (fs2.existsSync(proc))
+    if (fs3.existsSync(proc))
       return;
     return commandLine(pid)?.trim() || undefined;
   }
 }
 function loginShell(env = process.env, platform = process.platform) {
-  const given = env.SHELL && path.isAbsolute(env.SHELL) ? env.SHELL : undefined;
+  const given = env.SHELL && path2.isAbsolute(env.SHELL) ? env.SHELL : undefined;
   if (platform === "darwin")
     return given ?? "/bin/zsh";
   if (given && given !== "/bin/sh")
@@ -829,14 +875,14 @@ function accountShell() {
 `).map((line) => line.split(":")).find((fields) => fields[2] === uid)?.[6]?.trim();
   let shell;
   try {
-    shell = shellOf(fs2.readFileSync("/etc/passwd", "utf8"));
+    shell = shellOf(fs3.readFileSync("/etc/passwd", "utf8"));
   } catch {}
   if (!shell) {
     try {
       shell = shellOf(execFileSync("getent", ["passwd", uid], { encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }));
     } catch {}
   }
-  return shell && path.isAbsolute(shell) ? shell : undefined;
+  return shell && path2.isAbsolute(shell) ? shell : undefined;
 }
 var LOGIN_PATH_MARKERS = ["__KUVO_PATH__", "__KUVO_END__"];
 var WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; kill -9 -$s; kill -9 0; } >/dev/null 2>&1 & exec 3<&-; wait $s; kill -9 -$s 2>/dev/null; kill -9 0';
@@ -902,10 +948,10 @@ async function fromLogin(env, wait, printed, parse) {
   }
   return;
 }
-var savedPathFile = (home) => path.join(home, "run", "login-path");
+var savedPathFile = (home) => path2.join(home, "run", "login-path");
 function savedLoginPath(home) {
   try {
-    const saved = fs2.readFileSync(savedPathFile(home), "utf8").trim();
+    const saved = fs3.readFileSync(savedPathFile(home), "utf8").trim();
     return saved.startsWith("/") ? saved : undefined;
   } catch {
     return;
@@ -913,15 +959,15 @@ function savedLoginPath(home) {
 }
 function saveLoginPath(home, value) {
   try {
-    fs2.mkdirSync(path.dirname(savedPathFile(home)), { recursive: true, mode: 448 });
-    fs2.writeFileSync(savedPathFile(home) + ".new", value + `
+    fs3.mkdirSync(path2.dirname(savedPathFile(home)), { recursive: true, mode: 448 });
+    fs3.writeFileSync(savedPathFile(home) + ".new", value + `
 `, { mode: 384 });
-    fs2.renameSync(savedPathFile(home) + ".new", savedPathFile(home));
+    fs3.renameSync(savedPathFile(home) + ".new", savedPathFile(home));
   } catch {}
 }
 function sandboxGeneration(on) {
   try {
-    return fs2.readFileSync(on, "utf8").trim();
+    return fs3.readFileSync(on, "utf8").trim();
   } catch {
     return "";
   }
@@ -950,11 +996,11 @@ function useOf(rows, pid, command, asleep) {
 }
 function linuxUse(pid, proc) {
   const rows = [];
-  for (const name of fs2.readdirSync(proc)) {
+  for (const name of fs3.readdirSync(proc)) {
     if (!/^\d+$/.test(name))
       continue;
     try {
-      const stat = fs2.readFileSync(`${proc}/${name}/stat`, "utf8");
+      const stat = fs3.readFileSync(`${proc}/${name}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       const [utime, stime, cutime, cstime] = fields.slice(11, 15).map(Number);
       rows.push({ pid: Number(name), ppid: Number(fields[1]), state: fields[0], seconds: (utime + stime + (Number(name) === pid ? 0 : cutime + cstime)) / 100 });
@@ -962,7 +1008,7 @@ function linuxUse(pid, proc) {
   }
   let command = "";
   try {
-    command = fs2.readFileSync(`${proc}/${pid}/cmdline`, "utf8").replaceAll("\x00", " ").trim();
+    command = fs3.readFileSync(`${proc}/${pid}/cmdline`, "utf8").replaceAll("\x00", " ").trim();
   } catch {
     return null;
   }
@@ -971,8 +1017,8 @@ function linuxUse(pid, proc) {
 }
 function threadsAsleep(pid, proc) {
   try {
-    return fs2.readdirSync(`${proc}/${pid}/task`).every((thread) => {
-      const stat = fs2.readFileSync(`${proc}/${pid}/task/${thread}/stat`, "utf8");
+    return fs3.readdirSync(`${proc}/${pid}/task`).every((thread) => {
+      const stat = fs3.readFileSync(`${proc}/${pid}/task/${thread}/stat`, "utf8");
       return stat.slice(stat.lastIndexOf(")") + 2).startsWith("S");
     });
   } catch {
@@ -1002,7 +1048,7 @@ function macUse(table, pid) {
   return useOf(rows, pid, command, "SI");
 }
 async function processUse(pid, proc = "/proc") {
-  if (fs2.existsSync(proc)) {
+  if (fs3.existsSync(proc)) {
     try {
       return linuxUse(pid, proc);
     } catch {
@@ -1360,62 +1406,62 @@ function walk(folder, own = []) {
 
 // box/src/shared/files.ts
 import crypto2 from "crypto";
-import fs3 from "fs";
-import path2 from "path";
+import fs4 from "fs";
+import path3 from "path";
 
 // box/src/shared/wait.ts
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // box/src/shared/files.ts
 function writePrivate(file, text) {
-  fs3.mkdirSync(path2.dirname(file), { recursive: true, mode: 448 });
+  fs4.mkdirSync(path3.dirname(file), { recursive: true, mode: 448 });
   placeWhole(file, text);
 }
 function writeSecret(file, text, mode = 384) {
-  privateFolder(path2.dirname(file));
+  privateFolder(path3.dirname(file));
   placeWhole(file, text, mode);
 }
 function privateFolder(folder) {
-  fs3.mkdirSync(folder, { recursive: true, mode: 448 });
-  const real = fs3.realpathSync(folder);
-  const made = fs3.statSync(real);
+  fs4.mkdirSync(folder, { recursive: true, mode: 448 });
+  const real = fs4.realpathSync(folder);
+  const made = fs4.statSync(real);
   if (!made.isDirectory())
     throw new Error(`${folder} isn't a folder: nothing secret is written there.`);
   const me = process.getuid?.();
   if (me !== undefined && me !== 0 && made.uid !== me)
     throw new Error(`${folder} isn't yours: nothing secret is written in it.`);
   if (made.mode & 63)
-    fs3.chmodSync(real, 448);
+    fs4.chmodSync(real, 448);
   return folder;
 }
 function placeWhole(file, text, mode = 384) {
   const temporary = `${file}.${process.pid}.${crypto2.randomBytes(4).toString("hex")}.tmp`;
   try {
-    fs3.writeFileSync(temporary, text, { mode, flag: "wx" });
-    if ((fs3.statSync(temporary).mode & 511) !== mode)
-      fs3.chmodSync(temporary, mode);
-    fs3.renameSync(temporary, file);
+    fs4.writeFileSync(temporary, text, { mode, flag: "wx" });
+    if ((fs4.statSync(temporary).mode & 511) !== mode)
+      fs4.chmodSync(temporary, mode);
+    fs4.renameSync(temporary, file);
   } catch (error) {
     try {
-      fs3.rmSync(temporary, { force: true });
+      fs4.rmSync(temporary, { force: true });
     } catch {}
     throw error;
   }
 }
 function take(lock, stale) {
   try {
-    fs3.mkdirSync(lock);
+    fs4.mkdirSync(lock);
     return true;
   } catch {
     try {
-      if (Date.now() - fs3.statSync(lock).mtimeMs > stale)
-        fs3.rmdirSync(lock);
+      if (Date.now() - fs4.statSync(lock).mtimeMs > stale)
+        fs4.rmdirSync(lock);
     } catch {}
     return false;
   }
 }
 function hold(lock, stale, wait) {
-  fs3.mkdirSync(path2.dirname(lock), { recursive: true, mode: 448 });
+  fs4.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
   const nap = new Int32Array(new SharedArrayBuffer(4));
   for (let i = 0;i < wait / 10; i++) {
     if (take(lock, stale))
@@ -1425,7 +1471,7 @@ function hold(lock, stale, wait) {
   return false;
 }
 async function holdAwaiting(lock, stale, wait) {
-  fs3.mkdirSync(path2.dirname(lock), { recursive: true, mode: 448 });
+  fs4.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
   for (let i = 0;i < wait / 10; i++) {
     if (take(lock, stale))
       return true;
@@ -1440,7 +1486,7 @@ function locked(lock, work, { stale = 1e4, wait = 3000 } = {}) {
   } finally {
     if (held)
       try {
-        fs3.rmdirSync(lock);
+        fs4.rmdirSync(lock);
       } catch {}
   }
 }
@@ -1460,7 +1506,7 @@ async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
     } finally {
       if (held)
         try {
-          fs3.rmdirSync(lock);
+          fs4.rmdirSync(lock);
         } catch {}
     }
   } finally {
@@ -3031,19 +3077,8 @@ function resetsIn(text, now = Date.now()) {
     total += Number(part[1]) * (units[part[2].toLowerCase()] ?? 0);
   return total > 0 ? now + Math.min(total, 31 * 86400000) : undefined;
 }
-function zone() {
-  const name = process.env.KUVO_TZ;
-  if (!name)
-    return;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: name });
-    return name;
-  } catch {
-    return;
-  }
-}
 function resetTime(at) {
-  const timeZone = zone();
+  const timeZone = yourZone();
   const day = (date) => date.toLocaleDateString("en-US", { timeZone });
   const date = new Date(at);
   const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
@@ -5013,8 +5048,8 @@ async function sideQuestionRoutes(questions, method, parts, body) {
 // box/src/shared/session-notes.ts
 import { AsyncLocalStorage } from "async_hooks";
 import crypto3 from "crypto";
-import fs4 from "fs";
-import path3 from "path";
+import fs5 from "fs";
+import path4 from "path";
 
 // box/src/shared/json.ts
 function sortedJSON(value) {
@@ -5074,12 +5109,12 @@ ${id}`;
       counted.delete(key);
   }
 }
-var notesLock = (folder, id) => path3.join(folder, `${crypto3.createHash("sha256").update(id).digest("hex").slice(0, 32)}.lock`);
+var notesLock = (folder, id) => path4.join(folder, `${crypto3.createHash("sha256").update(id).digest("hex").slice(0, 32)}.lock`);
 var OLD_STALE = 120000;
 async function pastOld(oldLock) {
   for (let waited = 0;waited < 30000; waited += 10) {
     try {
-      if (Date.now() - fs4.statSync(oldLock).mtimeMs > OLD_STALE)
+      if (Date.now() - fs5.statSync(oldLock).mtimeMs > OLD_STALE)
         return;
     } catch {
       return;
@@ -5090,7 +5125,7 @@ async function pastOld(oldLock) {
 function lockedIn(folder, oldLock) {
   return async (id, work) => {
     try {
-      fs4.mkdirSync(folder, { recursive: true, mode: 448 });
+      fs5.mkdirSync(folder, { recursive: true, mode: 448 });
     } catch {
       return work();
     }
@@ -22620,7 +22655,7 @@ function trimmed2(slots, now) {
   return kept;
 }
 var formats = new Map;
-function knownZone(zone) {
+function knownZone2(zone) {
   if (!zone || zone.length > 64)
     return;
   try {
@@ -24967,7 +25002,7 @@ class Usage {
     this.changed(false);
   }
   view(zone) {
-    const asked = knownZone(zone) ?? ownZone();
+    const asked = knownZone2(zone) ?? ownZone();
     const now = this.now();
     const rows = this.rows();
     const totals = {};
@@ -30390,1308 +30425,6 @@ function seatRules(folder, askFirst, denies) {
   return [...rules, ...denies];
 }
 
-// box/src/agents/groups/store.ts
-import { existsSync as existsSync18, mkdirSync as mkdirSync24, readdirSync as readdirSync20, readFileSync as readFileSync34, renameSync as renameSync20, rmSync as rmSync16, writeFileSync as writeFileSync25 } from "fs";
-import { join as join40 } from "path";
-var version2 = 1;
-function isTurning(value) {
-  return value && typeof value.bot === "string" && typeof value.seat === "string" && typeof value.agents === "boolean" && typeof value.prompt === "string" && typeof value.sent === "number" && (value.wrapUp === undefined || typeof value.wrapUp === "boolean");
-}
-var strings2 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
-var stringMap = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string");
-var isDate = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value));
-function isGroup(value, id) {
-  if (!value || value.id !== id || typeof value.name !== "string" || !strings2(value.members) || !isDate(value.created))
-    return false;
-  if (!stringMap(value.seats) || !stringMap(value.heard))
-    return false;
-  if (value.seatBoxes !== undefined && !stringMap(value.seatBoxes))
-    return false;
-  if (value.purpose !== undefined && value.purpose !== null && typeof value.purpose !== "string")
-    return false;
-  if (value.agentSeats !== undefined && !strings2(value.agentSeats))
-    return false;
-  if (value.retracted !== undefined && value.retracted !== null && !stringMap(value.retracted))
-    return false;
-  if (value.viewed !== undefined && !isDate(value.viewed))
-    return false;
-  return value.meeting === undefined || value.meeting === null || isMeeting(value.meeting);
-}
-function isMeeting(value) {
-  if (!value || !isDate(value.next) || typeof value.topic !== "string")
-    return false;
-  if (value.every !== undefined && value.every !== null && typeof value.every !== "string")
-    return false;
-  if (value.at !== undefined && value.at !== null && typeof value.at !== "number")
-    return false;
-  return value.weekday === undefined || value.weekday === null || typeof value.weekday === "number";
-}
-var kinds3 = new Set(["message", "wrapUp", "note", "meeting"]);
-var states = new Set(["proposed", "waiting", "working", "done", "failed"]);
-function isMessages(value) {
-  return Array.isArray(value) && value.every((message) => message && typeof message.id === "string" && typeof message.text === "string" && isDate(message.time) && kinds3.has(message.kind) && (message.author === undefined || message.author === null || typeof message.author === "string") && (message.tasks === undefined || Array.isArray(message.tasks) && message.tasks.every((task) => task && typeof task.id === "string" && typeof task.bot === "string" && typeof task.task === "string" && states.has(task.state))));
-}
-var forgottenFor = 3 * 86400000;
-var read2 = (file) => {
-  try {
-    return JSON.parse(readFileSync34(file, "utf8"));
-  } catch {
-    return;
-  }
-};
-var text5 = (file) => {
-  try {
-    return readFileSync34(file, "utf8");
-  } catch {
-    return;
-  }
-};
-function write(file, value) {
-  writeFileSync25(file + ".new", JSON.stringify(value, null, 2), { mode: 384 });
-  renameSync20(file + ".new", file);
-}
-
-class GroupStore {
-  root;
-  bots;
-  agentsFile;
-  constructor(root, bots, agentsFile) {
-    this.root = root;
-    this.bots = bots;
-    this.agentsFile = agentsFile;
-    mkdirSync24(root, { recursive: true, mode: 448 });
-  }
-  folder(id) {
-    return join40(this.root, id);
-  }
-  load() {
-    const all = new Map;
-    let names = [];
-    try {
-      names = readdirSync20(this.root);
-    } catch {}
-    for (const id of names) {
-      if (!/^grp_[a-z0-9]+$/.test(id))
-        continue;
-      const kept = this.read(id);
-      if (kept)
-        all.set(id, kept);
-    }
-    return all;
-  }
-  read(id) {
-    const record = read2(join40(this.folder(id), "group.json"));
-    if (!record || typeof record.kuvo !== "number" || record.kuvo > version2 || !isGroup(record.group, id))
-      return;
-    const messages = read2(join40(this.folder(id), "messages.json")) ?? [];
-    if (!isMessages(messages))
-      return;
-    return { group: record.group, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
-  }
-  saveGroup(kept) {
-    mkdirSync24(this.folder(kept.group.id), { recursive: true, mode: 448 });
-    write(join40(this.folder(kept.group.id), "group.json"), { kuvo: version2, status: kept.status, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group });
-  }
-  saveMessages(kept) {
-    mkdirSync24(this.folder(kept.group.id), { recursive: true, mode: 448 });
-    write(join40(this.folder(kept.group.id), "messages.json"), kept.messages);
-  }
-  setAwake(id, awake) {
-    const file = join40(this.folder(id), "awake");
-    if (awake && !existsSync18(file) && existsSync18(this.folder(id)))
-      writeFileSync25(file, "");
-    if (!awake)
-      rmSync16(file, { force: true });
-  }
-  trash(id, trash) {
-    if (!existsSync18(this.folder(id)))
-      return;
-    const into = join40(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`);
-    mkdirSync24(into, { recursive: true, mode: 448 });
-    renameSync20(this.folder(id), join40(into, id));
-    emit("kuvo.group.trashed", { id, path: into });
-  }
-  settings() {
-    const value = read2(join40(this.root, "settings.json"));
-    if (!value || typeof value !== "object")
-      return;
-    return {
-      personalities: value.personalities && typeof value.personalities === "object" ? value.personalities : {},
-      identityNote: typeof value.identityNote === "string" ? value.identityNote : "",
-      askFirst: value.askFirst === true,
-      denies: Array.isArray(value.denies) ? value.denies.filter((rule) => typeof rule?.effect === "string" && holdsBack(rule.effect) && typeof rule.action === "string") : [],
-      timeZone: typeof value.timeZone === "string" ? value.timeZone : undefined,
-      locale: typeof value.locale === "string" ? value.locale : undefined
-    };
-  }
-  writeSettings(settings) {
-    const kept = read2(join40(this.root, "settings.json"));
-    write(join40(this.root, "settings.json"), { ...kept && typeof kept === "object" ? kept : {}, kuvo: version2, ...settings });
-  }
-  allBots() {
-    let names = [];
-    try {
-      names = readdirSync20(this.bots);
-    } catch {}
-    return names.flatMap((name) => this.bot(name) ?? []);
-  }
-  bot(id) {
-    if (!/^bot_[A-Za-z0-9]+$/.test(id))
-      return;
-    const folder = join40(this.bots, id);
-    const described = read2(join40(folder, "bot.json"));
-    const sessionID = text5(join40(folder, "session"))?.trim();
-    if (!described?.name || !sessionID)
-      return;
-    const job = read2(join40(folder, "job.json"));
-    const directory = text5(join40(folder, "directory"))?.trim() || join40(folder, "workspace");
-    return {
-      id,
-      name: String(described.name),
-      job: typeof job?.line === "string" ? job.line : String(described.job ?? ""),
-      instructions: typeof job?.details === "string" ? job.details : "",
-      memoryFile: join40(folder, "MEMORY.md"),
-      folder,
-      sessionID,
-      directory,
-      model: described.model?.id && described.model?.providerID ? described.model : undefined,
-      personality: typeof described.personality === "string" ? described.personality : undefined,
-      agents: text5(join40(folder, "via"))?.trim() === "bridge",
-      ...described.look !== undefined ? { look: described.look } : {},
-      ...typeof described.created === "string" ? { created: described.created } : {},
-      ...text5(join40(folder, "paused"))?.trim() === "moving" ? { moving: true } : {}
-    };
-  }
-  peerMemory(bot) {
-    const entries = this.peerEntries(bot);
-    return Object.fromEntries(Object.entries(entries).filter(([, entry]) => !entry.forgotten));
-  }
-  peerMemoryAt(bot, key) {
-    const at = this.peerEntries(bot)[key]?.at;
-    return typeof at === "number" ? at : 0;
-  }
-  peerEntries(bot) {
-    const all = read2(join40(this.root, "peer-memory.json"));
-    const entries = all && typeof all === "object" ? all[bot] : undefined;
-    return entries && typeof entries === "object" ? entries : {};
-  }
-  keepPeerMemory(bot, key, memory) {
-    this.changePeerMemory(bot, (entries) => entries[key] = memory);
-  }
-  forgetPeerMemory(bot, key, at) {
-    this.changePeerMemory(bot, (entries) => {
-      if (typeof at === "number" && at > 0)
-        entries[key] = { forgotten: true, at, time: new Date().toISOString() };
-      else
-        delete entries[key];
-    });
-  }
-  changePeerMemory(bot, change) {
-    const all = read2(join40(this.root, "peer-memory.json")) ?? {};
-    const entries = { ...all[bot] ?? {} };
-    change(entries);
-    for (const [key, entry] of Object.entries(entries))
-      if (entry?.forgotten && !(Date.now() - Date.parse(entry.time) < forgottenFor))
-        delete entries[key];
-    if (Object.keys(entries).length === 0)
-      delete all[bot];
-    else
-      all[bot] = entries;
-    write(join40(this.root, "peer-memory.json"), all);
-  }
-  peerWork() {
-    const all = read2(join40(this.root, "peer-work.json"));
-    return all && typeof all === "object" ? all : {};
-  }
-  keepPeerWork(task, work) {
-    this.changePeerWork((all) => {
-      if (work)
-        all[task] = work;
-      else
-        delete all[task];
-    });
-  }
-  changePeerWork(change) {
-    const all = this.peerWork();
-    change(all);
-    write(join40(this.root, "peer-work.json"), all);
-  }
-  pendingMemory() {
-    const value = read2(join40(this.root, "pending-memory.json"));
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      return {};
-    return Object.fromEntries(Object.entries(value).filter(([bot, chats]) => /^bot_[A-Za-z0-9]+$/.test(bot) && strings2(chats)));
-  }
-  setPendingMemory(pending) {
-    if (Object.keys(pending).length === 0)
-      rmSync16(join40(this.root, "pending-memory.json"), { force: true });
-    else
-      write(join40(this.root, "pending-memory.json"), pending);
-  }
-  peerTurns() {
-    const all = read2(join40(this.root, "peer-turns.json"));
-    return all && typeof all === "object" ? all : {};
-  }
-  keepPeerTurns(turns) {
-    write(join40(this.root, "peer-turns.json"), turns);
-  }
-  writeFile(path, contents) {
-    mkdirSync24(join40(path, ".."), { recursive: true });
-    writeFileSync25(path + ".new", contents, { mode: 384 });
-    renameSync20(path + ".new", path);
-  }
-  removeFile(path) {
-    rmSync16(path, { force: true });
-  }
-}
-
-// box/src/agents/groups/named.ts
-import { readFileSync as readFileSync35 } from "fs";
-var start = "<named-agents>";
-var end = "</named-agents>";
-var heading = "Agents the user named with & in this message, by their address. Read one's conversation with read_conversation only when what the user asks needs what it knows or did, and write to it with send_message only to ask it something or hand it work; when the user only mentions one, do neither:";
-function readDirectory(file) {
-  if (!file)
-    return { machine: null, agents: [] };
-  try {
-    const value = JSON.parse(readFileSync35(file, "utf8"));
-    const agents = Array.isArray(value?.agents) ? value.agents.filter((agent) => agent && typeof agent.session === "string" && agent.session.startsWith("ses_") && typeof agent.name === "string" && agent.name) : [];
-    return { machine: typeof value?.machine === "string" ? value.machine : null, agents };
-  } catch {
-    return { machine: null, agents: [] };
-  }
-}
-var fold3 = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
-var isWordCharacter = (character) => character !== undefined && /[\p{L}\p{N}]/u.test(character);
-function namedIn(text, agents, excluding = new Set) {
-  if (!text.includes("&"))
-    return [];
-  const byName = new Map;
-  for (const agent of agents) {
-    if (excluding.has(agent.session))
-      continue;
-    const key = fold3(agent.name);
-    if (key && !byName.has(key))
-      byName.set(key, agent);
-  }
-  const folded = fold3(text);
-  const found = [];
-  for (const [key, agent] of [...byName].sort((a, b) => b[0].length - a[0].length)) {
-    const needle = "&" + key;
-    let from = 0;
-    for (;; ) {
-      const at = folded.indexOf(needle, from);
-      if (at < 0)
-        break;
-      from = at + needle.length;
-      const to = at + needle.length;
-      if (isWordCharacter(folded[at - 1]) || isWordCharacter(folded[to]))
-        continue;
-      if (found.some((each) => at < each.to && each.at < to))
-        continue;
-      found.push({ at, to, agent });
-    }
-  }
-  const named = [];
-  for (const { agent } of found.sort((a, b) => a.at - b.at))
-    if (!named.includes(agent))
-      named.push(agent);
-  return named;
-}
-function what(agent, here) {
-  const machine = agent.machine ?? null;
-  const place = machine === here ? here === null ? "on the Mac" : "here" : machine === null ? "on the Mac" : `on ${machine}`;
-  return `${agent.kind}, ${place}` + (agent.project ? `, in ${agent.project}` : "");
-}
-function namedBlock(text, directory, excluding = new Set) {
-  const named = namedIn(text, directory.agents, excluding);
-  if (!named.length)
-    return;
-  const lines = named.map((agent) => `- &${agent.name} (${agent.session}): ${what(agent, directory.machine)}` + (agent.about ? `: ${agent.about}` : ""));
-  return [start, heading, ...lines, end].join(`
-`);
-}
-
-// box/src/agents/groups/time.ts
-function parseRepeat(text) {
-  if (text === "weekdays")
-    return { kind: "weekdays" };
-  const unit = text.slice(-1);
-  const digits = text.slice(0, -1);
-  if (!/^[1-9][0-9]*$/.test(digits) || text.length > 7)
-    return;
-  const count = Number(digits);
-  if (unit === "m" && count >= 5 && count <= 525600)
-    return { kind: "minutes", count };
-  if (unit === "h" && count <= 8760)
-    return { kind: "hours", count };
-  if (unit === "d" && count <= 366)
-    return { kind: "days", count };
-  if (unit === "w" && count <= 52)
-    return { kind: "weeks", count };
-  return;
-}
-var keepsTimeOfDay = (every) => every.kind === "days" || every.kind === "weeks" || every.kind === "weekdays";
-var keepsWeekday = (every) => every.kind === "weeks";
-var formats2 = new Map;
-var weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-function local(time, zone) {
-  let format = formats2.get(zone);
-  if (!format) {
-    format = new Intl.DateTimeFormat("en-US", {
-      timeZone: zone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "numeric",
-      day: "numeric",
-      hour: "numeric",
-      minute: "numeric",
-      weekday: "short"
-    });
-    formats2.set(zone, format);
-  }
-  const parts = {};
-  for (const part of format.formatToParts(new Date(time)))
-    parts[part.type] = part.value;
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    hour: Number(parts.hour) % 24,
-    minute: Number(parts.minute),
-    weekday: weekdays.indexOf(parts.weekday) + 1
-  };
-}
-function offset(time, zone) {
-  const at = local(time, zone);
-  const wall = Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute);
-  return wall - Math.floor(time / 60000) * 60000;
-}
-function moment(year, month, day, hour, minute, zone) {
-  const wall = Date.UTC(year, month - 1, day, hour, minute);
-  const before = wall - offset(wall - 86400000, zone);
-  const after = wall - offset(wall + 86400000, zone);
-  const reads = (time) => {
-    const at = local(time, zone);
-    return Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute) === wall;
-  };
-  const fits = [before, after].filter(reads);
-  if (fits.length > 0)
-    return Math.min(...fits);
-  return before;
-}
-function plusDays(date, days) {
-  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
-  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
-}
-var daysBetween = (from, to) => Math.round((Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000);
-function minutesOf(time, zone) {
-  const at = local(time, zone);
-  return at.hour * 60 + at.minute;
-}
-function isWeekend(time, zone) {
-  const day = local(time, zone).weekday;
-  return day === 1 || day === 7;
-}
-function next(every, due, now, zone, at, weekday) {
-  if (every.kind === "minutes" || every.kind === "hours") {
-    const period = every.count * (every.kind === "hours" ? 3600000 : 60000);
-    return due + (Math.floor((now - due) / period) + 1) * period;
-  }
-  const days = every.kind === "days" ? every.count : every.kind === "weeks" ? every.count * 7 : 1;
-  const minutes = at ?? minutesOf(due, zone);
-  let first = local(due, zone);
-  if (keepsWeekday(every) && weekday !== undefined) {
-    const shift = (weekday - local(due, zone).weekday + 7) % 7;
-    first = plusDays(first, shift > 3 ? shift - 7 : shift);
-  }
-  const missed = daysBetween(first, local(now, zone));
-  let periods = Math.max(1, Math.trunc(missed / days));
-  for (let tries = 0;tries < 400; tries++, periods++) {
-    const day = plusDays(first, periods * days);
-    const time = moment(day.year, day.month, day.day, Math.floor(minutes / 60), minutes % 60, zone);
-    if (time > now && (every.kind !== "weekdays" || !isWeekend(time, zone)))
-      return time;
-  }
-  return now + days * 86400000;
-}
-function weekdayOf(time, zone) {
-  return local(time, zone).weekday;
-}
-var defaultTopic = "Our regular meeting: where things stand, and what's next.";
-function planMeeting(plan, before, zone, now = Date.now()) {
-  if (typeof plan?.next !== "number" || !Number.isFinite(plan.next))
-    return "That isn't a meeting.";
-  const every = plan.every ?? undefined;
-  const repeat = every === undefined ? undefined : parseRepeat(String(every));
-  if (every !== undefined && !repeat)
-    return `\u201C${every}\u201D isn't how often a meeting can come back.`;
-  const time = Math.floor(plan.next / 60) * 60000;
-  const kept = before && Date.parse(before.next) === time && (before.every ?? undefined) === every ? before : undefined;
-  const at = repeat && keepsTimeOfDay(repeat) ? kept?.at ?? minutesOf(time, zone) : undefined;
-  const weekday = repeat && keepsWeekday(repeat) ? kept?.weekday ?? weekdayOf(time, zone) : undefined;
-  let when = time;
-  if (when <= now && repeat)
-    when = next(repeat, when, now, zone, at, weekday);
-  for (let tries = 0;repeat?.kind === "weekdays" && isWeekend(when, zone) && tries < 7; tries++) {
-    const day = plusDays(local(when, zone), 1);
-    const clock = local(when, zone);
-    when = moment(day.year, day.month, day.day, clock.hour, clock.minute, zone);
-  }
-  if (when <= now)
-    return "That time has passed. Pick one to come.";
-  const topic = String(plan.topic ?? "").trim() || defaultTopic;
-  return {
-    next: new Date(when).toISOString().replace(/\.\d{3}Z$/, "Z"),
-    ...every !== undefined ? { every } : {},
-    topic,
-    ...at !== undefined ? { at } : {},
-    ...weekday !== undefined ? { weekday } : {}
-  };
-}
-
-// box/src/agents/groups/routes.ts
-var json12 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var error = (status, message) => json12({ message }, status);
-async function groupRoutes(runner, store, method, parts, body) {
-  if (!runner || !store)
-    return error(404, "Group chats run on the Mac here.");
-  const [id, action] = parts;
-  if (!id) {
-    if (method === "GET")
-      return json12({ version: version2, data: runner.list() });
-    return error(405, "Not allowed");
-  }
-  if ((id === "box-settings" || id === "clock" || id === "settings") && method === "PUT" && action === undefined) {
-    const value = await body();
-    const before = store.settings();
-    if (id === "box-settings") {
-      store.writeSettings({
-        personalities: value?.personalities && typeof value.personalities === "object" ? value.personalities : {},
-        identityNote: typeof value?.identityNote === "string" ? value.identityNote : "",
-        askFirst: value?.askFirst === true,
-        denies: Array.isArray(value?.denies) ? value.denies : []
-      });
-    } else {
-      store.writeSettings({
-        timeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined,
-        locale: typeof value?.locale === "string" ? value.locale : undefined
-      });
-    }
-    const after = store.settings();
-    if (JSON.stringify([before?.askFirst, before?.denies]) !== JSON.stringify([after?.askFirst, after?.denies]))
-      runner.rulesChanged();
-    return json12({});
-  }
-  if (!/^grp_[a-z0-9]+$/.test(id))
-    return error(404, "No such chat.");
-  if (!action) {
-    if (method === "GET") {
-      const chat = runner.get(id);
-      return chat ? json12({ version: version2, data: chat }) : error(404, "No such chat.");
-    }
-    if (method === "PUT") {
-      const { group, messages, status, replace } = await body();
-      if (!isGroup(group, id) || !isMessages(messages ?? []))
-        return error(400, "That isn't a group chat.");
-      if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true))
-        return error(409, "That chat is here already.");
-      return json12({ data: runner.get(id) });
-    }
-    if (method === "PATCH") {
-      const edits = await body();
-      if (edits && "meetingPlan" in edits) {
-        if (edits.meetingPlan === null) {
-          edits.meeting = null;
-        } else {
-          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, store.settings()?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
-          if (typeof planned === "string")
-            return error(400, planned);
-          edits.meeting = planned;
-        }
-        delete edits.meetingPlan;
-      }
-      if (runner.get(id)?.status === "held" && Object.keys(edits ?? {}).some((key) => key !== "viewed"))
-        return error(409, "That chat is moving.");
-      if (edits?.meeting !== undefined && edits.meeting !== null && !isMeeting(edits.meeting))
-        return error(400, "That isn't a meeting.");
-      if (edits?.members !== undefined && !(Array.isArray(edits.members) && edits.members.every((member) => typeof member === "string")))
-        return error(400, "Those aren't bots.");
-      return await runner.update(id, edits ?? {}) ? json12({ data: runner.get(id) }) : error(404, "No such chat.");
-    }
-    if (method === "DELETE") {
-      if (runner.get(id)?.status === "held")
-        return error(409, "That chat is moving.");
-      return await runner.delete(id) ? json12({}) : error(404, "No such chat.");
-    }
-    return error(405, "Not allowed");
-  }
-  if (method !== "POST")
-    return error(405, "Not allowed");
-  const found = runner.get(id);
-  if (!found)
-    return error(404, "No such chat.");
-  switch (action) {
-    case "activate":
-      runner.activate(id);
-      return json12({ data: runner.get(id) });
-    case "hold":
-      return json12({ data: runner.hold(id) });
-    case "release":
-      runner.release(id);
-      return json12({});
-  }
-  if (found.status !== "active")
-    return error(409, "That chat is moving.");
-  switch (action) {
-    case "send": {
-      const { text } = await body();
-      if (typeof text === "string" && text.trim() === "/compact")
-        return error(400, "A group chat can't be summarized: each bot keeps its own conversation, and starts it over when it grows too long.");
-      const members = new Set(found.group.members.flatMap((member) => store.bot(member)?.sessionID ?? runner.peers?.bots().find((bot) => bot.id === member)?.session ?? []));
-      const named = typeof text === "string" ? namedBlock(text, readDirectory(store.agentsFile), members) : undefined;
-      const message = typeof text === "string" ? runner.send(id, text, named) : undefined;
-      return message ? json12({ data: message }) : error(400, "Nothing to send.");
-    }
-    case "stop":
-      runner.stop(id);
-      return json12({});
-    case "keep-going":
-      runner.keepGoing(id);
-      return json12({});
-    case "undo": {
-      const { message } = await body();
-      const text = typeof message === "string" ? runner.undo(id, message) : undefined;
-      return text === undefined ? error(404, "No such message.") : json12({ data: { text } });
-    }
-    case "start-work": {
-      const { wrapUp } = await body();
-      if (typeof wrapUp === "string")
-        runner.startWork(wrapUp, id);
-      return json12({});
-    }
-  }
-  return error(404, "Not found");
-}
-
-// box/src/agents/groups/link.ts
-var json13 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-var message2 = (status, text) => json13({ message: text }, status);
-var seconds3 = (text) => {
-  const time = Date.parse(text ?? "");
-  return Number.isFinite(time) ? time / 1000 : undefined;
-};
-var stamp4 = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-var plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" ");
-var newGroupID = () => "grp_" + Array.from(crypto.getRandomValues(new Uint8Array(10)), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join("");
-var failed = (status) => status === 409 ? 409 : status >= 500 ? 503 : 404;
-var present = (value) => Object.fromEntries(Object.entries(value).filter(([, each]) => each !== null && each !== undefined));
-function clientMessage(message, withSteps = true) {
-  if (!message)
-    return;
-  const { named: _named, steps, time, tasks, author, ...rest } = message;
-  return {
-    ...rest,
-    ...author != null ? { author } : {},
-    time: seconds3(time),
-    ...withSteps && steps ? { steps } : {},
-    ...tasks ? {
-      tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, ...started ? { started: seconds3(started) } : {}, ...finished ? { finished: seconds3(finished) } : {} }))
-    } : {}
-  };
-}
-function member(bot) {
-  return { id: bot.id, name: bot.name, look: bot.look, session: bot.sessionID, directory: bot.directory, agents: bot.agents };
-}
-var plainLook = { color: "graphite", shape: "round", face: "calm" };
-var looks3 = {
-  color: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
-  shape: ["round", "squircle", "pebble", "gem", "bloom"],
-  face: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
-};
-function knownLook(look) {
-  const given = look && typeof look === "object" && !Array.isArray(look) ? look : {};
-  const pick = (key) => typeof given[key] === "string" && looks3[key].includes(given[key]) ? given[key] : plainLook[key];
-  return { color: pick("color"), shape: pick("shape"), face: pick("face") };
-}
-function memberThere(bot, runner) {
-  return { id: bot.id, name: bot.name, look: knownLook(bot.look), session: bot.session ?? "", directory: "", agents: false, computer: runner.peers?.name(bot.box) ?? "another computer" };
-}
-function bots(runner, store) {
-  const here = store.allBots().sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.name.localeCompare(b.name));
-  const ids = new Set(here.map((bot) => bot.id));
-  const there = (runner.peers?.bots() ?? []).filter((bot) => !ids.has(bot.id) && runner.peers?.takesSeats(bot.box));
-  return { here, there };
-}
-function anyMember(id, runner, store) {
-  const bot = store.bot(id);
-  if (bot)
-    return member(bot);
-  const there = runner.peers?.bots().find((each) => each.id === id);
-  return there ? memberThere(there, runner) : undefined;
-}
-function list2(runner, store) {
-  const groups = runner.list().filter((chat) => chat.status === "active").map(({ group, state, said, fromBot }) => ({
-    id: group.id,
-    name: group.name,
-    ...group.purpose ? { purpose: group.purpose } : {},
-    members: group.members.flatMap((id) => anyMember(id, runner, store) ?? []),
-    speaking: state.speaking,
-    discussing: Boolean(state.discussing),
-    paused: Boolean(state.paused),
-    unread: Boolean(fromBot && (!group.viewed || Date.parse(fromBot.time) > Date.parse(group.viewed))),
-    last: clientMessage(said, false),
-    meeting: group.meeting ? present({ ...group.meeting, next: seconds3(group.meeting.next) }) : undefined
-  }));
-  return { groups };
-}
-function chat(runner, id, withMessages = true) {
-  const found = runner.get(id);
-  if (!found || found.status !== "active")
-    return;
-  const { messages, state } = found;
-  return {
-    ...withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each)) } : {},
-    speaking: state.speaking,
-    discussing: Boolean(state.discussing),
-    paused: Boolean(state.paused),
-    ...state.activity?.length ? { activity: state.activity } : {},
-    ...state.stopped?.length ? { stopped: state.stopped } : {}
-  };
-}
-function following(read, chat, signal) {
-  const encoder = new TextEncoder;
-  let stop = () => {};
-  const stream = new ReadableStream({
-    start(controller) {
-      let lastState = "";
-      let lastMessages;
-      const look = (withMessages) => {
-        const now = read(withMessages || lastMessages === undefined);
-        if (!now) {
-          stop();
-          try {
-            controller.close();
-          } catch {}
-          return;
-        }
-        const { messages, ...state } = now;
-        const stateLine = JSON.stringify(state);
-        const messagesLine = messages === undefined ? lastMessages : JSON.stringify(messages);
-        if (stateLine === lastState && messagesLine === lastMessages)
-          return;
-        const line = chat && messagesLine === lastMessages ? stateLine : JSON.stringify(now);
-        lastState = stateLine;
-        lastMessages = messagesLine;
-        try {
-          controller.enqueue(encoder.encode(line + `
-`));
-        } catch {
-          stop();
-        }
-      };
-      const unsubscribe = subscribe((event) => {
-        if (!event.type.startsWith("kuvo.group.") || chat !== undefined && event.data?.id !== chat)
-          return;
-        look(event.type !== "kuvo.group.updated");
-      });
-      const onAbort = () => stop();
-      stop = () => {
-        unsubscribe();
-        signal?.removeEventListener("abort", onAbort);
-      };
-      signal?.addEventListener("abort", onAbort, { once: true });
-      look(true);
-    },
-    cancel() {
-      stop();
-    }
-  });
-  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
-}
-async function ask(runner, store, method, parts, body = {}) {
-  const response = await groupRoutes(runner, store, method, parts, async () => body);
-  const value = await response.json().catch(() => ({}));
-  return { status: response.status, value };
-}
-function joinable(runner, store) {
-  const { here, there } = bots(runner, store);
-  return [...here.map(member), ...there.map((bot) => memberThere(bot, runner))];
-}
-async function linkRoutes(runner, store, method, parts, body, signal) {
-  if (!runner || !store)
-    return json13({}, 404);
-  const [id, action] = parts;
-  const here = () => {
-    const { here, there } = bots(runner, store);
-    return new Set([...here, ...there].map((bot) => bot.id));
-  };
-  if (!id || id === "events") {
-    if (method === "GET")
-      return id ? following(() => list2(runner, store), undefined, signal) : json13(list2(runner, store));
-    if (method === "POST" && !id)
-      return await make(runner, store, await body().catch(() => {
-        return;
-      }), here());
-    return json13({}, 405);
-  }
-  if (id === "joinable")
-    return method === "GET" ? json13({ bots: joinable(runner, store) }) : json13({}, 405);
-  if (!/^grp_[a-z0-9]+$/.test(id))
-    return json13({}, 404);
-  if (method === "GET" && (!action || action === "events")) {
-    if (!chat(runner, id))
-      return json13({}, 404);
-    return action ? following((withMessages) => chat(runner, id, withMessages), id, signal) : json13(chat(runner, id));
-  }
-  if (method === "PATCH" && !action) {
-    const given = await body().catch(() => {
-      return;
-    });
-    if (!given || typeof given !== "object" || Array.isArray(given))
-      return message2(400, "That isn\u2019t a change to a group chat.");
-    const edits = {};
-    if ("name" in given) {
-      const name = plainName(given.name);
-      if (!name)
-        return message2(400, "A group chat needs a name.");
-      edits.name = name;
-    }
-    if ("purpose" in given)
-      edits.purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : null;
-    if ("members" in given) {
-      if (!Array.isArray(given.members) || !given.members.every((each) => typeof each === "string"))
-        return message2(400, "Those aren\u2019t bots.");
-      const members = [...new Set(given.members)];
-      if (members.length < 2)
-        return message2(400, "A group chat needs at least two bots.");
-      const bots = here();
-      const missing = members.find((each) => !bots.has(each));
-      if (missing)
-        return message2(404, `There\u2019s no bot \u201C${missing}\u201D.`);
-      edits.members = members;
-    }
-    if ("meeting" in given)
-      edits.meetingPlan = given.meeting;
-    const asked = await ask(runner, store, "PATCH", [id], edits);
-    if (asked.status !== 200)
-      return message2([400, 404, 409].includes(asked.status) ? asked.status : 503, asked.value?.message ?? "The group chat couldn\u2019t be changed.");
-    return json13({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null });
-  }
-  if (method === "DELETE" && !action) {
-    const asked = await ask(runner, store, "DELETE", [id]);
-    if (asked.status === 200 || asked.status === 404 && asked.value?.message === "No such chat.")
-      return json13({});
-    if (asked.status === 409)
-      return message2(409, "That chat is moving. Try again once it\u2019s there.");
-    return message2(503, asked.value?.message ?? "The group chat couldn\u2019t be deleted. Try again in a moment.");
-  }
-  if (method !== "POST" || action === "events")
-    return json13({}, 405);
-  const given = await body().catch(() => {
-    return;
-  }) ?? {};
-  let asked;
-  switch (action) {
-    case undefined:
-      if (typeof given.text !== "string" || !trim(given.text))
-        return json13({}, 400);
-      asked = await ask(runner, store, "POST", [id, "send"], { text: given.text, ...typeof given.named === "string" ? { named: given.named } : {} });
-      if (asked.status === 400 && asked.value?.message)
-        return message2(400, asked.value.message);
-      break;
-    case "stop":
-    case "keep-going":
-      asked = await ask(runner, store, "POST", [id, action]);
-      break;
-    case "viewed":
-      asked = await ask(runner, store, "PATCH", [id], { viewed: stamp4() });
-      break;
-    case "undo": {
-      if (typeof given.message !== "string")
-        return json13({}, 404);
-      asked = await ask(runner, store, "POST", [id, "undo"], { message: given.message });
-      if (asked.status !== 200)
-        return json13({}, failed(asked.status));
-      return json13({ text: asked.value?.data?.text ?? "" });
-    }
-    case "start":
-      if (typeof given.message !== "string")
-        return json13({}, 404);
-      asked = await ask(runner, store, "POST", [id, "start-work"], { wrapUp: given.message });
-      break;
-    default:
-      return json13({}, 404);
-  }
-  return json13({}, asked.status === 200 ? 200 : failed(asked.status));
-}
-async function make(runner, store, given, here) {
-  if (!given || typeof given !== "object" || Array.isArray(given))
-    return message2(400, "That isn\u2019t a group chat to make.");
-  const name = plainName(given.name);
-  if (!name)
-    return message2(400, "A group chat needs a name.");
-  const members = [...new Set(Array.isArray(given.members) ? given.members.filter((each) => typeof each === "string") : [])];
-  if (members.length < 2)
-    return message2(400, "A group chat needs at least two bots.");
-  const missing = members.find((each) => !here.has(each));
-  if (missing)
-    return message2(404, `There\u2019s no bot \u201C${missing}\u201D.`);
-  const purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : undefined;
-  let meeting;
-  if (given.meeting !== undefined && given.meeting !== null) {
-    const planned = planMeeting(given.meeting, undefined, store.settings()?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
-    if (typeof planned === "string")
-      return message2(400, planned);
-    meeting = planned;
-  }
-  const id = newGroupID();
-  const now = stamp4();
-  if (!runner.put({ id, name, ...purpose ? { purpose } : {}, members, seats: {}, heard: {}, created: now, viewed: now, ...meeting ? { meeting } : {} }, [], "active", false)) {
-    return message2(409, "That chat is here already.");
-  }
-  return json13({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null }, 201);
-}
-
-// box/src/agents/groups/post.ts
-import { existsSync as existsSync19, readFileSync as readFileSync37, renameSync as renameSync22, writeFileSync as writeFileSync27 } from "fs";
-
-// box/src/shared/seats.ts
-var SEAT_MAIL_KINDS = ["turn", "state", "result", "steer", "stop", "drop", "work", "held", "report", "memory"];
-
-// box/src/agents/usage/usage-peers.ts
-import { createHash as createHash17 } from "crypto";
-import { mkdirSync as mkdirSync25, readFileSync as readFileSync36, renameSync as renameSync21, writeFileSync as writeFileSync26 } from "fs";
-import { dirname as dirname21 } from "path";
-var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage";
-var MINUTE4 = 60000;
-var DAY5 = 24 * 60 * MINUTE4;
-var TELL_AGAIN = 10 * MINUTE4;
-var PEER_AWAY = 25 * MINUTE4;
-var SKEW = MINUTE4;
-var MOST_ACCOUNTS = 50;
-var MOST_USES = 50000;
-var MOST_BYTES2 = 400000;
-var RECENT = 2 * 24 * 60 * MINUTE4;
-var SERVICE = /^[a-z0-9][a-z0-9-]{0,39}$/;
-var WHOLE_FRESH = 25 * MINUTE4;
-var text6 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined;
-
-class UsagePeers {
-  usage;
-  transport;
-  directory;
-  file;
-  now;
-  most;
-  peers = new Map;
-  told = new Map;
-  answered = new Map;
-  askedBack = new Map;
-  readFor = new Map;
-  refreshedElsewhere = -Infinity;
-  reading = new Set;
-  constructor(usage, transport, directory, file, now = Date.now, most = MOST_BYTES2) {
-    this.usage = usage;
-    this.transport = transport;
-    this.directory = directory;
-    this.file = file;
-    this.now = now;
-    this.most = most;
-    this.load();
-    usage.peers = this;
-    directory.listen(() => this.directorySaid());
-    transport.onFollowed?.(() => this.told.clear());
-  }
-  freshAt;
-  send(to, mail, durable) {
-    if (this.freshAt?.at !== mail.at)
-      this.freshAt = { at: mail.at, fresh: Object.fromEntries(this.usage.own().flatMap((account) => account.accountWide && account.scanned ? [[account.provider, account.scanned]] : [])) };
-    const fresh = this.freshAt.fresh;
-    this.transport.send(to, Object.keys(fresh).length ? { ...mail, fresh } : mail, durable);
-  }
-  readsWhole(service, identity) {
-    const self = this.directory.own()?.key;
-    if (!self || !this.directory.told)
-      return false;
-    const now = this.now();
-    for (const [key, kept] of this.peers) {
-      if (key >= self || this.vouched(key) || now - kept.heard > PEER_AWAY)
-        continue;
-      if (kept.accounts.some((account) => account.accountWide && account.service === service && account.identity === identity && account.scanned !== undefined && now - account.scanned < WHOLE_FRESH))
-        return true;
-    }
-    return false;
-  }
-  rows(own) {
-    const now = this.now();
-    const self = this.directory.own();
-    const boxes = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }];
-    const peers = [...this.peers.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name));
-    for (const [key, kept] of peers)
-      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, vouched: this.vouched(key), accounts: kept.accounts.map((account) => ({ ...account, slots: trimmed2(account.slots, now) })) });
-    return usageRows(boxes);
-  }
-  vouched(key) {
-    if (!this.directory.isYours)
-      return false;
-    return this.directory.told ? !this.directory.isYours(key) : this.peers.get(key)?.vouched === true;
-  }
-  tell(changed = false) {
-    if (!this.transport.followed || !this.directory.told)
-      return;
-    const now = this.now();
-    const { accounts, digest } = this.shared();
-    const from = Math.floor((now - RECENT) / SLOT);
-    const recent = () => recentOf(accounts, from);
-    for (const { key } of this.directory.peerBoxes()) {
-      const last = this.told.get(key);
-      if (!last)
-        this.send(key, { kind: "usage", at: now, accounts, digest, ask: true }, false);
-      else if (last.digest !== digest && (changed || now - last.at >= TELL_AGAIN))
-        this.send(key, { kind: "usage", at: now, accounts: recent(), from, digest }, false);
-      else if (now - last.at >= TELL_AGAIN)
-        this.send(key, { kind: "usage", at: now, digest }, false);
-      else
-        continue;
-      this.told.set(key, { digest, at: now });
-    }
-  }
-  tellAll() {
-    if (!this.transport.followed || !this.directory.told) {
-      this.told.clear();
-      return;
-    }
-    const now = this.now();
-    const { accounts, digest } = this.shared();
-    for (const { key } of this.directory.peerBoxes()) {
-      this.send(key, { kind: "usage", at: now, accounts, digest, ...this.told.has(key) ? {} : { ask: true } }, false);
-      this.told.set(key, { digest, at: now });
-    }
-  }
-  refreshElsewhere() {
-    if (!this.transport.followed || !this.directory.told)
-      return;
-    const now = this.now();
-    if (now - this.refreshedElsewhere < MINUTE4)
-      return;
-    this.refreshedElsewhere = now;
-    const digest = this.lastDigest ?? this.shared().digest;
-    for (const { key } of this.directory.peerBoxes())
-      this.send(key, { kind: "usage", at: now, digest, refresh: true }, false);
-  }
-  take(from, mail) {
-    if (!isUsageMail(mail))
-      return;
-    if (this.directory.told && !this.directory.peerBoxes().some((box) => box.key === from))
-      return;
-    const now = this.now();
-    const before = this.peers.get(from);
-    const name = this.directory.peerBoxes().find((box) => box.key === from)?.name ?? before?.name ?? "another computer";
-    const digest = text6(mail.digest, 64);
-    const wasAway = !!before && now - before.heard > PEER_AWAY;
-    const skew = typeof mail.at === "number" && Number.isFinite(mail.at) && Math.abs(now - mail.at) >= SKEW ? now - mail.at : 0;
-    let whole = !!before && !!digest && before.digest === digest;
-    if (Array.isArray(mail.accounts)) {
-      const off = typeof mail.at === "number" && Number.isFinite(mail.at) && Math.abs(now - mail.at) >= SKEW ? now - mail.at : 0;
-      let accounts = mail.accounts.slice(0, MOST_ACCOUNTS).flatMap((account) => {
-        const taken = takenAccount(account, off, now);
-        return taken ? [taken] : [];
-      });
-      const since = typeof mail.from === "number" && Number.isInteger(mail.from) && mail.from > 0 ? mail.from * SLOT : undefined;
-      if (since !== undefined)
-        accounts = accounts.map((account) => withOlder(account, before?.accounts.find((kept) => kept.provider === account.provider), since));
-      whole = !!digest && digestOf2(accounts.map(toldOf2)) === digest;
-      const vouched = this.vouched(from);
-      this.peers.set(from, { name, heard: now, ...digest ? { digest } : {}, ...vouched ? { vouched } : {}, accounts });
-      this.save();
-      this.usage.peersChanged();
-    } else if (before) {
-      before.heard = now;
-      before.name = name;
-      if (wasAway)
-        this.usage.peersChanged();
-    }
-    const fresh = mail.fresh && typeof mail.fresh === "object" ? mail.fresh : undefined;
-    const kept = this.peers.get(from);
-    if (fresh && kept) {
-      for (const account of kept.accounts) {
-        const at = fresh[account.provider];
-        if (!account.accountWide || typeof at !== "number" || !Number.isFinite(at))
-          continue;
-        const moved = Math.min(at + skew, now);
-        if (moved > (account.scanned ?? 0))
-          account.scanned = moved;
-      }
-    }
-    if (!whole && digest && mail.ask !== true && now - (this.askedBack.get(from) ?? -Infinity) >= MINUTE4) {
-      this.askedBack.set(from, now);
-      const mine = this.shared();
-      this.send(from, { kind: "usage", at: now, ...mine, ask: true }, false);
-      this.told.set(from, { digest: mine.digest, at: now });
-    }
-    if (mail.ask === true || wasAway)
-      this.answer(from, mail.ask === true);
-    if (mail.refresh === true && now - (this.readFor.get(from) ?? -Infinity) >= MINUTE4) {
-      this.readFor.set(from, now);
-      const reading = this.usage.refresh().then(() => this.answer(from, true));
-      this.reading.add(reading);
-      reading.finally(() => this.reading.delete(reading));
-    }
-  }
-  async idle() {
-    while (this.reading.size)
-      await Promise.all([...this.reading]);
-  }
-  answer(key, urgent = false) {
-    if (!this.transport.followed)
-      return;
-    const now = this.now();
-    if (!urgent && now - (this.answered.get(key) ?? -Infinity) < MINUTE4)
-      return;
-    this.answered.set(key, now);
-    const mine = this.shared();
-    this.send(key, { kind: "usage", at: now, ...mine }, false);
-    this.told.set(key, { digest: mine.digest, at: now });
-  }
-  lastDigest;
-  shared() {
-    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY5) / DAY5) * DAY5) / SLOT;
-    const accounts = this.usage.own().slice(0, MOST_ACCOUNTS).flatMap((own) => {
-      const taken = takenAccount(toldOf2(own), 0, Infinity);
-      return taken ? [{ ...toldOf2(taken), slots: fromSlot(keptSlots(taken.slots), start), whole: start }] : [];
-    });
-    for (let bytes = Buffer.byteLength(JSON.stringify(accounts));bytes > this.most; bytes = Buffer.byteLength(JSON.stringify(accounts))) {
-      const uses = accounts.reduce((sum, account) => sum + account.slots.used.length, 0);
-      if (!uses)
-        break;
-      const over = Math.ceil((bytes - this.most) / bytes * uses) + 16;
-      const cutoff = accounts.flatMap((account) => account.slots.used.map((use) => use[0])).sort((a, b) => a - b)[Math.min(over, uses) - 1];
-      for (const account of accounts) {
-        if (!account.slots.used.some((use) => use[0] <= cutoff))
-          continue;
-        account.slots = fromSlot(account.slots, cutoff + 1);
-        account.whole = Math.max(account.whole ?? 0, cutoff + 1);
-        account.cut = true;
-      }
-    }
-    const digest = digestOf2(accounts);
-    this.lastDigest = digest;
-    return { accounts, digest };
-  }
-  directorySaid() {
-    const here = new Set(this.directory.peerBoxes().map((box) => box.key));
-    let gone = false;
-    for (const key of [...this.peers.keys()]) {
-      if (here.has(key))
-        continue;
-      this.peers.delete(key);
-      gone = true;
-    }
-    for (const map of [this.told, this.answered, this.askedBack, this.readFor])
-      for (const key of [...map.keys()])
-        if (!here.has(key))
-          map.delete(key);
-    let moved = false;
-    for (const [key, kept] of this.peers) {
-      const vouched = this.vouched(key);
-      if (kept.vouched === true === vouched)
-        continue;
-      if (vouched)
-        kept.vouched = true;
-      else
-        delete kept.vouched;
-      moved = true;
-    }
-    if (gone || moved) {
-      this.save();
-      this.usage.peersChanged();
-    }
-    this.tell();
-  }
-  load() {
-    if (!this.file)
-      return;
-    try {
-      const saved = JSON.parse(readFileSync36(this.file, "utf8"));
-      for (const [key, kept] of Object.entries(saved.peers ?? {})) {
-        if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
-          continue;
-        const digest = text6(kept.digest, 64);
-        this.peers.set(key, { name: typeof kept.name === "string" ? kept.name : "another computer", heard: kept.heard, ...digest ? { digest } : {}, ...kept.vouched === true ? { vouched: true } : {}, accounts: kept.accounts.flatMap((account) => takenAccount(account, 0, Infinity) ?? []) });
-      }
-    } catch {}
-  }
-  save() {
-    if (!this.file)
-      return;
-    try {
-      mkdirSync25(dirname21(this.file), { recursive: true });
-      const peers = Object.fromEntries([...this.peers].map(([key, kept]) => [key, { ...kept, accounts: kept.accounts.map(({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) })) }]));
-      writeFileSync26(this.file + ".new", JSON.stringify({ peers }), { mode: 384 });
-      renameSync21(this.file + ".new", this.file);
-    } catch {}
-  }
-}
-function digestOf2(accounts) {
-  const canonical = accounts.map((account) => [account.provider, account.service, account.agent ?? null, account.account ?? null, account.label ?? null, account.identity ?? null, account.cut === true, account.places ?? [], account.slots.models, account.slots.used, account.slots.unknown ?? []]);
-  return createHash17("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32);
-}
-var toldOf2 = ({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) });
-function fromSlot(slots, first) {
-  return keptSlots(slotsFrom({ ...slots, used: slots.used.filter((use) => use[0] >= first), ...slots.unknown ? { unknown: slots.unknown.filter((each) => each[0] >= first) } : {}, ...slots.fallback ? { fallback: slots.fallback.filter((each) => each[0] >= first) } : {} }, Infinity));
-}
-function recentOf(accounts, from) {
-  return accounts.map((account) => ({
-    ...account,
-    slots: { models: account.slots.models, used: account.slots.used.filter((use) => use[0] >= from), ...account.slots.unknown ? { unknown: account.slots.unknown.filter((each) => each[0] >= from) } : {}, ...account.slots.fallback ? { fallback: account.slots.fallback.filter((each) => each[0] >= from) } : {} }
-  }));
-}
-function withOlder(account, kept, since) {
-  const slots = noSlots();
-  const first = (account.whole ?? 0) * SLOT;
-  for (const [slot, models] of kept?.slots.used ?? [])
-    if (slot < since && slot >= first)
-      slots.used.set(slot, models);
-  for (const [slot, models] of kept?.slots.unknown ?? [])
-    if (slot < since && slot >= first)
-      slots.unknown.set(slot, models);
-  for (const [slot, models] of kept?.slots.fallback ?? [])
-    if (slot < since && slot >= first)
-      slots.fallback.set(slot, models);
-  for (const [slot, models] of account.slots.used)
-    if (slot >= since)
-      slots.used.set(slot, models);
-  for (const [slot, models] of account.slots.unknown)
-    if (slot >= since)
-      slots.unknown.set(slot, models);
-  for (const [slot, models] of account.slots.fallback)
-    if (slot >= since)
-      slots.fallback.set(slot, models);
-  return { ...account, slots };
-}
-function takenAccount(given, off, now) {
-  if (!given || typeof given !== "object")
-    return null;
-  const account = given;
-  const provider = text6(account.provider);
-  if (!provider || typeof account.service !== "string" || !SERVICE.test(account.service))
-    return null;
-  const scanned = typeof account.scanned === "number" && Number.isFinite(account.scanned) && account.scanned > 0 ? Math.min(account.scanned + off, now) : undefined;
-  return {
-    provider,
-    service: account.service,
-    ...kinds.includes(account.agent) ? { agent: account.agent, ...text6(account.account) ? { account: text6(account.account) } : {} } : {},
-    ...text6(account.label, 100) ? { label: text6(account.label, 100) } : {},
-    ...typeof account.identity === "string" && /^[0-9a-f]{16}$/.test(account.identity) ? { identity: account.identity } : {},
-    ...scanned ? { scanned } : {},
-    slots: slotsFrom(account.slots, MOST_USES),
-    ...account.cut === true ? { cut: true } : {},
-    ...Number.isSafeInteger(account.whole) && account.whole > 0 ? { whole: account.whole } : {},
-    ...Array.isArray(account.places) && account.places.length ? { places: account.places.filter((place) => typeof place === "string" && /^[0-9a-f]{16}$/.test(place)).slice(0, 20) } : {},
-    ...account.estimated === false ? { estimated: false } : {},
-    ...account.accountWide === true ? { accountWide: true } : {}
-  };
-}
-
-// box/src/agents/usage/settings-peers.ts
-var isSettingsMail = (value) => value !== null && typeof value === "object" && value.kind === "settings";
-var MINUTE5 = 60000;
-var TELL_AGAIN2 = 10 * MINUTE5;
-
-class SettingsPeers {
-  settings;
-  transport;
-  directory;
-  now;
-  told = new Map;
-  answered = new Map;
-  constructor(settings, transport, directory, now = Date.now) {
-    this.settings = settings;
-    this.transport = transport;
-    this.directory = directory;
-    this.now = now;
-    settings.self = () => directory.own()?.key ?? "";
-    settings.listen(() => this.tell(true));
-    directory.listen(() => this.directorySaid());
-    transport.onFollowed?.(() => {
-      this.told.clear();
-      this.tell();
-    });
-  }
-  ours() {
-    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer)
-      return [];
-    return this.directory.peerBoxes().flatMap(({ key }) => this.directory.isPeer(key) ? [key] : []);
-  }
-  taking;
-  tell(changed = false) {
-    if (!this.transport.followed)
-      return;
-    const now = this.now();
-    const digest = this.settings.digest();
-    for (const key of this.ours()) {
-      if (this.taking?.key === key && this.taking.digest === digest) {
-        this.told.set(key, { digest, at: now });
-        continue;
-      }
-      const last = this.told.get(key);
-      if (!last)
-        this.send(key, { kind: "settings", at: now, digest, usage: this.settings.kept(), ask: true });
-      else if (last.digest !== digest && (changed || now - last.at >= TELL_AGAIN2))
-        this.send(key, { kind: "settings", at: now, digest, usage: this.settings.kept() });
-      else if (now - last.at >= TELL_AGAIN2)
-        this.send(key, { kind: "settings", at: now, digest });
-      else
-        continue;
-      this.told.set(key, { digest, at: now });
-    }
-  }
-  take(from, mail) {
-    if (!isSettingsMail(mail) || mail.setup !== this.directory.setup || !this.ours().includes(from))
-      return;
-    if (mail.usage) {
-      this.taking = typeof mail.digest === "string" ? { key: from, digest: mail.digest } : undefined;
-      try {
-        this.settings.merge(mail.usage);
-      } finally {
-        this.taking = undefined;
-      }
-    }
-    if (!this.transport.followed)
-      return;
-    const digest = this.settings.digest();
-    const now = this.now();
-    if (mail.ask === true) {
-      this.send(from, { kind: "settings", at: now, digest, usage: this.settings.kept() });
-    } else if (typeof mail.digest === "string" && mail.digest !== digest && now - (this.answered.get(from) ?? -Infinity) >= MINUTE5) {
-      this.answered.set(from, now);
-      this.send(from, { kind: "settings", at: now, digest, usage: this.settings.kept(), ...mail.usage ? {} : { ask: true } });
-    } else
-      return;
-    this.told.set(from, { digest, at: now });
-  }
-  send(to, mail) {
-    if (!this.directory.setup)
-      return;
-    this.transport.send(to, { ...mail, setup: this.directory.setup }, false);
-  }
-  directorySaid() {
-    if (this.directory.told) {
-      if (this.directory.setup)
-        this.settings.inSetup(this.directory.setup);
-      else if (this.directory.inNoSetup)
-        this.settings.inNoSetup();
-    }
-    const ours = new Set(this.ours());
-    for (const map of [this.told, this.answered])
-      for (const key of [...map.keys()])
-        if (!ours.has(key))
-          map.delete(key);
-    this.tell();
-  }
-}
-
 // box/src/agents/groups/api.ts
 function server3(url, password) {
   const authorization = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
@@ -31837,12 +30570,12 @@ class SeatAPI {
 }
 
 // box/src/shared/queues.ts
-import fs5 from "fs";
-import path4 from "path";
+import fs6 from "fs";
+import path5 from "path";
 var queueFiles = (run) => ({
-  file: path4.join(run, "queues.json"),
-  waiting: path4.join(run, "waiting"),
-  lock: path4.join(run, ".queues.lock")
+  file: path5.join(run, "queues.json"),
+  waiting: path5.join(run, "waiting"),
+  lock: path5.join(run, ".queues.lock")
 });
 var WAITING_ID = /^msg_[A-Za-z0-9]{1,80}$/;
 var keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) => {
@@ -31868,7 +30601,7 @@ var RESUMED_FOR = 60000;
 function readQueues(files) {
   let all = {};
   try {
-    all = JSON.parse(fs5.readFileSync(files.file, "utf8"));
+    all = JSON.parse(fs6.readFileSync(files.file, "utf8"));
   } catch {}
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
@@ -31909,13 +30642,13 @@ function changeQueue(files, session, change, changed) {
     changed?.();
   return after;
 }
-var waitingFile = (files, id) => path4.join(files.waiting, `${id}.json`);
+var waitingFile = (files, id) => path5.join(files.waiting, `${id}.json`);
 var fileNames = (files) => (files ?? []).flatMap((file) => {
   if (!isObject(file))
     return [];
   if (typeof file.name === "string" && file.name)
     return [file.name];
-  return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path4.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
+  return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path5.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
 });
 var last2 = (state, item) => ({ ...state, waiting: [...state.waiting ?? [], item] });
 function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2) {
@@ -32575,6 +31308,144 @@ class Seats {
     const cutShort = after.findLast((message) => message?.type === "idle")?.outcome === "interrupted";
     return { ...said2(after), size, cutShort };
   }
+}
+
+// box/src/agents/groups/time.ts
+function parseRepeat(text) {
+  if (text === "weekdays")
+    return { kind: "weekdays" };
+  const unit = text.slice(-1);
+  const digits = text.slice(0, -1);
+  if (!/^[1-9][0-9]*$/.test(digits) || text.length > 7)
+    return;
+  const count = Number(digits);
+  if (unit === "m" && count >= 5 && count <= 525600)
+    return { kind: "minutes", count };
+  if (unit === "h" && count <= 8760)
+    return { kind: "hours", count };
+  if (unit === "d" && count <= 366)
+    return { kind: "days", count };
+  if (unit === "w" && count <= 52)
+    return { kind: "weeks", count };
+  return;
+}
+var keepsTimeOfDay = (every) => every.kind === "days" || every.kind === "weeks" || every.kind === "weekdays";
+var keepsWeekday = (every) => every.kind === "weeks";
+var formats2 = new Map;
+var weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function local(time, zone) {
+  let format = formats2.get(zone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      weekday: "short"
+    });
+    formats2.set(zone, format);
+  }
+  const parts = {};
+  for (const part of format.formatToParts(new Date(time)))
+    parts[part.type] = part.value;
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24,
+    minute: Number(parts.minute),
+    weekday: weekdays.indexOf(parts.weekday) + 1
+  };
+}
+function offset(time, zone) {
+  const at = local(time, zone);
+  const wall = Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute);
+  return wall - Math.floor(time / 60000) * 60000;
+}
+function moment(year, month, day, hour, minute, zone) {
+  const wall = Date.UTC(year, month - 1, day, hour, minute);
+  const before = wall - offset(wall - 86400000, zone);
+  const after = wall - offset(wall + 86400000, zone);
+  const reads = (time) => {
+    const at = local(time, zone);
+    return Date.UTC(at.year, at.month - 1, at.day, at.hour, at.minute) === wall;
+  };
+  const fits = [before, after].filter(reads);
+  if (fits.length > 0)
+    return Math.min(...fits);
+  return before;
+}
+function plusDays(date, days) {
+  const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
+  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
+}
+var daysBetween = (from, to) => Math.round((Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000);
+function minutesOf(time, zone) {
+  const at = local(time, zone);
+  return at.hour * 60 + at.minute;
+}
+function isWeekend(time, zone) {
+  const day = local(time, zone).weekday;
+  return day === 1 || day === 7;
+}
+function next(every, due, now, zone, at, weekday) {
+  if (every.kind === "minutes" || every.kind === "hours") {
+    const period = every.count * (every.kind === "hours" ? 3600000 : 60000);
+    return due + (Math.floor((now - due) / period) + 1) * period;
+  }
+  const days = every.kind === "days" ? every.count : every.kind === "weeks" ? every.count * 7 : 1;
+  const minutes = at ?? minutesOf(due, zone);
+  let first = local(due, zone);
+  if (keepsWeekday(every) && weekday !== undefined) {
+    const shift = (weekday - local(due, zone).weekday + 7) % 7;
+    first = plusDays(first, shift > 3 ? shift - 7 : shift);
+  }
+  const missed = daysBetween(first, local(now, zone));
+  let periods = Math.max(1, Math.trunc(missed / days));
+  for (let tries = 0;tries < 400; tries++, periods++) {
+    const day = plusDays(first, periods * days);
+    const time = moment(day.year, day.month, day.day, Math.floor(minutes / 60), minutes % 60, zone);
+    if (time > now && (every.kind !== "weekdays" || !isWeekend(time, zone)))
+      return time;
+  }
+  return now + days * 86400000;
+}
+function weekdayOf(time, zone) {
+  return local(time, zone).weekday;
+}
+var defaultTopic = "Our regular meeting: where things stand, and what's next.";
+function planMeeting(plan, before, zone, now = Date.now()) {
+  if (typeof plan?.next !== "number" || !Number.isFinite(plan.next))
+    return "That isn't a meeting.";
+  const every = plan.every ?? undefined;
+  const repeat = every === undefined ? undefined : parseRepeat(String(every));
+  if (every !== undefined && !repeat)
+    return `\u201C${every}\u201D isn't how often a meeting can come back.`;
+  const time = Math.floor(plan.next / 60) * 60000;
+  const kept = before && Date.parse(before.next) === time && (before.every ?? undefined) === every ? before : undefined;
+  const at = repeat && keepsTimeOfDay(repeat) ? kept?.at ?? minutesOf(time, zone) : undefined;
+  const weekday = repeat && keepsWeekday(repeat) ? kept?.weekday ?? weekdayOf(time, zone) : undefined;
+  let when = time;
+  if (when <= now && repeat)
+    when = next(repeat, when, now, zone, at, weekday);
+  for (let tries = 0;repeat?.kind === "weekdays" && isWeekend(when, zone) && tries < 7; tries++) {
+    const day = plusDays(local(when, zone), 1);
+    const clock = local(when, zone);
+    when = moment(day.year, day.month, day.day, clock.hour, clock.minute, zone);
+  }
+  if (when <= now)
+    return "That time has passed. Pick one to come.";
+  const topic = String(plan.topic ?? "").trim() || defaultTopic;
+  return {
+    next: new Date(when).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    ...every !== undefined ? { every } : {},
+    topic,
+    ...at !== undefined ? { at } : {},
+    ...weekday !== undefined ? { weekday } : {}
+  };
 }
 
 // box/src/agents/groups/runner.ts
@@ -33676,7 +32547,7 @@ class GroupRunner {
     this.meetings.unref?.();
   }
   meetDue(now = Date.now()) {
-    const zone = usableZone(this.context.store.settings()?.timeZone);
+    const zone = chatZone(this.context.store.settings());
     for (const [id, kept] of this.chats) {
       const meeting = kept.group.meeting;
       if (kept.status !== "active" || !meeting)
@@ -33824,7 +32695,7 @@ class GroupRunner {
   when(time) {
     const settings = this.context.store.settings();
     try {
-      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: settings?.timeZone }).format(new Date(time));
+      return new Intl.DateTimeFormat(settings?.locale ?? "en-US", { dateStyle: "medium", timeStyle: "short", timeZone: chatZone(settings) }).format(new Date(time));
     } catch {
       return time;
     }
@@ -33964,8 +32835,9 @@ function named6(unheard) {
   return [...head.slice(0, -1), ...items, head.at(-1)].join(`
 `);
 }
-function usableZone(zone) {
+function chatZone(settings) {
   const own = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zone = yourZone() ?? settings?.timeZone;
   if (!zone)
     return own;
   try {
@@ -33979,6 +32851,1173 @@ var weekdayOf2 = (time, zone) => {
   const name = new Intl.DateTimeFormat("en-US", { timeZone: zone, weekday: "short" }).format(new Date(time));
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(name) + 1;
 };
+
+// box/src/agents/groups/store.ts
+import { existsSync as existsSync18, mkdirSync as mkdirSync24, readdirSync as readdirSync20, readFileSync as readFileSync34, renameSync as renameSync20, rmSync as rmSync16, writeFileSync as writeFileSync25 } from "fs";
+import { join as join40 } from "path";
+var version2 = 1;
+function isTurning(value) {
+  return value && typeof value.bot === "string" && typeof value.seat === "string" && typeof value.agents === "boolean" && typeof value.prompt === "string" && typeof value.sent === "number" && (value.wrapUp === undefined || typeof value.wrapUp === "boolean");
+}
+var strings2 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string");
+var stringMap = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string");
+var isDate = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value));
+function isGroup(value, id) {
+  if (!value || value.id !== id || typeof value.name !== "string" || !strings2(value.members) || !isDate(value.created))
+    return false;
+  if (!stringMap(value.seats) || !stringMap(value.heard))
+    return false;
+  if (value.seatBoxes !== undefined && !stringMap(value.seatBoxes))
+    return false;
+  if (value.purpose !== undefined && value.purpose !== null && typeof value.purpose !== "string")
+    return false;
+  if (value.agentSeats !== undefined && !strings2(value.agentSeats))
+    return false;
+  if (value.retracted !== undefined && value.retracted !== null && !stringMap(value.retracted))
+    return false;
+  if (value.viewed !== undefined && !isDate(value.viewed))
+    return false;
+  return value.meeting === undefined || value.meeting === null || isMeeting(value.meeting);
+}
+function isMeeting(value) {
+  if (!value || !isDate(value.next) || typeof value.topic !== "string")
+    return false;
+  if (value.every !== undefined && value.every !== null && typeof value.every !== "string")
+    return false;
+  if (value.at !== undefined && value.at !== null && typeof value.at !== "number")
+    return false;
+  return value.weekday === undefined || value.weekday === null || typeof value.weekday === "number";
+}
+var kinds3 = new Set(["message", "wrapUp", "note", "meeting"]);
+var states = new Set(["proposed", "waiting", "working", "done", "failed"]);
+function isMessages(value) {
+  return Array.isArray(value) && value.every((message) => message && typeof message.id === "string" && typeof message.text === "string" && isDate(message.time) && kinds3.has(message.kind) && (message.author === undefined || message.author === null || typeof message.author === "string") && (message.tasks === undefined || Array.isArray(message.tasks) && message.tasks.every((task) => task && typeof task.id === "string" && typeof task.bot === "string" && typeof task.task === "string" && states.has(task.state))));
+}
+var forgottenFor = 3 * 86400000;
+var read2 = (file) => {
+  try {
+    return JSON.parse(readFileSync34(file, "utf8"));
+  } catch {
+    return;
+  }
+};
+var text5 = (file) => {
+  try {
+    return readFileSync34(file, "utf8");
+  } catch {
+    return;
+  }
+};
+function write(file, value) {
+  writeFileSync25(file + ".new", JSON.stringify(value, null, 2), { mode: 384 });
+  renameSync20(file + ".new", file);
+}
+
+class GroupStore {
+  root;
+  bots;
+  agentsFile;
+  constructor(root, bots, agentsFile) {
+    this.root = root;
+    this.bots = bots;
+    this.agentsFile = agentsFile;
+    mkdirSync24(root, { recursive: true, mode: 448 });
+  }
+  folder(id) {
+    return join40(this.root, id);
+  }
+  load() {
+    const all = new Map;
+    let names = [];
+    try {
+      names = readdirSync20(this.root);
+    } catch {}
+    for (const id of names) {
+      if (!/^grp_[a-z0-9]+$/.test(id))
+        continue;
+      const kept = this.read(id);
+      if (kept)
+        all.set(id, kept);
+    }
+    return all;
+  }
+  read(id) {
+    const record = read2(join40(this.folder(id), "group.json"));
+    if (!record || typeof record.kuvo !== "number" || record.kuvo > version2 || !isGroup(record.group, id))
+      return;
+    const messages = read2(join40(this.folder(id), "messages.json")) ?? [];
+    if (!isMessages(messages))
+      return;
+    return { group: record.group, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
+  }
+  saveGroup(kept) {
+    mkdirSync24(this.folder(kept.group.id), { recursive: true, mode: 448 });
+    write(join40(this.folder(kept.group.id), "group.json"), { kuvo: version2, status: kept.status, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group });
+  }
+  saveMessages(kept) {
+    mkdirSync24(this.folder(kept.group.id), { recursive: true, mode: 448 });
+    write(join40(this.folder(kept.group.id), "messages.json"), kept.messages);
+  }
+  setAwake(id, awake) {
+    const file = join40(this.folder(id), "awake");
+    if (awake && !existsSync18(file) && existsSync18(this.folder(id)))
+      writeFileSync25(file, "");
+    if (!awake)
+      rmSync16(file, { force: true });
+  }
+  trash(id, trash) {
+    if (!existsSync18(this.folder(id)))
+      return;
+    const into = join40(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`);
+    mkdirSync24(into, { recursive: true, mode: 448 });
+    renameSync20(this.folder(id), join40(into, id));
+    emit("kuvo.group.trashed", { id, path: into });
+  }
+  settings() {
+    const value = read2(join40(this.root, "settings.json"));
+    if (!value || typeof value !== "object")
+      return;
+    return {
+      personalities: value.personalities && typeof value.personalities === "object" ? value.personalities : {},
+      identityNote: typeof value.identityNote === "string" ? value.identityNote : "",
+      askFirst: value.askFirst === true,
+      denies: Array.isArray(value.denies) ? value.denies.filter((rule) => typeof rule?.effect === "string" && holdsBack(rule.effect) && typeof rule.action === "string") : [],
+      timeZone: typeof value.timeZone === "string" ? value.timeZone : undefined,
+      boxTimeZone: typeof value.boxTimeZone === "string" ? value.boxTimeZone : undefined,
+      locale: typeof value.locale === "string" ? value.locale : undefined
+    };
+  }
+  writeSettings(settings) {
+    const kept = read2(join40(this.root, "settings.json"));
+    write(join40(this.root, "settings.json"), { ...kept && typeof kept === "object" ? kept : {}, kuvo: version2, ...settings });
+  }
+  allBots() {
+    let names = [];
+    try {
+      names = readdirSync20(this.bots);
+    } catch {}
+    return names.flatMap((name) => this.bot(name) ?? []);
+  }
+  bot(id) {
+    if (!/^bot_[A-Za-z0-9]+$/.test(id))
+      return;
+    const folder = join40(this.bots, id);
+    const described = read2(join40(folder, "bot.json"));
+    const sessionID = text5(join40(folder, "session"))?.trim();
+    if (!described?.name || !sessionID)
+      return;
+    const job = read2(join40(folder, "job.json"));
+    const directory = text5(join40(folder, "directory"))?.trim() || join40(folder, "workspace");
+    return {
+      id,
+      name: String(described.name),
+      job: typeof job?.line === "string" ? job.line : String(described.job ?? ""),
+      instructions: typeof job?.details === "string" ? job.details : "",
+      memoryFile: join40(folder, "MEMORY.md"),
+      folder,
+      sessionID,
+      directory,
+      model: described.model?.id && described.model?.providerID ? described.model : undefined,
+      personality: typeof described.personality === "string" ? described.personality : undefined,
+      agents: text5(join40(folder, "via"))?.trim() === "bridge",
+      ...described.look !== undefined ? { look: described.look } : {},
+      ...typeof described.created === "string" ? { created: described.created } : {},
+      ...text5(join40(folder, "paused"))?.trim() === "moving" ? { moving: true } : {}
+    };
+  }
+  peerMemory(bot) {
+    const entries = this.peerEntries(bot);
+    return Object.fromEntries(Object.entries(entries).filter(([, entry]) => !entry.forgotten));
+  }
+  peerMemoryAt(bot, key) {
+    const at = this.peerEntries(bot)[key]?.at;
+    return typeof at === "number" ? at : 0;
+  }
+  peerEntries(bot) {
+    const all = read2(join40(this.root, "peer-memory.json"));
+    const entries = all && typeof all === "object" ? all[bot] : undefined;
+    return entries && typeof entries === "object" ? entries : {};
+  }
+  keepPeerMemory(bot, key, memory) {
+    this.changePeerMemory(bot, (entries) => entries[key] = memory);
+  }
+  forgetPeerMemory(bot, key, at) {
+    this.changePeerMemory(bot, (entries) => {
+      if (typeof at === "number" && at > 0)
+        entries[key] = { forgotten: true, at, time: new Date().toISOString() };
+      else
+        delete entries[key];
+    });
+  }
+  changePeerMemory(bot, change) {
+    const all = read2(join40(this.root, "peer-memory.json")) ?? {};
+    const entries = { ...all[bot] ?? {} };
+    change(entries);
+    for (const [key, entry] of Object.entries(entries))
+      if (entry?.forgotten && !(Date.now() - Date.parse(entry.time) < forgottenFor))
+        delete entries[key];
+    if (Object.keys(entries).length === 0)
+      delete all[bot];
+    else
+      all[bot] = entries;
+    write(join40(this.root, "peer-memory.json"), all);
+  }
+  peerWork() {
+    const all = read2(join40(this.root, "peer-work.json"));
+    return all && typeof all === "object" ? all : {};
+  }
+  keepPeerWork(task, work) {
+    this.changePeerWork((all) => {
+      if (work)
+        all[task] = work;
+      else
+        delete all[task];
+    });
+  }
+  changePeerWork(change) {
+    const all = this.peerWork();
+    change(all);
+    write(join40(this.root, "peer-work.json"), all);
+  }
+  pendingMemory() {
+    const value = read2(join40(this.root, "pending-memory.json"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return {};
+    return Object.fromEntries(Object.entries(value).filter(([bot, chats]) => /^bot_[A-Za-z0-9]+$/.test(bot) && strings2(chats)));
+  }
+  setPendingMemory(pending) {
+    if (Object.keys(pending).length === 0)
+      rmSync16(join40(this.root, "pending-memory.json"), { force: true });
+    else
+      write(join40(this.root, "pending-memory.json"), pending);
+  }
+  peerTurns() {
+    const all = read2(join40(this.root, "peer-turns.json"));
+    return all && typeof all === "object" ? all : {};
+  }
+  keepPeerTurns(turns) {
+    write(join40(this.root, "peer-turns.json"), turns);
+  }
+  writeFile(path, contents) {
+    mkdirSync24(join40(path, ".."), { recursive: true });
+    writeFileSync25(path + ".new", contents, { mode: 384 });
+    renameSync20(path + ".new", path);
+  }
+  removeFile(path) {
+    rmSync16(path, { force: true });
+  }
+}
+
+// box/src/agents/groups/named.ts
+import { readFileSync as readFileSync35 } from "fs";
+var start = "<named-agents>";
+var end = "</named-agents>";
+var heading = "Agents the user named with & in this message, by their address. Read one's conversation with read_conversation only when what the user asks needs what it knows or did, and write to it with send_message only to ask it something or hand it work; when the user only mentions one, do neither:";
+function readDirectory(file) {
+  if (!file)
+    return { machine: null, agents: [] };
+  try {
+    const value = JSON.parse(readFileSync35(file, "utf8"));
+    const agents = Array.isArray(value?.agents) ? value.agents.filter((agent) => agent && typeof agent.session === "string" && agent.session.startsWith("ses_") && typeof agent.name === "string" && agent.name) : [];
+    return { machine: typeof value?.machine === "string" ? value.machine : null, agents };
+  } catch {
+    return { machine: null, agents: [] };
+  }
+}
+var fold3 = (text) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+var isWordCharacter = (character) => character !== undefined && /[\p{L}\p{N}]/u.test(character);
+function namedIn(text, agents, excluding = new Set) {
+  if (!text.includes("&"))
+    return [];
+  const byName = new Map;
+  for (const agent of agents) {
+    if (excluding.has(agent.session))
+      continue;
+    const key = fold3(agent.name);
+    if (key && !byName.has(key))
+      byName.set(key, agent);
+  }
+  const folded = fold3(text);
+  const found = [];
+  for (const [key, agent] of [...byName].sort((a, b) => b[0].length - a[0].length)) {
+    const needle = "&" + key;
+    let from = 0;
+    for (;; ) {
+      const at = folded.indexOf(needle, from);
+      if (at < 0)
+        break;
+      from = at + needle.length;
+      const to = at + needle.length;
+      if (isWordCharacter(folded[at - 1]) || isWordCharacter(folded[to]))
+        continue;
+      if (found.some((each) => at < each.to && each.at < to))
+        continue;
+      found.push({ at, to, agent });
+    }
+  }
+  const named = [];
+  for (const { agent } of found.sort((a, b) => a.at - b.at))
+    if (!named.includes(agent))
+      named.push(agent);
+  return named;
+}
+function what(agent, here) {
+  const machine = agent.machine ?? null;
+  const place = machine === here ? here === null ? "on the Mac" : "here" : machine === null ? "on the Mac" : `on ${machine}`;
+  return `${agent.kind}, ${place}` + (agent.project ? `, in ${agent.project}` : "");
+}
+function namedBlock(text, directory, excluding = new Set) {
+  const named = namedIn(text, directory.agents, excluding);
+  if (!named.length)
+    return;
+  const lines = named.map((agent) => `- &${agent.name} (${agent.session}): ${what(agent, directory.machine)}` + (agent.about ? `: ${agent.about}` : ""));
+  return [start, heading, ...lines, end].join(`
+`);
+}
+
+// box/src/agents/groups/routes.ts
+var json12 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var error = (status, message) => json12({ message }, status);
+async function groupRoutes(runner, store, method, parts, body) {
+  if (!runner || !store)
+    return error(404, "Group chats run on the Mac here.");
+  const [id, action] = parts;
+  if (!id) {
+    if (method === "GET")
+      return json12({ version: version2, data: runner.list() });
+    return error(405, "Not allowed");
+  }
+  if ((id === "box-settings" || id === "clock" || id === "settings") && method === "PUT" && action === undefined) {
+    const value = await body();
+    const before = store.settings();
+    if (id === "box-settings") {
+      store.writeSettings({
+        personalities: value?.personalities && typeof value.personalities === "object" ? value.personalities : {},
+        identityNote: typeof value?.identityNote === "string" ? value.identityNote : "",
+        askFirst: value?.askFirst === true,
+        denies: Array.isArray(value?.denies) ? value.denies : [],
+        boxTimeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined
+      });
+      boxZoneIs(value?.timeZone);
+    } else {
+      store.writeSettings({
+        timeZone: typeof value?.timeZone === "string" ? value.timeZone : undefined,
+        locale: typeof value?.locale === "string" ? value.locale : undefined
+      });
+    }
+    const after = store.settings();
+    if (JSON.stringify([before?.askFirst, before?.denies]) !== JSON.stringify([after?.askFirst, after?.denies]))
+      runner.rulesChanged();
+    return json12({});
+  }
+  if (!/^grp_[a-z0-9]+$/.test(id))
+    return error(404, "No such chat.");
+  if (!action) {
+    if (method === "GET") {
+      const chat = runner.get(id);
+      return chat ? json12({ version: version2, data: chat }) : error(404, "No such chat.");
+    }
+    if (method === "PUT") {
+      const { group, messages, status, replace } = await body();
+      if (!isGroup(group, id) || !isMessages(messages ?? []))
+        return error(400, "That isn't a group chat.");
+      if (!runner.put(group, messages ?? [], status === "active" ? "active" : "held", replace === true))
+        return error(409, "That chat is here already.");
+      return json12({ data: runner.get(id) });
+    }
+    if (method === "PATCH") {
+      const edits = await body();
+      if (edits && "meetingPlan" in edits) {
+        if (edits.meetingPlan === null) {
+          edits.meeting = null;
+        } else {
+          const planned = planMeeting(edits.meetingPlan, runner.get(id)?.group.meeting, chatZone(store.settings()));
+          if (typeof planned === "string")
+            return error(400, planned);
+          edits.meeting = planned;
+        }
+        delete edits.meetingPlan;
+      }
+      if (runner.get(id)?.status === "held" && Object.keys(edits ?? {}).some((key) => key !== "viewed"))
+        return error(409, "That chat is moving.");
+      if (edits?.meeting !== undefined && edits.meeting !== null && !isMeeting(edits.meeting))
+        return error(400, "That isn't a meeting.");
+      if (edits?.members !== undefined && !(Array.isArray(edits.members) && edits.members.every((member) => typeof member === "string")))
+        return error(400, "Those aren't bots.");
+      return await runner.update(id, edits ?? {}) ? json12({ data: runner.get(id) }) : error(404, "No such chat.");
+    }
+    if (method === "DELETE") {
+      if (runner.get(id)?.status === "held")
+        return error(409, "That chat is moving.");
+      return await runner.delete(id) ? json12({}) : error(404, "No such chat.");
+    }
+    return error(405, "Not allowed");
+  }
+  if (method !== "POST")
+    return error(405, "Not allowed");
+  const found = runner.get(id);
+  if (!found)
+    return error(404, "No such chat.");
+  switch (action) {
+    case "activate":
+      runner.activate(id);
+      return json12({ data: runner.get(id) });
+    case "hold":
+      return json12({ data: runner.hold(id) });
+    case "release":
+      runner.release(id);
+      return json12({});
+  }
+  if (found.status !== "active")
+    return error(409, "That chat is moving.");
+  switch (action) {
+    case "send": {
+      const { text } = await body();
+      if (typeof text === "string" && text.trim() === "/compact")
+        return error(400, "A group chat can't be summarized: each bot keeps its own conversation, and starts it over when it grows too long.");
+      const members = new Set(found.group.members.flatMap((member) => store.bot(member)?.sessionID ?? runner.peers?.bots().find((bot) => bot.id === member)?.session ?? []));
+      const named = typeof text === "string" ? namedBlock(text, readDirectory(store.agentsFile), members) : undefined;
+      const message = typeof text === "string" ? runner.send(id, text, named) : undefined;
+      return message ? json12({ data: message }) : error(400, "Nothing to send.");
+    }
+    case "stop":
+      runner.stop(id);
+      return json12({});
+    case "keep-going":
+      runner.keepGoing(id);
+      return json12({});
+    case "undo": {
+      const { message } = await body();
+      const text = typeof message === "string" ? runner.undo(id, message) : undefined;
+      return text === undefined ? error(404, "No such message.") : json12({ data: { text } });
+    }
+    case "start-work": {
+      const { wrapUp } = await body();
+      if (typeof wrapUp === "string")
+        runner.startWork(wrapUp, id);
+      return json12({});
+    }
+  }
+  return error(404, "Not found");
+}
+
+// box/src/agents/groups/link.ts
+var json13 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
+var message2 = (status, text) => json13({ message: text }, status);
+var seconds3 = (text) => {
+  const time = Date.parse(text ?? "");
+  return Number.isFinite(time) ? time / 1000 : undefined;
+};
+var stamp4 = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+var plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" ");
+var newGroupID = () => "grp_" + Array.from(crypto.getRandomValues(new Uint8Array(10)), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join("");
+var failed = (status) => status === 409 ? 409 : status >= 500 ? 503 : 404;
+var present = (value) => Object.fromEntries(Object.entries(value).filter(([, each]) => each !== null && each !== undefined));
+function clientMessage(message, withSteps = true) {
+  if (!message)
+    return;
+  const { named: _named, steps, time, tasks, author, ...rest } = message;
+  return {
+    ...rest,
+    ...author != null ? { author } : {},
+    time: seconds3(time),
+    ...withSteps && steps ? { steps } : {},
+    ...tasks ? {
+      tasks: tasks.map(({ started, finished, lost: _lost, ...task }) => ({ ...task, ...started ? { started: seconds3(started) } : {}, ...finished ? { finished: seconds3(finished) } : {} }))
+    } : {}
+  };
+}
+function member(bot) {
+  return { id: bot.id, name: bot.name, look: bot.look, session: bot.sessionID, directory: bot.directory, agents: bot.agents };
+}
+var plainLook = { color: "graphite", shape: "round", face: "calm" };
+var looks3 = {
+  color: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
+  shape: ["round", "squircle", "pebble", "gem", "bloom"],
+  face: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
+};
+function knownLook(look) {
+  const given = look && typeof look === "object" && !Array.isArray(look) ? look : {};
+  const pick = (key) => typeof given[key] === "string" && looks3[key].includes(given[key]) ? given[key] : plainLook[key];
+  return { color: pick("color"), shape: pick("shape"), face: pick("face") };
+}
+function memberThere(bot, runner) {
+  return { id: bot.id, name: bot.name, look: knownLook(bot.look), session: bot.session ?? "", directory: "", agents: false, computer: runner.peers?.name(bot.box) ?? "another computer" };
+}
+function bots(runner, store) {
+  const here = store.allBots().sort((a, b) => (a.created ?? "").localeCompare(b.created ?? "") || a.name.localeCompare(b.name));
+  const ids = new Set(here.map((bot) => bot.id));
+  const there = (runner.peers?.bots() ?? []).filter((bot) => !ids.has(bot.id) && runner.peers?.takesSeats(bot.box));
+  return { here, there };
+}
+function anyMember(id, runner, store) {
+  const bot = store.bot(id);
+  if (bot)
+    return member(bot);
+  const there = runner.peers?.bots().find((each) => each.id === id);
+  return there ? memberThere(there, runner) : undefined;
+}
+function list2(runner, store) {
+  const groups = runner.list().filter((chat) => chat.status === "active").map(({ group, state, said, fromBot }) => ({
+    id: group.id,
+    name: group.name,
+    ...group.purpose ? { purpose: group.purpose } : {},
+    members: group.members.flatMap((id) => anyMember(id, runner, store) ?? []),
+    speaking: state.speaking,
+    discussing: Boolean(state.discussing),
+    paused: Boolean(state.paused),
+    unread: Boolean(fromBot && (!group.viewed || Date.parse(fromBot.time) > Date.parse(group.viewed))),
+    last: clientMessage(said, false),
+    meeting: group.meeting ? present({ ...group.meeting, next: seconds3(group.meeting.next) }) : undefined
+  }));
+  return { groups };
+}
+function chat(runner, id, withMessages = true) {
+  const found = runner.get(id);
+  if (!found || found.status !== "active")
+    return;
+  const { messages, state } = found;
+  return {
+    ...withMessages ? { messages: messages.slice(-300).map((each) => clientMessage(each)) } : {},
+    speaking: state.speaking,
+    discussing: Boolean(state.discussing),
+    paused: Boolean(state.paused),
+    ...state.activity?.length ? { activity: state.activity } : {},
+    ...state.stopped?.length ? { stopped: state.stopped } : {}
+  };
+}
+function following(read, chat, signal) {
+  const encoder = new TextEncoder;
+  let stop = () => {};
+  const stream = new ReadableStream({
+    start(controller) {
+      let lastState = "";
+      let lastMessages;
+      const look = (withMessages) => {
+        const now = read(withMessages || lastMessages === undefined);
+        if (!now) {
+          stop();
+          try {
+            controller.close();
+          } catch {}
+          return;
+        }
+        const { messages, ...state } = now;
+        const stateLine = JSON.stringify(state);
+        const messagesLine = messages === undefined ? lastMessages : JSON.stringify(messages);
+        if (stateLine === lastState && messagesLine === lastMessages)
+          return;
+        const line = chat && messagesLine === lastMessages ? stateLine : JSON.stringify(now);
+        lastState = stateLine;
+        lastMessages = messagesLine;
+        try {
+          controller.enqueue(encoder.encode(line + `
+`));
+        } catch {
+          stop();
+        }
+      };
+      const unsubscribe = subscribe((event) => {
+        if (!event.type.startsWith("kuvo.group.") || chat !== undefined && event.data?.id !== chat)
+          return;
+        look(event.type !== "kuvo.group.updated");
+      });
+      const onAbort = () => stop();
+      stop = () => {
+        unsubscribe();
+        signal?.removeEventListener("abort", onAbort);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      look(true);
+    },
+    cancel() {
+      stop();
+    }
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
+}
+async function ask(runner, store, method, parts, body = {}) {
+  const response = await groupRoutes(runner, store, method, parts, async () => body);
+  const value = await response.json().catch(() => ({}));
+  return { status: response.status, value };
+}
+function joinable(runner, store) {
+  const { here, there } = bots(runner, store);
+  return [...here.map(member), ...there.map((bot) => memberThere(bot, runner))];
+}
+async function linkRoutes(runner, store, method, parts, body, signal) {
+  if (!runner || !store)
+    return json13({}, 404);
+  const [id, action] = parts;
+  const here = () => {
+    const { here, there } = bots(runner, store);
+    return new Set([...here, ...there].map((bot) => bot.id));
+  };
+  if (!id || id === "events") {
+    if (method === "GET")
+      return id ? following(() => list2(runner, store), undefined, signal) : json13(list2(runner, store));
+    if (method === "POST" && !id)
+      return await make(runner, store, await body().catch(() => {
+        return;
+      }), here());
+    return json13({}, 405);
+  }
+  if (id === "joinable")
+    return method === "GET" ? json13({ bots: joinable(runner, store) }) : json13({}, 405);
+  if (!/^grp_[a-z0-9]+$/.test(id))
+    return json13({}, 404);
+  if (method === "GET" && (!action || action === "events")) {
+    if (!chat(runner, id))
+      return json13({}, 404);
+    return action ? following((withMessages) => chat(runner, id, withMessages), id, signal) : json13(chat(runner, id));
+  }
+  if (method === "PATCH" && !action) {
+    const given = await body().catch(() => {
+      return;
+    });
+    if (!given || typeof given !== "object" || Array.isArray(given))
+      return message2(400, "That isn\u2019t a change to a group chat.");
+    const edits = {};
+    if ("name" in given) {
+      const name = plainName(given.name);
+      if (!name)
+        return message2(400, "A group chat needs a name.");
+      edits.name = name;
+    }
+    if ("purpose" in given)
+      edits.purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : null;
+    if ("members" in given) {
+      if (!Array.isArray(given.members) || !given.members.every((each) => typeof each === "string"))
+        return message2(400, "Those aren\u2019t bots.");
+      const members = [...new Set(given.members)];
+      if (members.length < 2)
+        return message2(400, "A group chat needs at least two bots.");
+      const bots = here();
+      const missing = members.find((each) => !bots.has(each));
+      if (missing)
+        return message2(404, `There\u2019s no bot \u201C${missing}\u201D.`);
+      edits.members = members;
+    }
+    if ("meeting" in given)
+      edits.meetingPlan = given.meeting;
+    const asked = await ask(runner, store, "PATCH", [id], edits);
+    if (asked.status !== 200)
+      return message2([400, 404, 409].includes(asked.status) ? asked.status : 503, asked.value?.message ?? "The group chat couldn\u2019t be changed.");
+    return json13({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null });
+  }
+  if (method === "DELETE" && !action) {
+    const asked = await ask(runner, store, "DELETE", [id]);
+    if (asked.status === 200 || asked.status === 404 && asked.value?.message === "No such chat.")
+      return json13({});
+    if (asked.status === 409)
+      return message2(409, "That chat is moving. Try again once it\u2019s there.");
+    return message2(503, asked.value?.message ?? "The group chat couldn\u2019t be deleted. Try again in a moment.");
+  }
+  if (method !== "POST" || action === "events")
+    return json13({}, 405);
+  const given = await body().catch(() => {
+    return;
+  }) ?? {};
+  let asked;
+  switch (action) {
+    case undefined:
+      if (typeof given.text !== "string" || !trim(given.text))
+        return json13({}, 400);
+      asked = await ask(runner, store, "POST", [id, "send"], { text: given.text, ...typeof given.named === "string" ? { named: given.named } : {} });
+      if (asked.status === 400 && asked.value?.message)
+        return message2(400, asked.value.message);
+      break;
+    case "stop":
+    case "keep-going":
+      asked = await ask(runner, store, "POST", [id, action]);
+      break;
+    case "viewed":
+      asked = await ask(runner, store, "PATCH", [id], { viewed: stamp4() });
+      break;
+    case "undo": {
+      if (typeof given.message !== "string")
+        return json13({}, 404);
+      asked = await ask(runner, store, "POST", [id, "undo"], { message: given.message });
+      if (asked.status !== 200)
+        return json13({}, failed(asked.status));
+      return json13({ text: asked.value?.data?.text ?? "" });
+    }
+    case "start":
+      if (typeof given.message !== "string")
+        return json13({}, 404);
+      asked = await ask(runner, store, "POST", [id, "start-work"], { wrapUp: given.message });
+      break;
+    default:
+      return json13({}, 404);
+  }
+  return json13({}, asked.status === 200 ? 200 : failed(asked.status));
+}
+async function make(runner, store, given, here) {
+  if (!given || typeof given !== "object" || Array.isArray(given))
+    return message2(400, "That isn\u2019t a group chat to make.");
+  const name = plainName(given.name);
+  if (!name)
+    return message2(400, "A group chat needs a name.");
+  const members = [...new Set(Array.isArray(given.members) ? given.members.filter((each) => typeof each === "string") : [])];
+  if (members.length < 2)
+    return message2(400, "A group chat needs at least two bots.");
+  const missing = members.find((each) => !here.has(each));
+  if (missing)
+    return message2(404, `There\u2019s no bot \u201C${missing}\u201D.`);
+  const purpose = typeof given.purpose === "string" && given.purpose.trim() ? given.purpose.trim() : undefined;
+  let meeting;
+  if (given.meeting !== undefined && given.meeting !== null) {
+    const planned = planMeeting(given.meeting, undefined, chatZone(store.settings()));
+    if (typeof planned === "string")
+      return message2(400, planned);
+    meeting = planned;
+  }
+  const id = newGroupID();
+  const now = stamp4();
+  if (!runner.put({ id, name, ...purpose ? { purpose } : {}, members, seats: {}, heard: {}, created: now, viewed: now, ...meeting ? { meeting } : {} }, [], "active", false)) {
+    return message2(409, "That chat is here already.");
+  }
+  return json13({ group: list2(runner, store).groups.find((each) => each.id === id) ?? null }, 201);
+}
+
+// box/src/agents/groups/post.ts
+import { existsSync as existsSync19, readFileSync as readFileSync37, renameSync as renameSync22, writeFileSync as writeFileSync27 } from "fs";
+
+// box/src/shared/seats.ts
+var SEAT_MAIL_KINDS = ["turn", "state", "result", "steer", "stop", "drop", "work", "held", "report", "memory"];
+
+// box/src/agents/usage/usage-peers.ts
+import { createHash as createHash17 } from "crypto";
+import { mkdirSync as mkdirSync25, readFileSync as readFileSync36, renameSync as renameSync21, writeFileSync as writeFileSync26 } from "fs";
+import { dirname as dirname21 } from "path";
+var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage";
+var MINUTE4 = 60000;
+var DAY5 = 24 * 60 * MINUTE4;
+var TELL_AGAIN = 10 * MINUTE4;
+var PEER_AWAY = 25 * MINUTE4;
+var SKEW = MINUTE4;
+var MOST_ACCOUNTS = 50;
+var MOST_USES = 50000;
+var MOST_BYTES2 = 400000;
+var RECENT = 2 * 24 * 60 * MINUTE4;
+var SERVICE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+var WHOLE_FRESH = 25 * MINUTE4;
+var text6 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined;
+
+class UsagePeers {
+  usage;
+  transport;
+  directory;
+  file;
+  now;
+  most;
+  peers = new Map;
+  told = new Map;
+  answered = new Map;
+  askedBack = new Map;
+  readFor = new Map;
+  refreshedElsewhere = -Infinity;
+  reading = new Set;
+  constructor(usage, transport, directory, file, now = Date.now, most = MOST_BYTES2) {
+    this.usage = usage;
+    this.transport = transport;
+    this.directory = directory;
+    this.file = file;
+    this.now = now;
+    this.most = most;
+    this.load();
+    usage.peers = this;
+    directory.listen(() => this.directorySaid());
+    transport.onFollowed?.(() => this.told.clear());
+  }
+  freshAt;
+  send(to, mail, durable) {
+    if (this.freshAt?.at !== mail.at)
+      this.freshAt = { at: mail.at, fresh: Object.fromEntries(this.usage.own().flatMap((account) => account.accountWide && account.scanned ? [[account.provider, account.scanned]] : [])) };
+    const fresh = this.freshAt.fresh;
+    this.transport.send(to, Object.keys(fresh).length ? { ...mail, fresh } : mail, durable);
+  }
+  readsWhole(service, identity) {
+    const self = this.directory.own()?.key;
+    if (!self || !this.directory.told)
+      return false;
+    const now = this.now();
+    for (const [key, kept] of this.peers) {
+      if (key >= self || this.vouched(key) || now - kept.heard > PEER_AWAY)
+        continue;
+      if (kept.accounts.some((account) => account.accountWide && account.service === service && account.identity === identity && account.scanned !== undefined && now - account.scanned < WHOLE_FRESH))
+        return true;
+    }
+    return false;
+  }
+  rows(own) {
+    const now = this.now();
+    const self = this.directory.own();
+    const boxes = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }];
+    const peers = [...this.peers.entries()].sort(([, a], [, b]) => a.name.localeCompare(b.name));
+    for (const [key, kept] of peers)
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, vouched: this.vouched(key), accounts: kept.accounts.map((account) => ({ ...account, slots: trimmed2(account.slots, now) })) });
+    return usageRows(boxes);
+  }
+  vouched(key) {
+    if (!this.directory.isYours)
+      return false;
+    return this.directory.told ? !this.directory.isYours(key) : this.peers.get(key)?.vouched === true;
+  }
+  tell(changed = false) {
+    if (!this.transport.followed || !this.directory.told)
+      return;
+    const now = this.now();
+    const { accounts, digest } = this.shared();
+    const from = Math.floor((now - RECENT) / SLOT);
+    const recent = () => recentOf(accounts, from);
+    for (const { key } of this.directory.peerBoxes()) {
+      const last = this.told.get(key);
+      if (!last)
+        this.send(key, { kind: "usage", at: now, accounts, digest, ask: true }, false);
+      else if (last.digest !== digest && (changed || now - last.at >= TELL_AGAIN))
+        this.send(key, { kind: "usage", at: now, accounts: recent(), from, digest }, false);
+      else if (now - last.at >= TELL_AGAIN)
+        this.send(key, { kind: "usage", at: now, digest }, false);
+      else
+        continue;
+      this.told.set(key, { digest, at: now });
+    }
+  }
+  tellAll() {
+    if (!this.transport.followed || !this.directory.told) {
+      this.told.clear();
+      return;
+    }
+    const now = this.now();
+    const { accounts, digest } = this.shared();
+    for (const { key } of this.directory.peerBoxes()) {
+      this.send(key, { kind: "usage", at: now, accounts, digest, ...this.told.has(key) ? {} : { ask: true } }, false);
+      this.told.set(key, { digest, at: now });
+    }
+  }
+  refreshElsewhere() {
+    if (!this.transport.followed || !this.directory.told)
+      return;
+    const now = this.now();
+    if (now - this.refreshedElsewhere < MINUTE4)
+      return;
+    this.refreshedElsewhere = now;
+    const digest = this.lastDigest ?? this.shared().digest;
+    for (const { key } of this.directory.peerBoxes())
+      this.send(key, { kind: "usage", at: now, digest, refresh: true }, false);
+  }
+  take(from, mail) {
+    if (!isUsageMail(mail))
+      return;
+    if (this.directory.told && !this.directory.peerBoxes().some((box) => box.key === from))
+      return;
+    const now = this.now();
+    const before = this.peers.get(from);
+    const name = this.directory.peerBoxes().find((box) => box.key === from)?.name ?? before?.name ?? "another computer";
+    const digest = text6(mail.digest, 64);
+    const wasAway = !!before && now - before.heard > PEER_AWAY;
+    const skew = typeof mail.at === "number" && Number.isFinite(mail.at) && Math.abs(now - mail.at) >= SKEW ? now - mail.at : 0;
+    let whole = !!before && !!digest && before.digest === digest;
+    if (Array.isArray(mail.accounts)) {
+      const off = typeof mail.at === "number" && Number.isFinite(mail.at) && Math.abs(now - mail.at) >= SKEW ? now - mail.at : 0;
+      let accounts = mail.accounts.slice(0, MOST_ACCOUNTS).flatMap((account) => {
+        const taken = takenAccount(account, off, now);
+        return taken ? [taken] : [];
+      });
+      const since = typeof mail.from === "number" && Number.isInteger(mail.from) && mail.from > 0 ? mail.from * SLOT : undefined;
+      if (since !== undefined)
+        accounts = accounts.map((account) => withOlder(account, before?.accounts.find((kept) => kept.provider === account.provider), since));
+      whole = !!digest && digestOf2(accounts.map(toldOf2)) === digest;
+      const vouched = this.vouched(from);
+      this.peers.set(from, { name, heard: now, ...digest ? { digest } : {}, ...vouched ? { vouched } : {}, accounts });
+      this.save();
+      this.usage.peersChanged();
+    } else if (before) {
+      before.heard = now;
+      before.name = name;
+      if (wasAway)
+        this.usage.peersChanged();
+    }
+    const fresh = mail.fresh && typeof mail.fresh === "object" ? mail.fresh : undefined;
+    const kept = this.peers.get(from);
+    if (fresh && kept) {
+      for (const account of kept.accounts) {
+        const at = fresh[account.provider];
+        if (!account.accountWide || typeof at !== "number" || !Number.isFinite(at))
+          continue;
+        const moved = Math.min(at + skew, now);
+        if (moved > (account.scanned ?? 0))
+          account.scanned = moved;
+      }
+    }
+    if (!whole && digest && mail.ask !== true && now - (this.askedBack.get(from) ?? -Infinity) >= MINUTE4) {
+      this.askedBack.set(from, now);
+      const mine = this.shared();
+      this.send(from, { kind: "usage", at: now, ...mine, ask: true }, false);
+      this.told.set(from, { digest: mine.digest, at: now });
+    }
+    if (mail.ask === true || wasAway)
+      this.answer(from, mail.ask === true);
+    if (mail.refresh === true && now - (this.readFor.get(from) ?? -Infinity) >= MINUTE4) {
+      this.readFor.set(from, now);
+      const reading = this.usage.refresh().then(() => this.answer(from, true));
+      this.reading.add(reading);
+      reading.finally(() => this.reading.delete(reading));
+    }
+  }
+  async idle() {
+    while (this.reading.size)
+      await Promise.all([...this.reading]);
+  }
+  answer(key, urgent = false) {
+    if (!this.transport.followed)
+      return;
+    const now = this.now();
+    if (!urgent && now - (this.answered.get(key) ?? -Infinity) < MINUTE4)
+      return;
+    this.answered.set(key, now);
+    const mine = this.shared();
+    this.send(key, { kind: "usage", at: now, ...mine }, false);
+    this.told.set(key, { digest: mine.digest, at: now });
+  }
+  lastDigest;
+  shared() {
+    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY5) / DAY5) * DAY5) / SLOT;
+    const accounts = this.usage.own().slice(0, MOST_ACCOUNTS).flatMap((own) => {
+      const taken = takenAccount(toldOf2(own), 0, Infinity);
+      return taken ? [{ ...toldOf2(taken), slots: fromSlot(keptSlots(taken.slots), start), whole: start }] : [];
+    });
+    for (let bytes = Buffer.byteLength(JSON.stringify(accounts));bytes > this.most; bytes = Buffer.byteLength(JSON.stringify(accounts))) {
+      const uses = accounts.reduce((sum, account) => sum + account.slots.used.length, 0);
+      if (!uses)
+        break;
+      const over = Math.ceil((bytes - this.most) / bytes * uses) + 16;
+      const cutoff = accounts.flatMap((account) => account.slots.used.map((use) => use[0])).sort((a, b) => a - b)[Math.min(over, uses) - 1];
+      for (const account of accounts) {
+        if (!account.slots.used.some((use) => use[0] <= cutoff))
+          continue;
+        account.slots = fromSlot(account.slots, cutoff + 1);
+        account.whole = Math.max(account.whole ?? 0, cutoff + 1);
+        account.cut = true;
+      }
+    }
+    const digest = digestOf2(accounts);
+    this.lastDigest = digest;
+    return { accounts, digest };
+  }
+  directorySaid() {
+    const here = new Set(this.directory.peerBoxes().map((box) => box.key));
+    let gone = false;
+    for (const key of [...this.peers.keys()]) {
+      if (here.has(key))
+        continue;
+      this.peers.delete(key);
+      gone = true;
+    }
+    for (const map of [this.told, this.answered, this.askedBack, this.readFor])
+      for (const key of [...map.keys()])
+        if (!here.has(key))
+          map.delete(key);
+    let moved = false;
+    for (const [key, kept] of this.peers) {
+      const vouched = this.vouched(key);
+      if (kept.vouched === true === vouched)
+        continue;
+      if (vouched)
+        kept.vouched = true;
+      else
+        delete kept.vouched;
+      moved = true;
+    }
+    if (gone || moved) {
+      this.save();
+      this.usage.peersChanged();
+    }
+    this.tell();
+  }
+  load() {
+    if (!this.file)
+      return;
+    try {
+      const saved = JSON.parse(readFileSync36(this.file, "utf8"));
+      for (const [key, kept] of Object.entries(saved.peers ?? {})) {
+        if (!kept || typeof kept.heard !== "number" || !Array.isArray(kept.accounts))
+          continue;
+        const digest = text6(kept.digest, 64);
+        this.peers.set(key, { name: typeof kept.name === "string" ? kept.name : "another computer", heard: kept.heard, ...digest ? { digest } : {}, ...kept.vouched === true ? { vouched: true } : {}, accounts: kept.accounts.flatMap((account) => takenAccount(account, 0, Infinity) ?? []) });
+      }
+    } catch {}
+  }
+  save() {
+    if (!this.file)
+      return;
+    try {
+      mkdirSync25(dirname21(this.file), { recursive: true });
+      const peers = Object.fromEntries([...this.peers].map(([key, kept]) => [key, { ...kept, accounts: kept.accounts.map(({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) })) }]));
+      writeFileSync26(this.file + ".new", JSON.stringify({ peers }), { mode: 384 });
+      renameSync21(this.file + ".new", this.file);
+    } catch {}
+  }
+}
+function digestOf2(accounts) {
+  const canonical = accounts.map((account) => [account.provider, account.service, account.agent ?? null, account.account ?? null, account.label ?? null, account.identity ?? null, account.cut === true, account.places ?? [], account.slots.models, account.slots.used, account.slots.unknown ?? []]);
+  return createHash17("sha256").update(JSON.stringify(canonical)).digest("hex").slice(0, 32);
+}
+var toldOf2 = ({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) });
+function fromSlot(slots, first) {
+  return keptSlots(slotsFrom({ ...slots, used: slots.used.filter((use) => use[0] >= first), ...slots.unknown ? { unknown: slots.unknown.filter((each) => each[0] >= first) } : {}, ...slots.fallback ? { fallback: slots.fallback.filter((each) => each[0] >= first) } : {} }, Infinity));
+}
+function recentOf(accounts, from) {
+  return accounts.map((account) => ({
+    ...account,
+    slots: { models: account.slots.models, used: account.slots.used.filter((use) => use[0] >= from), ...account.slots.unknown ? { unknown: account.slots.unknown.filter((each) => each[0] >= from) } : {}, ...account.slots.fallback ? { fallback: account.slots.fallback.filter((each) => each[0] >= from) } : {} }
+  }));
+}
+function withOlder(account, kept, since) {
+  const slots = noSlots();
+  const first = (account.whole ?? 0) * SLOT;
+  for (const [slot, models] of kept?.slots.used ?? [])
+    if (slot < since && slot >= first)
+      slots.used.set(slot, models);
+  for (const [slot, models] of kept?.slots.unknown ?? [])
+    if (slot < since && slot >= first)
+      slots.unknown.set(slot, models);
+  for (const [slot, models] of kept?.slots.fallback ?? [])
+    if (slot < since && slot >= first)
+      slots.fallback.set(slot, models);
+  for (const [slot, models] of account.slots.used)
+    if (slot >= since)
+      slots.used.set(slot, models);
+  for (const [slot, models] of account.slots.unknown)
+    if (slot >= since)
+      slots.unknown.set(slot, models);
+  for (const [slot, models] of account.slots.fallback)
+    if (slot >= since)
+      slots.fallback.set(slot, models);
+  return { ...account, slots };
+}
+function takenAccount(given, off, now) {
+  if (!given || typeof given !== "object")
+    return null;
+  const account = given;
+  const provider = text6(account.provider);
+  if (!provider || typeof account.service !== "string" || !SERVICE.test(account.service))
+    return null;
+  const scanned = typeof account.scanned === "number" && Number.isFinite(account.scanned) && account.scanned > 0 ? Math.min(account.scanned + off, now) : undefined;
+  return {
+    provider,
+    service: account.service,
+    ...kinds.includes(account.agent) ? { agent: account.agent, ...text6(account.account) ? { account: text6(account.account) } : {} } : {},
+    ...text6(account.label, 100) ? { label: text6(account.label, 100) } : {},
+    ...typeof account.identity === "string" && /^[0-9a-f]{16}$/.test(account.identity) ? { identity: account.identity } : {},
+    ...scanned ? { scanned } : {},
+    slots: slotsFrom(account.slots, MOST_USES),
+    ...account.cut === true ? { cut: true } : {},
+    ...Number.isSafeInteger(account.whole) && account.whole > 0 ? { whole: account.whole } : {},
+    ...Array.isArray(account.places) && account.places.length ? { places: account.places.filter((place) => typeof place === "string" && /^[0-9a-f]{16}$/.test(place)).slice(0, 20) } : {},
+    ...account.estimated === false ? { estimated: false } : {},
+    ...account.accountWide === true ? { accountWide: true } : {}
+  };
+}
+
+// box/src/agents/usage/settings-peers.ts
+var isSettingsMail = (value) => value !== null && typeof value === "object" && value.kind === "settings";
+var MINUTE5 = 60000;
+var TELL_AGAIN2 = 10 * MINUTE5;
+
+class SettingsPeers {
+  settings;
+  transport;
+  directory;
+  now;
+  told = new Map;
+  answered = new Map;
+  constructor(settings, transport, directory, now = Date.now) {
+    this.settings = settings;
+    this.transport = transport;
+    this.directory = directory;
+    this.now = now;
+    settings.self = () => directory.own()?.key ?? "";
+    settings.listen(() => this.tell(true));
+    directory.listen(() => this.directorySaid());
+    transport.onFollowed?.(() => {
+      this.told.clear();
+      this.tell();
+    });
+  }
+  ours() {
+    if (!this.directory.told || !this.directory.setup || !this.directory.isPeer)
+      return [];
+    return this.directory.peerBoxes().flatMap(({ key }) => this.directory.isPeer(key) ? [key] : []);
+  }
+  taking;
+  tell(changed = false) {
+    if (!this.transport.followed)
+      return;
+    const now = this.now();
+    const digest = this.settings.digest();
+    for (const key of this.ours()) {
+      if (this.taking?.key === key && this.taking.digest === digest) {
+        this.told.set(key, { digest, at: now });
+        continue;
+      }
+      const last = this.told.get(key);
+      if (!last)
+        this.send(key, { kind: "settings", at: now, digest, usage: this.settings.kept(), ask: true });
+      else if (last.digest !== digest && (changed || now - last.at >= TELL_AGAIN2))
+        this.send(key, { kind: "settings", at: now, digest, usage: this.settings.kept() });
+      else if (now - last.at >= TELL_AGAIN2)
+        this.send(key, { kind: "settings", at: now, digest });
+      else
+        continue;
+      this.told.set(key, { digest, at: now });
+    }
+  }
+  take(from, mail) {
+    if (!isSettingsMail(mail) || mail.setup !== this.directory.setup || !this.ours().includes(from))
+      return;
+    if (mail.usage) {
+      this.taking = typeof mail.digest === "string" ? { key: from, digest: mail.digest } : undefined;
+      try {
+        this.settings.merge(mail.usage);
+      } finally {
+        this.taking = undefined;
+      }
+    }
+    if (!this.transport.followed)
+      return;
+    const digest = this.settings.digest();
+    const now = this.now();
+    if (mail.ask === true) {
+      this.send(from, { kind: "settings", at: now, digest, usage: this.settings.kept() });
+    } else if (typeof mail.digest === "string" && mail.digest !== digest && now - (this.answered.get(from) ?? -Infinity) >= MINUTE5) {
+      this.answered.set(from, now);
+      this.send(from, { kind: "settings", at: now, digest, usage: this.settings.kept(), ...mail.usage ? {} : { ask: true } });
+    } else
+      return;
+    this.told.set(from, { digest, at: now });
+  }
+  send(to, mail) {
+    if (!this.directory.setup)
+      return;
+    this.transport.send(to, { ...mail, setup: this.directory.setup }, false);
+  }
+  directorySaid() {
+    if (this.directory.told) {
+      if (this.directory.setup)
+        this.settings.inSetup(this.directory.setup);
+      else if (this.directory.inNoSetup)
+        this.settings.inNoSetup();
+    }
+    const ours = new Set(this.ours());
+    for (const map of [this.told, this.answered])
+      for (const key of [...map.keys()])
+        if (!ours.has(key))
+          map.delete(key);
+    this.tell();
+  }
+}
 
 // box/src/agents/groups/peer.ts
 var seatMailBytes = 512 * 1024;
@@ -35314,7 +35353,7 @@ import { statSync as statSync17 } from "fs";
 import { dirname as dirname22 } from "path";
 
 // box/src/shared/bundle.ts
-import fs6 from "fs";
+import fs7 from "fs";
 var BUILT = /\/\/ Built from Packages\/Box\/src\/agents ([0-9a-f]{16,64})\s*(?:\n|$)/g;
 function buildOf(text) {
   let found = null;
@@ -35325,24 +35364,24 @@ function buildOf(text) {
 function bundleBuild(file) {
   let handle;
   try {
-    handle = fs6.openSync(file, "r");
-    const size = fs6.fstatSync(handle).size;
+    handle = fs7.openSync(file, "r");
+    const size = fs7.fstatSync(handle).size;
     const length = Math.min(size, 1024);
     const tail = Buffer.alloc(length);
-    fs6.readSync(handle, tail, 0, length, size - length);
+    fs7.readSync(handle, tail, 0, length, size - length);
     return buildOf(tail.toString("utf8"));
   } catch {
     return null;
   } finally {
     if (handle !== undefined)
       try {
-        fs6.closeSync(handle);
+        fs7.closeSync(handle);
       } catch {}
   }
 }
 
 // box/src/shared/night.ts
-function nightOf(date = new Date, zone = process.env.KUVO_TZ) {
+function nightOf(date = new Date, zone = yourZone()) {
   let parts;
   try {
     parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: zone || undefined, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(date).map((part) => [part.type, part.value]));
@@ -35520,8 +35559,8 @@ class Renewal {
 }
 
 // box/src/shared/engines.ts
-import fs7 from "fs";
-import path5 from "path";
+import fs8 from "fs";
+import path6 from "path";
 function byNumbers(a, b) {
   const [x, y] = [a, b].map((version) => version.split(".").map((part) => parseInt(part, 10) || 0));
   for (let i = 0;i < 3; i++)
@@ -35530,16 +35569,16 @@ function byNumbers(a, b) {
   return 0;
 }
 function enginesThere(root) {
-  return enginesIn(path5.join(root, "engine"));
+  return enginesIn(path6.join(root, "engine"));
 }
 function enginesIn(folder) {
   let names = [];
   try {
-    names = fs7.readdirSync(folder);
+    names = fs8.readdirSync(folder);
   } catch {}
   const runs = (name) => {
     try {
-      fs7.accessSync(path5.join(folder, name, "opencode"), fs7.constants.X_OK);
+      fs8.accessSync(path6.join(folder, name, "opencode"), fs8.constants.X_OK);
       return true;
     } catch {
       return false;
@@ -35550,7 +35589,7 @@ function enginesIn(folder) {
 function keeperEngine(root) {
   let named;
   try {
-    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs7.readFileSync(path5.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
+    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs8.readFileSync(path6.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const there = enginesThere(root);
   return named && there.includes(named) ? named : there.at(-1) ?? null;
@@ -35558,9 +35597,9 @@ function keeperEngine(root) {
 
 // box/src/shared/account.ts
 import { spawnSync as spawnSync3 } from "child_process";
-import fs8 from "fs";
+import fs9 from "fs";
 import os from "os";
-import path6 from "path";
+import path7 from "path";
 function homeFolder() {
   return process.env.HOME || os.homedir();
 }
@@ -35576,14 +35615,14 @@ function accountEntry() {
     line = spawnSync3("getent", ["passwd", String(uid)], { encoding: "utf8", timeout: 5000 }).stdout;
     if (!line?.trim()) {
       try {
-        line = fs8.readFileSync("/etc/passwd", "utf8").split(`
+        line = fs9.readFileSync("/etc/passwd", "utf8").split(`
 `).find((each) => each.split(":")[2] === String(uid));
       } catch {}
     }
   }
   const fields = line?.trim().split(":") ?? [];
   let home = fields[process.platform === "darwin" ? 8 : 5] || "";
-  if (!path6.isAbsolute(home))
+  if (!path7.isAbsolute(home))
     try {
       home = os.userInfo().homedir;
     } catch {
@@ -35598,30 +35637,30 @@ function accountHome() {
 function isRealBridgeFolder(folder, home = accountHome()) {
   const located = (each) => {
     try {
-      return fs8.realpathSync.native(each);
+      return fs9.realpathSync.native(each);
     } catch {
-      return path6.resolve(each);
+      return path7.resolve(each);
     }
   };
-  const parent = located(path6.dirname(folder));
-  return path6.basename(parent).toLowerCase().startsWith("run.kuvo.code") || parent === located(path6.join(home, ".kuvo-code"));
+  const parent = located(path7.dirname(folder));
+  return path7.basename(parent).toLowerCase().startsWith("run.kuvo.code") || parent === located(path7.join(home, ".kuvo-code"));
 }
 
 // box/src/shared/updating.ts
-import fs9 from "fs";
-import path7 from "path";
+import fs10 from "fs";
+import path8 from "path";
 function updateUnderWay(run) {
-  const lock = path7.join(run, ".updating");
-  if (!fs9.existsSync(lock))
+  const lock = path8.join(run, ".updating");
+  if (!fs10.existsSync(lock))
     return false;
   let pid = null;
   try {
-    pid = Number(fs9.readFileSync(path7.join(lock, "pid"), "utf8"));
+    pid = Number(fs10.readFileSync(path8.join(lock, "pid"), "utf8"));
   } catch {}
   if (pid)
     return processRuns(pid, "kuvo-link");
   try {
-    return Date.now() - fs9.statSync(lock).mtimeMs < 60000;
+    return Date.now() - fs10.statSync(lock).mtimeMs < 60000;
   } catch {
     return false;
   }
@@ -35731,9 +35770,9 @@ class Store {
 }
 
 // box/src/shared/hang.ts
-import fs10 from "fs";
+import fs11 from "fs";
 import net from "net";
-import path8 from "path";
+import path9 from "path";
 var LOOK_EVERY = 30000;
 var ANSWER_WITHIN = 20000;
 var HUNG_AFTER = 600000;
@@ -35839,21 +35878,21 @@ class HangWatch {
   }
   server() {
     try {
-      const { pid, port } = JSON.parse(fs10.readFileSync(this.options.record, "utf8"));
+      const { pid, port } = JSON.parse(fs11.readFileSync(this.options.record, "utf8"));
       return Number.isInteger(pid) && pid > 1 && Number.isInteger(port) && port > 0 ? { pid, port } : null;
     } catch {
       return null;
     }
   }
   stoppedOnPurpose() {
-    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs10.existsSync(path8.join(this.options.run, name)));
+    return ["stopped", ".launching", ".updating", ".system-asking"].some((name) => fs11.existsSync(path9.join(this.options.run, name)));
   }
   endedLately() {
-    const file = path8.join(this.options.run, `hung-${this.options.name}.json`);
-    if (!fs10.existsSync(file))
+    const file = path9.join(this.options.run, `hung-${this.options.name}.json`);
+    if (!fs11.existsSync(file))
       return [];
     try {
-      const times = JSON.parse(fs10.readFileSync(file, "utf8"));
+      const times = JSON.parse(fs11.readFileSync(file, "utf8"));
       return Array.isArray(times) ? times.filter((time) => typeof time === "number" && this.now() - time < ENDED_WHILE && time <= this.now()) : null;
     } catch {
       return null;
@@ -35867,10 +35906,10 @@ class HangWatch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, and it's been ended too often lately, or there's no telling how often: it's left as it is, for you to restart.`);
       return;
     }
-    const file = path8.join(this.options.run, `hung-${this.options.name}.json`);
+    const file = path9.join(this.options.run, `hung-${this.options.name}.json`);
     try {
-      fs10.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
-      fs10.renameSync(`${file}.new`, file);
+      fs11.writeFileSync(`${file}.new`, JSON.stringify([...lately, this.now()]), { mode: 384 });
+      fs11.renameSync(`${file}.new`, file);
     } catch {
       console.error(`The ${this.options.name} has said nothing for ${minutes} minutes, but that can't be noted in ${file}: it's left as it is, for you to restart.`);
       return;
@@ -36401,6 +36440,7 @@ for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO
 if (groupFolders) {
   try {
     const store = new GroupStore(groupFolders.root, groupFolders.bots, agentsFile);
+    boxZoneIs(store.settings()?.boxTimeZone);
     const runner = new GroupRunner({
       store,
       engine: link4,
@@ -36676,4 +36716,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 0ce89c1b875ca246efac518b46e6a39decdec83c948cd97389ed48ad917a93dd
+// Built from Packages/Box/src/agents e6cede460e206f5195560e22da1a38e77727b77b07e82166e8cd8585a4eee828

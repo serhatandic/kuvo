@@ -62,8 +62,10 @@ export interface Settings {
   askFirst: boolean
   /** What Settings › Permissions denies. */
   denies: Rule[]
-  /** The user's time zone, for meetings, and how they write dates. */
+  /** The user's time zone, for meetings, and how they write dates, as a client said them (`clock`). */
   timeZone?: string
+  /** Your time zone as the box keeps it (`box-settings`), for a bridge that can't read its folder. */
+  boxTimeZone?: string
   locale?: string
 }
 
@@ -275,6 +277,7 @@ export class GroupStore {
       askFirst: value.askFirst === true,
       denies: Array.isArray(value.denies) ? value.denies.filter((rule: any) => typeof rule?.effect === "string" && holdsBack(rule.effect) && typeof rule.action === "string") : [],
       timeZone: typeof value.timeZone === "string" ? value.timeZone : undefined,
+      boxTimeZone: typeof value.boxTimeZone === "string" ? value.boxTimeZone : undefined,
       locale: typeof value.locale === "string" ? value.locale : undefined,
     }
   }
