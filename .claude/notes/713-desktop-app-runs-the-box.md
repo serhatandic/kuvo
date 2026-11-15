@@ -653,6 +653,64 @@ is made (but `desktop`), under the move's lock; the box's own relay is for the r
   own); a switch for "Let my devices connect" that needs no relay from the client (the desktop
   app's Settings, #644).
 
+## 8d. Piece 5 plan: the desktop app's part (2026-11-15)
+
+**What's built here**, and where each piece of logic lives.
+
+- **`gpui/kuvo_box/src/install.rs`** (no GPUI; any Rust client's): finds what the app carries
+  from its own executable (`<bundle>/Contents/MacOS/kuvo` → `Contents/Resources/box-release/
+  kuvo-install`, `Contents/MacOS/kuvo-keys`), runs `sh kuvo-install <verb> --app <bundle>
+  [--root <name>]` with every `KUVO_*` dropped, reads its JSON lines as they come (`{"step"}`,
+  then the answer), and follows the box's word: `status`, then the `verb` it names, nothing
+  else. It judges nothing about the computer.
+- **The app's own guard, before the installer's** (the backstop stays `kuvo-install`'s): a build
+  that isn't run from a bundle carrying a release (`cargo run`) only attaches. A bundle that
+  isn't `run.kuvo.code` installs only into a root of its own (`KUVO_DEMO_MACHINE_ROOT`, a name),
+  and `run.kuvo.code` only into `.kuvo-code`. Anything else: refused in the app, the installer
+  never started.
+- **`gpui/kuvo/src/launch.rs`**: the window's root. It shows the quiet "Starting…" while
+  `status` runs, the Welcome card's row while a new Mac is set up (drafts 1 A), and `Home` once
+  a box answers.
+
+  | `status` says | The app |
+  | --- | --- |
+  | `fresh` (`new`) | runs `new`; the Welcome row says "Setting up Kuvo on this Mac…" with a spinner, then waits for the box's server and opens the first run on the same card |
+  | `ours`, no verb | attaches, offers the release it carries (`kuvo/box/update {from}`, where the box has `box.update`) |
+  | `ours` (`new`: its helper isn't in place) | runs `new` (the box's `helper start`), then attaches |
+  | `app-07`, `app-box`, `moving`, `stuck` (`move`) | runs `move` and draws its answer. Until piece 4 that's the box's refusal, in its words, with Try Again; a box that still answers (`app-box`'s) is attached to all the same |
+  | `waits` | the box's words where it gave any, Try Again |
+  | `back`, `machine`, `two` | attaches where a box of this Mac answers; else says it isn't running. Their own screens are piece 7's (`two`'s card) and 8's (a machine's box attached in place) |
+  | refused or failed | the box's `message`, as it is, under the row, with Try Again (Return) |
+  | no JSON, exit 2 | "Kuvo couldn't be set up on this Mac." and the installer's last line of stderr: an app's mistake, said plainly |
+
+- **Permissions.** The box says them (`kuvo/box/permissions`); the app draws a heads-up (drafts
+  3 C's card) over the conversation for the first one the box says to bring up, opens the pane
+  the box names, and, for one macOS has you add by hand, shows the drag tile. The tile is a GPUI
+  window (`WindowKind::PopUp`: a non-activating panel over System Settings) whose icon is a GPUI
+  drag with `external_drag_payload` (GPUI at our pinned revision hands a drag that leaves its
+  window to AppKit as a file drag: `gpui_macos/src/window.rs`, `start_external_drag`). No
+  hand-written `NSDraggingSource`. A small `#[cfg(target_os = "macos")]` module finds System
+  Settings' window (`CGWindowListCopyWindowInfo`) and moves the tile beside it. The tile goes
+  once the box says the permission is allowed.
+- **Box change (small, the box's facts and words):** `kuvo/box/permissions` gains `bundle` (the
+  helper's bundle on that Mac, what's dragged), and `list`: each permission with its `name`,
+  `allowed`, `settings` (the address of its System Settings pane), `byHand`, and `asks` (whether
+  a client brings it up now: not allowed, and not put off). `POST {later: "<id>"}` puts one off
+  ("Not Now"), kept in the box so every client agrees and it isn't asked at each open.
+- **`kuvo-keys`**: the bundle's layout names its place (`Contents/MacOS/kuvo-keys`), and the box
+  finds it through `--app <bundle>`; the app's window never runs it. Tested with a stand-in
+  bundle. Putting a real one there is piece 6's (and none signed exists until piece 4's guard).
+
+**Not here, said plainly:** B's card for a move (piece 7, with the box's step words); `two`'s
+card; Settings › This Mac; a machine's box attached in place; packaging (piece 6).
+
+**Tests.** `kuvo_box/tests/install.rs`: a stand-in `kuvo-install` (a shell script the test
+writes, answering from a file): `fresh` → `new` → done, each refusal and failure, `waits`
+(exit 4), output that isn't JSON, exit 2, `KUVO_*` dropped, a dev build and a mismatched bundle
+refusing before anything runs. `kuvo/tests/launch.rs`: the window through each state, Try Again
+by click and Return. `kuvo/tests/permissions.rs`: the heads-up, Not Now, the tile opening and
+going once allowed. Box: `own-box-helper.test.js`.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**
