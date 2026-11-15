@@ -45,6 +45,7 @@ extension BoxGate {
         "queue.items", // the desktop client draws the queue as the box says it
         "queue.removed.keyword", // #668: a queued message taken back keeps its keyword
         "queue.stop.arriving", // #668: Stop holds what's still on its way, so no client waits for it
+        "sandbox.needsYou", // #739: whether the sandbox's row warns, the box's one fact
         "sandbox.opens", // #708
         "sandbox.report", // #668: a machine's services gap in the box's words, and when to offer Report a Problem
         "sandbox.words", // #711

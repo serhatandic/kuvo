@@ -87,7 +87,7 @@ test("an engine provider's ways in: an account's sign-in first, then a key, lega
       { type: "key", label: "Bedrock API key" },
     ],
     environment: ["AWS_PROFILE"],
-    hint: "API key",
+    hint: "Connect",
   });
 
   // A way no client can start (a command) isn't offered.
@@ -109,7 +109,7 @@ test("every account's ways in, for Accounts' Sign In buttons and the way in each
   assert.deepEqual(engine.json.accounts.map(({ id, hint, methods }) => ({ id, hint, ways: methods.length })), [
     // OpenAI offers only its key here: its plan goes through Codex.
     { id: "openai", hint: "API key", ways: 1 },
-    { id: "amazon-bedrock", hint: "API key", ways: 2 },
+    { id: "amazon-bedrock", hint: "Connect", ways: 2 },
     { id: "github-copilot", hint: "Sign in with GitHub", ways: 1 },
   ]);
   const agents = await answer("GET", "kuvo/sign-in/accounts?agents=1");

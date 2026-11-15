@@ -138,6 +138,7 @@ export const FEATURES = [
   "sandbox",
   "sandbox.asks",
   "sandbox.check",
+  "sandbox.needsYou",
   "sandbox.opens",
   "sandbox.report",
   "sandbox.reviews.settled",
