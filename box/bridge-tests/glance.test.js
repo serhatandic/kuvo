@@ -102,9 +102,9 @@ beforeEach(() => {
 
 test("a worktree's row: its branch with the lines it changed, its account, and nothing of a pull request it doesn't have", async () => {
   const shown = await glance(["ses_tree", "ses_mine"]);
-  assert.deepEqual(shown.ses_tree, { branch: "kuvo/timer", additions: 1, deletions: 0, account: { name: "Anthropic" } });
+  assert.deepEqual(shown.ses_tree, { branch: "kuvo/timer", additions: 1, deletions: 0, account: { name: "Anthropic", title: "Anthropic" } });
   // In the project's own checkout: no branch of its own, so no mark on its row.
-  assert.deepEqual(shown.ses_mine, { account: { name: "Anthropic" } });
+  assert.deepEqual(shown.ses_mine, { account: { name: "Anthropic", title: "Anthropic" } });
   assert.match(queries()[0], /repository\(owner: "kuvo-test", name: "app"\) \{ pullRequests\(headRefName: "kuvo\/timer"/);
 });
 
@@ -112,7 +112,7 @@ test("a worktree's branch with a pull request: its number, state, size and check
   github({ p0: { pullRequests: { nodes: [pr(42)] } } });
   const shown = await glance(["ses_tree"]);
   assert.deepEqual(shown.ses_tree, {
-    branch: "kuvo/timer", account: { name: "Anthropic" },
+    branch: "kuvo/timer", account: { name: "Anthropic", title: "Anthropic" },
     pull: { number: 42, url: "https://github.com/kuvo-test/app/pull/42", state: "open", additions: 435, deletions: 4, checks: { passed: 12, failed: 0, pending: 2 } },
   });
 });
@@ -177,7 +177,7 @@ test("a session in the project's checkout shows the pull request it made, its he
   const shown = await glance(["ses_mine", "ses_other"]);
   assert.equal(shown.ses_mine.branch, "fix-skip");
   assert.deepEqual(shown.ses_mine.pull.checks, { passed: 13, failed: 1, pending: 0 });
-  assert.deepEqual(shown.ses_other, { account: { name: "OpenAI" } });
+  assert.deepEqual(shown.ses_other, { account: { name: "OpenAI", title: "OpenAI" } });
 });
 
 test("without gh, or signed out, a pull request a session made still shows its number, and GitHub isn't asked again for a while", async () => {
@@ -241,10 +241,10 @@ test("followed: what it shows now, again only as it changes, and nothing more on
     return piece?.body ? JSON.parse(piece.body.toString()) : piece;
   };
   assert.equal((await next()).head.status, 200);
-  assert.deepEqual(await next(), { sessions: { ses_mine: { account: { name: "Anthropic" } } } });
+  assert.deepEqual(await next(), { sessions: { ses_mine: { account: { name: "Anthropic", title: "Anthropic" } } } });
   // An ask comes: said at once, not a minute later.
   link.noteAskEvent({ type: "permission.asked", data: { id: "per_9", sessionID: "ses_mine" } }, "engine", 4_000);
-  assert.deepEqual(await next(), { sessions: { ses_mine: { account: { name: "Anthropic" }, asked: 4_000 } } });
+  assert.deepEqual(await next(), { sessions: { ses_mine: { account: { name: "Anthropic", title: "Anthropic" }, asked: 4_000 } } });
   stop.abort();
   assert.equal((await answer.next()).done, true);
 });
