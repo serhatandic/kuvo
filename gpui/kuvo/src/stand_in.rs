@@ -355,6 +355,11 @@ impl StandIn {
 
     /// What renaming and removing say (`503`) instead of doing it, as a box that can't ask the
     /// computer that writes the record says it.
+    /// A computer's app was removed from your devices: its box adds none until it's allowed again.
+    pub fn block_vouching(&self, key: &str) {
+        self.state().areas.vouch_blocked.push(key.to_owned());
+    }
+
     pub fn manage_refused(&self, words: &str) {
         self.state().areas.manage_refused = Some(words.to_owned());
     }

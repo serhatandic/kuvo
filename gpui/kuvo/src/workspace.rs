@@ -1321,6 +1321,15 @@ impl Workspace {
 
     pub fn set_switching(&mut self, switching: Option<crate::home::Switching>, cx: &mut Context<Self>) {
         if self.switching != switching {
+            // Why this app isn't paired, whole, on the Computers pages (the switcher's line is short).
+            let pairing = switching.as_ref().and_then(|switching| match &switching.pairing {
+                kuvo_box::boxes::Pairing::Waiting(why) | kuvo_box::boxes::Pairing::Refused(why) => Some(("This app doesn’t reach your other computers yet".to_owned(), why.clone())),
+                kuvo_box::boxes::Pairing::Removed(why) => Some(("This app was removed from your devices".to_owned(), format!("{why} To add it again, choose Connect This App Again in the computer menu at the top."))),
+                _ => None,
+            });
+            if let Some(page) = self.area_view(Area::Computers).and_then(|view| view.read(cx).computers_page().cloned()) {
+                page.update(cx, |page, cx| page.set_pairing(pairing, cx));
+            }
             self.switching = switching;
             cx.notify();
         }

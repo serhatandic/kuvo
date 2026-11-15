@@ -130,3 +130,23 @@ fn a_computer_this_app_doesnt_reach_says_why_and_cant_be_picked(cx: &mut TestApp
     // Asked directly, it's refused too: no window is ever made for a computer that isn't yours.
     home.update_in(cx, |home, window, cx| assert!(!home.switch_to("key_build", window, cx)));
 }
+
+#[gpui::test]
+fn when_this_apps_computer_was_blocked_the_boxs_words_show_whole_on_computers(cx: &mut TestAppContext) {
+    // The nearest box refuses to pair this app, in the main computer's words (its app was removed,
+    // and its box may add none until it's allowed again).
+    let words = "Kuvo on MacBook was removed from your devices, so MacBook can’t add Kuvo Code’s app by itself now. Allow it again from Mac mini or one of your devices: Computers, MacBook.";
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (home, cx) = open(cx, stand_in);
+    let workspace = workspace(&home, cx);
+    workspace.update_in(cx, |workspace, window, cx| {
+        let mut switching = workspace.switching().cloned().expect("the switcher's computers");
+        switching.pairing = kuvo_box::boxes::Pairing::Refused(words.into());
+        workspace.set_switching(Some(switching), cx);
+        workspace.show_area(kuvo::area::Area::Computers, window, cx);
+    });
+    cx.run_until_parked();
+    let page = workspace.read_with(cx, |workspace, cx| workspace.area_view(kuvo::area::Area::Computers).and_then(|view| view.read(cx).computers_page().cloned()).expect("Computers"));
+    assert_eq!(page.read_with(cx, |page, _| page.said("notice-pairing")), Some(("This app doesn’t reach your other computers yet".to_owned(), words.to_owned())));
+    assert!(shown(cx, "notice-pairing"));
+}

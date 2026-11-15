@@ -19,6 +19,7 @@ pub const REQUIRED: &[&str] = &[
     "computers.facts",
     "computers.manage",
     "computers.reach",
+    "devices.allow",
     "devices.pair",
     "file.text",
     "folders.suggested",
