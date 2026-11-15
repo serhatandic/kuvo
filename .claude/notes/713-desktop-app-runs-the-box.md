@@ -751,6 +751,85 @@ at each step, then run again; a held database refuses; counts match; `S` byte fo
 after every run (a snapshot of every file's bytes, the database's log included); the merge from
 fixtures with clashes; a merge it can't do stops before swapping.
 
+## 8e. Piece 4 as built, and where I am (2026-11-15)
+
+**Built** (PROTOCOL.md, "Moving this Mac's box" → The whole move, run by the box; "Installing this
+computer's box" → `move`): `kuvo-link.js rehome <root> --run`, which `install --move` starts in a
+session of its own and follows; the steps `keys`, `upgrade` and `database`; `progress` and
+`dropped` in `kuvo/box/rehome`; what's owed settled at each run (`start`, `keychain`,
+`passwords`, `agent`); `box.rehome.run`. Files: `box/src/link/rehome/run.ts`, `run-steps.ts`,
+`migrate.ts`, `upgrades.ts`, `passwords.ts`.
+
+**As planned in §8d, with these differences:**
+
+- **`S` is read, never opened as a database.** Its schema is read from a clone of the database
+  alone (`plan-database`, removed at once); who has it open is asked of `lsof`.
+- **Saved sign-ins go down a pipe** (§8a.2 settled): `kuvo-keys passwords` writes no file any
+  more; it says them on its standard output, which must be a pipe, to the move that runs it, and
+  each goes from memory to `POST kuvo/vault/items` on the box's own server. `passwords.json` is
+  gone from the design.
+- **The preferences are read from the system** (`defaults export`) only for Kuvo Code itself;
+  a copy's (a test's, a demo's) from its file with `plutil`.
+- **No `--restore`**, no kept copy, and Move Back refused after such a move (the user, 11-15).
+- **The engine**: 0.7.2's, 0.6.6's and beta.1's is all 2.0.32 (schema `50
+  20261010180456_project_time_archived`). The pinned 2.2.6 migrates it as it starts, in about two
+  seconds on the fixture, and acts on nothing it finds: a run cut short is marked suspended,
+  queued messages stay queued (tried with both real engines; `fixtures/rehome/make-engine-fixture.ts`
+  makes the recorded pair again).
+
+**The inventory** (`713-piece-4-inventory.md`, from the code at `v0.6.6`, `v0.7.2`,
+`v0.8.0-beta.1` and main): 127 preference keys and 35 entries in `S` for 0.7.2.
+
+| | preference keys | entries in `S` |
+| --- | --- | --- |
+| box upgrade (carried by the move) | 36 | 7 |
+| already moved (cloned as it is) | 0 | 13 |
+| the retired app's own (window state) | 69 | 0 |
+| dropped | 22 | 15 |
+
+What it found that no list named: projects and machines were preferences in every release;
+`toolApproval`; the marks of what the app added to the engine's settings; integrations' keys
+named in the app's temporary folder (the box never renamed those for a box in a home of its
+own); `opencode-files`; bots of 0.6 with no `bot.json`; the usage panel's settings.
+
+**Not built: the merge (`two`).** `--run` refuses it plainly and changes nothing, and
+`install --status` still says `two` with nothing to run. It's a piece of its own, and these are
+what it has to settle before any code (none is a detail):
+
+1. **The box in `K` is another Mac's machine**, running: stopping it (`kuvo-start stop` leaves its
+   keeper and link up; a 0.7-era one has no `stop`), and starting it again whatever happens.
+2. **Its version.** A machine set up by 0.7 has engine 2.0.32, no bridge and an old keeper. Its
+   database must be migrated to merge into, after which its own engine can't read it: the merge
+   has to install the release over it too (what the first Mac with 0.8 does over SSH).
+3. **Two engine databases into one.** Both at the pinned schema, `S`'s rewritten for `K`'s paths,
+   then `ATTACH` and `INSERT … SELECT` in one transaction with foreign keys checked. Rules needed
+   per table: sessions, messages, parts, inbox by their own IDs; a project of one ID or one
+   folder kept once (`K`'s row); `event` and `event_sequence` of a shared project; credentials
+   and accounts (the newer kept, the other aside). Any other row with one ID and different
+   content stops it.
+4. **Keys.** A machine's box keeps its integrations' keys and its vault in files; 0.7's are in
+   the Keychain, and `kuvo-keys` only copies them for the helper. Either `kuvo-keys` gains a
+   verb that gives them to the move down a pipe (as `passwords` does), or the merge stops where
+   `S` has any.
+5. **Settings.** `K`'s engine settings stay `K`'s: `S`'s providers, models and integrations would
+   not come along unless they're merged key by key (a clash is the user's to settle).
+6. **Whose box it is after.** It stays a machine's (its Mac's setup, its `macs`): this Mac's
+   projects and bots then show to that other Mac as the machine's. Is that what "must not be left
+   with two" means, or should it become this Mac's own?
+
+**Waits for the rehearsal account** (needs the real `run.kuvo.code` ID, a real login, launchd and
+Keychain): `kuvo-keys` signed as Kuvo Code reading 0.7.2's items with no prompt, and its `copy`,
+`delete-originals` and `passwords` for real; the helper's short runs (`keys check`, `uncopy`,
+`clear`) from the release in `updates/install`; `helper start` after a move; `defaults export`
+of the real preferences; `lsof` seeing a running 0.7.2 and its engine; a real 0.7.2, 0.6 and
+beta.1 `S` moved whole (the fixtures here are laid out from the code, with a real database); the
+`app-box` keeper stopped on its control and its label booted out.
+
+**Left open by this piece** (decisions, in the report): the guard that keeps `kuvo-keys` to the
+box's move against a program of yours outside the sandbox (§8a.1) and the race in `copy`'s
+helper check (§8a.3), so no signed `kuvo-keys` yet; what `approveAll` becomes; the steps' and
+refusals' wording; `S` left on disk for good; the usage panel's API keys in the Keychain.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**

@@ -297,3 +297,15 @@ test.if(mac)("a keeper build's own box moves the same way: its lists kept and wh
   expect(readFileSync(join(m.K, "bin", "mcp-catalog.json"), "utf8")).toBe("the release's bin/mcp-catalog.json\n")
   expect(rows(join(m.K, "data", "opencode", "opencode.db")).session_v2.length).toBe(5)
 })
+
+test.if(!mac)("on Linux there's nothing to move: `--run` says so and makes nothing", () => {
+  const home = join(root, "linux")
+  const bundle = join(home, "Kuvo Code.app")
+  put(join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>run.kuvo.code.trial713</string></dict></plist>\n`)
+  const K = join(home, ".kuvo-code")
+  const refused = rehome({ home, K } as Parameters<typeof rehome>[0], ["--run", "--app", bundle, "--release", join(K, "updates", "install", "release"), "--engine", join(K, "updates", "install", "engine")])
+  expect(refused.status).toBe(1)
+  expect(refused.said).toMatchObject({ result: "refused", message: "This machine's box is in its own home already: there's nothing to move." })
+  expect(existsSync(join(K, "bin"))).toBe(false)
+  expect(existsSync(join(K, "box"))).toBe(false)
+})
