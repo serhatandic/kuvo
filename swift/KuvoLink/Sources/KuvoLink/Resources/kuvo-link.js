@@ -4085,6 +4085,15 @@ function tableCounts(file) {
     db.close();
   }
 }
+function soundness(file) {
+  const db = open2(file, true);
+  try {
+    const said = db.query("PRAGMA integrity_check").all();
+    return { whole: said.length === 1 && Object.values(said[0] ?? {})[0] === "ok", brokenLinks: db.query("PRAGMA foreign_key_check").all().length };
+  } finally {
+    db.close();
+  }
+}
 function everyCount(file) {
   const db = open2(file, true);
   try {
@@ -5545,7 +5554,12 @@ function listedBots(S) {
   const list = readJSON2(path169.join(S, "bots.json"));
   return (Array.isArray(list) ? list : []).filter((bot) => isObject(bot) && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.folder === "string" && typeof bot.sessionID === "string");
 }
-function bots({ S, staged }) {
+function bots({ S, staged, prefs, dropped }) {
+  if (exists4(path169.join(S, "bots.json")) && !Array.isArray(readJSON2(path169.join(S, "bots.json"))))
+    dropped.push("The earlier Kuvo Code's list of bots couldn't be read. Bots made with a version before 0.7 may be missing: their folders are brought along, in ~/.kuvo-code/bots.");
+  const theirs = prefs.calibration === undefined ? listedBots(S).filter((bot) => bot.machine).length : 0;
+  if (theirs)
+    dropped.push(`${theirs === 1 ? "A bot" : `${theirs} bots`} on your machines ${theirs === 1 ? "was" : "were"} described only on this Mac by the earlier Kuvo Code, and may not show there. ${theirs === 1 ? "Its" : "Their"} work is still on ${theirs === 1 ? "that machine" : "those machines"}: make ${theirs === 1 ? "it" : "them"} again if ${theirs === 1 ? "it's" : "they're"} missing.`);
   for (const bot of listedBots(S)) {
     if (bot.machine)
       continue;
@@ -5795,7 +5809,7 @@ function said6({ S, prefs, dropped }) {
     dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
   const terminals = isObject(prefs.projectSettings) ? Object.values(prefs.projectSettings).filter((each) => isObject(each) && typeof each.terminal === "string" && each.terminal).length : 0;
   if (terminals)
-    dropped.push(`The terminal app chosen for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept: Kuvo's own terminals open in the side panel.`);
+    dropped.push(`The command that opened in place of the chat for ${terminals === 1 ? "a project" : `${terminals} projects`} isn't kept.`);
   const moves = (Array.isArray(prefs.movesUnderWay) ? prefs.movesUnderWay : []).filter((each) => isObject(each) && each.stage === "switched").length;
   if (moves)
     dropped.push(`${moves === 1 ? "A move" : `${moves} moves`} to another computer that hadn't finished cleaning up left ${moves === 1 ? "its" : "their"} original folder where it was.`);
@@ -5814,10 +5828,13 @@ function said6({ S, prefs, dropped }) {
     dropped.push(`${theirWorktrees === 1 ? "A worktree" : `${theirWorktrees} worktrees`} on your machines may show ${theirWorktrees === 1 ? "its" : "their"} sessions under another project: the earlier Kuvo Code kept which project ${theirWorktrees === 1 ? "it" : "each"} belonged to on this Mac.`);
   if (Object.keys(prefs).some((key) => key.startsWith("machines.unreadable-")))
     dropped.push("The earlier Kuvo Code had set aside a list of machines it couldn't read. It isn't brought along: add any machine that's missing again.");
-  if (Object.keys(prefs).some((key) => key.startsWith("openusage.")))
-    dropped.push("API keys you pasted into the usage panel aren't brought along. Paste them again where you use them.");
-  if (typeof prefs.favoriteModels === "string" && prefs.favoriteModels)
-    dropped.push("Your starred models, and the model new sessions start with, are chosen again in the new app.");
+  const starred = typeof prefs.favoriteModels === "string" && prefs.favoriteModels !== "";
+  if (starred || prefs.lastModelRef !== undefined || prefs.lastModel !== undefined)
+    dropped.push(starred ? "Your starred models, and the model new sessions start with, are chosen again in the new app." : "The model new sessions start with is chosen again in the new app.");
+  if (prefs["notifications.enabled"] === false || prefs["notifications.sound"] === false || prefs["notifications.badge"] === false)
+    dropped.push("You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.");
+  if (prefs["analytics.enabled"] === false)
+    dropped.push("You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.");
   if (listOf8(S).some((name) => /\.unreadable-.*\.json$/.test(name)))
     dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some((name) => exists4(path169.join(S, "Usage", name))))
@@ -15026,7 +15043,7 @@ function readJournal(home) {
 
 class UnreadableJournal extends Error {
   constructor() {
-    super("The move's journal can't be read: nothing is done until someone looks at it (updates/rehome/journal.json).");
+    super("Kuvo was stopped part way through moving your sessions and can't tell how far it got, so it's changing nothing more. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.");
   }
 }
 var moveUnderWay = (home) => {
@@ -51611,13 +51628,14 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "69c7278af0a1";
+var BRIDGE_VERSION = "880f9e7ca5cf";
 
 // box/src/link/rehome/move.ts
 init_outside();
 
 // box/src/link/rehome/run-steps.ts
 init_database();
+init_paths();
 import { spawnSync as spawnSync14 } from "node:child_process";
 import fs162 from "node:fs";
 import path170 from "node:path";
@@ -51638,7 +51656,7 @@ async function migrateDatabases({ engine, data, scratch }) {
   if (other)
     throw new Error(`The engine's database ${path165.basename(other.database)} is of an earlier version, and only opencode.db can be brought up to date.`);
   const [{ database, from }] = due;
-  const before = tableCounts(database), every = everyCount(database);
+  const every = everyCount(database);
   fs157.rmSync(scratch, { recursive: true, force: true });
   try {
     const started = await startIsolated({ engine, data, scratch, what: "your sessions (to bring them up to date)" });
@@ -51649,11 +51667,10 @@ async function migrateDatabases({ engine, data, scratch }) {
   const to = schemaMark(database);
   if (to === null || !KNOWN_SCHEMAS.includes(to))
     throw new Error(`The engine didn't bring your sessions up to date (they're at ${to ?? "nothing"}, from ${from}).`);
-  const after = tableCounts(database);
-  const fewer = Object.entries(before).filter(([table, count]) => (table in after) && after[table] < count).map(([table, count]) => `${table} (${after[table]} of ${count})`);
+  const left = everyCount(database);
+  const fewer = Object.entries(every).filter(([table, count]) => (table in left) && left[table] < count).map(([table, count]) => `${table} (${left[table]} of ${count})`);
   if (fewer.length)
     throw new Error(`Bringing your sessions up to date lost some of what they held: ${fewer.join(", ")}.`);
-  const left = everyCount(database);
   return [{ database, from, to, gone: Object.fromEntries(Object.entries(every).filter(([table, count]) => count > 0 && !(table in left))) }];
 }
 
@@ -51808,7 +51825,38 @@ function stagedCounts(move) {
   counts.vaultItems = listOf9(path170.join(at("box"), "vault", "items")).filter((name) => name.endsWith(".json")).length;
   counts.accounts = foldersIn(at("agents")).reduce((sum, agent) => sum + foldersIn(path170.join(at("agents"), agent, "accounts")).length, 0);
   counts.groupChats = foldersIn(at("groups")).length;
+  counts.brokenLinks = (data ? databasesIn(data) : []).reduce((sum, database) => sum + soundness(database).brokenLinks, 0);
   return counts;
+}
+function relinkStaged(move) {
+  let changed = 0;
+  const walk = (folder, depth) => {
+    let entries = [];
+    try {
+      entries = fs162.readdirSync(folder, { withFileTypes: true });
+    } catch {}
+    for (const entry of entries) {
+      const file = path170.join(folder, entry.name);
+      if (entry.isSymbolicLink()) {
+        let target = "";
+        try {
+          target = fs162.readlinkSync(file);
+        } catch {
+          continue;
+        }
+        if (!path170.isAbsolute(target) || !moves(target, move.map))
+          continue;
+        fs162.rmSync(file, { force: true });
+        fs162.symlinkSync(mapped(target, move.map), file);
+        changed++;
+      } else if (entry.isDirectory() && depth < 40)
+        walk(file, depth + 1);
+    }
+  };
+  for (const placement of move.placements)
+    if (!placement.installed)
+      walk(placement.staged, 0);
+  return changed;
 }
 var countsFile2 = (move) => path170.join(move.work, "run-counts.json");
 function noteCounts(move, _when) {
@@ -51822,8 +51870,14 @@ function countsHold(move) {
   } catch {
     throw new Error("the counts taken after the clone can't be read");
   }
+  const data = stagedPlace(move, "data/opencode");
+  for (const database of data ? databasesIn(data) : [])
+    if (!soundness(database).whole)
+      throw new Error(`${path170.basename(database)} doesn't pass its integrity check once moved`);
   const after = stagedCounts(move);
-  const fewer = Object.keys(before).filter((name) => (after[name] ?? 0) < before[name]);
+  if ((after.brokenLinks ?? 0) > (before.brokenLinks ?? 0))
+    throw new Error(`the engine's database has ${after.brokenLinks} broken links once moved, ${before.brokenLinks ?? 0} before`);
+  const fewer = Object.keys(before).filter((name) => name !== "brokenLinks" && (after[name] ?? 0) < before[name]);
   if (fewer.length)
     throw new Said(`Something went missing as your sessions and settings were copied (${fewer.map((name) => `${name}: ${after[name] ?? 0} of ${before[name]}`).join(", ")}), so nothing was changed.`);
   return Object.fromEntries(Object.keys(after).flatMap((name) => [[`${name}Before`, before[name] ?? 0], [name, after[name]]]));
@@ -52312,6 +52366,8 @@ async function carryOn2(journal, rewriter) {
   if (at("rewrite")) {
     stepTo(journal, "rewrite");
     rewriter.rewrite(move);
+    if (journal.run)
+      relinkStaged(move);
     stopPoint("after-rewrite");
   }
   if (at("check")) {
@@ -52475,7 +52531,11 @@ async function carried(journal, rewriter) {
       return { result: "waits", message: WAITS, status: rehomeStatus(home) };
     if (!forwardOnly(journal.step))
       return { result: "failed", message: failed2(journal, error), status: rehomeStatus(home) };
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    const plain = !journal.run || error instanceof Said;
+    if (!plain)
+      console.error(`The move stopped at ${journal.step}, past where it goes back: ${raw}`);
+    const message = plain ? raw : "Kuvo couldn't finish moving your sessions this time. Try again.";
     noteRecord(home, { failed: { at: Date.now(), step: journal.step, message } });
     return { result: "stuck", message, status: rehomeStatus(home) };
   }
@@ -52786,6 +52846,10 @@ function appFolderOf(appBox, home) {
     throw new Error("kuvo-link.js rehome needs KUVO_HOME, the app's own box's folder (<app folder>/box).");
   return path171.dirname(path171.resolve(appBox));
 }
+
+// box/src/link/install/command.ts
+init_said();
+
 // box/src/link/install/verdict.ts
 init_home();
 import fs164 from "node:fs";
@@ -52894,7 +52958,7 @@ function bundleID(bundle) {
 }
 var sha2563 = (file) => crypto59.createHash("sha256").update(fs165.readFileSync(file)).digest("hex");
 function checkedRelease(release) {
-  const damaged = new Error("This copy of Kuvo Code is damaged. Download it again, then try again.");
+  const damaged = new Said("This copy of Kuvo Code is damaged. Download it again, then try again.");
   let box;
   try {
     box = JSON.parse(fs165.readFileSync(path173.join(release, "box.json"), "utf8"));
@@ -52937,11 +53001,11 @@ async function installCommand(args) {
   const judged = () => judgeInstall(home, appFolder, { helperInPlace: () => mac && launchTools() ? helperRuns() : null });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
+      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
       return EXIT.refused;
     }
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only." });
+      say({ result: "refused", message: real ? "Only Kuvo Code itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo Code itself sets up ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -52964,7 +53028,9 @@ async function installCommand(args) {
     say({ ...answer, status: judged().status });
     return EXIT[answer.result];
   } catch (error) {
-    say({ result: "failed", message: error instanceof Error ? error.message : String(error), ...judged() });
+    if (!(error instanceof Said))
+      console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    say({ result: "failed", message: error instanceof Said ? error.message : "Kuvo couldn't finish setting up on this computer this time. Try again.", ...judged() });
     return EXIT.failed;
   }
 }
@@ -53009,7 +53075,8 @@ async function moved({ home, root, bundle, release, engine }, judged, say) {
     return { result: "waits", verdict: "waits", message: NOT_MOVED2.waits };
   if (before.verb !== "move")
     return { result: before.verdict === "ours" ? "nothing" : "refused", verdict: before.verdict, ...NOT_MOVED2[before.verdict] ? { message: NOT_MOVED2[before.verdict] } : {} };
-  checkedRelease(release);
+  if (before.verdict !== "ours")
+    checkedRelease(release);
   const folder = rehomeFolder(home);
   fs165.mkdirSync(folder, { recursive: true, mode: 448 });
   const out = path173.join(folder, `run.${process.pid}.out`), log = path173.join(folder, "run.log");
@@ -53084,7 +53151,7 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   const pinned = checkedRelease(release).engine;
   if (before.verdict === "fresh") {
     if (!fs165.existsSync(path173.join(engine, pinned, "opencode")))
-      throw new Error(NO_ENGINE("this Mac"));
+      throw new Said(NO_ENGINE("this Mac"));
     for (const name of fs165.readdirSync(engine))
       if (name !== pinned)
         fs165.rmSync(path173.join(engine, name), { recursive: true, force: true });
@@ -53140,7 +53207,7 @@ async function newMachine({ home, release, engine }, judged) {
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path173.join(engine, engineVersion, "opencode");
   if (!fs165.existsSync(staged))
-    throw new Error(NO_ENGINE("this computer"));
+    throw new Said(NO_ENGINE("this computer"));
   if (!await takeLock(home, { waiting: () => console.error("Another move is under way: this one waits for it.") }))
     return { result: "waits", verdict: judged().verdict, message: "Another move is under way." };
   try {
@@ -53315,6 +53382,7 @@ var sizeOf2 = (file) => {
 var NO_ENGINE2 = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
 var DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
 var TWO = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
+var STUCK = "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.";
 var NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
 function schemaRefusal2(appFolder, home) {
   const databases = databasesIn(path175.join(appFolder, "opencode", "data", "opencode"));
@@ -53333,7 +53401,7 @@ function schemaRefusal2(appFolder, home) {
           fs167.copyFileSync(database + suffix, copy + suffix, fs167.constants.COPYFILE_FICLONE);
       const mark = schemaMark(copy);
       if (!takenSchema(mark))
-        return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed.`;
+        return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed. Update Kuvo Code if a newer version is out, then try again.`;
     }
     return null;
   } catch (error) {
@@ -53356,7 +53424,7 @@ function runRefusal({ appFolder, home }, plan, pinned) {
     return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
   const old = runningIn(path175.join(appFolder, "box", "run"));
   if (old.length)
-    return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}). Quit Kuvo Code wherever it's open, then try again.`;
+    return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}) and didn't stop when asked. Restart this Mac, then try again.`;
   if (runningIn(path175.join(home, "run")).length)
     return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
   const target = nearest(home);
@@ -53430,8 +53498,11 @@ function startHelper(home, app) {
 `).pop() ?? "");
   } catch {}
   const started = ran.status === 0 && isObject(said) && said.started === true;
-  const message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran.stderr ?? "").trim().split(`
-`).pop() || "it said nothing"}.`;
+  const off = isObject(said) && said.disabled === true;
+  if (!started || off)
+    console.error(`helper start: ${isObject(said) && typeof said.message === "string" ? said.message : (ran.stderr ?? "").trim().split(`
+`).pop() || "it said nothing"}`);
+  const message = off ? started ? "Kuvo Helper is turned off in System Settings › General › Login Items, so Kuvo runs only until you log out. Turn it on there to have it start when you log in." : "Kuvo Helper is turned off in System Settings › General › Login Items, so Kuvo couldn't be started. Turn it on there, then try again." : started ? undefined : "Your sessions are moved, but Kuvo couldn't be started on this Mac. Try again.";
   return { started, ...message ? { message } : {} };
 }
 function settleStart(home, options) {
@@ -53496,6 +53567,8 @@ async function rehomeRun(folders, options) {
     return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
   return locked2(home, options.waiting ?? (() => {}), async () => {
     const earlier = await resumed(home, RUN_REWRITER);
+    if (earlier && earlier.result === "stuck")
+      return { ...earlier, message: STUCK };
     if (earlier && earlier.result !== "failed")
       return earlier.result === "done" ? settle5(home, options) : earlier;
     const record = readRecord(home);
@@ -53503,6 +53576,8 @@ async function rehomeRun(folders, options) {
       return settle5(home, options);
     if (machineBoxThere(home))
       return { result: "refused", message: TWO, status: rehomeStatus(home) };
+    if (recordedKind(path175.join(home, "box", "kind")) === "mac")
+      return { result: "refused", message: "Kuvo is set up on this Mac already, so nothing was moved over it. An earlier Kuvo Code's sessions are still in its own folder.", status: rehomeStatus(home) };
     const keys = path175.join(options.bundle, "Contents", "MacOS", "kuvo-keys");
     const plan = {
       bundle: options.bundle,
@@ -53540,6 +53615,8 @@ async function rehomeRun(folders, options) {
       kept: path175.join(rehomeFolder(home), "kept", stamp4(now)),
       run: plan
     }, RUN_REWRITER);
+    if (outcome.result === "stuck")
+      return { ...outcome, message: STUCK };
     return outcome.result === "done" ? settle5(home, options) : outcome;
   });
 }
