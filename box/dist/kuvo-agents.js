@@ -34980,7 +34980,7 @@ function handler(context) {
             const written = String(input.text ?? "");
             const template = name ? await link.commandTemplate(name, sessions.get(id).location.directory) : undefined;
             const text = template ? expandCommand(template, written) : `/${name} ${written}`.trim();
-            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer" });
+            sessions.prompt(id, { id: newID("msg"), text, files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined });
             return json15({});
           }
           case "interrupt":
@@ -36555,4 +36555,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 9f2570c90f7978443cc8d964d455269c5add6bbb3c09116e8d0269cd2a4efa7a
+// Built from Packages/Box/src/agents b47b7a299ff9d398fa94e6798b3e0e7c221355f4f62b03bdf4fec70d920b8c88
