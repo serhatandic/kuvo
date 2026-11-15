@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Amazon Bedrock says Connect. Key sheets on desktop and phone say Add Key, Replace Key or Add Another Key with the account’s name; account sign-ins keep Sign In to the account’s name.
+
 - Updating from Kuvo Code 0.7 brings your work along: your sessions, projects, worktrees, bots, group chats, personalities, machines, saved sign-ins and settings move into Kuvo's new place on this Mac. The earlier Kuvo Code's own folder is left exactly as it was, nothing runs until the move has succeeded, and anything it couldn't bring is said.
 - Computers, group task states and conversation summaries use display words supplied by the box, shared across clients.
 

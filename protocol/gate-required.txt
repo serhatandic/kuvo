@@ -4,6 +4,7 @@
 # One name a line, in order (LC_ALL=C sort): git merges this file by union (.gitattributes), so
 # branches that each add a name merge without a conflict (two added side by side may land in
 # either order, which is fine). Change nothing else here.
+account-action-sheet-title
 agent-tools.own
 auto.lists
 bots.deletes

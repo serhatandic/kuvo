@@ -175,6 +175,8 @@ pub struct Action {
     /// `rename`, `remove`.
     pub id: String,
     pub label: String,
+    #[serde(default, rename = "sheetTitle")]
+    pub sheet_title: Option<String>,
     #[serde(default)]
     pub confirm: Option<Confirm>,
     #[serde(default)]

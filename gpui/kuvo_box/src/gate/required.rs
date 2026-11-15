@@ -71,6 +71,7 @@ pub const REQUIRED: &[&str] = &[
     "sign-in.accounts.kinds",
     "sign-in.accounts.plan",
     "sign-in.accounts.state",
+    "account-action-sheet-title",
     "sign-in.codes",
     "typed",
     "usage.notices",

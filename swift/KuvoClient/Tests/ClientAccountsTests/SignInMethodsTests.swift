@@ -92,6 +92,7 @@ struct SignInMethodsTests {
             let actions = try #require(each["actions"] as? [[String: Any]])
             #expect(said.actions.map(\.id) == actions.map { $0["id"] as? String }, "\(each["about"]!)")
             #expect(said.actions.map(\.label) == actions.map { $0["label"] as? String })
+            #expect(said.actions.map(\.sheetTitle) == actions.map { $0["sheetTitle"] as? String })
             #expect(said.actions.map(\.here) == actions.map { $0["here"] as? Bool ?? false })
             for (action, box) in zip(said.actions, actions) {
                 let confirm = box["confirm"] as? [String: String]

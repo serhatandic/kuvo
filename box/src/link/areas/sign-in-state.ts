@@ -29,6 +29,7 @@ export interface ActionConfirm {
 export interface AccountAction {
   id: "signIn" | "signInAgain" | "addAnother" | "disconnect" | "install" | "update" | "signOut" | "rename" | "remove";
   label: string;
+  sheetTitle?: string;
   confirm?: ActionConfirm;
   here?: true;
 }
@@ -152,6 +153,14 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   })();
 
   const actions: AccountAction[] = [];
+  const finish = () => {
+    for (const action of actions) {
+      if (["signIn", "signInAgain", "addAnother"].includes(action.id)) {
+        action.sheetTitle = words === SIGN_IN_WORDS ? `Sign In to ${name}` : `${action.label} · ${name}`;
+      }
+    }
+    return { state, line, actions, connections, ...(added ? { added: true as const } : {}) };
+  };
   // A coding agent's sign-in page comes back to its computer, unless its bridge says it can finish
   // on another device.
   const here = agents && meta.remoteSignIn !== true ? { here: true as const } : {};
@@ -170,11 +179,11 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating) actions.push({ id: "update", label: `Update to ${latest}` });
     if (meta.signsOut === true && said.length) actions.push({ id: "signOut", label: "Sign Out" });
     if (added) actions.push({ id: "rename", label: "Rename" }, remove);
-    return { state, line, actions, connections, ...(added ? { added: true as const } : {}) };
+    return finish();
   }
   if (!said.length) {
     if (signsIn) actions.push({ id: "signIn", label: words.first });
-    return { state, line, actions, connections };
+    return finish();
   }
   if (signsIn) {
     // Wherever one of its sign-ins ended, the one in use or another, or the one in use failed.
@@ -191,5 +200,5 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
       : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
     actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
   }
-  return { state, line, actions, connections };
+  return finish();
 }

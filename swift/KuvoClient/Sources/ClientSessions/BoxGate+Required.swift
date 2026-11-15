@@ -72,6 +72,7 @@ extension BoxGate {
         "setup.welcomed", // #733
         "sign-in.accounts.kinds", // #711
         "sign-in.accounts.plan", // #733 (with a key-only account's Add Key)
+        "account-action-sheet-title", // #734
         "sign-in.accounts.state", // #668: no client decides when Disconnect, Sign In Again or Install show
         "sign-in.codes", // #711
         "typed",
