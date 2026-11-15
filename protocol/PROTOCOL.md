@@ -3335,7 +3335,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     Signed in, an account's Custom Auto limit goes, as when you sign in there.
   - Custom Auto: a session's model `{providerID: "auto", id: <list ID>}` runs down that list,
     going on with the next model at a usage limit or an error. `kuvo/agents/api/kuvo/auto`: `GET`
-    and `PUT {lists}` → `{data: {entries, lists: [{id, name, entries: [{providerID, modelID,
+    → `{data: {entries, lists: [{id, name, revision, entries: [{providerID, modelID,
     variant?}]}], limits: [{key, until, scope, known}]}}` (the first list's ID is `auto`;
     `entries` is the first list's; `key` is a provider for an account's limit, `provider/model`
     for a model's; `until` in ms; each entry names its model by the model's own id, so one saved
@@ -9933,3 +9933,15 @@ refinement; the legacy local client retains its own sharp-screenshot path.
 Examples and box-only socket path cases live in `protocol/vectors/browser-view.json`;
 released Swift socket vectors stay unchanged in `protocol/vectors/link.json`. Route answers
 are generated from the browser route shapes.
+
+### Custom Auto lists changed by id (`auto.lists`)
+
+`kuvo/agents/api/kuvo/auto` GET returns `data.lists`, each with `id`, `name`,
+`entries`, and an opaque `revision`. POST adds `{id, name, entries}`; PUT `<id>`
+renames (`{revision, name}`) or sets contents (`{revision, entries}`). DELETE
+`<id>` takes `{revision}` and keeps at least one list. PUT `order` takes
+`{ids, was}`: both are arrays of ids, `was` the order read, and `ids` every id
+once in the desired order. The names `order` and `limits` are reserved.
+Changes return `data.lists` and `data.limits`. Stale revisions, duplicate adds,
+and stale order return 409; read again and let the user retry. Different lists
+can be changed independently. Whole-collection PUT is no longer supported.

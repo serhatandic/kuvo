@@ -4510,6 +4510,7 @@ var FEATURES = [
   "artifacts",
   "asks",
   "attention",
+  "auto.lists",
   "autopilot",
   "bots",
   "bots.deletes",
@@ -45378,7 +45379,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ac8283751520";
+var BRIDGE_VERSION = "61861026984e";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
