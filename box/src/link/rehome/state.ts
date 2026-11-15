@@ -16,8 +16,11 @@ import type { RehomeStatus, RehomeStep } from "../../shared/routes/box";
 export const rehomeFolder = (home: string): string => path.join(home, "updates", "rehome");
 
 /** The steps, in order (PROTOCOL.md, "Moving this Mac's box"). Before `clear`, a move that stops
- * goes back; from it on, it only goes forward. */
-export const STEPS = ["plan", "install", "clone", "rewrite", "check", "place", "fix", "clear", "done"] as const satisfies readonly RehomeStep[];
+ * goes back; from it on, it only goes forward. `keys`, `upgrade` and `database` are a move's that
+ * the box runs whole itself (`rehome --run`, #713): the Keychain's hand-over, an earlier Kuvo
+ * Code's data brought into the box's own files, and the engine's database brought up to date,
+ * the last two in the staged copy. */
+export const STEPS = ["plan", "install", "keys", "clone", "upgrade", "database", "rewrite", "check", "place", "fix", "clear", "done"] as const satisfies readonly RehomeStep[];
 export const stepIndex = (step: RehomeStep): number => STEPS.indexOf(step);
 /** Whether `step` is past the point a stopped move goes back from. */
 export const forwardOnly = (step: RehomeStep): boolean => stepIndex(step) >= stepIndex("clear");
@@ -36,6 +39,8 @@ export const KEPT_FOR = 30 * 86_400_000;
 export interface RehomeRecord extends Partial<RehomeStatus> {
   /** The kept copies' folders, each deleted once `keptUntil` passes. */
   kept?: string[];
+  /** What an earlier Kuvo Code kept that the move didn't carry, in words a client shows once. */
+  dropped?: string[];
   /** What a move merged into a folder that was there (a session's files from the app's
    * `Attachments` into `attachments`, say): each as it was and where it went, for a move back. */
   merged?: { source: string; placed: string }[];
@@ -46,6 +51,14 @@ export interface RehomeRecord extends Partial<RehomeStatus> {
   /** Where the old place is still named in what moved, but not where the box rewrites (people's and
    * agents' words, what's made anew as the box starts): said for support. */
   leftovers?: string[];
+  /** The app whose data a move the box ran itself took (`rehome --run`): its bundle and its ID, for
+   * what's still owed to be settled at a later run. */
+  app?: { bundle: string; id: string };
+  /** A merge (`two`): the earlier Kuvo Code's data went into the box that was here, which keeps
+   * its kind. Its data in the app's folder is taken, and says nothing more. */
+  mergedInto?: boolean;
+  /** What each count was before and after (`rehome --run`'s check), for support. */
+  counts?: Record<string, number>;
 }
 
 const stateFile = (home: string) => path.join(rehomeFolder(home), "state.json");
@@ -96,7 +109,31 @@ export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
     asked: kept.asked ?? null,
     from: kept.from ?? underWay?.from ?? null,
     to: kept.to ?? underWay?.to ?? null,
+    progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step, underWay.run.merge === true) : null,
+    dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each): each is string => typeof each === "string") : [],
   };
+}
+
+/** Each step of a move the box runs itself, in the words a client shows as they are (never its
+ * own): what's happening now, which step it is and of how many. */
+const STEP_TITLES: Record<Exclude<RehomeStep, "done">, string> = {
+  plan: "Checking this Mac",
+  install: "Getting ready",
+  keys: "Handing over your keys",
+  clone: "Copying your sessions and settings",
+  upgrade: "Bringing your settings along",
+  database: "Bringing your sessions up to date",
+  rewrite: "Pointing everything at its new place",
+  check: "Checking nothing is missing",
+  place: "Putting everything in place",
+  fix: "Reconnecting your worktrees",
+  clear: "Finishing up",
+};
+const MERGE_TITLES: Partial<typeof STEP_TITLES> = { clone: "Copying both sets of sessions and settings", place: "Putting them together" };
+export function progressOf(step: RehomeStep, merge = false): NonNullable<RehomeStatus["progress"]> {
+  const shown = STEPS.filter(each => each !== "done");
+  const at = step === "done" ? "clear" : step;
+  return { step, title: (merge ? MERGE_TITLES[at] : undefined) ?? STEP_TITLES[at], index: shown.indexOf(at) + 1, of: shown.length };
 }
 
 // The journal
@@ -143,6 +180,23 @@ export interface Journal {
   clonedAt?: number;
   /** Keep This Mac Awake was off in the app: the box's own setting says so too. */
   keepsAwakeOff?: boolean;
+  /** A move the box runs whole itself (`rehome --run`, #713), with no keeper before it: the app
+   * that carries its release (`bundle`, and its ID), the release and the engine its installer
+   * staged (`engine`: the folder its version is in), what it moves (`app-07`: an earlier Kuvo
+   * Code's data, with no box of its own; `app-box`: a keeper build's box), whether it's merged
+   * into a box that's here already (`two`), and whether the app brings `kuvo-keys`. The app's
+   * folder is never changed: nothing's cleared, and no copy is kept. */
+  run?: RunPlan;
+}
+
+export interface RunPlan {
+  bundle: string;
+  id: string;
+  release: string;
+  engine: string;
+  source: "app-07" | "app-box";
+  merge?: boolean;
+  keys: string | null;
 }
 
 const journalFile = (home: string) => path.join(rehomeFolder(home), "journal.json");

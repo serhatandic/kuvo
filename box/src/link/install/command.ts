@@ -5,7 +5,7 @@
 //
 //   install --status --root <name> [--app <bundle>]                       what this computer holds
 //   install --new --root <name> --release <folder> --engine <folder> [--app <bundle>]   a new box, made and started
-//   install --move …                                                      the old app's box moved (not built yet)
+//   install --move --root <name> --release <folder> --engine <folder> --app <bundle>    an earlier Kuvo Code's sessions and settings moved
 //
 // One JSON line on stdout. Exit: 0 done; 1 refused or failed, in words; 2 not asked as above; 4
 // another move holds the lock.
@@ -13,7 +13,7 @@
 // on Linux it's a machine's, in `~/.kuvo-code`, started as a computer that's added is (the one
 // start script, `add/scripts.ts`), with its `@reboot` line and no helper.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +25,8 @@ import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
 import { homeOfRoot, rehomeNew, runningIn } from "../rehome/move";
-import { giveLock, takeLock } from "../rehome/state";
+import { giveLock, progressOf, rehomeFolder, rehomeStatus, takeLock } from "../rehome/state";
+import { sleep } from "../../shared/wait";
 import { launchTools } from "../uninstall";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
 
@@ -127,15 +128,15 @@ export async function installCommand(args: string[]): Promise<number> {
       say(judgement);
       return 0;
     }
-    if (verbs[0] === "--move") {
-      // BOX-NEEDED (#713 piece 4): `rehome --run`, the old app's box and data moved by the box itself.
-      say({ result: "refused", message: "Moving an earlier Kuvo Code's sessions into their new place isn't in this version yet.", ...judged() });
-      return EXIT.refused;
-    }
     const release = option("--release"), engine = option("--engine");
     if (!release || !engine || !path.isAbsolute(release) || !path.isAbsolute(engine)) {
       console.error(USAGE);
       return 2;
+    }
+    if (verbs[0] === "--move") {
+      const answer = mac ? await moved({ home, root: option("--root")!, bundle: bundle!, release, engine }, judged, say) : { result: "refused" as const, verdict: judged().verdict, message: "There's nothing to move on this computer: Kuvo is where it belongs already." };
+      say({ ...answer, status: judged().status });
+      return EXIT[answer.result];
     }
     const answer = mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
     say({ ...answer, status: judged().status });
@@ -172,6 +173,68 @@ function tidyStaging(home: string, { verdict, verb }: Judgement, release: string
     const version = isObject(box) && typeof box.engine === "string" && /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) ? box.engine : null;
     if (version && fs.existsSync(path.join(home, "engine", version, "opencode"))) fs.rmSync(path.join(home, "updates", "install", "engine"), { recursive: true, force: true });
   } catch {}
+}
+
+/** Why each verdict has nothing to move, in words an app shows as they are. */
+const NOT_MOVED: Partial<Record<InstallVerdict, string>> = {
+  fresh: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
+  machine: "This Mac is set up as one of your machines already: Kuvo Code uses what's here.",
+  back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
+  waits: "Another move is under way.",
+};
+
+/** An earlier Kuvo Code's sessions and settings moved by the box itself (`rehome --run`, "Moving
+ * this Mac's box"), started in a session of its own so that the app quitting doesn't stop it,
+ * and followed: a line for each step as it's reached (`{step, title, index, of}`, the box's own
+ * words), then its answer. A move that's done with something still owed (its start, the
+ * Keychain) is finished by running it again. */
+async function moved({ home, root, bundle, release, engine }: { home: string; root: string; bundle: string; release: string; engine: string }, judged: () => Judgement, say: (value: unknown) => void): Promise<Answer> {
+  const before = judged();
+  if (before.verdict === "waits") return { result: "waits", verdict: "waits", message: NOT_MOVED.waits };
+  if (before.verb !== "move") return { result: before.verdict === "ours" ? "nothing" : "refused", verdict: before.verdict, ...(NOT_MOVED[before.verdict] ? { message: NOT_MOVED[before.verdict] } : {}) };
+  checkedRelease(release);
+  const folder = rehomeFolder(home);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const out = path.join(folder, "run.out"), log = path.join(folder, "run.log");
+  fs.rmSync(out, { force: true });
+  const outTo = fs.openSync(out, "w", 0o600), logTo = fs.openSync(log, "a", 0o600);
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(process.execPath, [...OWN_RUNTIME, process.argv[1], "rehome", root, "--run", "--app", bundle, "--release", release, "--engine", engine], {
+      cwd: home, detached: true, stdio: ["ignore", outTo, logTo], env: process.env,
+    });
+  } finally {
+    fs.closeSync(outTo);
+    fs.closeSync(logTo);
+  }
+  const ended = new Promise<number | null>(resolve => { child.once("exit", status => resolve(status)); child.once("error", () => resolve(null)); });
+  // Each step as it's reached, in the box's own words.
+  let shown = "";
+  const show = () => {
+    const progress = rehomeStatus(home).progress;
+    if (progress && progress.step !== shown) {
+      shown = progress.step;
+      say(progress);
+    }
+  };
+  say(progressOf("plan"));
+  shown = "plan";
+  let status: number | null | undefined;
+  while (status === undefined) {
+    status = await Promise.race([ended, sleep(250).then(() => undefined)]);
+    show();
+  }
+  child.unref();
+  let said: unknown = null;
+  try { said = JSON.parse(fs.readFileSync(out, "utf8").trim().split("\n").pop() ?? ""); } catch {}
+  fs.rmSync(out, { force: true });
+  const verdict = judged().verdict;
+  if (!isObject(said) || typeof said.result !== "string") return { result: "failed", verdict, message: "Kuvo stopped while moving your sessions. Try again." };
+  const message = typeof said.message === "string" ? { message: said.message } : {};
+  const started = typeof said.started === "boolean" ? { started: said.started } : {};
+  if (said.result === "done" || said.result === "nothing") return { result: said.result, verdict, ...started, ...message };
+  if (said.result === "waits") return { result: "waits", verdict, ...message };
+  return { result: said.result === "refused" ? "refused" : "failed", verdict, ...message };
 }
 
 interface NewMac { home: string; appFolder: string; app: string; release: string; engine: string }

@@ -11,10 +11,15 @@
 //   rehome <root> --failed <why>                                a try the keeper gave up on, counted
 //   rehome <root> --status                                      how it stands (`kuvo/box/rehome`)
 //   rehome <root> --settled keychain|agent                      what the app owed it, done
+//   rehome <root> --run --app <bundle> --release <folder> --engine <folder>
+//                                                               an earlier Kuvo Code's data moved by the box itself,
+//                                                               whole (KUVO_HOME the box's home; `install --move` starts it)
 
 import path from "node:path";
-import { accountHome, located } from "../home";
+import { accountHome, homeFolder, K, located } from "../home";
+import { bundleID, checkedRelease } from "../install/command";
 import { appFolderOf, homeOfRoot, keeperFailed, newReadiness, NOTHING_TO_MOVE, rehome, rehomeBack, rehomeNew, rehomeReady, rehomeResume, settled, type RehomeOutcome } from "./move";
+import { rehomeRun } from "./run";
 import { moveUnderWay, rehomeStatus } from "./state";
 
 /** Each result's exit status: 0, start what's there; 1, it didn't move, start the box where it was;
@@ -22,7 +27,7 @@ import { moveUnderWay, rehomeStatus } from "./state";
  * lock, start nothing. */
 const EXIT: Record<RehomeOutcome["result"], number> = { done: 0, back: 0, nothing: 0, refused: 1, failed: 1, stuck: 3, waits: 4 };
 
-const USAGE = "Usage: kuvo-link.js rehome <root> [--new] [--release <folder>] [--keeps-awake on|off] | --ready | --resume | --back | --status | --settled keychain|agent | --new --check | --failed <why>";
+const USAGE = "Usage: kuvo-link.js rehome <root> [--new] [--release <folder>] [--keeps-awake on|off] | --ready | --resume | --back | --status | --settled keychain|agent | --new --check | --failed <why> | --run --app <bundle> --release <folder> --engine <folder>";
 
 export async function rehomeCommand(root: string | undefined, args: string[]): Promise<number> {
   // (Whether something runs is told by its process, never taken from a pid alone, as `KUVO_BOX=mac`
@@ -44,6 +49,29 @@ export async function rehomeCommand(root: string | undefined, args: string[]): P
     if (args.includes("--status")) {
       say(rehomeStatus(home));
       return 0;
+    }
+    // The whole move, run by the box itself (#713): the app that carries its release says whose
+    // data it is (its bundle's ID names the earlier Kuvo Code's folder), and this process runs in
+    // the box's home, as the installer does.
+    if (args.includes("--run")) {
+      const bundle = option("--app"), release = option("--release"), engine = option("--engine");
+      const id = bundle && path.isAbsolute(bundle) ? bundleID(bundle) : null;
+      if (!bundle || !id || !release || !engine || !path.isAbsolute(release) || !path.isAbsolute(engine) || located(home) !== located(K)) {
+        console.error(USAGE);
+        return 2;
+      }
+      if (process.platform !== "darwin") {
+        say({ result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) });
+        return 1;
+      }
+      let pinned: string;
+      try { pinned = checkedRelease(release).engine; } catch (error) {
+        say({ result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) });
+        return 1;
+      }
+      const outcome = await rehomeRun({ appFolder: path.join(homeFolder(), "Library", "Application Support", id), home }, { bundle, id, release, engine, pinned, waiting });
+      say(outcome);
+      return EXIT[outcome.result];
     }
     // (A copy of the app, a demo's or a test's, never acts on the real one's move: only Kuvo Code
     // itself, or the box in that home.)

@@ -21,6 +21,7 @@ import { agentsWorking } from "../updates/update";
 import { BRIDGE_VERSION } from "../version";
 import { setKeepsAwake } from "../work/settings";
 import { undoKeychain } from "./outside";
+import { beforeForward, countsHold, handOverKeys, migrateStaged, noteCounts, takeBackKeys, upgradeStaged } from "./run-steps";
 import { PATH_REWRITER, pathMap, type MoveContext, type PathMap, type Rewriter } from "./rewrite";
 import {
   AFTER_A_FAILURE, KEPT_FOR, MOST_TRIES, forgetJournal, forwardOnly, giveLock, holdsLock, journalAct, noteRecord, readActs, readJournal,
@@ -49,7 +50,7 @@ export const SERVED_FILE = "served.json";
  * box moved or made there without it would start with nothing. */
 const RELEASE_HELPER = path.join("bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
 /** Why a release folder can't be a box's files in its home, or null. */
-function releaseRefusal(release: string | null): string | null {
+export function releaseRefusal(release: string | null): string | null {
   const fileAt = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
   if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js"))) return "The box's own files to put in its new home weren't given.";
   if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home.";
@@ -58,6 +59,8 @@ function releaseRefusal(release: string | null): string | null {
 
 /** What a move back says with nothing moved. */
 const NOT_MOVED = "This Mac's box hasn't moved: there's nothing to move back.";
+/** What a move the box ran itself says to Move Back: the earlier Kuvo Code's own folder was never changed. */
+const NOT_BACK = "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back.";
 /** What a box that's in its own home says to a move: a machine's, on Linux. */
 export const NOTHING_TO_MOVE = "This machine's box is in its own home already: there's nothing to move.";
 
@@ -70,7 +73,7 @@ const inside = (file: string, folder: string) => file !== folder && file.startsW
 // a power cut or a kill would, with nothing after it run.
 // And, for a test, something written there meanwhile (`KUVO_TEST_REHOME_WRITE_AT`, `…_FILE`, `…_TEXT`),
 // as the app or a process that started would.
-function stopPoint(point: string): void {
+export function stopPoint(point: string): void {
   if (!IN_TEST_FOLDER) return;
   if (process.env.KUVO_TEST_REHOME_WRITE_AT === point && process.env.KUVO_TEST_REHOME_WRITE_FILE) {
     fs.mkdirSync(path.dirname(process.env.KUVO_TEST_REHOME_WRITE_FILE), { recursive: true });
@@ -107,13 +110,13 @@ const ran = (command: string, args: string[], timeout = 120_000) => {
   return { status: result.status, output: `${result.stdout ?? ""}`, errors: `${result.stderr ?? ""}` };
 };
 /** The nearest folder of `file` that's there. */
-const nearest = (file: string): string => {
+export const nearest = (file: string): string => {
   let folder = file;
   while (!exists(folder) && path.dirname(folder) !== folder) folder = path.dirname(folder);
   return folder;
 };
 /** The kind of disk `folder` is on (`apfs`, `hfs`, …), by its mount, or null. */
-function diskKind(folder: string): string | null {
+export function diskKind(folder: string): string | null {
   const df = ran("/bin/df", ["-P", folder]).output.trim().split("\n").pop()?.trim().split(/\s+/);
   const mount = df && df.length >= 6 ? df.slice(5).join(" ") : null;
   if (!mount) return null;
@@ -124,7 +127,7 @@ function diskKind(folder: string): string | null {
   return null;
 }
 /** Free bytes on `folder`'s disk (a test's folder may say, `KUVO_TEST_REHOME_FREE`). */
-function freeBytes(folder: string): number | null {
+export function freeBytes(folder: string): number | null {
   if (IN_TEST_FOLDER && process.env.KUVO_TEST_REHOME_FREE) return Number(process.env.KUVO_TEST_REHOME_FREE);
   const free = Number(ran("/bin/df", ["-Pk", folder]).output.trim().split("\n").pop()?.trim().split(/\s+/)[3]);
   return Number.isFinite(free) ? free * 1024 : null;
@@ -139,28 +142,35 @@ export interface Folders {
   home: string;
 }
 
-const staging = (home: string) => path.join(rehomeFolder(home), "staging");
-const stamp = (at: number) => new Date(at).toISOString().replace(/[:.]/g, "-");
+export const staging = (home: string) => path.join(rehomeFolder(home), "staging");
+export const stamp = (at: number) => new Date(at).toISOString().replace(/[:.]/g, "-");
 
 /** What moves from the app's folder (#333 §2.1): the box's own folder's entries to the same names
  * in its home (`run` without its processes' records; never `bin`, which comes from its release),
  * what's beside it to its place there, and the app's sent files merged into `attachments`; then its
  * release's `bin`. Cleared after: the app's box folder and the engine's whole, and each other. */
-export function planMove({ appFolder, home }: Folders, release: string): Pick<Journal, "placements" | "clearing"> {
+export function planMove({ appFolder, home }: Folders, release: string, { engine, whole = false }: { engine?: string; whole?: boolean } = {}): Pick<Journal, "placements" | "clearing"> {
   const box = path.join(appFolder, "box");
   const placements: Placement[] = [];
   const stage = (name: string) => path.join(staging(home), `${placements.length}-${name}`);
-  for (const name of listOf(box).sort()) {
+  // (`whole`, a move the box runs itself: `box` and `run` too where the app had no box of its own,
+  // and each place beside it whether or not it's there, for what its upgrades write there.)
+  const own = new Set([...listOf(box), ...(whole ? ["box", "run"] : [])]);
+  for (const name of [...own].sort()) {
     if (name === "bin") continue;
     placements.push({ from: path.join(box, name), to: path.join(home, name), staged: stage(name), ...(name === "run" ? { run: true } : {}) });
   }
   for (const [name, there] of BESIDE) {
+    // (The engine from the installer's, where it's given: never an earlier Kuvo Code's.)
+    if (name === "engine" && engine) continue;
     const from = path.join(appFolder, there);
-    if (exists(from)) placements.push({ from, to: path.join(home, name), staged: stage(name) });
+    if (whole || exists(from)) placements.push({ from, to: path.join(home, name), staged: stage(name) });
   }
-  if (exists(path.join(appFolder, APP_ATTACHMENTS))) placements.push({ from: path.join(appFolder, APP_ATTACHMENTS), to: path.join(home, "attachments"), staged: stage("attachments") });
+  if (whole || exists(path.join(appFolder, APP_ATTACHMENTS))) placements.push({ from: path.join(appFolder, APP_ATTACHMENTS), to: path.join(home, "attachments"), staged: stage("attachments") });
+  if (engine) placements.push({ from: engine, to: path.join(home, "engine"), staged: stage("engine"), installed: true });
   placements.push({ from: path.join(release, "bin"), to: path.join(home, "bin"), staged: stage("bin"), installed: true });
-  const clearing = [box, path.join(appFolder, "opencode"), ...BESIDE.filter(([, there]) => !there.startsWith("opencode/")).map(([, there]) => path.join(appFolder, there)),
+  // (A move the box runs itself changes nothing in the app's folder: nothing's cleared.)
+  const clearing = whole ? [] : [box, path.join(appFolder, "opencode"), ...BESIDE.filter(([, there]) => !there.startsWith("opencode/")).map(([, there]) => path.join(appFolder, there)),
     path.join(appFolder, APP_ATTACHMENTS)].filter(exists);
   return { placements, clearing };
 }
@@ -250,6 +260,8 @@ export function backRefusal({ appFolder, home }: Folders, { running: checkRunnin
   if (process.platform !== "darwin") return NOTHING_TO_MOVE;
   const state = readRecord(home);
   if (state.state !== "done" || state.way !== "move") return NOT_MOVED;
+  // (One the box ran itself left the earlier Kuvo Code's folder as it was: there's nothing to put back.)
+  if (state.app) return NOT_BACK;
   // (Its keeper, which runs the move back, aside.)
   const running = checkRunning ? runningIn(path.join(home, "run"), { keeper: false }) : [];
   if (running.length) return `Something is running in this Mac's box (${running.join(", ")}): it moves back once that's stopped.`;
@@ -367,12 +379,18 @@ function cloneAll(journal: Journal): void {
         if (PROCESS_RECORD.test(name) || !(kind.isFile() || kind.isDirectory() || kind.isSymbolicLink())) continue;
         clone(file, path.join(placement.staged, name));
       }
+    } else if (placement.installed && path.basename(placement.to) === "engine") {
+      // The installer's engine: cloned (moments, almost no room), copied where the disk can't.
+      if (ran("/bin/cp", ["-cRPp", placement.from, placement.staged], CLONE_LIMIT).status !== 0) {
+        fs.rmSync(placement.staged, { recursive: true, force: true });
+        clone(placement.from, placement.staged, true);
+      }
     } else {
       clone(placement.from, placement.staged, placement.installed);
     }
     // The box's files: with those the app put in its box's `bin` that its release doesn't bring
     // (its catalog of servers, its bots' words), as the box reads them there.
-    if (placement.installed && journal.way === "move") {
+    if (placement.installed && path.basename(placement.to) === "bin" && journal.way === "move") {
       const old = path.join(journal.from, "box", "bin");
       for (const name of listOf(old)) {
         const kind = fs.lstatSync(path.join(old, name));
@@ -479,12 +497,34 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
     }
     stopPoint("after-install");
   }
+  // A move the box runs itself (`rehome --run`): this Mac's keys handed over first (a Keychain
+  // that won't is said before the long part), journaled in the Keychain's own journal, and taken
+  // back should the move go back.
+  if (journal.run && at("keys")) {
+    stepTo(journal, "keys");
+    handOverKeys(journal.run, home);
+    stopPoint("after-keys");
+  }
   if (at("clone")) {
     journal.clonedAt = Date.now();
     stepTo(journal, "clone");
     cloneAll(journal);
     settleBoxFiles(journal);
+    if (journal.run) noteCounts(move, "before");
     stopPoint("after-clone");
+  }
+  // And, in the staged copy alone: what an earlier Kuvo Code kept in its own files and
+  // preferences brought into the box's, then the engine's database brought up to date by the
+  // release's engine.
+  if (journal.run && at("upgrade")) {
+    stepTo(journal, "upgrade");
+    noteRecord(home, { dropped: upgradeStaged(journal.run, move) });
+    stopPoint("after-upgrade");
+  }
+  if (journal.run && at("database")) {
+    stepTo(journal, "database");
+    await migrateStaged(journal.run, move);
+    stopPoint("after-database");
   }
   if (at("rewrite")) {
     stepTo(journal, "rewrite");
@@ -496,9 +536,11 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
     for (const placement of journal.placements) {
       if (exists(placement.from) && !exists(placement.staged)) throw new Error(`${placement.from} wasn't staged.`);
     }
-    if (journal.way === "move" && !exists(path.join(journal.placements.find(each => each.installed)!.staged, "kuvo-start"))) throw new Error("The box's own files weren't staged.");
+    if (journal.way === "move" && !exists(path.join(journal.placements.find(each => each.installed && path.basename(each.to) === "bin")!.staged, "kuvo-start"))) throw new Error("The box's own files weren't staged.");
     const leftovers = await rewriter.check(move);
     noteRecord(home, { leftovers });
+    // (A move the box runs itself: nothing it counted before its upgrades is fewer now.)
+    if (journal.run) noteRecord(home, { counts: countsHold(move) });
     stopPoint("after-check");
   }
   if (at("place")) {
@@ -543,6 +585,14 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
         ? changedSince(journal.clearing.filter(each => each !== path.join(journal.from, "opencode")), journal.clonedAt, path.join(journal.from, "box", "run"))
         : null;
       if (written) throw new Error(`${written} changed as it moved, so it went back.`);
+      // A move the box runs itself clears nothing, so nothing above looked: nothing may have
+      // changed in what it cloned since (an earlier Kuvo Code still open would be left behind).
+      if (journal.run) {
+        const sources = journal.placements.filter(each => !each.installed).map(each => each.from);
+        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path.join(journal.from, "box", "run")) : null;
+        if (changed) throw new Error(`${changed} changed while your sessions were being copied. Quit Kuvo Code wherever it's still open, then try again.`);
+        beforeForward(journal.run, journal.from);
+      }
     }
     stepTo(journal, "clear");
     // A move back: the files its keys were written to from your Keychain go, never kept.
@@ -581,10 +631,15 @@ function finish(journal: Journal, now = Date.now()): void {
     // (Moved back, it moves again only on Move Now, however that goes: until a move's done.)
     movedBack: journal.way === "back",
     movedAt: now,
-    keptUntil: now + KEPT_FOR,
-    kept: [...(record.kept ?? []).filter(each => each !== journal.kept), journal.kept],
+    // (A move the box ran itself left the app's folder as it was: no copy is kept, and what it
+    // still owes is its own to settle: its start, the Keychain's originals, the old keeper's
+    // launch agent where there was one, and an earlier Kuvo Code's saved sign-ins.)
+    ...(journal.run ? { app: { bundle: journal.run.bundle, id: journal.run.id } } : {
+      keptUntil: now + KEPT_FOR,
+      kept: [...(record.kept ?? []).filter(each => each !== journal.kept), journal.kept],
+    }),
     merged,
-    owed: ["keychain", "agent"],
+    owed: journal.run ? ["start", ...(journal.run.keys ? ["keychain" as const] : []), ...(journal.run.source === "app-box" ? ["agent" as const] : []), ...(journal.run.keys ? ["passwords" as const] : [])] : ["keychain", "agent"],
     tries: 0,
     nextTry: null,
     failed: null,
@@ -602,13 +657,17 @@ function failed(journal: Journal, error: unknown, now = Date.now()): string {
   const home = homeOf(journal);
   const step = journal.step;
   undo(journal);
+  // (A move the box runs itself: the Keychain's copies it made for the helper taken away again.
+  // One that can't be now stays journaled there, and is taken away before the next copy.)
+  if (journal.run) try { takeBackKeys(journal.run, home); } catch (problem) { console.error(`This Mac's keys couldn't be taken back: ${(problem as Error).message}`); }
   const message = error instanceof Error ? error.message : String(error);
   const record = readRecord(home);
   // A move back that didn't: the box stays moved, as it was (Move Back tried again by asking again).
   // (Its try counted once, should it stop before the journal goes and be undone again.)
   const counted = record.counted === journal.began;
   if (journal.way === "back") noteRecord(home, { state: "done", way: "move", failed: { at: now, step, message }, asked: null });
-  else noteRecord(home, { state: "failed", way: "move", tries: (record.tries ?? 0) + (counted ? 0 : 1), nextTry: now + AFTER_A_FAILURE, failed: { at: now, step, message }, asked: null, counted: journal.began });
+  // (A move the box runs itself is tried again by you, at once: its tries are counted, never waited for.)
+  else noteRecord(home, { state: "failed", way: "move", tries: (record.tries ?? 0) + (counted ? 0 : 1), nextTry: journal.run ? null : now + AFTER_A_FAILURE, failed: { at: now, step, message }, asked: null, counted: journal.began });
   // (Then the journal: stopped before, it's undone again, which changes nothing.)
   forgetJournal(home);
   return message;
@@ -643,7 +702,7 @@ class LockLost extends Error {}
 
 const WAITS = "Another move is under way.";
 
-async function locked(home: string, waiting: () => void, work: () => Promise<RehomeOutcome>): Promise<RehomeOutcome> {
+export async function locked(home: string, waiting: () => void, work: () => Promise<RehomeOutcome>): Promise<RehomeOutcome> {
   if (!(await takeLock(home, { waiting }))) return { result: "waits", message: WAITS, status: rehomeStatus(home) };
   try {
     return await work();
@@ -669,7 +728,7 @@ async function carried(journal: Journal, rewriter: Rewriter): Promise<RehomeOutc
 }
 
 /** One that stopped part way, finished: back before it cleared the old place, forward after. */
-async function resumed(home: string, rewriter: Rewriter): Promise<RehomeOutcome | null> {
+export async function resumed(home: string, rewriter: Rewriter): Promise<RehomeOutcome | null> {
   let journal: Journal | null;
   try { journal = readJournal(home); } catch (error) {
     return { result: "stuck", message: (error as Error).message, status: rehomeStatus(home) };
@@ -861,7 +920,7 @@ export async function rehomeBack(home: string, options: MoveOptions = {}): Promi
   });
 }
 
-function run(journal: Journal, rewriter: Rewriter): Promise<RehomeOutcome> {
+export function run(journal: Journal, rewriter: Rewriter): Promise<RehomeOutcome> {
   const home = homeOf(journal);
   // (Anything left from a move that ended before it began.)
   forgetJournal(home);
@@ -949,6 +1008,7 @@ export function askRehome(home: string, ask: "now" | "back"): string | null {
   const record = readRecord(home);
   const moved = record.state === "done" && record.way === "move";
   if (ask === "back" && !moved) return NOT_MOVED;
+  if (ask === "back" && record.app) return NOT_BACK;
   if (ask === "now" && moved) return "This Mac's box has moved already.";
   noteRecord(home, { asked: ask });
   return null;
