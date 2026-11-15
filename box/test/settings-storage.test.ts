@@ -1,5 +1,5 @@
 import "./safety"
-import confirmationVectors from "../../protocol/vectors/routes/settings-confirmation.json"
+import confirmationVectors from "../../protocol/vectors/settings-confirmation.json"
 import { afterAll, beforeEach, expect, test } from "bun:test"
 import { mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
