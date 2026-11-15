@@ -38143,9 +38143,14 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
     const docs = peer.sign && have ? { docs: { have } } : {};
     const yours = Boolean(told[peer.key]) && !isApart(peer.key, link, told);
     let bytes = null, sent = [];
-    for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
-      sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures2(), moved, boxes: boxes.filter((box) => box.key !== peer.key), trash, ...where, ...computer && yours ? { computer } : {} }, ...zone && yours ? { zone } : {}, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
+    const zones = zone && yours ? [zone, ...zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : []] : [null];
+    for (const told of zones) {
+      for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
+        sent = ownList.slice(0, count);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures2(), moved, boxes: boxes.filter((box) => box.key !== peer.key), trash, ...where, ...computer && yours ? { computer } : {} }, ...told ? { zone: told } : {}, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
+        if (bytes)
+          break;
+      }
       if (bytes)
         break;
     }
@@ -45336,7 +45341,7 @@ import fs147 from "node:fs";
 import path156 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1fe9c5fd3378";
+var BRIDGE_VERSION = "0c9e5e5267cb";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";

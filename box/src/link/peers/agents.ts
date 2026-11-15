@@ -191,9 +191,14 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     const yours = Boolean(told[peer.key]) && !isApart(peer.key, link, told);
     // As many as fit in one mail: the first (bots, then the latest sessions) first.
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
-    for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
-      sent = ownList.slice(0, count);
-      bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer && yours ? { computer } : {}) }, ...(zone && yours ? { zone } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+    // (Your zone with its rules where they fit, else without them: the peer's own, if it has them.)
+    const zones = zone && yours ? [zone, ...(zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : [])] : [null];
+    for (const told of zones) {
+      for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
+        sent = ownList.slice(0, count);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer && yours ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+        if (bytes) break;
+      }
       if (bytes) break;
     }
     if (!bytes) continue;
