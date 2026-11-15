@@ -58,6 +58,12 @@ case "$VERSION" in
 esac
 
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
+    # The box's built files as their sources build them: a merge keeps one side's without a
+    # conflict (scripts/merge-setup.sh), and with CI paused this is the check before they're built
+    # in. One that can't be checked here, for want of a Bun, is only said.
+    status=0
+    ./scripts/check-built.sh || status=$?
+    [ "$status" -eq 1 ] && exit 1
     if [ -z "${SIGN_IDENTITY:-}" ]; then
         SIGN_IDENTITY=$(security find-identity -v -p codesigning | awk '/"Developer ID Application/ { print $2; exit }')
     fi
