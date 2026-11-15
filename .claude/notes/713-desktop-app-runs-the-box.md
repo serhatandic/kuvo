@@ -763,7 +763,11 @@ session of its own and follows; the steps `keys`, `upgrade` and `database`; `pro
 **As planned in §8d, with these differences:**
 
 - **`S` is read, never opened as a database.** Its schema is read from a clone of the database
-  alone (`plan-database`, removed at once); who has it open is asked of `lsof`.
+  alone (`plan-database`, removed at once); who has it open to write in is asked of `lsof` (tried
+  with the real 2.0.32 engine running: it shows as `opencode`, open for both; a reader, such as a
+  backup, holds nothing back).
+- **The engine's plugin** (`config/opencode/plugins/kuvo-code.js`), which 0.7.2 wrote for its own
+  engine at each start, is replaced by the release's in the staged copy.
 - **Saved sign-ins go down a pipe** (§8a.2 settled): `kuvo-keys passwords` writes no file any
   more; it says them on its standard output, which must be a pipe, to the move that runs it, and
   each goes from memory to `POST kuvo/vault/items` on the box's own server. `passwords.json` is

@@ -117,7 +117,7 @@ async function stopOldKeeper(appFolder: string): Promise<void> {
   try { keeper = JSON.parse(fs.readFileSync(path.join(run, "keeper.json"), "utf8")); } catch {}
   const pid = isObject(keeper) && Number.isInteger(keeper.pid) ? keeper.pid as number : null;
   const runs = () => pid !== null && processRuns(pid, "--box");
-  if (runs() && isObject(keeper) && typeof keeper.url === "string" && typeof keeper.password === "string" && /^http:\/\/127\.0\.0\.1:\d+/.test(keeper.url)) {
+  if (runs() && isObject(keeper) && typeof keeper.url === "string" && typeof keeper.password === "string" && /^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(keeper.url)) {
     try { await fetch(`${keeper.url.replace(/\/+$/, "")}/stop`, { method: "POST", headers: { authorization: `Bearer ${keeper.password}` }, signal: AbortSignal.timeout(20_000) }); } catch {}
   }
   const gone = async (limit: number) => {
