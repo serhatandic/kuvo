@@ -1626,7 +1626,7 @@ async function takeSeed(input, engine = readEngineFile) {
 import { spawn as spawn18 } from "node:child_process";
 import crypto66 from "node:crypto";
 import fs188 from "node:fs";
-import os27 from "node:os";
+import os26 from "node:os";
 import path196 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
@@ -29148,27 +29148,28 @@ function savedMacConfig(file = MAC_LINK_FILE) {
   };
 }
 var DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr";
-function macName3() {
+function computerName2() {
   if (process.platform === "darwin") {
     const asked = spawnSync8("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
     const said = asked.status === 0 ? plainName(asked.stdout).slice(0, 100) : "";
     if (said)
       return said;
   }
-  return plainName(os11.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || "Mac";
+  return plainName(os11.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
 }
 function ownMacConfig() {
   if (!OWN_HOME_MAC)
     return null;
-  const given = IN_TEST_FOLDER ? process.env.KUVO_TEST_RELAY : undefined;
-  let relay = IN_TEST_FOLDER ? null : DEFAULT_RELAY;
+  const real = located(K) === located(path106.join(accountHome(), ".kuvo-code"));
+  let relay = real ? DEFAULT_RELAY : null;
   try {
+    const given = real ? undefined : process.env.KUVO_TEST_RELAY;
     if (given && ["ws:", "wss:"].includes(new URL(given).protocol))
       relay = given.replace(/\/$/, "");
   } catch {}
   if (!relay)
     return null;
-  return { phones: true, machines: anyMachines(), relay, name: macName3(), app: MAC_APP_VERSION ?? "" };
+  return { phones: true, machines: anyMachines(), relay, name: computerName2(), app: MAC_APP_VERSION ?? "" };
 }
 function macLinkCheck() {
   if (macLink.host && !macNeeded(readLink()))
@@ -29201,7 +29202,8 @@ async function macKeys({ needed = false } = {}) {
     return true;
   const given = await linkHost("link/identity", {});
   if (!given || !["key", "secret", "sign"].every((name) => KEY_TEXT.test(given[name] ?? ""))) {
-    setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
+    if (config.phones || config.machines)
+      setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
     return false;
   }
   macLink.overlay = { key: given.key, secret: given.secret, sign: given.sign, relay: macLink.config.relay, name: macLink.config.name };
@@ -48234,7 +48236,6 @@ function takeInAppBrowserData(appFolder, folder = BROWSER_FOLDER) {
 import { spawnSync as spawnSync14 } from "node:child_process";
 import crypto58 from "node:crypto";
 import fs161 from "node:fs";
-import os22 from "node:os";
 import path169 from "node:path";
 
 // box/src/link/helper.ts
@@ -48386,7 +48387,7 @@ import fs159 from "node:fs";
 import path167 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ddbcfd1cd65c";
+var BRIDGE_VERSION = "b665425be01d";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync12 } from "node:child_process";
@@ -50998,7 +50999,6 @@ function checkedRelease(release) {
       throw damaged;
   return { version: box.version, engine: box.engine, files: box.files };
 }
-var computerName2 = () => os22.hostname().replace(/\.(local|lan|home)$/i, "") || "computer";
 async function installCommand(args) {
   delete process.env.KUVO_BOX;
   const option = (name) => args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined;
@@ -51020,14 +51020,14 @@ async function installCommand(args) {
   const bundle = option("--app");
   const app = mac && bundle ? bundleID(bundle) : null;
   const appFolder = app ? path169.join(homeFolder(), "Library", "Application Support", app) : null;
-  const judged = () => judgeInstall(home, appFolder, { helperInPlace: () => mac && launchTools() ? helperStatus().agent : null });
+  const judged = () => judgeInstall(home, appFolder, { helperInPlace: () => mac && launchTools() ? helperRuns() : null });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>).", ...judgeInstall(home, null) });
+      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
       return EXIT.refused;
     }
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only.", ...judgeInstall(home, null) });
+      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -51045,7 +51045,7 @@ async function installCommand(args) {
       console.error(USAGE);
       return 2;
     }
-    const answer = mac ? await newMac({ home, appFolder, app, release, engine }, judged) : newMachine({ home, release, engine }, judged);
+    const answer = mac ? await newMac({ home, appFolder, app, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
     say({ ...answer, status: judged().status });
     return EXIT[answer.result];
   } catch (error) {
@@ -51053,6 +51053,11 @@ async function installCommand(args) {
     return EXIT.failed;
   }
 }
+function helperRuns() {
+  const status = helperStatus();
+  return status.agent && status.loaded !== false;
+}
+var NO_ENGINE = (here) => `The engine couldn't be downloaded. Check that ${here} is online, then try again.`;
 var clearStaging2 = (home) => fs161.rmSync(path169.join(home, "updates", "install"), { recursive: true, force: true });
 function tidyStaging(home, { verdict, verb }, release) {
   if (verb !== null || !["ours", "machine", "two"].includes(verdict) || !release)
@@ -51069,10 +51074,13 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   if (before.verdict !== "fresh" && before.verdict !== "ours")
     return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: NOT_NEW[before.verdict] };
   let made = false;
+  const pinned = checkedRelease(release).engine;
   if (before.verdict === "fresh") {
-    const { engine: version } = checkedRelease(release);
-    if (!fs161.existsSync(path169.join(engine, version, "opencode")))
-      throw new Error("The engine isn't downloaded yet: this Mac's box is made once it is.");
+    if (!fs161.existsSync(path169.join(engine, pinned, "opencode")))
+      throw new Error(NO_ENGINE("this Mac"));
+    for (const name of fs161.readdirSync(engine))
+      if (name !== pinned)
+        fs161.rmSync(path169.join(engine, name), { recursive: true, force: true });
     const outcome = await rehomeNew({ appFolder, home }, { release, engine, waiting: () => console.error("Another move is under way: this one waits for it.") });
     if (outcome.result === "waits")
       return { result: "waits", verdict: judged().verdict, message: outcome.message };
@@ -51083,76 +51091,97 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   const after = judged();
   if (after.verdict !== "ours")
     return { result: "failed", verdict: after.verdict, message: "This Mac's box couldn't be made." };
-  let started = false, message;
-  if (!launchTools())
-    message = "It's made, and starts by itself only in ~/.kuvo-code.";
-  else {
-    const version = fs161.readdirSync(path169.join(home, "engine")).filter((name) => fs161.existsSync(path169.join(home, "engine", name, "opencode"))).sort().pop();
-    const ran = version ? spawnSync14(path169.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path169.join(home, "bin", "kuvo-link.js"), "helper", "start", "--if-missing", "--app", app], {
-      cwd: home,
-      encoding: "utf8",
-      timeout: 180000,
-      env: { ...process.env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }
-    }) : null;
-    let said = null;
-    try {
-      said = JSON.parse((ran?.stdout ?? "").trim().split(`
-`).pop() ?? "");
-    } catch {}
-    started = ran?.status === 0 && isObject(said) && (said.started === true || said.left === true);
-    message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran?.stderr ?? "").trim().split(`
-`).pop() || "it said nothing"}.`;
-  }
-  if (started || !launchTools())
+  if (!launchTools()) {
     clearStaging2(home);
-  if (!started && launchTools())
+    return { result: made ? "done" : "nothing", verdict: "ours", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
+  }
+  const engines = fs161.readdirSync(path169.join(home, "engine")).filter((name) => fs161.existsSync(path169.join(home, "engine", name, "opencode"))).sort();
+  const version = engines.includes(pinned) ? pinned : engines.pop();
+  const ran = version ? spawnSync14(path169.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path169.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
+    cwd: home,
+    encoding: "utf8",
+    timeout: 180000,
+    env: { ...process.env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" }
+  }) : null;
+  let said = null;
+  try {
+    said = JSON.parse((ran?.stdout ?? "").trim().split(`
+`).pop() ?? "");
+  } catch {}
+  const started = ran?.status === 0 && isObject(said) && said.started === true;
+  const message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran?.stderr ?? "").trim().split(`
+`).pop() || "it said nothing"}.`;
+  if (!started)
     return { result: "failed", verdict: "ours", started, message };
+  clearStaging2(home);
   return { result: made ? "done" : "nothing", verdict: "ours", started, ...message ? { message } : {} };
 }
-function newMachine({ home, release, engine }, judged) {
-  const before = judged();
-  if (before.verdict !== "fresh")
-    return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: before.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
+async function newMachine({ home, release, engine }, judged) {
+  const refusal = () => {
+    const now = judged();
+    if (now.verdict === "fresh")
+      return null;
+    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
+  };
+  const before = refusal();
+  if (before)
+    return before;
   if (path169.basename(home) !== ".kuvo-code")
-    return { result: "refused", verdict: before.verdict, message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
+    return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path169.join(engine, engineVersion, "opencode");
   if (!fs161.existsSync(staged))
-    throw new Error("The engine isn't downloaded yet: this computer's box is made once it is.");
-  writePrivate(path169.join(home, MAKING2), `${Date.now()}
+    throw new Error(NO_ENGINE("this computer"));
+  if (!await takeLock(home, { waiting: () => console.error("Another move is under way: this one waits for it.") }))
+    return { result: "waits", verdict: judged().verdict, message: "Another move is under way." };
+  try {
+    const refused = refusal();
+    if (refused)
+      return refused;
+    writePrivate(path169.join(home, MAKING2), `${Date.now()}
 `);
-  const engineAt = path169.join(home, "engine", engineVersion, "opencode");
-  fs161.mkdirSync(path169.dirname(engineAt), { recursive: true, mode: 448 });
-  fs161.copyFileSync(staged, `${engineAt}.new`);
-  fs161.chmodSync(`${engineAt}.new`, 493);
-  fs161.renameSync(`${engineAt}.new`, engineAt);
-  for (const [name, mode] of RELEASE_FILES) {
-    const to = path169.join(home, name);
-    fs161.mkdirSync(path169.dirname(to), { recursive: true, mode: 448 });
-    fs161.copyFileSync(path169.join(release, name), `${to}.new`);
-    fs161.chmodSync(`${to}.new`, mode);
-    fs161.renameSync(`${to}.new`, to);
-  }
-  writePrivate(path169.join(home, "updates", "installed.json"), JSON.stringify({ version, files }));
-  const tools = launchTools();
-  if (!tools) {
-    clearStaging2(home);
-    return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
-  }
-  const standIns = path169.dirname(tools.crontab);
-  const ran = spawnSync14("sh", ["-c", start(engineVersion, computerName2(), "{}")], {
-    cwd: home,
-    input: "",
-    encoding: "utf8",
-    timeout: 300000,
-    env: { ...process.env, ...path169.isAbsolute(standIns) ? { PATH: `${standIns}${path169.delimiter}${process.env.PATH ?? ""}` } : {} }
-  });
-  const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
-  if (!started)
-    return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split(`
+    const aside = path169.join(home, "trash", `earlier-box-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+    const kept = new Set(["updates", "trash", "desktop"]);
+    const there = fs161.readdirSync(home).filter((name) => !kept.has(name)).concat(fs161.readdirSync(path169.join(home, "updates")).filter((name) => name !== "install" && name !== "rehome").map((name) => path169.join("updates", name)));
+    for (const name of there.sort()) {
+      fs161.mkdirSync(path169.dirname(path169.join(aside, name)), { recursive: true, mode: 448 });
+      fs161.renameSync(path169.join(home, name), path169.join(aside, name));
+    }
+    const engineAt = path169.join(home, "engine", engineVersion, "opencode");
+    fs161.mkdirSync(path169.dirname(engineAt), { recursive: true, mode: 448 });
+    fs161.copyFileSync(staged, `${engineAt}.new`);
+    fs161.chmodSync(`${engineAt}.new`, 493);
+    fs161.renameSync(`${engineAt}.new`, engineAt);
+    for (const [name, mode] of RELEASE_FILES) {
+      const to = path169.join(home, name);
+      fs161.mkdirSync(path169.dirname(to), { recursive: true, mode: 448 });
+      fs161.copyFileSync(path169.join(release, name), `${to}.new`);
+      fs161.chmodSync(`${to}.new`, mode);
+      fs161.renameSync(`${to}.new`, to);
+    }
+    writePrivate(path169.join(home, "updates", "installed.json"), JSON.stringify({ version, files }));
+    const tools = launchTools();
+    if (!tools) {
+      clearStaging2(home);
+      return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
+    }
+    const standIns = path169.dirname(tools.crontab);
+    const ran = spawnSync14("sh", ["-c", start(engineVersion, computerName2(), "{}")], {
+      cwd: home,
+      input: "",
+      encoding: "utf8",
+      timeout: 300000,
+      env: { ...process.env, ...path169.isAbsolute(standIns) ? { PATH: `${standIns}${path169.delimiter}${process.env.PATH ?? ""}` } : {} }
+    });
+    const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
+    if (!started)
+      return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split(`
 `).pop() || "it said nothing"}. Try again.` };
-  clearStaging2(home);
-  return { result: "done", verdict: judged().verdict, started };
+    clearStaging2(home);
+    return { result: "done", verdict: judged().verdict, started };
+  } finally {
+    giveLock(home);
+  }
 }
 
 // box/src/link/rehome/command.ts
@@ -51356,7 +51385,7 @@ function macTell(notice) {
 }
 
 // box/src/link/mac/relay.ts
-import os25 from "node:os";
+import os24 from "node:os";
 
 // box/src/link/peers/mail.ts
 var answeringAsk = null;
@@ -53958,7 +53987,7 @@ async function* artifactsRoute(context) {
 
 // box/src/link/areas/info.ts
 import fs171 from "node:fs";
-import os23 from "node:os";
+import os22 from "node:os";
 import path181 from "node:path";
 
 // box/src/shared/bundle.ts
@@ -54059,7 +54088,7 @@ function macInfo(engine, started, chats, agents) {
   const moving = movingNow();
   return {
     kind: "mac",
-    name: config?.name || os23.hostname(),
+    name: config?.name || os22.hostname(),
     app: config?.app || MAC_APP_VERSION || "",
     engine: engine.version ?? MAC_ENGINE_VERSION ?? "",
     features: macFeatures(),
@@ -55085,7 +55114,7 @@ async function fill(given, caller, signal) {
 // box/src/link/vault/tools.ts
 import crypto60 from "node:crypto";
 import fs173 from "node:fs";
-import os24 from "node:os";
+import os23 from "node:os";
 import path184 from "node:path";
 
 // box/src/link/vault/mask.ts
@@ -55236,7 +55265,7 @@ async function askForItem(caller, args, signal) {
     always: alwaysFor2(caller) !== null,
     ...site ? { site } : {},
     ...asker,
-    ...IS_MAC ? {} : { machine: os24.hostname() }
+    ...IS_MAC ? {} : { machine: os23.hostname() }
   }, stops));
   if (onAutopilot)
     return leftUndone();
@@ -60961,7 +60990,7 @@ async function* toApp(request, phone, signal) {
   yield { head: { status: 503, headers: { "content-type": "application/json" } } };
   yield { body: Buffer.from(JSON.stringify({ message: OWN_HOME_MAC && !openAppHost() ? APP_CLOSED : APP_NOT_ANSWERING })) };
 }
-function macFront(handle = engineHandler(readEngineFile, { name: os25.hostname() }), timing) {
+function macFront(handle = engineHandler(readEngineFile, { name: os24.hostname() }), timing) {
   return async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (isMachinesRoute(route))
@@ -61212,11 +61241,11 @@ Sec-WebSocket-Accept: ${accept}\r
 // box/src/link/server/serve.ts
 import crypto65 from "node:crypto";
 import http from "node:http";
-import os26 from "node:os";
+import os25 from "node:os";
 var IDLE_TOLD = 5000;
 var IDLE_KEPT = 60000;
 var HEARTBEAT = 20000;
-function serveBox(password, handle = engineHandler(readEngineFile, { name: os26.hostname() })) {
+function serveBox(password, handle = engineHandler(readEngineFile, { name: os25.hostname() })) {
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   const server = http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response) => {
     const given = Buffer.from(request.headers.authorization ?? "");
@@ -61534,7 +61563,7 @@ async function run7() {
   keepApprovals();
   keepGroupSettings();
   keepOldBranchPrefix();
-  holdVault(engineHandler(readEngineFile, { name: os27.hostname() }, readBridgeFile));
+  holdVault(engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);
@@ -61660,11 +61689,11 @@ async function run7() {
     } catch {}
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
-      hello: { v: 1, kind: "machine", name: link.name || os27.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
+      hello: { v: 1, kind: "machine", name: link.name || os26.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
       authorize: authorizePhone,
       confirmed: confirmPhone,
       mail: (_from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at)),
-      handle: engineHandler(readEngineFile, { name: link.name || os27.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),
+      handle: engineHandler(readEngineFile, { name: link.name || os26.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),
       connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
       send: () => {}
     });
@@ -61742,7 +61771,7 @@ async function box(command) {
       try {
         given = JSON.parse(await input());
       } catch {}
-      const handle = engineHandler(readEngineFile, { name: os27.hostname() }, readBridgeFile);
+      const handle = engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile);
       const folder = given?.headers?.["x-opencode-directory"];
       const vaultHeaders = {};
       for (const name of ["x-kuvo-vault-key", "x-kuvo-vault-proof"]) {
@@ -61843,7 +61872,7 @@ async function keptServe() {
   }
   fs188.mkdirSync(RUN, { recursive: true, mode: 448 });
   const password = crypto66.randomBytes(24).toString("hex");
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os27.hostname() }, readBridgeFile));
+  const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -61906,7 +61935,7 @@ async function serve() {
     await dropBotsOwnKeys(runningEngine).catch(() => {});
   if (IS_MAC)
     macLink.hold = macNoticeHold();
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os27.hostname() }, readBridgeFile, () => {}, macLink.hold));
+  const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile, () => {}, macLink.hold));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -61919,7 +61948,7 @@ async function serve() {
   keepApprovals();
   keepGroupSettings();
   keepEngineDefaults();
-  holdVault(engineHandler(readEngineFile, { name: os27.hostname() }, readBridgeFile));
+  holdVault(engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   const port = server.address().port;
   if (OWN_HOME_MAC)
     writePrivate(SERVE_FILE(), JSON.stringify({ pid: process.pid, port, password, kept: false }));
@@ -62035,7 +62064,7 @@ async function setup() {
     if (!next.phones.length && !peersOf(next).length)
       return current ? next : null;
     next.relay = String(input.relay);
-    next.name = String(input.name || next.name || os27.hostname()).slice(0, 100);
+    next.name = String(input.name || next.name || os26.hostname()).slice(0, 100);
     link = next;
     return next;
   });
@@ -62118,7 +62147,7 @@ function pair(relay) {
     process.exit(3);
   }
   const link = updateLink((current) => {
-    const next = current ?? { secret: crypto66.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os27.hostname(), phones: [] };
+    const next = current ?? { secret: crypto66.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os26.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

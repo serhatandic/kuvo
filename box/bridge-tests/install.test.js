@@ -89,7 +89,7 @@ let count = 0;
 function computer({ app = APP_ID } = {}) {
   const home = path.join(scratch, `home-${++count}`);
   const tools = path.join(home, "tools");
-  write(path.join(tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${home}/launchctl-asked"\ncase "$1" in print) [ -f "${home}/loaded" ] ;; bootstrap) touch "${home}/loaded" ;; bootout) rm -f "${home}/loaded" ;; print-disabled) exit 0 ;; esac\n`, 0o755);
+  write(path.join(tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${home}/launchctl-asked"\ncase "$1" in print) [ -f "${home}/loaded" ] ;; bootstrap) if [ -f "${home}/launchd-refuses" ]; then echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; fi; touch "${home}/loaded" ;; bootout) rm -f "${home}/loaded" ;; print-disabled) exit 0 ;; esac\n`, 0o755);
   write(path.join(tools, "crontab"), `#!/bin/sh\nif [ "$1" = -l ]; then [ -f "${home}/crontab" ] && cat "${home}/crontab" || { echo "no crontab for you" >&2; exit 1; }; else cat >"${home}/crontab"; fi\n`, 0o755);
   write(path.join(tools, "open"), `#!/bin/sh\necho "$*" >>"${home}/open-asked"\n`, 0o755);
   const bundle = path.join(home, "Applications", "Kuvo Code.app");
@@ -185,6 +185,23 @@ test("beside a box that's here already, nothing is made, and the engine the inst
   assert.equal(read(path.join(where.K, "bin", "kuvo-start")), "#!/bin/sh\n", "its files as they were");
 });
 
+test("a computer whose box has another engine than the release's is still told how it stands, offline: asking never waits on a download", () => {
+  const where = computer();
+  write(path.join(where.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700);
+  write(path.join(where.K, "run", "link.json"), JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] }));
+  write(path.join(where.K, "engine", "1.0.0", "opencode"), engineBinary, 0o755);
+  fs.rmSync(engineTar);
+  try {
+    const status = install(where, "status");
+    assert.equal(status.status, 0, status.stderr + JSON.stringify(status.lines));
+    assert.deepEqual(status.steps, ["checking"], "nothing fetched");
+    assert.equal(status.said.verdict, "machine");
+    assert.equal(exists(path.join(staging(where), "engine")), false);
+  } finally {
+    fs.writeFileSync(engineTar, engineBytes);
+  }
+});
+
 test("new on a Mac: this Mac's own box made in its home from the release and its engine, started by Kuvo Helper, the installer's staging gone", { skip: !mac && "a Mac's box" }, () => {
   const where = computer();
   const made = install(where, "new");
@@ -251,6 +268,25 @@ test("a Mac's install cut short is made again: what a making left, and a box mad
   assert.equal(exists(path.join(unstarted.home, "Library", "LaunchAgents", "run.kuvo.code.machine.plist")), true);
   assert.equal(read(path.join(unstarted.K, "chats", "c1", "notes.md")), "kept");
   assert.equal(install(unstarted, "status").said.verb, null);
+
+  // Its launch agent written, but launchd wouldn't take it: said as failed, never as started, and
+  // `new` is still what to run. Tried again once launchd takes it, it's started.
+  const refused = computer();
+  write(path.join(refused.home, "launchd-refuses"), "");
+  const failed = install(refused, "new");
+  assert.equal(failed.status, 1);
+  assert.equal(failed.said.result, "failed");
+  assert.equal(failed.said.started, false);
+  assert.match(failed.said.message, /launchd didn't start it now: Bootstrap failed/);
+  assert.equal(read(path.join(refused.K, "box", "kind")), "mac\n", "the box is made");
+  assert.equal(exists(path.join(refused.home, "Library", "LaunchAgents", "run.kuvo.code.machine.plist")), true);
+  assert.deepEqual({ verdict: install(refused, "status").said.verdict, verb: install(refused, "status").said.verb }, { verdict: "ours", verb: "new" });
+  fs.rmSync(path.join(refused.home, "launchd-refuses"));
+  const retried = install(refused, "new");
+  assert.equal(retried.status, 0, retried.stderr + JSON.stringify(retried.lines));
+  assert.deepEqual({ result: retried.said.result, started: retried.said.started }, { result: "nothing", started: true });
+  assert.equal(exists(path.join(refused.home, "loaded")), true);
+  assert.equal(install(refused, "status").said.verb, null);
 });
 
 test("a Mac that holds an earlier Kuvo Code's sessions gets no new box beside them, and moving them isn't here yet, said plainly", { skip: !mac && "a Mac's app folder" }, () => {
@@ -326,6 +362,26 @@ test("new on Linux: a machine's box in ~/.kuvo-code, its files and engine in pla
   assert.equal(remade.status, 0, remade.stderr + JSON.stringify(remade.lines));
   assert.equal(read(path.join(cut.home, "keeper-asked")), "start\n");
   assert.notEqual(read(path.join(cut.K, "bin", "kuvo-start")), "half");
+
+  // A box the computer that set it up removed (turned off, its sessions left in its folder) is no
+  // box: a new one is made, and what was there is set aside in its trash, nothing deleted. The
+  // desktop app's own folder there stays where it is.
+  const removed = computer();
+  write(path.join(removed.K, "run", "off"), "");
+  write(path.join(removed.K, "run", "link.json"), JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] }));
+  write(path.join(removed.K, "chats", "c1", "notes.md"), "kept");
+  write(path.join(removed.K, "desktop", "identity"), "the app's own");
+  assert.equal(install(removed, "status").said.verdict, "fresh");
+  const anew = install(removed, "new");
+  assert.equal(anew.status, 0, anew.stderr + JSON.stringify(anew.lines));
+  assert.equal(anew.said.verdict, "machine");
+  const aside = fs.readdirSync(path.join(removed.K, "trash")).filter(name => name.startsWith("earlier-box-"));
+  assert.equal(aside.length, 1);
+  assert.equal(read(path.join(removed.K, "trash", aside[0], "chats", "c1", "notes.md")), "kept");
+  assert.equal(exists(path.join(removed.K, "trash", aside[0], "run", "link.json")), true, "its old link with it, never the new box's");
+  assert.equal(exists(path.join(removed.K, "run", "off")), false);
+  assert.equal(exists(path.join(removed.K, "chats")), false);
+  assert.equal(read(path.join(removed.K, "desktop", "identity")), "the app's own");
 });
 
 // (What the pack's box.json names, for the Linux test: read from the pack itself.)

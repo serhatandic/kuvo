@@ -24,6 +24,9 @@ if (box.version !== version) {
   process.exit(1);
 }
 const data = fs.readFileSync(pack);
+// (box/src/install/kuvo-install reads this with `sed`, on a computer with nothing to parse JSON
+// yet: one line, with `version`, `engine` and `sha256` each named once, and each system's builds
+// as objects of `url` and `integrity`. Keep it so, or change that script with it.)
 const manifest = Buffer.from(JSON.stringify({
   kuvo: "box/1",
   version,

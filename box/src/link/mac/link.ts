@@ -9,7 +9,7 @@ import { isObject } from "../../shared/json";
 import { macPeersBody, ownDoc } from "../documents/work";
 import { writePrivate } from "../files";
 import { plainName } from "../../shared/text";
-import { IN_TEST_FOLDER, MAC_APP_VERSION, OWN_HOME_MAC, RUN } from "../home";
+import { accountHome, K, located, MAC_APP_VERSION, OWN_HOME_MAC, RUN } from "../home";
 import { linkHost } from "../host-interface";
 import { cleanPeer, fitsPeer, mailFor, peersOf } from "../peers/known";
 import { macLink, readLink, updateLink } from "../state";
@@ -71,14 +71,14 @@ export function savedMacConfig(file = MAC_LINK_FILE): MacLinkConfig | null {
  * retired Mac app's own default, `PhoneLink.defaultRelay`). */
 export const DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr";
 
-/** This Mac's name, as you named it in System Settings; its host's name where that can't be asked. */
-function macName(): string {
+/** This computer's name: a Mac's as you named it in System Settings, else its host's. */
+export function computerName(): string {
   if (process.platform === "darwin") {
     const asked = spawnSync("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
     const said = asked.status === 0 ? plainName(asked.stdout).slice(0, 100) : "";
     if (said) return said;
   }
-  return plainName(os.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || "Mac";
+  return plainName(os.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
 }
 
 /** The link's settings of a Mac's box in a home of its own that no app ever told them (#713: the
@@ -90,13 +90,15 @@ function macName(): string {
  * (`KUVO_TEST_RELAY`), else none, as before. Null for a box in its app's folder, which its app tells. */
 export function ownMacConfig(): MacLinkConfig | null {
   if (!OWN_HOME_MAC) return null;
-  const given = IN_TEST_FOLDER ? process.env.KUVO_TEST_RELAY : undefined;
-  let relay = IN_TEST_FOLDER ? null : DEFAULT_RELAY;
+  // (The real one: your account's own `~/.kuvo-code`, the only home a Mac's helper runs.)
+  const real = located(K) === located(path.join(accountHome(), ".kuvo-code"));
+  let relay = real ? DEFAULT_RELAY : null;
   try {
+    const given = real ? undefined : process.env.KUVO_TEST_RELAY;
     if (given && ["ws:", "wss:"].includes(new URL(given).protocol)) relay = given.replace(/\/$/, "");
   } catch {}
   if (!relay) return null;
-  return { phones: true, machines: anyMachines(), relay, name: macName(), app: MAC_APP_VERSION ?? "" };
+  return { phones: true, machines: anyMachines(), relay, name: computerName(), app: MAC_APP_VERSION ?? "" };
 }
 
 // Off the relay once it's no longer wanted (the phone link turned off, the last phone gone, a
@@ -137,7 +139,8 @@ export async function macKeys({ needed = false } = {}): Promise<boolean> {
   if (macLink.overlay || !config || !(needed || config.phones || config.machines)) return true;
   const given = await linkHost("link/identity", {});
   if (!given || !["key", "secret", "sign"].every(name => KEY_TEXT.test((given[name] ?? "") as string))) {
-    setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
+    // (Asked for ahead of the link being wanted: the link itself hasn't failed, and says nothing.)
+    if (config.phones || config.machines) setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
     return false;
   }
   macLink.overlay = { key: given.key as string, secret: given.secret as string, sign: given.sign as string, relay: macLink.config!.relay, name: macLink.config!.name };

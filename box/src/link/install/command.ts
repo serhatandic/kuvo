@@ -16,7 +16,6 @@
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { RELEASE_FILES } from "../add/files";
@@ -24,7 +23,9 @@ import * as scripts from "../add/scripts";
 import { writePrivate } from "../files";
 import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
+import { computerName } from "../mac/link";
 import { homeOfRoot, rehomeNew } from "../rehome/move";
+import { giveLock, takeLock } from "../rehome/state";
 import { launchTools } from "../uninstall";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
 
@@ -85,9 +86,6 @@ export function checkedRelease(release: string): { version: string; engine: stri
   return { version: box.version, engine: box.engine, files: box.files as Record<string, string> };
 }
 
-/** This computer's name, as you named it (a Mac's, in System Settings), else its host's. */
-const computerName = (): string => os.hostname().replace(/\.(local|lan|home)$/i, "") || "computer";
-
 export async function installCommand(args: string[]): Promise<number> {
   // (Whether something runs is told by its process, never a stale record: as `rehome`.)
   delete process.env.KUVO_BOX;
@@ -109,16 +107,16 @@ export async function installCommand(args: string[]): Promise<number> {
   const bundle = option("--app");
   const app = mac && bundle ? bundleID(bundle) : null;
   const appFolder = app ? path.join(homeFolder(), "Library", "Application Support", app) : null;
-  const judged = (): Judgement => judgeInstall(home, appFolder, { helperInPlace: () => (mac && launchTools() ? helperStatus().agent : null) });
+  const judged = (): Judgement => judgeInstall(home, appFolder, { helperInPlace: () => (mac && launchTools() ? helperRuns() : null) });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>).", ...judgeInstall(home, null) });
+      say({ result: "refused", message: "Kuvo Code's installer needs the app it's run from (--app <bundle>)." });
       return EXIT.refused;
     }
     // (A copy of the app, a demo's or a test's, never judges or makes the real one's box, nor the
-    // real app a copy's: each has its own folder and its own home.)
+    // real app a copy's: each has its own folder and its own home. Nothing's said of what's there.)
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only.", ...judgeInstall(home, null) });
+      say({ result: "refused", message: real ? "Only Kuvo Code itself installs its box in ~/.kuvo-code: a copy installs it in a home of its own." : "Kuvo Code itself installs its box in ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -137,7 +135,7 @@ export async function installCommand(args: string[]): Promise<number> {
       console.error(USAGE);
       return 2;
     }
-    const answer = mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : newMachine({ home, release, engine }, judged);
+    const answer = mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
     say({ ...answer, status: judged().status });
     return EXIT[answer.result];
   } catch (error) {
@@ -145,6 +143,16 @@ export async function installCommand(args: string[]): Promise<number> {
     return EXIT.failed;
   }
 }
+
+/** Whether what starts a Mac's own box is in place and launchd has it: its launch agent's file
+ * naming this box's helper, loaded (where that couldn't be asked, the file alone). One written
+ * that launchd never took, or took and let go of, isn't in place: `new` starts it. */
+function helperRuns(): boolean {
+  const status = helperStatus();
+  return status.agent && status.loaded !== false;
+}
+
+const NO_ENGINE = (here: string) => `The engine couldn't be downloaded. Check that ${here} is online, then try again.`;
 
 /** What the installer staged, gone once a box is made from it (the engine this runs on with it:
  * a running program keeps its file). */
@@ -171,9 +179,11 @@ async function newMac({ home, appFolder, app, release, engine }: NewMac, judged:
   const before = judged();
   if (before.verdict !== "fresh" && before.verdict !== "ours") return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: NOT_NEW[before.verdict] };
   let made = false;
+  const pinned = checkedRelease(release).engine;
   if (before.verdict === "fresh") {
-    const { engine: version } = checkedRelease(release);
-    if (!fs.existsSync(path.join(engine, version, "opencode"))) throw new Error("The engine isn't downloaded yet: this Mac's box is made once it is.");
+    if (!fs.existsSync(path.join(engine, pinned, "opencode"))) throw new Error(NO_ENGINE("this Mac"));
+    // (Only this release's engine goes into the box: never a download cut short, nor another version's.)
+    for (const name of fs.readdirSync(engine)) if (name !== pinned) fs.rmSync(path.join(engine, name), { recursive: true, force: true });
     const outcome = await rehomeNew({ appFolder, home }, { release, engine, waiting: () => console.error("Another move is under way: this one waits for it.") });
     if (outcome.result === "waits") return { result: "waits", verdict: judged().verdict, message: outcome.message };
     if (outcome.result !== "done" && outcome.result !== "nothing") return { result: outcome.result === "refused" ? "refused" : "failed", verdict: judged().verdict, message: outcome.message };
@@ -181,67 +191,95 @@ async function newMac({ home, appFolder, app, release, engine }: NewMac, judged:
   }
   const after = judged();
   if (after.verdict !== "ours") return { result: "failed", verdict: after.verdict, message: "This Mac's box couldn't be made." };
-  // Started by the box's own link, on its own engine: its launch agent written and loaded (opened
-  // where Login Items is off for it). Only for the real home, or a test's with stand-ins.
-  let started = false, message: string | undefined;
-  if (!launchTools()) message = "It's made, and starts by itself only in ~/.kuvo-code.";
-  else {
-    const version = fs.readdirSync(path.join(home, "engine")).filter(name => fs.existsSync(path.join(home, "engine", name, "opencode"))).sort().pop();
-    const ran = version ? spawnSync(path.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path.join(home, "bin", "kuvo-link.js"), "helper", "start", "--if-missing", "--app", app], {
-      cwd: home, encoding: "utf8", timeout: 180_000, env: { ...process.env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
-    }) : null;
-    let said: unknown = null;
-    try { said = JSON.parse((ran?.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
-    started = ran?.status === 0 && isObject(said) && (said.started === true || said.left === true);
-    message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran?.stderr ?? "").trim().split("\n").pop() || "it said nothing"}.`;
+  // Started by the box's own link, on its own engine, the whole start (`helper start`): its
+  // launch agent written and loaded where it isn't, started where it's loaded and not running,
+  // opened where Login Items is off for it. Only for the real home, or a test's with stand-ins.
+  if (!launchTools()) {
+    clearStaging(home);
+    return { result: made ? "done" : "nothing", verdict: "ours", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
   }
-  if (started || !launchTools()) clearStaging(home);
-  if (!started && launchTools()) return { result: "failed", verdict: "ours", started, message };
+  const engines = fs.readdirSync(path.join(home, "engine")).filter(name => fs.existsSync(path.join(home, "engine", name, "opencode"))).sort();
+  const version = engines.includes(pinned) ? pinned : engines.pop();
+  const ran = version ? spawnSync(path.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
+    cwd: home, encoding: "utf8", timeout: 180_000, env: { ...process.env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
+  }) : null;
+  let said: unknown = null;
+  try { said = JSON.parse((ran?.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
+  const started = ran?.status === 0 && isObject(said) && said.started === true;
+  const message = isObject(said) && typeof said.message === "string" ? said.message : started ? undefined : `Kuvo Helper couldn't be started: ${(ran?.stderr ?? "").trim().split("\n").pop() || "it said nothing"}.`;
+  // (Not started: what's staged stays, and `status` says to run `new` again.)
+  if (!started) return { result: "failed", verdict: "ours", started, message };
+  clearStaging(home);
   return { result: made ? "done" : "nothing", verdict: "ours", started, ...(message ? { message } : {}) };
 }
 
-/** A Linux computer's new box, a machine's, in `~/.kuvo-code` (its keeper names no other): the
- * release's files and the engine put in place as a computer that's added gets them, then the one
- * start script that add runs there (its settings its own, how its engine starts, its `@reboot`
- * line, its id, its keeper). Nothing of it there yet: a box that's there is never written over. */
-function newMachine({ home, release, engine }: { home: string; release: string; engine: string }, judged: () => Judgement): Answer {
-  const before = judged();
-  if (before.verdict !== "fresh") return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: before.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
-  if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: before.verdict, message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
+/** A Linux computer's new box, a machine's, in `~/.kuvo-code` (its keeper names no other): what's
+ * there that isn't a box (one the computer that set it up removed or turned off, what a making
+ * cut short left) set aside in its trash, nothing deleted, as a Mac's new box does; the release's
+ * files and the engine put in place as a computer that's added gets them; then the one start
+ * script that add runs there (its settings its own, how its engine starts, its `@reboot` line,
+ * its id, its keeper). Under the move's lock, so two never make it at once. */
+async function newMachine({ home, release, engine }: { home: string; release: string; engine: string }, judged: () => Judgement): Promise<Answer> {
+  const refusal = (): Answer | null => {
+    const now = judged();
+    if (now.verdict === "fresh") return null;
+    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
+  };
+  const before = refusal();
+  if (before) return before;
+  if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path.join(engine, engineVersion, "opencode");
-  if (!fs.existsSync(staged)) throw new Error("The engine isn't downloaded yet: this computer's box is made once it is.");
-  // The engine first, then each file by name, the keeper's mark and the version last (one cut
-  // short is seen as not done, and made again: nothing here says a box is there until they are).
-  writePrivate(path.join(home, MAKING), `${Date.now()}\n`);
-  const engineAt = path.join(home, "engine", engineVersion, "opencode");
-  fs.mkdirSync(path.dirname(engineAt), { recursive: true, mode: 0o700 });
-  fs.copyFileSync(staged, `${engineAt}.new`);
-  fs.chmodSync(`${engineAt}.new`, 0o755);
-  fs.renameSync(`${engineAt}.new`, engineAt);
-  for (const [name, mode] of RELEASE_FILES) {
-    const to = path.join(home, name);
-    fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 });
-    fs.copyFileSync(path.join(release, name), `${to}.new`);
-    fs.chmodSync(`${to}.new`, mode);
-    fs.renameSync(`${to}.new`, to);
-  }
-  // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
-  writePrivate(path.join(home, "updates", "installed.json"), JSON.stringify({ version, files }));
-  const tools = launchTools();
-  if (!tools) {
+  if (!fs.existsSync(staged)) throw new Error(NO_ENGINE("this computer"));
+  if (!(await takeLock(home, { waiting: () => console.error("Another move is under way: this one waits for it.") }))) return { result: "waits", verdict: judged().verdict, message: "Another move is under way." };
+  try {
+    // (Again, holding it: another may have made it meanwhile.)
+    const refused = refusal();
+    if (refused) return refused;
+    writePrivate(path.join(home, MAKING), `${Date.now()}\n`);
+    // What's there set aside whole, but the installer's own and the move's records, and the trash.
+    const aside = path.join(home, "trash", `earlier-box-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+    // (Nor the desktop app's own folder there, `desktop`: its identity among your devices.)
+    const kept = new Set(["updates", "trash", "desktop"]);
+    const there = fs.readdirSync(home).filter(name => !kept.has(name))
+      .concat(fs.readdirSync(path.join(home, "updates")).filter(name => name !== "install" && name !== "rehome").map(name => path.join("updates", name)));
+    for (const name of there.sort()) {
+      fs.mkdirSync(path.dirname(path.join(aside, name)), { recursive: true, mode: 0o700 });
+      fs.renameSync(path.join(home, name), path.join(aside, name));
+    }
+    // The engine first, then each file by name, the keeper's mark and the version last.
+    const engineAt = path.join(home, "engine", engineVersion, "opencode");
+    fs.mkdirSync(path.dirname(engineAt), { recursive: true, mode: 0o700 });
+    fs.copyFileSync(staged, `${engineAt}.new`);
+    fs.chmodSync(`${engineAt}.new`, 0o755);
+    fs.renameSync(`${engineAt}.new`, engineAt);
+    for (const [name, mode] of RELEASE_FILES) {
+      const to = path.join(home, name);
+      fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 });
+      fs.copyFileSync(path.join(release, name), `${to}.new`);
+      fs.chmodSync(`${to}.new`, mode);
+      fs.renameSync(`${to}.new`, to);
+    }
+    // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
+    writePrivate(path.join(home, "updates", "installed.json"), JSON.stringify({ version, files }));
+    const tools = launchTools();
+    if (!tools) {
+      clearStaging(home);
+      return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
+    }
+    // (A test's stand-ins for `crontab` first on the PATH: the script names it plainly, as on a
+    // computer it's sent to.)
+    const standIns = path.dirname(tools.crontab);
+    const ran = spawnSync("sh", ["-c", scripts.start(engineVersion, computerName(), "{}")], {
+      cwd: home, input: "", encoding: "utf8", timeout: 300_000,
+      env: { ...process.env, ...(path.isAbsolute(standIns) ? { PATH: `${standIns}${path.delimiter}${process.env.PATH ?? ""}` } : {}) },
+    });
+    const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
+    // (Not started: its mark stays, so it's `fresh` still, and made again by trying again.)
+    if (!started) return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}. Try again.` };
     clearStaging(home);
-    return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code." };
+    return { result: "done", verdict: judged().verdict, started };
+  } finally {
+    giveLock(home);
   }
-  // (A test's stand-ins for `crontab` first on the PATH: the script names it plainly, as on a
-  // computer it's sent to.)
-  const standIns = path.dirname(tools.crontab);
-  const ran = spawnSync("sh", ["-c", scripts.start(engineVersion, computerName(), "{}")], {
-    cwd: home, input: "", encoding: "utf8", timeout: 300_000,
-    env: { ...process.env, ...(path.isAbsolute(standIns) ? { PATH: `${standIns}${path.delimiter}${process.env.PATH ?? ""}` } : {}) },
-  });
-  const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
-  if (!started) return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}. Try again.` };
-  clearStaging(home);
-  return { result: "done", verdict: judged().verdict, started };
 }

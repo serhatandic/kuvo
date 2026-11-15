@@ -630,6 +630,29 @@ status, `new`, a cut-short one made again, a damaged pack, an engine that isn't 
 says; on Linux `new` as a machine's start); `box/bridge-tests/own-link.test.js` (the link's own
 settings and keys).
 
+**Piece 3 as built (2026-11-15), and what it leaves.** As planned above, with these differences
+after the reviewer's pass: `ours` says `new` while its helper isn't in place *or launchd doesn't
+have it* (so a start launchd refused, or Login Items off, is tried at the next open: `helper
+start`, the whole start); `status` runs on whichever engine the box has, never waiting on a
+download; on Linux a removed or turned-off box's folder is set aside in the trash before a new one
+is made (but `desktop`), under the move's lock; the box's own relay is for the real
+`~/.kuvo-code` alone. PROTOCOL.md, "Installing this computer's box", says each as it is.
+
+- **For piece 4:** `install --move` answers "isn't in this version yet"; `back` has no verb (Move
+  Again is `kuvo/box/rehome {now}` then `--run`); `moving` and `stuck` name `move`. A 0.7 Mac has
+  no `mac-link.json`, so after its move it starts from the box's own link settings ("Let my
+  devices connect" on): if the inventory should carry the old app's `phoneLink` preference
+  instead, that's one more "box upgrade" line. `app-07` is broad (anything in `S` but what's
+  nobody's): `--run` must take a Mac with nothing real to move without failing.
+- **For piece 5:** the app runs `sh kuvo-install status`, then the verb it names, and draws the
+  lines; `--root` for a demo copy. On Linux there's no `--app`, so nothing keeps a copy of a Linux
+  app from installing into the real `~/.kuvo-code`: the app's own guard (a dev build only
+  attaches) is the only one there. Two installers at once aren't locked against each other in
+  the shell's part (a second can remove the first's download: a plain failure, tried again).
+- **Not built:** the box's own update reusing an engine the installer fetched (it fetches its
+  own); a switch for "Let my devices connect" that needs no relay from the client (the desktop
+  app's Settings, #644).
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**

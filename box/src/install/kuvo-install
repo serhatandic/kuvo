@@ -96,43 +96,59 @@ if [ ! -f "$R/.whole" ] || [ "$(cat "$R/.whole" 2>/dev/null)" != "$PACK_SUM" ]; 
     mv "$R.new" "$R" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
 fi
 
-# The engine for this system: the one fetched before; the box's own of this version (to ask how
-# things stand with; a new box takes a copy); else downloaded, checked, and run once.
+# The engine for this system: the one fetched before; to ask how things stand, the box's own (of
+# this version, else whichever it has: a box that's here is never kept waiting on a download);
+# else a copy of the box's own of this version, or one downloaded, checked, and run once. Where
+# that can't be had and the box has an engine, the box's own answers (a box already made needs no
+# other; a new one says the engine is still to come).
 E="$I/engine/$ENGINE/opencode"
 OWN="$K/engine/$ENGINE/opencode"
-if [ ! -x "$E" ] && [ -x "$OWN" ] && [ "$VERB" = status ]; then
-    E=$OWN
-elif [ ! -x "$E" ]; then
-    S="$I/engine/.fetch.$$"
+ANY=""
+for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && ANY="${d}opencode"; done
+[ ! -x "$OWN" ] || ANY=$OWN
+S="$I/engine/.fetch.$$"
+# Puts the engine at $E; where it can't, says why in WHY.
+take_engine() {
     rm -rf "$I"/engine/.fetch.*
-    mkdir -p "$S" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
-    trap 'rm -rf "$S"' EXIT
+    mkdir -p "$S" || { WHY="Kuvo Code couldn't write in your home folder ($ROOT)."; return 1; }
     if [ -x "$OWN" ]; then
-        cp -p "$OWN" "$S/opencode" || fail "The engine couldn't be copied. Check that $HERE has room, then try again."
+        cp -p "$OWN" "$S/opencode" || { WHY="The engine couldn't be copied. Check that $HERE has room, then try again."; return 1; }
     else
         # (This system's builds, then this machine's, its two fields in whichever order.)
         build=$(printf '%s' "$manifest" | sed -n "s|.*\"$SYSTEM\":{\(.*\)|\1|p" | sed 's|}}.*||' | sed -n "s|.*\"$MACHINE\":{\([^}]*\).*|\1|p")
         URL=$(printf '%s' "$build" | sed -n 's|.*"url":"\([^"]*\)".*|\1|p')
         INTEGRITY=$(printf '%s' "$build" | sed -n 's|.*"integrity":"sha512-\([A-Za-z0-9+/=]*\)".*|\1|p')
-        case "$URL" in https://* | file:///*) ;; *) fail "This Kuvo Code has no engine for this kind of computer." ;; esac
+        case "$URL" in https://* | file:///*) ;; *) WHY="This Kuvo Code has no engine for this kind of computer."; return 1 ;; esac
         want=$(decoded "$INTEGRITY" | od -An -v -tx1 | tr -d ' \n')
-        [ ${#want} -eq 128 ] || fail "$DAMAGED"
+        [ ${#want} -eq 128 ] || { WHY=$DAMAGED; return 1; }
         step engine
-        OFFLINE="The engine couldn't be downloaded. Check that $HERE is online, then try again."
+        WHY="The engine couldn't be downloaded. Check that $HERE is online, then try again."
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL --proto '=https,file' --retry 2 --connect-timeout 30 --max-time 900 -o "$S/engine.tgz" "$URL" 2>/dev/null || fail "$OFFLINE"
+            curl -fsSL --proto '=https,file' --retry 2 --connect-timeout 30 --max-time 900 -o "$S/engine.tgz" "$URL" 2>/dev/null || return 1
         elif command -v wget >/dev/null 2>&1; then
-            case "$URL" in https://*) ;; *) fail "$OFFLINE" ;; esac
-            wget -q -T 60 -O "$S/engine.tgz" "$URL" 2>/dev/null || fail "$OFFLINE"
+            case "$URL" in https://*) ;; *) return 1 ;; esac
+            wget -q -T 60 -O "$S/engine.tgz" "$URL" 2>/dev/null || return 1
         else
-            fail "The engine couldn't be downloaded: $HERE has neither curl nor wget."
+            WHY="The engine couldn't be downloaded: $HERE has neither curl nor wget."
+            return 1
         fi
-        [ "$(sum512_of "$S/engine.tgz")" = "$want" ] || fail "The engine that was downloaded isn't what this Kuvo Code's release says. Try again."
-        tar xzf "$S/engine.tgz" -C "$S" package/bin/opencode 2>/dev/null && mv "$S/package/bin/opencode" "$S/opencode" || fail "The engine couldn't be unpacked. Check that $HERE has room, then try again."
+        [ "$(sum512_of "$S/engine.tgz")" = "$want" ] || { WHY="The engine that was downloaded isn't what this Kuvo Code's release says. Try again."; return 1; }
+        tar xzf "$S/engine.tgz" -C "$S" package/bin/opencode 2>/dev/null && mv "$S/package/bin/opencode" "$S/opencode" || { WHY="The engine couldn't be unpacked. Check that $HERE has room, then try again."; return 1; }
     fi
     chmod 755 "$S/opencode"
-    "$S/opencode" --version >/dev/null 2>&1 || fail "Kuvo Code's engine doesn't run on $HERE."
-    mkdir -p "$I/engine/$ENGINE" && mv -f "$S/opencode" "$E" || fail "Kuvo Code couldn't write in your home folder ($ROOT)."
+    "$S/opencode" --version >/dev/null 2>&1 || { WHY="Kuvo Code's engine doesn't run on $HERE."; return 1; }
+    mkdir -p "$I/engine/$ENGINE" && mv -f "$S/opencode" "$E" || { WHY="Kuvo Code couldn't write in your home folder ($ROOT)."; return 1; }
+}
+if [ ! -x "$E" ] && [ "$VERB" = status ] && [ -n "$ANY" ]; then
+    E=$ANY
+elif [ ! -x "$E" ]; then
+    trap 'rm -rf "$S"' EXIT
+    WHY=""
+    if ! take_engine; then
+        rm -rf "$S"
+        [ -n "$ANY" ] || fail "$WHY"
+        E=$ANY
+    fi
     rm -rf "$S"
     trap - EXIT
 fi
