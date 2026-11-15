@@ -198,18 +198,7 @@ async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
   }
 
   if (sandbox.status === 200) {
-    const state = sandbox.value;
-    // (On, but with commands still reaching your login's services: why, and its page, as off.)
-    const needsYou = !state.on || state.gaps?.includes("services") === true;
-    const action = needsYou ? sandboxAction(state, name, here) : null;
-    groups.push({
-      id: "sandbox", title: "Sandbox", rows: [row({
-        id: "sandbox", title: "Sandbox", line: needsYou ? (state.why ?? "") : "Agents' commands here run in it.",
-        ...(needsYou ? { tone: "warning" as const } : {}),
-        kind: action ? "actions" : "status", value: state.on ? "On" : "Off",
-        ...(action ? { actions: [action] } : {}),
-      })],
-    });
+    groups.push({ id: "sandbox", title: "Sandbox", rows: [row(sandboxRow(sandbox.value, name, here))] });
   } else {
     notes.push({ words: `The sandbox couldn't be read: ${said(sandbox, "it didn't answer.")}`, tone: "warning" });
   }
@@ -246,6 +235,19 @@ const restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
 /** The sandbox's button while it's off, as the box names it (`kuvo/sandbox`'s `action`): one that
  * runs a route (checking again, restarting the engine), one that opens a page, or this computer's
  * own Software Update, only from a client on it. */
+/** The sandbox's row, as `kuvo/sandbox` says it: on, a quiet line; off, or on while commands can
+ * still reach your login's services, why (a warning) and its button. */
+export function sandboxRow(state: any, name: string, here: boolean) {
+  const needsYou = !state.on || state.gaps?.includes("services") === true;
+  const action = needsYou ? sandboxAction(state, name, here) : null;
+  return {
+    id: "sandbox", title: "Sandbox", line: needsYou ? String(state.why ?? "") : "Agents' commands here run in it.",
+    ...(needsYou ? { tone: "warning" as const } : {}),
+    kind: action ? "actions" as const : "status" as const, value: state.on ? "On" : "Off",
+    ...(action ? { actions: [action] } : {}),
+  };
+}
+
 export function sandboxAction(state: any, name: string, here: boolean, restarts = restartsItself()): SettingAction | null {
   if (!state.action || !state.actionLabel) return null;
   const title = String(state.actionLabel);

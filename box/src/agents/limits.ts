@@ -449,6 +449,7 @@ export class Limits {
     this.timer = undefined
     if (this.turnTimer) clearTimeout(this.turnTimer)
     this.turnTimer = undefined
+    this.awaiting = undefined
   }
 
   /** This box's accounts as clients are shown them (`accounts`): each named, a window whose reset has passed started over. */
@@ -461,10 +462,10 @@ export class Limits {
    * When a window listed starts over next (after now, by the box's clock): what's listed changes
    * then with nothing read, so clients are told (`turn`). None while none says when it resets.
    */
-  nextTurn(): number | undefined {
+  nextTurn(rows: LimitRow[] = this.rows()): number | undefined {
     const now = this.now()
     let soonest: number | undefined
-    for (const row of this.rows()) for (const window of row.windows) if (window.resetsAt && window.resetsAt > now && (soonest === undefined || window.resetsAt < soonest)) soonest = window.resetsAt
+    for (const row of rows) for (const window of row.windows) if (window.resetsAt && window.resetsAt > now && (soonest === undefined || window.resetsAt < soonest)) soonest = window.resetsAt
     return soonest
   }
 
@@ -474,14 +475,18 @@ export class Limits {
   }
 
   private turnTimer?: ReturnType<typeof setTimeout>
+  /** When the armed timer for the next window to start over fires (by the box's clock), if one is. */
+  awaiting?: number
 
-  /** Awaits the next window to start over, while this box reads (`start`). */
-  private awaitTurn() {
+  /** Awaits the next window to start over, while this box reads (`start`). `rows`, as just listed. */
+  private awaitTurn(rows?: LimitRow[]) {
     if (this.turnTimer) clearTimeout(this.turnTimer)
     this.turnTimer = undefined
+    this.awaiting = undefined
     if (!this.timer) return
-    const at = this.nextTurn()
+    const at = this.nextTurn(rows)
     if (at === undefined) return
+    this.awaiting = at
     this.turnTimer = setTimeout(() => this.turn(), Math.min(Math.max(at - this.now(), 0) + 1, 2 ** 31 - 1))
     this.turnTimer.unref?.()
   }
@@ -948,7 +953,7 @@ export class Limits {
   private changed(heard = false, own = true) {
     const list = this.shown()
     const rows = this.rows()
-    this.awaitTurn()
+    this.awaitTurn(rows)
     const notices = this.notices()
     const now = JSON.stringify([list, rows, notices])
     if (own && (!heard || this.now() - this.lastHeardSave >= 30_000)) {

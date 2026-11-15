@@ -10575,15 +10575,16 @@ class Limits {
     if (this.turnTimer)
       clearTimeout(this.turnTimer);
     this.turnTimer = undefined;
+    this.awaiting = undefined;
   }
   shown() {
     const now = this.now();
     return this.list().map((account) => shownAccount(account, now));
   }
-  nextTurn() {
+  nextTurn(rows = this.rows()) {
     const now = this.now();
     let soonest;
-    for (const row of this.rows())
+    for (const row of rows)
       for (const window of row.windows)
         if (window.resetsAt && window.resetsAt > now && (soonest === undefined || window.resetsAt < soonest))
           soonest = window.resetsAt;
@@ -10593,15 +10594,18 @@ class Limits {
     this.changed(false, false);
   }
   turnTimer;
-  awaitTurn() {
+  awaiting;
+  awaitTurn(rows) {
     if (this.turnTimer)
       clearTimeout(this.turnTimer);
     this.turnTimer = undefined;
+    this.awaiting = undefined;
     if (!this.timer)
       return;
-    const at = this.nextTurn();
+    const at = this.nextTurn(rows);
     if (at === undefined)
       return;
+    this.awaiting = at;
     this.turnTimer = setTimeout(() => this.turn(), Math.min(Math.max(at - this.now(), 0) + 1, 2 ** 31 - 1));
     this.turnTimer.unref?.();
   }
@@ -11004,7 +11008,7 @@ class Limits {
   changed(heard = false, own = true) {
     const list = this.shown();
     const rows = this.rows();
-    this.awaitTurn();
+    this.awaitTurn(rows);
     const notices = this.notices();
     const now = JSON.stringify([list, rows, notices]);
     if (own && (!heard || this.now() - this.lastHeardSave >= 30000)) {
@@ -36672,4 +36676,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 66a23949ee8e46e9fbb7540a8dce1ea1fb36b98a4f096a157246d715e37e4bf4
+// Built from Packages/Box/src/agents f089eb362d39a0a8745ce0951339f019d5442dfba4e7436b0fa39bbd8251101f

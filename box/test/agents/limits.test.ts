@@ -1114,4 +1114,34 @@ describe("names, the bar's ring and windows that started over (#668)", () => {
       stop()
     }
   })
+
+  test("a box that reads arms a timer for the next window to start over, and stopping clears it", async () => {
+    ClaudeAgent.keychain = true
+    const { heardWindows } = await import("../../src/agents/agents/claude-limits")
+    const own = new TestClaude(home)
+    signIn(home, "default", "token-own")
+    const limits = new Limits(() => agentAccounts([own]), undefined, clock.now)
+    const fiveHour = Math.floor(clock.at / 1000) + 3_600
+    limits.start()
+    try {
+      await limits.refresh()
+      expect(limits.awaiting).toBeUndefined()
+      for (const window of heardWindows({ status: "allowed", rateLimitType: "five_hour", utilization: 0.5, unifiedWindows: { five_hour: { utilization: 0.5, resetsAt: fiveHour }, seven_day: { utilization: 0.2, resetsAt: fiveHour + 86_400 } } })) own.limits.heard!(window)
+      await limits.refresh()
+      expect(limits.awaiting).toBe(fiveHour * 1000)
+    } finally {
+      limits.stop()
+    }
+    expect(limits.awaiting).toBeUndefined()
+  })
+
+  // An agent reading its limits is told a window that started over isn't known, never "0% used".
+  test("the agents' plan_limits tool says a window that started over isn't read since", async () => {
+    const { describePlanLimits } = await import("../../src/link/work/plan-limits")
+    const rows = limitRows([box("mac", "Mac", true, [{ provider: "claude-code", service: "claude", agent: "claude", windows: [{ id: "five_hour", used: 0.95, minutes: 300, resetsAt: 100 }, { id: "seven_day", used: 0.4, minutes: 10_080, resetsAt: 900 }] }])], 100)
+    const text = describePlanLimits({ accounts: [], rows }, 100)
+    expect(text).toContain("5-hour window: started over, not read since")
+    expect(text).not.toContain("5-hour window: 0% used")
+    expect(text).toContain("weekly limit: 40% used")
+  })
 })

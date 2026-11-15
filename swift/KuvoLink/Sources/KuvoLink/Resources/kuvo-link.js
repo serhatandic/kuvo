@@ -1269,6 +1269,10 @@ function describePlanLimits(data, now = Date.now()) {
     const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
     for (const window of windows) {
       const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : undefined;
+      if (window.expired === true) {
+        lines.push(`  - ${windowName(window)}: started over, not read since`);
+        continue;
+      }
       if (resetsAt && resetsAt <= now) {
         lines.push(`  - ${windowName(window)}: started over at ${resetTime(resetsAt)}, not read since`);
         continue;
@@ -45068,7 +45072,7 @@ import fs145 from "node:fs";
 import path153 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a941628af901";
+var BRIDGE_VERSION = "a536a5c27956";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync9 } from "node:child_process";
@@ -56201,22 +56205,7 @@ async function permissionsPage(context) {
     notes.push({ words: said8(config, "The engine's settings couldn't be read."), tone: "warning" });
   }
   if (sandbox.status === 200) {
-    const state = sandbox.value;
-    const needsYou = !state.on || state.gaps?.includes("services") === true;
-    const action = needsYou ? sandboxAction(state, name, here) : null;
-    groups.push({
-      id: "sandbox",
-      title: "Sandbox",
-      rows: [row({
-        id: "sandbox",
-        title: "Sandbox",
-        line: needsYou ? state.why ?? "" : "Agents' commands here run in it.",
-        ...needsYou ? { tone: "warning" } : {},
-        kind: action ? "actions" : "status",
-        value: state.on ? "On" : "Off",
-        ...action ? { actions: [action] } : {}
-      })]
-    });
+    groups.push({ id: "sandbox", title: "Sandbox", rows: [row(sandboxRow(sandbox.value, name, here))] });
   } else {
     notes.push({ words: `The sandbox couldn't be read: ${said8(sandbox, "it didn't answer.")}`, tone: "warning" });
   }
@@ -56251,6 +56240,19 @@ async function permissionsPage(context) {
 var CHECK2 = "POST kuvo/sandbox/check";
 var RESTART2 = "POST kuvo/engine/restart";
 var restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart");
+function sandboxRow(state, name, here) {
+  const needsYou = !state.on || state.gaps?.includes("services") === true;
+  const action = needsYou ? sandboxAction(state, name, here) : null;
+  return {
+    id: "sandbox",
+    title: "Sandbox",
+    line: needsYou ? String(state.why ?? "") : "Agents' commands here run in it.",
+    ...needsYou ? { tone: "warning" } : {},
+    kind: action ? "actions" : "status",
+    value: state.on ? "On" : "Off",
+    ...action ? { actions: [action] } : {}
+  };
+}
 function sandboxAction(state, name, here, restarts = restartsItself()) {
   if (!state.action || !state.actionLabel)
     return null;
