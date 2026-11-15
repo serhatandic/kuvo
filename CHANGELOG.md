@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Bots' wake-ups, a **/loop**'s time of day and goals' days go by your time zone on every computer, including a machine you add later and with the old Mac app gone: your computers share one time zone, take it from your Mac's clock (following it when you travel), and keep the one your Mac last gave a machine when you update. Each computer makes bots from what it keeps itself (its projects, your personalities), and a new bot starts on the model a new conversation there would.
 - A message that ran a command shows it as you typed it (**/review** main) on your Mac and your iPhone alike, kept by the computer the conversation is on, not the long prompt it gave the agent. Editing a queued message brings it back with the command or keyword it went with (**/plan**, **/goal**, a command), and Stop takes a message you sent a moment before with it, held with the rest, without waiting for it.
 - In a group chat, & offers the chat's own bots first, then other bots and sessions you can name there, ranked by the computer the chat is on, the same on every device.
 - In Settings › Accounts, Amazon Bedrock (reached with your computer's AWS credentials or a key) says and offers **Connect** rather than Sign In (also above the composer, for a Bedrock model it can't use yet), and **Reconnect** once its credentials stop working.
