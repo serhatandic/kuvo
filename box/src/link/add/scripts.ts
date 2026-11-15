@@ -159,8 +159,9 @@ export const start = (version: string, name: string, notes: string): string => `
 mkdir -p "$R" && chmod 700 "$R"
 ${engineOf(version)}
 [ -x "$E" ] || { echo "It has no engine yet." >&2; exit 3; }
-adopted=$(${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
+adopted=$( ${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
 rm -f "$R/.adopt.err"
+# (A space after "$(": with a subshell right behind it, sh on Linux reads "$((" as arithmetic.)
 case "$adopted" in *'"seeded":true'*) echo seeded ;; esac
 unset adopted
 if [ ! -f "$R/launch.env" ]; then

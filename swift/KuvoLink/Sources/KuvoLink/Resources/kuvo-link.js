@@ -38995,8 +38995,9 @@ var start = (version, name, notes) => `${K2}; R="$K/run"
 mkdir -p "$R" && chmod 700 "$R"
 ${engineOf(version)}
 [ -x "$E" ] || { echo "It has no engine yet." >&2; exit 3; }
-adopted=$(${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
+adopted=$( ${link("box adopt")} 2>"$R/.adopt.err") || { tail -n 2 "$R/.adopt.err" >&2; rm -f "$R/.adopt.err"; exit 6; }
 rm -f "$R/.adopt.err"
+# (A space after "$(": with a subshell right behind it, sh on Linux reads "$((" as arithmetic.)
 case "$adopted" in *'"seeded":true'*) echo seeded ;; esac
 unset adopted
 if [ ! -f "$R/launch.env" ]; then
@@ -48189,7 +48190,7 @@ import fs158 from "node:fs";
 import path166 from "node:path";
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cdf673b91ab3";
+var BRIDGE_VERSION = "6f0b028110c8";
 
 // box/src/link/rehome/outside.ts
 import { spawnSync as spawnSync10 } from "node:child_process";
