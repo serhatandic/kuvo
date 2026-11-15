@@ -4173,10 +4173,16 @@
             "literal": "limits"
            },
            {
+            "literal": "limits.bar"
+           },
+           {
             "literal": "limits.resets"
            },
            {
             "literal": "limits.rings"
+           },
+           {
+            "literal": "limits.titles"
            },
            {
             "literal": "mcp.catalog"
@@ -4282,6 +4288,9 @@
            },
            {
             "literal": "sandbox.opens"
+           },
+           {
+            "literal": "sandbox.report"
            },
            {
             "literal": "sandbox.reviews.settled"
@@ -4797,10 +4806,16 @@
             "literal": "limits"
            },
            {
+            "literal": "limits.bar"
+           },
+           {
             "literal": "limits.resets"
            },
            {
             "literal": "limits.rings"
+           },
+           {
+            "literal": "limits.titles"
            },
            {
             "literal": "mcp.catalog"
@@ -4906,6 +4921,9 @@
            },
            {
             "literal": "sandbox.opens"
+           },
+           {
+            "literal": "sandbox.report"
            },
            {
             "literal": "sandbox.reviews.settled"
@@ -10124,6 +10142,7 @@
        ]
       },
       "failures?": "number",
+      "report?": "string",
       "gaps?": {
        "list": {
         "oneOf": [
@@ -10234,6 +10253,7 @@
        ]
       },
       "failures?": "number",
+      "report?": "string",
       "gaps?": {
        "list": {
         "oneOf": [
@@ -10344,6 +10364,7 @@
        ]
       },
       "failures?": "number",
+      "report?": "string",
       "gaps?": {
        "list": {
         "oneOf": [
