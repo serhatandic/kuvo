@@ -376,12 +376,12 @@ impl Render for SettingsView {
 }
 
 /// What's under a sheet is dimmed by.
-fn dim(cx: &App) -> Hsla {
+pub(crate) fn dim(cx: &App) -> Hsla {
     if cx.theme().appearance.is_dark() { gpui::hsla(0., 0., 0., 0.45) } else { gpui::hsla(0., 0., 0., 0.12) }
 }
 
 /// A sheet over the page, on a dimmed backdrop that takes the clicks.
-fn sheet(content: AnyElement, cx: &App) -> AnyElement {
+pub(crate) fn sheet(content: AnyElement, cx: &App) -> AnyElement {
     let dim = dim(cx);
     div()
         .id("settings-sheet")

@@ -18,33 +18,22 @@ The Computers area (`kuvo/src/computers.rs`, the sidebar in `kuvo/src/areas.rs`)
    another), drawn and disabled, with a line saying they aren't in this app yet.
 4. **Add a Machine**: what a machine is, the SSH host field (taking no typing yet), and a notice
    that adding isn't in this app yet; Add Machine waits (sends nothing).
-5. Stand-in: `computers_alone()`, `more_computers(n)`, and old-mini (a Mac on 0.9.180) in its list.
+5. Stand-in: `computers_alone()`, `more_computers(n)`, `manage_refused(words)`, and old-mini (a Mac on 0.9.180) in its list; it answers the manage routes as a box does.
 6. Tests: `kuvo/tests/computers.rs` (6 scenarios, real clicks and a scroll wheel), unit tests in
    `computers.rs` and `kuvo_box/src/areas.rs`. Shots: `shots/screens-computers*`, `screens-computer-*`.
 
-## BOX-NEEDED
+## From the box (#735)
 
-1. **`features` on each computer in `kuvo/computers`**, proposed for PROTOCOL.md "Computers":
-   "`features?`: the names its box's `kuvo/info` lists, as it said them with its agents
-   (`agents.computer`, "Peers"); left out for one that hasn't said". `Computer::features` /
-   `is_older()` read it and apply the update gate's own list (`gate::missing`, as for the window's
-   box); the stand-in says it for old-mini alone (marked STAND-IN). With no box saying it, no
-   computer is called older. Two things for the box session: peers keep only the first 300
-   feature names ("Peers"; 171 today), so past that a box would wrongly look older, and the field
-   needs the whole list or a word saying it's cut; and the phone's Computers view needs the same
-   `BoxGate` call once the box sends it.
-2. **Which sessions are at work**: a per-session `atWork` fact on `kuvo/sessions/list`, or their
-   ids on the `here` computer of `kuvo/computers`, so a computer's page can list them. Until then
-   the page draws the box's count (`working`), with Show in Sessions for this window's own; no
-   copy of the box's rule is kept in the app.
-3. **`working` left out for a peer that never said it** (an older box is listed with `0`), so
-   "Nothing is at work" isn't claimed of it. Meanwhile an older computer's page draws no count.
-4. **Rename, connect again, remove, on every box**, offered per computer (`can` on
-   `kuvo/computers`, as the Work Queue's items say it). `kuvo/machines…` is a Mac's app's own and
-   answers only while it's open, so the desktop app can't use it.
-5. **Adding a machine from a box** (#636): the SSH setup steps (`POST kuvo/machines {destination}`
-   answered by the box, with its `step`s as it goes) and the hosts to suggest (`hosts`, from that
-   box's `~/.ssh/config`). The form's field takes no typing until then.
+1. **Done:** `features` on each computer (whole, or left out), `working` left out where never
+   said, `atWork` (which sessions), and `actions` (`rename`, `connect`, `remove`, with the box's
+   confirm), done by any box (PROTOCOL.md, "Computers", Managing them). The page draws Manage from
+   `actions`: Connect and Remove… work (Remove asks with the box's words, as Settings' confirm);
+   a refusal shows in the box's words on the page it was asked on.
+2. **Waiting on a design choice (drafts for the user):** the Rename editor (Rename… is drawn,
+   not done) and listing `atWork`'s sessions under At Work (the count is drawn as before).
+3. **Still BOX-NEEDED:** adding a machine from a box (#636): its SSH setup steps (`POST
+   kuvo/machines {destination}` answered by the box, its `step`s as it goes) and the hosts to
+   suggest. The form's field takes no typing until then.
 
 ## Not built (the app's side)
 
