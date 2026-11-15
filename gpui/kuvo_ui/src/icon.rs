@@ -73,6 +73,7 @@ icons! {
     Compose => "compose",
     Computer => "computer",
     Copy => "copy",
+    Drive => "drive",
     External => "external",
     File => "file",
     Folder => "folder",

@@ -183,7 +183,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
-    Screen { slug: "settings-a-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(general) },
+    Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
     Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "settings-a-models", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
@@ -538,8 +538,8 @@ fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<
         view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
     }
 }
-fn general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    settings(w, "General", window, cx);
+fn clock(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "Clock", window, cx);
 }
 fn accounts(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Accounts", window, cx);
@@ -568,10 +568,10 @@ fn picker(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
 }
 /// A computer that's away, and one on an older Kuvo.
 fn away(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    settings(w, "box/key_studio/general", window, cx);
+    settings(w, "box/key_studio/clock", window, cx);
 }
 fn older(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    settings(w, "box/key_old/general", window, cx);
+    settings(w, "box/key_old/clock", window, cx);
 }
 /// "notice" typed in your settings' search: what it finds on the computer's side is listed too.
 fn search_yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -977,8 +977,8 @@ fn main() -> anyhow::Result<()> {
                         {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GB","factor":1000000000,"decimals":1,"rounding":"nearest"}},
                         {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GB","factor":1000000000,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":250000000,"title":"0.25 GB"},{"value":500000000,"title":"0.5 GB"},{"value":1000000000,"title":"1 GB"},{"value":2000000000_u64,"title":"2 GB"},{"value":5000000000_u64,"title":"5 GB"},{"value":10000000000_u64,"title":"10 GB"}]}
                     ])),
-                    ("worktrees","Worktrees","System","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
-                    ("git","Git","System","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
+                    ("worktrees","Worktrees","Projects","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
+                    ("git","Git","Projects","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
                     ("archived","Archived Sessions","System","archive",json!([{"id":"sessions","title":"Kuvo Code","kind":"list","search":{"placeholder":"Search archived sessions","empty":"No archived session matches “{query}”."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
                 ];
                 for (id,title,group,icon,rows) in pages {

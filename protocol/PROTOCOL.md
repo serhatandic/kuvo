@@ -1566,6 +1566,12 @@ sessions").
   sidebar a client draws from them (KuvoClient's `SessionListsTests`): a client in another language
   checks itself against it.
 
+### Box display names (`names.titles`)
+
+Computers include `limitServices: [{id, title}]` alongside the legacy `limits` ids. Clients draw each title unchanged. The box names known services by their plan (ChatGPT, SuperGrok, Copilot, OpenRouter, Z.ai, Ollama, OpenCode Go); unknown service ids have their initial letter capitalized.
+
+Work sessions include `account.title`, the complete short display name including the account label where present ("Claude · Work", "Copilot"). Unknown providers retain their supplied account name. Usage answers include `serviceTitles`, a map from each service id in `services` or `totals` to its spend card title ("OpenCode", "Codex"); unknown ids are capitalized word by word. Clients draw these words unchanged.
+
 ### Computers
 
 Your computers as one list (`computers`, #711), from any box, a Mac's or a machine's, with no
@@ -1895,6 +1901,10 @@ update gate.
   notes goes too. Written only where it isn't so already.
 - `DELETE kuvo/sessions/<id>` → `200 {session}`: deleted where it runs, its own wake-ups and watches
   with it; one that's gone already is done too.
+- Archive and pin accept optional `was: {updated, archived}`; Delete accepts the same with
+  the current Delete `confirm: {title, message, label}` in `was` too. The box compares these
+  inside the session turn before mutation. A mismatch answers `409 {message:
+  "It changed since you read it."}`; without `was`, calls keep their existing behavior.
 - `POST kuvo/sessions/deletes {sessions: [<id>]}` → `200 {title, message, label}`: Delete All's
   question for several at once (Settings › Archived Sessions), by the same rule over the whole set
   (a worktree only they're in goes, and a removed one's kept changes go with the last of them):
@@ -3509,9 +3519,11 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     for a model's; `until` in ms; each entry names its model by the model's own id, so one saved
     under another id it's known by, such as Claude Code's `default`, comes as the model that
     stands for now, as its agent listed it (as saved until it has), and a second entry for the
-    same model at the same effort is left out; a list `PUT` back as it came keeps each entry under
-    the id it was saved by, so one saved as `default` goes on following it, and runs go down the
-    lists as `GET` gives them);
+    same model at the same effort is left out; changing a list
+    by id with its revision keeps unchanged entries under the ids they were saved by, so one saved
+    as `default` goes on following it, and runs go down the lists as `GET` gives them). Lists are
+    added, changed, removed and reordered separately ("Custom Auto lists changed by id"); the
+    whole collection cannot be `PUT` back;
     `DELETE …/auto/limits` tries them all again. The event
     `kuvo.auto.updated` says the lists or their limits changed. An account with a `provider`
     limit whose `until` hasn't come is at its usage limit: mark it (the Mac says "Usage limit ·
@@ -4954,6 +4966,18 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   viewer says instead of showing. So no client looks through a file's bytes to tell. Refused as
   `kuvo/file` refuses (`400`, `403`, `404`, `413`), but `413` already over 4 MB, with or without
   `max`: its text comes as one answer. `GET` only (`405 {}` otherwise).
+
+### Custom Auto lists changed by id (`auto.lists`)
+
+`kuvo/agents/api/kuvo/auto` GET returns `data.lists`, each with `id`, `name`,
+`entries`, and an opaque `revision`. POST adds `{id, name, entries}`; PUT `<id>`
+renames (`{revision, name}`) or sets contents (`{revision, entries}`). DELETE
+`<id>` takes `{revision}` and keeps at least one list. PUT `order` takes
+`{ids, was}`: both are arrays of ids, `was` the order read, and `ids` every id
+once in the desired order. The names `order` and `limits` are reserved.
+Changes return `data.lists` and `data.limits`. Stale revisions, duplicate adds,
+and stale order return 409; read again and let the user retry. Different lists
+can be changed independently. Whole-collection PUT is no longer supported.
 
 ### Goals
 
@@ -6744,6 +6768,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `artifacts` | `kuvo/artifacts…`: the record of what its agents made, each file with a version for each turn that changed it, passed on to the coding agents' bridge ("Artifacts") |
 | `asks` | `kuvo/asks`, `…/events`, and answering one |
 | `attention` | `kuvo/attention` |
+| `auto.lists` | Custom Auto lists added, changed and removed by id and revision, and reordered against the order read ("Custom Auto lists changed by id") |
 | `autopilot` | `kuvo/sessions/<id>/autopilot`, `autopilot` in `POST kuvo/sessions`: a conversation on Autopilot, its questions with a recommendation going ahead ("Autopilot"; bridge 0.9.200); a goal's `mode` and `decided`, `mode` on start and change, `{action: decided}` ("Work", Goals, Interactive or Autopilot) |
 | `bots` | `kuvo/bots` |
 | `bots.deletes` | `deletes` on each bot in `kuvo/bots` and its events, and on each in `elsewhere`: what deleting it takes with it, in the box's words |
@@ -6899,6 +6924,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `typed` | `kuvo/sessions/<id>/typed`: what "/" offers, and what a typed text means ("What a typed message means") |
 | `update` | a machine only: `kuvo/update` |
 | `usage.history` | `kuvo/agents/api/kuvo/usage…`: what your accounts used, by the day, read, priced and added up by the boxes ("Usage history") |
+| `usage.notices` | The box decides quota notices from plan limits and shares their facts with your computers ("Usage notices") |
 | `usage.settings` | `kuvo/agents/api/kuvo/usage/settings…`: the usage panel's settings, kept by each box and shared by yours ("Usage settings", #631) |
 | `vault` | `kuvo/vault…`: the box's own vault of sign-ins, keys, files and notes its agents use without seeing a value ("Vault", bridge 0.9.100) |
 | `vault.same` | `POST kuvo/vault/items/<id>/same`: whether values given are the ones kept, without giving them ("Vault") |
@@ -8229,9 +8255,12 @@ so a client still on those (the phone) sees every change kept just as they keep 
 `box/src/shared/routes/settings-pages.ts`.
 
 - `GET kuvo/settings`: `{sections}`, in order, each `{id, title, group, icon, line, keywords}`:
-  the heading it's under in a sidebar (`group`), its icon by name (`shield`, `globe`, …: a set every
-  client has; one a client hasn't, it draws with its own), and the words search finds it by besides
-  its title and line. Today `general`, `permissions`, `browser`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
+  the heading it's under in a sidebar (`group`), its icon by name (the required set every client
+  has is `settings`, `shield`, `globe`,
+  `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
+  `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
+  with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
+  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8296,7 +8325,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
 
 The sections now:
 
-- **General** (`general`): Clock (`time-zone`, a `choice` of every zone the box's runtime knows by
+- **Clock** (`clock`): Time zone (`time-zone`, a `choice` of every zone the box's runtime knows by
   its IANA name, titled `Europe › Istanbul`; while it has no zone of yours yet, `own-clock` first,
   its own clock, its value, which writes nothing when picked and isn't offered once one is set).
   A change is a pick of your time zone ("Your time zone"), which your other computers take (not on a
@@ -8383,7 +8412,7 @@ goes by: bots' and conversations' wake-ups, a `/loop`'s time of day, goals' days
 without a zone, the night's window updates wait for, a chat's meetings, and the times limits reset.
 Until you pick one, each box goes by its own clock, as before. Each box keeps it
 (`box/time-zone.json` in its folder: `{kuvo: 1, zone, n, zoneinfo?, carried?, kitSeen?}`), any
-client picks it there (`kuvo/settings/general`, "A box's settings"), and boxes carry a pick to each
+client picks it there (`kuvo/settings/clock`, "A box's settings"), and boxes carry a pick to each
 other. Every box does it alike, a Mac's and a machine's, on macOS and Linux.
 
 - **A pick**: counted past what the box had and at least the time it's made (milliseconds since
@@ -10316,21 +10345,3 @@ refinement; the legacy local client retains its own sharp-screenshot path.
 Examples and box-only socket path cases live in `protocol/vectors/browser-view.json`;
 released Swift socket vectors stay unchanged in `protocol/vectors/link.json`. Route answers
 are generated from the browser route shapes.
-
-### Custom Auto lists changed by id (`auto.lists`)
-
-`kuvo/agents/api/kuvo/auto` GET returns `data.lists`, each with `id`, `name`,
-`entries`, and an opaque `revision`. POST adds `{id, name, entries}`; PUT `<id>`
-renames (`{revision, name}`) or sets contents (`{revision, entries}`). DELETE
-`<id>` takes `{revision}` and keeps at least one list. PUT `order` takes
-`{ids, was}`: both are arrays of ids, `was` the order read, and `ids` every id
-once in the desired order. The names `order` and `limits` are reserved.
-Changes return `data.lists` and `data.limits`. Stale revisions, duplicate adds,
-and stale order return 409; read again and let the user retry. Different lists
-can be changed independently. Whole-collection PUT is no longer supported.
-
-### Box display names (`names.titles`)
-
-Computers include `limitServices: [{id, title}]` alongside the legacy `limits` ids. Clients draw each title unchanged. The box names known services by their plan (ChatGPT, SuperGrok, Copilot, OpenRouter, Z.ai, Ollama, OpenCode Go); unknown service ids have their initial letter capitalized.
-
-Work sessions include `account.title`, the complete short display name including the account label where present ("Claude · Work", "Copilot"). Unknown providers retain their supplied account name. Usage answers include `serviceTitles`, a map from each service id in `services` or `totals` to its spend card title ("OpenCode", "Codex"); unknown ids are capitalized word by word. Clients draw these words unchanged.

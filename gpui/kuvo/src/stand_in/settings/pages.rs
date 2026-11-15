@@ -99,7 +99,7 @@ impl Settings {
 
     fn sections(&self) -> Value {
         let mut sections = vec![
-            json!({ "id": "general", "title": "General", "group": "General", "icon": "settings", "line": "Your time zone, which bots’ wake-ups and times of day go by on all your computers.", "keywords": ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"] }),
+            json!({ "id": "clock", "title": "Clock", "group": "General", "icon": "settings", "line": "Your time zone, which bots’ wake-ups and times of day go by on all your computers.", "keywords": ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"] }),
             json!({ "id": "permissions", "title": "Permissions", "group": "Agents & Tools", "icon": "shield", "line": "What agents may do without asking, and the sandbox their commands run in.", "keywords": ["approval", "full access", "auto", "ask first", "allow", "don't allow", "sandbox", "also allowed", "other computers", "rules"] }),
             json!({ "id": "browser", "title": "Browser", "group": "System", "icon": "globe", "line": "The browser’s search engine, and offering to save sign-ins.", "keywords": ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"] }),
         ];
@@ -109,14 +109,14 @@ impl Settings {
 
     fn page(&self, section: &str, name: &str, here: bool) -> Option<Value> {
         match section {
-            "general" => Some(self.general(name)),
+            "clock" => Some(self.clock(name)),
             "permissions" => Some(self.permissions(name, here)),
             "browser" => Some(self.browser_page()),
             other => self.more_sections.iter().find(|(section, _)| section["id"] == json!(other)).map(|(_, page)| stamped(page.clone())),
         }
     }
 
-    fn general(&self, name: &str) -> Value {
+    fn clock(&self, name: &str) -> Value {
         let mut choices: Vec<Value> = ZONES.iter().map(|zone| json!({ "id": zone, "title": zone_title(zone) })).collect();
         let line = match &self.zone {
             Some(_) => "Bots’ wake-ups and times of day go by it on all your computers.".to_owned(),
@@ -126,7 +126,7 @@ impl Settings {
             }
         };
         let value = self.zone.clone().unwrap_or_else(|| OWN_CLOCK.to_owned());
-        json!({ "id": "general", "title": "General", "groups": [{ "id": "clock", "title": "Clock", "rows": [row(json!({ "id": "time-zone", "title": "Time zone", "line": line, "kind": "choice", "value": value, "choices": choices, "can": true }))] }] })
+        json!({ "id": "clock", "title": "Clock", "groups": [{ "id": "clock", "title": "Clock", "rows": [row(json!({ "id": "time-zone", "title": "Time zone", "line": line, "kind": "choice", "value": value, "choices": choices, "can": true }))] }] })
     }
 
     fn permissions(&self, name: &str, here: bool) -> Value {
@@ -238,7 +238,7 @@ impl Settings {
         let id = at["id"].as_str().unwrap_or_default();
         let fits_choice = || at["choices"].as_array().is_some_and(|choices| choices.iter().any(|choice| &choice["id"] == value));
         match (section, id) {
-            ("general", "time-zone") => {
+            ("clock", "time-zone") => {
                 if !fits_choice() {
                     return Some(refused(400, "That isn’t a time zone this computer knows."));
                 }
