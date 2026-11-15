@@ -3547,6 +3547,8 @@
           ]
          },
          "through?": "string",
+         "address?": "string",
+         "relay?": "string",
          "working?": "number",
          "atWork?": {
           "list": {
@@ -3671,6 +3673,8 @@
           ]
          },
          "through?": "string",
+         "address?": "string",
+         "relay?": "string",
          "working?": "number",
          "atWork?": {
           "list": {
@@ -3988,6 +3992,9 @@
             "literal": "claude-code"
            },
            {
+            "literal": "clients.kind"
+           },
+           {
             "literal": "computers"
            },
            {
@@ -3997,10 +4004,16 @@
             "literal": "computers.manage"
            },
            {
+            "literal": "computers.reach"
+           },
+           {
             "literal": "config"
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "devices.pair"
            },
            {
             "literal": "engine.restart"
@@ -4636,6 +4649,9 @@
             "literal": "claude-code"
            },
            {
+            "literal": "clients.kind"
+           },
+           {
             "literal": "computers"
            },
            {
@@ -4645,10 +4661,16 @@
             "literal": "computers.manage"
            },
            {
+            "literal": "computers.reach"
+           },
+           {
             "literal": "config"
            },
            {
             "literal": "config.apply"
+           },
+           {
+            "literal": "devices.pair"
            },
            {
             "literal": "engine.restart"
@@ -6244,6 +6266,16 @@
           ]
          },
          "pairing": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "phone"
+           },
+           {
+            "literal": "desktop"
+           }
+          ]
+         },
          "you": "bool"
         }
        }
@@ -6267,6 +6299,42 @@
      "object": {
       "link": "string",
       "ends": "number"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/devices/pair",
+   "answers": {
+    "200": {
+     "object": {
+      "paired": {
+       "literal": true
+      },
+      "pairing": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "reason?": {
+       "literal": "removed"
+      }
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }
