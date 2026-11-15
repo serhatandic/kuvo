@@ -1,6 +1,6 @@
 import "./safety"
 import { expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { addressProblem, cleanAddress, configHosts, suggestedHosts } from "../src/link/add/address"
@@ -42,7 +42,10 @@ test("the hosts suggested are ~/.ssh/config's Hosts and those of the files it in
   }
 })
 
-test("what a box gives a computer it sets up is a release's own files, each with its mode", () => {
+// (Held wherever the whole checkout is: a release is written from what's built and kept in git,
+// which a run sent only the box's own folders hasn't.)
+const whole = existsSync(join(import.meta.dir, "..", "..", "swift", "KuvoLink", "Sources", "KuvoLink", "Resources", "kuvo-link.js")) && existsSync(join(import.meta.dir, "..", "dist", "kuvo-agents.js"))
+test.if(whole)("what a box gives a computer it sets up is a release's own files, each with its mode", () => {
   const release = boxFiles(join(import.meta.dir, "..", ".."), "1.2.3")
   expect([...RELEASE_FILES].map(([path, mode]) => `${path} ${mode.toString(8)}`).sort()).toEqual(release.map(file => `${file.path} ${file.mode.toString(8)}`).sort())
   // (The keeper's mark and the version last: a copy cut short is seen as not done.)
@@ -56,8 +59,8 @@ test("the files go as one tar the system's own tar unpacks, each whole and with 
     const ran = Bun.spawnSync(["tar", "xf", "-", "-C", folder], { stdin: tarOf(files) })
     expect(ran.exitCode, ran.stderr.toString()).toBe(0)
     for (const file of files) {
-      expect(Buffer.compare(Buffer.from(require("node:fs").readFileSync(join(folder, file.path))), file.data)).toBe(0)
-      expect(require("node:fs").statSync(join(folder, file.path)).mode & 0o777).toBe(file.mode)
+      expect(Buffer.compare(readFileSync(join(folder, file.path)), file.data)).toBe(0)
+      expect(statSync(join(folder, file.path)).mode & 0o777).toBe(file.mode)
     }
   } finally {
     rmSync(folder, { recursive: true, force: true })
