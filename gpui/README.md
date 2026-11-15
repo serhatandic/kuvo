@@ -40,6 +40,20 @@ cargo run -p kuvo --features stand-in -- --stand-in   # against a made-up box: n
 cargo run -p kuvo                                       # this Mac's own box (Kuvo Code running here)
 ```
 
+- **As it opens** (`notes/screens-launch.md`): the app in its bundle asks the installer it carries
+  what this computer holds (`sh …/Contents/Resources/box-release/kuvo-install status`) and runs
+  what the box names: a new Mac is set up (`new`), an earlier Kuvo Code's sessions moved (`move`),
+  each said on this Mac's row in the first run's own card, a move with the box's words for its
+  step and a thin bar; what the box refuses is said in its words, with Try Again (Return). Then
+  it attaches, and offers the box the release it carries. A build that isn't the app in its
+  bundle (`cargo run -p kuvo`) installs nothing: it only attaches to a Kuvo that's there. A copy
+  of the app (another bundle ID) installs only into a root of its own
+  (`KUVO_DEMO_MACHINE_ROOT=<a folder's name in your home folder>`).
+- **What macOS allows** (`notes/screens-launch.md`): where the box on this computer says a
+  permission isn't allowed for the program agents run under (`kuvo/box/permissions`), a heads-up
+  over the main view: Open System Settings opens the list the box names, with a small window
+  beside it holding that program's icon to drag in, which goes once the box says it's allowed;
+  Not Now is kept by the box.
 - **The first run** (`notes/screens-first-run.md`): until the box says you've had it (`welcomed`
   in `kuvo/setup`), the window is one card at a time: a welcome; the coding agents and plans, each
   as the box lists it, signing in or installing in place; and where to work, a folder the box

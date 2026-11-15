@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The desktop app sets Kuvo up on your Mac itself the first time it opens: the welcome's first card says **Setting up Kuvo…** beside this Mac, then goes on to the welcome. Updating from Kuvo Code 0.7, the same card shows each step of the move with a bar, and picks it up where it is if you quit meanwhile. If either can't be done, the card says why, with **Try Again**.
+- When Screen Recording or Accessibility isn't allowed for Kuvo Helper, the program your agents run under on a Mac, the desktop app asks once: **Open System Settings** opens the right list with Kuvo Helper's icon in a small window beside it, to drag in and switch on. The small window closes by itself once it's allowed, and **Not Now** is remembered on that Mac.
 - Updating from Kuvo Code 0.7 brings your work along: your sessions, projects, worktrees, bots, group chats, personalities, machines, saved sign-ins and settings move into Kuvo's new place on this Mac. The earlier Kuvo Code's own folder is left exactly as it was, nothing runs until the move has succeeded, and anything it couldn't bring is said.
 - Computers, group task states and conversation summaries use display words supplied by the box, shared across clients.
 
