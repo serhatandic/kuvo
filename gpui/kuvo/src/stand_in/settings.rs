@@ -145,6 +145,35 @@ fn path_part(part: &str) -> String {
 }
 
 impl Settings {
+    /// A new computer: no coding agent's program is installed and nothing is signed in.
+    pub fn nothing_installed(&mut self) {
+        for agent in &mut self.agents {
+            agent["connections"] = json!([]);
+            agent["metadata"]["installed"] = json!(false);
+            agent["metadata"]["install"] = json!("npm install -g @stand-in/agent");
+            if let Some(metadata) = agent["metadata"].as_object_mut() {
+                metadata.remove("signInEnded");
+                metadata.remove("version");
+            }
+        }
+        // (An account you added goes with its sign-in.)
+        self.agents.retain(|agent| !agent["id"].as_str().is_some_and(|id| id.contains('@')));
+        for account in &mut self.engine {
+            account["connections"] = json!([]);
+        }
+        self.ended.clear();
+    }
+
+    /// Every sign-in there is works: none has ended.
+    pub fn all_well(&mut self) {
+        for agent in &mut self.agents {
+            if let Some(metadata) = agent["metadata"].as_object_mut() {
+                metadata.remove("signInEnded");
+            }
+        }
+        self.ended.clear();
+    }
+
     /// Every sign-in under way ends so.
     pub fn end_sign_ins(&mut self, ending: Ending, message: Option<&str>) {
         let attempts: Vec<String> = self.attempts.iter().filter(|(_, attempt)| attempt.status["status"] == "pending").map(|(id, _)| id.clone()).collect();
@@ -243,6 +272,9 @@ impl Settings {
                         }
                         for key in ["state", "line", "actions", "connections"] {
                             ways[key] = said[key].clone();
+                        }
+                        if said["added"] == true {
+                            ways["added"] = json!(true);
                         }
                         Some(ways)
                     })
