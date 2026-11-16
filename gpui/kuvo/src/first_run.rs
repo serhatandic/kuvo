@@ -139,6 +139,7 @@ pub struct FirstRun {
 }
 
 impl EventEmitter<Finished> for FirstRun {}
+impl EventEmitter<crate::workspace::Switch> for FirstRun {}
 
 /// An account's key in this view: which side it's on, and its id.
 fn key_of(entry: &AccountEntry) -> String {
@@ -464,11 +465,7 @@ impl FirstRun {
             return;
         }
         match self.step {
-            // Straight on past the agents, where the box says a model runs and nothing needs you.
-            Step::Welcome => {
-                let next = if self.ready() { self.after_agents(cx) } else { Step::Agents };
-                self.show(next, cx)
-            }
+            Step::Welcome => self.show(Step::Agents, cx),
             Step::Agents => {
                 self.close_sign_in(cx);
                 let next = self.after_agents(cx);
@@ -676,7 +673,11 @@ impl FirstRun {
 
     pub fn pick_computer(&mut self, key: &str, cx: &mut Context<Self>) {
         let here = self.own_computers().into_iter().any(|computer| computer.key == key && computer.here);
-        self.computer = (!here).then(|| key.to_owned());
+        if !here && self.own_computers().iter().any(|computer| computer.key == key) {
+            cx.emit(crate::workspace::Switch::To(key.to_owned()));
+            return;
+        }
+        self.computer = None;
         cx.notify();
     }
 

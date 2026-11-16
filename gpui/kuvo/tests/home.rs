@@ -405,3 +405,35 @@ fn a_computer_out_of_reach_says_so_with_try_again(cx: &mut TestAppContext) {
     assert!(!shown(cx, "blocked-unreached"));
     assert!(shown(cx, "session-project-ses_releases"));
 }
+
+
+#[gpui::test]
+fn switching_to_unwelcomed_computers_opens_the_app_even_without_projects(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").unwrap();
+    devbox.set_first_run(|run| run.welcomed = false);
+    devbox.clear_projects_and_sessions();
+    let (home, cx) = open(cx, stand_in);
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
+    assert!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.first_run().is_none()));
+    assert!(!shown(cx, "project-Billing"));
+    assert!(devbox.seen_at("GET", "kuvo/setup/welcomed").is_empty());
+}
+
+#[gpui::test]
+fn first_run_computer_picker_switches_and_returning_keeps_the_app_open(cx: &mut TestAppContext) {
+    let stand_in = StandIn::first_run(Replies::Never, NOW, kuvo::stand_in::first_run::Scenario::Running);
+    let (home, cx) = open(cx, stand_in);
+    assert!(shown(cx, "first-run"));
+    click(cx, "first-run-next");
+    click(cx, "first-run-next");
+    click(cx, "first-run-computer-key_devbox");
+    assert_eq!(name(&home, cx), "devbox");
+    assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
+    let here = home.read_with(cx, |home, _| home.boxes().nearest_key().unwrap());
+    home.update_in(cx, |home, window, cx| assert!(home.switch_to(&here, window, cx)));
+    cx.run_until_parked();
+    assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
+}

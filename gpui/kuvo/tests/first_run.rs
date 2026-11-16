@@ -232,17 +232,23 @@ fn a_sign_in_that_fails_says_why_in_place_and_cancel_gives_one_up(cx: &mut TestA
 }
 
 #[gpui::test]
-fn where_a_model_runs_already_the_welcome_goes_straight_to_where_to_work(cx: &mut TestAppContext) {
+fn ready_models_still_visit_every_step_forward_and_back(cx: &mut TestAppContext) {
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
     let (workspace, cx) = open(cx, stand_in.clone());
     assert!(shown(cx, "first-run-signed-in"), "the welcome says what's signed in");
     // Return is the way on.
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
+    assert_eq!(step(&workspace, cx), Step::Agents);
+    click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Where);
-    // The agents and plans are a step back, not gone.
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
+    assert_eq!(step(&workspace, cx), Step::Agents);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(step(&workspace, cx), Step::Welcome);
+    click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Agents);
     assert!(shown(cx, "first-run-agent-claude-code-signed-in"));
     click(cx, "first-run-next");
@@ -264,6 +270,7 @@ fn no_project_starts_the_first_session_as_a_chat(cx: &mut TestAppContext) {
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "first-run-next");
+    click(cx, "first-run-next");
     click(cx, "first-run-no-project");
     click(cx, "first-run-next");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.landing_place()), StartIn::Chat);
@@ -275,25 +282,14 @@ fn no_project_starts_the_first_session_as_a_chat(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_machine_picked_says_it_cant_be_worked_on_from_here_yet(cx: &mut TestAppContext) {
+fn picking_another_computer_leaves_first_run(cx: &mut TestAppContext) {
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
-    let (workspace, cx) = open(cx, stand_in.clone());
+    let (workspace, cx) = open(cx, stand_in);
     click(cx, "first-run-next");
-    assert!(shown(cx, "first-run-computer-this") && shown(cx, "first-run-computer-key_devbox"));
-    assert!(!shown(cx, "first-run-computer-key_build"), "a machine that isn't yours isn't offered");
+    click(cx, "first-run-next");
     click(cx, "first-run-computer-key_devbox");
-    // Said plainly, with no folders of this Mac's passed off as the machine's, and no way on.
-    assert!(shown(cx, "first-run-elsewhere") && !shown(cx, "first-run-folder-0"));
-    click(cx, "first-run-next");
-    cx.simulate_keystrokes("enter");
-    cx.run_until_parked();
-    assert_eq!(step(&workspace, cx), Step::Where);
-    assert!(!stand_in.welcomed());
-    // Back on this Mac, its folders and the way on are there again.
-    click(cx, "first-run-computer-this");
-    assert!(shown(cx, "first-run-folder-0") && !shown(cx, "first-run-elsewhere"));
-    click(cx, "first-run-next");
-    assert!(stand_in.welcomed());
+    assert!(workspace.read_with(cx, |workspace, _| workspace.first_run().is_none()));
+    assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
 }
 
 #[gpui::test]
@@ -408,7 +404,7 @@ fn a_box_that_couldnt_say_keeps_the_window_waiting_saying_why_until_it_can(cx: &
 }
 
 #[gpui::test]
-fn signed_in_with_a_key_alone_the_welcome_lists_it_and_goes_straight_on(cx: &mut TestAppContext) {
+fn signed_in_with_a_key_alone_the_welcome_still_opens_agents(cx: &mut TestAppContext) {
     // No plan signed in, but a key whose model runs: nothing to draw an empty row for.
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Running);
     for agent in ["claude-code", "codex-cli", "antigravity"] {
@@ -420,7 +416,7 @@ fn signed_in_with_a_key_alone_the_welcome_lists_it_and_goes_straight_on(cx: &mut
     let (workspace, cx) = open(cx, stand_in);
     assert!(shown(cx, "first-run-signed-in"), "OpenRouter's key is what's ready");
     click(cx, "first-run-next");
-    assert_eq!(step(&workspace, cx), Step::Where);
+    assert_eq!(step(&workspace, cx), Step::Agents);
 }
 
 #[gpui::test]
@@ -462,13 +458,13 @@ fn signing_in_asks_the_box_again_whether_theres_anything_left_to_ask(cx: &mut Te
 }
 
 #[gpui::test]
-fn the_box_saying_theres_nothing_to_ask_is_gone_by_whatever_the_app_can_see(cx: &mut TestAppContext) {
+fn the_box_saying_ready_still_opens_agents(cx: &mut TestAppContext) {
     // Nothing shows as signed in here, yet the box says ready: it's the box's to say.
     let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
     stand_in.set_first_run(|first_run| first_run.ready_says = Some(true));
     let (workspace, cx) = open(cx, stand_in);
     click(cx, "first-run-next");
-    assert_eq!(step(&workspace, cx), Step::Where);
+    assert_eq!(step(&workspace, cx), Step::Agents);
 }
 
 // MARK: What macOS allows Kuvo Helper
@@ -564,4 +560,20 @@ fn the_step_is_passed_over_where_nothing_needs_allowing(cx: &mut TestAppContext)
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert_eq!(step(&workspace, cx), Step::Agents);
+}
+
+#[gpui::test]
+fn desktop_welcome_is_kept_across_launches_and_does_not_depend_on_the_box(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("settings.json");
+    cx.update(|cx| {
+        kuvo::yours::init(Some(path.clone()), cx);
+        kuvo::yours::change(kuvo::yours::Change::Welcomed, cx);
+        kuvo::yours::init(Some(path), cx);
+    });
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    assert!(workspace.read_with(cx, |workspace, _| workspace.first_run().is_none()));
+    assert!(shown(cx, "rail-settings") && !shown(cx, "first-run"));
+    assert!(stand_in.seen_at("GET", "kuvo/setup/welcomed").is_empty());
 }

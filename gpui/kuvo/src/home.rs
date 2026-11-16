@@ -229,6 +229,7 @@ impl Home {
         cx.activate(true);
         window.activate_window();
         let shown = if open.computer == NEAREST {
+            self.leave_first_run(cx);
             self.shown = NEAREST.to_owned();
             self.workspaces.contains_key(NEAREST)
         } else {
@@ -284,7 +285,14 @@ impl Home {
 
     fn make(&mut self, slot: &str, client: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live;
-        let workspace = cx.new(|cx| Workspace::new(client, live, window, cx));
+        let switching = !self.workspaces.is_empty() || slot != NEAREST;
+        let workspace = cx.new(|cx| {
+            let mut workspace = Workspace::new(client, live, window, cx);
+            if switching {
+                workspace.skip_first_run(cx);
+            }
+            workspace
+        });
         // Each computer's window opens where it was last time on this device.
         let key = if slot == NEAREST { crate::yours::NEAREST.to_owned() } else { slot.to_owned() };
         workspace.update(cx, |workspace, cx| workspace.restore(key, window, cx));
@@ -314,6 +322,14 @@ impl Home {
         self.workspaces.insert(slot.to_owned(), (workspace, subscription));
     }
 
+    /// Selecting work ends this device's onboarding for all cached computers.
+    fn leave_first_run(&mut self, cx: &mut Context<Self>) {
+        crate::yours::change(crate::yours::Change::Welcomed, cx);
+        for (workspace, _) in self.workspaces.values() {
+            workspace.update(cx, |workspace, cx| workspace.skip_first_run(cx));
+        }
+    }
+
     /// Shows the computer with this key: its own box's sessions, bots, queue and settings. False
     /// for one this app doesn't reach (not yours, not paired, nowhere it can be found).
     pub fn switch_to(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -329,6 +345,7 @@ impl Home {
                 self.workspaces[&slot].0.update(cx, |workspace, cx| workspace.read_at_once(cx));
             }
         }
+        self.leave_first_run(cx);
         self.shown = slot;
         self.rows_changed(cx);
         let workspace = self.workspace().clone();
@@ -382,6 +399,7 @@ impl Home {
     fn show_computer(&mut self, key: &str, add_at: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.restoring = None;
         if self.boxes.nearest().is_some() && self.shown != NEAREST {
+            self.leave_first_run(cx);
             self.shown = NEAREST.to_owned();
             self.rows_changed(cx);
             self.keep_shown(cx);

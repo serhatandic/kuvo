@@ -304,6 +304,16 @@ impl StandIn {
         self.state().settings.set_browser(key, value);
     }
 
+    /// Removes projects and sessions from a fixture while keeping its identity and peers.
+    pub fn clear_projects_and_sessions(&self) {
+        let mut state = self.state();
+        state.areas.empty = true;
+        state.projects.clear();
+        state.sessions.clear();
+        state.messages.clear();
+        state.running.clear();
+    }
+
     /// An empty box: no projects, no sessions.
     pub fn empty(replies: Replies) -> StandIn {
         let areas = areas::Areas { empty: true, ..areas::Areas::default() };

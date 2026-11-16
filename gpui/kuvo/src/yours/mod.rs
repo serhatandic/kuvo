@@ -208,6 +208,8 @@ pub struct Yours {
     pub privacy: Privacy,
     /// The first Quit's note was seen on this device (`quit_note`).
     pub quit_note_seen: bool,
+    /// First run completed on this desktop device.
+    pub welcomed: bool,
 }
 
 /// One change to your settings, as a row makes it.
@@ -222,6 +224,7 @@ pub enum Change {
     Dock(bool),
     ShareAnonymousUsage(bool),
     QuitNoteSeen,
+    Welcomed,
     QueueOpened(String, f64, usize),
 }
 
@@ -246,6 +249,7 @@ impl Change {
             Change::Dock(on) => yours.notifications.dock = on,
             Change::ShareAnonymousUsage(on) => yours.privacy.share_anonymous_usage = on,
             Change::QueueOpened(computer, at, count) => { yours.queue_opened_count.insert(computer.clone(), count); yours.queue_last_opened.insert(computer, at); }
+            Change::Welcomed => yours.welcomed = true,
             Change::QuitNoteSeen => yours.quit_note_seen = true,
         }
     }
@@ -280,7 +284,7 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
+        let now = Yours { welcomed: value.get("welcomed").and_then(Value::as_bool).unwrap_or(false), queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
         let place: Place = page(&value, "place");
         Store { path, now, place: place.into(), file: file.into(), problem: None.into() }
     }
@@ -342,6 +346,9 @@ impl Store {
         file.insert("queueOpenedCount".into(), serde_json::to_value(&self.now.queue_opened_count).unwrap());
         file.insert("queueLastOpened".into(), serde_json::to_value(&self.now.queue_last_opened).unwrap());
         file.insert("place".into(), serde_json::to_value(&*self.place.borrow()).unwrap());
+        if self.now.welcomed {
+            file.insert("welcomed".into(), Value::Bool(true));
+        }
         if self.now.quit_note_seen {
             file.insert(QUIT_NOTE_SEEN.into(), Value::Bool(true));
         }

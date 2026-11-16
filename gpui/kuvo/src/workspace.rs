@@ -205,7 +205,7 @@ enum Welcome {
     Unknown,
     Asking,
     /// Not had yet: the window shows it, and nothing else.
-    FirstRun { run: Entity<FirstRun>, _finished: Subscription },
+    FirstRun { run: Entity<FirstRun>, _finished: Subscription, _switch: Subscription },
     Had,
 }
 
@@ -345,6 +345,8 @@ pub struct Workspace {
     /// The first run, while the box says it hasn't been had; and the keyboard to go to the
     /// landing view once it's done.
     welcome: Welcome,
+    /// Switching computers must never start onboarding.
+    onboarding_suppressed: bool,
     /// Whether the box has answered that once (it had, it hadn't, or it couldn't say): until
     /// then the window waits, saying how the box stands, rather than show the app and perhaps
     /// take it away again.
@@ -496,6 +498,7 @@ impl Workspace {
             restoring_now: false,
             kept_area: None,
             // (Tests and shots hand it what to show: asked in `read_at_once`.)
+            onboarding_suppressed: false,
             welcome: if live { Welcome::Unknown } else { Welcome::Had },
             welcome_answered: !live,
             welcome_why: None,
@@ -700,8 +703,23 @@ impl Workspace {
         !self.welcome_answered && matches!(self.welcome, Welcome::Unknown | Welcome::Asking) && self.box_state != BoxState::Held
     }
 
-    /// Asks the box whether you've had the first run with it, once.
+    /// Opens a selected computer directly in the app, including computers with no projects.
+    pub fn skip_first_run(&mut self, cx: &mut Context<Self>) {
+        self.onboarding_suppressed = true;
+        self.welcome = Welcome::Had;
+        self.welcome_answered = true;
+        self.welcome_why = None;
+        cx.notify();
+    }
+
+    /// Asks the initial box for migration from older desktop releases, once.
+    // COMPAT: keep until desktop installs predating the device welcomed flag are unsupported.
     fn ask_welcomed(&mut self, cx: &mut Context<Self>) {
+        if self.onboarding_suppressed || crate::yours::now(cx).welcomed {
+            self.welcome = Welcome::Had;
+            self.welcome_answered = true;
+            return;
+        }
         if !matches!(self.welcome, Welcome::Unknown) {
             return;
         }
@@ -722,6 +740,12 @@ impl Workspace {
     /// (held for its update, or not answering) is asked again once it's reached; until then the
     /// window is as it would be, saying how the box stands.
     fn take_welcomed(&mut self, said: kuvo_box::Result<bool>, cx: &mut Context<Self>) {
+        if self.onboarding_suppressed || crate::yours::now(cx).welcomed {
+            self.welcome = Welcome::Had;
+            self.welcome_answered = true;
+            cx.notify();
+            return;
+        }
         // Only its word counts as an answer: a box that couldn't say (not answering just now, or
         // held for its update, which never got the question) is asked again, the window still
         // waiting, saying why, rather than showing the app a first run would then take away.
@@ -750,9 +774,20 @@ impl Workspace {
                     run
                 });
                 let finished = cx.subscribe(&run, |this: &mut Workspace, _, finished: &Finished, cx| this.finish_first_run(finished.place.clone(), cx));
-                self.welcome = Welcome::FirstRun { run, _finished: finished };
+                let switch = cx.subscribe(&run, |this: &mut Workspace, _, event: &Switch, cx| {
+                    if let Switch::To(key) = event {
+                        let key = key.clone();
+                        this.skip_first_run(cx);
+                        crate::yours::change(crate::yours::Change::Welcomed, cx);
+                        cx.emit(Switch::To(key));
+                    }
+                });
+                self.welcome = Welcome::FirstRun { run, _finished: finished, _switch: switch };
             }
-            Ok(true) => self.welcome = Welcome::Had,
+            Ok(true) => {
+                self.welcome = Welcome::Had;
+                crate::yours::change(crate::yours::Change::Welcomed, cx);
+            },
             Err(_) => self.welcome = Welcome::Unknown,
         }
         cx.notify();
@@ -762,6 +797,7 @@ impl Workspace {
     /// again doesn't welcome you again), and the window opens on its landing view, set to start
     /// where you picked.
     fn finish_first_run(&mut self, place: StartIn, cx: &mut Context<Self>) {
+        crate::yours::change(crate::yours::Change::Welcomed, cx);
         self.welcome = Welcome::Had;
         let client = self.client.clone();
         if self.live {
