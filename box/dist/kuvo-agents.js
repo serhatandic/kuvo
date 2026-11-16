@@ -67,6 +67,7 @@ var onMacBox = onMachine && !!machineHome && (() => {
   }
 })();
 var yourHomes = !onMachine || onMacBox;
+var groupsMemoryKey = process.env.KUVO_GROUPS_MEMORY_KEY || (onMacBox ? "kuvo.groups" : undefined);
 var ownFolders = {};
 function takeOwnFolders() {
   for (const key of Object.keys(process.env)) {
@@ -36526,7 +36527,7 @@ var self;
 var partGiven;
 var groups;
 var groupFolders = onMachine ? { root: join42(machineHome, "groups"), bots: process.env.KUVO_BOTS ?? join42(machineHome, "bots"), trash: join42(machineHome, "trash") } : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH } : undefined;
-var groupMemoryKey = process.env.KUVO_GROUPS_MEMORY_KEY || undefined;
+var groupMemoryKey = groupsMemoryKey;
 var post = new PeerPost(groupFolders ? join42(groupFolders.root, "peer-outbox.json") : undefined);
 var directory = new LinkDirectory(post);
 var peers = { post, directory };
@@ -36816,4 +36817,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents d89b5128767e659434b56af5a991e6458f9c8f2d208a7a8cc22a6e9400506af0
+// Built from Packages/Box/src/agents 8ebdd33fef40d541d366fa6a75a094d326e8afb6e90f916fc82ba156fc42acf6
