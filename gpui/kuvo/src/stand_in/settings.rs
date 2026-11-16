@@ -86,12 +86,75 @@ impl Default for Computer {
     }
 }
 
+/// Git, Worktrees, Storage and Archived Sessions as a Mac's box describes them to the app beside it
+/// (`box/src/link/areas/settings-pages.ts`), with made-up values; Storage as it's first measured
+/// where `measuring`.
+pub fn described_pages(measuring: bool) -> Vec<(Value, Value)> {
+    let section = |id: &str, title: &str, group: &str, icon: &str| json!({ "id": id, "title": title, "group": group, "icon": icon, "line": "", "keywords": [] });
+    let git = json!({ "id": "git", "title": "Git", "groups": [
+        { "id": "branches", "rows": [{ "id": "branch-prefix", "title": "Branch prefix", "line": "How a session’s own branch in a worktree starts.", "placeholder": "None", "kind": "text", "value": "kuvo/", "can": true }] },
+        { "id": "commit-messages", "title": "Commit Instructions", "note": "Added when Suggest a Message in Changes asks the model for one.", "rows": [{ "id": "commit-instructions", "title": "Commit instructions", "lines": { "min": 5, "max": 12 }, "placeholder": "For example: Start with the area changed, like “ui: …”, and never mention tickets.", "kind": "text", "value": "", "can": true }] },
+        { "id": "pull-requests", "title": "Pull Request Instructions", "note": "Added when Create Pull Request writes the title and description.", "rows": [{ "id": "pull-request-instructions", "title": "Pull request instructions", "lines": { "min": 5, "max": 12 }, "placeholder": "For example: Add a Testing section, and link the issue if the branch names one.", "kind": "text", "value": "Add a Testing section.\nLink the issue when the branch names one.", "can": true }] },
+    ] });
+    let folder_words = |clear: &str, message: &str| json!({ "choose": "Choose a Folder…", "clear": clear, "prompt": "Choose", "message": message });
+    let tree = |branch: &str, project: &str, sessions: u32| json!({ "id": format!("tree-/Users/sam/.kuvo-code/data/opencode/worktree/{branch}"), "title": branch, "line": format!("{project} · {sessions} {}", if sessions == 1 { "session" } else { "sessions" }), "kind": "actions", "actions": [{ "id": "remove", "title": "Remove…", "style": "destructive", "confirm": { "title": format!("Remove the worktree for {branch}?"), "body": "Its folder is deleted. Git sees nothing in it that isn’t committed. Its sessions stay, without a folder to run in.", "button": "Remove" } }] });
+    let worktrees = json!({ "id": "worktrees", "title": "Worktrees", "groups": [
+        { "id": "folders", "rows": [
+            { "id": "worktrees-folder", "title": "Worktree folder", "line": "Each session’s worktree is a folder in it. Leave it empty for the default.", "kind": "folder", "value": "", "placeholder": "~/.kuvo-code/data/opencode/worktree", "folder": folder_words("Default Folder", "Choose where new worktrees go. Each one is a folder in it."), "can": true },
+            { "id": "projects-folder", "title": "New projects folder", "line": "Where projects your bots make go. A bot asks you first, and Kuvo never deletes them.", "kind": "folder", "value": "/Users/sam/Projects", "placeholder": "None", "folder": folder_words("None", "Choose where new projects go. Each one is a folder in it."), "can": true },
+        ] },
+        { "id": "session-worktrees", "title": "Sessions’ Worktrees", "note": "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", "rows": [
+            { "id": "worktrees", "title": "Sessions’ Worktrees", "kind": "list", "empty": "None yet. Choose Worktree in a new session’s composer to give it one.", "items": [tree("kuvo/settings-look", "kuvo-ai", 2), tree("kuvo/fix-sync", "api", 1), tree("kuvo/onboarding", "kuvo-web", 1)] },
+        ] },
+    ] });
+    let size = |bytes: u64| -> Value { let unit = if bytes >= 1_000_000_000 { ("GB", 1_000_000_000) } else { ("MB", 1_000_000) }; json!({ "name": unit.0, "factor": unit.1, "decimals": 1, "rounding": "nearest" }) };
+    let part = |id: &str, title: &str, value: u64, words: &str| json!({ "id": id, "title": title, "value": value, "words": words });
+    let mut other = part("other", "Other", 1_840_000_000, "1.8 GB");
+    other["parts"] = json!([
+        { "title": "The engine", "value": 820_000_000_u64, "words": "820 MB" }, { "title": "Coding agents", "value": 610_000_000_u64, "words": "610 MB" },
+        { "title": "Tools", "value": 240_000_000_u64, "words": "240 MB" }, { "title": "Deleted, kept a while", "value": 130_000_000_u64, "words": "130 MB" }, { "title": "Caches", "value": 40_000_000_u64, "words": "40 MB" },
+    ]);
+    let used = if measuring {
+        json!({ "id": "used", "title": "Measuring what Kuvo keeps…", "kind": "meter", "busy": "Measuring…", "actions": [{ "id": "refresh", "title": "Refresh" }] })
+    } else {
+        json!({ "id": "used", "title": "9.4 GB used by Kuvo", "kind": "meter", "actions": [{ "id": "refresh", "title": "Refresh" }], "parts": [
+            part("sessions", "Sessions", 1_210_000_000, "1.2 GB"), part("worktrees", "Worktrees", 5_630_000_000, "5.6 GB"), part("made", "What agents made", 420_000_000, "420 MB"), part("browser", "Browser", 300_000_000, "300 MB"), other,
+        ] })
+    };
+    let suggestions: Vec<Value> = [0.25, 0.5, 1.0, 2.0, 5.0, 10.0].iter().map(|gb: &f64| json!({ "value": (gb * 1e9) as u64, "title": format!("{gb} GB") })).collect();
+    let storage = json!({ "id": "storage", "title": "Storage", "groups": [
+        { "id": "computer", "title": "This Mac", "note": "What Kuvo keeps on this Mac.", "rows": [used] },
+        { "id": "folders", "title": "Storage by Folder", "rows": [
+            { "id": "home-folder", "title": "Kuvo’s folder", "line": "~/.kuvo-code", "kind": "actions", "value": 9_400_000_000_u64, "unit": size(9_400_000_000), "actions": [{ "id": "show", "title": "Show in Finder", "opens": "file:///Users/sam/.kuvo-code" }] },
+        ] },
+        { "id": "agents-made", "title": "What Agents Made", "rows": [
+            { "id": "copies", "title": "Copies of what agents made", "line": "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", "kind": "status", "value": 420_000_000_u64, "unit": size(420_000_000) },
+            { "id": "older-budget", "title": "Older versions keep up to", "line": "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", "kind": "number", "value": 1_000_000_000_u64, "unit": { "name": "GB", "factor": 1_000_000_000, "decimals": 2, "rounding": "nearest" }, "min": 0, "can": true,
+              "suggestions": suggestions,
+              "confirmBelow": { "value": 805_306_368_u64, "confirm": { "title": "Keep less of older versions?", "body": "Older versions take 805.3 MB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.", "button": "Keep up to" } } },
+            { "id": "older-copies", "title": "Older versions", "line": "805.3 MB now.", "kind": "actions", "value": 805_306_368_u64, "actions": [{ "id": "clear", "title": "Clear…", "style": "destructive", "confirm": { "title": "Clear older versions?", "body": "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", "button": "Clear" } }] },
+        ] },
+        { "id": "manage", "rows": [
+            { "id": "manage-worktrees", "title": "Worktrees", "line": "Sessions’ own copies of a project, and where they go.", "kind": "open", "section": "worktrees" },
+            { "id": "manage-archived", "title": "Archived Sessions", "line": "Bring sessions back, or delete them for good.", "kind": "open", "section": "archived" },
+        ] },
+    ] });
+    let archived = json!({ "id": "archived", "title": "Archived Sessions", "groups": [{ "id": "project-kuvo", "title": "Kuvo Code", "rows": [{ "id": "archived-kuvo", "title": "Kuvo Code", "kind": "list", "search": { "placeholder": "Search archived sessions", "empty": "No archived session matches “{query}”." },
+        "items": [{ "id": "session-1", "title": "Fix settings", "line": "Nov 14, 2026, 4:12 PM", "kind": "actions", "actions": [{ "id": "unarchive", "title": "Unarchive" }, { "id": "delete", "title": "Delete…", "style": "destructive" }] }] }] }] });
+    vec![
+        (section("git", "Git", "Projects", "branch"), git),
+        (section("worktrees", "Worktrees", "Projects", "folder"), worktrees),
+        (section("storage", "Storage", "System", "drive"), storage),
+        (section("archived", "Archived Sessions", "System", "archive"), archived),
+    ]
+}
+
 /// A section with a row of every kind a box may describe (PROTOCOL.md, "A box's settings"), for
 /// the kinds its own pages don't have yet: its line in `kuvo/settings`, and its page.
 pub fn every_kind() -> (Value, Value) {
     let section = json!({ "id": "samples", "title": "Every Kind", "group": "System", "icon": "sliders", "line": "A row of each kind Kuvo may describe.", "keywords": ["proxy"] });
     let page = json!({ "id": "samples", "title": "Every Kind", "line": "A row of each kind Kuvo may describe, drawn from its description alone.", "groups": [
-        { "id": "fields", "title": "Fields", "note": "Typed, then saved with Return or Save.", "rows": [
+        { "id": "fields", "title": "Fields", "note": "Saved with Return, or as you leave the field.", "rows": [
             { "id": "proxy", "title": "Proxy", "line": "For what agents fetch.", "kind": "text", "value": "", "placeholder": "http://proxy.example:8080", "can": true },
             { "id": "keep", "title": "Keep sessions for", "line": "Days, before they’re archived.", "kind": "number", "value": 30, "min": 1, "max": 365, "can": true },
             { "id": "projects", "title": "Projects folder", "line": "Where new projects are made.", "kind": "folder", "value": "/home/sam/projects", "can": true },

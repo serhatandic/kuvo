@@ -180,6 +180,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-storage", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage) },
     Screen { slug: "settings-row-storage-confirm", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_confirm) },
     Screen { slug: "settings-row-worktrees", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_worktrees) },
+    Screen { slug: "settings-row-worktrees-picker", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_worktrees_picker) },
+    Screen { slug: "settings-row-storage-breakdown", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_breakdown) },
+    Screen { slug: "settings-row-storage-measuring", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_measuring) },
+    Screen { slug: "settings-row-git-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     // Settings › MCP Servers (`kuvo/settings/mcp`), the first flow section: its servers with how
@@ -540,12 +544,21 @@ fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspac
     settings(w, "yours/shortcuts", window, cx);
 }
 fn row_storage(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
-fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "worktrees", window, cx); }
+/// The worktree folder's picker, opened from the folder in its field.
+fn row_worktrees_picker(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "worktrees", window, cx);
-    if let Some(row) = w.client().settings_page("worktrees").ok().and_then(|page| page.row("folder").cloned()) && let Some(words) = row.folder.clone() {
+    if let Some(row) = w.client().settings_page("worktrees").ok().and_then(|page| page.row("worktrees-folder").cloned()) && let Some(words) = row.folder.clone() {
         view.update(cx, |view,cx| view.act(kuvo::settings::Act::Folder { at: kuvo::settings::At::of("worktrees", &row), words },cx));
     }
 }
+/// Storage with its breakdown open.
+fn row_storage_breakdown(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "storage", window, cx);
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Expand("row-used".into()), cx));
+}
+/// Storage as it's first measured: no parts yet.
+fn row_storage_measuring(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
 fn row_git(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "git", window, cx); }
 fn row_archived(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "archived", window, cx); }
 fn mcp_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "mcp", window, cx); }
@@ -573,7 +586,7 @@ fn mcp_signing_in(w: &mut Workspace, window: &mut Window, cx: &mut Context<Works
 }
 fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "storage", window, cx);
-    if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
+    if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("older-budget").cloned()) {
         view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
     }
 }
@@ -878,19 +891,6 @@ fn to_agents(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
     }
 }
 
-fn to_where(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
-    to_agents(run, cx);
-    run.go_on(cx);
-}
-
-const FIRST_RUN: &[FirstRunScreen] = &[
-    FirstRunScreen { slug: "first-run-welcome", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
-    // A model runs already and nothing needs you: Get Started goes straight to where to work.
-    FirstRunScreen { slug: "first-run-welcome-ready", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
-    // Before the box has said whether the first run's been had: being reached, and not answering.
-    FirstRunScreen { slug: "first-run-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
-    FirstRunScreen { slug: "first-run-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
-    // The box stops answering mid-way.
 /// A stand-in helper for the tile to offer, in a folder of the pictures' own (taken away after).
 fn shots_helper() -> PathBuf {
     std::env::temp_dir().join(format!("kuvo-shots-allow-{}", std::process::id())).join("Kuvo Helper.app")
@@ -911,6 +911,19 @@ fn to_allow(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
     }
 }
 
+fn to_where(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
+    to_agents(run, cx);
+    run.go_on(cx);
+}
+
+const FIRST_RUN: &[FirstRunScreen] = &[
+    FirstRunScreen { slug: "first-run-welcome", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // A model runs already and nothing needs you: Get Started goes straight to where to work.
+    FirstRunScreen { slug: "first-run-welcome-ready", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // Before the box has said whether the first run's been had: being reached, and not answering.
+    FirstRunScreen { slug: "first-run-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    FirstRunScreen { slug: "first-run-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
+    // The box stops answering mid-way.
     FirstRunScreen { slug: "first-run-welcome-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Unreachable("Kuvo Code isn’t answering on this Mac.".into()), "This Mac".into(), cx), after: nothing_before },
     FirstRunScreen { slug: "first-run-agents", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: to_agents, after: nothing_before },
     FirstRunScreen { slug: "first-run-agents-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: to_agents, after: nothing_before },
@@ -933,19 +946,6 @@ fn to_allow(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
     // The box turns out older than this app needs, mid-way.
     FirstRunScreen { slug: "first-run-held", scenario: Scenario::Crowded, size: (1280., 820.), before: nothing_before, then: to_agents, after: |stand_in| stand_in.set_older(true) },
     FirstRunScreen { slug: "first-run-narrow", scenario: Scenario::Crowded, size: (720., 480.), before: nothing_before, then: to_agents, after: nothing_before },
-    // Done: the window's own landing view, set to start where you picked.
-    FirstRunScreen { slug: "first-run-landing", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.go_on(cx); }, after: nothing_before },
-    FirstRunScreen { slug: "first-run-landing-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.pick_place(kuvo_box::models::StartIn::Chat, cx); run.go_on(cx); }, after: nothing_before },
-];
-
-/// Renders the first run's screens (`screens-first-run-*`).
-fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
-    for screen in FIRST_RUN {
-        if !only.is_empty() && !only.iter().any(|slug| slug == screen.slug || slug == "first-run") {
-            continue;
-        }
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| Theme::set_appearance(appearance, cx));
     // A Mac whose Kuvo says macOS doesn't allow Kuvo Helper either yet: a step of its own after the
     // agents; and with System Settings opened on one added by hand (its tile isn't in the picture).
     FirstRunScreen { slug: "first-run-allow", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_allowed, then: to_allow, after: nothing_before },
@@ -960,6 +960,19 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
             });
         }
     }, after: nothing_before },
+    // Done: the window's own landing view, set to start where you picked.
+    FirstRunScreen { slug: "first-run-landing", scenario: Scenario::Running, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.go_on(cx); }, after: nothing_before },
+    FirstRunScreen { slug: "first-run-landing-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_where(run, cx); run.pick_place(kuvo_box::models::StartIn::Chat, cx); run.go_on(cx); }, after: nothing_before },
+];
+
+/// Renders the first run's screens (`screens-first-run-*`).
+fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
+    for screen in FIRST_RUN {
+        if !only.is_empty() && !only.iter().any(|slug| slug == screen.slug || slug == "first-run") {
+            continue;
+        }
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            cx.update(|cx| Theme::set_appearance(appearance, cx));
             let stand_in = StandIn::first_run(Replies::Never, NOW, screen.scenario);
             (screen.before)(&stand_in);
             let client = BoxClient::new(stand_in.clone());
@@ -1003,6 +1016,9 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
             cx.run_until_parked();
         }
     }
+    if let Some(made) = shots_helper().parent().filter(|made| made.exists()) {
+        std::fs::remove_dir_all(made)?;
+    }
     Ok(())
 }
 
@@ -1016,9 +1032,6 @@ fn main() -> anyhow::Result<()> {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots");
     std::fs::create_dir_all(&out)?;
     let text_system = gpui_platform::current_platform(true).text_system();
-    if let Some(made) = shots_helper().parent().filter(|made| made.exists()) {
-        std::fs::remove_dir_all(made)?;
-    }
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
@@ -1070,19 +1083,10 @@ fn main() -> anyhow::Result<()> {
                 stand_in.more_computers(40);
             }
             if screen.slug.starts_with("settings-row-") {
-                use serde_json::json;
-                let confirm = json!({"value":805306368,"confirm":{"title":"Keep less of older versions?","body":"Older versions take 805.3 MB now, so the oldest of their copies go until they fit. The newest version of each file, memory, skills and what’s kept stay.","button":"Keep up to"}});
-                let pages = [
-                    ("storage","Storage","System","drive",json!([
-                        {"id":"copies","title":"Copies of what agents made","kind":"status","value":1342177280,"unit":{"name":"GB","factor":1000000000,"decimals":1,"rounding":"nearest"}},
-                        {"id":"budget","title":"Older versions keep up to","line":"Past it, the oldest go first.","kind":"number","value":1073741824,"unit":{"name":"GB","factor":1000000000,"decimals":2,"rounding":"nearest"},"can":true,"confirmBelow":confirm,"suggestions":[{"value":250000000,"title":"0.25 GB"},{"value":500000000,"title":"0.5 GB"},{"value":1000000000,"title":"1 GB"},{"value":2000000000_u64,"title":"2 GB"},{"value":5000000000_u64,"title":"5 GB"},{"value":10000000000_u64,"title":"10 GB"}]}
-                    ])),
-                    ("worktrees","Worktrees","Projects","folder",json!([{"id":"folder","title":"Folder","kind":"folder","value":"","placeholder":"Kuvo Code’s Folder","can":true,"folder":{"choose":"Choose a Folder…","clear":"Kuvo Code’s Folder","prompt":"Choose","message":"Choose where new worktrees go. Each one is a folder in it."}}])),
-                    ("git","Git","Projects","branch",json!([{"id":"instructions","title":"Commit instructions","kind":"text","value":"Write a short title.\nExplain why the change matters.","lines":{"min":3,"max":8},"can":true}])),
-                    ("archived","Archived Sessions","System","archive",json!([{"id":"sessions","title":"Kuvo Code","kind":"list","search":{"placeholder":"Search archived sessions","empty":"No archived session matches “{query}”."},"items":[{"id":"session","title":"Fix settings","line":"Kuvo Code","kind":"actions","actions":[{"id":"restore","title":"Restore"}]}]}]))
-                ];
-                for (id,title,group,icon,rows) in pages {
-                    stand_in.add_settings_section(json!({"id":id,"title":title,"group":group,"icon":icon}),json!({"id":id,"title":title,"groups":[{"id":"settings","title": if id == "archived" { "Kuvo Code" } else { "" },"rows":rows}]}));
+                // Git, Worktrees and Storage as the box describes them (settings-pages.ts), with
+                // made-up values.
+                for (section, page) in kuvo::stand_in::settings::described_pages(screen.slug == "settings-row-storage-measuring") {
+                    stand_in.add_settings_section(section, page);
                 }
             }
             if screen.slug == "settings-a-kinds" {
@@ -1321,10 +1325,6 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                         let dropped = if slug == "launch-moved-dropped" { vec![dropped.into(), "A bot on your machines was described only on this Mac by the earlier Kuvo Code, and may not show there. Its work is still on that machine: make it again if it's missing.".into()] } else { Vec::new() };
                         launch.show_move(Stage::Said { what, boxes, first }, Moving { steps, finishing: true, dropped, ..Moving::default() }, (slug != "launch-two").then_some("Kuvo Helper"), cx)
                     }
-                    "launch-starting" => launch.show(Stage::Starting, true, cx),
-                    "launch-failed" | "launch-failed-narrow" => launch.show(Stage::Stopped { line: "Couldn’t set up Kuvo".into(), message: offline.into(), note: None }, true, cx),
-                    "launch-done" => {
-                        let home = launch.home().cloned().expect("the app, open");
                     "launch-moved-allow" => {
                         let stand_in = StandIn::at(Replies::Never, NOW);
                         stand_in.set_permissions(|permissions| *permissions = Permissions { accessibility: true, ..Permissions::nothing_allowed() });
@@ -1332,6 +1332,10 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                         let first = boxes.nearest().expect("the stand-in is the nearest box");
                         launch.show_allow(boxes, first, window, cx);
                     }
+                    "launch-starting" => launch.show(Stage::Starting, true, cx),
+                    "launch-failed" | "launch-failed-narrow" => launch.show(Stage::Stopped { line: "Couldn’t set up Kuvo".into(), message: offline.into(), note: None }, true, cx),
+                    "launch-done" => {
+                        let home = launch.home().cloned().expect("the app, open");
                         home.update(cx, |home, cx| {
                             home.set_now(NOW, cx);
                             home.read_at_once(cx);

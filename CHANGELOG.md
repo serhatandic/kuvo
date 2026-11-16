@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Settings › Git, Worktrees and Storage in the desktop app are laid out like the rest of Settings: one card per group, fields saved when you press Return or click away (no Save buttons), commit and pull request instructions in full-width boxes, one worktree folder field showing the default, and Storage shows how much Kuvo takes on the computer as a bar with a breakdown.
 - Allowing Kuvo Helper in macOS (Screen Recording, Accessibility) is now a step when you set up Kuvo or move to it, each with its own **Open System Settings**, instead of a banner in the window. **Not Now** skips it; Settings › This Mac still shows how each stands.
 - Settings › **MCP Servers** is in the desktop app: each server says how it's doing (Connected, Needs sign-in, Couldn’t connect) with its error under it; **Add Server…** and **Edit…** open a form that says as you type what the name will be, whether the computer has the command's program and whether a URL is one (paste a server's setup from its README into the name and the rest fills in); and **Sign In…** shows how it's going under the server until it's done. It's the same for each of your computers, picked at the top of Settings.
 - The desktop archived sidebar and Settings › Archived Sessions show the same archived sessions in the same groups and order, including archived bot sessions.

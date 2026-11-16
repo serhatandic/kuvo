@@ -28,6 +28,8 @@ fn open(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut 
     let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    // (Active, as the app's window is when you use it: a field is only left in an active one.)
+    cx.update(|window, _| window.activate_window());
     cx.simulate_resize(size(px(1280.), px(1800.)));
     workspace.update_in(cx, |workspace, _, cx| {
         workspace.set_now(NOW, cx);
@@ -335,19 +337,22 @@ fn every_kind_of_row_is_drawn_from_the_boxs_description(cx: &mut TestAppContext)
     click(cx, "row-keep-field");
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("soon");
-    click(cx, "row-keep-save");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert_eq!(view.read_with(cx, |view, _| view.problem().map(str::to_owned)).as_deref(), Some("Keep sessions for takes a number."));
     click(cx, "row-keep-field");
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("14");
-    click(cx, "row-keep-save");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert_eq!(last(&stand_in)["value"], json!(14.0));
     // A secret that's set shows no field until Replace; what's typed is sent and never drawn again.
     assert!(!shown(cx, "row-token-field"));
     click(cx, "row-token-replace");
     click(cx, "row-token-field");
     cx.simulate_input("tok-123");
-    click(cx, "row-token-save");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert_eq!((last(&stand_in)["row"].clone(), last(&stand_in)["value"].clone()), (json!("token"), json!("tok-123")));
     assert!(!shown(cx, "row-token-field") && shown(cx, "row-token-replace"));
     click(cx, "row-token-remove");
@@ -364,9 +369,9 @@ fn every_kind_of_row_is_drawn_from_the_boxs_description(cx: &mut TestAppContext)
     assert_eq!(view.read_with(cx, |view, _| view.row_why("row-cache")).as_deref(), Some("Only on that computer itself."));
     // What only an installed app does says the box's why; a page opens; a section opens in Settings.
     assert_eq!(view.read_with(cx, |view, _| view.row_why("row-background")).as_deref(), Some("Turn it on in Kuvo Code on that computer."));
-    click(cx, "row-docs-open");
+    click(cx, "row-docs");
     assert_eq!(cx.opened_url().as_deref(), Some("https://www.kuvo.run/code/docs/settings/"));
-    click(cx, "row-rules-open");
+    click(cx, "row-rules");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Permissions"));
 }
 
@@ -1034,13 +1039,16 @@ fn lowering_a_budget_asks_before_sending_and_cancel_sends_nothing(cx: &mut TestA
     click(cx, "row-budget-field");
     cx.simulate_keystrokes("cmd-a backspace");
     cx.simulate_input("0.5");
-    click(cx, "row-budget-save");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Keep less?".into(), "Old copies go.".into(), "Keep 0.5 GiB".into())));
     assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
-    click(cx,"row-budget-save");
+    click(cx, "row-budget-field");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     click(cx,"confirm-go");
     let sent = bodies(&stand_in,"PATCH","kuvo/settings/storage");
     assert_eq!(sent.len(),1);
@@ -1077,7 +1085,7 @@ fn a_described_list_search_filters_items_without_sending_a_change(cx: &mut TestA
 }
 
 #[gpui::test]
-fn a_rounded_unit_field_keeps_untouched_bytes_and_ordinary_confirmation_has_no_attestation(cx: &mut TestAppContext) {
+fn a_rounded_unit_field_sends_nothing_untouched_and_ordinary_confirmation_has_no_attestation(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.add_settings_section(json!({"id":"storage","title":"Storage","group":"System","icon":"drive"}), json!({
         "id":"storage","title":"Storage","groups":[{"id":"copies","rows":[{
@@ -1087,12 +1095,24 @@ fn a_rounded_unit_field_keeps_untouched_bytes_and_ordinary_confirmation_has_no_a
         }]}]
     }));
     let (workspace,cx) = open(cx,stand_in.clone());
-    section(&workspace,cx,"storage");
-    click(cx,"row-budget-save");
+    let view = section(&workspace,cx,"storage");
+    // Return, or leaving it, as it is: nothing to save.
+    click(cx,"row-budget-field");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    click(cx,"settings-whose");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.confirm_words()).is_none());
+    assert!(bodies(&stand_in,"PATCH","kuvo/settings/storage").is_empty());
+    click(cx,"row-budget-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("2");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     click(cx,"confirm-go");
     let sent = bodies(&stand_in,"PATCH","kuvo/settings/storage");
     assert_eq!(sent.len(),1);
-    assert_eq!(sent[0]["value"],json!(1073741831));
+    assert_eq!(sent[0]["value"],json!(2147483648.0));
     assert!(sent[0].get("confirmed").is_none());
 }
 
@@ -1111,15 +1131,13 @@ fn a_folder_picker_browses_the_selected_computers_box_and_cancel_sends_nothing(c
     click(cx,"settings-computer");
     click(cx,"menu-item-devbox");
     section(&workspace,cx,"worktrees");
-    click(cx,"row-place-picks-menu");
-    click(cx,"menu-item-Choose a Folder…");
+    click(cx,"row-place-browse");
     assert!(shown(cx,"settings-folder-picker"));
     assert!(!devbox.seen_at("GET","kuvo/folders").is_empty());
     assert!(stand_in.seen_at("GET","kuvo/folders").is_empty());
     click(cx,"settings-folder-cancel");
     assert!(bodies(&devbox,"PATCH","kuvo/settings/worktrees").is_empty());
-    click(cx,"row-place-picks-menu");
-    click(cx,"menu-item-Choose a Folder…");
+    click(cx,"row-place-browse");
     click(cx,"settings-folder-2");
     click(cx,"settings-folder-parent");
     click(cx,"settings-folder-2");
@@ -1142,7 +1160,9 @@ fn multiline_instructions_keep_whitespace_and_return_adds_a_line(cx: &mut TestAp
     cx.simulate_keystrokes("enter");
     cx.simulate_input("Second  ");
     assert!(bodies(&stand_in,"PATCH","kuvo/settings/git").is_empty());
-    click(cx,"row-instructions-save");
+    // Saved as it's left: a press anywhere else on the page.
+    click(cx,"settings-whose");
+    cx.run_until_parked();
     let sent=bodies(&stand_in,"PATCH","kuvo/settings/git");
     assert_eq!(sent[0]["value"],json!("  First\nSecond  "));
 }
@@ -1157,13 +1177,14 @@ fn single_line_text_trims_whitespace_and_refreshes_canonical_value(cx: &mut Test
     let view = section(&workspace, cx, "git");
     click(cx, "row-prefix-field");
     cx.simulate_keystrokes("cmd-a backspace");
-    cx.simulate_input("  feature/  ");
-    click(cx, "row-prefix-save");
+    cx.simulate_input("  release/  ");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
     let sent = bodies(&stand_in, "PATCH", "kuvo/settings/git");
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["value"], json!("feature/"));
+    assert_eq!(sent[0]["value"], json!("release/"));
     let shown_text = view.read_with(cx, |view, cx| view.field("row-prefix").unwrap().read(cx).text().to_owned());
-    assert_eq!(shown_text, "feature/");
+    assert_eq!(shown_text, "release/");
 }
 
 #[gpui::test]
@@ -1395,4 +1416,79 @@ fn a_form_whose_thing_changed_meanwhile_stays_open_with_what_was_typed(cx: &mut 
     assert_eq!(view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).refused().map(str::to_owned))).as_deref(), Some("It changed since you read it."));
     let typed = view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["command"].clone());
     assert_eq!(typed, json!("npx -y files-server --readonly"));
+}
+
+/// Git as the box describes it: no Save buttons; a field is saved as it's left (or on Return),
+/// with its row's revision, and leaving one unchanged sends nothing. The instructions are written
+/// full width under their group's heading, not titled again.
+#[gpui::test]
+fn fields_save_as_theyre_left_and_instructions_are_full_width(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    for (section, page) in kuvo::stand_in::settings::described_pages(false) {
+        stand_in.add_settings_section(section, page);
+    }
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "git");
+    assert!(!shown(cx, "row-branch-prefix-save") && !shown(cx, "row-commit-instructions-save"));
+    // The instructions' own title isn't drawn: the group's heading says it.
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-commit-instructions")).as_deref(), Some(""));
+    let prefix = bounds(cx, "row-branch-prefix-field").unwrap();
+    let area = bounds(cx, "row-commit-instructions-field").unwrap();
+    assert!(area.size.width > prefix.size.width * 2., "full width");
+    // Left unchanged: nothing.
+    click(cx, "row-branch-prefix-field");
+    click(cx, "settings-whose");
+    assert!(bodies(&stand_in, "PATCH", "kuvo/settings/git").is_empty());
+    // Typed and left: saved, from the row's revision.
+    click(cx, "row-branch-prefix-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("sam/");
+    click(cx, "row-commit-instructions-field");
+    let sent = bodies(&stand_in, "PATCH", "kuvo/settings/git");
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0]["row"].clone(), sent[0]["value"].clone()), (json!("branch-prefix"), json!("sam/")));
+    assert!(sent[0]["was"].as_str().is_some_and(|was| !was.is_empty()));
+    // Return adds a line in the instructions; leaving saves them.
+    cx.simulate_input("Say why");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Keep it short");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/settings/git").len(), 1);
+    click(cx, "settings-whose");
+    let sent = bodies(&stand_in, "PATCH", "kuvo/settings/git");
+    assert_eq!((sent[1]["row"].clone(), sent[1]["value"].clone()), (json!("commit-instructions"), json!("Say why\nKeep it short")));
+    // Escape puts back what the box has.
+    click(cx, "row-branch-prefix-field");
+    cx.simulate_input("oops");
+    cx.simulate_keystrokes("escape");
+    let text = view.read_with(cx, |view, cx| view.field("row-branch-prefix").unwrap().read(cx).text().to_owned());
+    assert_eq!(text, sent[0]["value"].as_str().map(|_| "sam/").unwrap_or_default());
+}
+
+/// Storage as the box describes it: the whole as one bar with each part's name and size, a
+/// breakdown that opens, Refresh, and rows that open Worktrees and Archived Sessions.
+#[gpui::test]
+fn storage_shows_its_parts_a_breakdown_and_opens_the_pages_that_clear_the_rest(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    for (section, page) in kuvo::stand_in::settings::described_pages(false) {
+        stand_in.add_settings_section(section, page);
+    }
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "storage");
+    assert!(shown(cx, "row-used-bar"));
+    for ix in 0..5 {
+        assert!(shown(cx, &format!("row-used-part-{ix}")), "part {ix}");
+    }
+    assert!(!shown(cx, "row-used-breakdown-list"));
+    click(cx, "row-used-breakdown");
+    assert!(shown(cx, "row-used-breakdown-list"));
+    click(cx, "row-used-breakdown");
+    assert!(!shown(cx, "row-used-breakdown-list"));
+    click(cx, "row-used-refresh");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/settings/storage/used/refresh").len(), 1);
+    // The size beside Kuvo's folder; the budget's common values in its field's menu.
+    assert!(shown(cx, "row-home-folder-aside"));
+    assert!(shown(cx, "row-older-budget-picks-menu"));
+    // A row that opens a page is pressed whole.
+    click(cx, "row-manage-worktrees");
+    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned())).map(|view| view.read_with(cx, |view, _| view.section().to_owned())).as_deref(), Some("worktrees"));
 }
