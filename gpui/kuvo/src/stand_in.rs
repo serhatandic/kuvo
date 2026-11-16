@@ -248,6 +248,16 @@ impl StandIn {
         self.state().settings.add_section(section, page);
     }
 
+    /// Its MCP Servers section is listed (`kuvo/settings/mcp`).
+    pub fn show_mcp(&self) {
+        self.state().settings.mcp.on = true;
+    }
+
+    /// Its MCP servers' state, to change or read (a sign-in going through, what its forms sent).
+    pub fn with_mcp<T>(&self, work: impl FnOnce(&mut crate::stand_in::settings::Settings) -> T) -> T {
+        work(&mut self.state().settings)
+    }
+
     /// A browser setting changes, as from another client meanwhile.
     pub fn set_browser_setting(&self, key: &str, value: Value) {
         self.state().settings.set_browser(key, value);

@@ -32,7 +32,7 @@ fn engine_default(action: &str) -> &'static str {
 }
 
 /// A row with its revision: a hash of what it is and whether it can be changed, never its words.
-fn row(mut row: Value) -> Value {
+pub(super) fn row(mut row: Value) -> Value {
     let ids = |list: &Value| -> Vec<Value> { list.as_array().map(|list| list.iter().map(|each| each["id"].clone()).collect()).unwrap_or_default() };
     let items: Vec<Value> = row["items"].as_array().map(|items| items.iter().map(|item| item["revision"].clone()).collect()).unwrap_or_default();
     let can = row.get("can").map(|can| can == &json!(true));
@@ -52,6 +52,9 @@ impl Settings {
     /// app asking runs beside it.
     pub(super) fn pages_answer(&mut self, method: &str, segments: &[&str], body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
         let ["kuvo", "settings", rest @ ..] = segments else { return None };
+        if let Some(answer) = self.mcp_answer(method, rest, body, name, here) {
+            return Some(answer);
+        }
         Some(match (method, rest) {
             ("GET", []) if self.pages_down => refused(503, "Kuvo on this computer isn’t answering."),
             ("GET", []) => {
@@ -109,6 +112,9 @@ impl Settings {
             json!({ "id": "permissions", "title": "Permissions", "group": "Agents & Tools", "icon": "shield", "line": "What agents may do without asking, and the sandbox their commands run in.", "keywords": ["approval", "full access", "auto", "ask first", "allow", "don't allow", "sandbox", "also allowed", "other computers", "rules"] }),
             json!({ "id": "browser", "title": "Browser", "group": "System", "icon": "globe", "line": "The browser’s search engine, and offering to save sign-ins.", "keywords": ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"] }),
         ];
+        if self.mcp.on {
+            sections.push(super::mcp::Mcp::section());
+        }
         sections.extend(self.more_sections.iter().map(|(section, _)| section.clone()));
         Value::Array(sections)
     }
