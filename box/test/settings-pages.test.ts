@@ -68,6 +68,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["worktrees", "Worktrees", "Projects", "folder"],
     ["storage", "Storage", "System", "drive"],
     ["archived", "Archived Sessions", "System", "archive"],
+    ["agents", "Agents", "Agents & Tools", "bot"],
     ["mcp", "MCP Servers", "Agents & Tools", "sliders"],
   ])
   expect((await ask(handler, "GET", "kuvo/settings/general")).status).toBe(404)

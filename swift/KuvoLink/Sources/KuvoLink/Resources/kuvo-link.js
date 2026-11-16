@@ -6989,7 +6989,7 @@ import { spawn as spawn19 } from "node:child_process";
 import crypto67 from "node:crypto";
 import fs196 from "node:fs";
 import os26 from "node:os";
-import path204 from "node:path";
+import path205 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // box/src/shared/hang.ts
@@ -41746,7 +41746,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "334571f78fa0";
+var BRIDGE_VERSION = "812a6a9f309e";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62182,7 +62182,7 @@ async function* settingsRoute(context) {
 }
 
 // box/src/link/areas/settings-pages.ts
-import path201 from "node:path";
+import path202 from "node:path";
 init_home();
 
 // box/src/link/areas/work.ts
@@ -63202,6 +63202,460 @@ var mcpSection = {
   look: () => `${mtime2(CONFIG_FILE)} ${mtime2(FLOWS_FILE)} ${mtime2(CATALOG_FILE)} ${Math.floor(Date.now() / 1000)}`
 };
 
+// box/src/link/areas/settings-agents.ts
+import path199 from "node:path";
+init_home();
+
+// box/src/link/areas/permission-rules.ts
+var ACTIONS = [
+  { id: "edit", title: "Edit files", line: "Changing, creating or deleting files. Plan mode doesn't, by default." },
+  { id: "shell", title: "Run commands", line: "In the terminal." },
+  { id: "read", title: "Read files", line: "Files ending in .env ask first unless you allow this." },
+  { id: "external_directory", title: "Work outside the project", line: "In folders that aren't the project's." },
+  { id: "webfetch", title: "Open web pages" },
+  { id: "websearch", title: "Search the web" },
+  { id: "subagent", title: "Hand work to subagents" },
+  { id: "skill", title: "Use skills" }
+];
+var EFFECTS = [{ id: "allow", title: "Allow" }, { id: "ask", title: "Ask First" }, { id: "deny", title: "Don't Allow" }];
+var engineDefault = (action) => action === "external_directory" ? "ask" : "allow";
+var isRule2 = (value) => isObject(value) && typeof value.action === "string" && typeof value.resource === "string" && typeof value.effect === "string";
+var choiceIn = (rules, action) => rules.filter(isRule2).findLast((rule) => rule.action === action && rule.resource === "*")?.effect;
+var isChoice = (rule) => isRule2(rule) && rule.resource === "*" && ACTIONS.some((action) => action.id === rule.action);
+
+// box/src/link/areas/settings-agents.ts
+var TITLE2 = "Agents";
+var BUILT_IN2 = ["build", "plan", "general", "explore"];
+var HIDDEN = new Set(["compaction", "title", "summary"]);
+var isBuiltIn = (id) => BUILT_IN2.includes(id) || HIDDEN.has(id);
+var BUILT_IN_WORDS = {
+  build: "The default agent: it can change files and run commands.",
+  plan: "Plans and answers without changing files.",
+  general: "Researches questions and runs multi-step tasks for another agent.",
+  explore: "Finds files and code quickly, without changing anything."
+};
+var BUILT_IN_MODES = { build: "primary", plan: "primary", general: "subagent", explore: "subagent" };
+var MODES2 = [
+  { id: "primary", title: "Mode", line: "A mode new sessions can start in." },
+  { id: "subagent", title: "Subagent", line: "It works when you name it in a message, or when another agent hands it part of the work." },
+  { id: "all", title: "Both", line: "A mode, and a subagent other agents hand work to." }
+];
+var MODE_LINES = { primary: "A mode", subagent: "A subagent", all: "A mode and a subagent" };
+var MODE_DETAIL = {
+  primary: "New sessions can start in it, from the mode menu.",
+  subagent: "It works when you name it in a message, or when another agent hands it part of the work; its description tells them when.",
+  all: "New sessions can start in it, and it works when you name it or another agent hands it part of the work."
+};
+var RULE_FIELDS = [
+  { id: "allowed", effect: "allow", title: "Allowed Without Asking" },
+  { id: "asks", effect: "ask", title: "Asks First" },
+  { id: "never", effect: "deny", title: "Never Allowed" }
+];
+var RULE_EXAMPLE = "Run commands: npm test *";
+var OTHER_ACTIONS = ["question", "browser", "todowrite", "tool.use", "provider.use", "integration.use"];
+var computerHere2 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+async function facts2(context) {
+  const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200)
+    return config;
+  let engine = null;
+  try {
+    engine = context.readEngine();
+  } catch {}
+  if (!engine?.port)
+    engine = null;
+  const [listed, models] = engine ? await Promise.all([
+    call(engine, "GET", "/api/agent", undefined, AbortSignal.timeout(5000)).catch(() => null),
+    usableModels(engine, null, AbortSignal.timeout(5000)).catch(() => null)
+  ]) : [null, null];
+  return {
+    settings: config.value,
+    engine,
+    agents: Array.isArray(listed) ? listed.filter(isObject) : null,
+    models: models ? models.map((each) => ({ id: `${each.providerID}/${each.id}`, title: each.name, line: each.providerID })) : null
+  };
+}
+var agentsIn = (settings) => {
+  const agents = settings.agents;
+  return agents === undefined ? {} : isObject(agents) ? agents : null;
+};
+var entryOf2 = (known, id) => {
+  const entry = agentsIn(known.settings)?.[id];
+  return isObject(entry) ? entry : undefined;
+};
+function listedAgents2(known) {
+  const yours = Object.keys(agentsIn(known.settings) ?? {}).filter((id) => !isBuiltIn(id) && isObject(agentsIn(known.settings)[id]));
+  return [...BUILT_IN2, ...yours.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))];
+}
+var engineAgent = (known, id) => known.agents?.find((each) => each.id === id);
+var nameOf6 = (known, id) => isBuiltIn(id) ? engineAgent(known, id)?.name || id.charAt(0).toUpperCase() + id.slice(1) : id;
+var text8 = (value) => typeof value === "string" ? value : "";
+var modeOf2 = (known, id, entry) => text8(entry?.mode) || engineAgent(known, id)?.mode || BUILT_IN_MODES[id] || "all";
+var BUILT_IN_RULES = {
+  plan: { edit: "deny" },
+  general: { subagent: "deny" },
+  explore: { edit: "deny", shell: "allow", read: "allow", external_directory: "allow", webfetch: "allow", websearch: "allow", subagent: "deny", skill: "deny" }
+};
+function inherited(known, id, action) {
+  const global = Array.isArray(known.settings.permissions) ? known.settings.permissions : [];
+  return choiceIn(global, action) ?? BUILT_IN_RULES[id]?.[action] ?? engineDefault(action);
+}
+var titleOf2 = (action) => ACTIONS.find((each) => each.id === action)?.title ?? action;
+function ownRules(entry) {
+  const permissions = entry?.permissions;
+  if (permissions !== undefined && !Array.isArray(permissions))
+    return { rules: [], editable: false, list: false };
+  const rules = (permissions ?? []).filter((each) => !isChoice(each));
+  const rank = (rule) => isRule2(rule) ? RULE_FIELDS.findIndex((field) => field.effect === rule.effect) : -1;
+  const editable = rules.every((rule, at) => rank(rule) >= 0 && (at === 0 || rank(rules[at - 1]) <= rank(rule)));
+  return { rules, editable, list: true };
+}
+var rulesText = (rules, effect) => rules.filter(isRule2).filter((rule) => rule.effect === effect).map((rule) => `${titleOf2(rule.action)}: ${rule.resource}`).join(`
+`);
+function parseRules(typed, effect, known) {
+  const rules = [];
+  for (const raw of typed.split(`
+`)) {
+    const line = raw.trim();
+    if (!line)
+      continue;
+    const lower = line.toLowerCase();
+    const names = [
+      ...ACTIONS.flatMap((action) => [[action.title, action.id], [action.id, action.id]]),
+      ...known.map((action) => [action, action])
+    ];
+    const match = names.filter(([name]) => lower.startsWith(`${name.toLowerCase()}:`)).sort((a, b) => b[0].length - a[0].length)[0];
+    if (!match)
+      return { rules, why: `“${line}” needs what it's for first, like ${RULE_EXAMPLE}.` };
+    const resource = line.slice(match[0].length + 1).trim();
+    if (!resource)
+      return { rules, why: `Add a pattern after ${match[0]}:, like ${RULE_EXAMPLE}.` };
+    if (resource === "*" && ACTIONS.some((action) => action.id === match[1]))
+      return { rules, why: `For all of them, set ${titleOf2(match[1])} above.` };
+    rules.push({ action: match[1], resource, effect });
+  }
+  return { rules };
+}
+function agentForm(context, known, id) {
+  const entry = id === null ? undefined : entryOf2(known, id);
+  const builtIn = id !== null && isBuiltIn(id);
+  const mode = id === null ? "subagent" : modeOf2(known, id, entry);
+  const permissions = entry?.permissions;
+  const { rules, editable, list } = ownRules(entry);
+  const own = Array.isArray(permissions) ? permissions : [];
+  const notList = { why: "Its permissions in the settings file aren't a list of rules: change them there." };
+  const model = text8(entry?.model);
+  const models = [
+    { id: "", title: "Default", line: "A mode uses the session's model; a subagent the one Settings › Models gives subagents." },
+    ...(known.models ?? []).map((each) => ({ id: each.id, title: each.title, line: each.line })),
+    ...model && !(known.models ?? []).some((each) => each.id === model) ? [{ id: model, title: model, line: known.models ? "Not available here now" : "As the settings name it" }] : []
+  ];
+  const fields = [
+    ...id === null ? [{ id: "name", title: "Name", kind: "text", value: "", placeholder: "Bug Hunter" }] : [],
+    { id: "mode", title: "Use as", kind: "choice", value: mode, choices: MODES2.map((each) => ({ ...each })) },
+    {
+      id: "description",
+      title: "Description",
+      kind: "lines",
+      value: text8(entry?.description),
+      placeholder: builtIn ? BUILT_IN_WORDS[id] ?? "" : "What it's for, like: Finds bugs and explains them, without changing code",
+      line: "Other agents read it to know when to hand it work."
+    },
+    { id: "model", title: "Model", kind: "choice", value: model, choices: models },
+    ...id === null ? [] : [{ id: "on", title: "Use this agent", kind: "switch", value: entry?.disabled !== true }],
+    {
+      id: "system",
+      title: "Instructions",
+      kind: "lines",
+      value: text8(entry?.system),
+      placeholder: builtIn ? "Its built-in instructions" : "How it works: what to look for, what to leave alone, how to report back.",
+      line: builtIn ? "Leave empty to keep its built-in instructions. Anything here replaces them; the project's AGENTS.md, skills and MCP servers still apply." : "The project's AGENTS.md, skills and MCP servers apply too."
+    },
+    ...ACTIONS.map((action, at) => {
+      const chosen = choiceIn(own, action.id);
+      const from = inherited(known, id ?? "", action.id);
+      return {
+        id: `may-${action.id}`,
+        title: action.title,
+        kind: "choice",
+        value: chosen ?? from,
+        choices: [
+          ...EFFECTS.map((effect) => effect.id === from ? { id: effect.id, title: `${effect.title} (Default)` } : { id: effect.id, title: effect.title }),
+          ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []
+        ],
+        ...at === 0 ? { line: "Default does what Settings › Permissions says. A choice here wins over it for this agent." } : {},
+        ...list ? {} : { can: notList }
+      };
+    }),
+    ...RULE_FIELDS.map((field, at) => ({
+      id: field.id,
+      title: field.title,
+      kind: "lines",
+      mono: true,
+      value: editable ? rulesText(rules, field.effect) : "",
+      placeholder: at === 0 ? RULE_EXAMPLE : at === 1 ? "Run commands: git push *" : "Edit files: *.pem",
+      ...at === 0 ? { line: "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything." } : {},
+      ...at === RULE_FIELDS.length - 1 ? { line: "Never Allowed wins over Asks First, which wins over Allowed Without Asking." } : {},
+      ...!list ? { can: notList } : editable ? {} : { can: { why: "Its rules are in an order only the settings file keeps: change them there." } }
+    }))
+  ];
+  return id === null ? { title: "New Agent", submit: "Create Agent", fields, note: `On ${computerHere2(context)}, for every project.` } : { title: nameOf6(known, id), submit: "Save", fields };
+}
+var agentId = (typed) => typed.replace(/[^\p{L}\p{N}_ -]/gu, "").split(" ").filter(Boolean).join(" ");
+function readForm2(known, id, values) {
+  const fields = [];
+  const say = (field, words, tone) => fields.push({ id: field, words, tone });
+  let ready = true;
+  const agents = agentsIn(known.settings);
+  if (!agents)
+    return { fields: [{ id: "name", words: "The engine's agents in its settings file aren't a list Kuvo can change: change them there.", tone: "warning" }], ready: false };
+  let target = id;
+  if (id === null) {
+    const typed = text8(values.name).trim();
+    const made = agentId(typed);
+    const lower = made.toLowerCase();
+    const taken = Object.keys(agents).some((each) => each.toLowerCase() === lower) || isBuiltIn(lower) || (known.agents ?? []).some((each) => each.id?.toLowerCase() === lower || each.name?.toLowerCase() === lower);
+    if (!made) {
+      say("name", typed ? "A name needs a letter or a number." : "How it shows in the composer, and how other agents ask for it.", typed ? "warning" : "quiet");
+      ready = false;
+    } else if (taken) {
+      say("name", `There's an agent called ${made} already.`, "warning");
+      ready = false;
+    } else if (made !== typed) {
+      say("name", `It'll be called ${made}.`, "quiet");
+    }
+    target = made || null;
+  }
+  const before = id === null ? undefined : entryOf2(known, id);
+  const mode = text8(values.mode);
+  if (!MODES2.some((each) => each.id === mode)) {
+    say("mode", "Pick how it's used.", "warning");
+    ready = false;
+  } else {
+    say("mode", MODE_DETAIL[mode], "quiet");
+  }
+  const model = text8(values.model);
+  const offered = !model || model === text8(before?.model) || (known.models ?? []).some((each) => each.id === model);
+  if (!offered) {
+    say("model", `${model} isn't a model here.`, "warning");
+    ready = false;
+  }
+  const { rules: kept, editable, list } = ownRules(before);
+  const own = Array.isArray(before?.permissions) ? before.permissions : [];
+  let permissions = before?.permissions;
+  if (list) {
+    const choices = [];
+    for (const action of ACTIONS) {
+      const picked = values[`may-${action.id}`];
+      const chosen = choiceIn(own, action.id);
+      const from = inherited(known, target ?? "", action.id);
+      if (typeof picked !== "string" || !EFFECTS.some((effect) => effect.id === picked) && picked !== chosen) {
+        say(`may-${action.id}`, "Pick one.", "warning");
+        ready = false;
+        continue;
+      }
+      if (picked === from && chosen !== picked)
+        continue;
+      choices.push({ action: action.id, resource: "*", effect: picked });
+    }
+    let rules = kept;
+    if (editable) {
+      const named = [...new Set([...OTHER_ACTIONS, ...kept.filter(isRule2).map((rule) => rule.action)])];
+      rules = RULE_FIELDS.flatMap((field) => {
+        const read = parseRules(text8(values[field.id]), field.effect, named);
+        if (read.why) {
+          say(field.id, read.why, "warning");
+          ready = false;
+        }
+        return read.rules;
+      });
+    }
+    const made = [...choices, ...rules];
+    permissions = made.length ? made : undefined;
+  }
+  const entry = { ...before };
+  const builtIn = target !== null && isBuiltIn(target);
+  if (builtIn && mode === BUILT_IN_MODES[target] && before?.mode === undefined)
+    delete entry.mode;
+  else
+    entry.mode = mode;
+  for (const [key, value] of [["description", text8(values.description).trim()], ["model", model], ["system", text8(values.system).trim()]]) {
+    if (value)
+      entry[key] = value;
+    else
+      delete entry[key];
+  }
+  if (id !== null && values.on === false)
+    entry.disabled = true;
+  else
+    delete entry.disabled;
+  if (permissions === undefined)
+    delete entry.permissions;
+  else
+    entry.permissions = permissions;
+  if (!ready || target === null)
+    return { fields, ready };
+  const empty = Object.keys(entry).length === 0;
+  const changes = [{ path: ["agents", target], value: builtIn && empty ? null : entry, was: before ?? null }];
+  if ((entry.disabled === true || entry.mode === "subagent") && known.settings.default_agent === target)
+    changes.push({ path: ["default_agent"], value: null, was: target });
+  return { fields, ready, changes, id: target };
+}
+async function agentsPage(context) {
+  const known = await facts2(context);
+  if (!("settings" in known))
+    return unreadPage("agents", TITLE2, known);
+  const agents = agentsIn(known.settings);
+  const where = computerHere2(context);
+  const notList = { why: "The engine's agents in its settings file aren't a list Kuvo can change: change them there." };
+  const items = listedAgents2(known).map((id) => {
+    const entry = entryOf2(known, id);
+    const builtIn = isBuiltIn(id);
+    const mode = modeOf2(known, id, entry);
+    const description = text8(entry?.description) || (builtIn ? BUILT_IN_WORDS[id] : "") || "";
+    const name = nameOf6(known, id);
+    const actions = [
+      { id: "edit", title: "Edit…", form: agentForm(context, known, id) },
+      ...builtIn && entry ? [{ id: "reset", title: "Reset to Built-In…", style: "destructive", confirm: { title: `Reset ${name} to how it's built in?`, body: "Your changes to it are removed.", button: "Reset" } }] : [],
+      ...!builtIn ? [{ id: "delete", title: "Delete Agent…", style: "destructive", confirm: { title: `Delete ${name}?`, body: `It's removed from ${where}'s settings.`, button: "Delete" } }] : []
+    ];
+    const kept = item({
+      id: `agent-${id}`,
+      title: name,
+      line: [MODE_LINES[mode] ?? mode, description.split(`
+`)[0]].filter(Boolean).join(" · "),
+      kind: "switch",
+      value: entry?.disabled !== true,
+      can: agents ? true : notList,
+      actions
+    });
+    const badge = builtIn && entry ? { words: "Changed", tone: "quiet" } : undefined;
+    const unusable = !MODE_LINES[mode] ? `The engine leaves it out: “${mode}” isn't a way to use an agent. Pick one in Edit….` : undefined;
+    return { ...kept, ...badge ? { badge } : {}, ...unusable ? { notice: { words: unusable, tone: "warning" } } : {} };
+  });
+  const groups = [{
+    id: "agents",
+    title: "Agents",
+    note: "Plan is what /plan turns on. Your own agents work when you name one in a message, or when an agent hands one part of a task; Claude Code, Codex, Cursor, Grok and Antigravity get your subagents too.",
+    rows: [row({
+      id: "agents",
+      title: "Agents",
+      kind: "list",
+      items,
+      empty: "None yet.",
+      ...agents ? { add: { id: "add", title: "New Agent…", form: agentForm(context, known, null) } } : {}
+    })]
+  }];
+  const claude = (await claudeCodeList(path199.join(homeFolder(), ".claude"), known.settings, new Set).catch(() => null))?.agents ?? [];
+  if (claude.length) {
+    groups.push({
+      id: "claude-code",
+      title: "From Claude Code",
+      note: `Agents in ~/.claude/agents on ${where}, brought over as subagents with their description and instructions. They use the session's model and the permissions here, not the tools and model Claude Code gives them.`,
+      rows: claude.map((each) => {
+        const id = each.path[1];
+        const line = each.description.split(`
+`)[0] || undefined;
+        return each.imported ? row({ id: `claude-${id}`, title: each.name, ...line ? { line } : {}, kind: "status", value: "Imported" }) : row({ id: `claude-${id}`, title: each.name, ...line ? { line } : {}, kind: "actions", actions: [{ id: "import", title: "Import", ...agents ? {} : { can: notList } }] });
+      })
+    });
+  }
+  const notes = [
+    ...agents ? [] : [{ words: notList.why, tone: "warning" }],
+    ...known.agents ? [] : [{ words: `The engine isn’t running on ${where}, so the models to pick from and what each agent may do by default aren’t known. The agents are listed as the settings have them.`, tone: "warning" }]
+  ];
+  return { id: "agents", title: TITLE2, groups, ...notes.length ? { notes } : {} };
+}
+var write4 = (context, changes) => asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes });
+var idOf6 = (at) => at.id.startsWith("agent-") ? at.id.slice("agent-".length) : null;
+async function agentsChange(context, at, value) {
+  const known = await facts2(context);
+  if (!("settings" in known))
+    return refusal5(known) ?? { status: 503, message: said9(known, "This computer's settings couldn't be read.") };
+  const id = idOf6(at);
+  if (id === null || !listedAgents2(known).includes(id))
+    return { status: 400, message: "That isn't something to change." };
+  const entry = entryOf2(known, id);
+  if (entry?.disabled !== true !== at.value)
+    return STALE;
+  if (value === at.value)
+    return null;
+  const changes = [{ path: ["agents", id, "disabled"], value: value ? null : true, was: entry?.disabled ?? null }];
+  if (value === false && known.settings.default_agent === id)
+    changes.push({ path: ["default_agent"], value: null, was: id });
+  return staleOrRefusal(await write4(context, changes));
+}
+var formRefused2 = (checked) => {
+  const first = checked.fields.find((each) => each.tone === "warning");
+  return { status: 400, message: first?.words ?? "Fill in what it needs first.", fields: [...checked.fields] };
+};
+async function agentsAct(context, at, action, values) {
+  const known = await facts2(context);
+  if (!("settings" in known))
+    return refusal5(known) ?? { status: 503, message: said9(known, "This computer's settings couldn't be read.") };
+  if (at.id === "agents" && action.id === "add") {
+    const checked = readForm2(known, null, values ?? {});
+    if (!checked.changes || !checked.id)
+      return formRefused2(checked);
+    const written = await write4(context, checked.changes);
+    const taken = `There's an agent called ${checked.id} already.`;
+    if (written.status === 409 && written.value?.message === CHANGED_SINCE)
+      return { status: 400, message: taken, fields: [{ id: "name", words: taken, tone: "warning" }] };
+    return refusal5(written);
+  }
+  if (at.id.startsWith("claude-") && action.id === "import") {
+    const claude = await claudeCodeList(path199.join(homeFolder(), ".claude"), known.settings, new Set);
+    const found = claude.agents.find((each) => each.path[1] === at.id.slice("claude-".length));
+    if (!found || found.imported)
+      return STALE;
+    return staleOrRefusal(await write4(context, [{ path: [...found.path], value: found.settings, was: null }]));
+  }
+  const id = idOf6(at);
+  if (id === null || !listedAgents2(known).includes(id))
+    return { status: 404, message: "That isn't something it does." };
+  const entry = entryOf2(known, id);
+  switch (action.id) {
+    case "edit": {
+      const checked = readForm2(known, id, values ?? {});
+      if (!checked.changes)
+        return formRefused2(checked);
+      return staleOrRefusal(await write4(context, checked.changes));
+    }
+    case "reset":
+    case "delete": {
+      if (!entry || action.id === "reset" !== isBuiltIn(id))
+        return STALE;
+      const changes = [{ path: ["agents", id], value: null, was: entry }];
+      if (action.id === "delete" && known.settings.default_agent === id)
+        changes.push({ path: ["default_agent"], value: null, was: id });
+      return staleOrRefusal(await write4(context, changes));
+    }
+  }
+  return { status: 404, message: "That isn't something it does." };
+}
+async function agentsCheck(context, at, action, values) {
+  const known = await facts2(context);
+  if (!("settings" in known))
+    return { fields: [], ready: false };
+  const { fields, ready } = readForm2(known, action.id === "edit" ? idOf6(at) : null, values);
+  return { fields, ready };
+}
+var agentsSection = {
+  listed: {
+    id: "agents",
+    title: TITLE2,
+    group: "Agents & Tools",
+    icon: "bot",
+    line: "The built-in agents and your own: how each is used, its model, instructions and what it may do.",
+    keywords: ["agents", "subagents", "modes", "build", "plan", "instructions", "prompt", "model", "permissions", "rules", "claude code", "import"]
+  },
+  read: agentsPage,
+  change: agentsChange,
+  act: agentsAct,
+  check: agentsCheck,
+  look: () => `${mtime2(CONFIG_FILE)} ${mtime2(path199.join(homeFolder(), ".claude", "agents"))} ${Math.floor(Date.now() / 1e4)}`
+};
+
 // box/src/shared/routes/settings-pages.ts
 init_shape();
 var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
@@ -63327,7 +63781,7 @@ init_link();
 init_files2();
 import { spawnSync as spawnSync19 } from "node:child_process";
 import fs192 from "node:fs";
-import path199 from "node:path";
+import path200 from "node:path";
 init_home();
 init_host_interface();
 function runs(pid) {
@@ -63356,7 +63810,7 @@ var PERMISSIONS = [
   { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
   { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
 ];
-var LATER = () => path199.join(K, "box", "permissions-later.json");
+var LATER = () => path200.join(K, "box", "permissions-later.json");
 function putOff() {
   try {
     const kept = parsed(fs192.readFileSync(LATER(), "utf8"));
@@ -63368,7 +63822,7 @@ function putOff() {
 function keepPutOff(later) {
   if (!later.size)
     return fs192.rmSync(LATER(), { force: true });
-  fs192.mkdirSync(path199.dirname(LATER()), { recursive: true, mode: 448 });
+  fs192.mkdirSync(path200.dirname(LATER()), { recursive: true, mode: 448 });
   writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
 }
 function boxPermissions() {
@@ -63388,7 +63842,7 @@ function boxPermissions() {
     return unknown;
   let noted;
   try {
-    noted = parsed(fs192.readFileSync(path199.join(K, "run", "permissions.json"), "utf8"));
+    noted = parsed(fs192.readFileSync(path200.join(K, "run", "permissions.json"), "utf8"));
   } catch {
     return unknown;
   }
@@ -63457,12 +63911,12 @@ init_state();
 // box/src/link/mac/keeper-runs.ts
 init_home();
 import fs193 from "node:fs";
-import path200 from "node:path";
+import path201 from "node:path";
 var boxAnswers = (route) => route === "kuvo/engine/restart" && (OWN_HOME_MAC || keeperRuns2());
 function keeperRuns2() {
   let pid = 0;
   try {
-    pid = Number(JSON.parse(fs193.readFileSync(path200.join(RUN, "keeper.json"), "utf8"))?.pid);
+    pid = Number(JSON.parse(fs193.readFileSync(path201.join(RUN, "keeper.json"), "utf8"))?.pid);
   } catch {
     return false;
   }
@@ -63526,25 +63980,12 @@ var SECTIONS = [
   { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
+  agentsSection.listed,
   mcpSection.listed
 ];
 var browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE));
 var MODE_NAMES = { askFirst: "Ask First", acceptEdits: "Accept Edits", auto: "Auto", fullAccess: "Full Access" };
-var ACTIONS = [
-  { id: "edit", title: "Edit files", line: "Changing, creating or deleting files. Plan mode doesn't, by default." },
-  { id: "shell", title: "Run commands", line: "In the terminal." },
-  { id: "read", title: "Read files", line: "Files ending in .env ask first unless you allow this." },
-  { id: "external_directory", title: "Work outside the project", line: "In folders that aren't the project's." },
-  { id: "webfetch", title: "Open web pages" },
-  { id: "websearch", title: "Search the web" },
-  { id: "subagent", title: "Hand work to subagents" },
-  { id: "skill", title: "Use skills" }
-];
-var EFFECTS = [{ id: "allow", title: "Allow" }, { id: "ask", title: "Ask First" }, { id: "deny", title: "Don't Allow" }];
-var engineDefault = (action) => action === "external_directory" ? "ask" : "allow";
 var NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.";
-var isRule2 = (value) => isObject(value) && typeof value.action === "string" && typeof value.resource === "string" && typeof value.effect === "string";
-var choiceIn = (rules, action) => rules.filter(isRule2).findLast((rule) => rule.action === action && rule.resource === "*")?.effect;
 async function permissionsPage(context) {
   const name = context.info.name || "this computer";
   const here = context.request.fromApp === true;
@@ -63876,9 +64317,9 @@ async function worktreesChange(context, at, value) {
   if ((config.value.worktree?.directory ?? "") !== at.value)
     return STALE;
   const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
-  if (folder && !path201.isAbsolute(folder))
+  if (folder && !path202.isAbsolute(folder))
     return { status: 400, message: "Give a full path to the folder." };
-  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path201.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path202.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
 }
 async function worktreesAct(context, at, action) {
   if (action.id !== "remove" || !at.id.startsWith("tree-"))
@@ -64064,7 +64505,7 @@ var computerFacts = {
   letDevices: letDevicesConnect
 };
 var computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer");
-var computerHere2 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+var computerHere3 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
 var LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
 var ALLOWS = {
   screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
@@ -64072,7 +64513,7 @@ var ALLOWS = {
 };
 async function computerPage(context) {
   const here = context.request.fromApp === true;
-  const where = computerHere2(context), name = context.info.name || where;
+  const where = computerHere3(context), name = context.info.name || where;
   const kind = computerFacts.kind();
   const ownMac = kind === "ownMac" && process.platform === "darwin";
   const atLogin = ownMac ? computerFacts.atLogin() : null;
@@ -64194,8 +64635,9 @@ var PAGES2 = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  agents: agentsSection,
   mcp: mcpSection,
-  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path201.join(RUN, "permissions.json"))} ${mtime2(path201.join(RUN, "update.json"))} ${mtime2(path201.join(RUN, "update.lock"))} ${mtime2(path201.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path202.join(RUN, "permissions.json"))} ${mtime2(path202.join(RUN, "update.json"))} ${mtime2(path202.join(RUN, "update.lock"))} ${mtime2(path202.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
 };
 var followers2 = new Set;
 var changed5 = () => {
@@ -64227,7 +64669,7 @@ function inTurn4(key, work) {
   return mine;
 }
 var whyNot2 = (can) => can === undefined || can === true ? null : can.why;
-var idOf6 = (part) => {
+var idOf7 = (part) => {
   try {
     return decodeURIComponent(part ?? "");
   } catch {
@@ -64242,10 +64684,10 @@ async function checked3(context, section, rowPart, actionPart) {
     return [400, { message: "Send its form's values as an object (values)." }];
   const body = given;
   const page = await section.read(context, true);
-  const at = rowsOf4(page).find((each) => each.id === idOf6(rowPart));
+  const at = rowsOf4(page).find((each) => each.id === idOf7(rowPart));
   if (!at)
     return [404, { message: "That isn't on this page now." }];
-  const action = actionsOf3(at).find((each) => each.id === idOf6(actionPart));
+  const action = actionsOf3(at).find((each) => each.id === idOf7(actionPart));
   if (!action?.form)
     return [404, { message: "That has no form to check." }];
   if (body.was !== undefined && expectedRevision(at, action) !== body.was)
@@ -64261,7 +64703,7 @@ async function* settingsPageRoute(context, match) {
       return yield* json(405, { message: "Read them with GET." });
     return yield* json(200, { sections: SECTIONS.map((each) => each === COMPUTER ? { ...each, title: computerTitle(context) } : each) });
   }
-  const id = idOf6(sectionPart);
+  const id = idOf7(sectionPart);
   const section = id && Object.hasOwn(PAGES2, id) ? PAGES2[id] : undefined;
   if (!section)
     return yield* json(404, { message: "This computer has no settings by that name." });
@@ -64293,7 +64735,7 @@ async function* settingsPageRoute(context, match) {
   }
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};
-  const rowId = rowPart !== undefined ? idOf6(rowPart) : given.row;
+  const rowId = rowPart !== undefined ? idOf7(rowPart) : given.row;
   if (typeof rowId !== "string" || !rowId)
     return yield* json(400, { message: "Name the row to change (row)." });
   if (typeof given.was !== "string")
@@ -64308,7 +64750,7 @@ async function* settingsPageRoute(context, match) {
     const at = rowsOf4(page).find((each) => each.id === rowId);
     if (!at)
       return { status: 404, value: { message: "That isn't on this page now." } };
-    const action = rowPart !== undefined ? actionsOf3(at).find((each) => each.id === idOf6(actionPart)) : undefined;
+    const action = rowPart !== undefined ? actionsOf3(at).find((each) => each.id === idOf7(actionPart)) : undefined;
     if (expectedRevision(at, action) !== given.was)
       return { status: 409, value: { message: CHANGED_SINCE, page } };
     let done;
@@ -64689,14 +65131,14 @@ async function* forgetHost(context, id, here) {
 
 // box/src/link/mac/app.ts
 import fs195 from "node:fs";
-import path202 from "node:path";
+import path203 from "node:path";
 init_files();
 init_home();
 init_host_interface();
-var APP_FILE = () => path202.join(RUN, "app.json");
-var OPENING_FILE = () => path202.join(RUN, "app-opening.json");
-var FAILED_FILE = () => path202.join(RUN, "app-open-failed.json");
-var UPDATING_FILE = () => path202.join(RUN, "app-updating");
+var APP_FILE = () => path203.join(RUN, "app.json");
+var OPENING_FILE = () => path203.join(RUN, "app-opening.json");
+var FAILED_FILE = () => path203.join(RUN, "app-open-failed.json");
+var UPDATING_FILE = () => path203.join(RUN, "app-updating");
 var WAIT = 30000;
 var REST = 5 * 60000;
 var UPDATING_FOR = 2 * 60000;
@@ -64714,10 +65156,10 @@ function readJSON3(file) {
   }
 }
 function bundleOf2(given) {
-  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path202.isAbsolute(given))
+  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path203.isAbsolute(given))
     return null;
   const bundle = given.replace(/\/+$/, "");
-  return bundle.endsWith(".app") && path202.normalize(bundle) === bundle ? bundle : null;
+  return bundle.endsWith(".app") && path203.normalize(bundle) === bundle ? bundle : null;
 }
 function toolsOf(given) {
   if (!isObject(given) || typeof given.url !== "string" || typeof given.token !== "string")
@@ -65593,7 +66035,7 @@ init_format();
 init_home();
 
 // box/src/link/places.ts
-import path203 from "node:path";
+import path204 from "node:path";
 init_home();
 init_machines();
 init_home();
@@ -65611,11 +66053,11 @@ function boxPlaces() {
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
-    browser: path203.join(K, "browser"),
-    trash: path203.join(K, "trash"),
-    temporary: path203.join(K, "t"),
+    browser: path204.join(K, "browser"),
+    trash: path204.join(K, "trash"),
+    temporary: path204.join(K, "t"),
     engineData: ENGINE_DATA,
-    engineConfig: ENGINE_CONFIG ?? path203.join(K, "config"),
+    engineConfig: ENGINE_CONFIG ?? path204.join(K, "config"),
     settingsFile: CONFIG_FILE,
     engineLayerFile: ENGINE_LAYER_FILE,
     defaultsPlugin: DEFAULTS_PLUGIN,
@@ -65716,9 +66158,9 @@ async function run7() {
   fs196.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
-    process.env.PATH = joinPath(path204.join(K, "bin"), saved);
+    process.env.PATH = joinPath(path205.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs196.rmSync(path204.join(RUN, folder), { recursive: true, force: true });
+    fs196.rmSync(path205.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -66219,7 +66661,7 @@ async function serve() {
     } catch {}
   try {
     if (APP_FOLDER)
-      writePrivate(path204.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+      writePrivate(path205.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
     else
       clearKept(K);
   } catch {}
@@ -66456,7 +66898,7 @@ if (main) {
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
     const step = (running) => noteUpdate({ running });
-    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path204.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
+    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path205.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
     if (outcome && !(offered && outcome.result === "busy"))
       noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
     if (outcome?.result === "updated") {

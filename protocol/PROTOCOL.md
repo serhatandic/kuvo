@@ -8951,6 +8951,38 @@ The sections now:
   settings file, its flows and the catalog, and read the engine each second. The engine doesn't
   list a server's tools, so the page doesn't either.
 
+- **Agents** (`agents`, group `Agents & Tools`, a flow section without flows): Agents (`agents`, a
+  `list` of `agent-<id>`: the engine's built-in Build, Plan, General and Explore, then yours, each
+  an object in the engine's settings' `agents`; the hidden `compaction`, `title` and `summary`
+  aren't listed and their settings stay). Each a `switch` (off: `disabled: true`), its line how
+  it's used (`mode`: A mode, A subagent, A mode and a subagent) and its description's first line
+  (Kuvo's words for a built-in one), a built-in one with settings of yours `badge` Changed, and a
+  `notice` where its `mode` isn't one the engine takes (it leaves the agent out). Its actions
+  `edit` (Edit…, a form), and `reset` (Reset to Built-In…, a built-in one with settings, asked
+  first) or `delete` (Delete Agent…, yours, asked first). The list's `add` is New Agent…'s form.
+  The form's fields: `name` (New Agent only: letters, digits, spaces, hyphens and underscores,
+  one space between words; a name taken by an agent in the settings or the engine's, whatever the
+  case, is refused), `mode` (`primary`, `subagent`, `all`; a new one `subagent`), `description`,
+  `model` (`""` for none, then the engine's models whose provider is ready, as
+  `provider/model`), `on` (Edit only), `system` (its instructions; a built-in one's replace its
+  own), a `may-<action>` choice for each kind of action Permissions has (`edit`, `shell`, `read`,
+  `external_directory`, `webfetch`, `websearch`, `subagent`, `skill`: the choice marked
+  "(Default)" is Settings › Permissions' choice, else how the agent is built, else the engine's;
+  picking it writes no rule of the agent's own), and `allowed`, `asks` and `never`: its rules for
+  particular commands, files or sites, one a line, "<what it's for>: <pattern>" (what it's for by
+  its title, "Run commands", or the engine's name, "shell", either case). A submit writes the
+  agent's entry through `kuvo/config` with the entry as read (`was`): the choices first, then the
+  rules allowed, asked, never (so Never Allowed wins), and what the form doesn't show (`steps`,
+  `temperature`) stays. Rules written by hand in another order, or permissions that aren't a list,
+  are shown as `can: {why}` and kept as they are. A built-in one left as it's built in has no
+  entry. An agent turned off, made a subagent only, or deleted that `default_agent` names stops
+  being it, in the same write. Then From Claude Code (`claude-code`, only while there are any):
+  `kuvo/claude-code`'s agents, each `claude-<id>` with `import` (written at `agents.<id>` as a
+  subagent with its description and instructions) or "Imported". Its events follow the settings
+  file and ~/.claude/agents, and read the engine every ten seconds. With the engine down, the
+  agents are listed from the settings and the page's note says the models and defaults aren't
+  known.
+
 - **Archived Sessions** (`archived`): archived sessions grouped by project, from
   `kuvo/sessions/list`; each row uses `kuvo/sessions/<id>/actions` verbatim, including
   Unarchive, Delete and the box's confirmation words. Delete All’s confirmation comes from
