@@ -1619,19 +1619,29 @@ impl gpui::Render for BesideSettings {
 /// The window over your boxes: the switcher open on your computers, a session open on another
 /// of them (`switcher`, `elsewhere`), the first Quit's note (`quit-note`), and another computer
 /// whose Kuvo is older than this app, its update chip's card open: waiting a long while, with
-/// Update Now (`update-waiting`), and being updated (`update-running`).
+/// Update Now (`update-waiting`), and being updated (`update-running`); one the box that lists it
+/// sets up again (`update-setup`), and one nothing here reaches over SSH (`update-ssh`). And this
+/// Mac's own Kuvo waiting for the release this app carries (`update-own-waiting`), and taking it
+/// (`update-own-running`).
 fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
             let stand_in = StandIn::at(Replies::Never, NOW);
-            if slug.starts_with("update-") {
+            let own = slug.starts_with("update-own-");
+            if own {
+                stand_in.own_update_waits(if slug == "update-own-running" { "updating" } else { "waiting" }, 2);
+            } else if slug.starts_with("update-") {
                 stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
-                stand_in.bring_up_to_date("key_devbox", if slug == "update-running" { "updating" } else { "waiting" }, slug == "update-waiting", 2);
+                if slug == "update-setup" {
+                    stand_in.sets_up_again("key_devbox");
+                } else if slug != "update-ssh" {
+                    stand_in.bring_up_to_date("key_devbox", if slug == "update-running" { "updating" } else { "waiting" }, slug == "update-waiting", 2);
+                }
             }
             let boxes = kuvo::home::stand_in_boxes(stand_in);
             let first = boxes.nearest().expect("the stand-in is the nearest box");
@@ -1647,7 +1657,9 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                         home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
                     }
                     if slug.starts_with("update-") {
-                        assert!(home.switch_to("key_devbox", window, cx));
+                        if !own {
+                            assert!(home.switch_to("key_devbox", window, cx));
+                        }
                         home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_update_card(cx));
                     }
                     if slug == "quit-note" {

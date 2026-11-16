@@ -106,10 +106,11 @@ pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
     (title, next)
 }
 
-/// What the title bar's update chip says of the computer the window shows while its box waits for
-/// an update: the box's words where the box that lists your computers brings it up to date (its
-/// row's `update`, `computers.update`), else the gate's own (`held_words`); whether it's under way;
-/// and Update Now, where that box offers it.
+/// What the title bar's update chip says: of the computer the window shows while its box waits for
+/// an update, the box's words where the box that lists your computers brings it up to date (its
+/// row's `update`, `computers.update`), else the gate's own (`held_words`); or of this Mac's own
+/// Kuvo while it waits to take the release this app carries. Whether it's under way, and what its
+/// card offers: always something that works, where anything can be done from here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldUpdate {
     /// The computer's key, as your computers' list names it (none: not listed there).
@@ -120,6 +121,58 @@ pub struct HeldUpdate {
     /// It couldn't be updated, or has waited a long while: drawn with a warning.
     pub attention: bool,
     pub action: Option<kuvo_box::areas::ComputerAction>,
+    /// What the action does.
+    pub does: Option<UpdateDoes>,
+    /// It's this Mac's own Kuvo's update (it waits for your sessions here: "Update Ready").
+    pub own: bool,
+}
+
+/// What Update Now asks of the box that lists your computers.
+type Asked = Box<dyn FnOnce(&BoxClient) -> kuvo_box::Result<()> + Send>;
+
+/// What the update chip's action does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UpdateDoes {
+    /// Asks the box that lists your computers to bring this one up to date (`update`).
+    Update(String),
+    /// Asks the box that lists your computers to set this one up again over SSH (`setup`), and
+    /// shows its page in Computers, where how that goes (and anything it asks) is.
+    SetUp(String),
+    /// Asks the box that lists your computers to take the release waiting for it now (its own
+    /// row's `update-here`).
+    Here,
+    /// This Mac's own Kuvo, brought up by the installer this app carries: `now` (asked first),
+    /// else once the work on this Mac ends (at once where none is).
+    OwnBox { now: bool },
+    /// Opens Computers › Add a Machine on the box that lists your computers, the address it was
+    /// added under typed in (none: empty), to set it up over SSH from there.
+    AddMachine { address: Option<String> },
+}
+
+/// How bringing this Mac's own Kuvo up to the release this app carries stands, where its box is
+/// from before it did that by itself the moment its work ended (`computers.update.here`): the
+/// installer this app carries runs the release's own code for it (`kuvo-install update`), and says
+/// how it goes in the box's words.
+// COMPAT(0.8 beta update): goes once no Mac's box is from before `computers.update.here`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OwnUpdate {
+    /// It waits for the work on this Mac to end; Update Now asks this first.
+    Waiting { title: String, confirm: Option<Confirm> },
+    Updating { title: String },
+    /// It didn't go through: Try Again.
+    Failed { message: String },
+    /// It can't be updated here now, in the box's words (blocked, off, refused): nothing to press.
+    CantNow { message: String },
+}
+
+/// What Update Now asks before this Mac's own Kuvo is updated now, where the box didn't say.
+// COMPAT(0.8 beta update): an installer's waiting run always says it.
+pub fn own_update_confirm() -> Confirm {
+    Confirm {
+        title: "Update Kuvo on this Mac now?".into(),
+        message: "What your sessions on this Mac are doing stops as Kuvo restarts. It’s back in a moment.".into(),
+        label: "Update Now".into(),
+    }
 }
 
 /// The update chip's card: open, asking first (the box's confirm), sending, or why it couldn't.
@@ -157,6 +210,12 @@ pub enum Switch {
     /// Something was asked of the box that lists your computers (Update Now): read the list again
     /// where it isn't followed.
     ReadList,
+    /// Update Now for this Mac's own Kuvo, by the installer this app carries: `now`, else once
+    /// the work on it ends (at once where none is).
+    UpdateOwnBox { now: bool },
+    /// Show this computer in Computers, on the box that lists your computers: Add a Machine with
+    /// this address (`add_at`), else its page.
+    ShowComputer { key: String, add_at: Option<String> },
 }
 
 impl gpui::EventEmitter<Switch> for Workspace {}
@@ -168,6 +227,8 @@ pub struct Workspace {
     switching: Option<crate::home::Switching>,
     /// The box that lists your computers (the nearest), which does what their rows offer.
     lister: Option<BoxClient>,
+    /// How bringing this Mac's own Kuvo up to date stands, where this app does it.
+    own_update: Option<OwnUpdate>,
     /// The title bar's update chip's card.
     update_card: UpdateCard,
     /// Whether it follows the box (the app), or shows what it's handed (tests and shots).
@@ -321,6 +382,7 @@ impl Workspace {
             client: client.clone(),
             switching: None,
             lister: None,
+            own_update: None,
             update_card: UpdateCard::default(),
             live,
             info: None,
@@ -773,7 +835,7 @@ impl Workspace {
     }
 
     /// What the update chip says while the box this window shows waits for its update: none while
-    /// it doesn't.
+    /// it doesn't. Its card always offers what brings it up to date from here, where anything can.
     pub fn held_update(&self) -> Option<HeldUpdate> {
         if !self.client.gate().is_held() {
             return None;
@@ -783,19 +845,136 @@ impl Workspace {
             && let Some(update) = &row.computer.update
         {
             let updating = update.is_updating();
+            // (Brought up by the box that lists it, or set up over SSH from there: `add`.)
+            let action = (!updating).then(|| row.computer.actions.iter().find(|action| action.id == "update" || action.id == "add").cloned()).flatten();
+            let does = action.as_ref().map(|action| if action.id == "add" { UpdateDoes::AddMachine { address: row.computer.id.clone() } } else { UpdateDoes::Update(row.key().to_owned()) });
             return Some(HeldUpdate {
                 key: Some(row.key().to_owned()),
                 title: update.title.clone(),
                 detail: update.detail.clone(),
                 updating,
                 attention: update.state == "failed" || update.long,
-                action: (!updating).then(|| row.computer.action("update").cloned()).flatten(),
+                action,
+                does,
+                own: false,
             });
         }
         let name = self.info.as_ref().map(|_| self.box_name().to_string());
         let (title, detail) = held_words(name.as_deref(), self.client.here());
-        // (This Mac's own box finishes its update by itself, once the work running on it ends.)
-        Some(HeldUpdate { key: row.map(|row| row.key().to_owned()), title, detail, updating: self.client.here(), attention: false, action: None })
+        let key = row.map(|row| row.key().to_owned());
+        let own = self.own_update_chip();
+        // This Mac's own box: how its update goes, where this app brings it.
+        if self.client.here() {
+            return Some(own.unwrap_or(HeldUpdate { key, title, detail, updating: false, attention: false, action: None, does: None, own: false }));
+        }
+        let (Some(row), Some(key)) = (row, key) else {
+            return Some(HeldUpdate { key: None, title, detail, updating: false, attention: false, action: None, does: None, own: false });
+        };
+        let computer = name.clone().unwrap_or_else(|| row.computer.name.clone());
+        // COMPAT(0.8 beta update): what's offered where the box that lists your computers is from
+        // before it said how each older one is brought up (`computers.update`): goes once no box is
+        // from before `computers.update.here`.
+        // This Mac's own Kuvo first, while its update is under way or waits.
+        if let Some(own) = own {
+            return Some(HeldUpdate { key: Some(key), detail: format!("Then {computer} can be brought up to date from here."), ..own });
+        }
+        // Set up again over SSH, by the box that set it up: that brings it up to that box's Kuvo.
+        if row.computer.action("setup").is_some_and(|action| action.why.is_none()) {
+            return Some(HeldUpdate {
+                key: Some(key.clone()),
+                title,
+                detail: format!("Update Now sets Kuvo up on {computer} again over SSH. What’s at work there keeps going."),
+                updating: false,
+                attention: false,
+                action: Some(kuvo_box::areas::ComputerAction { id: "setup".into(), label: "Update Now".into(), confirm: None, why: None }),
+                does: Some(UpdateDoes::SetUp(key)),
+                own: false,
+            });
+        }
+        // Another Mac: its own app updates it.
+        if row.computer.is_mac() {
+            return Some(HeldUpdate { key: Some(key), title, detail, updating: false, attention: false, action: None, does: None, own: false });
+        }
+        // A machine nothing here reaches over SSH: it's set up over SSH once more, from Computers.
+        let address = row.computer.id.clone().filter(|id| !id.is_empty());
+        Some(HeldUpdate {
+            key: Some(key),
+            title,
+            detail: format!("This Mac can’t reach {computer} over SSH to update it. Set it up over SSH from Computers, at the address you reach it at."),
+            updating: false,
+            attention: false,
+            action: Some(kuvo_box::areas::ComputerAction { id: "add".into(), label: "Set Up Over SSH…".into(), confirm: None, why: None }),
+            does: Some(UpdateDoes::AddMachine { address }),
+            own: false,
+        })
+    }
+
+    /// How this Mac's own Kuvo's update stands, where it waits for one or takes it now: as its box
+    /// says (its own row's `update`, `computers.update.here`), else as the installer this app
+    /// carries says it, for a box from before.
+    fn own_update_chip(&self) -> Option<HeldUpdate> {
+        let here = self.switching.as_ref().and_then(|switching| switching.rows.iter().find(|row| row.computer.here));
+        if let Some(row) = here
+            && let Some(update) = &row.computer.update
+        {
+            let updating = update.is_updating();
+            let action = (!updating).then(|| row.computer.action("update-here").cloned()).flatten();
+            return Some(HeldUpdate {
+                key: Some(row.key().to_owned()),
+                title: update.title.clone(),
+                detail: update.detail.clone(),
+                updating,
+                attention: update.state == "failed" || update.long,
+                does: action.as_ref().map(|_| UpdateDoes::Here),
+                action,
+                own: true,
+            });
+        }
+        // COMPAT(0.8 beta update): the installer's words for a box from before `computers.update.here`.
+        let action = |label: &str, confirm: Option<Confirm>| Some(kuvo_box::areas::ComputerAction { id: "update-here".into(), label: label.into(), confirm, why: None });
+        let chip = |title: String, detail: String| HeldUpdate { key: None, title, detail, updating: false, attention: false, action: None, does: None, own: true };
+        Some(match self.own_update.clone()? {
+            // (Update Now asks first, always: what's at work here stops.)
+            OwnUpdate::Waiting { title, confirm } => HeldUpdate { action: action("Update Now", Some(confirm.unwrap_or_else(own_update_confirm))), does: Some(UpdateDoes::OwnBox { now: true }), ..chip(title, String::new()) },
+            OwnUpdate::Updating { title } => HeldUpdate { updating: true, ..chip(title, String::new()) },
+            // (Tried again as it was at first: at once where nothing's at work, else once that ends.)
+            OwnUpdate::Failed { message } => HeldUpdate { attention: true, action: action("Try Again", None), does: Some(UpdateDoes::OwnBox { now: false }), ..chip("Kuvo on this Mac couldn’t be updated".into(), message) },
+            OwnUpdate::CantNow { message } => HeldUpdate { attention: true, ..chip("Kuvo on this Mac can’t be updated now".into(), message) },
+        })
+    }
+
+    /// What the title bar's update chip says now: of the computer shown while it waits for its
+    /// update, else of this Mac's own Kuvo while it waits for one or takes it.
+    pub fn update_chip(&self) -> Option<HeldUpdate> {
+        self.held_update().or_else(|| self.own_update_chip())
+    }
+
+    /// How bringing this Mac's own Kuvo up to date stands, where this app does it.
+    pub fn set_own_update(&mut self, own: Option<OwnUpdate>, cx: &mut Context<Self>) {
+        if self.own_update != own {
+            self.own_update = own;
+            cx.notify();
+        }
+    }
+
+    pub fn own_update(&self) -> Option<&OwnUpdate> {
+        self.own_update.as_ref()
+    }
+
+    /// Shows a computer in Computers: Add a Machine with `add_at` typed in, else its page.
+    pub fn show_computer(&mut self, key: &str, add_at: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self.area_view(Area::Computers).cloned() {
+            if let Some(address) = add_at
+                && let Some(page) = view.read(cx).computers_page().cloned()
+            {
+                page.update(cx, |page, cx| page.type_host(address, cx));
+            }
+            if let Some(page) = view.read(cx).computers_page().cloned() {
+                page.update(cx, |page, cx| page.tries_changed(cx));
+            }
+            view.update(cx, |view, cx| view.select(Some(if add_at.is_some() { "add".into() } else { format!("computer:{key}") }), cx));
+        }
+        self.show_area(Area::Computers, window, cx);
     }
 
     /// The box that lists your computers, which Update Now asks.
@@ -837,14 +1016,15 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Update Now: asked first where the box says to (`confirmed`: it was), then asked of the box
-    /// that lists your computers. Its list says how it goes from then on.
+    /// Update Now: asked first where the box says to (`confirmed`: it was), then done as the chip
+    /// offers it: asked of the box that lists your computers, by the installer this app carries
+    /// for this Mac's own Kuvo, or in Computers. The list says how it goes from then on.
     pub fn update_now(&mut self, confirmed: bool, cx: &mut Context<Self>) {
         if self.update_card.sending {
             return;
         }
-        let Some(held) = self.held_update() else { return self.close_update_card(cx) };
-        let (Some(key), Some(action)) = (held.key, held.action) else { return };
+        let Some(held) = self.update_chip() else { return self.close_update_card(cx) };
+        let (Some(does), Some(action)) = (held.does, held.action) else { return };
         if action.why.is_some() {
             return;
         }
@@ -853,16 +1033,40 @@ impl Workspace {
             self.update_card.error = None;
             return cx.notify();
         }
+        // (What's shown once it's asked: setting a machine up again shows its page in Computers,
+        // where how that goes, and anything it asks, is.)
+        let mut then = None;
+        let work: Asked = match does {
+            UpdateDoes::OwnBox { now } => {
+                self.update_card = UpdateCard::default();
+                cx.emit(Switch::UpdateOwnBox { now });
+                return cx.notify();
+            }
+            UpdateDoes::AddMachine { address } => {
+                self.update_card = UpdateCard::default();
+                cx.emit(Switch::ShowComputer { key: String::new(), add_at: Some(address.unwrap_or_default()) });
+                return cx.notify();
+            }
+            UpdateDoes::SetUp(key) => {
+                then = Some(Switch::ShowComputer { key: key.clone(), add_at: None });
+                Box::new(move |lister| lister.setup_computer(&key).map(|_| ()))
+            }
+            UpdateDoes::Update(key) => Box::new(move |lister| lister.update_computer(&key).map(|_| ())),
+            UpdateDoes::Here => Box::new(|lister| lister.update_here()),
+        };
         let Some(lister) = self.lister.clone() else {
             self.update_card.error = Some("Your computers’ list isn’t reachable right now. Try again in a moment.".into());
             return cx.notify();
         };
-        let done = |this: &mut Workspace, result: kuvo_box::Result<()>, cx: &mut Context<Workspace>| {
+        let done = move |this: &mut Workspace, result: kuvo_box::Result<()>, cx: &mut Context<Workspace>| {
             this.update_card.sending = false;
             match result {
                 Ok(()) => {
                     this.update_card = UpdateCard::default();
                     cx.emit(Switch::ReadList);
+                    if let Some(then) = then {
+                        cx.emit(then);
+                    }
                 }
                 Err(error) => {
                     this.update_card.confirming = false;
@@ -874,12 +1078,12 @@ impl Workspace {
         self.update_card.sending = true;
         self.update_card.error = None;
         if !self.live {
-            let result = lister.update_computer(&key).map(|_| ());
+            let result = work(&lister);
             return done(self, result, cx);
         }
         cx.notify();
         self.update_card._task = Some(cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { lister.update_computer(&key).map(|_| ()) }).await;
+            let result = cx.background_executor().spawn(async move { work(&lister) }).await;
             this.update(cx, |this, cx| done(this, result, cx)).ok();
         }));
     }

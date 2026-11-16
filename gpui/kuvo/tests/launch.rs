@@ -574,3 +574,174 @@ fn after_a_move_what_macos_must_allow_kuvo_helper_is_asked_before_the_app_opens(
     assert!(opened(&launch, cx));
     assert!(shown(cx, "rail-settings") && !shown(cx, "permissions-step"));
 }
+
+const ATTACHES: &str = r#"{"verdict":"ours","verb":null,"status":{}}"#;
+const WAITING: &str = r#"{"step":"waiting","title":"Kuvo on this Mac updates once your sessions finish.","confirm":{"title":"Update Kuvo on this Mac now?","message":"2 sessions are at work on this Mac. They stop as Kuvo restarts.","label":"Update Now"}}"#;
+const BUSY: &str = r#"{"result":"busy","message":"Something is running there now."}"#;
+
+/// The app as it opened on a Mac whose Kuvo is from before it took the release the app carries
+/// itself (`made` as the test says, before it opens): its installer brings it up (`update`),
+/// first asked to wait for the work there to end, and saying `first`.
+fn on_a_mac_from_before<'a>(cx: &'a mut TestAppContext, made: &Path, first: &[&str], set: impl FnOnce(&StandIn)) -> (Bundle, StandIn, Entity<Launch>, &'a mut VisualTestContext) {
+    let (bundle, installer) = carried(made);
+    let exit = if first.last().is_some_and(|last| last.contains("\"updated\"") || last.contains("\"current\"")) { 0 } else { 1 };
+    bundle.says("status", None, 0, &[ATTACHES]).says("update", Some(1), exit, first);
+    let box_here = StandIn::at(Replies::Never, NOW);
+    box_here.from_before_update_here();
+    set(&box_here);
+    let here = Here::default();
+    here.answers(&box_here);
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(opened(&launch, cx));
+    (bundle, box_here, launch, cx)
+}
+
+fn workspace_of(launch: &Entity<Launch>, cx: &mut VisualTestContext) -> Entity<kuvo::workspace::Workspace> {
+    let home = launch.read_with(cx, |launch, _| launch.home().cloned()).expect("the app is open");
+    home.read_with(cx, |home, _| home.workspace().clone())
+}
+
+fn chip(launch: &Entity<Launch>, cx: &mut VisualTestContext) -> Option<kuvo::workspace::HeldUpdate> {
+    workspace_of(launch, cx).read_with(cx, |workspace, _| workspace.update_chip())
+}
+
+fn label(launch: &Entity<Launch>, cx: &mut VisualTestContext) -> Option<&'static str> {
+    chip(launch, cx).as_ref().map(kuvo::title_bar::chip_label)
+}
+
+#[gpui::test]
+fn a_mac_whose_kuvo_is_from_before_is_updated_once_its_work_ends_or_now_on_your_word(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, _, launch, cx) = on_a_mac_from_before(cx, made.path(), &[WAITING, BUSY], |_| {});
+    // The installer was asked to bring it up, waiting for the work there to end: the window is
+    // open as ever, with only the chip saying so.
+    assert_eq!(verbs(&bundle), ["status", "update"]);
+    assert!(!bundle.asked()[1].contains("--now"));
+    assert!(shown(cx, "update-chip") && !shown(cx, "update-card") && shown(cx, "rail-settings"));
+    assert_eq!(label(&launch, cx), Some("Update Ready"));
+    click(cx, "update-chip");
+    assert!(shown(cx, "update-card-title") && shown(cx, "update-now"));
+    assert_eq!(chip(&launch, cx).map(|chip| chip.title).as_deref(), Some("Kuvo on this Mac updates once your sessions finish."));
+    // Update Now asks first, in the box's words, and only then is it updated now.
+    bundle.says("update", Some(2), 0, &[r#"{"step":"updating","title":"Updating Kuvo on this Mac…"}"#, r#"{"result":"updated"}"#]);
+    click(cx, "update-now");
+    assert!(shown(cx, "update-confirm"));
+    assert_eq!(verbs(&bundle), ["status", "update"]);
+    click(cx, "update-confirm");
+    assert_eq!(verbs(&bundle), ["status", "update", "update"]);
+    assert!(bundle.asked()[2].starts_with("update --now"), "{:?}", bundle.asked());
+    // Updated: nothing more to say.
+    assert!(!shown(cx, "update-chip"));
+}
+
+#[gpui::test]
+fn update_now_with_no_word_from_the_box_still_asks_first(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    // (Busy, with no waiting step: the box said no question of its own.)
+    let (bundle, _, launch, cx) = on_a_mac_from_before(cx, made.path(), &[BUSY], |_| {});
+    click(cx, "update-chip");
+    click(cx, "update-now");
+    assert!(shown(cx, "update-confirm"), "what's at work here stops: it asks first");
+    assert_eq!(verbs(&bundle), ["status", "update"]);
+    assert_eq!(label(&launch, cx), Some("Update Ready"));
+}
+
+#[gpui::test]
+fn update_now_that_fails_says_why_and_try_again_waits_for_the_work_to_end(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, _, launch, cx) = on_a_mac_from_before(cx, made.path(), &[WAITING, BUSY], |_| {});
+    let offline = "The engine couldn't be downloaded. Check that this Mac is online, then try again.";
+    bundle.says("update", Some(2), 1, &[&format!(r#"{{"result":"failed","message":"{offline}"}}"#)]);
+    click(cx, "update-chip");
+    click(cx, "update-now");
+    click(cx, "update-confirm");
+    click(cx, "update-chip");
+    let said = chip(&launch, cx).expect("the chip");
+    assert_eq!((said.title.as_str(), said.detail.as_str(), said.attention), ("Kuvo on this Mac couldn’t be updated", offline, true));
+    assert!(shown(cx, "update-card-words") && shown(cx, "update-now"));
+    // Try Again never updates over work at once: it waits for it to end (at once where none is).
+    bundle.says("update", Some(3), 0, &[r#"{"result":"updated"}"#]);
+    click(cx, "update-now");
+    assert!(!shown(cx, "update-confirm"));
+    assert_eq!(verbs(&bundle), ["status", "update", "update", "update"]);
+    assert!(!bundle.asked()[3].contains("--now"), "{:?}", bundle.asked());
+    assert!(!shown(cx, "update-chip"));
+}
+
+#[gpui::test]
+fn update_now_that_finds_it_updating_already_says_so(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, _, launch, cx) = on_a_mac_from_before(cx, made.path(), &[WAITING, BUSY], |_| {});
+    bundle.says("update", Some(2), 1, &[r#"{"result":"busy","message":"It's updating already."}"#]);
+    click(cx, "update-chip");
+    click(cx, "update-now");
+    click(cx, "update-confirm");
+    let said = chip(&launch, cx).expect("the chip");
+    assert!(said.updating && said.action.is_none() && !said.attention, "{said:?}");
+    assert_eq!(said.title, "Updating Kuvo on this Mac…");
+    assert_eq!(label(&launch, cx), Some("Updating…"));
+}
+
+#[gpui::test]
+fn a_mac_whose_kuvo_cant_be_updated_now_says_why_with_nothing_to_press(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let blocked = "A Mac that connects to this machine has an older Kuvo Code, which would put back older versions: update Kuvo Code there first.";
+    let (_, _, launch, cx) = on_a_mac_from_before(cx, made.path(), &[&format!(r#"{{"result":"blocked","message":"{blocked}"}}"#)], |_| {});
+    click(cx, "update-chip");
+    let said = chip(&launch, cx).expect("the chip");
+    assert_eq!((said.detail.as_str(), said.updating), (blocked, false));
+    assert!(shown(cx, "update-card-words") && !shown(cx, "update-now"));
+}
+
+#[gpui::test]
+fn an_installer_that_cant_say_is_said_never_a_spinner(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    // (It answers `status`, and doesn't know `update`.)
+    bundle.says("status", None, 0, &[ATTACHES]).complains("update", "Usage: sh kuvo-install status|new|move");
+    let box_here = StandIn::at(Replies::Never, NOW);
+    box_here.from_before_update_here();
+    let here = Here::default();
+    here.answers(&box_here);
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(opened(&launch, cx));
+    let said = chip(&launch, cx).expect("the chip");
+    assert!(!said.updating && said.action.is_none() && said.detail.contains("Usage: sh kuvo-install"), "{said:?}");
+}
+
+#[gpui::test]
+fn a_mac_whose_kuvo_takes_the_release_itself_is_only_offered_it(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[ATTACHES]);
+    let box_here = StandIn::at(Replies::Never, NOW);
+    let here = Here::default();
+    here.answers(&box_here);
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(opened(&launch, cx));
+    // Offered, and the box takes it itself: the installer isn't asked to.
+    assert_eq!(box_here.seen_at("POST", "kuvo/box/update").len(), 1);
+    assert_eq!(verbs(&bundle), ["status"]);
+    assert!(!shown(cx, "update-chip"));
+}
+
+#[gpui::test]
+fn an_older_machine_waits_for_this_macs_kuvo_to_update_first_and_says_so(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    // (Its list offers to set devbox up again, too: this Mac's own update comes first.)
+    let (bundle, _, launch, cx) = on_a_mac_from_before(cx, made.path(), &[WAITING, BUSY], |box_here| {
+        box_here.peer_box("key_devbox").expect("devbox").set_older(true);
+        box_here.sets_up_again("key_devbox");
+    });
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    click(cx, "update-chip");
+    let said = chip(&launch, cx).expect("the chip");
+    assert_eq!(said.title, "Kuvo on this Mac updates once your sessions finish.");
+    assert_eq!(said.detail, "Then devbox can be brought up to date from here.");
+    // Its Update Now brings this Mac's Kuvo up now, asked first.
+    bundle.says("update", Some(2), 0, &[r#"{"result":"updated"}"#]);
+    click(cx, "update-now");
+    click(cx, "update-confirm");
+    assert!(bundle.asked()[2].starts_with("update --now"), "{:?}", bundle.asked());
+}

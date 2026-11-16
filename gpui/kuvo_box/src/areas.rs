@@ -225,8 +225,9 @@ pub struct Vouching {
 /** What can be done with a computer from the box that lists it, in the box's words. */
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ComputerAction {
-    /// `rename`, `connect`, `remove`, `allow-devices`, `setup`, `uninstall` or `update` (brings
-    /// its Kuvo up to this box's now: `POST kuvo/computers/<key>/update`).
+    /// `rename`, `connect`, `remove`, `allow-devices`, `setup`, `uninstall`, `update` (brings
+    /// its Kuvo up to this box's now: `POST kuvo/computers/<key>/update`) or, on the box's own
+    /// row, `update-here` (it takes the release waiting for it now: `POST kuvo/update {now}`).
     pub id: String,
     pub label: String,
     /// Where it asks first, the box's question.
@@ -619,6 +620,12 @@ impl BoxClient {
     /// whatever is at work there: asked of the box that lists it, never of that machine's own.
     pub fn update_computer(&self, key: &str) -> Result<AddTry> {
         Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/{}/update", segment(key)), serde_json::json!({})))?.tried)
+    }
+
+    /// Brings this box itself up to the release waiting for it, now (`kuvo/update {now}`,
+    /// `computers.update.here`: its own row's `update-here`), whatever is at work on it.
+    pub fn update_here(&self) -> Result<()> {
+        self.value::<serde_json::Value>(&Request::post("kuvo/update", serde_json::json!({ "now": true }))).map(|_| ())
     }
 
     /// Uninstalls Kuvo Code from a machine this box added over SSH, and removes it.

@@ -262,22 +262,30 @@ pub fn reach_line(row: &Row) -> String {
     }
 }
 
+/// The update chip's words: short, as the card's title names the computer.
+pub fn chip_label(held: &crate::workspace::HeldUpdate) -> &'static str {
+    if held.updating {
+        "Updating…"
+    } else if held.own && !held.attention && held.action.as_ref().is_some_and(|action| action.why.is_none()) {
+        // This Mac's own Kuvo, waiting for your sessions here to finish.
+        "Update Ready"
+    } else if held.action.as_ref().is_some_and(|action| action.why.is_none()) {
+        "Update Kuvo"
+    } else {
+        "Needs an update"
+    }
+}
+
 /// While the box this window shows waits for its update: a small chip at the title bar's right, as
 /// Zed shows its own update (`UpdateButton` beside the title bar's other controls), never a strip
 /// that pushes the window down. It says how the update stands in a few words (a spinner while it
 /// runs), and opens a card with the box's words and, where the box that lists your computers
 /// offers it, Update Now (asked first where that box says to).
 fn update_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyElement> {
-    let held = workspace.held_update()?;
+    let held = workspace.update_chip()?;
     let c = cx.theme().colors.clone();
     let open = workspace.update_card_open();
-    let label = if held.updating {
-        "Updating Kuvo…"
-    } else if held.action.as_ref().is_some_and(|action| action.why.is_none()) {
-        "Update Kuvo"
-    } else {
-        "Needs an update"
-    };
+    let label = chip_label(&held);
     let leading = if held.updating {
         spinner("update-chip-spinner", IconSize::Nav, c.icon).into_any_element()
     } else {

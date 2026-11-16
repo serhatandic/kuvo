@@ -43,6 +43,17 @@ pub struct Areas {
     /// (`waiting`, `updating`, `failed`), whether it has waited long, and how many sessions are at
     /// work there (Update Now asks first while any are).
     pub updates: Vec<Updating>,
+    /// The release its app carries, waiting for it (`computers.update.here`): its own row says how
+    /// that stands, with Update Now.
+    pub here_update: Option<Updating>,
+    /// The machines it offers to set up again over SSH (Set Up Again) without bringing them up to
+    /// date itself, by key.
+    pub set_up_again: Vec<String>,
+    /// The older machines it didn't set up over SSH, by key: it says to set each up over SSH from
+    /// here (`add`).
+    pub to_set_up: Vec<String>,
+    /// The computers it lists as Macs (`kind: mac`), by key.
+    pub as_macs: Vec<String>,
 }
 
 /// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
@@ -199,6 +210,13 @@ pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opt
         updating.long = false;
         areas.tried += 1;
         let tried = json!({ "id": format!("add_{}", areas.tried), "kind": "update", "destination": key, "name": key, "state": "working", "title": "Updating Kuvo…", "steps": add_steps(1, None) });
+        areas.tries.insert(0, tried.clone());
+        return Some(((202, json!({ "try": tried })), true));
+    }
+    if let Some(key) = rest.strip_suffix("/setup").filter(|key| areas.set_up_again.iter().any(|again| again == key)) {
+        let destination = key.strip_prefix("key_").unwrap_or(key).to_owned();
+        areas.tried += 1;
+        let tried = json!({ "id": format!("add_{}", areas.tried), "kind": "setup", "destination": destination, "name": destination, "state": "working", "title": "Setting it up again…", "steps": add_steps(1, None) });
         areas.tries.insert(0, tried.clone());
         return Some(((202, json!({ "try": tried })), true));
     }
@@ -361,6 +379,36 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 computer["vouching"] = json!({ "blocked": true, "words": format!("Kuvo on {name} was removed from your devices. {name} can’t add Kuvo Code’s app again until you allow it.") });
                 if let Some(actions) = computer["actions"].as_array_mut() {
                     actions.push(json!({ "id": "allow-devices", "label": "Allow Its App Again", "confirm": { "title": format!("Allow Kuvo Code’s app on {name} again?"), "message": format!("Kuvo Code on {name} can add itself to your devices again, and reach every one of your computers."), "label": "Allow" } }));
+                }
+            }
+            if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
+                computer["kind"] = json!("mac");
+            }
+            if areas.to_set_up.iter().any(|key| computer["key"] == json!(key)) {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                computer["update"] = json!({ "state": "waiting", "title": format!("Kuvo on {name} needs an update. Set it up over SSH from {} to update it.", super::NAME), "detail": "" });
+                if let Some(actions) = computer["actions"].as_array_mut() {
+                    actions.push(json!({ "id": "add", "label": "Set Up Over SSH…" }));
+                }
+            }
+            if areas.set_up_again.iter().any(|key| computer["key"] == json!(key))
+                && let Some(actions) = computer["actions"].as_array_mut()
+            {
+                actions.push(json!({ "id": "setup", "label": "Set Up Again" }));
+            }
+            if computer["here"] == json!(true)
+                && let Some(updating) = &areas.here_update
+            {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                computer["update"] = json!({ "state": updating.state, "title": if updating.state == "updating" { format!("Updating Kuvo on {name}…") } else { format!("Kuvo on {name} updates once your sessions there finish.") }, "detail": "" });
+                if updating.state != "updating"
+                    && let Some(actions) = computer["actions"].as_array_mut()
+                {
+                    let mut action = json!({ "id": "update-here", "label": "Update Now" });
+                    if updating.working > 0 {
+                        action["confirm"] = json!({ "title": format!("Update Kuvo on {name} now?"), "message": format!("{} at work on {name} stop as Kuvo restarts there.", if updating.working == 1 { "1 session is".to_owned() } else { format!("{} sessions are", updating.working) }), "label": "Update Now" });
+                    }
+                    actions.push(action);
                 }
             }
             if let Some(updating) = areas.updates.iter().find(|updating| computer["key"] == json!(updating.key)) {

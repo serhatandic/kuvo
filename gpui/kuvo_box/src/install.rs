@@ -1,6 +1,6 @@
 //! Running the box's installer, the one the app carries (PROTOCOL.md, "Installing this computer's
-//! box"): `sh <bundle>/Contents/Resources/box-release/kuvo-install status|new|move --app <bundle>
-//! [--root <name>]`, its JSON lines read as they come.
+//! box"): `sh <bundle>/Contents/Resources/box-release/kuvo-install status|new|move|update [--now]
+//! --app <bundle> [--root <name>]`, its JSON lines read as they come.
 //!
 //! The box decides everything: what this computer holds (`verdict`), what to run next (`verb`),
 //! and every word shown. This only runs what it's told and hands on what was said.
@@ -142,6 +142,10 @@ pub enum Verb {
     Status,
     New,
     Move,
+    /// This computer's box brought up to the release the app carries, by the release's own code:
+    /// once nothing's at work there, or at once (`--now`). For a box from before it took the
+    /// release itself the moment its work ends (`computers.update.here`).
+    Update,
 }
 
 impl Verb {
@@ -150,6 +154,7 @@ impl Verb {
             Verb::Status => "status",
             Verb::New => "new",
             Verb::Move => "move",
+            Verb::Update => "update",
         }
     }
 }
@@ -199,13 +204,17 @@ pub struct Step {
     /// Where it is among the steps (from 1), and how many there are.
     pub index: Option<u32>,
     pub of: Option<u32>,
+    /// What to ask before going on at once, in the box's words (an update that waits for work to
+    /// end: Update Now asks this first).
+    pub confirm: Option<crate::accounts::Confirm>,
 }
 
 impl Step {
     /// A step out of what the box said: a line of the installer's, or a move's `progress`.
     fn said(said: &Value) -> Option<Step> {
         let count = |name: &str| said.get(name).and_then(Value::as_u64).and_then(|count| u32::try_from(count).ok());
-        Some(Step { step: said.get("step")?.as_str()?.to_owned(), title: said.get("title").and_then(Value::as_str).map(str::to_owned), index: count("index"), of: count("of") })
+        let confirm = said.get("confirm").cloned().and_then(|confirm| serde_json::from_value(confirm).ok());
+        Some(Step { step: said.get("step")?.as_str()?.to_owned(), title: said.get("title").and_then(Value::as_str).map(str::to_owned), index: count("index"), of: count("of"), confirm })
     }
 }
 
@@ -300,8 +309,20 @@ impl Installer {
 
     /// Runs one verb to its end, handing each step on as it's said.
     pub fn run(&self, verb: Verb, on: &mut dyn FnMut(Progress)) -> Ran {
+        self.run_with(verb, &[], on)
+    }
+
+    /// Brings this computer's box up to the release the app carries (`update`): once nothing's at
+    /// work there (it waits, in its own process, saying so in a `waiting` step), or `now`. Its
+    /// last line says how it ended (`updated`, `current`, `busy`, `blocked`, `off`, `failed`).
+    pub fn update(&self, now: bool, on: &mut dyn FnMut(Progress)) -> Ran {
+        self.run_with(Verb::Update, if now { &["--now"] } else { &[] }, on)
+    }
+
+    fn run_with(&self, verb: Verb, options: &[&str], on: &mut dyn FnMut(Progress)) -> Ran {
         let mut command = Command::new(&self.shell);
         command.arg(&self.carried.installer).arg(verb.word());
+        command.args(options);
         command.arg("--app").arg(&self.carried.bundle);
         if self.root != REAL_ROOT {
             command.arg("--root").arg(&self.root);

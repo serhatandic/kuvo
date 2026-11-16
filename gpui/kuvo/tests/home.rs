@@ -209,3 +209,112 @@ fn cancel_leaves_an_older_computer_as_it_was(cx: &mut TestAppContext) {
     assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").is_empty());
     assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.held_update()).map(|held| held.updating), Some(false));
 }
+
+/// devbox's box older than this app, which the box that lists your computers doesn't bring up to
+/// date itself (from before it did, or one it can't): the window opened on devbox.
+fn on_devbox_held<'a>(cx: &'a mut TestAppContext, stand_in: &StandIn) -> (Entity<Home>, &'a mut VisualTestContext) {
+    stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    assert_eq!(name(&home, cx), "devbox");
+    (home, cx)
+}
+
+fn computers_page(home: &Entity<Home>, cx: &mut VisualTestContext) -> Entity<kuvo::computers::ComputersView> {
+    let ws = workspace(home, cx);
+    ws.read_with(cx, |workspace, cx| workspace.area_view(kuvo::area::Area::Computers).and_then(|view| view.read(cx).computers_page().cloned())).expect("Computers' page")
+}
+
+#[gpui::test]
+fn an_older_machine_the_list_sets_up_again_is_updated_from_the_chip_and_shown_in_computers(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.sets_up_again("key_devbox");
+    let (home, cx) = on_devbox_held(cx, &stand_in);
+    click(cx, "update-chip");
+    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
+    assert_eq!(chip.title, "devbox’s Kuvo is older than this app");
+    assert_eq!(chip.detail, "Update Now sets Kuvo up on devbox again over SSH. What’s at work there keeps going.");
+    click(cx, "update-now");
+    // Asked of the box that lists your computers (this Mac's), never of devbox's own.
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/setup").len(), 1);
+    // The window is on this Mac's Computers, on devbox's page, where how it goes shows.
+    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
+    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.area()), kuvo::area::Area::Computers);
+    let page = computers_page(&home, cx);
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Computer("key_devbox".into()));
+    assert_eq!(page.read_with(cx, |page, _| page.tries_drawn().into_iter().map(|tried| tried.kind).collect::<Vec<_>>()), ["setup"]);
+}
+
+#[gpui::test]
+fn an_older_machine_to_set_up_over_ssh_says_so_in_the_boxs_words_and_opens_add_a_machine(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.needs_set_up_over_ssh("key_devbox");
+    let (home, cx) = on_devbox_held(cx, &stand_in);
+    click(cx, "update-chip");
+    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
+    assert_eq!(chip.title, "Kuvo on devbox needs an update. Set it up over SSH from Stand-in Mac to update it.");
+    assert_eq!(chip.action.as_ref().map(|action| action.label.as_str()), Some("Set Up Over SSH…"));
+    click(cx, "update-now");
+    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
+    let page = computers_page(&home, cx);
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
+    assert!(shown(cx, "add-machine"), "Add a Machine is on screen");
+    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty(), "nothing added until you say");
+}
+
+#[gpui::test]
+fn another_older_mac_says_its_own_app_updates_it_with_nothing_to_press(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.lists_as_mac("key_devbox");
+    let (home, cx) = on_devbox_held(cx, &stand_in);
+    click(cx, "update-chip");
+    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
+    assert_eq!(chip.detail, "Kuvo on devbox needs an update before it can be used here.");
+    assert!(shown(cx, "update-card") && !shown(cx, "update-now"));
+}
+
+/// (COMPAT(0.8 beta update): a list from before it said so itself.)
+#[gpui::test]
+fn an_older_machine_nothing_here_reaches_over_ssh_still_has_a_way_on(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (home, cx) = on_devbox_held(cx, &stand_in);
+    click(cx, "update-chip");
+    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
+    assert_eq!(chip.action.as_ref().map(|action| action.label.as_str()), Some("Set Up Over SSH…"));
+    assert!(shown(cx, "update-now"), "never a card with nothing to do");
+    click(cx, "update-now");
+    // Add a Machine, on this Mac's Computers, its address typed in, for you to add.
+    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
+    let page = computers_page(&home, cx);
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
+    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty(), "nothing added until you say");
+}
+
+#[gpui::test]
+fn this_macs_kuvo_waiting_for_its_release_says_so_in_the_chip_and_updates_now_on_your_word(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.own_update_waits("waiting", 2);
+    let (home, cx) = open(cx, stand_in.clone());
+    assert!(shown(cx, "update-chip"));
+    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
+    assert!(chip.title.ends_with("updates once your sessions there finish."), "{}", chip.title);
+    assert_eq!(kuvo::title_bar::chip_label(&chip), "Update Ready");
+    click(cx, "update-chip");
+    click(cx, "update-now");
+    // Sessions are at work here: it asks first.
+    assert!(shown(cx, "update-confirm"));
+    assert!(stand_in.seen_at("POST", "kuvo/update").is_empty());
+    click(cx, "update-confirm");
+    let asked = stand_in.seen_at("POST", "kuvo/update");
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].body.as_ref().map(|body| body["now"].clone()), Some(json!(true)));
+    // Under way: a spinner, nothing to press.
+    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
+    assert!(chip.updating && chip.action.is_none());
+    assert_eq!(kuvo::title_bar::chip_label(&chip), "Updating…");
+    click(cx, "update-chip");
+    assert!(shown(cx, "update-card-title") && !shown(cx, "update-now"));
+}

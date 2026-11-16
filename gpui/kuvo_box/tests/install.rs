@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use kuvo_box::install::stand_in::Bundle;
-use kuvo_box::install::{End, Installer, MoveFacts, Outcome, Progress, Step, Verb};
+use kuvo_box::install::{End, Installer, MoveFacts, Outcome, Progress, Ran, Step, Verb};
 
 const TRIAL: &str = "run.kuvo.code.trial713.p5";
 const ROOT: &str = ".kuvo-trial713-p5";
@@ -97,7 +97,7 @@ fn an_earlier_kuvo_code_s_data_is_handed_to_move_and_its_refusal_said() {
     bundle.says("move", None, 0, &[r#"{"step":"plan","title":"Getting ready","index":1,"of":12}"#, r#"{"step":"clone","title":"Copying your sessions and settings","index":3,"of":12}"#, r#"{"result":"done","verdict":"ours","started":true,"status":{}}"#]);
     let (outcome, drawn) = set_up(&installer);
     assert_eq!(outcome.end, End::Started);
-    assert_eq!(drawn.last(), Some(&Progress::Step(Step { step: "clone".into(), title: Some("Copying your sessions and settings".into()), index: Some(3), of: Some(12) })));
+    assert_eq!(drawn.last(), Some(&Progress::Step(Step { step: "clone".into(), title: Some("Copying your sessions and settings".into()), index: Some(3), of: Some(12), confirm: None })));
 }
 
 /// What the box says of a move besides where it is, handed on as it said it: every step ahead of
@@ -125,7 +125,7 @@ fn a_move_still_at_work_from_an_earlier_open_says_where_it_is() {
     bundle.says("status", None, 0, &[r#"{"verdict":"waits","verb":null,"status":{"progress":{"step":"check","title":"Checking the copy","index":8,"of":12}}}"#]);
     let (outcome, _) = set_up(&installer);
     assert_eq!(outcome.end, End::Waits);
-    assert_eq!(outcome.progress, Some(Step { step: "check".into(), title: Some("Checking the copy".into()), index: Some(8), of: Some(12) }));
+    assert_eq!(outcome.progress, Some(Step { step: "check".into(), title: Some("Checking the copy".into()), index: Some(8), of: Some(12), confirm: None }));
     // Nothing was run beside it.
     assert_eq!(asked(&bundle).len(), 1);
 }
@@ -306,4 +306,28 @@ fn kuvo_code_itself_installs_into_its_own_home_and_carries_the_keychain_tool() {
     assert_eq!(real.asked(), Vec::<String>::new());
     std::fs::remove_file(real.path.join("Contents/MacOS/kuvo-keys")).unwrap();
     assert_eq!(kuvo_box::install::carried(&real.executable()).unwrap().keys, None);
+}
+
+/// This Mac's box brought up to the release the app carries (`update`): waiting for work to end,
+/// its words and Update Now's question handed on as the box said them; then at once (`--now`).
+#[test]
+fn this_macs_box_is_updated_waiting_for_work_to_end_or_now() {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = bundle(made.path());
+    let waiting = r#"{"step":"waiting","title":"Kuvo on this Mac updates once your sessions finish.","confirm":{"title":"Update Kuvo on this Mac now?","message":"2 sessions are at work on this Mac. They stop as Kuvo restarts.","label":"Update Now"}}"#;
+    bundle.says("update", Some(1), 1, &[waiting, r#"{"result":"busy","message":"Something is running there now."}"#]);
+    bundle.says("update", Some(2), 0, &[r#"{"step":"updating","title":"Updating Kuvo on this Mac…"}"#, r#"{"result":"updated"}"#]);
+    let mut drawn = Vec::new();
+    let ran = installer.update(false, &mut |progress| drawn.push(progress));
+    let Progress::Step(step) = &drawn[0] else { panic!("{drawn:?}") };
+    assert_eq!((step.step.as_str(), step.title.as_deref()), ("waiting", Some("Kuvo on this Mac updates once your sessions finish.")));
+    assert_eq!(step.confirm.as_ref().map(|confirm| confirm.label.as_str()), Some("Update Now"));
+    let Ran::Answered { exit: 1, answer } = ran else { panic!("{ran:?}") };
+    assert_eq!(answer.result.as_deref(), Some("busy"));
+    let mut drawn = Vec::new();
+    let ran = installer.update(true, &mut |progress| drawn.push(progress));
+    assert!(matches!(&ran, Ran::Answered { exit: 0, answer } if answer.result.as_deref() == Some("updated")), "{ran:?}");
+    assert_eq!(drawn, vec![Progress::Step(Step { step: "updating".into(), title: Some("Updating Kuvo on this Mac…".into()), ..Step::default() })]);
+    // Asked as the protocol says: the verb, `--now` where it's now, the copy's own root.
+    assert_eq!(asked(&bundle), vec![format!("update --root {ROOT}"), format!("update --now --root {ROOT}")]);
 }

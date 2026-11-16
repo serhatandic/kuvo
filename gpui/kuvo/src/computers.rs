@@ -125,6 +125,11 @@ enum What {
     SetUp,
     Uninstall,
     Update,
+    /// This box takes the release waiting for it now (its own row's `update-here`).
+    UpdateHere,
+    /// Add a Machine, its address typed in: an older machine this box didn't set up over SSH
+    /// (`add`), to set it up from here.
+    AddMachine,
 }
 
 impl What {
@@ -137,6 +142,8 @@ impl What {
             What::SetUp => "action-setup",
             What::Uninstall => "action-uninstall",
             What::Update => "action-update",
+            What::UpdateHere => "action-update-here",
+            What::AddMachine => "action-add",
         }
     }
 }
@@ -268,6 +275,21 @@ impl ComputersView {
     /// What's typed for a machine's address.
     pub fn typed_host(&self, cx: &App) -> String {
         self.host.read(cx).text().to_owned()
+    }
+
+    /// Types `address` for a machine to add (a machine to set up over SSH once more, from the
+    /// update chip), left for you to add.
+    pub fn type_host(&mut self, address: &str, cx: &mut Context<Self>) {
+        self.host.update(cx, |host, cx| host.set_text(address, cx));
+        self.rebuild(cx);
+    }
+
+    /// The box's tries may have changed (something was asked of it elsewhere): read again where
+    /// they aren't followed.
+    pub fn tries_changed(&mut self, cx: &mut Context<Self>) {
+        if self._adding_follow.is_none() {
+            self.read_adding(cx);
+        }
     }
 
     /// Reads the box's tries again (where they aren't followed).
@@ -639,6 +661,8 @@ impl ComputersView {
                     "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
                     "update" => (What::Update.row(), "Kuvo there".to_owned(), label, act(What::Update), why),
+                    "update-here" => (What::UpdateHere.row(), "Kuvo here".to_owned(), label, act(What::UpdateHere), why),
+                    "add" => (What::AddMachine.row(), "Kuvo there".to_owned(), label, act(What::AddMachine), why),
                     "setup" => (What::SetUp.row(), "Kuvo Code there".to_owned(), label, act(What::SetUp), why),
                     "uninstall" => (What::Uninstall.row(), "Uninstall".to_owned(), label, act(What::Uninstall), why),
                     _ => return None,
@@ -665,6 +689,15 @@ impl ComputersView {
     /// Does what a Manage button offers: asked first where the box says to, then done by the box;
     /// the list is read again (followed, it comes by itself). A refusal is shown in the box's words.
     fn manage(&mut self, act: Manage, cx: &mut Context<Self>) {
+        // (Nothing asked of the box: Add a Machine, at the address it was added under.)
+        if act.what == What::AddMachine {
+            let address = match &self.computers {
+                Reading::Ready(computers) => computers.iter().find(|computer| computer.key == act.key).and_then(|computer| computer.id.clone()),
+                _ => None,
+            };
+            self.type_host(&address.unwrap_or_default(), cx);
+            return cx.emit(ComputersEvent::Select(Some("add".into())));
+        }
         if let Some(confirm) = act.confirm.clone() {
             self.focus_confirm = true;
             self.confirm = Some((confirm, act));
@@ -682,6 +715,8 @@ impl ComputersView {
             What::SetUp => ("Starting…", Box::new(move |client| client.setup_computer(&act.key).map(|_| ()))),
             What::Uninstall => ("Starting…", Box::new(move |client| client.uninstall_computer(&act.key).map(|_| ()))),
             What::Update => ("Updating…", Box::new(move |client| client.update_computer(&act.key).map(|_| ()))),
+            What::UpdateHere => ("Updating…", Box::new(|client| client.update_here())),
+            What::AddMachine => return,
         };
         let tries = matches!(act.what, What::SetUp | What::Uninstall | What::Update);
         self.problem = None;

@@ -398,3 +398,38 @@ fn an_older_computer_being_brought_up_to_date_says_how_and_updates_now_on_your_w
     assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Updating Kuvo on old-mini…"));
     assert!(!shown(cx, "action-update"), "nothing to press while it runs");
 }
+
+/// This computer's Kuvo waiting for the release its app carries (`computers.update.here`): its
+/// page says so in its box's words, and Update Now takes it now, asked first while sessions are
+/// at work.
+#[gpui::test]
+fn this_computers_kuvo_waiting_for_its_release_updates_now_on_your_word(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.own_update_waits("waiting", 1);
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-this");
+    let title = said(&page, cx, "notice-update").map(|(title, _)| title).unwrap_or_default();
+    assert!(title.ends_with("updates once your sessions there finish."), "{title}");
+    click(cx, "action-update-here-button");
+    assert!(page.read_with(cx, |page, _| page.confirm_words()).is_some_and(|(title, _, _)| title.starts_with("Update Kuvo on")));
+    assert!(stand_in.seen_at("POST", "kuvo/update").is_empty());
+    click(cx, "computers-confirm-go");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/update").len(), 1);
+    assert!(said(&page, cx, "notice-update").is_some_and(|(title, _)| title.starts_with("Updating Kuvo on")));
+    assert!(!shown(cx, "action-update-here"), "nothing to press while it runs");
+}
+
+/// An older machine this box didn't set up over SSH: its page says so in the box's words, and its
+/// button opens Add a Machine at its address, adding nothing until you say.
+#[gpui::test]
+fn an_older_machine_to_set_up_over_ssh_opens_add_a_machine_at_its_address(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.needs_set_up_over_ssh("key_devbox");
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_devbox");
+    assert!(said(&page, cx, "notice-update").is_some_and(|(title, _)| title.starts_with("Kuvo on devbox needs an update.")));
+    click(cx, "action-add-button");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
+    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty());
+}

@@ -76,6 +76,9 @@ struct State {
     /// The boxes of your other computers it reaches, by key.
     peers: HashMap<String, StandIn>,
     older: bool,
+    /// It's from before it took the release its app carries the moment its work ended, saying how
+    /// that stands itself (no `computers.update.here`): the app brings it up with its installer.
+    before_update_here: bool,
     sessions: BTreeMap<String, Value>,
     projects: BTreeMap<String, Value>,
     /// Each conversation's engine messages, oldest first.
@@ -443,6 +446,35 @@ impl StandIn {
         let mut state_now = self.state();
         state_now.areas.updates.retain(|updating| updating.key != key);
         state_now.areas.updates.push(areas::Updating { key: key.to_owned(), state, long, working });
+    }
+
+    /// It's from before it took the release its app carries itself (no `computers.update.here`).
+    pub fn from_before_update_here(&self) {
+        self.state().before_update_here = true;
+    }
+
+    /// The release its app carries waits for it (`computers.update.here`): its own row says how
+    /// (`waiting`, `updating`, `failed`) with Update Now, asked first while `working` sessions are
+    /// at work on it.
+    pub fn own_update_waits(&self, state: &'static str, working: usize) {
+        self.state().areas.here_update = Some(areas::Updating { key: String::new(), state, long: false, working });
+    }
+
+    /// Its list offers to set the computer `key` up again over SSH (Set Up Again), as the box
+    /// that set it up does, without bringing it up to date itself.
+    pub fn sets_up_again(&self, key: &str) {
+        self.state().areas.set_up_again.push(key.to_owned());
+    }
+
+    /// It says the older machine `key`, which it didn't set up over SSH, is to be set up over SSH
+    /// from here (its row's `update`, and `add`).
+    pub fn needs_set_up_over_ssh(&self, key: &str) {
+        self.state().areas.to_set_up.push(key.to_owned());
+    }
+
+    /// It lists the computer `key` as a Mac.
+    pub fn lists_as_mac(&self, key: &str) {
+        self.state().areas.as_macs.push(key.to_owned());
     }
 
     /// Its list of computers has this computer alone.
@@ -1513,9 +1545,19 @@ impl StandIn {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
                 features.extend(["queue", "asks"]);
                 features.extend(state.queue.features());
+                if !state.before_update_here { features.push(crate::home::UPDATES_ITSELF); }
                 if state.older { features.clear(); }
                 answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
+            // Update Now on itself (`computers.update.here`): the release waiting for it is being
+            // taken.
+            ("POST", ["kuvo", "update"]) if body["now"] == json!(true) => match state.areas.here_update.as_mut() {
+                Some(update) => {
+                    update.state = "updating";
+                    answer(202, json!({ "updating": "checking" }))
+                }
+                None => answer(409, json!({ "message": "It has the newest Kuvo already." })),
+            },
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
             ("GET", ["kuvo", "search"]) => {
                 let Some(query) = query(path, "q").map(decoded).map(|q| q.replace('+', " ")).filter(|q| !q.trim().is_empty()) else {
