@@ -252,8 +252,17 @@ test.if(!!ENGINE)("a computer's first box, installed and started the real way: i
     return null
   }, "a turn offered Kuvo Code's tools",
     async () => `The model was asked ${model.tools.length} times, offered: ${JSON.stringify(model.tools.map(each => each.slice(0, 12)))}\nThe turn: ${JSON.stringify((await api("GET", `api/session/${session.id}/message?limit=20`)).json).slice(0, 3000)}\nMCP: ${JSON.stringify((await api("GET", "api/mcp")).json)}`)
-  for (const name of ["start_session", "make_project", "list_projects", "send_message", "list_agents", "schedule_wake_up", "set_job", "vault_ask", "sandbox_ask", "queue_add"]) {
+  for (const name of ["start_session", "make_project", "list_projects", "send_message", "list_agents", "schedule_wake_up", "set_job", "queue_add"]) {
     expect(offered).toContain(`kuvo-browser_${name}`)
+  }
+  // The vault's and the sandbox's asks are the box's long-running process's, which a Mac's own box
+  // always runs (Kuvo Helper's `serve`); a machine's runs once it has something to answer (a Mac that
+  // set it up, a phone, a vault: PROTOCOL.md, "Peers"), and this one, installed with no Mac, has none.
+  // (Whether a machine's should run with nothing to answer, so its sandbox and asks work with no
+  // Mac, a desktop app on that computer say, is an open design question, not this test's.)
+  for (const name of ["vault_ask", "sandbox_ask"]) {
+    if (mac) expect(offered).toContain(`kuvo-browser_${name}`)
+    else expect(offered).not.toContain(`kuvo-browser_${name}`)
   }
 
   // The engine's plugin, loaded: a command an agent runs gets your own folders back, never the
@@ -281,11 +290,12 @@ test.if(!!ENGINE)("a computer's first box, installed and started the real way: i
   expect(bridge.status).toBe(200)
 
   // The vault answers a client: on a Mac, `serve`, as the desktop app asks it; on a machine, one
-  // request through the box's own command, as a Mac reaches a machine's box over SSH.
-  let vault: { status: number; body: { state?: unknown } }
+  // request through the box's own command, as a Mac reaches a machine's box over SSH (where, with
+  // nothing to answer yet, it says its process isn't running: above).
+  let vault: { status: number; body: { state?: unknown; message?: string } }
   if (serve) {
     const answered = await fetch(`${serve.url}/kuvo/vault`, { headers: { authorization: "Basic " + Buffer.from(`opencode:${serve.password}`).toString("base64"), "x-kuvo-from": "app" } })
-    vault = { status: answered.status, body: (await answered.json()) as { state?: unknown } }
+    vault = { status: answered.status, body: (await answered.json()) as { state?: unknown; message?: string } }
   } else {
     const asked = spawnSync(path.join(K, "engine", version!, "opencode"), ["--config=/dev/null", "--no-env-file", path.join(K, "bin", "kuvo-link.js"), "box", "route"], {
       cwd: K, encoding: "utf8", timeout: 60_000, input: JSON.stringify({ method: "GET", path: "kuvo/vault", headers: { "x-kuvo-from": "app" } }),
@@ -294,6 +304,10 @@ test.if(!!ENGINE)("a computer's first box, installed and started the real way: i
     const answer = JSON.parse(asked.stdout.trim().split("\n").pop() ?? "null")
     vault = { status: answer?.status, body: typeof answer?.body === "string" ? JSON.parse(answer.body) : answer?.body }
   }
-  expect(vault.status).toBe(200)
-  expect(vault.body.state).toBeTruthy()
+  if (mac) {
+    expect(vault.status).toBe(200)
+    expect(vault.body.state).toBeTruthy()
+  } else {
+    expect(vault).toMatchObject({ status: 503, body: { message: expect.stringContaining("link here isn't running") } })
+  }
 }, LONG)
