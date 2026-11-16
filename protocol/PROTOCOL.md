@@ -1823,7 +1823,10 @@ machines; a client that wants every computer's facts asks the box that has it as
   - **What it does**, in order: connects with the keys and agent of the box's computer (never a
     password; refused, it tries once through an agent of its own that offers the first few SSH keys
     in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
-    its `machine-id` where it has one, what Kuvo Code it has); puts its own release's files there, each checked by its
+    its `machine-id` where it has one, what Kuvo Code it has); refuses a Mac with an earlier Kuvo
+    Code's data its installer would move (`app-07`, `app-box`: updated to Kuvo there first),
+    unless that Mac has a box of its own or a machine's, judged from the probe by the installer's
+    own rule (`machineBoxIn`), where its installer leaves that data as it is; puts its own release's files there, each checked by its
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
     Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
@@ -7643,11 +7646,16 @@ above. Only on a Mac.
   has is left as it is; one under four characters, which the vault keeps none of, is said
   (`dropped`); a site the earlier Kuvo Code let agents sign in to alone, with that account,
   stays so (`POST kuvo/vault/grants`, everyone, `own`: asked again at a later run where the
-  sign-in is there without it). Each password is read back from the vault before
-  `kuvo-keys delete-originals --password <site> --account <account>` removes its Keychain
-  original (the verified password arrives on stdin). A different vault password or failed read
-  keeps the original and leaves the move owed; a retry verifies again. Short passwords stay
-  in the Keychain. Never written to a file, by either.
+  sign-in is there without it). Each password is checked against the vault's
+  (`POST kuvo/vault/items/<id>/same`, which shows nothing and notes nothing in its activity)
+  before `kuvo-keys delete-originals --password <site> --account <account>` removes its
+  Keychain original (the verified password arrives on stdin). One the vault keeps differently
+  (it had another password for that site and account), two the Keychain has for the same site
+  and account, one not valid UTF-8 (said with U+FFFD in its place, never given to the vault),
+  and one `delete-originals` finds changed (`copy-missing`) keep their originals, are counted in
+  `dropped`, and the rest go on; a vault that can't answer the check, or a Keychain that won't
+  remove one, leaves the step owed, verified again at the next run. Short passwords stay in
+  the Keychain. Never written to a file, by either.
 - **What the move carries** (the `upgrade` step; each reads the app's folder and its
   preferences, `~/Library/Preferences/<ID>.plist`, asked of the system for Kuvo Code itself, and
   writes only in staging; each leaves what a box already had as it is; preferences that are
