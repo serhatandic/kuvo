@@ -150,7 +150,8 @@ const started = (session = "ses_tests") => ({ type: "session.execution.started",
 const delivered = (session = "ses_tests") => ({ type: "session.inbox.delivered", data: { sessionID: session, inboxID: `inb_${state.counter}` } });
 
 const said = (text, session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "assistant", time: { created: at() }, content: text ? [{ type: "text", text }] : [] });
-const asked = (text = "Run the tests.", session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "user", text, time: { created: at() } });
+// Its lead asking, as its message reaches the session.
+const asked = (text = "Run the tests.", session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "user", text: `[Message from Pixel · ses_pixel] (To answer, use send_message to ses_pixel.)\n\n${text}`, time: { created: at() } });
 const ownWord = (session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "synthetic", text: "<shell>done</shell>", metadata: { source: "shell" }, time: { created: at() } });
 const notice = (text = "Going on with another account.", session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "synthetic", text, time: { created: at() } });
 const boxWord = (text = '[Session finished] "Part" in tidepool (address ses_part)\n\nDone.', session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "user", text, time: { created: at() } });
@@ -242,6 +243,36 @@ test("a session waiting on its own command isn't finished: told once, when it's 
   assert.doesNotMatch(finished()[0], /Still running/);
   // Nothing brings it back.
   await time.pass(3_600 * SECONDS);
+  await time.pass(5 * SECONDS);
+  assert.equal(finished().length, 1);
+});
+
+// #768: the user's own turn is theirs, but a finish its lead waits on still comes.
+test("a finish waiting on its command, with the user talking to the session meanwhile: its lead hears it's done, never the user's answer as its report", async () => {
+  const time = clock();
+  const watch = watcher(time);
+  await watch.caughtUp;
+  asked();
+  await watch(startJob("sh_1"));
+  said("Started the tests; they'll take a while.");
+  await watch(ended());
+  await time.pass(10 * SECONDS);
+  // The user asks it something directly while the tests run, and it answers them.
+  state.messages.ses_tests.unshift({ id: `msg_${state.counter + 1}`, type: "user", text: "How long will they take?", time: { created: at() } });
+  said("About an hour: the suite is long.");
+  await watch(ended());
+  await time.pass(10 * SECONDS);
+  assert.deepEqual(leadLines(), [], "nothing while its lead's work runs, and not the user's answer");
+  await watch(exited("sh_1"));
+  await time.pass(11 * SECONDS);
+  await time.pass(5 * SECONDS);
+  assert.equal(finished().length, 1, "its lead hears it's done, once");
+  assert.match(finished()[0], /^\[Session finished\] "Tests"[\s\S]*The user has written to it since[\s\S]*read_conversation/);
+  assert.doesNotMatch(finished()[0], /About an hour/);
+  // Another turn of the user's: nothing.
+  state.messages.ses_tests.unshift({ id: `msg_${state.counter + 1}`, type: "user", text: "Thanks.", time: { created: at() } });
+  said("You're welcome.");
+  await watch(ended());
   await time.pass(5 * SECONDS);
   assert.equal(finished().length, 1);
 });
@@ -388,7 +419,7 @@ test("told it finished, a turn nobody asked for is told only if it has something
   await time.pass(5 * SECONDS);
   assert.equal(finished().length, 2, "the same again isn't");
   // Someone writes to it: its answer goes, however short.
-  asked("[Message from Pixel · ses_pixel] (…)\n\nDid you push?");
+  asked("Did you push?");
   said("No.");
   await watch(ended());
   await time.pass(5 * SECONDS);
@@ -435,7 +466,7 @@ test("stopped by its lead (stop_session): what it left running and its wake-ups 
   state.active.add("ses_tests");
   const before = state.interrupted.length;
   await watch(started());
-  asked("[Message from Pixel · ses_pixel] (…)\n\nCarry on.");
+  asked("Carry on.");
   await watch(delivered());
   assert.equal(state.interrupted.length, before, "not stopped: someone asked");
   state.active.delete("ses_tests");
@@ -767,7 +798,7 @@ test("a word of the box's or its agent's landing in a turn, or after its reply, 
   assert.equal(finished().length, 1);
   assert.match(finished()[0], /All 120 tests pass/);
   // After its reply (a coding agent's "used more tools"): the reply is what it said.
-  asked("[Message from Pixel · ses_pixel] (…)\n\nAnything else?");
+  asked("Anything else?");
   said("Nothing else.");
   notice("Used 3 more tools.");
   await watch(ended());
@@ -775,7 +806,7 @@ test("a word of the box's or its agent's landing in a turn, or after its reply, 
   assert.equal(finished().length, 2, "someone asked, and a word after the reply doesn't change that");
   assert.match(finished()[1], /Nothing else\./);
   // A command's end written in a turn someone asked for: still theirs, however short the answer.
-  asked("[Message from Pixel · ses_pixel] (…)\n\nDid you push?");
+  asked("Did you push?");
   said("Checking.");
   ownWord();
   said("No.");
@@ -835,7 +866,7 @@ test("a question isn't held up by what ran before it was asked; a turn on its ow
   await watch(ended());
   await time.pass(10 * SECONDS);
   assert.deepEqual(finished(), [], "it's what it was asked to start: held");
-  asked("[Message from Pixel · ses_pixel] (…)\n\nWhich port?");
+  asked("Which port?");
   said("Port 3000.");
   await watch(ended());
   await time.pass(5 * SECONDS);
@@ -1003,7 +1034,7 @@ test("a long turn is read whole: who asked is known past its many steps", async 
   said("Up.");
   await watch(ended());
   // A question, a turn of many steps, with what ran from before still up: told at once.
-  asked("[Message from Pixel · ses_pixel] (…)\n\nFix the login.");
+  asked("Fix the login.");
   for (let step = 0; step < 120; step++) said("");
   said("Fixed it.");
   await watch(ended());
@@ -1314,7 +1345,7 @@ test("stopped by the user while its finish waits on its command: its lead hears 
   await time.pass(5 * SECONDS);
   assert.equal(leadLines().length, 1);
   // Written to again, it's as any other.
-  asked("[Message from Pixel · ses_pixel] (…)\n\nCarry on.");
+  asked("Carry on.");
   state.active.add("ses_tests");
   await watch(started());
   await watch(delivered());
@@ -1433,7 +1464,7 @@ test("stopped by its lead, then written to again and stopped by the user: its le
   // Its lead writes to it again; you stop it as it works.
   state.active.add("ses_tests");
   await watch(started());
-  asked("[Message from Pixel · ses_pixel] (…)\n\nCarry on.");
+  asked("Carry on.");
   await watch(delivered());
   assert.equal((await route("POST", "kuvo/sessions/ses_tests/stop")).status, 200);
   state.active.delete("ses_tests");

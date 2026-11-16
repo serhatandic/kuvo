@@ -75,6 +75,7 @@ macro_rules! icons {
 }
 
 icons! {
+    Alarm => "alarm",
     Archive => "archive",
     ArrowDown => "arrow-down",
     ArrowLeft => "arrow-left",

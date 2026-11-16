@@ -5,6 +5,7 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. S
 
 | Ours | Lucide |
 | --- | --- |
+| alarm | alarm-clock |
 | archive | archive |
 | arrow-down | arrow-down |
 | arrow-left | arrow-left |

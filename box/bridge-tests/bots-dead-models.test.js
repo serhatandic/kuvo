@@ -41,20 +41,21 @@ const sessions = {
   ses_free: { id: "ses_free", title: "Name the app", location: { directory: app }, model: { providerID: "opencode", id: "deepseek-v4.1-flash-free" }, time: { created: Date.now(), updated: 1 }, metadata: { kuvo: { startedBy: "ses_lead", by, depth: 1, wake: ["finished", "asks"] } } },
   ses_busy: { id: "ses_busy", title: "Write the copy", location: { directory: app }, model: { providerID: "opencode-go", id: "deepseek-v4.1-flash" }, time: { created: Date.now(), updated: 1 }, metadata: { kuvo: { startedBy: "ses_lead", by, depth: 1, wake: ["finished", "asks"] } } },
 };
-// Each session's messages, oldest first: the concept's turn failed before it wrote anything.
+// Each session's messages, oldest first, each turn its lead's message: the concept's turn failed
+// before it wrote anything.
 const messages = {
   ses_concept: [
-    { id: "msg_1", type: "user", text: "Pick the concept for a new iOS app." },
+    { id: "msg_1", type: "user", text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nPick the concept for a new iOS app." },
     { id: "msg_2", type: "assistant", model: zen("claude-opus-5-5"), content: [], finish: "error", error: funds },
     { id: "msg_3", type: "idle", outcome: "failed", error: funds },
   ],
   ses_build: [
-    { id: "msg_4", type: "user", text: "Build it." },
+    { id: "msg_4", type: "user", text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it." },
     { id: "msg_5", type: "assistant", model: zen("gpt-6.1-sol"), content: [{ type: "text", text: "Built it, with tests." }] },
     { id: "msg_6", type: "idle", outcome: "succeeded" },
   ],
   ses_free: [
-    { id: "msg_7", type: "user", text: "Name it." },
+    { id: "msg_7", type: "user", text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nName it." },
     { id: "msg_8", type: "assistant", content: [{ type: "text", text: "Pocket Ledger." }] },
     { id: "msg_9", type: "idle", outcome: "succeeded" },
   ],
@@ -219,7 +220,7 @@ test("a new key for that account offers its models again", async () => {
 
 test("a model that's only busy isn't held back", async () => {
   prompts = [];
-  messages.ses_busy = [{ id: "msg_10", type: "user", text: "Write it." }, { id: "msg_11", type: "idle", outcome: "failed", error: { type: "provider.unknown", message: "Overloaded" } }];
+  messages.ses_busy = [{ id: "msg_10", type: "user", text: "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nWrite it." }, { id: "msg_11", type: "idle", outcome: "failed", error: { type: "provider.unknown", message: "Overloaded" } }];
   await watch({ type: "session.execution.failed", data: { sessionID: "ses_busy", error: { type: "provider.unknown", message: "Overloaded" } } });
   await runAll();
   assert.match(prompts[0]?.text ?? "", /^\[Session failed\] "Write the copy" in the-app \(address ses_busy\) stopped with an error: Overloaded\. Read it with read_conversation/);

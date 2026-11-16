@@ -25,7 +25,7 @@ const by = { bot: "bot_pixel00001", name: "Pixel" };
 const toldFile = path.join(home, "run", "work", "told.json");
 
 // A stand-in for the engine or the coding agents' bridge: its sessions, each with its last reply
-// (none when `replied` is null), a turn after it that wrote none (`after`, the id of your message, or
+// (none when `replied` is null), a turn after it that wrote none (`after`, the id of its lead's message, or
 // of the box's own with `startedBy: "synthetic"`), and messages after that (`later`: commands you
 // ran, a model switch);
 // `listing` false answers its list as an engine still starting does, and `unread` the sessions
@@ -48,14 +48,14 @@ function place(sessions) {
       if (one && !one[2]) return sessions[id] ? reply({ data: sessions[id] }) : reply({ message: "No such session." }, 404);
       if (one?.[2] === "/message" && state.unread.has(id)) return reply({ message: "Busy." }, 503);
       if (one?.[2] === "/message" && sessions[id]) {
-        // A turn started after its reply that wrote none: what started it (your message, or the box's
-        // own, as a goal's nudge), then its end (newest first). As many as the page asks for.
-        const after = sessions[id].after ? [{ id: `${sessions[id].after}_end`, type: "idle", time: { created: 10 }, outcome: "failed" }, { id: sessions[id].after, type: sessions[id].startedBy ?? "user", time: { created: 10 }, content: [] }] : [];
+        // A turn started after its reply that wrote none: what started it (its lead's message, or the
+        // box's own, as a goal's nudge), then its end (newest first). As many as the page asks for.
+        const after = sessions[id].after ? [{ id: `${sessions[id].after}_end`, type: "idle", time: { created: 10 }, outcome: "failed" }, { id: sessions[id].after, type: sessions[id].startedBy ?? "user", time: { created: 10 }, ...(sessions[id].startedBy ? {} : { text: "[Message from Pixel · ses_pixel] (To answer, use send_message to ses_pixel.)\n\nTry again." }), content: [] }] : [];
         const later = (sessions[id].later ?? []).map(each => ({ ...each, time: { created: 11 } }));
         const limit = Number(new URL(request.url, "http://engine").searchParams.get("limit") ?? Infinity);
         const page = data => reply({ data: data.slice(0, limit) });
         if (sessions[id].replied === null) return page([...later, ...after]);
-        return page([...later, ...after, ...(after.length ? [{ id: `msg_${id}_end`, type: "idle", time: { created: sessions[id].replied ?? 9 } }] : []), { id: `msg_${id}`, type: "assistant", time: { created: sessions[id].replied ?? 9 }, content: [{ type: "text", text: sessions[id].said ?? "Done." }] }, { id: `msg_${id}_asked`, type: "user", time: { created: 8 }, content: [] }]);
+        return page([...later, ...after, ...(after.length ? [{ id: `msg_${id}_end`, type: "idle", time: { created: sessions[id].replied ?? 9 } }] : []), { id: `msg_${id}`, type: "assistant", time: { created: sessions[id].replied ?? 9 }, content: [{ type: "text", text: sessions[id].said ?? "Done." }] }, { id: `msg_${id}_asked`, type: "user", time: { created: 8 }, text: "[Message from Pixel · ses_pixel] (They get your last reply when you finish.)\n\nDo it.", content: [] }]);
       }
       if (one?.[2] === "/prompt" && sessions[id]) {
         state.prompts.push({ to: id, ...JSON.parse(body) });

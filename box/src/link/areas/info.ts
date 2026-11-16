@@ -7,7 +7,7 @@ import path from "node:path";
 import { bundleBuild } from "../../shared/bundle";
 import { keeperEngine } from "../../shared/engines";
 import { FEATURES } from "../../shared/features";
-import { processRuns as runs } from "../../shared/platform";
+import { engineRuns, processRuns as runs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
 import { macFeatures } from "../../shared/routes/mac";
 import type { BoxInfo, MachineInfo } from "../../shared/routes/box";
@@ -63,7 +63,7 @@ function movingNow(): Extract<BoxInfo, { kind: "mac" }>["moving"] | null {
 function machineInfo(engine: Partial<EngineRecord>, started: number | null, chats: string, agents: boolean, info: RouteContext["info"]): MachineInfo {
   // COMPAT(0.7 engine-stop): `stopped`, an engine an older Mac's Stop left down. Goes on the user's word, once no Mac from before 1.0 connects.
   // Whether it runs now, and whether it's stopped on purpose (until it's started, from anywhere).
-  const running = Boolean(engine.pid && runs(engine.pid, `${K}/engine/`));
+  const running = Boolean(engine.pid && engineRuns(engine.pid, K));
   const stopped = fs.existsSync(path.join(RUN, "stopped"));
   // The Mac that started it, as its start noted (and its name, from a Mac that notes it).
   const notes = engine.notes ?? {};

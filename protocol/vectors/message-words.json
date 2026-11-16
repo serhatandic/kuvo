@@ -415,6 +415,55 @@
           }
         }
       }
+    },
+    {
+      "name": "a wake-up its agent summarized: its summary and its note",
+      "message": {
+        "type": "user",
+        "id": "msg_4",
+        "text": "[Wake-up] Pacing check: read plan_limits; Claude weekly ≤ 75% by Tuesday.\n\nReply only with the readings.",
+        "metadata": {
+          "kuvo": {
+            "wake": {
+              "summary": "Pacing check"
+            }
+          }
+        }
+      },
+      "read": {
+        "type": "user",
+        "id": "msg_4",
+        "text": "[Wake-up] Pacing check: read plan_limits; Claude weekly ≤ 75% by Tuesday.\n\nReply only with the readings.",
+        "metadata": {
+          "kuvo": {
+            "wake": {
+              "summary": "Pacing check",
+              "note": "Pacing check: read plan_limits; Claude weekly ≤ 75% by Tuesday.\n\nReply only with the readings."
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a wake-up with no summary: its note's first sentence",
+      "message": {
+        "type": "user",
+        "id": "msg_5",
+        "text": "[Wake-up] **Look at** the v1.2 build. Then tell the user."
+      },
+      "read": {
+        "type": "user",
+        "id": "msg_5",
+        "text": "[Wake-up] **Look at** the v1.2 build. Then tell the user.",
+        "metadata": {
+          "kuvo": {
+            "wake": {
+              "summary": "Look at the v1.2 build.",
+              "note": "**Look at** the v1.2 build. Then tell the user."
+            }
+          }
+        }
+      }
     }
   ]
 }

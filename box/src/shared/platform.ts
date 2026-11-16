@@ -75,6 +75,45 @@ export function runsAs(pid: unknown, role: RegExp, proc = "/proc"): boolean {
   return line !== undefined && role.test(line);
 }
 
+/** A box's engine's command line, by the box's engine folder (`<root>/engine/`), for `runsAs`: any
+ * slash in it may be written twice, as a HOME written with a slash at its end gives ("/Users/you/",
+ * as Kuvo Helper gave its keeper, which started its engine as "/Users/you//.kuvo-code/engine/…"). */
+export function engineRole(root: string): RegExp {
+  const folder = path.join(path.resolve(root), "engine").replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\/+/g, "/+");
+  return new RegExp(`${folder}/+`);
+}
+
+/** Whether `pid` runs as the engine of the box at `root`, as `processRuns` tells it (taken on trust
+ * where it trusts a process that's alive), its command line, where it's read, its folder's
+ * (`engineRole`). */
+export function engineRuns(pid: unknown, root: string, proc = "/proc"): boolean {
+  if (!processRuns(pid, "/engine/", proc)) return false;
+  const line = commandLineOf(pid as number, proc);
+  return line === undefined || engineRole(root).test(line);
+}
+
+/** The HOME the engine `pid` was started with, spelled as it was ("/Users/you/" too: Kuvo Helper
+ * gave its keeper that): what its command line has before `<root's name>/engine/`, where that's the
+ * folder around `root`. A keeper that takes its folder from HOME (`K="$HOME/.kuvo-code"`), run with
+ * it, knows that engine as its own whatever its age. Undefined where it can't be told. */
+export function engineHome(pid: unknown, root: string, proc = "/proc"): string | undefined {
+  if (!runsAs(pid, engineRole(root), proc)) return undefined;
+  const line = commandLineOf(pid as number, proc) ?? "";
+  const name = path.basename(path.resolve(root)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const found = new RegExp(`/${name}/+engine/`).exec(line);
+  if (!found) return undefined;
+  let around: string;
+  try { around = fs.realpathSync(path.dirname(path.resolve(root))); } catch { return undefined; }
+  // (The path begins where a word of the command line does: the nearest such start whose folder is
+  // the one around `root`.)
+  for (let start = found.index - 1; start >= 0; start--) {
+    if (line[start] !== "/" || (start > 0 && line[start - 1] !== " ")) continue;
+    const home = line.slice(start, found.index);
+    try { if (fs.realpathSync(home) === around) return home; } catch {}
+  }
+  return undefined;
+}
+
 /**
  * The folders in a home folder that the system asks you about before an app looks into them:
  * on a Mac, its privacy prompts (so a folder list from the home folder doesn't look inside
