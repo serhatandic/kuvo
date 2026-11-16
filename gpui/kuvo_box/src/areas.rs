@@ -487,6 +487,19 @@ impl Account {
 
 // MARK: What waits on you
 
+/// What's at work in Kuvo on a computer, as its box says it (`kuvo/box/at-work`): of it, what this
+/// app reads: whether that box is shown in its computer's menu bar (a Mac's own box, run by Kuvo
+/// Helper), how many of its sessions are at work, and whether anything would stop with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub struct HereAtWork {
+    #[serde(default)]
+    pub applies: bool,
+    #[serde(default)]
+    pub working: usize,
+    #[serde(default)]
+    pub busy: bool,
+}
+
 /// How many things wait on you in each area, across the box, as it counts them (`kuvo/waiting`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 pub struct Waiting {
@@ -591,6 +604,11 @@ impl BoxClient {
         }
         let answer: Answer = self.get("kuvo/agents/api/kuvo/limits")?;
         Ok(answer.data.rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
+    }
+
+    /// What's at work in Kuvo on this box's computer, as it says it for its menu bar.
+    pub fn at_work(&self) -> Result<HereAtWork> {
+        self.get("kuvo/box/at-work")
     }
 
     /// How many things wait on you in each area.

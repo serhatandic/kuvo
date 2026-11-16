@@ -390,6 +390,15 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
   assert.deepEqual({ verdict: after.said.verdict, verb: after.said.verb }, { verdict: "ours", verb: null });
   const again = install(where, "move");
   assert.deepEqual({ status: again.status, result: again.said.result }, { status: 0, result: "nothing" });
+  // Stopped until it next starts (Stop Kuvo on this Mac, #761): its helper went, its launch agent
+  // still loaded. The app opening starts it again: `new` runs, which starts the helper.
+  write(path.join(where.K, "run", "paused"), "");
+  const stopped = install(where, "status");
+  assert.deepEqual({ verdict: stopped.said.verdict, verb: stopped.said.verb }, { verdict: "ours", verb: "new" });
+  fs.rmSync(path.join(where.home, "launchctl-asked"), { force: true });
+  const started = install(where, "new");
+  assert.deepEqual({ status: started.status, started: started.said.started }, { status: 0, started: true }, started.stderr);
+  assert.match(read(path.join(where.home, "launchctl-asked")), /^kickstart gui\/\d+\/run\.kuvo\.code\.machine$/m);
 });
 
 test("a move launchd wouldn't start is finished by running it again: until then the installer says to", { skip: !mac && "a Mac's app folder" }, () => {

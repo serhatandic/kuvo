@@ -21,6 +21,7 @@ import { isObject } from "../../shared/json";
 import { RELEASE_FILES } from "../add/files";
 import * as scripts from "../add/scripts";
 import { writePrivate } from "../files";
+import { PAUSED } from "../at-work";
 import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
@@ -155,10 +156,11 @@ export async function installCommand(args: string[]): Promise<number> {
 
 /** Whether what starts a Mac's own box is in place and launchd has it: its launch agent's file
  * naming this box's helper, loaded (where that couldn't be asked, the file alone). One written
- * that launchd never took, or took and let go of, isn't in place: `new` starts it. */
+ * that launchd never took, or took and let go of, isn't in place: `new` starts it. Nor is one
+ * stopped until it next starts (Stop Kuvo on this Mac, `run/paused`): the app opening starts it. */
 function helperRuns(): boolean {
   const status = helperStatus();
-  return status.agent && status.loaded !== false;
+  return status.agent && status.loaded !== false && !fs.existsSync(PAUSED());
 }
 
 const NO_ENGINE = (here: string) => `The engine couldn't be downloaded. Check that ${here} is online, then try again.`;

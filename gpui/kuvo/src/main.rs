@@ -33,8 +33,11 @@ fn main() {
         kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
         // Who its notifications are from (macOS takes it from the bundle; Linux from this).
         cx.set_app_identity("run.kuvo.code", "Kuvo");
-        // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one).
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one). The
+        // first time, on a Mac whose Kuvo stays at work in the menu bar, a note says so first
+        // (`kuvo::quit_note`), remembered in your settings. (After the key's dispatch: the window
+        // it came through is busy until then.)
+        cx.on_action(|_: &Quit, cx| cx.defer(kuvo::quit_note::quit));
         cx.set_menus([Menu { name: "Kuvo".into(), items: vec![MenuItem::action("Quit Kuvo", Quit)], disabled: false }]);
         cx.on_window_closed(|cx, _| {
             // (The small window beside System Settings isn't the app's own.)
@@ -77,6 +80,7 @@ fn main() {
         cx.activate(true);
     });
 }
+
 
 /// Asks the installer this build carries what this computer holds (`status`: it sets up, moves and
 /// starts nothing, and writes only its own staging in the box's home, `updates/install`), and

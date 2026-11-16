@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Darwin
@@ -44,6 +45,11 @@ public final class BoxHelper {
 
     private var keeper: Child?
     private var serve: Child?
+    /// The password `serve` was last started with: what the menu bar item reaches it with.
+    private(set) var servePassword: String?
+    /// When this helper started: a stop until Kuvo next starts (`run/paused`) made before it was
+    /// for the one before it, which this start ends.
+    let startedAt = Date()
     /// Whether `serve` started without the vault's file key (the Keychain was locked): started again
     /// once it can be read.
     private var serveLacksFileKey = false
@@ -77,6 +83,11 @@ public final class BoxHelper {
             return words[index + 1]
         }
         let given = option("--home")
+        #if DEBUG
+        // Tests alone: AppKit's run loop, as its own build runs, with no item in your menu bar.
+        let appLoop = words.contains("--test-app-loop")
+        words.removeAll { $0 == "--test-app-loop" }
+        #endif
         let appBundle = option("--app")
         var keychain = HostKeychain()
         #if DEBUG
@@ -136,8 +147,26 @@ public final class BoxHelper {
         }
         switch command {
         case "keep" where words.count <= 1:
-            MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, allowed: allowed) }
-            dispatchMain()
+            // In the menu bar (`MenuBarItem`), while it keeps the box: its own build always; the
+            // tests' never in your menu bar (`--test-app-loop`: AppKit's run loop, without the item).
+            #if DEBUG
+            let (loop, drawn) = (appLoop, false)
+            #else
+            let (loop, drawn) = (true, true)
+            #endif
+            let helper = MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, allowed: allowed) }
+            guard loop else { dispatchMain() }
+            MainActor.assumeIsolated {
+                let application = NSApplication.shared
+                application.setActivationPolicy(.accessory)
+                // Quit as AppKit has it (Activity Monitor, logging out): everything it started is
+                // told to stop first, as SIGTERM does, never an exit that leaves the box running.
+                HelperApp.shared = HelperApp(helper: helper)
+                application.delegate = HelperApp.shared
+                if drawn { MenuBarItem.shared = MenuBarItem(helper: helper, app: app) }
+                application.run()
+            }
+            exit(0)
         case "keys" where words.count == 2:
             let move = KeychainMove(keychain: keychain, home: home, app: app, helper: prefix)
             // What changes the box's keys never runs beside the helper keeping it (its lock), whose
@@ -252,7 +281,8 @@ public final class BoxHelper {
     }
 
     /// The box kept, in this process, for as long as it runs.
-    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, allowed: @escaping @Sendable () async -> Permissions?) {
+    @discardableResult
+    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, allowed: @escaping @Sendable () async -> Permissions?) -> BoxHelper {
         let run = home.appending(path: "run")
         try? FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // One at a time: one opened while launchd's runs goes at once, and cleanly.
@@ -291,6 +321,7 @@ public final class BoxHelper {
         let helper = BoxHelper(home: home, host: BoxHelperHost(home: home, keychain: keychain, prefix: prefix, app: app), environment: environment)
         helper.allowed = allowed
         helper.begin()
+        return helper
     }
 
     /// Why the box shouldn't run now, or nil: a move of it under way (its journal not done), or its
@@ -376,6 +407,19 @@ public final class BoxHelper {
     /// Whether the box was turned off for good (`kuvo-start off`, uninstalling).
     var isOff: Bool { FileManager.default.fileExists(atPath: run.appending(path: "off").path(percentEncoded: false)) }
 
+    /// Whether Kuvo on this Mac was stopped until it next starts while this helper ran (Stop Kuvo on
+    /// this Mac: `kuvo-start pause`, `run/paused`). A mark from before this helper started was for
+    /// the one before it: this start is the next one (its keeper takes the mark away).
+    var isPaused: Bool {
+        let file = run.appending(path: "paused").path(percentEncoded: false)
+        guard let made = (try? FileManager.default.attributesOfItem(atPath: file))?[.modificationDate] as? Date else { return false }
+        // (The file system's clock to the second, on some: a second's grace.)
+        return made.addingTimeInterval(1) >= startedAt
+    }
+
+    /// Whether everything it runs goes, and it with it: turned off, or stopped until it next starts.
+    var goes: Bool { isOff || isPaused }
+
     private func startKeeper() {
         guard !finishing else { return }
         // (In a session of its own, as `kuvo-start` starts its keeper: `off` ends it with what it's at.)
@@ -396,7 +440,9 @@ public final class BoxHelper {
         guard !finishing else { return }
         let (fileKey, retry) = host.vaultFileKey()
         serveLacksFileKey = fileKey == nil && retry
-        var secrets = ["password": HostProof.secret(), "hostVaultSecret": host.vaultSecret]
+        let password = HostProof.secret()
+        servePassword = password
+        var secrets = ["password": password, "hostVaultSecret": host.vaultSecret]
         if let fileKey { secrets["vaultFileKey"] = fileKey }
         let first = ((try? JSONSerialization.data(withJSONObject: secrets)) ?? Data()) + Data("\n".utf8)
         serve = Child.spawn("/bin/sh", [start.path(percentEncoded: false), "serve"], environment: environment, directory: home, session: false,
@@ -408,8 +454,8 @@ public final class BoxHelper {
     /// after it started, unless the box was turned off, when everything goes.
     private func ended(_ child: Child) {
         guard !finishing else { return }
-        if isOff {
-            log.notice("This Mac's box was turned off: Kuvo Helper goes too")
+        if goes {
+            log.notice("This Mac's box was turned off or stopped: Kuvo Helper goes too")
             return finish(0)
         }
         let wait = child.nextWait()
@@ -436,7 +482,7 @@ public final class BoxHelper {
                 serve.planned = true
                 serve.terminate()
             }
-            if isOff, keeper?.isRunning != true { return finish(0) }
+            if goes, keeper?.isRunning != true { return finish(0) }
             try? await Task.sleep(for: .seconds(10))
         }
     }
@@ -505,6 +551,23 @@ public final class BoxHelper {
     nonisolated static var systemPromptOpen: Bool {
         let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.contains { $0[kCGWindowOwnerName as String] as? String == "UserNotificationCenter" }
+    }
+}
+
+/// The helper as an app to AppKit: Quit (an Apple Event, as Activity Monitor and logging out send)
+/// goes as SIGTERM does (`finish`), which exits once what it started has stopped.
+@MainActor
+final class HelperApp: NSObject, NSApplicationDelegate {
+    static var shared: HelperApp?
+    let helper: BoxHelper
+
+    init(helper: BoxHelper) {
+        self.helper = helper
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        helper.finish(0)
+        return .terminateLater
     }
 }
 

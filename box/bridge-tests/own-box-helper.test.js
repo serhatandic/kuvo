@@ -377,3 +377,53 @@ test("kuvo/box/permissions: a machine's box runs under no such program, and says
   assert.equal((await box.ask("kuvo/box/permissions", "POST", { later: "accessibility" })).status, 409);
   await box.stop();
 });
+
+test("kuvo/box/at-work and kuvo/box/stop: what Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac, which the box's keeper does", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, async () => {
+  const where = home("mac");
+  // Its keeper, a stand-in: notes what it's asked, as `kuvo-start pause` would be.
+  write(path.join(where.K, "bin", "kuvo-start"), `#!/bin/sh\necho "$1 $HOME" >>"${where.home}/keeper-asked"\n`, 0o755);
+  const box = await served(where);
+  const said = await box.ask("kuvo/box/at-work");
+  assert.equal(said.status, 200);
+  // A Mac's own box is in its menu bar; with no engine read, nothing is known to work.
+  assert.deepEqual(said.body, { applies: true, working: 0, sessions: [], asking: [], waiting: { sessions: 0, bots: 0, queue: 0 }, background: 0, busy: false, rings: [] });
+  const stopping = await box.ask("kuvo/box/stop", "POST", {});
+  assert.deepEqual(stopping, { status: 202, body: { stopping: true } });
+  // In a process of its own (it outlasts the server, which goes with the helper), its HOME the
+  // folder around the box.
+  for (let waited = 0; waited < 200 && !exists(path.join(where.home, "keeper-asked")); waited++) await new Promise(done => setTimeout(done, 25));
+  assert.equal(read(path.join(where.home, "keeper-asked")), `pause ${where.home}\n`);
+  await box.stop();
+});
+
+test("kuvo/box/stop: a machine's box isn't stopped so (nothing would start it again at login)", async () => {
+  const where = home("machine");
+  write(path.join(where.K, "bin", "kuvo-start"), `#!/bin/sh\necho "$1" >>"${where.home}/keeper-asked"\n`, 0o755);
+  const box = await served(where);
+  assert.equal((await box.ask("kuvo/box/stop", "POST", {})).status, 409);
+  assert.equal((await box.ask("kuvo/box/at-work")).body.applies, false);
+  assert.equal(exists(path.join(where.home, "keeper-asked")), false);
+  await box.stop();
+});
+
+test("helper start after Stop Kuvo on this Mac waits for the stopped helper to go before starting it again", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, () => {
+  const where = home("mac");
+  write(path.join(where.run, "paused"), "");
+  // launchd still has the stopped helper running for three looks, then it's gone.
+  write(path.join(where.tools, "launchctl"), `#!/bin/sh
+echo "$*" >>"${where.home}/launchctl"
+case "$1" in
+  print) n=$(cat "${where.home}/looks" 2>/dev/null || echo 0); n=$((n + 1)); echo $n >"${where.home}/looks"; [ $n -le 3 ] && echo "	pid = 4242"; exit 0 ;;
+esac
+`, 0o755);
+  helper(where, ["install", "--app", "run.kuvo.code.trial4"]);
+  fs.rmSync(path.join(where.home, "launchctl"), { force: true });
+  const started = helper(where, ["start"]);
+  assert.equal(started.status, 0, started.stderr);
+  const asked = read(path.join(where.home, "launchctl")).trim().split("\n");
+  const kick = asked.findIndex(line => line.startsWith("kickstart"));
+  assert.ok(kick > 0, asked.join("\n"));
+  // (Its own look for whether it's loaded, then the waits: kickstarted only once it's gone.)
+  assert.ok(asked.slice(0, kick).filter(line => line.startsWith("print gui")).length >= 4, asked.join("\n"));
+  assert.equal(Number(read(path.join(where.home, "looks")).trim()) >= 4, true);
+});

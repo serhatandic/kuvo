@@ -1558,6 +1558,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "box.app.host": ["GET", "kuvo/box/app"],
     // (What this Mac's app asks of a Mac's box's keys: a GET is the wrong method, here as there.)
     "box.appKeys": ["GET", "kuvo/box/proof"],
+    // (What Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac.)
+    "box.atWork": ["GET", "kuvo/box/at-work"],
     // (A command, `kuvo-link.js helper`, not a route: kuvo/info names it.)
     "box.helper": ["GET", "kuvo/info"],
     // (A box in a home of its own: on a Mac's, kuvo/work/settings's keepsAwake.)

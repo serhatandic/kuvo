@@ -93,6 +93,10 @@ put CFBundleIdentifier string "$HELPER_ID"
 put CFBundleShortVersionString string "$VERSION"
 put CFBundleVersion string "$BUILD"
 put LSMinimumSystemVersion string "${MIN_SYSTEM:-26.0}"
+# The services' marks for its menu bar panel's rings: the desktop app's own (gpui/assets/marks),
+# one set for both, read by the service's id (`ServiceMark`).
+mkdir -p "$NEW/Contents/Resources/Marks"
+cp "$PACKAGE/../../gpui/assets/marks/"*.svg "$NEW/Contents/Resources/Marks/"
 if [ -n "${ICON:-}" ]; then
     test -f "$ICON" || { echo "No icon at $ICON" >&2; exit 1; }
     cp "$ICON" "$NEW/Contents/Resources/AppIcon.icns"

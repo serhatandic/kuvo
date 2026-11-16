@@ -141,6 +141,30 @@ export const BOX_APP = object({
   failed: nullable(object({ at: number, message: string })),
 });
 
+/** One of an account's rings as `kuvo/box/at-work` says it: how much of its window is gone (0 to 1),
+ * and how close that is (`calm`, `near`, `over`; a word a client doesn't know is drawn quietly). */
+const AT_WORK_RING = object({ used: number, level: string });
+
+/** What's at work in Kuvo on this computer now, as facts for what's always on screen there (Kuvo
+ * Helper's menu bar item, `kuvo/box/at-work`, PROTOCOL.md "In the menu bar"): whether this box has
+ * such an item (`applies`: a Mac's own box in a home of its own, which Kuvo Helper runs); its
+ * sessions at work (how many, and the latest few, by id and title, with the bot each works for, by
+ * name); those waiting on you (the latest few, with what each asks in the box's words); what waits
+ * on you in each area (`kuvo/waiting`'s counts); how many sessions have work running besides their
+ * turn (`background`); whether anything would stop with Kuvo here (`busy`); and each account's
+ * rings, in the box's order (its plan limits' `rows`), named as the box names them. */
+export const AT_WORK = object({
+  applies: bool,
+  working: number,
+  sessions: list(object({ id: string, "title?": string, "bot?": string })),
+  asking: list(object({ id: string, "title?": string, "asks?": string })),
+  waiting: object({ sessions: number, bots: number, queue: number }),
+  background: number,
+  busy: bool,
+  rings: list(object({ service: string, title: string, "short?": AT_WORK_RING, "long?": AT_WORK_RING })),
+});
+export type AtWork = Infer<typeof AT_WORK>;
+
 /** Whether a client wants the box's server kept running (`kuvo/box/serve`), and whether it runs. */
 export const BOX_SERVE = object({ needed: bool, serving: bool });
 
@@ -388,6 +412,9 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/box/app", answers: { 200: BOX_APP } },
   { route: "POST kuvo/box/app/open", answers: { 200: BOX_APP } },
   { route: "GET kuvo/box/serve", answers: { 200: BOX_SERVE } },
+  { route: "GET kuvo/box/at-work", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+  { route: "GET kuvo/box/at-work/events", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+  { route: "POST kuvo/box/stop", answers: { 202: object({ stopping: literal(true) }), 403: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
   { route: "POST kuvo/box/serve", answers: { 200: BOX_SERVE } },
   { route: "GET kuvo/browser", answers: { 200: BROWSER } },
   { route: "POST kuvo/browser", answers: { 202: BROWSER } },

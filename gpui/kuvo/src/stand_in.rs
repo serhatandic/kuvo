@@ -442,6 +442,12 @@ impl StandIn {
         self.state().areas.manage_refused = Some(words.to_owned());
     }
 
+    /// It isn't a Mac's own box shown in the menu bar (a machine's, or one on Linux): the first
+    /// Quit has nothing to note.
+    pub fn not_in_menu_bar(&self) {
+        self.state().areas.no_menu_bar = true;
+    }
+
     /// The old Kuvo Code app is open on this Mac: removing a machine waits, saying so.
     pub fn old_app_open(&self) {
         self.state().areas.old_app = true;

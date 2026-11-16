@@ -152,6 +152,15 @@ fn thinned(bytes: &'static [u8]) -> Cow<'static, [u8]> {
     }
 }
 
+/// Kuvo's own mark as Kuvo Helper draws it in the menu bar (the app icon's artwork in one colour,
+/// the user's pick, 11-16): black for a light theme, white for a dark one.
+pub fn kuvo_mark(dark: bool) -> std::sync::Arc<gpui::Image> {
+    static LIGHT: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
+    static DARK: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
+    let (cell, bytes): (_, &'static [u8]) = if dark { (&DARK, include_bytes!("../../assets/marks/kuvo-dark.png")) } else { (&LIGHT, include_bytes!("../../assets/marks/kuvo-light.png")) };
+    cell.get_or_init(|| std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.to_vec()))).clone()
+}
+
 /// The assets Kuvo's blocks need: hand this to `Application::with_assets`.
 pub struct Assets;
 

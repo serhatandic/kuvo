@@ -4,8 +4,10 @@
 //!
 //! ```json
 //! {"appearance": {"theme": "dark"}, "general": {"editor": "dev.zed.Zed"},
-//!  "notifications": {"sessions": true, "sound": true, "dock": true}}
+//!  "notifications": {"sessions": true, "sound": true, "dock": true}, "quitNoteSeen": true}
 //! ```
+//!
+//! (And one that's no page's: whether the first Quit's note was seen, `quit_note`.)
 //!
 //! Nothing here is a computer's: those are kept by each computer's Kuvo. A key left out is its
 //! default; a page that can't be read is its defaults (the rest is read as it is); a file that
@@ -27,6 +29,9 @@ use serde_json::{Map, Value};
 
 /// The file's name in the app's folder.
 pub const FILE: &str = "settings.json";
+
+/// The file's key for whether the first Quit's note was seen.
+const QUIT_NOTE_SEEN: &str = "quitNoteSeen";
 
 /// Light or dark, as picked in Appearance (none: as the Mac is when the app opens).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +81,8 @@ pub struct Yours {
     pub appearance: Appearance,
     pub general: General,
     pub notifications: Notifications,
+    /// The first Quit's note was seen on this device (`quit_note`).
+    pub quit_note_seen: bool,
 }
 
 /// One change to your settings, as a row makes it.
@@ -86,6 +93,7 @@ pub enum Change {
     Sessions(bool),
     Sound(bool),
     Dock(bool),
+    QuitNoteSeen,
 }
 
 impl Change {
@@ -96,6 +104,7 @@ impl Change {
             Change::Sessions(on) => yours.notifications.sessions = on,
             Change::Sound(on) => yours.notifications.sound = on,
             Change::Dock(on) => yours.notifications.dock = on,
+            Change::QuitNoteSeen => yours.quit_note_seen = true,
         }
     }
 }
@@ -126,7 +135,8 @@ impl Store {
         });
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
-        let now = Yours { appearance: page(&value, "appearance"), general: page(&value, "general"), notifications: page(&value, "notifications") };
+        let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
+        let now = Yours { appearance: page(&value, "appearance"), general: page(&value, "general"), notifications: page(&value, "notifications"), quit_note_seen };
         Store { path, now, file, problem: None }
     }
 
@@ -163,6 +173,9 @@ impl Store {
                     kept.insert(field, value);
                 }
             }
+        }
+        if self.now.quit_note_seen {
+            self.file.insert(QUIT_NOTE_SEEN.into(), Value::Bool(true));
         }
         let Some(path) = &self.path else { return Ok(()) };
         let text = serde_json::to_string_pretty(&self.file).map_err(|error| error.to_string())?;

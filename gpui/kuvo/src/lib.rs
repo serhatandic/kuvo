@@ -24,6 +24,7 @@ pub mod notifications;
 pub mod panel;
 pub mod permissions;
 pub mod queue;
+pub mod quit_note;
 pub mod rail;
 pub mod session_menu;
 pub mod settings;
