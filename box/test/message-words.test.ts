@@ -177,8 +177,7 @@ test("a group chat says what a bot's tool step does in words", async () => {
   const { activity } = await import("../src/agents/groups/rules");
   const step = (name: string, input: unknown) => [{ type: "assistant", id: "m1", time: { created: 10 }, content: [{ type: "tool", id: "t1", name, state: { status: "running", input } }] }];
   expect(activity(step("kuvo-browser_start_session", {}), "", 0)[0]).toMatchObject({ kind: "tool", call: { title: "Started a session", doing: "Starting a session" } });
-  const linear = activity(step("linear_list_issues", {}), "", 0)[0] as { call: { doing: string } };
-  expect(linear.call.doing).toBe("Linear · List issues");
+  expect(activity(step("linear_list_issues", {}), "", 0)[0]).toMatchObject({ kind: "tool", call: { doing: "Linear · List issues" } });
   // The engine's own are worded by clients.
   expect((activity(step("read", { filePath: "/a" }), "", 0)[0] as { call: { title?: string } }).call.title).toBeUndefined();
 });

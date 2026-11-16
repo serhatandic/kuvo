@@ -22,6 +22,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - In the desktop app, the button that takes you back to the latest message shows whenever you've scrolled up, not only once something new arrives.
 - In the desktop app, what you send shows in the conversation at once, marked Sending…, rather than a few seconds later. If it can't be sent, it stays there saying why, with **Retry** and **Edit**.
 - Updating Kuvo on your Mac, or on a computer it set up, tries again by itself when a download drops or a try fails before anything changed, rather than waiting for you to tap Try Again.
+- Updating Kuvo on your Mac no longer fails with "Its engine couldn't be stopped to update it." A failed update is only shown once a second try fails too.
 - Text carets blink while typing fields are focused, project folders keep open or closed folder icons in Sessions, and a title-bar button or ⌘B shows or hides the sidebar (⌘0 still works).
 - The usage rings in the desktop app and in Kuvo's menu bar item now fill with what's **left** of each limit (a full ring means all of it is left), and say "62% left"; the desktop app's card and Settings › Usage say it too, with when each resets. The card opens to the right of the ring you rest on, so the rings below stay in view, and clicking on it no longer clicks what's under it.
 - A plan that has ended (a Cursor or SuperGrok subscription that isn't active) no longer shows as a ring, in the app or the menu bar; Settings › Usage lists it as "Plan ended", and agents are told it ended.

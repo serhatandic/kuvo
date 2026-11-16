@@ -114,7 +114,7 @@ import { runningServe, SERVE_FILE, SERVE_NEEDED, stopKeptServe } from "./serve-k
 import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { keepMachinesUp } from "./add/keep-up";
-import { type UpdateOptions, agentsWorking, checkDrift, failedDownloading, offerWaits, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { type UpdateOptions, agentsWorking, checkDrift, failedInPassing, offerWaits, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -1209,9 +1209,10 @@ if (main) {
       if (installer && !told && running !== "checking") { told = true; console.log(JSON.stringify(installerSteps.updating)); }
     };
     let outcome: Awaited<ReturnType<typeof update>> | null;
-    // (A try the app's installer asked for whose download broke off before anything changed,
-    // tried again once a little later: what's passing goes by then. Only one that fails again is
-    // said, with Try Again. A check that would fail again, or one put back, isn't tried again.)
+    // (A try the app's installer asked for whose download broke off, or whose engine couldn't be
+    // stopped, before anything changed, tried again once a little later: what's passing goes by
+    // then. Only one that fails again is said, with Try Again. A check that would fail again, or
+    // one put back, isn't tried again.)
     let againOnce = installer, swapped = false;
     for (;;) {
       told = false;
@@ -1229,7 +1230,7 @@ if (main) {
           : await update({ now, whileBusy: now && !args.includes("--free"), from, step, swapping: () => { swapped = true; }, ...test });
       // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
       if (installer && !now && outcome?.result === "busy") continue;
-      if (againOnce && outcome?.result === "failed" && !swapped && failedDownloading()) {
+      if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
         againOnce = false;
         await sleep(!REAL_BOX && Number(process.env.KUVO_TEST_FETCH_WAIT) >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? Number(process.env.KUVO_TEST_FETCH_WAIT) : 15_000);
         continue;

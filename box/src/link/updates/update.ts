@@ -19,7 +19,7 @@ import { isObject, parsed } from "../../shared/json";
 import { nightOf } from "../../shared/night";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
-import { alive, processRuns as runs } from "../../shared/platform";
+import { alive, engineHome, engineRole, processRuns as runs, runsAs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { LastUpdate, UpdateStatus, UpdateStep } from "../../shared/routes/box";
 import { quote } from "../../shared/text";
@@ -372,11 +372,27 @@ interface BoxFiles {
   bundles?: Record<string, Record<string, string>>;
 }
 
-// Whether the last `update` failed as a download broke off (the release, its files or its engine):
-// what's passing, which the installer's update tries once more by itself (`main.ts`), unlike a
-// check that would fail again (what it got isn't what it says, no room, a self-test).
-let brokeOff = false;
-export const failedDownloading = (): boolean => brokeOff;
+// Whether the last `update` failed in a way that's passing, before anything changed: a download
+// that broke off (the release, its files or its engine), or its engine that couldn't be stopped
+// (a start of it under way): what the installer's update tries once more by itself (`main.ts`),
+// unlike a check that would fail again (what it got isn't what it says, no room, a self-test).
+let brokeOff = false, stopFailed = false;
+export const failedInPassing = (): boolean => brokeOff || stopFailed;
+
+// The engine `pid` names (its record, as the update found it), when its command line says it's this
+// box's: ended, as the keeper's stop ends it (ten seconds to go, then killed), and waited for.
+async function stopEngine(pid: number): Promise<void> {
+  if (!runsAs(pid, engineRole(K))) return;
+  const gone = async (within: number): Promise<boolean> => {
+    for (const began = Date.now(); Date.now() - began < within; await sleep(100)) if (!alive(pid)) return true;
+    return !alive(pid);
+  };
+  try { process.kill(pid, "SIGTERM"); } catch {}
+  if (await gone(10_000)) return;
+  // (Still the engine: not a process that took its number as it went.)
+  if (runsAs(pid, engineRole(K))) try { process.kill(pid, "SIGKILL"); } catch {}
+  await gone(5_000);
+}
 
 // Updates the box to the newest release, when it's newer: `now` (Update Now) takes it whatever its
 // age. What happened: `{result: "updated" | "current" | "waiting" | "busy" | "off" | "blocked" |
@@ -392,8 +408,16 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
+  // The box's keeper, as the update runs it (its stop, its start, putting back what was there): with
+  // HOME spelled as the running engine was started with, so a keeper of any age knows that engine
+  // as its own, never starting a second beside it (Kuvo Helper gave its keeper "/Users/you/", and
+  // Kuvo Code runs this with "/Users/you").
+  let keeperEnv: Record<string, string> = {};
+  // The new engine, downloaded and checked: kept in its place when the update fails before anything
+  // changed, so the next try (a moment later, or the next quiet moment) doesn't fetch it again.
+  let checkedEngine: { from: string; to: string } | null = null;
   let fetching = false;
-  brokeOff = false;
+  brokeOff = stopFailed = false;
   const download = async <T>(get: () => Promise<T>): Promise<T> => {
     fetching = true;
     const got = await get();
@@ -471,14 +495,15 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
 
     // Its engine, unless it's here already.
     const engineFolder = path.join(K, "engine", manifest.engine);
-    let staged = null;
+    let staged: string | null = null;
     if (!fs.existsSync(path.join(engineFolder, "opencode"))) {
       // (Another kind of machine has none: no kind, and no build.)
       const kind = { x64: "x86_64", arm64: "aarch64" }[os.arch() as "x64" | "arm64"];
       const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
       if (!build?.url || !/^sha512-/.test(build.integrity ?? "")) throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await download(() => fetchedPatiently(build.url, 400_000_000, 900_000));
+      const engineURL = build.url;
+      const tarball = await download(() => fetchedPatiently(engineURL, 400_000_000, 900_000));
       if (crypto.createHash("sha512").update(tarball).digest("base64") !== build.integrity!.slice(7)) throw new Error("The engine isn't what the release says.");
       fs.writeFileSync(path.join(stage, "engine.tgz"), tarball, { mode: 0o600 });
       fs.mkdirSync(path.join(stage, "engine"), { mode: 0o700 });
@@ -491,6 +516,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     step("checking it");
     const engine = staged ?? path.join(engineFolder, "opencode");
     if (ran(engine, ["--version"]).status !== 0) throw new Error("The new engine doesn't run here.");
+    if (staged) checkedEngine = { from: staged, to: path.join(engineFolder, "opencode") };
     const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
     if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
@@ -501,6 +527,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     step("installing");
     let previous: Partial<EngineRecord> = {};
     try { previous = readEngineFile(); } catch {}
+    const home = previous?.pid ? engineHome(previous.pid, K) : undefined;
+    if (home) keeperEnv = { HOME: home };
     const withAgents = Boolean(previous?.agentsPort) && fs.existsSync(path.join(stage, "files", "bin", "kuvo-agents.js"));
     const otherEngine = previous?.version !== manifest.engine;
     if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
@@ -511,8 +539,15 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
     trial = true;
     stopped = true;
-    const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], {}, 300_000);
-    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) throw new Error("Its engine couldn't be stopped to update it.");
+    const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], keeperEnv, 300_000);
+    // COMPAT(0.8 beta update): an engine the keeper's stop left running though its record names it
+    // (its HOME not told, its command line unread): stopped here by that record, once its command
+    // line says it's this box's engine. Goes with `update --installer`.
+    if (stop.status === 0 && previous?.pid) await stopEngine(previous.pid);
+    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) {
+      stopFailed = true;
+      throw new Error(`Kuvo's engine on ${HERE} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
+    }
     if (otherEngine) keepData();
     swapped = true;
     swapping();
@@ -531,7 +566,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       fs.chmodSync(`${to}.new`, fs.statSync(from).mode & 0o777);
       fs.renameSync(`${to}.new`, to);
     }
-    ran("sh", [path.join(K, "bin", "kuvo-start"), "start"]);
+    ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
     if (!(await cameUp(manifest.engine, withAgents, upWithin))) throw new Error("The new version didn't come up.");
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
@@ -542,17 +577,24 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   } catch (error) {
     brokeOff = fetching;
     const message = String((error as Error | undefined)?.message ?? error).slice(0, 300);
+    // (An engine of another version beside the one running changes nothing: the keeper starts its own.)
+    if (!swapped && checkedEngine && fs.existsSync(checkedEngine.from) && !fs.existsSync(checkedEngine.to)) {
+      try {
+        fs.mkdirSync(path.dirname(checkedEngine.to), { recursive: true, mode: 0o700 });
+        fs.renameSync(checkedEngine.from, checkedEngine.to);
+      } catch {}
+    }
     // Room first: what was downloaded goes before anything's put back.
     if (stage) fs.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
-      ran("sh", [path.join(ROLLBACK, "restore.sh")], { KUVO_UPDATER: String(process.pid) }, 600_000);
+      ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
     } else {
       // Nothing changed: what was kept goes, and the engine starts again if it was stopped.
       if (trial) {
         fs.rmSync(UPDATE_TRIAL, { force: true });
         fs.rmSync(ROLLBACK, { recursive: true, force: true });
       }
-      if (stopped) ran("sh", [path.join(K, "bin", "kuvo-start"), "start"]);
+      if (stopped) ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     }
     if (trial) noteUpdate({ trial: null });
     noteUpdate({ last: { at: clock(), result: "failed", message, from: before } });
@@ -805,9 +847,16 @@ export interface Offered {
 // taken lately (a day once it was taken back, an hour when it failed before anything changed), or
 // the update to it was taken back by the keeper (its new bridge never said it was well: the trial
 // says it's on its way to it, and the box is back where it was).
+/** Whether the offered release `version` failed more than once in a row as it was taken, or was put
+ * in place and taken back: then it rests a day, and is said to have failed (`keepingSelfUp`); one
+ * failure that changed nothing is tried again in an hour, said as waiting. */
+export function offerFailedAgain(version: string | null | undefined, failed: UpdateState["offerFailed"] = updateState().offerFailed): boolean {
+  return !!failed && failed.version === version && (failed.takenBack || (failed.tries ?? 1) > 1);
+}
+
 function offerRests(version: string, now: number): boolean {
   const { offerFailed: failed, trial } = updateState();
-  if (failed?.version === version && now - failed.at < (failed.takenBack || (failed.tries ?? 1) > 1 ? OFFER_REST : OFFER_RETRY)) return true;
+  if (failed?.version === version && now - failed.at < (offerFailedAgain(version, failed) ? OFFER_REST : OFFER_RETRY)) return true;
   return trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
 }
 
