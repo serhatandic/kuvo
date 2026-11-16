@@ -386,6 +386,17 @@ fn an_account_signed_in_only_elsewhere_has_no_ring_here(cx: &mut TestAppContext)
     assert!(second.contains(&personal.center()), "the next account of this computer's takes its place");
 }
 
+/// Lets an entry motion (`animate_in`, 150 ms) run to its end, a frame at a time at 60 Hz, so a
+/// card is measured where it settles and not where it starts.
+fn settle_entry_motion(cx: &mut VisualTestContext) {
+    for _ in 0..12 {
+        cx.executor().advance_clock(std::time::Duration::from_micros(16_667));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+    }
+}
+
 /// Resting on a ring opens its card to the ring's right, centred on it, leaving the rings below
 /// in view; the card takes the clicks on it, so what's under it isn't reached; moving onto it
 /// keeps it open, and off both closes it.
@@ -403,6 +414,7 @@ fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppCont
     assert!(bounds(cx, "ring-card").is_none(), "not before the pointer rests");
     cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
     cx.run_until_parked();
+    settle_entry_motion(cx);
     let card = bounds(cx, "ring-card").expect("its card");
     assert!(card.left() >= ring.right() - px(0.5), "to the ring's right: {card:?} beside {ring:?}");
     assert!((card.center().y - ring.center().y).abs() < px(1.), "centred on the ring: {card:?} beside {ring:?}");
