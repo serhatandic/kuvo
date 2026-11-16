@@ -49,6 +49,16 @@ cargo run -p kuvo                                       # this Mac's own box (Ku
   bundle (`cargo run -p kuvo`) installs nothing: it only attaches to a Kuvo that's there. A copy
   of the app (another bundle ID) installs only into a root of its own
   (`KUVO_DEMO_MACHINE_ROOT=<a folder's name in your home folder>`).
+- **As a bundle**: `scripts/build-desktop-app.sh` (from the checkout's top) builds `build/Kuvo.app`,
+  signed ad hoc: this program, `kuvo-keys` beside it, Kuvo Code's icon, and the box's release with
+  Kuvo Helper in it (`Contents/Resources/box-release`). Its bundle ID is Kuvo Code's own unless
+  `APP_ID` names another, so opening it sets up the real `~/.kuvo-code`: never on a Mac in use.
+  `scripts/check-desktop-app.sh --run build/Kuvo.app` checks it and dry-runs a copy with another
+  ID in a home of its own. `kuvo --install-status` prints what the bundle's installer says this
+  computer holds and quits: no window, and nothing set up, moved or started, though like opening
+  the app it first stages the release and the engine in the box's home (`updates/install`; for
+  Kuvo Code's own ID that's the real `~/.kuvo-code`). A release's signing, notarization, update
+  feed and disk image aren't built yet (`.claude/notes/713-p6a-bundle.md`).
 - **What macOS allows** (`notes/screens-launch.md`): where the box on this computer says a
   permission isn't allowed for the program agents run under (`kuvo/box/permissions`), a heads-up
   over the main view: Open System Settings opens the list the box names, with a small window

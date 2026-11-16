@@ -104,6 +104,13 @@ retired Mac app's build, when `scripts/build-app.sh` is given the key. Boxes tak
 pinned in the box's link (`UPDATE_KEYS`, in `box/src`) signed; see `protocol/PROTOCOL.md`,
 "Updates".
 
+The desktop app as a Mac bundle, for trying it on a Mac: `scripts/build-desktop-app.sh` builds
+`build/Kuvo.app` (the app, `kuvo-keys`, the icon, and the box's release with Kuvo Helper in its
+pack), always signed ad hoc, and `scripts/check-desktop-app.sh` checks one (`--run`: a dry run
+of a copy with another bundle ID, in a home of its own). With Kuvo Code's own bundle ID (the
+default) it installs into the real `~/.kuvo-code` when opened, so open it only on a Mac or in an
+account kept for that. What a release adds isn't built yet: `gpui/README.md`, "As a bundle".
+
 The keeper's files are plain files: edit them in `box/src/keeper`, where the bridge's tests run
 `kuvo-wake` from. Where one names the engine's version it says `@ENGINE@`, which the release
 writes the pinned version over. `kuvo-start`, `kuvo-launch` and `kuvo-setsid` end without a last
