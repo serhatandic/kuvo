@@ -33,8 +33,9 @@ use kuvo_ui::{ActiveTheme, Appearance, IconName, TextField, TextFieldEvent, Them
 use serde_json::Value;
 
 use crate::areas::Reading;
+use crate::updates::Updates;
 
-pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
+pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone, UpdateAct};
 use form::{FormEvent, FormSheet};
 use sign_in::SignIn;
 
@@ -194,6 +195,8 @@ pub struct SettingsView {
     focus_confirm: bool,
     /// Drawn in dark (the Theme row says which is on).
     dark: bool,
+    /// The app's updater, and how it stood when last drawn (Updates).
+    updates: Option<(Entity<Updates>, crate::updates::Facts)>,
     /// The window's computer's name.
     this_box: String,
     now: Option<f64>,
@@ -299,6 +302,7 @@ impl SettingsView {
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
             dark: cx.theme().appearance.is_dark(),
+            updates: None,
             this_box: "This Mac".into(),
             now: None,
             items: Vec::new(),
@@ -308,6 +312,18 @@ impl SettingsView {
             list_filters: HashMap::new(),
             _subscriptions: vec![subscription],
         };
+        // The app's updates, followed as they change (a check starting or ending, a choice made
+        // in Sparkle's own window).
+        if let Some(updates) = Updates::get(cx) {
+            view._subscriptions.push(cx.observe(&updates, |this: &mut SettingsView, updates, cx| {
+                let facts = updates.read(cx).facts().clone();
+                if this.updates.as_ref().is_some_and(|(_, was)| *was != facts) {
+                    this.updates = Some((updates, facts));
+                    this.rebuild(cx);
+                }
+            }));
+            view.updates = Some((updates.clone(), updates.read(cx).facts().clone()));
+        }
         view.rebuild(cx);
         view
     }
@@ -592,7 +608,11 @@ impl SettingsView {
     /// A section's page, as blocks.
     fn blocks(&self, entry: &Entry) -> Vec<Block> {
         match entry.drawn {
-            Drawn::Yours => rows::yours(&entry.id, self.dark),
+            Drawn::Yours => {
+                // (Kuvo on this computer, where the window's box is this computer's.)
+                let here = self.home.here().then_some(self.this_box.as_str());
+                rows::yours(&entry.id, &rows::Yours { dark: self.dark, updates: self.updates.as_ref().map(|(_, facts)| facts), here, now: self.now.unwrap_or_else(crate::time::now_ms) })
+            }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
                 Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters }),
@@ -1309,6 +1329,17 @@ impl SettingsView {
                 let based = usage.version.clone();
                 // A part changed on another computer meanwhile is turned away: the box's is shown.
                 self.change(key, move |client| client.set_usage_notices(notices, based.as_deref()), |this, usage| this.usage = Reading::Ready(usage), cx)
+            }
+            Act::Update(asked) => {
+                let Some((updates, _)) = self.updates.clone() else { return };
+                updates.update(cx, |updates, cx| match asked {
+                    UpdateAct::Check => updates.check(cx),
+                    UpdateAct::Checks(on) => updates.set_checks(on, cx),
+                    UpdateAct::Downloads(on) => updates.set_downloads(on, cx),
+                    UpdateAct::Betas(on) => updates.set_betas(on, cx),
+                });
+                // (What it says now, at once: the observer above goes after this.)
+                self.updates = Some((updates.clone(), updates.read(cx).facts().clone()));
             }
             Act::SetDark(dark) => {
                 Theme::set_appearance(if dark { Appearance::Dark } else { Appearance::Light }, cx);

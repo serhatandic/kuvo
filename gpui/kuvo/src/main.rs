@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Bounds, Focusable, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 use kuvo::launch::{Launch, Opens};
-use kuvo::{Home, Quit, bind_keys};
+use kuvo::updates::Updates;
+use kuvo::{CheckForUpdates, Home, Quit, bind_keys};
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::Boxes;
 use kuvo_box::install::Installer;
@@ -29,9 +30,22 @@ fn main() {
     }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
+        // Its updates: Sparkle, where the bundle carries it and names a feed (`updates`). The
+        // stand-in's app has a made-up updater, so Settings › Updates shows as it would.
+        let updates = if stand_in() { stand_in_updates(cx) } else { kuvo::updates::start(cx) };
         // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one).
         cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.set_menus([Menu { name: "Kuvo".into(), items: vec![MenuItem::action("Quit Kuvo", Quit)], disabled: false }]);
+        cx.on_action(|_: &CheckForUpdates, cx| {
+            if let Some(updates) = Updates::get(cx) {
+                updates.update(cx, |updates, cx| updates.check(cx));
+            }
+        });
+        let mut items = Vec::new();
+        if updates.read(cx).facts().updates() {
+            items.extend([MenuItem::action("Check for Updates…", CheckForUpdates), MenuItem::separator()]);
+        }
+        items.push(MenuItem::action("Quit Kuvo", Quit));
+        cx.set_menus([Menu { name: "Kuvo".into(), items, disabled: false }]);
         cx.on_window_closed(|cx, _| {
             // (The small window beside System Settings isn't the app's own.)
             if !cx.windows().iter().any(|window| window.downcast::<Home>().is_some() || window.downcast::<Launch>().is_some()) {
@@ -180,6 +194,18 @@ fn stand_in_boxes() -> (Boxes, BoxClient) {
     let boxes = kuvo::home::stand_in_boxes(stand_in);
     let first = boxes.nearest().expect("the stand-in is the nearest box");
     (boxes, first)
+}
+
+/// A made-up updater for the stand-in's app: it updates itself, and was last checked an hour ago.
+#[cfg(feature = "stand-in")]
+fn stand_in_updates(cx: &mut App) -> gpui::Entity<Updates> {
+    let updater = kuvo::updates::stand_in::StandIn::new(kuvo::updates::version(), Some(kuvo::time::now_ms() - 3_600_000.0));
+    Updates::install(std::rc::Rc::new(updater), None, cx)
+}
+
+#[cfg(not(feature = "stand-in"))]
+fn stand_in_updates(cx: &mut App) -> gpui::Entity<Updates> {
+    kuvo::updates::start(cx)
 }
 
 #[cfg(not(feature = "stand-in"))]

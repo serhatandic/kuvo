@@ -31,6 +31,7 @@ pub mod sidebar;
 pub mod stand_in;
 pub mod time;
 pub mod title_bar;
+pub mod updates;
 pub mod workspace;
 
 use gpui::{App, KeyBinding, actions};
@@ -38,7 +39,7 @@ use gpui::{App, KeyBinding, actions};
 pub use home::Home;
 pub use workspace::Workspace;
 
-actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ShowChanges, ShowFiles]);
+actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ShowChanges, ShowFiles, CheckForUpdates]);
 
 /// Binds the app's keys, after the blocks' (so "/"'s list takes its keys ahead of the field's).
 pub fn bind_keys(cx: &mut App) {

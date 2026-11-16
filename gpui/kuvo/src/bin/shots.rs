@@ -191,6 +191,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-mcp-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
+    // Your settings › Updates (`settings/rows.rs`, `updates`): the app's version and its updates.
+    Screen { slug: "settings-a-updates", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
+    Screen { slug: "settings-a-updates-narrow", width: 760., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
     Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
     Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -534,6 +537,9 @@ fn settings(workspace: &mut Workspace, section: &str, window: &mut Window, cx: &
 
 fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/appearance", window, cx);
+}
+fn updates(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/updates", window, cx);
 }
 /// One of your own sections that isn't in the desktop app yet.
 fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -986,6 +992,8 @@ fn main() -> anyhow::Result<()> {
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
         bind_keys(cx);
+        // The app's updater, made up: a release that updates itself, last checked two hours ago.
+        kuvo::updates::Updates::install(std::rc::Rc::new(kuvo::updates::stand_in::StandIn::new("0.8.0", Some(NOW - 2.0 * 3_600_000.0))), None, cx);
     });
     for screen in SCREENS {
         if !only.is_empty() && !only.iter().any(|slug| slug == screen.slug) {

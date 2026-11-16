@@ -12,6 +12,7 @@ use kuvo_ui::IconName;
 use serde_json::Value;
 
 use crate::areas::Reading;
+use crate::updates::{Can, Facts as UpdateFacts};
 
 /// One of Settings' sections this app lists itself.
 pub struct Listed {
@@ -29,7 +30,10 @@ const fn listed(id: &'static str, title: &'static str, icon: IconName, group: &'
 }
 
 /// Your settings: this app's own, on this device, kept and drawn by the app.
-pub const YOURS: &[Listed] = &[listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors")];
+pub const YOURS: &[Listed] = &[
+    listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors"),
+    listed("updates", "Updates", IconName::ArrowDown, "", "version beta check new release automatic download install sparkle"),
+];
 
 /// Yours that the desktop app hasn't yet: each opens a page saying so.
 pub const YOURS_LATER: &[Listed] = &[
@@ -38,7 +42,6 @@ pub const YOURS_LATER: &[Listed] = &[
     listed("voice", "Voice", IconName::Mic, "", "microphone dictation speech"),
     listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
     listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
-    listed("updates", "Updates", IconName::ArrowDown, "", "version beta"),
     listed("privacy", "Privacy", IconName::Info, "", "crash reports"),
 ];
 
@@ -111,6 +114,8 @@ pub enum Act {
     SetModel { path: &'static [&'static str], model: Option<String>, was: Option<String> },
     SetNotice(Notice, bool),
     SetDark(bool),
+    /// The app's own updates (`crate::updates`).
+    Update(UpdateAct),
     /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
     /// its confirm, where it has one, was answered).
     Change { at: At, value: Value, asked: bool },
@@ -134,6 +139,15 @@ pub enum Act {
     Form { at: At, action: String, form: Box<Form> },
     /// A flow's pasted address, sent with the action that takes it (`code`'s).
     Code { at: At, action: String },
+}
+
+/// What Settings › Updates asks of the app's updater.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateAct {
+    Check,
+    Checks(bool),
+    Downloads(bool),
+    Betas(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -363,8 +377,20 @@ fn capitalized(words: &str) -> String {
     chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
+/// What your own settings' pages are drawn from: this app's, on this device.
+pub struct Yours<'a> {
+    pub dark: bool,
+    /// How the app stands with updating itself (none: this app has no updater, as in tests that
+    /// set none).
+    pub updates: Option<&'a UpdateFacts>,
+    /// The window's computer is this one, and its name ("This Mac").
+    pub here: Option<&'a str>,
+    pub now: f64,
+}
+
 /// One of your own settings' pages, as blocks.
-pub fn yours(section: &str, dark: bool) -> Vec<Block> {
+pub fn yours(section: &str, yours: &Yours) -> Vec<Block> {
+    let dark = yours.dark;
     match section {
         "appearance" => {
             let theme = Row::new(
@@ -375,8 +401,62 @@ pub fn yours(section: &str, dark: bool) -> Vec<Block> {
             );
             vec![Block::Group("Theme".into(), String::new(), vec![theme])]
         }
+        "updates" => updates(yours),
         _ => Vec::new(),
     }
+}
+
+// MARK: Updates
+
+/// The app's version and its updates. Kuvo on this computer isn't updated here: it updates itself,
+/// taking the release each new app brings, and its version is under its own settings.
+fn updates(yours: &Yours) -> Vec<Block> {
+    let without = UpdateFacts::without(crate::updates::version(), crate::updates::NOT_THIS_BUILD);
+    let facts = yours.updates.unwrap_or(&without);
+    let detail = match &facts.can {
+        Can::Not(why) => why.clone(),
+        Can::Update if facts.busy => "Checking for updates…".to_owned(),
+        Can::Update => checked_words(facts.checked, yours.now),
+    };
+    let control = if facts.updates() { Control::Buttons(vec![Push { label: "Check Now".into(), act: facts.can_check.then_some(Act::Update(UpdateAct::Check)) }]) } else { Control::None };
+    let mut version = Row::new("row-version", format!("Kuvo {}", facts.version), detail, control);
+    if crate::updates::is_beta(&facts.version) {
+        version.badge = Some(("Beta".into(), BadgeTone::Quiet));
+    }
+    let mut rows = vec![version];
+    // (Its own version and updates are the computer's: under its settings, described by its box.)
+    if let Some(name) = yours.here {
+        rows.push(Row::new("row-update-computer", format!("Kuvo on {name}"), "Updates itself when nothing’s at work, taking what each new version of the app brings.", Control::Opens(Act::Go(super::box_key("", "computer")))));
+    }
+    let mut blocks = vec![Block::Group("Version".into(), String::new(), rows)];
+    if facts.updates() {
+        let switch = |on: bool, act: fn(bool) -> UpdateAct| Control::Switch { on, act: Some(Act::Update(act(!on))) };
+        let mut rows = vec![Row::new("row-update-checks", "Check for updates automatically", "Kuvo looks once a day, and tells you when there’s a new version.", switch(facts.checks, UpdateAct::Checks))];
+        if let Some(downloads) = facts.downloads {
+            let line = "New versions download in the background and install the next time Kuvo quits.";
+            rows.push(if facts.checks {
+                Row::new("row-update-downloads", "Download and install automatically", line, switch(downloads, UpdateAct::Downloads))
+            } else {
+                Row::new("row-update-downloads", "Download and install automatically", line, Control::Switch { on: false, act: None }).why(Some("Turn on automatic checks first.".into()))
+            });
+        }
+        rows.push(Row::new("row-update-betas", "Get beta updates", "Try new features before they’re released. Betas can have bugs.", switch(facts.betas, UpdateAct::Betas)));
+        blocks.push(Block::Group("Getting Updates".into(), "Signed updates from Kuvo’s releases.".into(), rows));
+    }
+    blocks
+}
+
+/// When the app last looked for an update, in words.
+fn checked_words(checked: Option<f64>, now: f64) -> String {
+    let Some(checked) = checked else { return "Not checked yet.".into() };
+    let minutes = ((now - checked) / 60_000.0).max(0.0) as u64;
+    let (count, unit) = match minutes {
+        0 => return "Last checked just now.".into(),
+        1..60 => (minutes, "minute"),
+        60..1440 => (minutes / 60, "hour"),
+        _ => (minutes / 1440, "day"),
+    };
+    format!("Last checked {count} {unit}{} ago.", if count == 1 { "" } else { "s" })
 }
 
 /// One of a computer's pages this app still draws itself, as blocks.
@@ -584,6 +664,16 @@ pub fn found(whole: bool, blocks: Vec<Block>, query: &str) -> Vec<Block> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_check_is_said_in_words() {
+        let now = 1_000_000_000_000.0;
+        assert_eq!(checked_words(None, now), "Not checked yet.");
+        assert_eq!(checked_words(Some(now - 20_000.0), now), "Last checked just now.");
+        assert_eq!(checked_words(Some(now - 60_000.0), now), "Last checked 1 minute ago.");
+        assert_eq!(checked_words(Some(now - 5.0 * 3_600_000.0), now), "Last checked 5 hours ago.");
+        assert_eq!(checked_words(Some(now - 3.0 * 86_400_000.0), now), "Last checked 3 days ago.");
+    }
 
     #[test]
     fn search_keeps_the_rows_it_finds_and_whole_sections_it_names() {

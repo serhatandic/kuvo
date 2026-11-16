@@ -24,6 +24,8 @@ core-foundation = "0.10"
 core-graphics = "0.24"
 libc = "0.2"
 objc2 = "0.6"
+# The app updating itself: Sparkle, loaded from the bundle and driven through its classes (updates/sparkle.rs).
+objc2-foundation = "0.3"
 raw-window-handle = "0.6"
 
 [dev-dependencies]
