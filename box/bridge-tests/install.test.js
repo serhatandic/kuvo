@@ -237,7 +237,13 @@ test("new on a Mac: this Mac's own box made in its home from the release and its
   assert.equal(made.said.result, "done");
   assert.equal(made.said.verdict, "ours");
   assert.equal(made.said.started, true);
-  // Its files from the release, its helper whole, the release's engine, and its kind.
+  // Its files from the release, its helper whole, the release's engine, and its kind: every file of
+  // the release, as its box.json says, the engine's plugin outside `bin` too (which gives the
+  // commands agents run your own folders back).
+  const box = JSON.parse(read(path.join(scratch, "unpacked-box.json")));
+  for (const [name, sum] of Object.entries(box.files)) {
+    assert.equal(crypto.createHash("sha256").update(fs.readFileSync(path.join(where.K, name))).digest("hex"), sum, name);
+  }
   assert.equal(read(path.join(where.K, "bin", "box-version")), VERSION);
   assert.deepEqual(fs.readFileSync(path.join(where.K, "bin", "kuvo-link.js")), fs.readFileSync(script));
   assert.equal(spawnSync("codesign", ["--verify", "--strict", path.join(where.K, "bin", "Kuvo Helper.app")]).status, 0, "the helper, signed as it was");
