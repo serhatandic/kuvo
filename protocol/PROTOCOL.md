@@ -8082,7 +8082,11 @@ was named Kuvo Code Box, in no release.)
   its host interface (below), `kuvo-start serve`, and `kuvo-start keep` in a session of its own,
   each its own child, so macOS takes it for the
   responsible process of everything the box runs (the engine, the bridge, every agent's command):
-  folders, Screen Recording and the rest are asked for Kuvo Helper. Either child that ends is
+  folders, Screen Recording and the rest are asked for Kuvo Helper. Nothing sets a Mac's own box up
+  over SSH, so its keeper notes how its engine starts itself, once, as it starts and before each
+  start of the engine (`run/launch.env`, as a machine's start notes it: the `PATH`, `SHELL`, `LANG`
+  and `LC_*` the helper gives it, and `OPENCODE_CLIENT=desktop`); one noted already stays as it is.
+  Either child that ends is
   started again: a second after one that ran ten minutes or more, else after a wait that grows each
   time in a row (2 s, 5 s, 15 s… up to ten minutes). Every ten seconds it notes macOS asking you something (`run/.system-asking`), as the
   keeper did, and what macOS allows it (below). SIGTERM (launchd, logging out) closes `serve`'s stdin, sends the keeper SIGTERM (the
