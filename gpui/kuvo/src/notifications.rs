@@ -68,6 +68,30 @@ impl Open {
         format!("{id}|{}|{}", self.computer, self.session.as_deref().unwrap_or_default())
     }
 
+    /// Where a `kuvo-code://open` link opens (Kuvo Helper's menu bar item opens one in this very
+    /// app): `computer`, a box's key (none or empty: this Mac's), and `session`, one of its
+    /// sessions. None for any other link, or one whose key or session isn't one.
+    pub fn of_url(url: &str) -> Option<Open> {
+        let rest = url.strip_prefix("kuvo-code://open")?;
+        let query = match rest {
+            "" | "/" => "",
+            _ => rest.strip_prefix("/").unwrap_or(rest).strip_prefix('?')?,
+        };
+        let (mut computer, mut session) = (String::new(), None);
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            let value = percent_decoded(value)?;
+            match name {
+                "computer" => computer = value,
+                "session" if !value.is_empty() => session = Some(value),
+                _ => {}
+            }
+        }
+        let key = computer.is_empty() || (computer.len() == 43 && computer.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'));
+        let id = session.as_deref().is_none_or(|id| id.len() <= 64 && id.strip_prefix("ses_").is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric())));
+        (key && id).then_some(Open { computer, session })
+    }
+
     /// Where a tag opens; none for one that isn't this app's.
     pub fn of_tag(tag: &str) -> Option<Open> {
         let mut parts = tag.splitn(3, '|');
@@ -207,6 +231,78 @@ impl Notifier {
         if self.badge != Some(count) {
             self.badge = Some(count);
             (self.effects.badge)(count);
+        }
+    }
+}
+
+/// `%XX` as the byte it stands for (and `+` as itself: neither a key nor a session has a space);
+/// none where what it comes to isn't text.
+fn percent_decoded(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(at + 1..at + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Links opened in this app (`kuvo-code://open`, as macOS hands them over, `on_open_urls`), kept
+/// until the window takes them: one can come as the app opens, before there's a window to show it.
+pub mod opened {
+    use std::sync::OnceLock;
+
+    use super::Open;
+
+    fn channel() -> &'static (async_channel::Sender<Open>, async_channel::Receiver<Open>) {
+        static CHANNEL: OnceLock<(async_channel::Sender<Open>, async_channel::Receiver<Open>)> = OnceLock::new();
+        CHANNEL.get_or_init(async_channel::unbounded)
+    }
+
+    /// Links macOS opened in this app: each of Kuvo's kept for the window; any other, let be.
+    pub fn take(urls: Vec<String>) {
+        for open in urls.iter().filter_map(|url| Open::of_url(url)) {
+            channel().0.try_send(open).ok();
+        }
+    }
+
+    /// Where the window hears of them, those from before it was there first.
+    pub fn receiver() -> async_channel::Receiver<Open> {
+        channel().1.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Open;
+
+    const KEY: &str = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCdE";
+
+    #[test]
+    fn a_link_opens_its_computer_and_session() {
+        assert_eq!(Open::of_url(&format!("kuvo-code://open?computer={KEY}&session=ses_abc123")), Some(Open { computer: KEY.into(), session: Some("ses_abc123".into()) }));
+        // (Percent-encoded as a link may be.)
+        assert_eq!(Open::of_url(&format!("kuvo-code://open?computer={}&session=ses_abc123", KEY.replace('-', "%2D"))), Some(Open { computer: KEY.into(), session: Some("ses_abc123".into()) }));
+    }
+
+    #[test]
+    fn a_link_without_a_computer_opens_this_macs() {
+        assert_eq!(Open::of_url("kuvo-code://open"), Some(Open { computer: String::new(), session: None }));
+        assert_eq!(Open::of_url("kuvo-code://open?session=ses_x1"), Some(Open { computer: String::new(), session: Some("ses_x1".into()) }));
+        assert_eq!(Open::of_url("kuvo-code://open/?computer="), Some(Open { computer: String::new(), session: None }));
+    }
+
+    #[test]
+    fn other_links_are_let_be() {
+        for url in ["https://kuvo.run", "kuvo-code://delete?computer=x", "kuvo-code://open?computer=short", "kuvo-code://open?session=../../etc", "kuvo-code://open?session=ses_", "kuvo-code://openx", "kuvo-code://open?computer=%zz"] {
+            assert_eq!(Open::of_url(url), None, "{url}");
         }
     }
 }

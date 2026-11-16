@@ -707,6 +707,18 @@ impl BoxClient {
         self.get("kuvo/box/at-work")
     }
 
+    /// Tells Kuvo on this Mac where this app is installed (`kuvo/box/app`'s `desktop`), so the menu
+    /// bar's Open Kuvo opens this very app, never an older copy with the same bundle ID. A box
+    /// that doesn't take it (an older one, one in the app's folder) refuses; that's all.
+    pub fn register_desktop(&self, bundle: &str) -> Result<()> {
+        let response = self.send(&Request::post("kuvo/box/app", serde_json::json!({ "desktop": bundle })))?;
+        if response.is_success() {
+            Ok(())
+        } else {
+            Err(Error::Refused(crate::error::Refusal::from_answer(response.status, &response.body)))
+        }
+    }
+
     /// How many things wait on you in each area.
     pub fn waiting(&self) -> Result<Waiting> {
         self.get("kuvo/waiting")

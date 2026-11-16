@@ -24,6 +24,19 @@
 	<true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<!-- kuvo-code://open?computer=<key>&session=<id>: Kuvo Helper's menu bar item opens one of
+	     your computers, or a session there, in this very app. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>run.kuvo.code.open</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>kuvo-code</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 </dict>

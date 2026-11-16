@@ -82,6 +82,15 @@ const RESTORE_WAITS_AT_MOST: Duration = Duration::from_secs(3);
 
 /// How often this computer's box is asked again whether it's in the menu bar, while it hasn't said.
 const MENU_BAR_ASKED_EVERY: Duration = Duration::from_secs(30);
+
+/// The app bundle `executable` runs from (`<bundle>.app/Contents/MacOS/<executable>`); none for a
+/// program in no bundle (`cargo run`).
+fn own_bundle(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    let contents = executable.parent().filter(|folder| folder.file_name().is_some_and(|name| name == "MacOS"))?.parent()?;
+    let bundle = contents.parent()?;
+    (contents.file_name()? == "Contents" && bundle.extension()? == "app" && bundle.is_absolute()).then(|| bundle.to_owned())
+}
+
 /// How often this Mac's box is asked again whether this app brings it up, while it can't be reached.
 const OWN_UPDATE_ASKED_EVERY: Duration = Duration::from_secs(30);
 
@@ -125,6 +134,20 @@ impl Home {
             }));
         }
         home.ask_menu_bar(cx);
+        // Links opened in the app (`kuvo-code://open`: the menu bar's Kuvo Helper opens its
+        // computers and their sessions so), shown as a notification clicked would show them,
+        // those from before the window was there first.
+        if live {
+            let opened = crate::notifications::opened::receiver();
+            cx.spawn_in(window, async move |this, cx| {
+                while let Ok(open) = opened.recv().await {
+                    if this.update_in(cx, |home, window, cx| home.open_notice(&open, window, cx)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         // Closing the window quits the app (it has only the one): the first time, the note first.
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| this.update(cx, |home, cx| !home.notes_quit(window, cx)).unwrap_or(true));
@@ -160,6 +183,15 @@ impl Home {
                 let client = nearest.clone();
                 if let Ok(said) = cx.background_executor().spawn(async move { client.at_work() }).await {
                     this.update(cx, |this, _| this.in_menu_bar = Some(said.applies)).ok();
+                    // Kuvo on this Mac is in the menu bar: it's told where this app is, so its Open
+                    // Kuvo opens this very app (an older copy with the same ID never). What it
+                    // answers is no matter: an older box doesn't take it.
+                    if said.applies
+                        && let Some(bundle) = std::env::current_exe().ok().and_then(|executable| own_bundle(&executable))
+                    {
+                        let client = nearest.clone();
+                        cx.background_executor().spawn(async move { client.register_desktop(&bundle.to_string_lossy()) }).await.ok();
+                    }
                     return;
                 }
                 cx.background_executor().timer(MENU_BAR_ASKED_EVERY).await;

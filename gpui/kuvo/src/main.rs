@@ -33,7 +33,11 @@ fn main() {
     if std::env::args().any(|argument| argument == "--updater-status") {
         std::process::exit(updater_status());
     }
-    gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
+    let application = gpui_platform::application().with_assets(Assets);
+    // Links opened in the app (`kuvo-code://open`, Kuvo Helper's menu bar item opening a computer or
+    // a session in this very app): kept until the window takes them, as one can come as it opens.
+    application.on_open_urls(kuvo::notifications::opened::take);
+    application.run(move |cx: &mut App| {
         bind_keys(cx);
         // Reduce Motion, as macOS has it now and as it changes: the bots and spinners hold still.
         kuvo::reduce_motion::init(cx);
