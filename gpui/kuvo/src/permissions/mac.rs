@@ -30,9 +30,11 @@ fn is_settings(pid: i64) -> bool {
 }
 
 /// System Settings' window on screen, if it has one: its frame as Quartz gives it, from the top
-/// left of the main display.
+/// left of the main display. Its largest, so a sheet or alert it shows over its list (Screen
+/// Recording's "Quit & Reopen") is never taken for it, nor the tile moved beside one and back.
 pub fn settings_window() -> Option<Bounds<Pixels>> {
     let windows = copy_window_info(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)?;
+    let mut largest: Option<CGRect> = None;
     for item in windows.get_all_values() {
         // SAFETY: each item of the window list is a dictionary, kept alive by the list.
         let window: CFDictionary<CFString, CFType> = unsafe { CFDictionary::wrap_under_get_rule(item as CFDictionaryRef) };
@@ -45,11 +47,12 @@ pub fn settings_window() -> Option<Bounds<Pixels>> {
         }
         // SAFETY: as above.
         let Some(frame) = window.find(key(unsafe { kCGWindowBounds })).and_then(|value| value.downcast::<CFDictionary>()).and_then(|bounds| CGRect::from_dict_representation(&bounds)) else { continue };
-        if frame.size.width > 200. {
-            return Some(Bounds::new(point(px(frame.origin.x as f32), px(frame.origin.y as f32)), size(px(frame.size.width as f32), px(frame.size.height as f32))));
+        let area = |rect: &CGRect| rect.size.width * rect.size.height;
+        if frame.size.width > 200. && largest.as_ref().is_none_or(|largest| area(&frame) > area(largest)) {
+            largest = Some(frame);
         }
     }
-    None
+    largest.map(|frame| Bounds::new(point(px(frame.origin.x as f32), px(frame.origin.y as f32)), size(px(frame.size.width as f32), px(frame.size.height as f32))))
 }
 
 /// A point as AppKit takes it.
