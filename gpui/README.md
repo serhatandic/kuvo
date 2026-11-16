@@ -55,7 +55,9 @@ cargo run -p kuvo                                       # this Mac's own box (Ku
   `APP_ID` names another, so opening it sets up the real `~/.kuvo-code`: never on a Mac in use.
   `scripts/check-desktop-app.sh --run build/Kuvo.app` checks it and dry-runs a copy with another
   ID in a home of its own. `kuvo --install-status` prints what the bundle's installer says this
-  computer holds and quits: no window, nothing set up. A release's signing, notarization, update
+  computer holds and quits: no window, and nothing set up, moved or started, though like opening
+  the app it first stages the release and the engine in the box's home (`updates/install`; for
+  Kuvo Code's own ID that's the real `~/.kuvo-code`). A release's signing, notarization, update
   feed and disk image aren't built yet (`.claude/notes/713-p6a-bundle.md`).
 - **What macOS allows** (`notes/screens-launch.md`): where the box on this computer says a
   permission isn't allowed for the program agents run under (`kuvo/box/permissions`), a heads-up

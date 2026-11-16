@@ -66,6 +66,7 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/pack"
 tar -xzf "$RELEASE/box-$VERSION.tar.gz" -C "$work/pack" || fail "its release's pack doesn't unpack."
 PINNED=$(sed -n 's/^export const UPDATE_KEYS = \(.*\);$/\1/p' box/src/link/updates/update.ts)
+[ -n "$PINNED" ] || fail "the keys boxes trust (UPDATE_KEYS, box/src/link/updates/update.ts) couldn't be read."
 cat >"$work/release.mjs" <<'EOF'
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -94,9 +95,10 @@ for (const [bundle, files] of Object.entries(box.bundles ?? {})) {
     if (sha256(path.join(pack, bundle, name)) !== sum) fail(`its release's ${bundle}/${name} isn't what box.json says.`);
   }
 }
+for (const name of ["bin/kuvo-link.js", "bin/kuvo-start", "box-version"]) if (!Object.hasOwn(box.files, name)) fail(`its release's box.json names no ${name}.`);
 if (!box.bundles?.["bin/Kuvo Helper.app"]) fail("its release's box.json names no Kuvo Helper.");
 if (!manifest.darwin?.aarch64?.url) fail("its release names no engine for a Mac.");
-const trusted = JSON.parse(pinned || "[]").map(each => Buffer.from(each, "base64").toString("base64url")).includes(boxes.key);
+const trusted = JSON.parse(pinned).map(each => Buffer.from(each, "base64").toString("base64url")).includes(boxes.key);
 console.log(trusted ? "the box releases' key" : "a key no box trusts for an update");
 EOF
 KEY_SAYS=$("$NODE" "$work/release.mjs" "$RELEASE" "$work/pack" "$VERSION" "$PINNED") || exit 1

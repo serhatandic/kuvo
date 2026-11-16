@@ -21,7 +21,9 @@ fn main() {
         std::process::exit(2);
     }
     // What this computer holds, as the installer the bundle carries says it, and nothing more: no
-    // window, nothing set up or started (`kuvo --install-status`, for checking a built bundle).
+    // window, nothing set up, moved or started (`kuvo --install-status`, for checking a built
+    // bundle). As when the app opens, `status` first stages the release and the engine in the
+    // box's home (`updates/install`): for Kuvo Code itself that's the real `~/.kuvo-code`.
     if std::env::args().any(|argument| argument == "--install-status") {
         std::process::exit(install_status());
     }
@@ -72,8 +74,9 @@ fn main() {
     });
 }
 
-/// Asks the installer this build carries what this computer holds (`status`, which changes nothing
-/// of a Kuvo that's here), and prints its steps and its answer as they are. 0 where it answered;
+/// Asks the installer this build carries what this computer holds (`status`: it sets up, moves and
+/// starts nothing, and writes only its own staging in the box's home, `updates/install`), and
+/// prints its steps and its answer as they are. 0 where it answered;
 /// 1 where this build carries none or may not run it, or it gave no answer.
 fn install_status() -> i32 {
     use kuvo_box::install::{Progress, Ran, Verb};

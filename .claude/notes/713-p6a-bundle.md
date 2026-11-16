@@ -30,7 +30,13 @@ VERSION=0.8.0-beta.2 ZIP=1 scripts/heavy.sh mac-build scripts/build-desktop-app.
   new Mac and the move from 0.7 work all the same (`kuvo-install` doesn't check the signature: the
   app's own seals the folder). What doesn't: a box that's there already refuses the release as an
   update (`kuvo/box/update {from}` takes only a pinned key's), so rehearsing "a newer app updates
-  its box" needs a bundle built with the real key, which is the user's to give.
+  its box" needs a bundle built with the real key, which is the user's to give. The app shows
+  nothing of that refusal (`422`, dropped in `launch.rs`), so in a rehearsal it's silent.
+- The build stops where the box's built files aren't what their sources build
+  (`scripts/check-built.sh`), since the release packs them as they are in git.
+- A `run.kuvo.code` bundle left where Finder or Spotlight look can be opened by macOS for
+  anything that asks for Kuvo Code by its ID (it's a second, newer Kuvo Code to Launch Services).
+  Keep it out of the way: carry the zip to the rehearsal account and remove `build/Kuvo.app`.
 
 ## What's inside
 
@@ -62,8 +68,9 @@ has no entitlements: what macOS asks about is asked of Kuvo Helper.
   with `new` to run. It fetches the engine (the network; about a minute), and leaves nothing.
 - In the rehearsal account, before opening the app: `build/Kuvo.app/Contents/MacOS/kuvo
   --install-status` says what that account holds (`app-07` with `move` for one with 0.7's data)
-  and changes nothing of it; it stages the release and the engine in `~/.kuvo-code/updates/install`,
-  as opening the app would first.
+  and sets up, moves and starts nothing; it does stage the release and the engine in
+  `~/.kuvo-code/updates/install` (replacing an older staged release, and tidying a staged engine
+  the box there already has), as opening the app would first. So only in that account.
 
 Run here (2026-11-16, this Mac, `VERSION=0.8.0-beta.2`): the build, the check and `--run` pass
 (`verdict: fresh`, `verb: new`); `cargo test --workspace` passes. The window of the bundled app

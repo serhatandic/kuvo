@@ -15,7 +15,10 @@
 #   VERSION     the version to stamp (default 0.0.0: a local build); a beta's is like 0.8.0-beta.1.
 #               A box takes the release an app carries only when it's newer than itself.
 #   APP_ID      the bundle ID (default run.kuvo.code, Kuvo Code's own: such a bundle installs into
-#               the real ~/.kuvo-code when it's opened, so never open it on a Mac in use). A copy
+#               the real ~/.kuvo-code when it's opened, and `kuvo --install-status` from it stages
+#               its release there, so neither on a Mac in use; and macOS may open it for
+#               anything that asks for Kuvo Code by its ID, so don't keep it where Finder or
+#               Spotlight look: carry the zip to where it's tried, and remove the bundle). A copy
 #               of its own (run.kuvo.code.trial1) has its helper and kuvo-keys named after it too,
 #               and installs only into a root it's given (KUVO_DEMO_MACHINE_ROOT=<a folder's name>).
 #   OUT         where the bundle goes (default build)
@@ -34,7 +37,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 if [ $# -ne 0 ]; then
-    sed -n '2,33p' "$0" >&2
+    sed -n '2,35p' "$0" >&2
     exit 2
 fi
 if [ "${SIGN_IDENTITY:--}" != "-" ]; then
@@ -68,12 +71,18 @@ temporary=${TMPDIR:-/tmp}
 work=$(mktemp -d "${temporary%/}/kuvo-desktop-app.XXXXXXXX")
 NEW="$APP.new"
 trap 'rm -rf "$work" "$NEW"' EXIT
-rm -rf "$NEW"
+# (Nor an earlier build's zip of this version, to be carried in this one's place.)
+rm -rf "$NEW" "$OUT/Kuvo-$VERSION.zip"
+
+# The box's built files as its sources build them now (after a merge git may keep one side's):
+# what the release packs is what's in git.
+./scripts/check-built.sh
 
 # The app, saying the bundle's version where it names its own (to the relay and your computers).
 (cd gpui && KUVO_APP_VERSION="$VERSION" cargo build --release --locked -p kuvo --bin kuvo)
-BUILT="${CARGO_TARGET_DIR:-gpui/target}/release/kuvo"
-case "$BUILT" in /*) ;; *) [ -z "${CARGO_TARGET_DIR:-}" ] || BUILT="gpui/$BUILT" ;; esac
+# (Where cargo says it builds, whatever names that folder: never an older build found by guessing.)
+TARGET=$(cd gpui && cargo metadata --format-version 1 --no-deps --locked | "$NODE" -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).target_directory)')
+BUILT="$TARGET/release/kuvo"
 test -x "$BUILT" || { echo "No kuvo at $BUILT" >&2; exit 1; }
 
 # Kuvo Code's icon, as Xcode made it in the Mac app: the .icns, and the layered one macOS 26 draws.
@@ -120,11 +129,11 @@ env -u BOX_SOURCES KUVO_BOX_SIGNING_KEY="$KUVO_BOX_SIGNING_KEY" NODE="$NODE" ./s
 # of Kuvo Helper.
 codesign --force --sign - --options runtime --identifier "$APP_ID" "$NEW"
 
+# Checked before it takes the last build's place: one that doesn't pass is never left there.
+./scripts/check-desktop-app.sh "$NEW"
 rm -rf "$APP"
 mv "$NEW" "$APP"
-./scripts/check-desktop-app.sh "$APP"
 if [ "${ZIP:-}" = 1 ]; then
-    rm -f "$OUT/Kuvo-$VERSION.zip"
     ditto -c -k --keepParent "$APP" "$OUT/Kuvo-$VERSION.zip"
     echo "Packed $OUT/Kuvo-$VERSION.zip"
 fi
