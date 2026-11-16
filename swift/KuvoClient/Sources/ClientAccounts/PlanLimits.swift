@@ -338,7 +338,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         self.problem = problem
     }
 
-    private enum CodingKeys: String, CodingKey { case provider, service, title, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, rings, level, bar }
+    private enum CodingKeys: String, CodingKey { case provider, service, title, agent, account, label, identity, plan, windows, balance, extras, agentsReset, checked, next, problem, id, boxes, away, ended, rings, level, bar }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
