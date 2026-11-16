@@ -1274,7 +1274,7 @@ impl Render for FirstRun {
             }))
             .on_action(cx.listener(|_, _: &ToggleAppearance, _, cx| {
                 let next = cx.theme().appearance.toggled();
-                kuvo_ui::Theme::set_appearance(next, cx);
+                crate::yours::set_theme(next, cx);
             }))
     }
 }

@@ -63,11 +63,24 @@ pub struct FilesView {
     /// The tree's rows, worked out as folders are read, opened or closed (not on each frame).
     rows: std::rc::Rc<Vec<Row>>,
     focus: FocusHandle,
+    /// The editor a file opens in (Your settings › General), where it's on this Mac.
+    editor: Option<crate::yours::editors::Editor>,
+    _yours: gpui::Subscription,
 }
 
 impl FilesView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> FilesView {
-        FilesView { client, live, place: None, shown: false, folders: HashMap::new(), open: HashSet::new(), opened: None, rows: Default::default(), focus: cx.focus_handle() }
+        // (The editor picked changed: the button names the new one.)
+        let yours = cx.observe_global::<crate::yours::Store>(|this: &mut FilesView, cx| {
+            this.editor = crate::yours::editors::picked(cx);
+            cx.notify();
+        });
+        FilesView { client, live, place: None, shown: false, folders: HashMap::new(), open: HashSet::new(), opened: None, rows: Default::default(), focus: cx.focus_handle(), editor: None, _yours: yours }
+    }
+
+    /// The editor "Open in" names, where one's picked and on this Mac.
+    pub fn editor(&self) -> Option<&crate::yours::editors::Editor> {
+        self.editor.as_ref()
     }
 
     pub fn opened(&self) -> Option<&(String, Load<Shown>)> {
@@ -142,6 +155,10 @@ impl FilesView {
     /// Opens a file to read, as its box sends it.
     pub fn open_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.opened = Some((path.to_owned(), Load::Loading));
+        // (Looked up as a file opens: an editor installed or removed since is found.)
+        if self.client.here() {
+            self.editor = crate::yours::editors::picked(cx);
+        }
         window.focus(&self.focus, cx);
         let client = self.client.clone();
         let asked = path.to_owned();
@@ -331,10 +348,33 @@ impl FilesView {
                             .min_w_0()
                             .child(div().truncate().medium().child(name))
                             .child(div().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(if folder.is_empty() { "Read only".to_owned() } else { format!("{folder} · Read only") })),
-                    ),
+                    )
+                    .children(self.open_in(path)),
             )
             .child(div().id("file-scroll").debug_selector(|| "file-viewer".into()).flex_1().min_h_0().overflow_y_scroll().p(space::S3).child(body))
             .into_any_element()
+    }
+}
+
+impl FilesView {
+    /// Opens the file in the editor picked in Your settings › General, else in its own app: only
+    /// a file on this computer, which this Mac's apps can open.
+    // BOX-NEEDED: another computer's file would need its contents fetched to a copy here
+    // (`kuvo/file`), and an editor's remote opening; Files leaves the button out there.
+    fn open_in(&self, path: &str) -> Option<Button> {
+        if !self.client.here() {
+            return None;
+        }
+        let (label, tooltip) = match &self.editor {
+            Some(editor) => (format!("Open in {}", editor.name), None),
+            None => ("Open".to_owned(), Some("In your default text editor. Pick another in Settings › General.")),
+        };
+        let (path, editor) = (path.to_owned(), self.editor.as_ref().map(|editor| editor.id.clone()));
+        let button = Button::new("file-open-in", label).ghost().size(ButtonSize::Small).icon_after(IconName::External).on_click(move |_, _, cx| crate::yours::editors::open(std::path::Path::new(&path), editor.as_deref(), cx));
+        Some(match tooltip {
+            Some(tooltip) => button.tooltip(tooltip),
+            None => button,
+        })
     }
 }
 

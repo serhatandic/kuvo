@@ -13,6 +13,7 @@ use gpui::{AppContext as _, Context, Entity, Focusable as _, IntoElement, Render
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::{Boxes, Pairing, Row};
 
+use crate::notifications::{Effects, Notifier, Open};
 use crate::workspace::{Switch, Workspace};
 
 /// What the switcher draws: your computers with how this app stands with each, which one the
@@ -34,7 +35,10 @@ pub struct Home {
     made: HashMap<String, u64>,
     shown: String,
     now: Option<f64>,
+    /// This device's notifications and Dock count, from every computer it reaches.
+    notifier: Entity<Notifier>,
     _watch: Option<Task<()>>,
+    _notifier: Subscription,
 }
 
 /// The nearest box's workspace, whatever its key turns out to be.
@@ -46,7 +50,17 @@ impl Home {
     /// what it's handed (tests and shots).
     pub fn new(boxes: Boxes, first: BoxClient, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Home {
         let shown = if boxes.nearest().is_some() { NEAREST.to_owned() } else { boxes.rows().iter().find(|row| row.usable()).map(|row| row.key().to_owned()).unwrap_or_default() };
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, _watch: None };
+        // (Only the app touches the Dock and makes sounds; tests and shots keep to the window.)
+        let effects = if live { Effects::system() } else { Effects::none() };
+        let notifier = cx.new(|cx| Notifier::new(effects, cx));
+        let opens = cx.subscribe_in(&notifier, window, |this: &mut Home, _, open: &Open, window, cx| this.open_notice(open, window, cx));
+        if live {
+            let home = cx.entity().downgrade();
+            cx.on_system_notification_response(move |response, cx| {
+                let _ = home.update(cx, |home, cx| home.notifier.update(cx, |notifier, cx| notifier.clicked(&response.tag, cx)));
+            });
+        }
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens };
         home.make(&shown, first, window, cx);
         if live {
             boxes.start();
@@ -65,6 +79,43 @@ impl Home {
 
     pub fn boxes(&self) -> &Boxes {
         &self.boxes
+    }
+
+    pub fn notifier(&self) -> &Entity<Notifier> {
+        &self.notifier
+    }
+
+    /// A notification clicked: the window comes forward on its computer, at its session.
+    fn open_notice(&mut self, open: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        cx.activate(true);
+        window.activate_window();
+        let shown = if open.computer == NEAREST {
+            self.shown = NEAREST.to_owned();
+            self.workspaces.contains_key(NEAREST)
+        } else {
+            self.switch_to(&open.computer, window, cx)
+        };
+        if let (true, Some(session)) = (shown, &open.session) {
+            let workspace = self.workspace().clone();
+            workspace.update(cx, |workspace, cx| workspace.open_session_now(session, window, cx));
+        }
+        cx.notify();
+    }
+
+    /// The computers this device's notifications come from: the nearest, and each other one it
+    /// reaches.
+    fn notified(&self) -> Vec<(String, Option<u64>, BoxClient)> {
+        let nearest = self.boxes.nearest_key();
+        let mut clients: Vec<(String, Option<u64>, BoxClient)> = self.boxes.nearest().map(|client| (NEAREST.to_owned(), None, client)).into_iter().collect();
+        for row in self.boxes.rows() {
+            if !row.usable() || Some(row.key()) == nearest.as_deref() {
+                continue;
+            }
+            if let Some(client) = self.boxes.client(row.key()) {
+                clients.push((row.key().to_owned(), self.boxes.client_made(row.key()), client));
+            }
+        }
+        clients
     }
 
     /// The workspace shown.
@@ -159,6 +210,10 @@ impl Home {
         }
         if !self.workspaces.contains_key(&self.shown) {
             self.shown = if self.workspaces.contains_key(NEAREST) { NEAREST.to_owned() } else { self.workspaces.keys().next().cloned().unwrap_or_default() };
+        }
+        if self.live {
+            let clients = self.notified();
+            self.notifier.update(cx, |notifier, cx| notifier.follow(clients, cx));
         }
         let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
         let nearest = self.boxes.nearest_key();

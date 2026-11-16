@@ -190,6 +190,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-mcp-signing-in", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_signing_in) },
     Screen { slug: "settings-mcp-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
+    Screen { slug: "settings-yours-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_general) },
+    Screen { slug: "settings-yours-notifications", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_notifications) },
+    // A file of this Mac's, with the editor picked in General.
+    Screen { slug: "file-open-in", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(file_open_in) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
     Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
     Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
@@ -534,6 +538,21 @@ fn settings(workspace: &mut Workspace, section: &str, window: &mut Window, cx: &
 
 fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/appearance", window, cx);
+}
+/// General, with the editors a Mac might have.
+fn yours_general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "yours/general", window, cx);
+    let editors = [("com.microsoft.VSCode", "Visual Studio Code"), ("dev.zed.Zed", "Zed"), ("com.apple.TextEdit", "TextEdit")].map(|(id, name)| kuvo::yours::editors::Editor { id: id.into(), name: name.into() }).to_vec();
+    view.update(cx, |view, cx| view.set_editors(editors, cx));
+}
+fn yours_notifications(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/notifications", window, cx);
+}
+/// The sign-up form, opened to read, with TextEdit picked (on every Mac). (Kept only while the
+/// shots run; the screens after it don't open files.)
+fn file_open_in(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    kuvo::yours::change(kuvo::yours::Change::Editor(Some("com.apple.TextEdit".into())), cx);
+    file(workspace, window, cx);
 }
 /// One of your own sections that isn't in the desktop app yet.
 fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

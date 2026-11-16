@@ -3319,7 +3319,10 @@ a browser's, itself).
 - **`GET kuvo/notices/events`**: the same, a line now and one each time it changes (NDJSON).
 - **A client** shows each notice of the categories that are news (`finished`, `failed`, `report`,
   `message`) once, by its `id`, and none of what was listed the first time it read a box (news from
-  before it was there). Where a box says `telling: false` (a machine whose bridge isn't running),
+  before it was there). The desktop app, which has no answer buttons in its notifications,
+  shows what's asked (`permission`, `question`, `ask`, `blocked`) the same way, as the box words
+  it; each device decides only whether it shows them (its own settings: none while its window is
+  in front). Where a box says `telling: false` (a machine whose bridge isn't running),
   it has no news to show until its bridge runs again: no client words a box's news itself (the
   retired Mac app did, for a box from before `kuvo/notices` too; a box from before is held by the
   update gate now). A phone is pushed each box's notices.

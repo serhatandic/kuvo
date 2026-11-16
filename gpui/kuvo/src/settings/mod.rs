@@ -29,7 +29,7 @@ use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::models::Offered;
 use kuvo_box::settings::{Config, UsageSettings};
 use kuvo_box::settings_pages::{Changed, Page, Section};
-use kuvo_ui::{ActiveTheme, Appearance, IconName, TextField, TextFieldEvent, Theme};
+use kuvo_ui::{ActiveTheme, Appearance, IconName, TextField, TextFieldEvent};
 use serde_json::Value;
 
 use crate::areas::Reading;
@@ -194,6 +194,12 @@ pub struct SettingsView {
     focus_confirm: bool,
     /// Drawn in dark (the Theme row says which is on).
     dark: bool,
+    /// The editors on this Mac General offers (read as Settings opens).
+    editors: Vec<crate::yours::editors::Editor>,
+    /// Where System Settings shows this app's notifications.
+    notification_settings: String,
+    /// Your settings as last kept, and why the last change couldn't be, where it couldn't.
+    yours_now: (crate::yours::Yours, Option<String>),
     /// The window's computer's name.
     this_box: String,
     now: Option<f64>,
@@ -267,7 +273,7 @@ impl SettingsView {
             home: client,
             live,
             side: Side::Yours,
-            yours: "appearance".into(),
+            yours: "general".into(),
             section: "clock".into(),
             computer: None,
             computers: Reading::NotYet,
@@ -299,6 +305,9 @@ impl SettingsView {
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
             dark: cx.theme().appearance.is_dark(),
+            editors: if live { crate::yours::editors::installed() } else { Vec::new() },
+            notification_settings: crate::yours::desk::notification_settings(),
+            yours_now: Default::default(),
             this_box: "This Mac".into(),
             now: None,
             items: Vec::new(),
@@ -306,7 +315,8 @@ impl SettingsView {
             focus: cx.focus_handle(),
             tasks: HashMap::new(),
             list_filters: HashMap::new(),
-            _subscriptions: vec![subscription],
+            // (Your settings changed, here or by a key: their pages show it.)
+            _subscriptions: vec![subscription, cx.observe_global::<crate::yours::Store>(|this: &mut SettingsView, cx| this.rebuild(cx))],
         };
         view.rebuild(cx);
         view
@@ -525,9 +535,19 @@ impl SettingsView {
         self.rebuild(cx);
     }
 
-    /// The area came on screen: the page open is read again.
+    /// The area came on screen: the page open is read again, and the editors on this Mac.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
+        if self.live {
+            self.editors = crate::yours::editors::installed();
+            self.rebuild(cx);
+        }
         self.read_open(cx);
+    }
+
+    /// The editors General offers, as a test or a shot says they're on this Mac.
+    pub fn set_editors(&mut self, editors: Vec<crate::yours::editors::Editor>, cx: &mut Context<Self>) {
+        self.editors = editors;
+        self.rebuild(cx);
     }
 
     /// The foot row: to the other side, at the section last open there.
@@ -592,7 +612,10 @@ impl SettingsView {
     /// A section's page, as blocks.
     fn blocks(&self, entry: &Entry) -> Vec<Block> {
         match entry.drawn {
-            Drawn::Yours => rows::yours(&entry.id, self.dark),
+            Drawn::Yours => {
+                let (yours, problem) = &self.yours_now;
+                rows::yours(&entry.id, &rows::YoursFacts { yours, dark: self.dark, editors: &self.editors, problem: problem.as_deref(), notification_settings: &self.notification_settings })
+            }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
                 Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters }),
@@ -744,6 +767,7 @@ impl SettingsView {
     /// Works the page's items out again, from what it's drawn from now.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.dark = cx.theme().appearance.is_dark();
+        self.yours_now = cx.try_global::<crate::yours::Store>().map(|store| (store.now().clone(), store.problem().map(str::to_owned))).unwrap_or_default();
         let name = self.computer_name();
         let placeholder = if self.side == Side::Yours { "Search your settings…".to_owned() } else { format!("Search {name}’s settings…") };
         self.search.update(cx, |field, _| field.set_placeholder(placeholder));
@@ -1310,10 +1334,8 @@ impl SettingsView {
                 // A part changed on another computer meanwhile is turned away: the box's is shown.
                 self.change(key, move |client| client.set_usage_notices(notices, based.as_deref()), |this, usage| this.usage = Reading::Ready(usage), cx)
             }
-            Act::SetDark(dark) => {
-                Theme::set_appearance(if dark { Appearance::Dark } else { Appearance::Light }, cx);
-                self.rebuild(cx);
-            }
+            Act::SetDark(dark) => crate::yours::set_theme(if dark { Appearance::Dark } else { Appearance::Light }, cx),
+            Act::Yours(change) => crate::yours::change(change, cx),
         }
         self.rebuild(cx);
     }
