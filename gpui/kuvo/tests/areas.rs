@@ -260,21 +260,18 @@ fn a_bots_row_shows_what_the_box_says_its_doing_now(cx: &mut TestAppContext) {
 }
 
 /// Computers lists your computers as the box does (`kuvo/computers`): the one this window shows
-/// first, then the others; a machine shared with another setup under its own header. No Mac is
-/// asked for its machines.
+/// first, then the others. No Mac is asked for its machines.
 #[gpui::test]
-fn computers_lists_yours_as_the_box_does_with_shared_machines_apart(cx: &mut TestAppContext) {
+fn computers_lists_yours_as_the_box_does(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-computers");
     let this = bounds(cx, "computer-this").expect("this one");
     let devbox = bounds(cx, "computer-key_devbox").expect("devbox");
     let studio = bounds(cx, "computer-key_studio").expect("one that's away");
-    let header = bounds(cx, "header-shared").expect("Shared Machines");
-    let shared = bounds(cx, "computer-key_build").expect("a shared machine");
     // The box says how each is reached: a dot for each it lists.
     assert!(bounds(cx, "computer-dot-this").is_some() && bounds(cx, "computer-dot-key_studio").is_some());
-    assert!(this.top() < devbox.top() && devbox.top() < studio.top() && studio.top() < header.top() && header.top() < shared.top());
+    assert!(this.top() < devbox.top() && devbox.top() < studio.top() && studio.top() < bounds(cx, "computer-key_old").expect("an older one").top());
     assert!(stand_in.seen_at("GET", "kuvo/machines").is_empty());
     click(cx, "computer-key_devbox");
     assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
@@ -306,11 +303,11 @@ fn the_switcher_lists_your_other_computers_as_the_box_does(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn a_box_alone_lists_itself_and_no_shared_machines(cx: &mut TestAppContext) {
+fn a_box_alone_lists_itself(cx: &mut TestAppContext) {
     let (_workspace, cx) = open(cx, StandIn::empty(Replies::Never));
     click(cx, "rail-computers");
     assert!(bounds(cx, "computer-this").is_some());
-    assert!(bounds(cx, "header-shared").is_none());
+    assert!(bounds(cx, "computer-key_devbox").is_none());
 }
 
 #[gpui::test]

@@ -175,11 +175,10 @@ class Box {
 
   /**
    * Its link says who your other computers are (`PUT /api/kuvo/peers`): its peers, and `also`, the
-   * boxes they know that it doesn't; `apart`, those of its peers that aren't your own computers (a
-   * machine Macs of two setups share).
+   * boxes they know that it doesn't.
    */
-  async meet(others: Box[], also: Box[] = [], apart: Box[] = []) {
-    await peerRoutes(this.parts, "PUT", [], async () => ({ self: { key: this.key, name: this.name }, boxes: others.map((box) => ({ key: box.key, name: box.name, seats: true, ...(apart.includes(box) ? { apart: true } : {}) })), also: also.map((box) => ({ key: box.key, name: box.name })), bots: [] }))
+  async meet(others: Box[], also: Box[] = []) {
+    await peerRoutes(this.parts, "PUT", [], async () => ({ self: { key: this.key, name: this.name }, boxes: others.map((box) => ({ key: box.key, name: box.name, seats: true })), also: also.map((box) => ({ key: box.key, name: box.name })), bots: [] }))
   }
 
   async route(method = "GET", rest: string[] = []) {
@@ -644,25 +643,6 @@ describe("whose computers see what's yours alone (#701, the separate review)", (
     stop()
     expect(balance(mac)).toEqual({ left: 7.7, limit: 50, unit: "usd" })
     expect(heard.at(-1)?.rows.find((row: LimitRow) => row.service === "openrouter")?.balance).toEqual({ left: 7.7, limit: 50, unit: "usd" })
-  })
-
-  test("a machine that stops being one of your own computers, then is again: its spend is hidden, then asked for and shown at once", async () => {
-    const mac = new Box("key-mac", "MacBook Pro", relay, [])
-    const hetzner = new Box("key-hetzner", "hetzner", relay, [credits()])
-    await mac.meet([hetzner])
-    await hetzner.meet([mac])
-    await hetzner.limits.tick()
-    await relay.settled()
-    expect(balance(mac)).toEqual({ left: 7.7, limit: 50, unit: "usd" })
-    // Another setup's Mac sets it up too: the Mac's link says it isn't yours now.
-    await mac.meet([hetzner], [], [hetzner])
-    await relay.settled()
-    expect(balance(mac)).toBeUndefined()
-    // That Mac lets it go, a while later: yours again, and it's asked, and tells all of it now (not in ten minutes).
-    pass(2 * MINUTE)
-    await mac.meet([hetzner])
-    await relay.settled()
-    expect(balance(mac)).toEqual({ left: 7.7, limit: 50, unit: "usd" })
   })
 
   test("an account's spend and extras come from your own computers' reading, though a box that isn't yours read it later", () => {

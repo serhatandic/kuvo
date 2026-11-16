@@ -9657,7 +9657,6 @@ class LimitResets {
   spends = [];
   allowed = new Map;
   seen = new Map;
-  sharedSeen = false;
   waiting = new Map;
   running = new Map;
   constructor(limits, file, now = Date.now, transport, directory, peerWait = PEER_WAIT) {
@@ -9669,30 +9668,6 @@ class LimitResets {
     this.peerWait = peerWait;
     this.load();
     limits.resets = this;
-    directory?.listen(() => this.directorySaid());
-  }
-  directorySaid() {
-    const directory = this.directory;
-    if (!directory?.told)
-      return;
-    const shared = directory.sharedHere === true;
-    const becameShared = shared && !this.sharedSeen;
-    let changed = shared !== this.sharedSeen;
-    this.sharedSeen = shared;
-    const sharedPeer = directory.peerBoxes().some((box) => directory.isSharedPeer?.(box.key) === true);
-    for (const [row, decided] of [...this.allowed]) {
-      if (!decided.on && decided.from === "")
-        continue;
-      const apart = decided.from === undefined ? sharedPeer : decided.from ? directory.isPeer?.(decided.from) === true && !this.isYours(decided.from) : false;
-      if (!becameShared && !apart)
-        continue;
-      this.allowed.set(row, { on: false, at: decided.at, from: "" });
-      changed = true;
-    }
-    if (!changed)
-      return;
-    this.save();
-    this.changedSoon();
   }
   agentsMay(provider) {
     const live = this.limits.liveRow(provider);
@@ -10036,7 +10011,6 @@ class LimitResets {
       for (const [provider, row] of Object.entries(saved.seen ?? {}))
         if (typeof row === "string")
           this.seen.set(provider, row);
-      this.sharedSeen = saved.shared === true;
     } catch {}
   }
   save() {
@@ -10045,7 +10019,7 @@ class LimitResets {
     const at = this.now();
     this.spends = this.spends.filter((spend) => spend.state === "sending" || at - spend.at < KEEP_FOR).slice(-KEEP);
     mkdirSync10(dirname10(this.file), { recursive: true });
-    writeFileSync12(this.file + ".new", JSON.stringify({ spends: this.spends, allowed: Object.fromEntries(this.allowed), seen: Object.fromEntries(this.seen), ...this.sharedSeen ? { shared: true } : {} }), { mode: 384 });
+    writeFileSync12(this.file + ".new", JSON.stringify({ spends: this.spends, allowed: Object.fromEntries(this.allowed), seen: Object.fromEntries(this.seen) }), { mode: 384 });
     renameSync8(this.file + ".new", this.file);
   }
 }
@@ -35709,7 +35683,6 @@ class LinkDirectory {
   told = false;
   setup;
   inNoSetup = false;
-  sharedHere = false;
   constructor(transport, clock = realClock) {
     this.transport = transport;
     this.clock = clock;
@@ -35720,7 +35693,7 @@ class LinkDirectory {
     const boxes = new Map;
     for (const box of given.boxes) {
       if (box && typeof box.key === "string" && box.key)
-        boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, ...box.apart === true ? { apart: true } : {}, ...box.shared === true ? { shared: true } : {} });
+        boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true });
     }
     this.boxes = boxes;
     const self = given.self;
@@ -35732,7 +35705,6 @@ class LinkDirectory {
     }
     this.setup = typeof given.setup === "string" && /^set_[A-Za-z0-9_-]{1,64}$/.test(given.setup) ? given.setup : undefined;
     this.inNoSetup = given.setup === null;
-    this.sharedHere = given.shared === true;
     this.told = true;
     this.listed = given.bots.filter((bot) => bot && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.box === "string" && boxes.has(bot.box)).map((bot) => ({
       id: bot.id,
@@ -35768,10 +35740,7 @@ class LinkDirectory {
     return this.boxes.has(box);
   }
   isYours(box) {
-    return this.told && this.isPeer(box) && this.boxes.get(box)?.apart !== true;
-  }
-  isSharedPeer(box) {
-    return this.boxes.get(box)?.shared === true;
+    return this.told && this.isPeer(box);
   }
   home(box) {
     let home = this.homes.get(box);
@@ -37723,4 +37692,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 7db03b587057a4f5f93be7c2a6150108ef9acdb9713099bcbb4fd1fe07d49a43
+// Built from Packages/Box/src/agents 91d130ff966f78f2f4600ced73f1141af013a797a83acfdafe98271f30cdf0b7

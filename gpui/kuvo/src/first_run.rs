@@ -413,7 +413,7 @@ impl FirstRun {
     /// Your own computers, the box's first (one that isn't yours is left out).
     fn own_computers(&self) -> Vec<&Computer> {
         match &self.computers {
-            Reading::Ready(computers) => computers.iter().filter(|computer| !computer.apart).collect(),
+            Reading::Ready(computers) => computers.iter().collect(),
             _ => Vec::new(),
         }
     }

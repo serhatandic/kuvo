@@ -117,8 +117,8 @@ fn a_computer_this_app_doesnt_reach_says_why_and_cant_be_picked(cx: &mut TestApp
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (home, cx) = open(cx, stand_in);
     click(cx, "computer-switcher");
-    // One that's away, one that's older, and one that isn't yours: listed, each saying why.
-    for (item, key) in [("menu-item-studio-mini", "key_studio"), ("menu-item-build-box", "key_build")] {
+    // One that's away: listed, saying why.
+    for (item, key) in [("menu-item-studio-mini", "key_studio")] {
         assert!(shown(cx, item), "{item} is listed");
         click(cx, item);
         assert_ne!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some(key), "{item} isn't picked");
@@ -127,8 +127,8 @@ fn a_computer_this_app_doesnt_reach_says_why_and_cant_be_picked(cx: &mut TestApp
         }
     }
     assert_eq!(name(&home, cx), "This Mac");
-    // Asked directly, it's refused too: no window is ever made for a computer that isn't yours.
-    home.update_in(cx, |home, window, cx| assert!(!home.switch_to("key_build", window, cx)));
+    // Asked directly, it's refused too: no window is made for a computer this app doesn't reach.
+    home.update_in(cx, |home, window, cx| assert!(!home.switch_to("key_studio", window, cx)));
 }
 
 #[gpui::test]

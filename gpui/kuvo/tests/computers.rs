@@ -203,7 +203,7 @@ fn a_box_that_doesnt_add_machines_says_where_to_add_them(cx: &mut TestAppContext
 #[gpui::test]
 fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext) {
     let (workspace, page, cx) = open(cx, StandIn::at(Replies::Never, NOW));
-    for row in ["this", "key_devbox", "key_studio", "key_old", "key_build"] {
+    for row in ["this", "key_devbox", "key_studio", "key_old"] {
         assert!(shown(cx, &format!("computers-row-{row}")), "{row} among all of them");
         assert!(shown(cx, &format!("computer-{row}")), "{row} in the sidebar");
     }
@@ -227,9 +227,6 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
     assert!(!shown(cx, "notice-older"), "never said to wait for its update");
     assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.9.180, older than this app"));
     assert!(!shown(cx, "at-work-none"), "an older computer's count isn't claimed");
-    // Shared with another setup: filed apart, and it says nothing of what runs there.
-    click(cx, "computer-key_build");
-    assert!(shown(cx, "notice-apart") && !shown(cx, "fact-at-work"));
     // All of them again, from the sidebar's first row.
     click(cx, "computers-all");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::All);
@@ -318,12 +315,11 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
     assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_studio/connect").len(), 1);
     assert!(shown(cx, "notice-connecting") && !shown(cx, "action-reconnect"));
 
-    // Offered nothing (shared with another setup, an older Mac): no Manage; and what an older one
-    // never said of what's at work isn't drawn.
-    click(cx, "computer-key_build");
-    assert!(!shown(cx, "action-rename") && !shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
+    // Offered nothing (an older Mac): no Manage; and what it never said of what's at work isn't
+    // drawn.
     click(cx, "computer-key_old");
-    assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none") && !shown(cx, "action-remove"));
+    assert!(!shown(cx, "action-rename") && !shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
+    assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none"));
 }
 
 /// What the box refuses is shown in its words on the page it was asked on, and nothing changes.

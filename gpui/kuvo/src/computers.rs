@@ -585,7 +585,7 @@ impl ComputersView {
         cx.notify();
     }
 
-    /// All your computers: yours, then those filed apart, each a row with how it stands.
+    /// All your computers, each a row with how it stands.
     fn all_items(&self) -> Vec<Item> {
         let mut items = vec![Item::Title { title: "Your Computers".into(), line: "Each runs its own sessions, bots and agents.".into(), add: true }];
         let computers = match &self.computers {
@@ -608,9 +608,8 @@ impl ComputersView {
             }
             computer
         };
-        let (apart, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
         // (The computer this window shows is known without the list.)
-        let yours: Vec<Computer> = if yours.iter().any(|computer| computer.here) { yours.into_iter().map(named).collect() } else { std::iter::once(self.this()).chain(yours.into_iter().map(named)).collect() };
+        let yours: Vec<Computer> = if computers.iter().any(|computer| computer.here) { computers.iter().map(named).collect() } else { std::iter::once(self.this()).chain(computers.iter().map(named)).collect() };
         // What this box did with a machine that's no longer listed (uninstalled, or it failed and
         // the machine is gone since), where its own page can't say it.
         if let Reading::Ready(adding) = &self.adding {
@@ -620,10 +619,6 @@ impl ComputersView {
         rows(&mut items, yours);
         if yours_alone(computers) {
             items.push(Item::Note { key: "computers-alone".into(), words: "Add a machine (a Mac or Linux server you reach with SSH) to run sessions and bots there too.".into(), busy: false });
-        }
-        if !apart.is_empty() {
-            items.push(Item::Group("Shared Machines".into()));
-            rows(&mut items, apart.into_iter().map(named).collect());
         }
         items.push(Item::End);
         items
@@ -899,15 +894,6 @@ impl ComputersView {
         if computer.is_older() {
             let (title, words) = held_words(Some(name), computer.here && self.this_mac);
             return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words, action: None });
-        }
-        if computer.apart {
-            return Some(Item::Notice {
-                key: "notice-apart".into(),
-                tone: Tone::Info,
-                title: format!("{name} isn’t one of your own computers"),
-                words: "Someone else’s setup shares this machine, so what runs there isn’t shown.".into(),
-                action: None,
-            });
         }
         // (Only behind, and reached: used as it is, what it lacks not drawn there. Away or being
         // reached, that comes first, with its way on.)
@@ -1298,7 +1284,7 @@ fn rows(items: &mut Vec<Item>, computers: Vec<Computer>) {
 
 /// Only the computer this window shows is listed (none of your own besides).
 fn yours_alone(computers: &[Computer]) -> bool {
-    !computers.iter().any(|computer| !computer.here && !computer.shared && !computer.apart)
+    !computers.iter().any(|computer| !computer.here)
 }
 
 /// How the box this window shows knows a computer.

@@ -26,12 +26,6 @@ export interface SeatBox {
   key: string;
   name: string;
   seats: boolean;
-  /** Never said now: every peer is one of your own computers (a machine more than one Mac set up
-   * is yours all the same, #783). The bridge's handling of it (`groups/post.ts`, `limits-resets.ts`,
-   * `usage/usage-peers.ts`) is dead code, owed a removal (the link and bridge ship together). */
-  apart?: true;
-  /** Never said now, as `apart`. */
-  shared?: true;
 }
 
 /** A bot on another of your computers, as the link tells the bridge: its computer (`box`, by key),
@@ -59,6 +53,4 @@ export interface SeatPeers {
    * which the bridge takes as neither. The usage panel's settings go only between boxes of the
    * same setup. */
   setup?: string | null;
-  /** Never said now, as `SeatBox.apart`. */
-  shared?: true;
 }

@@ -177,12 +177,6 @@ pub struct Computer {
     /// A machine's name on its Mac.
     #[serde(default)]
     pub id: Option<String>,
-    /// A machine Macs of different setups share.
-    #[serde(default)]
-    pub shared: bool,
-    /// It isn't one of your own computers (a shared machine, a box of another setup): filed apart.
-    #[serde(default)]
-    pub apart: bool,
     /// `connected`, `connecting`, `away`, or `unknown` (known by another computer's word alone).
     #[serde(default)]
     pub reach: String,
@@ -812,14 +806,14 @@ mod tests {
     #[test]
     fn your_computers_read_as_the_box_says_them() {
         let said: Computers = serde_json::from_str(
-            r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"shared":false,"reach":"connected","version":"0.8.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
-                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","shared":true,"reach":"unknown","via":"peer","through":"Studio","working":0,"limits":[]},
+            r#"{"computers":[{"key":"","name":"Studio","kind":"mac","here":true,"reach":"connected","version":"0.8.0","engine":"2.3.0","system":"macOS 15.1","via":"here","working":2,"limits":["claude"]},
+                {"key":"k1","name":"devbox","kind":"machine","id":"devbox","reach":"unknown","via":"peer","through":"Studio","working":0,"limits":[]},
                 {"key":"k2"}]}"#,
         )
         .unwrap();
         assert_eq!(said.computers.len(), 2, "one in a shape this can't read is left out");
         assert!(said.computers[0].here && said.computers[0].is_mac());
-        assert_eq!((said.computers[1].shared, said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), (true, "unknown", Some("Studio")));
+        assert_eq!((said.computers[1].reach.as_str(), said.computers[1].through.as_deref()), ("unknown", Some("Studio")));
         // What's at work is said where the box said it; one that never said has no count at all.
         assert_eq!(said.computers[0].working, Some(2));
         let facts: Computer = serde_json::from_str(r#"{"key":"k3","name":"mini","kind":"machine","reach":"connected","via":"relay","atWork":[{"id":"ses_1","title":"Ship it"},{"id":"ses_2"},{"title":"no id"}],"actions":[{"id":"connect","label":"Connect"},{"label":"no id"}],"limits":[]}"#).unwrap();

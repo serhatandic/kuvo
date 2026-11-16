@@ -446,7 +446,7 @@ impl SettingsView {
     /// Your computers the picker lists: your own (those of another setup aren't yours to set).
     pub(crate) fn listed_computers(&self) -> Vec<Computer> {
         match &self.computers {
-            Reading::Ready(computers) => computers.iter().filter(|computer| !computer.apart).cloned().collect(),
+            Reading::Ready(computers) => computers.clone(),
             _ => Vec::new(),
         }
     }
