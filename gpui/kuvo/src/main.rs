@@ -29,8 +29,18 @@ fn main() {
     }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
-        // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one).
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one). The
+        // first time, on a Mac whose Kuvo stays at work in the menu bar, a note says so first
+        // (`kuvo::quit_note`), remembered in the app's own folder.
+        if !stand_in() {
+            let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
+            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            if let Some(names) = std::env::current_exe().ok().and_then(|executable| kuvo_box::install::names_for(&executable, demo_root.as_deref(), &home)) {
+                cx.set_global(kuvo::quit_note::QuitNoteFile::in_folder(&kuvo::keeper::folder_of(&home, &names.root)));
+            }
+        }
+        // (After the key's dispatch: the window it came through is busy until then.)
+        cx.on_action(|_: &Quit, cx| cx.defer(kuvo::quit_note::quit));
         cx.set_menus([Menu { name: "Kuvo".into(), items: vec![MenuItem::action("Quit Kuvo", Quit)], disabled: false }]);
         cx.on_window_closed(|cx, _| {
             // (The small window beside System Settings isn't the app's own.)
@@ -73,6 +83,7 @@ fn main() {
         cx.activate(true);
     });
 }
+
 
 /// Asks the installer this build carries what this computer holds (`status`: it sets up, moves and
 /// starts nothing, and writes only its own staging in the box's home, `updates/install`), and

@@ -37,6 +37,8 @@ pub struct Areas {
     pub manage_refused: Option<String>,
     /// The old Kuvo Code app is open on the Mac that writes your machines' records: removing waits.
     pub old_app: bool,
+    /// It isn't a Mac's own box, which Kuvo Helper runs and draws in the menu bar (`kuvo/box/at-work`'s `applies`).
+    pub no_menu_bar: bool,
 }
 
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
@@ -52,6 +54,7 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
         "kuvo/computers" => json!({ "computers": listed(areas) }),
         "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
+        "kuvo/box/at-work" => json!({ "applies": !areas.no_menu_bar, "working": 0, "sessions": [], "asking": [], "waiting": { "sessions": needing, "bots": bots_asking, "queue": 0 }, "background": 0, "busy": false, "rings": [] }),
         _ => return None,
     };
     Some((200, answer))

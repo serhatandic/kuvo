@@ -80,6 +80,8 @@ icons! {
     Globe => "globe",
     Image => "image",
     Info => "info",
+    // BRAND-NEEDED: a stand-in for Kuvo's menu bar mark, as Kuvo Helper draws it (its `MenuBarMark`), until the user picks one.
+    KuvoMark => "kuvo-mark",
     Link => "link",
     Message => "message",
     Mic => "mic",

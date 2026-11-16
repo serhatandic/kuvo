@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 
-use gpui::{AppContext as _, Context, Entity, Focusable as _, IntoElement, Render, Subscription, Task, Window};
+use std::time::Duration;
+
+use gpui::{App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Task, Window, div};
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::{Boxes, Pairing, Row};
 
@@ -35,7 +37,17 @@ pub struct Home {
     shown: String,
     now: Option<f64>,
     _watch: Option<Task<()>>,
+    /// Whether this computer's own Kuvo shows in its menu bar (its box's `kuvo/box/at-work`
+    /// `applies`), so quitting leaves it at work there: the first Quit's note says so. Not known
+    /// (its box not reached yet): no note.
+    in_menu_bar: Option<bool>,
+    _menu_bar: Option<Task<()>>,
+    /// The first Quit's note, while it's shown (`quit_note`).
+    quit_note: Option<FocusHandle>,
 }
+
+/// How often this computer's box is asked again whether it's in the menu bar, while it hasn't said.
+const MENU_BAR_ASKED_EVERY: Duration = Duration::from_secs(30);
 
 /// The nearest box's workspace, whatever its key turns out to be.
 const NEAREST: &str = "";
@@ -46,8 +58,12 @@ impl Home {
     /// what it's handed (tests and shots).
     pub fn new(boxes: Boxes, first: BoxClient, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Home {
         let shown = if boxes.nearest().is_some() { NEAREST.to_owned() } else { boxes.rows().iter().find(|row| row.usable()).map(|row| row.key().to_owned()).unwrap_or_default() };
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, _watch: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, _watch: None, in_menu_bar: None, _menu_bar: None, quit_note: None };
         home.make(&shown, first, window, cx);
+        home.ask_menu_bar(cx);
+        // Closing the window quits the app (it has only the one): the first time, the note first.
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| this.update(cx, |home, cx| !home.notes_quit(window, cx)).unwrap_or(true));
         if live {
             boxes.start();
             let changed = boxes.changed();
@@ -65,6 +81,70 @@ impl Home {
 
     pub fn boxes(&self) -> &Boxes {
         &self.boxes
+    }
+
+    /// Asks this computer's own box whether it shows in the menu bar (off the window's thread for
+    /// the app; at once against a stand-in), again every so often until it says.
+    fn ask_menu_bar(&mut self, cx: &mut Context<Self>) {
+        let Some(nearest) = self.boxes.nearest() else { return };
+        if !self.live {
+            self.in_menu_bar = nearest.at_work().ok().map(|said| said.applies);
+            return;
+        }
+        self._menu_bar = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let client = nearest.clone();
+                if let Ok(said) = cx.background_executor().spawn(async move { client.at_work() }).await {
+                    this.update(cx, |this, _| this.in_menu_bar = Some(said.applies)).ok();
+                    return;
+                }
+                cx.background_executor().timer(MENU_BAR_ASKED_EVERY).await;
+            }
+        }));
+    }
+
+    /// Quit (⌘Q): the first time on a Mac whose Kuvo stays at work in the menu bar, the note
+    /// first; else the app quits.
+    pub fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.notes_quit(window, cx) {
+            cx.quit();
+        }
+    }
+
+    /// Shows the first Quit's note where it's owed (or is shown already): whether it did.
+    fn notes_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.quit_note.is_some() {
+            return true;
+        }
+        if self.in_menu_bar != Some(true) || crate::quit_note::seen(cx) {
+            return false;
+        }
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        self.quit_note = Some(focus);
+        cx.notify();
+        true
+    }
+
+    /// Whether the first Quit's note is shown.
+    pub fn quit_note_shown(&self) -> bool {
+        self.quit_note.is_some()
+    }
+
+    /// The note answered: seen either way; Quit goes on, Cancel stays.
+    fn quit_noted(&mut self, quits: bool, window: &mut Window, cx: &mut Context<Self>) {
+        crate::quit_note::note_seen(cx);
+        self.quit_note = None;
+        if quits {
+            return cx.quit();
+        }
+        let workspace = self.workspace().clone();
+        workspace.update(cx, |workspace, cx| {
+            if workspace.is_landing() {
+                window.focus(&workspace.landing().focus_handle(cx), cx);
+            }
+        });
+        cx.notify();
     }
 
     /// The workspace shown.
@@ -181,8 +261,18 @@ impl Home {
 }
 
 impl Render for Home {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.workspace().clone()
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let note = self.quit_note.as_ref().map(|focus| {
+            let this = cx.entity().downgrade();
+            let other = this.clone();
+            crate::quit_note::card(
+                focus,
+                move |window: &mut Window, cx: &mut App| drop(this.update(cx, |home, cx| home.quit_noted(false, window, cx))),
+                move |window: &mut Window, cx: &mut App| drop(other.update(cx, |home, cx| home.quit_noted(true, window, cx))),
+                cx,
+            )
+        });
+        div().relative().size_full().child(self.workspace().clone()).children(note)
     }
 }
 

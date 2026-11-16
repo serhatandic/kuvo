@@ -1400,11 +1400,11 @@ impl gpui::Render for BesideSettings {
     }
 }
 
-/// The window over your boxes: the switcher open on your computers, and a session open on another
-/// of them (`switcher`, `elsewhere`).
+/// The window over your boxes: the switcher open on your computers, a session open on another
+/// of them (`switcher`, `elsewhere`), and the first Quit's note (`quit-note`).
 fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
-    for slug in ["switcher", "elsewhere"] {
+    for slug in ["switcher", "elsewhere", "quit-note"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -1422,6 +1422,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                     if slug == "elsewhere" {
                         assert!(home.switch_to("key_devbox", window, cx));
                         home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
+                    }
+                    if slug == "quit-note" {
+                        home.quit(window, cx);
+                        assert!(home.quit_note_shown(), "the stand-in is in its Mac's menu bar");
                     }
                 });
             })?;
