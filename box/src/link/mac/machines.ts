@@ -218,8 +218,12 @@ async function* machinesFollowed(request: LinkRequest, phone: Asker | undefined,
 // What this box can say itself of what's read.
 const OWN_ANSWERS: Record<string, () => MacMachines | Hosts | null> = { "kuvo/machines": machinesWithoutApp, "kuvo/hosts": hostsWithoutApp };
 
+/** A machine's home and same-as routes: not the app's nor this file's (they're gone: the box's
+ * own routes answer them as unknown). */
+export const isRetiredMachineRoute = (route: string): boolean => /^kuvo\/machines\/[^/]+\/(home|same-as)$/.test(route);
+
 /** Whether `route` is one of those this file answers. */
-export const isMachinesRoute = (route: string): boolean => /^kuvo\/(machines|hosts)(\/|$)/.test(route);
+export const isMachinesRoute = (route: string): boolean => /^kuvo\/(machines|hosts)(\/|$)/.test(route) && !isRetiredMachineRoute(route);
 
 /** A phone asking about this Mac's machines: the app says, and while it isn't there this box says
  * what it can, and that the rest needs the app. */
