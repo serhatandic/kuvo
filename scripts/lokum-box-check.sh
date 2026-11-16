@@ -6,7 +6,9 @@
 # box-vectors.json against it), scripts/route-shapes.sh and build-browser.sh with what they run and
 # build-browser.sh's file (route-shapes.test.ts, browser-built.test.ts), and
 # the bridge's tests' folder: test-safety.js, which every box test imports first, and the stand-ins
-# some box tests start (browser-source-stand-in.js, relay-stand-in.js).
+# some box tests start (browser-source-stand-in.js, relay-stand-in.js); and what a release is packed
+# from (the link and the bridge as built, box-release.sh, sign-box.mjs), for the test that installs a
+# box from one and starts it with the engine itself (fresh-box-start.test.ts).
 # It prints what failed and skipped, with the counts; FULL=1 prints all the run says. HOST defaults
 # to lokum-local (`HOST=lokum-tailscale` away from home).
 set -eo pipefail
@@ -86,5 +88,7 @@ COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     swift/OpenCodeKit/Sources/OpenCodeKit/Engine/EngineInstaller.swift \
     box/bridge-tests swift/KuvoClient/Tests/ClientSessionsTests/BoxVectorsTests.swift \
     scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \
-    scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js |
+    scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js \
+    box/dist/kuvo-agents.js swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js \
+    scripts/box-release.sh scripts/sign-box.mjs |
     ssh -o BatchMode=yes "$HOST" "$command"
