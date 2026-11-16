@@ -99,6 +99,8 @@ struct State {
     seen: Vec<Seen>,
     /// Sends answered as an engine that's gone away answers them (`503`).
     sends_fail: bool,
+    /// Files on its computer that `kuvo/file` serves, by path.
+    files: HashMap<String, Vec<u8>>,
     /// No model runs here: a new session starts on none.
     nothing_runs: bool,
     /// What it says of a session's model, where a test has said otherwise.
@@ -675,6 +677,16 @@ impl StandIn {
     /// From now on, a message sent is answered as by an engine that isn't answering.
     pub fn fail_sends(&self) {
         self.state().sends_fail = true;
+    }
+
+    /// A file on its computer, at `path`, for `kuvo/file`.
+    pub fn put_file(&self, path: &str, bytes: Vec<u8>) {
+        self.state().files.insert(path.to_owned(), bytes);
+    }
+
+    /// `message` (as the engine has one) added at the end of `session`'s conversation.
+    pub fn add_message(&self, session: &str, message: Value) {
+        self.state().messages.entry(session.to_owned()).or_default().push(message);
     }
 
     /// From now on, messages sent go again (after `fail_sends`).
@@ -1488,6 +1500,15 @@ impl StandIn {
                 }
                 return answer(status, value);
             }
+        }
+        // A file on its computer, by its address (`kuvo/file`).
+        if (method, route) == ("GET", "kuvo/file") {
+            let uri = query(path, "uri").map(decoded).unwrap_or_default();
+            let Some(file) = uri.strip_prefix("file://").map(decoded) else { return answer(400, json!({ "message": "Give a file:// address." })) };
+            return match state.files.get(&file) {
+                Some(bytes) => Ok(Response { status: 200, content_type: Some("application/octet-stream".into()), body: bytes.clone() }),
+                None => answer(404, json!({ "message": "There's no such file." })),
+            };
         }
         let body = request.body.clone().unwrap_or(Value::Null);
         let made = state.made.unwrap_or_else(now_ms);

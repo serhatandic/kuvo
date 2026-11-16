@@ -37,6 +37,7 @@ pub mod notices;
 pub mod parts;
 pub mod paths;
 pub mod permissions;
+pub mod pictures;
 pub mod place;
 pub mod queue;
 pub mod search;

@@ -1175,6 +1175,66 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn pictures_in_a_conversation_show_in_it_and_open_larger(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // Yours, with a picture it carried; and the agent's reply, showing you a file on its computer.
+    let yours = base64::engine::general_purpose::STANDARD.encode(png(40, 30));
+    stand_in.add_message("ses_recipes", json!({ "type": "user", "id": "msg_p1", "time": { "created": NOW - 60_000.0 }, "text": "What's this?", "files": [{ "mime": "image/png", "name": "fridge.png", "data": yours }] }));
+    stand_in.add_message("ses_recipes", json!({ "type": "assistant", "id": "msg_p2", "time": { "created": NOW - 50_000.0, "completed": NOW - 40_000.0 }, "agent": "build", "finish": "stop", "content": [
+        { "type": "tool", "id": "prt_p", "name": "kuvo-browser_show_file", "state": { "status": "completed", "input": { "path": "/home/sam/plan one.png", "caption": "This week's plan" }, "content": [] } },
+        { "type": "tool", "id": "prt_s", "name": "kuvo-browser_browser_screenshot", "state": { "status": "completed", "input": {}, "content": [{ "type": "file", "uri": format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png(20, 10))), "mime": "image/png" }] } },
+        { "type": "text", "text": "Here's the plan, and last week's:\n\n![](/home/sam/last-week.png)\n\n![The site](https://example.com/shot.png)" },
+    ] }));
+    stand_in.put_file("/home/sam/plan one.png", png(1200, 600));
+    stand_in.put_file("/home/sam/last-week.png", png(100, 900));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    // (Tall enough to show the whole conversation.)
+    cx.simulate_resize(size(px(1200.), px(2400.)));
+    open_session(&workspace, "ses_recipes", cx);
+    cx.run_until_parked();
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let all: Vec<String> = view.read_with(cx, |view, _| view.all_pictures().into_iter().map(|picture| picture.id).collect());
+    assert_eq!(all, ["msg_p1#0", "msg_p2:0-shown", "msg_p2:2~0"], "a step's own screenshot isn't among them while it's folded");
+
+    // Yours, under your words, at its own size; the one shown, fitted to 560 × 420, from its computer.
+    let mine = bounds(cx, "picture-msg_p1#0").expect("your picture is drawn");
+    assert_eq!((mine.size.width, mine.size.height), (px(40.), px(30.)));
+    let shown = bounds(cx, "picture-msg_p2:0-shown").expect("the picture shown is drawn");
+    assert_eq!((shown.size.width, shown.size.height), (px(560.), px(280.)));
+    // One written in its words, from its computer too; a web address isn't fetched.
+    let written = bounds(cx, "picture-msg_p2:2~0").expect("the picture in its words is drawn");
+    assert_eq!(written.size.height, px(420.));
+    assert!((f32::from(written.size.width) - 100. * 420. / 900.).abs() < 0.5, "fitted, as it is: {:?}", written.size);
+    let asked = stand_in.seen_at("GET", "kuvo/file");
+    assert_eq!(asked.len(), 2, "each read once, from the conversation's computer");
+
+    // The screenshot the agent took for itself: inside its step, once that's opened.
+    assert!(bounds(cx, "picture-msg_p2:1-0").is_none());
+    view.update(cx, |view, cx| view.toggle(kuvo::entries::Fold::Step("msg_p2".into(), 1), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "picture-msg_p2:1-0").is_some(), "shown once the step is opened");
+
+    // A click opens it over the conversation; → and ← go among its pictures; Escape closes.
+    cx.simulate_click(shown.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_p2:0-shown".into()));
+    assert!(bounds(cx, "picture-viewer").is_some());
+    cx.simulate_keystrokes("left");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_p1#0".into()));
+    cx.simulate_keystrokes("right");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_p2:0-shown".into()));
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |view, _| view.viewing().is_none()));
+    assert!(bounds(cx, "picture-viewer").is_none());
+}
+
+#[gpui::test]
 fn what_you_send_shows_at_once_and_the_boxs_copy_takes_its_place(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
