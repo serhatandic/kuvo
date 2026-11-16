@@ -117,12 +117,54 @@ impl Default for Notifications {
     }
 }
 
+/// The app's anonymous usage preference. No telemetry is sent yet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Privacy {
+    pub share_anonymous_usage: bool,
+}
+impl Default for Privacy {
+    fn default() -> Self { Self { share_anonymous_usage: true } }
+}
+
+/// The first view in a newly opened side panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelStart {
+    #[default]
+    Changes,
+    Files,
+    Branches,
+}
+
+impl PanelStart {
+    pub const ALL: [Self; 3] = [Self::Changes, Self::Files, Self::Branches];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Changes => "Changes",
+            Self::Files => "Files",
+            Self::Branches => "Branches",
+        }
+    }
+}
+
+/// Side panel choices on this device.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Panel {
+    #[serde(rename = "startsWith", deserialize_with = "or_default")]
+    pub starts_with: PanelStart,
+}
+
 /// All of your settings, a field a page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Yours {
     pub appearance: Appearance,
     pub general: General,
+    pub panel: Panel,
     pub notifications: Notifications,
+    pub privacy: Privacy,
     /// The first Quit's note was seen on this device (`quit_note`).
     pub quit_note_seen: bool,
 }
@@ -133,9 +175,11 @@ pub enum Change {
     Theme(Theme),
     TextSize(TextSize),
     Editor(Option<String>),
+    PanelStart(PanelStart),
     Sessions(bool),
     Sound(bool),
     Dock(bool),
+    ShareAnonymousUsage(bool),
     QuitNoteSeen,
 }
 
@@ -145,9 +189,11 @@ impl Change {
             Change::Theme(theme) => yours.appearance.theme = Some(theme),
             Change::TextSize(size) => yours.appearance.text_size = size,
             Change::Editor(editor) => yours.general.editor = editor,
+            Change::PanelStart(start) => yours.panel.starts_with = start,
             Change::Sessions(on) => yours.notifications.sessions = on,
             Change::Sound(on) => yours.notifications.sound = on,
             Change::Dock(on) => yours.notifications.dock = on,
+            Change::ShareAnonymousUsage(on) => yours.privacy.share_anonymous_usage = on,
             Change::QuitNoteSeen => yours.quit_note_seen = true,
         }
     }
@@ -180,7 +226,7 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { appearance: page(&value, "appearance"), general: page(&value, "general"), notifications: page(&value, "notifications"), quit_note_seen };
+        let now = Yours { appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
         Store { path, now, file, problem: None }
     }
 
@@ -204,7 +250,7 @@ impl Store {
     }
 
     fn write(&mut self) -> Result<(), String> {
-        let pages = [("appearance", serde_json::to_value(&self.now.appearance)), ("general", serde_json::to_value(&self.now.general)), ("notifications", serde_json::to_value(&self.now.notifications))];
+        let pages = [("panel", serde_json::to_value(&self.now.panel)), ("privacy", serde_json::to_value(&self.now.privacy)), ("appearance", serde_json::to_value(&self.now.appearance)), ("general", serde_json::to_value(&self.now.general)), ("notifications", serde_json::to_value(&self.now.notifications))];
         for (key, page) in pages {
             let Ok(Value::Object(page)) = page else { continue };
             let kept = self.file.entry(key).or_insert_with(|| Value::Object(Map::new()));

@@ -107,7 +107,11 @@ pub struct SidePanel {
 impl SidePanel {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> SidePanel {
         SidePanel {
-            tab: Tab::Changes,
+            tab: match crate::yours::now(cx).panel.starts_with {
+                crate::yours::PanelStart::Changes => Tab::Changes,
+                crate::yours::PanelStart::Files => Tab::Files,
+                crate::yours::PanelStart::Branches => Tab::Branches,
+            },
             place: None,
             shown: false,
             changes: cx.new(|cx| ChangesView::new(client.clone(), live, cx)),

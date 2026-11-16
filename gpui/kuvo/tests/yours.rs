@@ -102,7 +102,7 @@ fn general_and_notifications_open_with_their_rows_and_the_rest_say_theyre_coming
     assert!(shown(cx, "row-version"));
     // The others aren't in the desktop app yet, and say so.
     click(cx, "settings-later");
-    for later in ["voice", "shortcuts", "panel", "privacy"] {
+    for later in ["voice"] {
         click(cx, &format!("setting-{later}"));
         assert!(shown(cx, "placeholder"), "{later}");
     }
@@ -476,4 +476,63 @@ fn clicking_a_notification_opens_its_computer_at_its_session(cx: &mut TestAppCon
     cx.run_until_parked();
     let workspace = home.read_with(cx, |home, _| home.workspace().clone());
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_signup"));
+}
+
+#[gpui::test]
+fn privacy_rows_and_usage_preference_persist(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (_workspace, cx) = open(cx, &path);
+    click(cx, "rail-settings");
+    click(cx, "setting-privacy");
+    for row in ["row-share-usage", "row-privacy-policy", "row-privacy-storage", "row-privacy-browser", "row-privacy-vault"] {
+        assert!(shown(cx, row), "{row}");
+    }
+    assert!(next_run(&path).privacy.share_anonymous_usage);
+    click(cx, "row-share-usage-switch");
+    assert!(!next_run(&path).privacy.share_anonymous_usage);
+}
+
+#[gpui::test]
+fn panel_start_is_kept_and_used_by_a_new_panel(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (_workspace, cx) = open(cx, &path);
+    click(cx, "rail-settings");
+    click(cx, "setting-panel");
+    assert!(shown(cx, "row-panel-start"));
+    click(cx, "row-panel-start-menu");
+    click(cx, "menu-item-Files");
+    assert_eq!(next_run(&path).panel.starts_with, yours::PanelStart::Files);
+    let client = BoxClient::new(StandIn::at(Replies::Never, NOW));
+    let panel = cx.new(|cx| kuvo::panel::SidePanel::new(client, false, cx));
+    assert_eq!(panel.read_with(cx, |panel, _| panel.tab()), kuvo::panel::Tab::Files);
+    // A choice applies to the next panel; it does not move one someone is reading.
+    cx.update(|_, cx| yours::change(yours::Change::PanelStart(yours::PanelStart::Branches), cx));
+    assert_eq!(panel.read_with(cx, |panel, _| panel.tab()), kuvo::panel::Tab::Files);
+    assert_eq!(next_run(&path).panel.starts_with, yours::PanelStart::Branches);
+}
+
+#[gpui::test]
+fn shortcuts_come_from_the_running_keymap_and_can_be_searched(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (_workspace, cx) = open(cx, &path);
+    let shortcuts = cx.update(|_, cx| {
+        let shortcuts = kuvo::settings::shortcuts::read(cx);
+        let keymap = cx.key_bindings();
+        let keymap = keymap.borrow();
+        assert_eq!(shortcuts.len(), keymap.bindings().len());
+        for binding in keymap.bindings() {
+            let keys = binding.keystrokes().iter().map(|key| key.inner().unparse(gpui::OperatingSystem::Mac)).collect::<Vec<_>>().join(" ");
+            assert!(shortcuts.iter().any(|row| row.keys == keys));
+        }
+        shortcuts
+    });
+    assert!(!shortcuts.is_empty());
+    click(cx, "rail-settings");
+    click(cx, "setting-shortcuts");
+    assert!(shown(cx, "row-shortcut-search"));
+    assert!(shown(cx, "row-shortcut-0"));
+    click(cx, "row-shortcut-search-field");
+    cx.simulate_input("zz-no-such-shortcut");
+    cx.run_until_parked();
+    assert!(!shown(cx, "row-shortcut-0"));
 }

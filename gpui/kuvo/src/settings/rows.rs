@@ -35,15 +35,15 @@ pub const YOURS: &[Listed] = &[
     listed("general", "General", IconName::Settings, "", "open files editor code text"),
     listed("appearance", "Appearance", IconName::Sun, "", "theme light dark system auto colours colors text size font bigger smaller larger zoom"),
     listed("notifications", "Notifications", IconName::Bell, "", "sound badge dock finished waits asks alerts"),
+    listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
+    listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
+    listed("privacy", "Privacy", IconName::Info, "", "crash reports"),
     listed("updates", "Updates", IconName::ArrowDown, "", "version beta check new release automatic download install sparkle"),
 ];
 
 /// Yours that the desktop app hasn't yet: each opens a page saying so.
 pub const YOURS_LATER: &[Listed] = &[
     listed("voice", "Voice", IconName::Mic, "", "microphone dictation speech"),
-    listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
-    listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
-    listed("privacy", "Privacy", IconName::Info, "", "crash reports"),
 ];
 
 /// A computer's sections the desktop app still draws itself, from routes it knows one by one.
@@ -415,6 +415,8 @@ pub struct YoursFacts<'a> {
     pub yours: &'a crate::yours::Yours,
     /// The editors on this Mac General offers.
     pub editors: &'a [crate::yours::editors::Editor],
+    pub shortcuts: &'a [super::shortcuts::Shortcut],
+    pub shortcut_filter: &'a str,
     /// Why the last change couldn't be kept, where it couldn't.
     pub problem: Option<&'a str>,
     /// Where System Settings shows this app's notifications.
@@ -469,7 +471,29 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
             );
             vec![Block::Group(String::new(), String::new(), vec![theme, size])]
         }
+        "panel" => {
+            use crate::yours::PanelStart;
+            let picked = facts.yours.panel.starts_with;
+            vec![Block::Group(String::new(), String::new(), vec![Row::new(
+                "row-panel-start", "Start each panel with", "For a new window’s side panel.",
+                Control::Menu {
+                    shown: Some(picked.title().into()),
+                    choices: PanelStart::ALL.iter().map(|start| (start.title().into(), None, Some(Act::Yours(Change::PanelStart(*start))), *start == picked)).collect(),
+                },
+            )])]
+        }
+        "shortcuts" => shortcuts(facts),
         "updates" => updates(facts),
+        "privacy" => {
+            let mut rows = vec![
+                Row::new("row-share-usage", "Share anonymous usage", "Nothing is sent yet. This choice will apply when Kuvo adds anonymous usage reporting.", yours_switch(facts.yours.privacy.share_anonymous_usage, Change::ShareAnonymousUsage)),
+                Row::new("row-privacy-policy", "Privacy", "What Kuvo keeps and shares.", Control::Buttons(vec![Push::new("Read", Act::Open("https://www.kuvo.run/code/docs/privacy/".into()))])),
+            ];
+            for (id, title) in [("storage", "Storage"), ("browser", "Browser"), ("vault", "Vault")] {
+                rows.push(Row::new(format!("row-privacy-{id}"), title, "On the computer selected in Settings.", Control::Opens(Act::Section(id.into()))));
+            }
+            vec![Block::Group(String::new(), String::new(), rows)]
+        }
         "notifications" => {
             let now = &facts.yours.notifications;
             let rows = vec![
@@ -764,4 +788,19 @@ mod storage_unit_tests {
         assert_eq!(at.unit.as_ref().unwrap().display(1073741824.0), "1.07 GB");
         assert_eq!(at.field_value("1.07", true), Some(serde_json::json!(1073741824)));
     }
+}
+
+fn shortcuts(facts: &YoursFacts) -> Vec<Block> {
+    let mut blocks = vec![Block::Group(String::new(), String::new(), vec![Row::new("row-shortcut-search", "Search shortcuts", "Read-only. These are Kuvo’s current key bindings.", Control::Field { unit: None, lines: None, masked: false, value: facts.shortcut_filter.into(), placeholder: "Search actions or keys".into(), revision: String::new(), save: Act::Filter, more: vec![], browse: None, picks: vec![], busy: None })])];
+    let query = facts.shortcut_filter.to_lowercase();
+    for (index, shortcut) in facts.shortcuts.iter().enumerate() {
+        if !format!("{} {} {} {}", shortcut.area, shortcut.title, shortcut.keys, shortcut.context).to_lowercase().contains(&query) { continue; }
+        let row = Row::new(format!("row-shortcut-{index}"), &shortcut.title, super::shortcuts::description(&shortcut.context), Control::Text(shortcut.keys.clone()));
+        match blocks.last_mut() {
+            Some(Block::Group(area, _, rows)) if area == &shortcut.area => rows.push(row),
+            _ => blocks.push(Block::Group(shortcut.area.clone(), String::new(), vec![row])),
+        }
+    }
+    if blocks.len() == 1 { blocks.push(note("shortcuts-empty", "No shortcuts found.", false)); }
+    blocks
 }
