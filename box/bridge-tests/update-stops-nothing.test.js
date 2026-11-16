@@ -70,7 +70,7 @@ import fs from "node:fs"; import http from "node:http";
 const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
 const busy = ${JSON.stringify(path.join(scratch, "engine-busy"))};
 http.createServer((request, response) => {
-  if (request.url.startsWith("/api/event") || request.url.startsWith("/event")) { response.writeHead(200, { "content-type": "text/event-stream" }); response.write(": open\\n\\n"); return; }
+  if (request.url.startsWith("/api/event") || request.url.startsWith("/event")) { fs.writeFileSync(${JSON.stringify(scratch)} + "/feed-" + port, ""); response.writeHead(200, { "content-type": "text/event-stream" }); response.write(": open\\n\\n"); return; }
   response.writeHead(200, { "content-type": "application/json" });
   if (request.url.startsWith("/api/session/active")) return response.end(JSON.stringify({ data: fs.existsSync(busy) ? { ses_engine: { type: "busy" } } : {} }));
   response.end(JSON.stringify({ data: [] }));
@@ -238,4 +238,39 @@ test("an update while a coding agent's turn and an engine's turn run stops neith
   await until(() => !fs.existsSync(path.join(RUN, "update-trial")), "the update judged");
   assert.equal(readJSON(path.join(RUN, "update.json")).last?.to, "0.10.0", JSON.stringify(readJSON(path.join(RUN, "update.json"))));
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8").trim(), "0.10.0", "kept");
+});
+
+test("the engine started again while a coding agent's turn runs: the turn completes on the same bridge, which follows the new engine", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  // (The box the test before left running, on 0.10.0.)
+  const fake = path.join(scratch, "fake");
+  const engine = readJSON(path.join(RUN, "engine.json"));
+  const bridge = await bridgeUp();
+  const { api } = bridgeAPI();
+  const made = await api("POST", "api/session", { title: "Through a restart", location: { directory: home }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  assert.equal(made.status, 200, JSON.stringify(made.json));
+  const session = made.json.data.id;
+  const before = turns(fake).length;
+  assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00002", delivery: "steer", text: "hold two" })).status, 200);
+  await until(() => turns(fake).length === before + 1, "the agent's turn to start");
+
+  // The engine ends (a crash, or a hung one ended): its keeper starts another, on a port and
+  // password of its own.
+  process.kill(engine.pid, "SIGTERM");
+  const restarted = await until(() => { const said = readJSON(path.join(RUN, "engine.json")); return said?.pid && said.pid !== engine.pid && runs(said.pid) ? said : null; }, "the keeper to start the engine again");
+  assert.notEqual(restarted.port, engine.port);
+  // The bridge never went, and follows the new engine where its record says.
+  assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, bridge.pid);
+  assert.ok(runs(bridge.pid), "the bridge runs on");
+  await until(() => fs.existsSync(path.join(scratch, `feed-${restarted.port}`)), "the bridge to follow the new engine");
+
+  // The turn ends as it would have: on that bridge, once.
+  write(path.join(fake, "release-two"), "");
+  const messages = await until(async () => {
+    const page = (await bridgeAPI().api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
+    return page.at(-1)?.type === "idle" ? page : null;
+  }, "the agent's turn to end");
+  assert.deepEqual(messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text), ["Done: hold two"]);
+  assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "never cut");
+  assert.deepEqual(turns(fake).slice(before), [{ text: "hold two", bridge: bridge.pid }]);
+  assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, bridge.pid);
 });

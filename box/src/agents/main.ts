@@ -5,10 +5,12 @@
 // password in OPENCODE_PASSWORD, and stops when its stdin closes (so it can't outlive the app).
 // It keeps what it has in KUVO_AGENTS_HOME.
 //
-// On one of your machines (KUVO_AGENTS_REMOTE, see machine.ts) the engine's launch starts it beside
-// the engine, with the same settings: it listens on KUVO_AGENTS_PORT with the password in
-// KUVO_AGENTS_PASSWORD, reaches the engine on KUVO_ENGINE_PORT with OPENCODE_PASSWORD, and lives
-// as long as the engine (KUVO_ENGINE_PID) does, the Mac connected or not.
+// On a box (KUVO_AGENTS_REMOTE, see machine.ts: a machine's, and a Mac's in a home of its own) its
+// keeper keeps it running (KUVO_AGENTS_KEPT), with the engine's settings: it listens on
+// KUVO_AGENTS_PORT with the password in KUVO_AGENTS_PASSWORD, and reaches the engine where its
+// record says (`run/engine.json`), following it as the engine starts again: an engine's restart
+// never ends it, nor a turn on it. (A launch from before the keeper kept it starts it beside its
+// engine, with KUVO_ENGINE_PORT and OPENCODE_PASSWORD, which it takes until the record says more.)
 
 import { boxZoneIs } from "../shared/zone"
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
@@ -27,7 +29,7 @@ import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { VoiceWords } from "./voice"
 import { setToolProgram } from "./kuvotools"
-import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineHome, onMachine, takeOwnFolders } from "./machine"
+import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
 import { cancelSignIns, handler, signInsWaiting } from "./server"
@@ -82,13 +84,16 @@ if (process.argv.slice(2).includes("selftest")) {
 }
 const home = process.env.KUVO_AGENTS_HOME
 const password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCODE_PASSWORD
-const enginePID = Number(process.env.KUVO_ENGINE_PID)
-if (!home || !password || (onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT) || !Number(process.env.KUVO_ENGINE_PORT) || !enginePID))) {
-  console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT, KUVO_AGENTS_PASSWORD, KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.")
+// Kept by its box's keeper, which starts it again whenever it ends (rather than a launch beside one
+// engine): it may always make way for a newer build (renewal.ts).
+const kept = process.env.KUVO_AGENTS_KEPT === "1"
+if (!home || !password || (onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT)))) {
+  console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.")
   process.exit(2)
 }
-// On a machine: its engine, and Kuvo Code's tools as the engine has them.
-const machineEngine = onMachine ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined
+// On a box: its engine, where its record says now (or where a launch from before said), and Kuvo
+// Code's tools as the engine has them.
+const machineEngine = onMachine ? recordedEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined
 const port = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0
 if (onMachine) {
   setToolProgram(process.env.OPENCODE_CONFIG_CONTENT)
@@ -104,7 +109,7 @@ if (onMachine) {
   process.env.KUVO_BOTS ??= join(machineHome!, "bots")
   process.env.KUVO_WAKES ??= join(machineHome!, "wakes")
   // Nor do they get what the engine starts with: its settings, with keys in them, nor these.
-  for (const name of ["OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CLIENT", "KUVO_AGENTS_PASSWORD", "KUVO_AGENTS_PORT", "KUVO_ENGINE_PORT", "KUVO_ENGINE_PID"]) delete process.env[name]
+  for (const name of ["OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CLIENT", "OPENCODE_PASSWORD", "KUVO_AGENTS_PASSWORD", "KUVO_AGENTS_PORT", "KUVO_ENGINE_PORT", "KUVO_ENGINE_PID", "KUVO_AGENTS_KEPT"]) delete process.env[name]
 }
 // A test's: how long it waits for a quiet moment before it holds new turns for a newer bridge.
 const renewHoldAfter = Number(process.env.KUVO_TEST_RENEW_HOLD) || undefined
@@ -159,6 +164,14 @@ const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
 if (machineEngine) link.configure(machineEngine.url, machineEngine.password)
+// Its engine started again (a crash, a hang ended, an update's new engine): followed where its
+// record says now, every two seconds, its turns going on meanwhile (`EngineLink` reconnects).
+if (onMachine) {
+  setInterval(() => {
+    const now = recordedEngine()
+    if (now) link.configure(now.url, now.password)
+  }, 2_000).unref?.()
+}
 // The skills Settings › Skills lists, for the agents too (the engine lists them).
 setSkillSource(link, home)
 setServerSource(link)
@@ -487,13 +500,16 @@ renewal =
         paused: () => updateUnderWay(join(machineHome!, "run")),
         // Only on the engine its keeper starts: one a Mac brought with a newer engine it kept from
         // starting (sessions were at work) waits for that engine, which starts it.
+        // (One its keeper keeps is started again on the engine the keeper starts, whichever it runs on.)
         ready: () => {
-          const kept = keeperEngine(machineHome!)
-          return !kept || kept === basename(dirname(process.execPath))
+          if (kept) return true
+          const engine = keeperEngine(machineHome!)
+          return !engine || engine === basename(dirname(process.execPath))
         },
         // Only while the launch keeping it will start the new one (renewal.ts, `launchLets`).
         // (Its parent's command line and its launch's log, read once a minute at most.)
         lets: () => {
+          if (kept) return true
           const now = Date.now()
           if (launchSaid && now - launchSaid.at < 60_000) return launchSaid.lets
           const lets = launchLets(commandLineOf(process.ppid), () => {
@@ -512,7 +528,10 @@ renewal =
         check: (newer) =>
           new Promise<boolean | undefined>((done) => {
             const env: Record<string, string> = { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", PATH: process.env.PATH ?? "/usr/bin:/bin" }
-            const checking = spawn(process.execPath, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env, stdio: ["ignore", "pipe", "ignore"] })
+            // (On the engine its keeper starts it on, which may be newer than the one it runs on.)
+            const engine = kept ? keeperEngine(machineHome!) : null
+            const runtime = engine ? join(machineHome!, "engine", engine, "opencode") : process.execPath
+            const checking = spawn(runtime, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env, stdio: ["ignore", "pipe", "ignore"] })
             let said = ""
             checking.stdout.on("data", (chunk) => (said += chunk))
             let late = false
@@ -560,16 +579,7 @@ function stop() {
   server.stop(true)
   process.exit(0)
 }
-if (onMachine) {
-  // Its engine stopped (or another started in its place, which starts its own bridge).
-  setInterval(() => {
-    try {
-      process.kill(enginePID, 0)
-    } catch {
-      stop()
-    }
-  }, 5_000)
-} else {
+if (!onMachine) {
   process.stdin.on("end", stop)
   process.stdin.on("close", stop)
   process.stdin.resume()

@@ -43022,7 +43022,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "02a139eadb79";
+var BRIDGE_VERSION = "75ce03368852";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -70222,7 +70222,11 @@ async function lookAtPieces(trial, since, last = {}) {
   last.engineLog = log;
   const bridge = readJSON4(BRIDGE_FILE);
   const bridgePid = bridge?.pid && processRuns(bridge.pid, "kuvo-agents") ? bridge.pid : null;
-  const bridgeWanted = fs203.existsSync(path214.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && !!engine?.agentsPort;
+  let keeps = false;
+  try {
+    keeps = /^bridge\)/m.test(fs203.readFileSync(path214.join(K, "bin", "kuvo-start"), "utf8"));
+  } catch {}
+  const bridgeWanted = fs203.existsSync(path214.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
   let bridgeOK = !bridgeWanted;
   if (bridgePid)
     bridgeOK = !!bridge.port && !!bridge.password && await answers2(bridge, "api/session/active");

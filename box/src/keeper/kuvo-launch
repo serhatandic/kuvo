@@ -5,6 +5,9 @@ while IFS= read -r line && [ -n "$line" ]; do export "$line"; lines="$lines$line
 port=$KUVO_PORT; record=$KUVO_RECORD; unset KUVO_PORT KUVO_RECORD
 aport=${KUVO_AGENTS_PORT-}; unset KUVO_AGENTS_PORT
 replace=${KUVO_REPLACE-}; starting=${KUVO_START-}; unset KUVO_REPLACE KUVO_START
+# `KUVO_BRIDGE=1`: the coding agents' bridge alone, for the keeper that keeps it (`kuvo-start
+# bridge`), in the environment the engine gets; never the engine.
+bridge_only=${KUVO_BRIDGE-}; unset KUVO_BRIDGE
 V=${KUVO_VERSION:-@ENGINE@}; unset KUVO_VERSION
 K="$HOME/.kuvo-code"
 # A Mac's own box (`box/kind` says `mac`): your login shell's environment, as a new Terminal window
@@ -18,7 +21,7 @@ login_read=
 if [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ] && [ -f "$K/bin/kuvo-link.js" ]; then
   login=$(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" login-env 2>/dev/null </dev/null) && login_read=1 || login=
   while IFS= read -r line; do
-    case "${line%%=*}" in lines | line | port | record | aport | replace | starting | V | K | login | login_read) continue ;; esac
+    case "${line%%=*}" in lines | line | port | record | aport | replace | starting | bridge_only | V | K | login | login_read) continue ;; esac
     case "$line" in [A-Za-z_]*=*) export "$line" ;; esac
   done <<EOF
 $login
@@ -120,6 +123,8 @@ take_lock 2400 || exit 0
 if [ -f "$R/stopped" ]; then
   exit 0
 fi
+# (The engine's own start from here to its settings: none of it for the bridge alone.)
+if [ -z "$bridge_only" ]; then
 # One that started meanwhile (after a restart, or for another Mac) is used as it is; from
 # the Mac, the one it found to replace (another version, other settings), and only that
 # one, is stopped here, under the lock, so nothing starts one in between.
@@ -183,6 +188,7 @@ if [ -z "$own_mac" ]; then
   [ -f "$K/keys/settings.json" ] && export OPENCODE_CONFIG="$K/keys/settings.json"
   [ -f "$K/box/opencode.json" ] && export OPENCODE_CONFIG="$K/box/opencode.json"
 fi
+fi
 # What the engine starts with, as its box gives it (its link's `engine-config`, with Kuvo Code's own
 # tools, which no app gives a box's engine any more), which also
 # puts what some providers need from the engine, as the box learned it, beside its
@@ -204,6 +210,26 @@ export PATH="$K/bin:$PATH"
 # Bots' and sessions' folders under this root, for `kuvo-wake` (its default is the app's own root).
 export KUVO_BOTS="$K/bots" KUVO_WAKES="$K/wakes"
 cd "$K/workspace"
+# The coding agents' bridge alone (`kuvo-start bridge`): beside the engine running now, which it
+# follows by its record (`run/engine.json`) as that starts again; kept running by the keeper, never
+# ended with the engine. Where it listens noted once it says (`"url"` in its log); a port someone
+# else took, another, three times at most.
+if [ -n "$bridge_only" ]; then
+  [ -n "$aport" ] && [ -n "${KUVO_AGENTS_PASSWORD-}" ] && [ -f "$K/bin/kuvo-agents.js" ] || exit 3
+  kuvo_runs "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents && exit 0
+  mkdir -p "$K/agents" && chmod 700 "$K/agents"
+  try=0
+  while :; do
+    : >"$R/agents.log"
+    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-agents.js" >>"$R/agents.log" 2>&1 </dev/null &
+    apid=$!
+    echo "$apid" >"$R/agents.pid"
+    i=0; until grep -q '"url"' "$R/agents.log" 2>/dev/null || ! kill -0 "$apid" 2>/dev/null || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
+    kill -0 "$apid" 2>/dev/null && exit 0
+    try=$((try + 1)); [ $try -ge 3 ] && exit 3
+    aport=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 ))
+  done
+fi
 env -u KUVO_AGENTS_PASSWORD -u BUN_BE_BUN "$S" "$K/engine/$V/opencode" serve --port "$port" --hostname 127.0.0.1 >"$R/engine.log" 2>&1 </dev/null &
 pid=$!
 i=0
@@ -215,27 +241,11 @@ done
 (umask 077; printf '{"pid":%s,%s\n' "$pid" "$record" >"$R/engine.json") || { echo "Its engine couldn't be noted down there." >&2; exit 3; }
 noted=1
 : >"$R/engines/$pid"
-if [ -n "$aport" ] && [ -n "${KUVO_AGENTS_PASSWORD-}" ] && [ -f "$K/bin/kuvo-agents.js" ]; then
-  apid=$(cat "$R/agents.pid" 2>/dev/null)
-if kuvo_runs "$apid" kuvo-agents; then kill -- "-$apid" 2>/dev/null || kill "$apid" 2>/dev/null; i=0; while kill -0 "$apid" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done; fi
-rm -f "$R/agents.pid"
-  mkdir -p "$K/agents" && chmod 700 "$K/agents"
-  try=0
-  while :; do
-    : >"$R/agents.log"
-    KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" KUVO_ENGINE_PORT="$port" KUVO_ENGINE_PID="$pid" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" sh -c 'n=0; while kill -0 "$1" 2>/dev/null && [ $n -lt 5 ]; do s=$(date +%s); "$2" --config=/dev/null --no-env-file "$3" >>"$4" 2>&1 </dev/null; e=$?; [ $e -eq 98 ] && exit 98; [ $(($(date +%s) - s)) -ge 600 ] && n=0; n=$((n + 1)); sleep 5; done' kuvo-agents "$pid" "$K/engine/$V/opencode" "$K/bin/kuvo-agents.js" "$R/agents.log" </dev/null >/dev/null 2>&1 &
-    apid=$!
-    echo "$apid" >"$R/agents.pid"
-    i=0; until grep -q '"url"' "$R/agents.log" 2>/dev/null || ! kill -0 "$apid" 2>/dev/null || [ $i -ge 100 ]; do sleep 0.1; i=$((i + 1)); done
-    kill -0 "$apid" 2>/dev/null && break
-    try=$((try + 1)); [ $try -ge 3 ] && break
-    old=$aport; aport=$(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 ))
-    (umask 077; sed "s/\"agentsPort\":$old\([,}]\)/\"agentsPort\":$aport\1/" "$R/engine.json" >"$R/engine.json.new" && mv -f "$R/engine.json.new" "$R/engine.json")
-  done
-fi
+# (Its coding agents' bridge isn't started, nor ended, here: the keeper keeps it, apart from any one
+# engine, `kuvo-start bridge`.)
 unset KUVO_AGENTS_PASSWORD
 
-# The box's keeper, which keeps it all running from here on (the phone link, wake-ups, the
-# engine itself after a crash or a restart): once.
+# The box's keeper, which keeps it all running from here on (the coding agents' bridge, the phone
+# link, wake-ups, the engine itself after a crash or a restart): once.
 [ -f "$K/bin/kuvo-start" ] && sh "$K/bin/kuvo-start" box
-echo "$pid${aport:+ $aport}"
+echo "$pid"

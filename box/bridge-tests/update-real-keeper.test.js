@@ -192,14 +192,17 @@ test("a box takes a release with the real keeper: it starts the release's engine
   started.add(noted.pid);
   assert.equal(noted.version, "1.1.0");
   assert.deepEqual(noted.notes, { mac: "mac-1" }, "as the Mac that started it last left it noted");
-  assert.ok(Number.isInteger(noted.port) && noted.password && Number.isInteger(noted.agentsPort) && noted.agentsPassword, "a port and password of its own, and the bridge's");
+  assert.ok(Number.isInteger(noted.port) && noted.password, "a port and password of its own");
   assert.ok(command(noted.pid).includes(path.join(home, "engine", "1.1.0", "opencode")), `the release's engine, from the box's own folder: ${command(noted.pid)}`);
   const answered = await fetch(`http://127.0.0.1:${noted.port}/api/session`);
   assert.equal(answered.status, 200, "and it answers where it's noted");
-  // The bridge, by the engine's own runtime, noted and saying where it answers.
+  // The bridge, by the engine's own runtime, kept by the keeper apart from the engine: noted, and
+  // saying where it answers.
   const bridge = Number(fs.readFileSync(path.join(home, "run", "agents.pid"), "utf8"));
   assert.ok(alive(bridge), "the agents' bridge runs");
-  assert.match(fs.readFileSync(path.join(home, "run", "agents.log"), "utf8"), new RegExp(`"url":"http://127\\.0\\.0\\.1:${noted.agentsPort}"`));
+  assert.ok(command(bridge).includes(path.join(home, "bin", "kuvo-agents.js")), command(bridge));
+  const bridgeNoted = read(path.join(home, "run", "bridge.json"));
+  assert.match(fs.readFileSync(path.join(home, "run", "agents.log"), "utf8"), new RegExp(`"url":"http://127\\.0\\.0\\.1:${bridgeNoted.port}"`));
   // Only your own to read, as the launcher leaves them.
   assert.equal((fs.statSync(engineFile).mode & 0o777).toString(8), "600");
   assert.equal(fs.existsSync(path.join(home, "run", ".launching")), false, "the start's lock let go");
@@ -223,7 +226,10 @@ test("a box takes a release with the real keeper: it starts the release's engine
   assert.notEqual(second.pid, noted.pid);
   assert.equal(second.version, "1.1.0");
   assert.ok(alive(second.pid));
+  const secondBridge = Number(fs.readFileSync(path.join(home, "run", "agents.pid"), "utf8"));
+  assert.ok(alive(secondBridge), "Start starts the bridge too");
   assert.equal(realKeeper("stop").status, 0);
+  assert.equal(alive(secondBridge), false);
   assert.equal(alive(second.pid), false);
   // And no keeper but the one noted before: the real one found it running, and started none.
   assert.equal(Number(fs.readFileSync(path.join(home, "run", "box.pid"), "utf8")), keeping.pid);

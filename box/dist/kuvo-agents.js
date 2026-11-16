@@ -127,6 +127,18 @@ function ownFoldersConfig() {
     config["shell_environment_policy.exclude"] = unset;
   return config;
 }
+function machineEngine() {
+  if (!machineHome)
+    return;
+  try {
+    const record = JSON.parse(readFileSync(join(machineHome, "run", "engine.json"), "utf8"));
+    if (typeof record.port !== "number" || typeof record.password !== "string")
+      return;
+    return { pid: record.pid, url: `http://127.0.0.1:${record.port}`, password: record.password };
+  } catch {
+    return;
+  }
+}
 function dropOwnPrograms(runtime) {
   for (const agent of ["codex", "grok"])
     rmSync(join(runtime, agent), { recursive: true, force: true });
@@ -37350,12 +37362,12 @@ if (process.argv.slice(2).includes("selftest")) {
 }
 var home3 = process.env.KUVO_AGENTS_HOME;
 var password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCODE_PASSWORD;
-var enginePID = Number(process.env.KUVO_ENGINE_PID);
-if (!home3 || !password || onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT) || !Number(process.env.KUVO_ENGINE_PORT) || !enginePID)) {
-  console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT, KUVO_AGENTS_PASSWORD, KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.");
+var kept3 = process.env.KUVO_AGENTS_KEPT === "1";
+if (!home3 || !password || onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT))) {
+  console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.");
   process.exit(2);
 }
-var machineEngine = onMachine ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined;
+var machineEngine2 = onMachine ? machineEngine() ?? (process.env.KUVO_ENGINE_PORT ? { url: `http://127.0.0.1:${process.env.KUVO_ENGINE_PORT}`, password: process.env.OPENCODE_PASSWORD } : undefined) : undefined;
 var port2 = onMachine ? Number(process.env.KUVO_AGENTS_PORT) : 0;
 if (onMachine) {
   setToolProgram(process.env.OPENCODE_CONFIG_CONTENT);
@@ -37365,7 +37377,7 @@ if (onMachine) {
   process.env.KUVO_BIN = join42(machineHome, "bin");
   process.env.KUVO_BOTS ??= join42(machineHome, "bots");
   process.env.KUVO_WAKES ??= join42(machineHome, "wakes");
-  for (const name of ["OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CLIENT", "KUVO_AGENTS_PASSWORD", "KUVO_AGENTS_PORT", "KUVO_ENGINE_PORT", "KUVO_ENGINE_PID"])
+  for (const name of ["OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CLIENT", "OPENCODE_PASSWORD", "KUVO_AGENTS_PASSWORD", "KUVO_AGENTS_PORT", "KUVO_ENGINE_PORT", "KUVO_ENGINE_PID", "KUVO_AGENTS_KEPT"])
     delete process.env[name];
 }
 var renewHoldAfter = Number(process.env.KUVO_TEST_RENEW_HOLD) || undefined;
@@ -37401,8 +37413,15 @@ var roster = new Roster(new Accounts(home3), context);
 var store = new Store(join42(home3, "sessions"));
 var auto = new Auto(home3);
 var link4 = new EngineLink;
-if (machineEngine)
-  link4.configure(machineEngine.url, machineEngine.password);
+if (machineEngine2)
+  link4.configure(machineEngine2.url, machineEngine2.password);
+if (onMachine) {
+  setInterval(() => {
+    const now = machineEngine();
+    if (now)
+      link4.configure(now.url, now.password);
+  }, 2000).unref?.();
+}
 setSkillSource(link4, home3);
 setServerSource(link4);
 setSubagentSource(link4, home3);
@@ -37644,10 +37663,14 @@ renewal = onMachine && build ? new Renewal({
   told: (state) => writeRecord(state),
   paused: () => updateUnderWay(join42(machineHome, "run")),
   ready: () => {
-    const kept = keeperEngine(machineHome);
-    return !kept || kept === basename13(dirname24(process.execPath));
+    if (kept3)
+      return true;
+    const engine = keeperEngine(machineHome);
+    return !engine || engine === basename13(dirname24(process.execPath));
   },
   lets: () => {
+    if (kept3)
+      return true;
     const now = Date.now();
     if (launchSaid && now - launchSaid.at < 60000)
       return launchSaid.lets;
@@ -37665,7 +37688,9 @@ renewal = onMachine && build ? new Renewal({
   longEnough: renewUptime,
   check: (newer) => new Promise((done) => {
     const env = { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", PATH: process.env.PATH ?? "/usr/bin:/bin" };
-    const checking = spawn6(process.execPath, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env, stdio: ["ignore", "pipe", "ignore"] });
+    const engine = kept3 ? keeperEngine(machineHome) : null;
+    const runtime = engine ? join42(machineHome, "engine", engine, "opencode") : process.execPath;
+    const checking = spawn6(runtime, ["--config=/dev/null", "--no-env-file", script, "selftest"], { env, stdio: ["ignore", "pipe", "ignore"] });
     let said = "";
     checking.stdout.on("data", (chunk) => said += chunk);
     let late = false;
@@ -37708,19 +37733,11 @@ function stop() {
   server4.stop(true);
   process.exit(0);
 }
-if (onMachine) {
-  setInterval(() => {
-    try {
-      process.kill(enginePID, 0);
-    } catch {
-      stop();
-    }
-  }, 5000);
-} else {
+if (!onMachine) {
   process.stdin.on("end", stop);
   process.stdin.on("close", stop);
   process.stdin.resume();
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 26465bf80e5bd6209ea6b05911e519ad345ef1398a8323ae225809a4f1a61dd7
+// Built from Packages/Box/src/agents cb95e305a74917916db3bc98bc8d3436ebee6f9df24b2219accf4fbc1649d9ac

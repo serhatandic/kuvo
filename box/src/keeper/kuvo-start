@@ -6,6 +6,7 @@
 #   kuvo-start stop      stops the engine until it's started again
 #   kuvo-start engine-stop  the same, its coding agents' bridge left running (an update's new engine)
 #   kuvo-start restart   starts the engine over
+#   kuvo-start bridge    starts the coding agents' bridge, while the engine runs and it doesn't
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
 K="$HOME/.kuvo-code"; R="$K/run"
 mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
@@ -134,6 +135,10 @@ halt_engine() {
   fi
   rm -f "$R/engine.json"
 }
+# A new password, and a port.
+word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
+bridge_runs() { is "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents; }
 case "${1:-box}" in
 box)
   [ -f "$K/bin/kuvo-start" ] || exit 0
@@ -193,7 +198,7 @@ keep)
   # (The watchdog an engine from 0.7 had, which an older Mac's start brings, isn't stopped here:
   # nothing kills by a pattern, and it noted no pid to stop it by. It ends by itself once the
   # engine it watched isn't the one in run/engine.json any more.)
-  fails=0; next=0; started=; round=0
+  fails=0; next=0; started=; round=0; bfails=0; bnext=0; bstarted=
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
@@ -236,6 +241,18 @@ keep)
       if up; then started=$now; else started=; fails=$((fails + 1)); fi
       case $fails in 0) wait=0 ;; 1) wait=15 ;; 2) wait=30 ;; 3) wait=60 ;; 4) wait=120 ;; 5) wait=300 ;; *) wait=600 ;; esac
       next=$((now + wait))
+    fi
+    # The coding agents' bridge, while the engine runs, apart from it: started again whenever it
+    # ended (a newer build in its place, a crash), never with the engine. One that ran under ten
+    # minutes makes it wait longer each time, as the engine's starts do.
+    if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs; then
+      if [ -n "$bstarted" ]; then
+        if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi
+      fi
+      sh "$me" bridge >/dev/null 2>&1
+      if bridge_runs; then bstarted=$now; else bstarted=; bfails=$((bfails + 1)); fi
+      case $bfails in 0 | 1) bwait=0 ;; 2) bwait=15 ;; 3) bwait=30 ;; 4) bwait=60 ;; *) bwait=300 ;; esac
+      bnext=$((now + bwait))
     fi
     # Down and waiting for its next start: when, for the box to tell whoever asks.
     if ! up && [ ! -f "$R/stopped" ] && [ "$next" -gt "$now" ]; then
@@ -330,18 +347,26 @@ engine)
   [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] || exit 0
   up && exit 0
   notes=$(cat "$R/launch.notes" 2>/dev/null); [ -n "$notes" ] || notes='{}'
-  word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
-  number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
   for try in 1 2 3; do
     port=$(number); password=$(word); record="\"port\":$port,\"password\":\"$password\",\"version\":\"$V\",\"notes\":$notes"
-    agents=
-    if [ -f "$K/bin/kuvo-agents.js" ]; then aport=$(number); apassword=$(word); record="$record,\"agentsPort\":$aport,\"agentsPassword\":\"$apassword\""; agents="KUVO_AGENTS_PORT=$aport
-KUVO_AGENTS_PASSWORD=$apassword"; fi
-    { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; [ -z "$agents" ] || printf '%s\n' "$agents"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && exit 0
+    { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && exit 0
     { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
     sleep 2
   done
   exit 1
+  ;;
+bridge)
+  # The coding agents' bridge, kept apart from any one engine (PROTOCOL.md, "Updates"): started while
+  # the engine runs and no bridge does, as the engine is (its launch's environment, a port and
+  # password of its own), and following that engine by its record as it starts again. Not while it's
+  # stopped on purpose, off or paused.
+  { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
+  [ -f "$K/bin/kuvo-agents.js" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] && up || exit 0
+  launch_noted
+  [ -f "$R/launch.env" ] || exit 0
+  bridge_runs && exit 0
+  { cat "$R/launch.env"; printf 'KUVO_BRIDGE=1\nKUVO_VERSION=%s\nKUVO_AGENTS_PORT=%s\nKUVO_AGENTS_PASSWORD=%s\n\n' "$V" "$(number)" "$(word)"; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1
+  bridge_runs
   ;;
 serve)
   # A Mac's own box's server (`box/kind` says `mac`), for its helper, Kuvo Code Box, which
@@ -357,6 +382,7 @@ serve)
 start)
   rm -f "$R/stopped"
   sh "$K/bin/kuvo-start" engine
+  sh "$K/bin/kuvo-start" bridge
   sh "$K/bin/kuvo-start" box
   up
   ;;
@@ -384,6 +410,7 @@ restart)
   halt
   unlock
   sh "$K/bin/kuvo-start" engine
+  sh "$K/bin/kuvo-start" bridge
   sh "$K/bin/kuvo-start" box
   up
   ;;

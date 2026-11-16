@@ -146,11 +146,14 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   else engineOK = ["stopped", "paused", "off"].some(mark => fs.existsSync(path.join(RUN, mark)));
   last.engineLog = log;
 
-  // The coding agents' bridge: answers while the engine its launch started it beside runs (whichever
-  // build: one making way for the new is waiting).
+  // The coding agents' bridge: answers while the engine runs, where its keeper keeps it (or its
+  // engine's launch started it beside it, before the keeper did): whichever build, one making way
+  // for the new is waiting.
   const bridge = readJSON<BridgeRecord>(BRIDGE_FILE);
   const bridgePid = bridge?.pid && runs(bridge.pid, "kuvo-agents") ? bridge.pid : null;
-  const bridgeWanted = fs.existsSync(path.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && !!engine?.agentsPort;
+  let keeps = false;
+  try { keeps = /^bridge\)/m.test(fs.readFileSync(path.join(K, "bin", "kuvo-start"), "utf8")); } catch {}
+  const bridgeWanted = fs.existsSync(path.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
   let bridgeOK = !bridgeWanted;
   if (bridgePid) bridgeOK = !!bridge!.port && !!bridge!.password && (await answers(bridge!, "api/session/active"));
 
