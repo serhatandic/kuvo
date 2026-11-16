@@ -2176,7 +2176,8 @@ the same, and a new conversation, a new bot and a lead's session started from an
 start on a model by the same rule.
 
 - `GET kuvo/models/offered[?folder=<path>][&provider=<id>&model=<id>&variant=<effort>]` → `{"models":
-  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?}], "known": {"engine", "agents"}, "listing"?: [<account id>],
+  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?}], "providers": [{id, name, label?}],
+  "starred": [{providerID, id}], "known": {"engine", "agents"}, "listing"?: [<account id>],
   "starting"?: {providerID, id, variant?} | null}`. `405` for anything but `GET`; `503` with
   neither the engine nor the coding agents' bridge running.
 - `folder` (`models.offered.folder`): a project's folder, or a conversation's, as a full path: the
@@ -2203,6 +2204,18 @@ start on a model by the same rule.
   prices, which run signed out. Never a coding agent's, one that costs nothing only with its
   account (Copilot's included models), nor a provider of your own (one listing no prices reads as
   costing nothing, though it may be a paid gateway).
+- `providers` (`models.offered.providers`): each provider of `models`, in the order its models
+  come, named as its side names its account (`label`: the account's own, a coding agent's second
+  sign-in, "Work"); Custom Auto's lists as "Custom Auto"; one its side doesn't name, by its id. A
+  picker names where each model is from by them, and draws the providers' marks by `id`.
+- `starred` (`models.starred`): your starred models, in the order you starred them, kept by the box
+  (`box/models.json`) so every client's picker shows the same stars. Those that don't run there now
+  are listed too: a client shows only those in `models`, matching one by its id or an alias. `GET
+  kuvo/models/starred` → `{"starred": [{providerID, id}]}`; `POST kuvo/models/starred` with
+  `{providerID, id, starred: true|false}` stars it (at the end, or where it was) or takes its star
+  away, and answers the same; `400` for anything else sent, `405` for another method. A box without
+  `models.starred` keeps none: a client shows no stars there. Moving from the earlier Mac app brings
+  its starred models along (its `favoriteModels` preference).
 - `known`: whether the engine's models, and the coding agents' with Custom Auto's lists, could be
   said. One that couldn't (not answering, an engine that hasn't loaded yet, or the bridge not
   running: starting, or started again) has none in `models`, rather than none at all: a client

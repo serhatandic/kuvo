@@ -71,3 +71,24 @@ test("a model that needs no account says so: OpenCode Zen's free ones, not Copil
     ["auto", "auto_1", false],
   ])
 })
+
+// Each provider named as its side names it, so every client's picker says where a model is from
+// (`models.offered.providers`), in the order its models come.
+test("each provider is named as its side lists it, a coding agent's second account with its label", () => {
+  const answer = offeredAnswer({
+    engine: { ...lists.engine!, accounts: new Map([["anthropic", { id: "anthropic", name: "Anthropic", methods: [], signedIn: true, installed: true, complete: false }]]) },
+    bridge: { ...lists.bridge!, accounts: new Map([["claude-code", { id: "claude-code", name: "Claude Code", label: "Work", methods: [], signedIn: true, installed: true, complete: true }]]) },
+  }, null)
+  expect(answer.providers).toEqual([
+    { id: "anthropic", name: "Anthropic" },
+    { id: "claude-code", name: "Claude Code", label: "Work" },
+    { id: "auto", name: "Custom Auto" },
+  ])
+  // None starred: an empty list, not left out.
+  expect(answer.starred).toEqual([])
+})
+
+test("a provider its side doesn't name is named by its id", () => {
+  const answer = offeredAnswer(lists, null)
+  expect(answer.providers?.find(each => each.id === "anthropic")).toEqual({ id: "anthropic", name: "anthropic" })
+})

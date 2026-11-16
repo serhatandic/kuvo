@@ -39,6 +39,7 @@ import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, computersAddRoute } from "../areas/computers-add";
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
+import { MODELS_STARRED_ROUTE, modelsStarredRoute } from "../areas/models-starred";
 import { READ_ALL_ROUTE, readAllRoute } from "../areas/read-all";
 import { WORK_QUEUE_ROUTE, workQueueRoute } from "../areas/work-queue";
 import { pluginSearchRoute } from "../areas/plugins";
@@ -184,6 +185,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },
   // The models a session can use here, and the one a new session starts on (PROTOCOL.md, "The models offered").
   { when: route => route === MODELS_OFFERED_ROUTE, answer: modelsOfferedRoute },
+  // Your starred models, shared by every client's picker (PROTOCOL.md, "The models offered").
+  { when: route => route === MODELS_STARRED_ROUTE, answer: modelsStarredRoute },
   // Mark All as Read (PROTOCOL.md, "What's been read").
   { when: route => route === READ_ALL_ROUTE, answer: readAllRoute },
   // The Work Queue (PROTOCOL.md, "The Work Queue"), before a bot's work, whose routes it starts like.

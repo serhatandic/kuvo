@@ -5755,10 +5755,16 @@
             "literal": "models.offered.free"
            },
            {
+            "literal": "models.offered.providers"
+           },
+           {
             "literal": "models.offered.sides"
            },
            {
             "literal": "models.readiness"
+           },
+           {
+            "literal": "models.starred"
            },
            {
             "literal": "moves"
@@ -6469,10 +6475,16 @@
             "literal": "models.offered.free"
            },
            {
+            "literal": "models.offered.providers"
+           },
+           {
             "literal": "models.offered.sides"
            },
            {
             "literal": "models.readiness"
+           },
+           {
+            "literal": "models.starred"
            },
            {
             "literal": "moves"
@@ -14196,6 +14208,23 @@
         "agents": "bool"
        }
       },
+      "providers?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string",
+         "label?": "string"
+        }
+       }
+      },
+      "starred?": {
+       "list": {
+        "object": {
+         "providerID": "string",
+         "id": "string"
+        }
+       }
+      },
       "listing?": {
        "list": "string"
       },
@@ -14214,6 +14243,45 @@
      }
     },
     "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/models/starred",
+   "answers": {
+    "200": {
+     "object": {
+      "starred": {
+       "list": {
+        "object": {
+         "providerID": "string",
+         "id": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/models/starred",
+   "answers": {
+    "200": {
+     "object": {
+      "starred": {
+       "list": {
+        "object": {
+         "providerID": "string",
+         "id": "string"
+        }
+       }
+      }
+     }
+    },
+    "400": {
      "object": {
       "message": "string"
      }
@@ -15791,7 +15859,13 @@
                "id": "string",
                "title": "string",
                "line?": "string",
-               "verified?": "bool"
+               "verified?": "bool",
+               "model?": {
+                "object": {
+                 "providerID": "string",
+                 "id": "string"
+                }
+               }
               }
              }
             },
@@ -15930,7 +16004,13 @@
                        "id": "string",
                        "title": "string",
                        "line?": "string",
-                       "verified?": "bool"
+                       "verified?": "bool",
+                       "model?": {
+                        "object": {
+                         "providerID": "string",
+                         "id": "string"
+                        }
+                       }
                       }
                      }
                     },
@@ -16105,7 +16185,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -16316,7 +16402,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -16470,7 +16562,13 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string",
-                  "verified?": "bool"
+                  "verified?": "bool",
+                  "model?": {
+                   "object": {
+                    "providerID": "string",
+                    "id": "string"
+                   }
+                  }
                  }
                 }
                },
@@ -16609,7 +16707,13 @@
                           "id": "string",
                           "title": "string",
                           "line?": "string",
-                          "verified?": "bool"
+                          "verified?": "bool",
+                          "model?": {
+                           "object": {
+                            "providerID": "string",
+                            "id": "string"
+                           }
+                          }
                          }
                         }
                        },
@@ -16784,7 +16888,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -16995,7 +17105,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -17145,7 +17261,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -17343,7 +17465,13 @@
                "id": "string",
                "title": "string",
                "line?": "string",
-               "verified?": "bool"
+               "verified?": "bool",
+               "model?": {
+                "object": {
+                 "providerID": "string",
+                 "id": "string"
+                }
+               }
               }
              }
             },
@@ -17482,7 +17610,13 @@
                        "id": "string",
                        "title": "string",
                        "line?": "string",
-                       "verified?": "bool"
+                       "verified?": "bool",
+                       "model?": {
+                        "object": {
+                         "providerID": "string",
+                         "id": "string"
+                        }
+                       }
                       }
                      }
                     },
@@ -17657,7 +17791,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -17868,7 +18008,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -18022,7 +18168,13 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string",
-                  "verified?": "bool"
+                  "verified?": "bool",
+                  "model?": {
+                   "object": {
+                    "providerID": "string",
+                    "id": "string"
+                   }
+                  }
                  }
                 }
                },
@@ -18161,7 +18313,13 @@
                           "id": "string",
                           "title": "string",
                           "line?": "string",
-                          "verified?": "bool"
+                          "verified?": "bool",
+                          "model?": {
+                           "object": {
+                            "providerID": "string",
+                            "id": "string"
+                           }
+                          }
                          }
                         }
                        },
@@ -18336,7 +18494,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -18547,7 +18711,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -18697,7 +18867,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -18903,7 +19079,13 @@
                "id": "string",
                "title": "string",
                "line?": "string",
-               "verified?": "bool"
+               "verified?": "bool",
+               "model?": {
+                "object": {
+                 "providerID": "string",
+                 "id": "string"
+                }
+               }
               }
              }
             },
@@ -19042,7 +19224,13 @@
                        "id": "string",
                        "title": "string",
                        "line?": "string",
-                       "verified?": "bool"
+                       "verified?": "bool",
+                       "model?": {
+                        "object": {
+                         "providerID": "string",
+                         "id": "string"
+                        }
+                       }
                       }
                      }
                     },
@@ -19217,7 +19405,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -19428,7 +19622,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -19582,7 +19782,13 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string",
-                  "verified?": "bool"
+                  "verified?": "bool",
+                  "model?": {
+                   "object": {
+                    "providerID": "string",
+                    "id": "string"
+                   }
+                  }
                  }
                 }
                },
@@ -19721,7 +19927,13 @@
                           "id": "string",
                           "title": "string",
                           "line?": "string",
-                          "verified?": "bool"
+                          "verified?": "bool",
+                          "model?": {
+                           "object": {
+                            "providerID": "string",
+                            "id": "string"
+                           }
+                          }
                          }
                         }
                        },
@@ -19896,7 +20108,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -20107,7 +20325,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -20257,7 +20481,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -20463,7 +20693,13 @@
                  "id": "string",
                  "title": "string",
                  "line?": "string",
-                 "verified?": "bool"
+                 "verified?": "bool",
+                 "model?": {
+                  "object": {
+                   "providerID": "string",
+                   "id": "string"
+                  }
+                 }
                 }
                }
               },
@@ -20602,7 +20838,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -20777,7 +21019,13 @@
                         "id": "string",
                         "title": "string",
                         "line?": "string",
-                        "verified?": "bool"
+                        "verified?": "bool",
+                        "model?": {
+                         "object": {
+                          "providerID": "string",
+                          "id": "string"
+                         }
+                        }
                        }
                       }
                      },
@@ -20988,7 +21236,13 @@
                            "id": "string",
                            "title": "string",
                            "line?": "string",
-                           "verified?": "bool"
+                           "verified?": "bool",
+                           "model?": {
+                            "object": {
+                             "providerID": "string",
+                             "id": "string"
+                            }
+                           }
                           }
                          }
                         },
@@ -21142,7 +21396,13 @@
                     "id": "string",
                     "title": "string",
                     "line?": "string",
-                    "verified?": "bool"
+                    "verified?": "bool",
+                    "model?": {
+                     "object": {
+                      "providerID": "string",
+                      "id": "string"
+                     }
+                    }
                    }
                   }
                  },
@@ -21281,7 +21541,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -21456,7 +21722,13 @@
                            "id": "string",
                            "title": "string",
                            "line?": "string",
-                           "verified?": "bool"
+                           "verified?": "bool",
+                           "model?": {
+                            "object": {
+                             "providerID": "string",
+                             "id": "string"
+                            }
+                           }
                           }
                          }
                         },
@@ -21667,7 +21939,13 @@
                               "id": "string",
                               "title": "string",
                               "line?": "string",
-                              "verified?": "bool"
+                              "verified?": "bool",
+                              "model?": {
+                               "object": {
+                                "providerID": "string",
+                                "id": "string"
+                               }
+                              }
                              }
                             }
                            },
@@ -21817,7 +22095,13 @@
                         "id": "string",
                         "title": "string",
                         "line?": "string",
-                        "verified?": "bool"
+                        "verified?": "bool",
+                        "model?": {
+                         "object": {
+                          "providerID": "string",
+                          "id": "string"
+                         }
+                        }
                        }
                       }
                      },
@@ -22020,7 +22304,13 @@
                "id": "string",
                "title": "string",
                "line?": "string",
-               "verified?": "bool"
+               "verified?": "bool",
+               "model?": {
+                "object": {
+                 "providerID": "string",
+                 "id": "string"
+                }
+               }
               }
              }
             },
@@ -22159,7 +22449,13 @@
                        "id": "string",
                        "title": "string",
                        "line?": "string",
-                       "verified?": "bool"
+                       "verified?": "bool",
+                       "model?": {
+                        "object": {
+                         "providerID": "string",
+                         "id": "string"
+                        }
+                       }
                       }
                      }
                     },
@@ -22334,7 +22630,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -22545,7 +22847,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -22699,7 +23007,13 @@
                   "id": "string",
                   "title": "string",
                   "line?": "string",
-                  "verified?": "bool"
+                  "verified?": "bool",
+                  "model?": {
+                   "object": {
+                    "providerID": "string",
+                    "id": "string"
+                   }
+                  }
                  }
                 }
                },
@@ -22838,7 +23152,13 @@
                           "id": "string",
                           "title": "string",
                           "line?": "string",
-                          "verified?": "bool"
+                          "verified?": "bool",
+                          "model?": {
+                           "object": {
+                            "providerID": "string",
+                            "id": "string"
+                           }
+                          }
                          }
                         }
                        },
@@ -23013,7 +23333,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -23224,7 +23550,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -23374,7 +23706,13 @@
                       "id": "string",
                       "title": "string",
                       "line?": "string",
-                      "verified?": "bool"
+                      "verified?": "bool",
+                      "model?": {
+                       "object": {
+                        "providerID": "string",
+                        "id": "string"
+                       }
+                      }
                      }
                     }
                    },
@@ -23601,7 +23939,13 @@
                  "id": "string",
                  "title": "string",
                  "line?": "string",
-                 "verified?": "bool"
+                 "verified?": "bool",
+                 "model?": {
+                  "object": {
+                   "providerID": "string",
+                   "id": "string"
+                  }
+                 }
                 }
                }
               },
@@ -23740,7 +24084,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -23915,7 +24265,13 @@
                         "id": "string",
                         "title": "string",
                         "line?": "string",
-                        "verified?": "bool"
+                        "verified?": "bool",
+                        "model?": {
+                         "object": {
+                          "providerID": "string",
+                          "id": "string"
+                         }
+                        }
                        }
                       }
                      },
@@ -24126,7 +24482,13 @@
                            "id": "string",
                            "title": "string",
                            "line?": "string",
-                           "verified?": "bool"
+                           "verified?": "bool",
+                           "model?": {
+                            "object": {
+                             "providerID": "string",
+                             "id": "string"
+                            }
+                           }
                           }
                          }
                         },
@@ -24280,7 +24642,13 @@
                     "id": "string",
                     "title": "string",
                     "line?": "string",
-                    "verified?": "bool"
+                    "verified?": "bool",
+                    "model?": {
+                     "object": {
+                      "providerID": "string",
+                      "id": "string"
+                     }
+                    }
                    }
                   }
                  },
@@ -24419,7 +24787,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -24594,7 +24968,13 @@
                            "id": "string",
                            "title": "string",
                            "line?": "string",
-                           "verified?": "bool"
+                           "verified?": "bool",
+                           "model?": {
+                            "object": {
+                             "providerID": "string",
+                             "id": "string"
+                            }
+                           }
                           }
                          }
                         },
@@ -24805,7 +25185,13 @@
                               "id": "string",
                               "title": "string",
                               "line?": "string",
-                              "verified?": "bool"
+                              "verified?": "bool",
+                              "model?": {
+                               "object": {
+                                "providerID": "string",
+                                "id": "string"
+                               }
+                              }
                              }
                             }
                            },
@@ -24955,7 +25341,13 @@
                         "id": "string",
                         "title": "string",
                         "line?": "string",
-                        "verified?": "bool"
+                        "verified?": "bool",
+                        "model?": {
+                         "object": {
+                          "providerID": "string",
+                          "id": "string"
+                         }
+                        }
                        }
                       }
                      },
@@ -25200,7 +25592,13 @@
                  "id": "string",
                  "title": "string",
                  "line?": "string",
-                 "verified?": "bool"
+                 "verified?": "bool",
+                 "model?": {
+                  "object": {
+                   "providerID": "string",
+                   "id": "string"
+                  }
+                 }
                 }
                }
               },
@@ -25339,7 +25737,13 @@
                          "id": "string",
                          "title": "string",
                          "line?": "string",
-                         "verified?": "bool"
+                         "verified?": "bool",
+                         "model?": {
+                          "object": {
+                           "providerID": "string",
+                           "id": "string"
+                          }
+                         }
                         }
                        }
                       },
@@ -25514,7 +25918,13 @@
                         "id": "string",
                         "title": "string",
                         "line?": "string",
-                        "verified?": "bool"
+                        "verified?": "bool",
+                        "model?": {
+                         "object": {
+                          "providerID": "string",
+                          "id": "string"
+                         }
+                        }
                        }
                       }
                      },
@@ -25725,7 +26135,13 @@
                            "id": "string",
                            "title": "string",
                            "line?": "string",
-                           "verified?": "bool"
+                           "verified?": "bool",
+                           "model?": {
+                            "object": {
+                             "providerID": "string",
+                             "id": "string"
+                            }
+                           }
                           }
                          }
                         },
@@ -25879,7 +26295,13 @@
                     "id": "string",
                     "title": "string",
                     "line?": "string",
-                    "verified?": "bool"
+                    "verified?": "bool",
+                    "model?": {
+                     "object": {
+                      "providerID": "string",
+                      "id": "string"
+                     }
+                    }
                    }
                   }
                  },
@@ -26018,7 +26440,13 @@
                             "id": "string",
                             "title": "string",
                             "line?": "string",
-                            "verified?": "bool"
+                            "verified?": "bool",
+                            "model?": {
+                             "object": {
+                              "providerID": "string",
+                              "id": "string"
+                             }
+                            }
                            }
                           }
                          },
@@ -26193,7 +26621,13 @@
                            "id": "string",
                            "title": "string",
                            "line?": "string",
-                           "verified?": "bool"
+                           "verified?": "bool",
+                           "model?": {
+                            "object": {
+                             "providerID": "string",
+                             "id": "string"
+                            }
+                           }
                           }
                          }
                         },
@@ -26404,7 +26838,13 @@
                               "id": "string",
                               "title": "string",
                               "line?": "string",
-                              "verified?": "bool"
+                              "verified?": "bool",
+                              "model?": {
+                               "object": {
+                                "providerID": "string",
+                                "id": "string"
+                               }
+                              }
                              }
                             }
                            },
@@ -26554,7 +26994,13 @@
                         "id": "string",
                         "title": "string",
                         "line?": "string",
-                        "verified?": "bool"
+                        "verified?": "bool",
+                        "model?": {
+                         "object": {
+                          "providerID": "string",
+                          "id": "string"
+                         }
+                        }
                        }
                       }
                      },

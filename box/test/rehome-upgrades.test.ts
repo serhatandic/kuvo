@@ -30,7 +30,7 @@ function kept07(m: Mac, { described = true }: { described?: boolean } = {}) {
     removedWorktrees: { [join(m.S, "opencode", "data", "opencode", "worktree", "gone")]: m.repository },
     machines: { data: [{ destination: "mini.local", identity: "~/.ssh/id_mini", otherAddresses: ["10.0.0.5"] }] },
     "git.branchPrefix": "me/", "git.commitInstructions": " Sign off every commit. ",
-    keepsAwake: false, toolApproval: "askFirst", "engine.defaultsAdded": true,
+    keepsAwake: false, toolApproval: "askFirst", "engine.defaultsAdded": true, favoriteModels: "anthropic/claude-opus-5-5,openai/gpt-6",
     groupMemoryWaiting: { bot_a1: ["grp_gone"] },
     composerDrafts: { data: { "ses_1": { text: "half a thought", files: [] }, "ses_2": { text: "another", files: [] } } },
     botEditsWaiting: { bot_m1: ["name"] },
@@ -102,6 +102,8 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   expect(readFileSync(join(K, "opencode-files", "global-prompt.md"), "utf8")).toBe("be brief")
   expect(readJSON(join(K, "box", "git.json"))).toEqual({ moved: true })
   expect(readJSON(join(K, "box", "work.json"))).toEqual({ keepsAwake: false })
+  // Your starred models come along, for every client's picker.
+  expect(readJSON(join(K, "box", "models.json"))).toEqual({ starred: [{ providerID: "anthropic", id: "claude-opus-5-5" }, { providerID: "openai", id: "gpt-6" }] })
   expect(readJSON(join(K, "box", "approval.json"))).toEqual({ last: "askFirst" })
   expect(readFileSync(join(K, "box", "defaults-added"), "utf8")).toBe("websearch\n")
   // Someone who used an earlier Kuvo Code has had the first run: they land in their sessions.

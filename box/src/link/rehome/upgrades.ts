@@ -24,6 +24,7 @@ import { DEFAULT_RELAY } from "../mac/link";
 import { placementOf, type MoveContext } from "./rewrite";
 import { Said } from "./said";
 import type { RunPlan } from "./state";
+import { starredFromKeys } from "../areas/models-starred";
 
 type Prefs = Record<string, unknown>;
 
@@ -276,6 +277,13 @@ function boxSettings({ prefs, staged }: Upgrade): void {
     writeWhole(file, JSON.stringify({ ...(isObject(had) ? had : {}), ...change }, null, 2));
   };
   if (prefs.keepsAwake === false) merged("box/work.json", { keepsAwake: false });
+  // Your starred models, shared now by every client's picker (`box/models.json`), unless this box
+  // already has stars of its own.
+  const starred = typeof prefs.favoriteModels === "string" ? starredFromKeys(prefs.favoriteModels) : [];
+  if (starred.length) {
+    const had = readJSON(staged("box/models.json"));
+    if (!(isObject(had) && Array.isArray(had.starred) && had.starred.length)) merged("box/models.json", { starred });
+  }
   if (prefs.toolApproval === "askFirst") {
     const had = readJSON(staged("box/approval.json"));
     if (!(isObject(had) && typeof had.last === "string")) merged("box/approval.json", { last: "askFirst" });
@@ -569,8 +577,7 @@ function said({ S, prefs, dropped }: Upgrade): void {
   // which nothing here can see: said only where the panel had one of those two connected.)
   const keyed = strings(prefs["kuvo.usage.connectedProviders.v1"]).filter(id => /openrouter|zai|z\.ai/i.test(id)).length;
   if (keyed) dropped.push("An API key you pasted into the usage panel (OpenRouter's or Z.ai's) isn't brought along. Paste it again in the usage panel.");
-  const starred = typeof prefs.favoriteModels === "string" && prefs.favoriteModels !== "";
-  if (starred || prefs.lastModelRef !== undefined || prefs.lastModel !== undefined) dropped.push(starred ? "Your starred models, and the model new sessions start with, are chosen again in the new app." : "The model new sessions start with is chosen again in the new app.");
+  if (prefs.lastModelRef !== undefined || prefs.lastModel !== undefined) dropped.push("The model new sessions start with is chosen again in the new app.");
   if (prefs["notifications.enabled"] === false || prefs["notifications.sound"] === false || prefs["notifications.badge"] === false) dropped.push("You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.");
   if (prefs["analytics.enabled"] === false) dropped.push("You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.");
   if (listOf(S).some(name => /\.unreadable-.*\.json$/.test(name))) dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");

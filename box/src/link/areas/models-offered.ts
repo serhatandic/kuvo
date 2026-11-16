@@ -12,6 +12,7 @@ import { readWorktrees } from "./worktree-records";
 import { targetsOf } from "../letters/tools";
 import { listsHere, needsNoAccount, offeredHere, startingModel, stillListing, type Lists, type Ref } from "../work/model-rule";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { starredModels, type Starred } from "./models-starred";
 
 export const MODELS_OFFERED_ROUTE = "kuvo/models/offered";
 
@@ -56,20 +57,41 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
   try { engine = readEngine(); } catch {}
   const agents = bridge();
   const lists = await listsHere(engine, agents, folder);
-  return yield* json(200, offeredAnswer(lists, wantedIn(request.path)));
+  return yield* json(200, offeredAnswer(lists, wantedIn(request.path), starredModels()));
 }
 
-/** The route's answer from what the engine and the bridge list, for the model `wanted`. */
-export function offeredAnswer(lists: Lists, wanted: Ref | null) {
+/** Each provider of `models`, named as its side lists its account (`label`: the account's own, a
+ * coding agent's second sign-in), in the order its models come; Custom Auto's lists as "Custom
+ * Auto"; one its side doesn't name, by its id. */
+export function providersOf(models: { providerID: string; agents: boolean }[], lists: Lists): { id: string; name: string; label?: string }[] {
+  const out: { id: string; name: string; label?: string }[] = [];
+  for (const model of models) {
+    if (out.some(each => each.id === model.providerID)) continue;
+    if (model.providerID === "auto") { out.push({ id: "auto", name: "Custom Auto" }); continue; }
+    const account = (model.agents ? lists.bridge?.accounts : lists.engine?.accounts)?.get(model.providerID);
+    out.push({ id: model.providerID, name: account?.name ?? model.providerID, ...(account?.label ? { label: account.label } : {}) });
+  }
+  return out;
+}
+
+/** The route's answer from what the engine and the bridge list, for the model `wanted`, with your
+ * starred models (`starred`, in the order starred: those that don't run here now too, a client
+ * shows only those offered). */
+export function offeredAnswer(lists: Lists, wanted: Ref | null, starred: Starred[] = []) {
   const starting = startingModel([wanted], lists);
   const listing = stillListing(lists);
+  const offered = offeredHere(lists);
   return {
     // `side`: where a conversation on it runs (the engine, or the coding agents' bridge, Custom
     // Auto's lists too), so a client offers in place only its own side's; `efforts`, its variants;
     // `aliases`, other ids a conversation may name it by (Claude Code's `default`); `free`, it
     // needs no account (OpenCode Zen's free models).
-    models: offeredHere(lists).map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
+    models: offered.map(model => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...(model.retiring ? { retiring: true } : {}), ...(model.hidden ? { hidden: true } : {}), ...(!model.agents && needsNoAccount(model) ? { free: true } : {}) })),
     // (The bridge not running is one that can't say yet: it's starting, or started again.)
+    // Each provider's name, as its side names it (`models.offered.providers`), so a picker names
+    // where each model is from; and your starred models (`models.starred`).
+    providers: providersOf(offered, lists),
+    starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...(listing.length ? { listing } : {}),
     ...(starting !== undefined ? { starting: starting?.model ?? null } : {}),

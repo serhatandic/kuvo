@@ -30,6 +30,11 @@ async function facts(context: RouteContext): Promise<Facts | { status: number; v
   const imported = await asked(context, claudeCodeRoute, "GET", "kuvo/claude-code");
   return { settings: config.value, commands, agents, models, imports: imported.status === 200 && Array.isArray(imported.value.commands) ? imported.value.commands : [] };
 }
+/** A model's choice names its model (`provider/model`), so a client draws its model picker. */
+const modelOf = (id: string) => {
+  const at = id.indexOf("/");
+  return at > 0 && at < id.length - 1 ? { model: { providerID: id.slice(0, at), id: id.slice(at + 1) } } : {};
+};
 function form(known: Facts, name: string | null, before: Record<string, unknown> = {}): SettingForm {
   const agents = [...new Set([...known.agents.filter(each => !each.hidden).map(each => text(each.id || each.name)), ...(text(before.agent) ? [text(before.agent)] : [])])].filter(Boolean);
   const models = [...new Map([...known.models.filter(each => typeof each.providerID === "string" && typeof each.id === "string").map(each => [`${each.providerID}/${each.id}`, text(each.name) || each.id] as const), ...(text(before.model) ? [[text(before.model), text(before.model)] as const] : [])]).entries()];
@@ -37,7 +42,7 @@ function form(known: Facts, name: string | null, before: Record<string, unknown>
     ...(name === null ? [{ id: "name", title: "Name", kind: "text" as const, value: "", placeholder: "test" }] : []),
     { id: "description", title: "Description", kind: "lines", value: text(before.description), placeholder: "Shown in the list when you type /" },
     { id: "agent", title: "Agent", kind: "choice", value: text(before.agent), choices: [{ id: "", title: "The session's agent" }, ...agents.map(id => ({ id, title: id }))] },
-    { id: "model", title: "Model", kind: "choice", value: text(before.model), choices: [{ id: "", title: "The agent's or session's model" }, ...models.map(([id, title]) => ({ id, title }))] },
+    { id: "model", title: "Model", kind: "choice", value: text(before.model), choices: [{ id: "", title: "The agent's or session's model" }, ...models.map(([id, title]) => ({ id, title, ...modelOf(id) }))] },
     { id: "subagent", title: "Run as a subagent", kind: "switch", value: before.subagent === true, line: "In the background, without filling up the conversation." },
     { id: "template", title: "Prompt", kind: "lines", mono: true, value: text(before.template), line: PROMPT },
   ] };

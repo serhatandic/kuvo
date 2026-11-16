@@ -236,12 +236,17 @@ export type ModelAction = Infer<typeof MODEL_ACTION>;
  * listed may still run); and the model a new session starts on, for the one wanted (`starting`: null for none
  * that runs; left out while the engine can't say). */
 const MODEL_REF = object({ providerID: string, id: string, "variant?": string });
+const STARRED = object({ providerID: string, id: string });
 export const MODELS_OFFERED = object({
   models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
   known: object({ engine: bool, agents: bool }),
+  "providers?": list(object({ id: string, name: string, "label?": string })),
+  "starred?": list(STARRED),
   "listing?": list(string),
   "starting?": nullable(MODEL_REF),
 });
+/** Your starred models, as `kuvo/models/starred` keeps them (`models.starred`). */
+export const MODELS_STARRED = object({ starred: list(STARRED) });
 
 /** What a session is, as every client's lists go by it (`kuvo/sessions/list`, PROTOCOL.md "Session
  * lists"): a project's session, a chat, a bot's conversation, a bot's seat in a group chat, a run
@@ -333,6 +338,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED } },
+  { route: "GET kuvo/models/starred", answers: { 200: MODELS_STARRED } },
+  { route: "POST kuvo/models/starred", answers: { 200: MODELS_STARRED, 400: REFUSED } },
   { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },
   { route: "GET kuvo/sessions/:id/queue/events", answers: { 200: QUEUE_SHOWN } },
   { route: "GET kuvo/sessions/:id/asks", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
