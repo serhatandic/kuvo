@@ -127,6 +127,8 @@ icons! {
     SidebarLeft => "sidebar",
     Sliders => "sliders",
     Sparkle => "sparkle",
+    Star => "star",
+    StarFilled => "star-filled",
     Spinner => "spinner",
     Stop => "stop",
     Sun => "sun",
@@ -151,6 +153,123 @@ const MARKS: &[(&str, &str, &[u8])] = &[
     ("openrouter", "marks/openrouter.svg", include_bytes!("../../assets/marks/openrouter.svg")),
     ("zai", "marks/zai.svg", include_bytes!("../../assets/marks/zai.svg")),
 ];
+
+/// The providers' marks, by models.dev's provider ids (MIT, as Kuvo Code's shared client design
+/// package ships them: `swift/KuvoClient/Sources/ClientDesign/Resources/Marks.xcassets`). One
+/// colour each, drawn as a mask.
+const PROVIDER_MARKS: &[(&str, &str, &[u8])] = &[
+    ("ai21", "marks/providers/ai21.svg", include_bytes!("../../assets/marks/providers/ai21.svg")),
+    ("alibaba", "marks/providers/alibaba.svg", include_bytes!("../../assets/marks/providers/alibaba.svg")),
+    ("amazon-bedrock", "marks/providers/amazon-bedrock.svg", include_bytes!("../../assets/marks/providers/amazon-bedrock.svg")),
+    ("amd", "marks/providers/amd.svg", include_bytes!("../../assets/marks/providers/amd.svg")),
+    ("anthropic", "marks/providers/anthropic.svg", include_bytes!("../../assets/marks/providers/anthropic.svg")),
+    ("arcee", "marks/providers/arcee.svg", include_bytes!("../../assets/marks/providers/arcee.svg")),
+    ("azure", "marks/providers/azure.svg", include_bytes!("../../assets/marks/providers/azure.svg")),
+    ("baseten", "marks/providers/baseten.svg", include_bytes!("../../assets/marks/providers/baseten.svg")),
+    ("cerebras", "marks/providers/cerebras.svg", include_bytes!("../../assets/marks/providers/cerebras.svg")),
+    ("cloudflare-workers-ai", "marks/providers/cloudflare-workers-ai.svg", include_bytes!("../../assets/marks/providers/cloudflare-workers-ai.svg")),
+    ("cohere", "marks/providers/cohere.svg", include_bytes!("../../assets/marks/providers/cohere.svg")),
+    ("databricks", "marks/providers/databricks.svg", include_bytes!("../../assets/marks/providers/databricks.svg")),
+    ("deepinfra", "marks/providers/deepinfra.svg", include_bytes!("../../assets/marks/providers/deepinfra.svg")),
+    ("deepseek", "marks/providers/deepseek.svg", include_bytes!("../../assets/marks/providers/deepseek.svg")),
+    ("digitalocean", "marks/providers/digitalocean.svg", include_bytes!("../../assets/marks/providers/digitalocean.svg")),
+    ("fireworks-ai", "marks/providers/fireworks-ai.svg", include_bytes!("../../assets/marks/providers/fireworks-ai.svg")),
+    ("friendli", "marks/providers/friendli.svg", include_bytes!("../../assets/marks/providers/friendli.svg")),
+    ("github-copilot", "marks/providers/github-copilot.svg", include_bytes!("../../assets/marks/providers/github-copilot.svg")),
+    ("gitlab", "marks/providers/gitlab.svg", include_bytes!("../../assets/marks/providers/gitlab.svg")),
+    ("google", "marks/providers/google.svg", include_bytes!("../../assets/marks/providers/google.svg")),
+    ("google-vertex", "marks/providers/google-vertex.svg", include_bytes!("../../assets/marks/providers/google-vertex.svg")),
+    ("groq", "marks/providers/groq.svg", include_bytes!("../../assets/marks/providers/groq.svg")),
+    ("helicone", "marks/providers/helicone.svg", include_bytes!("../../assets/marks/providers/helicone.svg")),
+    ("huggingface", "marks/providers/huggingface.svg", include_bytes!("../../assets/marks/providers/huggingface.svg")),
+    ("inception", "marks/providers/inception.svg", include_bytes!("../../assets/marks/providers/inception.svg")),
+    ("io-net", "marks/providers/io-net.svg", include_bytes!("../../assets/marks/providers/io-net.svg")),
+    ("kilo", "marks/providers/kilo.svg", include_bytes!("../../assets/marks/providers/kilo.svg")),
+    ("liquid", "marks/providers/liquid.svg", include_bytes!("../../assets/marks/providers/liquid.svg")),
+    ("llmgateway", "marks/providers/llmgateway.svg", include_bytes!("../../assets/marks/providers/llmgateway.svg")),
+    ("lmstudio", "marks/providers/lmstudio.svg", include_bytes!("../../assets/marks/providers/lmstudio.svg")),
+    ("meta", "marks/providers/meta.svg", include_bytes!("../../assets/marks/providers/meta.svg")),
+    ("minimax", "marks/providers/minimax.svg", include_bytes!("../../assets/marks/providers/minimax.svg")),
+    ("mistral", "marks/providers/mistral.svg", include_bytes!("../../assets/marks/providers/mistral.svg")),
+    ("modal", "marks/providers/modal.svg", include_bytes!("../../assets/marks/providers/modal.svg")),
+    ("moonshotai", "marks/providers/moonshotai.svg", include_bytes!("../../assets/marks/providers/moonshotai.svg")),
+    ("nebius", "marks/providers/nebius.svg", include_bytes!("../../assets/marks/providers/nebius.svg")),
+    ("neon", "marks/providers/neon.svg", include_bytes!("../../assets/marks/providers/neon.svg")),
+    ("novita-ai", "marks/providers/novita-ai.svg", include_bytes!("../../assets/marks/providers/novita-ai.svg")),
+    ("nvidia", "marks/providers/nvidia.svg", include_bytes!("../../assets/marks/providers/nvidia.svg")),
+    ("oci", "marks/providers/oci.svg", include_bytes!("../../assets/marks/providers/oci.svg")),
+    ("ollama-cloud", "marks/providers/ollama-cloud.svg", include_bytes!("../../assets/marks/providers/ollama-cloud.svg")),
+    ("openai", "marks/providers/openai.svg", include_bytes!("../../assets/marks/providers/openai.svg")),
+    ("opencode", "marks/providers/opencode.svg", include_bytes!("../../assets/marks/providers/opencode.svg")),
+    ("openrouter", "marks/providers/openrouter.svg", include_bytes!("../../assets/marks/providers/openrouter.svg")),
+    ("ovhcloud", "marks/providers/ovhcloud.svg", include_bytes!("../../assets/marks/providers/ovhcloud.svg")),
+    ("perplexity", "marks/providers/perplexity.svg", include_bytes!("../../assets/marks/providers/perplexity.svg")),
+    ("poe", "marks/providers/poe.svg", include_bytes!("../../assets/marks/providers/poe.svg")),
+    ("scaleway", "marks/providers/scaleway.svg", include_bytes!("../../assets/marks/providers/scaleway.svg")),
+    ("siliconflow", "marks/providers/siliconflow.svg", include_bytes!("../../assets/marks/providers/siliconflow.svg")),
+    ("snowflake-cortex", "marks/providers/snowflake-cortex.svg", include_bytes!("../../assets/marks/providers/snowflake-cortex.svg")),
+    ("stepfun", "marks/providers/stepfun.svg", include_bytes!("../../assets/marks/providers/stepfun.svg")),
+    ("togetherai", "marks/providers/togetherai.svg", include_bytes!("../../assets/marks/providers/togetherai.svg")),
+    ("venice", "marks/providers/venice.svg", include_bytes!("../../assets/marks/providers/venice.svg")),
+    ("vercel", "marks/providers/vercel.svg", include_bytes!("../../assets/marks/providers/vercel.svg")),
+    ("volcengine", "marks/providers/volcengine.svg", include_bytes!("../../assets/marks/providers/volcengine.svg")),
+    ("wandb", "marks/providers/wandb.svg", include_bytes!("../../assets/marks/providers/wandb.svg")),
+    ("watsonx", "marks/providers/watsonx.svg", include_bytes!("../../assets/marks/providers/watsonx.svg")),
+    ("xai", "marks/providers/xai.svg", include_bytes!("../../assets/marks/providers/xai.svg")),
+    ("xiaomi", "marks/providers/xiaomi.svg", include_bytes!("../../assets/marks/providers/xiaomi.svg")),
+    ("zai", "marks/providers/zai.svg", include_bytes!("../../assets/marks/providers/zai.svg")),
+];
+
+/// Providers drawn with another's mark: the same provider in another region or plan, and a coding
+/// agent by its product's (as `BrandMark.aliases`).
+const PROVIDER_ALIASES: &[(&str, &str)] = &[
+    ("google-vertex-anthropic", "google-vertex"),
+    ("azure-cognitive-services", "azure"),
+    ("alibaba-cn", "alibaba"),
+    ("alibaba-coding-plan", "alibaba"),
+    ("alibaba-coding-plan-cn", "alibaba"),
+    ("alibaba-token-plan", "alibaba"),
+    ("alibaba-token-plan-cn", "alibaba"),
+    ("minimax-cn", "minimax"),
+    ("minimax-coding-plan", "minimax"),
+    ("minimax-cn-coding-plan", "minimax"),
+    ("moonshotai-cn", "moonshotai"),
+    ("kimi-code-plan-global", "moonshotai"),
+    ("kimi-code-plan-cn", "moonshotai"),
+    ("xiaomi-token-plan-ams", "xiaomi"),
+    ("xiaomi-token-plan-cn", "xiaomi"),
+    ("xiaomi-token-plan-sgp", "xiaomi"),
+    ("zai-coding-plan", "zai"),
+    ("zhipuai", "zai"),
+    ("zhipuai-coding-plan", "zai"),
+    ("cloudflare-ai-gateway", "cloudflare-workers-ai"),
+    ("perplexity-agent", "perplexity"),
+    ("siliconflow-cn", "siliconflow"),
+    ("stepfun-ai", "stepfun"),
+    ("stepfun-step-plan", "stepfun"),
+    ("stepfun-ai-step-plan", "stepfun"),
+    ("volcengine-coding-plan", "volcengine"),
+    ("opencode-go", "opencode"),
+];
+
+/// The coding agents, by the bridge's provider ids, and the service whose mark they're drawn with.
+const AGENT_MARKS: &[(&str, &str)] = &[("claude-code", "claude"), ("codex-cli", "codex"), ("grok-cli", "grok"), ("cursor", "cursor"), ("antigravity", "antigravity")];
+
+/// The mark a model's provider is drawn with (an engine provider's, or a coding agent's), and the
+/// one it shares it with, so providers drawn alike sit together; none for one Kuvo has no mark for.
+pub fn provider_mark(provider: &str) -> Option<(&'static str, &'static str)> {
+    let provider = provider.to_lowercase();
+    if let Some((_, service)) = AGENT_MARKS.iter().find(|(id, _)| *id == provider) {
+        return MARKS.iter().find(|(id, ..)| id == service).map(|(id, path, _)| (*id, *path));
+    }
+    let name = PROVIDER_ALIASES.iter().find(|(id, _)| *id == provider).map(|(_, to)| *to).unwrap_or(provider.as_str());
+    PROVIDER_MARKS.iter().find(|(id, ..)| *id == name).map(|(id, path, _)| (*id, *path))
+}
+
+/// The colour a provider's mark is drawn in, where its maker's has one (Claude Code's orange).
+pub fn provider_mark_color(provider: &str) -> Option<Hsla> {
+    AGENT_MARKS.iter().find(|(id, _)| *id == provider).and_then(|(_, service)| mark_color(service))
+}
 
 /// The colour a service's mark is drawn in, where its maker's mark has one (Claude's orange);
 /// `None` for a mark that's black or white, drawn in the text's colour. The user asked for marks
@@ -184,7 +303,7 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
-        if let Some((_, _, bytes)) = MARKS.iter().find(|(_, mark, _)| *mark == path) {
+        if let Some((_, _, bytes)) = MARKS.iter().chain(PROVIDER_MARKS).find(|(_, mark, _)| *mark == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
         Ok(IconName::ALL
@@ -197,7 +316,7 @@ impl AssetSource for Assets {
         Ok(IconName::ALL
             .iter()
             .map(|icon| icon.path())
-            .chain(MARKS.iter().map(|(_, mark, _)| *mark))
+            .chain(MARKS.iter().chain(PROVIDER_MARKS).map(|(_, mark, _)| *mark))
             .filter(|p| p.starts_with(path))
             .map(SharedString::from)
             .collect())

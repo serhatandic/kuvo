@@ -100,6 +100,8 @@ pub struct Button {
     full_width: bool,
     shown: Option<ShownState>,
     tooltip: Option<SharedString>,
+    /// The keys that do the same, shown in its tooltip.
+    tooltip_keys: Option<SharedString>,
     on_click: Option<ClickHandler>,
 }
 
@@ -122,6 +124,7 @@ impl Button {
             full_width: false,
             shown: None,
             tooltip: None,
+            tooltip_keys: None,
             on_click: None,
         }
     }
@@ -215,6 +218,12 @@ impl Button {
 
     pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
         self.tooltip = Some(text.into());
+        self
+    }
+
+    /// The keys that do the same, shown after its tooltip's words ("⇧⌘M").
+    pub fn tooltip_keys(mut self, keys: impl Into<SharedString>) -> Self {
+        self.tooltip_keys = Some(keys.into());
         self
     }
 
@@ -358,7 +367,15 @@ impl RenderOnce for Button {
             }
         }
         if let Some(text) = self.tooltip {
-            button = button.tooltip(move |_window, cx| crate::menu::Tooltip::new(text.clone()).build(cx));
+            let keys = self.tooltip_keys.clone();
+            button = button.tooltip(move |_window, cx| {
+                let tip = crate::menu::Tooltip::new(text.clone());
+                match &keys {
+                    Some(keys) => tip.shortcut(keys.clone()),
+                    None => tip,
+                }
+                .build(cx)
+            });
         }
 
         let size = self.icon_size;
