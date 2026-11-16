@@ -9101,10 +9101,10 @@ async function sendNow(target, session, item) {
   return true;
 }
 async function steerQueued(target, session, item, toAgents) {
-  const entry = (await inboxFor(target, session)).find((each) => each.id === item);
+  const entry = (await inboxOf(target, session)).find((each) => each.id === item);
   if (!entry || !await isRunning(target, session))
     return sendNow(target, session, item);
-  changeQueue2(session, (state) => ({ ...state, paused: false, held: state.held.filter((id) => id !== item), resumed: Date.now() }));
+  changeQueue2(session, (state) => ({ ...state, held: state.held.filter((id) => id !== item) }));
   if (entry.delivery === "steer" && !toAgents)
     return true;
   try {
@@ -42052,7 +42052,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2a86c5c451b4";
+var BRIDGE_VERSION = "14aa5e99efb1";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -58083,7 +58083,8 @@ async function* sending3(context, session) {
       const template = typed && !toAgents ? commandTemplate(target, folderOf4(place.data), command, signal) : null;
       const message = fields ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null) : await sentAgain(again, files, session, target, toAgents);
       const held = heldAsItComes(session, id);
-      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
+      const now = !held && !command && given.delivery === "now";
+      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || now || !command ? "steer" : undefined;
       const body = command ? { name: command, text: message.text, ...message.files.length ? { files: message.files } : {}, ...delivery ? { delivery } : {}, ...typed && toAgents ? { metadata: withParts(undefined, typed) } : {} } : { id: id ?? messageID(), text: message.text, ...message.files.length ? { files: message.files } : {}, delivery, metadata: message.metadata };
       if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" }, typeof given.words === "string" ? given.words : fields?.words)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
@@ -58097,6 +58098,8 @@ async function* sending3(context, session) {
       };
       const made = template ? madeText(await template, message.text) : null;
       const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, (each) => each.status >= 200 && each.status < 300) : await post();
+      if (now && answer.status >= 200 && answer.status < 300)
+        await sendNow(target, session, body.id).catch(() => false);
       if (held && id && answer.status >= 200 && answer.status < 300)
         await holdQueue(target, session, undefined, [id]).catch(() => {});
       return answer;
