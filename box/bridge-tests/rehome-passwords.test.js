@@ -24,11 +24,14 @@ const APP = "run.kuvo.code.trial713";
 const S = path.join(home, "Library", "Application Support", APP);
 const bundle = path.join(home, "Applications", "Kuvo Code.app");
 const write = (file, text, mode = 0o644) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text, { mode }); fs.chmodSync(file, mode); };
+// (No password is one a file could hold by chance: the box's folder is full of random keys and
+// ids in hex and base64, and three letters of those, as "abc" was here, turn up in one run in
+// thirty. Each has a character neither writes.)
 const LOGINS = [
   { host: "github.com", account: "ada", password: "hunter22" },
   { host: "github.com", account: "grace", password: "another-one" },
   { host: "example.org", account: "", password: "pass word" },
-  { host: "short.example", account: "x", password: "abc" },
+  { host: "short.example", account: "x", password: "a~%" },
 ];
 
 test("saved sign-ins go into the vault once this Mac's box answers: each a sign-in of its site, the one agents may use alone still theirs, one too short said, none twice", { skip: !mac && "a Mac's vault and Keychain" }, async () => {
@@ -60,7 +63,7 @@ test("saved sign-ins go into the vault once this Mac's box answers: each a sign-
     let out = "", err = "";
     child.stdout.on("data", chunk => { out += chunk; });
     child.stderr.on("data", chunk => { err += chunk; });
-    child.once("exit", status => resolve({ status, said: JSON.parse(out.trim().split("\n").pop() || "{}"), errors: err }));
+    child.once("exit", status => resolve({ status, out, said: JSON.parse(out.trim().split("\n").pop() || "{}"), errors: err }));
   });
   const settled = await run();
   assert.equal(settled.status, 0, settled.errors + errors);
@@ -79,8 +82,14 @@ test("saved sign-ins go into the vault once this Mac's box answers: each a sign-
   const ada = vault.items.find(item => item.username === "ada");
   assert.deepEqual(host.vault.get(ada.id), { password: "hunter22" });
   assert.deepEqual([...host.vault.values()].map(values => values.password).sort(), ["another-one", "hunter22", "pass word"]);
-  const everything = fs.readdirSync(K, { recursive: true, encoding: "utf8" }).map(name => { try { return fs.readFileSync(path.join(K, name), "utf8"); } catch { return ""; } }).join("\n");
-  for (const login of LOGINS) assert.equal(everything.includes(login.password), false, `${login.host}'s password isn't in a file`);
+  // (Each file that holds one is named, with what stands around it, never only "a file".)
+  const files = fs.readdirSync(K, { recursive: true, encoding: "utf8" }).map(name => { try { return [name, fs.readFileSync(path.join(K, name), "latin1")]; } catch { return [name, ""]; } });
+  for (const login of LOGINS) {
+    const found = files.filter(([, text]) => text.includes(login.password)).map(([name, text]) => `${name}: …${text.slice(Math.max(0, text.indexOf(login.password) - 40), text.indexOf(login.password) + login.password.length + 40)}…`);
+    assert.deepEqual(found, [], `${login.host}'s password isn't in a file`);
+  }
+  // Nor in what the move or the box said (the one too short is counted, never quoted).
+  for (const login of LOGINS) assert.equal((settled.out + settled.errors + errors).includes(login.password), false, `${login.host}'s password isn't said`);
   // The site agents signed in to alone, with that account: still theirs; the other account of it, not.
   assert.deepEqual(vault.grants.map(grant => [grant.item, grant.how]), [[ada.id, "own"]]);
 
