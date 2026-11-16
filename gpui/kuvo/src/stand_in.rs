@@ -487,10 +487,13 @@ impl StandIn {
         self.state().areas.to_set_up.push(key.to_owned());
     }
 
-    /// It lists the computer `key` with an older Kuvo (as a machine from before boxes said their
-    /// version), saying nothing of how it's brought up.
-    pub fn lists_older(&self, key: &str) {
-        self.state().areas.as_older.push(key.to_owned());
+    /// It says the older computer `key` needs an update it can't bring itself, in `why`'s words,
+    /// with nothing to press (a Linux box, or one a Mac's setup has as a member).
+    pub fn cant_bring_up(&self, key: &str, why: &str) {
+        let mut state = self.state();
+        state.areas.cant_bring_up.push((key.to_owned(), why.to_owned()));
+        // (It lists your computers then, as every box does.)
+        state.areas.lists_yours = true;
     }
 
     /// It lists the computer `key` as a Mac.

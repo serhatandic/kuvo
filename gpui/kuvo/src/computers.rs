@@ -852,7 +852,11 @@ impl ComputersView {
     fn notice(&self, computer: &Computer) -> Option<Item> {
         let name = &computer.name;
         let busy = |row: &'static str| self.busy.get(&(computer.key.clone(), row)).map(|(words, _)| words.clone());
-        if let Some(update) = &computer.update {
+        // (The window's box's words, unless it offers nothing to press and the box that lists your
+        // computers does: that one brings it up.)
+        let offered = (!computer.here).then(|| self.offers.get(&computer.key)).flatten().filter(|offer| offer.action.is_some() || offer.updating);
+        let actionable = computer.actions.iter().any(|action| matches!(action.id.as_str(), "update" | "update-here" | "add") && action.why.is_none());
+        if let Some(update) = computer.update.as_ref().filter(|update| actionable || update.is_updating() || offered.is_none()) {
             let tone = if update.is_updating() { Tone::Busy } else if update.state == "failed" || update.long { Tone::Attention } else { Tone::Waiting };
             let action = (!update.is_updating())
                 .then(|| computer.actions.iter().find(|action| matches!(action.id.as_str(), "update" | "update-here" | "add")))
@@ -873,9 +877,7 @@ impl ComputersView {
                 });
             return Some(Item::Notice { key: "notice-update".into(), tone, title: update.title.clone(), words: update.detail.clone(), action });
         }
-        if !computer.here
-            && let Some(offer) = self.offers.get(&computer.key)
-        {
+        if let Some(offer) = offered {
             let tone = if offer.updating { Tone::Busy } else if offer.attention { Tone::Attention } else { Tone::Waiting };
             // (It stands for the row of Manage's that does the same: not drawn there too.)
             let row = match &offer.does {

@@ -54,9 +54,10 @@ pub struct Areas {
     pub to_set_up: Vec<String>,
     /// The computers it lists as Macs (`kind: mac`), by key.
     pub as_macs: Vec<String>,
-    /// The computers it lists with an older Kuvo (what they answer lacks what this app needs, and
-    /// they never said their version), saying nothing of how they're brought up, by key.
-    pub as_older: Vec<String>,
+    /// The older computers it can't bring up itself, by key, with why in its words (no action).
+    pub cant_bring_up: Vec<(String, String)>,
+    /// An empty box that lists your computers all the same (another computer's, in a test).
+    pub lists_yours: bool,
 }
 
 /// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
@@ -362,7 +363,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 setup,
                 { "id": "uninstall", "label": "Uninstall", "confirm": { "title": format!("Uninstall Kuvo Code from {name}?"), "message": format!("{} connects to {name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on {name}.", super::NAME), "label": "Uninstall" } }] })
     });
-    computers(areas.empty || areas.computers_alone, areas.more_computers)
+    computers((areas.empty && !areas.lists_yours) || areas.computers_alone, areas.more_computers)
         .into_iter()
         .chain(added)
         .filter(|computer| !areas.removed.iter().any(|key| computer["key"] == json!(key)))
@@ -387,13 +388,9 @@ fn listed(areas: &Areas) -> Vec<Value> {
             if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
                 computer["kind"] = json!("mac");
             }
-            if areas.as_older.iter().any(|key| computer["key"] == json!(key))
-                && let Some(fields) = computer.as_object_mut()
-            {
-                for field in ["version", "engine", "system", "working", "atWork"] {
-                    fields.remove(field);
-                }
-                fields.insert("features".into(), json!(["sessions.list", "messages.send"]));
+            if let Some((_, why)) = areas.cant_bring_up.iter().find(|(key, _)| computer["key"] == json!(key)) {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                computer["update"] = json!({ "state": "waiting", "title": format!("Kuvo on {name} needs an update"), "detail": why });
             }
             if areas.to_set_up.iter().any(|key| computer["key"] == json!(key)) {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();

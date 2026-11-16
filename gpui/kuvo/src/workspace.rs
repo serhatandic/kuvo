@@ -876,16 +876,14 @@ impl Workspace {
         self.offer_for(row, &computer)
     }
 
-    /// What brings the computer `key` (another of your computers, as the box that lists them names
-    /// it) up to date from here, while its Kuvo is older than this app's or is being updated: the
-    /// box's words and action where that box brings it up (`computers.update`), else what this app
-    /// can do. None for one as new, or this Mac's own (its chip is `own_update_chip`'s). A computer's
-    /// page in Computers draws it where the box the window shows can't bring that computer up itself.
+    /// How the box that lists your computers brings the computer `key` (another of yours) up to
+    /// date, in its words, with its action (`computers.update`): what a computer's page in Computers
+    /// draws where the box the window shows doesn't bring that computer up itself. Only what that
+    /// box says: none where it says nothing (the chip's own fallback for a box from before isn't
+    /// drawn there).
     pub fn update_offer(&self, key: &str) -> Option<HeldUpdate> {
         let row = self.switching.as_ref()?.rows.iter().find(|row| row.key() == key && !row.computer.here)?;
-        if row.computer.update.is_none() && !row.computer.is_older() {
-            return None;
-        }
+        row.computer.update.as_ref()?;
         self.offer_for(row, &row.computer.name)
     }
 

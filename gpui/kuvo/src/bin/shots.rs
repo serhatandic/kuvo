@@ -1765,10 +1765,11 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             if own {
                 stand_in.own_update_waits(if slug == "update-own-running" { "updating" } else { "waiting" }, 2);
             } else if let Some(state) = slug.strip_prefix("page-update-") {
-                stand_in.bring_up_to_date("key_devbox", state, false, 2);
+                stand_in.bring_up_to_date("key_devbox", if state == "running" { "updating" } else { state }, false, 2);
             } else if slug == "page-older-offer" {
-                stand_in.lists_older("key_devbox");
-                stand_in.sets_up_again("key_devbox");
+                // (Shown from devbox's window, whose box can't bring old-mini up: the list's can.)
+                stand_in.peer_box("key_devbox").expect("devbox").cant_bring_up("key_old", "Add computers from a Mac for now: on Linux, Kuvo Code can’t yet keep the list of your computers.");
+                stand_in.bring_up_to_date("key_old", "waiting", false, 0);
             } else if slug == "blocked-held" {
                 stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
                 stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
@@ -1794,7 +1795,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                         assert!(home.switch_to("key_devbox", window, cx));
                         home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
                     }
-                    if slug.starts_with("page-") {
+                    if slug == "page-older-offer" {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_old", None, window, cx));
+                    } else if slug.starts_with("page-") {
                         home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_devbox", None, window, cx));
                     }
                     if slug.starts_with("blocked-") {

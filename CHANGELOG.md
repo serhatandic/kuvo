@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Your Linux machines and other computers set up by your Mac get their Kuvo updates again. An earlier Kuvo Code app opened by mistake after you moved to Kuvo Code 1.0 no longer stops your Mac's Kuvo from updating them; it's told it was replaced.
+- Your Linux machines and other computers set up by your Mac get their Kuvo updates again. An earlier Kuvo Code app opened by mistake after you moved to Kuvo Code 1.0 no longer stops your Mac's Kuvo from updating them: it changes nothing now, so quit it and move it to the Trash.
 - An older computer's page in Computers shows one card: what's true now in plain words, and the button that moves it on (**Update Now**, **Try Again**, or **Set Up Over SSH…**), with how the update is going in that same card. Rows that would only say "Not said yet" are left out.
 - A computer that can't be used yet (its Kuvo is older, or it can't be reached) shows why in every area, with **Update Now** or **Try Again** and **Switch to** one of your computers that works, instead of empty lists.
 - When a machine's usual address doesn't answer (a home network's while you're away), your Mac tries its other addresses, like its Tailscale one, before saying it couldn't reach it, and says so in plain words.

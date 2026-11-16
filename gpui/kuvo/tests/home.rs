@@ -320,43 +320,45 @@ fn this_macs_kuvo_waiting_for_its_release_says_so_in_the_chip_and_updates_now_on
     assert!(shown(cx, "update-card-title") && !shown(cx, "update-now"));
 }
 
-/// An older machine's page in Computers, where the box that lists it says nothing of bringing it
-/// up (from before it did): one card, in plain words, with its way on, never a card without a
-/// button (#772: hetzner and lokum-tailscale said "older than this app" and nothing else).
+/// An older computer's page in a window showing another computer, whose own box can't bring it up
+/// (a Linux box): the card has the way on of the box that lists your computers, which brings it up,
+/// never a card without a button (#772: hetzner and lokum-tailscale on mini-local's page).
 #[gpui::test]
-fn an_older_machines_page_always_has_one_card_with_its_way_on(cx: &mut TestAppContext) {
+fn an_older_computers_page_on_another_computers_window_has_the_listers_update_now(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.lists_older("key_devbox");
-    stand_in.sets_up_again("key_devbox");
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.cant_bring_up("key_old", "Add computers from a Mac for now: on Linux, Kuvo Code can’t yet keep the list of your computers.");
+    stand_in.bring_up_to_date("key_old", "waiting", false, 0);
     let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    assert_eq!(name(&home, cx), "devbox");
     click(cx, "rail-computers");
-    click(cx, "computer-key_devbox");
+    click(cx, "computer-key_old");
     let page = computers_page(&home, cx);
-    assert_eq!(page.read_with(cx, |page, _| page.said("notice-update")), Some(("devbox’s Kuvo is older than this app".to_owned(), "Update Now sets Kuvo up on devbox again over SSH. What’s at work there keeps going.".to_owned())));
+    assert_eq!(page.read_with(cx, |page, _| page.said("notice-update")).map(|(title, _)| title).as_deref(), Some("Kuvo on old-mini updates in a moment"));
     assert!(!shown(cx, "notice-older"), "one card");
-    // What it can't say isn't drawn as "Not said yet".
-    assert_eq!(page.read_with(cx, |page, _| page.said("fact-version")), Some(("Kuvo".to_owned(), "Older than this app".to_owned())));
-    assert!(page.read_with(cx, |page, _| page.said("fact-system").is_none() && page.said("fact-engine").is_none()));
-    assert!(!shown(cx, "action-setup"), "its way on is the card's button, not a row of Manage's too");
+    // What it can't say isn't drawn as "Not said yet"; it's "Kuvo", not "Kuvo Code".
+    assert_eq!(page.read_with(cx, |page, _| page.said("fact-version")).map(|(title, _)| title).as_deref(), Some("Kuvo"));
     click(cx, "notice-update-action");
-    // Asked of the box that lists your computers.
-    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/setup").len(), 1);
+    // Asked of the box that lists your computers, never of devbox's, which can't.
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_old/update").len(), 1);
+    assert!(devbox.seen_at("POST", "kuvo/computers/key_old/update").is_empty());
 }
 
-/// One that box didn't set up over SSH either: the card opens Add a Machine at its address.
+/// Where neither box brings it up, the window's box's words stand, as they are.
 #[gpui::test]
-fn an_older_machine_nothing_here_set_up_opens_add_a_machine_from_its_card(cx: &mut TestAppContext) {
+fn where_nothing_brings_it_up_the_window_boxs_words_stand(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.lists_older("key_devbox");
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.cant_bring_up("key_old", "Add computers from a Mac for now: on Linux, Kuvo Code can’t yet keep the list of your computers.");
     let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
     click(cx, "rail-computers");
-    click(cx, "computer-key_devbox");
+    click(cx, "computer-key_old");
     let page = computers_page(&home, cx);
-    assert!(page.read_with(cx, |page, _| page.said("notice-update")).is_some_and(|(title, _)| title == "devbox’s Kuvo is older than this app"));
-    click(cx, "notice-update-action");
-    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
-    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
-    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty(), "nothing added until you say");
+    assert_eq!(page.read_with(cx, |page, _| page.said("notice-update")), Some(("Kuvo on old-mini needs an update".to_owned(), "Add computers from a Mac for now: on Linux, Kuvo Code can’t yet keep the list of your computers.".to_owned())));
 }
 
 /// A computer that can't be used shows one view, in every area, with what moves it on and another
