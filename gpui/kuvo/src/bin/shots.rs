@@ -192,6 +192,15 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-mcp-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_add) },
     Screen { slug: "settings-mcp-add-error", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_add_error) },
     Screen { slug: "settings-mcp-signing-in", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_signing_in) },
+    // Settings › Vault (`kuvo/settings/vault`), a machine's, as your other devices read it: what
+    // agents wait for, its items, Pause and activity; an item's Edit and Who Can Use It sheets; Add
+    // Item typed into; and the vault locked after a restart.
+    Screen { slug: "settings-vault", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_list) },
+    Screen { slug: "settings-vault-item", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_item) },
+    Screen { slug: "settings-vault-who", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_who) },
+    Screen { slug: "settings-vault-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_add) },
+    Screen { slug: "settings-vault-locked", width: 1280., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_list) },
+    Screen { slug: "settings-vault-narrow", width: 760., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_list) },
     Screen { slug: "settings-mcp-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
     // Settings › Agents (`kuvo/settings/agents`), as the real box answered it: the built-in agents
     // and yours with how each is used, Claude Code's to import, one's editor and New Agent's.
@@ -666,6 +675,34 @@ fn agents_form(w: &mut Workspace, row: &str, action: &str, name: Option<&str>, w
 }
 fn agents_edit(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { agents_form(w, "agent-reviewer", "edit", None, window, cx); }
 fn agents_new(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { agents_form(w, "agents", "add", Some("Bug Hunter"), window, cx); }
+fn vault_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "vault", window, cx); }
+/// One of the vault's items' sheets, by its action, for the item called `title`.
+fn vault_sheet(w: &mut Workspace, title: &str, action: &str, window: &mut Window, cx: &mut Context<Workspace>) -> Option<gpui::Entity<kuvo::settings::form::FormSheet>> {
+    let view = settings(w, "vault", window, cx);
+    let page = w.client().settings_page("vault").ok()?;
+    let row = page.row("items")?.items.iter().find(|item| item.title == title)?.clone();
+    let form = row.actions.iter().find(|each| each.id == action)?.form.clone()?;
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Form { at: kuvo::settings::At::of("vault", &row), action: action.into(), form: Box::new(form) }, cx));
+    view.read(cx).form().cloned()
+}
+fn vault_item(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { vault_sheet(w, "GitHub", "edit", window, cx); }
+fn vault_who(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { vault_sheet(w, "GitHub", "who", window, cx); }
+/// Add Item, a sign-in typed into, its password too short so far.
+fn vault_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "vault", window, cx);
+    let Some(row) = w.client().settings_page("vault").ok().and_then(|page| page.row("items").cloned()) else { return };
+    let Some(add) = row.add.clone() else { return };
+    let form = add.form.clone().expect("a form");
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Form { at: kuvo::settings::At::of("vault", &row), action: add.id.clone(), form: Box::new(form) }, cx));
+    if let Some(sheet) = view.read(cx).form().cloned() {
+        sheet.update(cx, |sheet, cx| {
+            sheet.set_text("name", "Linear", cx);
+            sheet.set_text("site", "linear.app", cx);
+            sheet.set_text("username", "me@example.com", cx);
+            sheet.set_text("password", "abc", cx);
+        });
+    }
+}
 /// A server's sign-in the box leads, under way.
 fn mcp_signing_in(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "mcp", window, cx);
@@ -1123,6 +1160,9 @@ fn main() -> anyhow::Result<()> {
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
+        // Drawn as on a Mac, which asks Touch ID or its password before what lets something use
+        // what's yours more (never asked here: nothing is pressed).
+        cx.set_global(kuvo::confirm_you::ConfirmYou(std::sync::Arc::new(|_: &str| false)));
         bind_keys(cx);
     });
     for screen in SCREENS {
@@ -1147,6 +1187,12 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug.starts_with("settings-agents") {
                 stand_in.show_agents();
+            }
+            if screen.slug.starts_with("settings-vault") {
+                stand_in.show_vault();
+                if screen.slug == "settings-vault-locked" {
+                    stand_in.with_vault(|vault| vault.locked = true);
+                }
             }
             if screen.slug == "compaction-running" { stand_in.running_compaction(); }
             // The rate limits' conversation waits on a permission; another one waits behind it.

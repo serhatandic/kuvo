@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub mod agents;
 pub mod mcp;
 mod pages;
+pub mod vault;
 
 use serde_json::{Map, Value, json};
 
@@ -62,6 +63,8 @@ pub struct Settings {
     pub mcp: mcp::Mcp,
     /// Its Agents section (`kuvo/settings/agents`), listed once it's on.
     pub agent_settings: agents::Agents,
+    /// Its Vault (`kuvo/settings/vault`), listed once it's on.
+    pub vault: vault::Vault,
 }
 
 /// How the stand-in's computer stands, as its own settings page says it. All made up.
@@ -279,6 +282,7 @@ impl Default for Settings {
             computer: Computer::default(),
             mcp: mcp::Mcp::default(),
             agent_settings: agents::Agents::default(),
+            vault: vault::Vault::default(),
         }
     }
 }
@@ -394,6 +398,9 @@ impl Settings {
     /// Its answer to `method route` (`query`: a query value by name), if it's one of these routes.
     pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
         let segments: Vec<&str> = route.split('/').collect();
+        if let Some(answer) = self.vault_answer(method, &segments, body) {
+            return Some(answer);
+        }
         if let Some(answer) = self.pages_answer(method, &segments, body, name, here) {
             return Some(answer);
         }

@@ -27,6 +27,7 @@ import type { Refused, Section } from "./settings-kit";
 import { mcpSection } from "./settings-mcp";
 import { agentsSection } from "./settings-agents";
 import { ACTIONS, choiceIn, EFFECTS, engineDefault, isRule } from "./permission-rules";
+import { vaultSection } from "./settings-vault";
 import { SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
 import { budgetConfirmation, fileSize, fileSizeUnit } from "../../shared/artifact-budget";
 import { fitsShape } from "../../shared/shape";
@@ -95,6 +96,7 @@ const SECTIONS: SettingsSection[] = [
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "How much Kuvo keeps on this computer, and how much older versions of what agents made keep.", keywords: ["copies", "older versions", "budget", "disk", "clear", "space", "size", "folder"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
   agentsSection.listed,
+  vaultSection.listed,
   mcpSection.listed,
 ];
 
@@ -812,6 +814,7 @@ const PAGES: Record<string, Section> = {
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => `${Math.floor(Date.now() / 1000)} ${mtime(SIZES_FILE)} ${isMeasuring()}` },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
   agents: agentsSection,
+  vault: vaultSection,
   mcp: mcpSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };

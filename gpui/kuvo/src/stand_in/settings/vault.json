@@ -1,0 +1,1109 @@
+{
+ "section": {
+  "id": "vault",
+  "title": "Vault",
+  "group": "Agents & Tools",
+  "icon": "shield",
+  "line": "Sign-ins, keys, files and notes agents use without ever seeing them.",
+  "keywords": [
+   "vault",
+   "secrets",
+   "passwords",
+   "sign-ins",
+   "api keys",
+   "files",
+   "notes",
+   "waiting for you",
+   "who can use it",
+   "pause",
+   "activity"
+  ]
+ },
+ "page": {
+  "id": "vault",
+  "title": "Vault",
+  "groups": [
+   {
+    "id": "asks",
+    "title": "Waiting for You",
+    "rows": [
+     {
+      "id": "ask-q_5zosfa6vuf",
+      "title": "Scout wants to use “App Store Connect”",
+      "line": "To upload the build to TestFlight",
+      "kind": "actions",
+      "actions": [
+       {
+        "id": "no",
+        "title": "Don’t Allow"
+       },
+       {
+        "id": "once",
+        "title": "Allow Once"
+       },
+       {
+        "id": "always",
+        "title": "Always Allow…",
+        "verified": true,
+        "confirm": {
+         "title": "Let Scout use “App Store Connect” on its own?",
+         "body": "From now on it uses it without asking you. Change that in its Who Can Use It.",
+         "button": "Always Allow"
+        }
+       }
+      ],
+      "revision": "GMR_g8mPjGi0wsDn"
+     },
+     {
+      "id": "ask-q_nk6aye49nu",
+      "title": "Ranger needs a Sentry token",
+      "line": "To read the crash reports",
+      "kind": "actions",
+      "actions": [
+       {
+        "id": "no",
+        "title": "Don’t Allow"
+       },
+       {
+        "id": "give",
+        "title": "Give…",
+        "form": {
+         "title": "Give Ranger an Item",
+         "submit": "Give",
+         "fields": [
+          {
+           "id": "item",
+           "title": "Item",
+           "kind": "choice",
+           "choices": [
+            {
+             "id": "v_idt55yz0nj",
+             "title": "App Review Contact",
+             "line": "Note · Bots may read it"
+            },
+            {
+             "id": "v_p4be04q0vz",
+             "title": "App Store Connect",
+             "line": "API Key · issuer_id, value"
+            },
+            {
+             "id": "v_xlyqzvmol8",
+             "title": "GitHub",
+             "line": "Sign-in · octo@example.com · github.com"
+            },
+            {
+             "id": "v_surknqheuf",
+             "title": "npm Token",
+             "line": "API Key · registry.npmjs.org"
+            },
+            {
+             "id": "v_3emxslx91c",
+             "title": "Signing Key",
+             "line": "File · AuthKey_ABC123.p8"
+            }
+           ],
+           "value": ""
+          },
+          {
+           "id": "how",
+           "title": "For",
+           "kind": "choice",
+           "choices": [
+            {
+             "id": "once",
+             "title": "This Once"
+            },
+            {
+             "id": "always",
+             "title": "From Now On",
+             "verified": true
+            }
+           ],
+           "value": "once"
+          }
+         ],
+         "note": "It needs a Sentry token.",
+         "revision": "NpVasZF4AKcYGkEY"
+        }
+       }
+      ],
+      "revision": "TS9GZeiJkIcbq-t1"
+     }
+    ]
+   },
+   {
+    "id": "items",
+    "title": "Items",
+    "note": "Kept on lokum, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
+    "rows": [
+     {
+      "id": "items",
+      "title": "Items",
+      "kind": "list",
+      "items": [
+       {
+        "id": "item-v_idt55yz0nj",
+        "title": "App Review Contact",
+        "line": "Note · Bots may read it",
+        "kind": "actions",
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "App Review Contact",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "name",
+             "title": "Name",
+             "kind": "text",
+             "placeholder": "What it’s for, like GitHub",
+             "value": "App Review Contact"
+            },
+            {
+             "id": "text",
+             "title": "Text",
+             "kind": "secret",
+             "multi": true,
+             "placeholder": "Unchanged. Type here to replace it.",
+             "shows": {
+              "route": "kuvo/vault/items/v_idt55yz0nj/values",
+              "field": "text"
+             }
+            },
+            {
+             "id": "readable",
+             "title": "Bots May Read It",
+             "kind": "switch",
+             "line": "For what isn’t a secret, like a contact for App Review.",
+             "value": true
+            }
+           ],
+           "note": "A value left empty stays as it is.",
+           "revision": "jJoaNnb2bzLY3TBD"
+          }
+         },
+         {
+          "id": "who",
+          "title": "Who Can Use It…",
+          "form": {
+           "title": "Who Can Use “App Review Contact”",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "everyone",
+             "title": "Every agent",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "own",
+               "title": "On Its Own",
+               "verified": true
+              },
+              {
+               "id": "ask",
+               "title": "Asks Each Time",
+               "verified": true
+              },
+              {
+               "id": "no",
+               "title": "No"
+              }
+             ],
+             "value": "no"
+            },
+            {
+             "id": "add-bot",
+             "title": "Let a Bot Use It",
+             "kind": "choice",
+             "line": "It asks you each time, until you choose On Its Own.",
+             "choices": [
+              {
+               "id": "none",
+               "title": "No One Else"
+              },
+              {
+               "id": "bot_ranger",
+               "title": "Ranger",
+               "verified": true
+              },
+              {
+               "id": "bot_scout",
+               "title": "Scout",
+               "verified": true
+              }
+             ],
+             "value": "none"
+            }
+           ],
+           "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
+           "revision": "hWxmRaddLCmnHe45"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete “App Review Contact” from the vault?",
+           "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "EtNugjIHBrBV7bZ-"
+       },
+       {
+        "id": "item-v_p4be04q0vz",
+        "title": "App Store Connect",
+        "line": "API Key · issuer_id, value",
+        "kind": "actions",
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "App Store Connect",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "name",
+             "title": "Name",
+             "kind": "text",
+             "placeholder": "What it’s for, like GitHub",
+             "value": "App Store Connect"
+            },
+            {
+             "id": "hosts",
+             "title": "Hosts",
+             "kind": "text",
+             "placeholder": "api.example.com (optional)",
+             "value": ""
+            },
+            {
+             "id": "value",
+             "title": "Value",
+             "kind": "secret",
+             "placeholder": "Unchanged",
+             "shows": {
+              "route": "kuvo/vault/items/v_p4be04q0vz/values",
+              "field": "value"
+             }
+            },
+            {
+             "id": "field-issuer_id",
+             "title": "Issuer Id",
+             "kind": "secret",
+             "placeholder": "Unchanged",
+             "shows": {
+              "route": "kuvo/vault/items/v_p4be04q0vz/values",
+              "field": "issuer_id"
+             }
+            },
+            {
+             "id": "remove",
+             "title": "Remove a Field",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "none",
+               "title": "None"
+              },
+              {
+               "id": "issuer_id",
+               "title": "Issuer Id"
+              }
+             ],
+             "value": "none"
+            },
+            {
+             "id": "more",
+             "title": "Add Fields",
+             "kind": "pairs",
+             "secret": true,
+             "pairs": {
+              "key": "field_name",
+              "value": "Value"
+             },
+             "line": "For a key with more than one part, like an issuer ID.",
+             "value": []
+            }
+           ],
+           "note": "A value left empty stays as it is.",
+           "revision": "pKIc3milVOg7OgwY"
+          }
+         },
+         {
+          "id": "who",
+          "title": "Who Can Use It…",
+          "form": {
+           "title": "Who Can Use “App Store Connect”",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "everyone",
+             "title": "Every agent",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "own",
+               "title": "On Its Own",
+               "verified": true
+              },
+              {
+               "id": "ask",
+               "title": "Asks Each Time",
+               "verified": true
+              },
+              {
+               "id": "no",
+               "title": "No"
+              }
+             ],
+             "value": "no"
+            },
+            {
+             "id": "add-bot",
+             "title": "Let a Bot Use It",
+             "kind": "choice",
+             "line": "It asks you each time, until you choose On Its Own.",
+             "choices": [
+              {
+               "id": "none",
+               "title": "No One Else"
+              },
+              {
+               "id": "bot_ranger",
+               "title": "Ranger",
+               "verified": true
+              },
+              {
+               "id": "bot_scout",
+               "title": "Scout",
+               "verified": true
+              }
+             ],
+             "value": "none"
+            }
+           ],
+           "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
+           "revision": "hWxmRaddLCmnHe45"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete “App Store Connect” from the vault?",
+           "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "ikH_JPfRatBzshVY"
+       },
+       {
+        "id": "item-v_xlyqzvmol8",
+        "title": "GitHub",
+        "line": "Sign-in · octo@example.com · github.com",
+        "kind": "actions",
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "GitHub",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "name",
+             "title": "Name",
+             "kind": "text",
+             "placeholder": "What it’s for, like GitHub",
+             "value": "GitHub"
+            },
+            {
+             "id": "site",
+             "title": "Site",
+             "kind": "text",
+             "placeholder": "github.com",
+             "line": "It’s filled in only on this site and those under it.",
+             "value": "github.com"
+            },
+            {
+             "id": "username",
+             "title": "Username",
+             "kind": "text",
+             "placeholder": "Email or username",
+             "value": "octo@example.com"
+            },
+            {
+             "id": "password",
+             "title": "Password",
+             "kind": "secret",
+             "placeholder": "Unchanged",
+             "shows": {
+              "route": "kuvo/vault/items/v_xlyqzvmol8/values",
+              "field": "password"
+             }
+            },
+            {
+             "id": "signInOnly",
+             "title": "Only for Signing In",
+             "kind": "switch",
+             "line": "Agents sign in with it in the browser, and can’t hand it to a command.",
+             "value": true
+            }
+           ],
+           "note": "A value left empty stays as it is.",
+           "revision": "NW4z0bf-E9jPTEVg"
+          }
+         },
+         {
+          "id": "who",
+          "title": "Who Can Use It…",
+          "form": {
+           "title": "Who Can Use “GitHub”",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "bot-bot_scout",
+             "title": "Scout",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "own",
+               "title": "On Its Own"
+              },
+              {
+               "id": "ask",
+               "title": "Asks Each Time"
+              },
+              {
+               "id": "no",
+               "title": "No"
+              }
+             ],
+             "value": "own"
+            },
+            {
+             "id": "everyone",
+             "title": "Other sessions and bots",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "own",
+               "title": "On Its Own",
+               "verified": true
+              },
+              {
+               "id": "ask",
+               "title": "Asks Each Time",
+               "verified": true
+              },
+              {
+               "id": "no",
+               "title": "No"
+              }
+             ],
+             "value": "no"
+            },
+            {
+             "id": "add-bot",
+             "title": "Let a Bot Use It",
+             "kind": "choice",
+             "line": "It asks you each time, until you choose On Its Own.",
+             "choices": [
+              {
+               "id": "none",
+               "title": "No One Else"
+              },
+              {
+               "id": "bot_ranger",
+               "title": "Ranger",
+               "verified": true
+              }
+             ],
+             "value": "none"
+            }
+           ],
+           "note": "Only on github.com. Agents never see the password: Kuvo fills it in.",
+           "revision": "ZPTBsbM4uzOvDBjf"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete “GitHub” from the vault?",
+           "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "SETqtFzdU8tsXbaP",
+        "badge": {
+         "words": "On its own",
+         "tone": "good"
+        }
+       },
+       {
+        "id": "item-v_surknqheuf",
+        "title": "npm Token",
+        "line": "API Key · registry.npmjs.org",
+        "kind": "actions",
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "npm Token",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "name",
+             "title": "Name",
+             "kind": "text",
+             "placeholder": "What it’s for, like GitHub",
+             "value": "npm Token"
+            },
+            {
+             "id": "hosts",
+             "title": "Hosts",
+             "kind": "text",
+             "placeholder": "api.example.com (optional)",
+             "value": "registry.npmjs.org"
+            },
+            {
+             "id": "value",
+             "title": "Value",
+             "kind": "secret",
+             "placeholder": "Unchanged",
+             "shows": {
+              "route": "kuvo/vault/items/v_surknqheuf/values",
+              "field": "value"
+             }
+            },
+            {
+             "id": "more",
+             "title": "Add Fields",
+             "kind": "pairs",
+             "secret": true,
+             "pairs": {
+              "key": "field_name",
+              "value": "Value"
+             },
+             "line": "For a key with more than one part, like an issuer ID.",
+             "value": []
+            }
+           ],
+           "note": "A value left empty stays as it is.",
+           "revision": "UZTuS8VIo_BHnL-4"
+          }
+         },
+         {
+          "id": "who",
+          "title": "Who Can Use It…",
+          "form": {
+           "title": "Who Can Use “npm Token”",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "everyone",
+             "title": "Every agent",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "own",
+               "title": "On Its Own",
+               "verified": true
+              },
+              {
+               "id": "ask",
+               "title": "Asks Each Time"
+              },
+              {
+               "id": "no",
+               "title": "No"
+              }
+             ],
+             "value": "ask"
+            },
+            {
+             "id": "add-bot",
+             "title": "Let a Bot Use It",
+             "kind": "choice",
+             "line": "It asks you each time, until you choose On Its Own.",
+             "choices": [
+              {
+               "id": "none",
+               "title": "No One Else"
+              },
+              {
+               "id": "bot_ranger",
+               "title": "Ranger",
+               "verified": true
+              },
+              {
+               "id": "bot_scout",
+               "title": "Scout",
+               "verified": true
+              }
+             ],
+             "value": "none"
+            }
+           ],
+           "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
+           "revision": "fccIINCP3xBZMJcw"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete “npm Token” from the vault?",
+           "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "vradLYD2Ef246rlK",
+        "badge": {
+         "words": "Asks",
+         "tone": "quiet"
+        }
+       },
+       {
+        "id": "item-v_3emxslx91c",
+        "title": "Signing Key",
+        "line": "File · AuthKey_ABC123.p8",
+        "kind": "actions",
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "Signing Key",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "name",
+             "title": "Name",
+             "kind": "text",
+             "placeholder": "What it’s for, like GitHub",
+             "value": "Signing Key"
+            },
+            {
+             "id": "file",
+             "title": "File",
+             "kind": "file",
+             "file": {
+              "choose": "Choose File…",
+              "none": "No file chosen"
+             },
+             "line": "At most about 700 KB.",
+             "value": {
+              "name": "AuthKey_ABC123.p8"
+             }
+            }
+           ],
+           "note": "A value left empty stays as it is.",
+           "revision": "1aJDH0048xWLCPFc"
+          }
+         },
+         {
+          "id": "who",
+          "title": "Who Can Use It…",
+          "form": {
+           "title": "Who Can Use “Signing Key”",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "everyone",
+             "title": "Every agent",
+             "kind": "choice",
+             "choices": [
+              {
+               "id": "own",
+               "title": "On Its Own",
+               "verified": true
+              },
+              {
+               "id": "ask",
+               "title": "Asks Each Time",
+               "verified": true
+              },
+              {
+               "id": "no",
+               "title": "No"
+              }
+             ],
+             "value": "no"
+            },
+            {
+             "id": "add-bot",
+             "title": "Let a Bot Use It",
+             "kind": "choice",
+             "line": "It asks you each time, until you choose On Its Own.",
+             "choices": [
+              {
+               "id": "none",
+               "title": "No One Else"
+              },
+              {
+               "id": "bot_ranger",
+               "title": "Ranger",
+               "verified": true
+              },
+              {
+               "id": "bot_scout",
+               "title": "Scout",
+               "verified": true
+              }
+             ],
+             "value": "none"
+            }
+           ],
+           "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
+           "revision": "hWxmRaddLCmnHe45"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete “Signing Key” from the vault?",
+           "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "iFdRiiUNz7eBOmcL"
+       }
+      ],
+      "add": {
+       "id": "add",
+       "title": "Add Item…",
+       "form": {
+        "title": "Add Item",
+        "submit": "Add",
+        "fields": [
+         {
+          "id": "kind",
+          "title": "Kind",
+          "kind": "choice",
+          "choices": [
+           {
+            "id": "login",
+            "title": "Sign-in"
+           },
+           {
+            "id": "key",
+            "title": "API Key"
+           },
+           {
+            "id": "file",
+            "title": "File"
+           },
+           {
+            "id": "note",
+            "title": "Note"
+           }
+          ],
+          "value": "login"
+         },
+         {
+          "id": "name",
+          "title": "Name",
+          "kind": "text",
+          "placeholder": "What it’s for, like GitHub",
+          "value": ""
+         },
+         {
+          "id": "site",
+          "title": "Site",
+          "kind": "text",
+          "placeholder": "github.com",
+          "line": "It’s filled in only on this site and those under it.",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "login"
+           ]
+          },
+          "value": ""
+         },
+         {
+          "id": "username",
+          "title": "Username",
+          "kind": "text",
+          "placeholder": "Email or username",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "login"
+           ]
+          },
+          "value": ""
+         },
+         {
+          "id": "password",
+          "title": "Password",
+          "kind": "secret",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "login"
+           ]
+          }
+         },
+         {
+          "id": "signInOnly",
+          "title": "Only for Signing In",
+          "kind": "switch",
+          "line": "Agents sign in with it in the browser, and can’t hand it to a command.",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "login"
+           ]
+          },
+          "value": true
+         },
+         {
+          "id": "hosts",
+          "title": "Hosts",
+          "kind": "text",
+          "placeholder": "api.example.com (optional)",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "key"
+           ]
+          },
+          "value": ""
+         },
+         {
+          "id": "value",
+          "title": "Value",
+          "kind": "secret",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "key"
+           ]
+          }
+         },
+         {
+          "id": "more",
+          "title": "Other Fields",
+          "kind": "pairs",
+          "secret": true,
+          "pairs": {
+           "key": "field_name",
+           "value": "Value"
+          },
+          "line": "For a key with more than one part, like an issuer ID.",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "key"
+           ]
+          },
+          "value": []
+         },
+         {
+          "id": "file",
+          "title": "File",
+          "kind": "file",
+          "file": {
+           "choose": "Choose File…",
+           "none": "No file chosen"
+          },
+          "line": "At most about 700 KB.",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "file"
+           ]
+          }
+         },
+         {
+          "id": "text",
+          "title": "Text",
+          "kind": "secret",
+          "multi": true,
+          "shown": {
+           "field": "kind",
+           "is": [
+            "note"
+           ]
+          }
+         },
+         {
+          "id": "readable",
+          "title": "Bots May Read It",
+          "kind": "switch",
+          "line": "For what isn’t a secret, like a contact for App Review.",
+          "shown": {
+           "field": "kind",
+           "is": [
+            "note"
+           ]
+          },
+          "value": false
+         }
+        ],
+        "note": "Kept on lokum, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
+        "revision": "qKui_W5ZgL_5bCqO"
+       }
+      },
+      "empty": "Nothing yet. Add a sign-in, a key, a file or a note for your agents to use.",
+      "revision": "ZwZQyZjc03iBG8hL"
+     }
+    ]
+   },
+   {
+    "id": "pause",
+    "rows": [
+     {
+      "id": "pause",
+      "title": "Pause Agents’ Use",
+      "line": "Stops every agent on lokum from using the vault at once. What they ask still comes to you.",
+      "kind": "switch",
+      "value": false,
+      "can": true,
+      "revision": "LraErgD6hV-ncnKZ"
+     },
+     {
+      "id": "paused-bot_ranger",
+      "title": "Ranger is paused",
+      "line": "It tried to fill a sign-in on a site that isn't one of its sites.",
+      "kind": "actions",
+      "actions": [
+       {
+        "id": "go-on",
+        "title": "Let Go On"
+       }
+      ],
+      "revision": "OiSUhen41xGZt--C"
+     }
+    ]
+   },
+   {
+    "id": "activity",
+    "title": "Activity",
+    "rows": [
+     {
+      "id": "activity",
+      "title": "Activity",
+      "kind": "list",
+      "empty": "Nothing used yet.",
+      "items": [
+       {
+        "id": "activity-a_xy1y6o4sck",
+        "title": "You, on your Mac, looked at “npm Token”",
+        "line": "Nov 16, 2026 at 2:30 PM",
+        "kind": "status",
+        "revision": "Z7DBrqSCZsqW7cs6"
+       },
+       {
+        "id": "activity-a_twihbga0mh",
+        "title": "Refused “App Store Connect” on evil.example: not one of its sites. Ranger was paused",
+        "line": "Nov 16, 2026 at 2:00 PM",
+        "kind": "status",
+        "tone": "warning",
+        "revision": "Z7DBrqSCZsqW7cs6"
+       },
+       {
+        "id": "activity-a_om3rhi3kxt",
+        "title": "Scout used “GitHub” on github.com",
+        "line": "Nov 16, 2026 at 1:00 PM",
+        "kind": "status",
+        "revision": "Z7DBrqSCZsqW7cs6"
+       },
+       {
+        "id": "activity-a_tez07cw498",
+        "title": "Added “GitHub”",
+        "line": "Nov 16, 2026 at 12:00 PM",
+        "kind": "status",
+        "revision": "Z7DBrqSCZsqW7cs6"
+       }
+      ],
+      "revision": "yMcqB1CP_IRHdyzc"
+     }
+    ]
+   }
+  ],
+  "notes": [
+   {
+    "words": "Agents can’t use keys, files and notes from lokum’s vault yet. Sign-ins you let them use on their own still fill.",
+    "tone": "quiet"
+   }
+  ]
+ },
+ "locked": {
+  "id": "vault",
+  "title": "Vault",
+  "groups": [],
+  "notes": [
+   {
+    "words": "lokum’s vault is locked since it started again, so its agents can’t use it. Unlocking it takes the key it was made with, which this app doesn’t keep.",
+    "tone": "warning"
+   }
+  ]
+ },
+ "checks": {
+  "items/add": {
+   "fields": [
+    {
+     "id": "name",
+     "words": "Give it a name.",
+     "tone": "quiet"
+    },
+    {
+     "id": "site",
+     "words": "The site it’s for, like github.com.",
+     "tone": "quiet"
+    },
+    {
+     "id": "password",
+     "words": "Its password.",
+     "tone": "quiet"
+    }
+   ],
+   "ready": false
+  },
+  "items/add/short": {
+   "fields": [
+    {
+     "id": "name",
+     "words": "There’s an item called “GitHub” already.",
+     "tone": "warning"
+    },
+    {
+     "id": "password",
+     "words": "A value needs at least 4 characters, so it can be hidden from agents.",
+     "tone": "warning"
+    }
+   ],
+   "ready": false
+  },
+  "items/add/ready": {
+   "fields": [],
+   "ready": true
+  }
+ },
+ "items": {
+  "item-v_idt55yz0nj": "App Review Contact",
+  "item-v_p4be04q0vz": "App Store Connect",
+  "item-v_xlyqzvmol8": "GitHub",
+  "item-v_surknqheuf": "npm Token",
+  "item-v_3emxslx91c": "Signing Key"
+ }
+}

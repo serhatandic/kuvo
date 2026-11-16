@@ -118,6 +118,9 @@ impl Settings {
         if self.agent_settings.on {
             sections.push(super::agents::Agents::section());
         }
+        if self.vault.on {
+            sections.push(super::vault::Vault::section());
+        }
         if self.mcp.on {
             sections.push(super::mcp::Mcp::section());
         }
