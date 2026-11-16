@@ -377,7 +377,7 @@ impl Element for TextElement {
                     .map(|r| Bounds::new(r.origin + origin, r.size))
                     .collect()
             };
-            let caret = (focused && field.selection.is_empty() && !field.disabled).then(|| {
+            let caret = (focused && window.is_window_active() && field.caret_visible && field.selection.is_empty() && !field.disabled).then(|| {
                 Bounds::new(
                     point(origin.x + caret_at.x - px(0.5), origin.y + caret_at.y + px(1.)),
                     size(px(2.), line_height - px(2.)),

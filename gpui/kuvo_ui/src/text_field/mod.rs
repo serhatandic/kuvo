@@ -14,7 +14,7 @@
 
 mod layout;
 
-use std::ops::Range;
+use std::{ops::Range, time::Duration};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
@@ -201,6 +201,10 @@ pub struct TextField {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     last_edit: EditKind,
+    caret_visible: bool,
+    blink_enabled: bool,
+    blink_task: Option<gpui::Task<()>>,
+    blink_subscriptions: Vec<gpui::Subscription>,
 }
 
 impl EventEmitter<TextFieldEvent> for TextField {}
@@ -235,6 +239,40 @@ impl TextField {
             undo: Vec::new(),
             redo: Vec::new(),
             last_edit: EditKind::Other,
+            caret_visible: true,
+            blink_enabled: false,
+            blink_task: None,
+            blink_subscriptions: Vec::new(),
+        }
+    }
+
+    // Only the active field owns a timer. Replacing its task cancels the previous
+    // deadline, so input always gets a fresh, solid half second.
+    fn reset_blink(&mut self, cx: &mut Context<Self>) {
+        self.caret_visible = true;
+        self.blink_task = None;
+        if !self.blink_enabled {
+            return;
+        }
+        self.blink_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                if this.update(cx, |this, cx| {
+                    this.caret_visible = !this.caret_visible;
+                    cx.notify();
+                }).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn sync_blink(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let enabled = self.focus.is_focused(window) && window.is_window_active() && !self.disabled;
+        if self.blink_enabled != enabled {
+            self.blink_enabled = enabled;
+            self.reset_blink(cx);
+            cx.notify();
         }
     }
 
@@ -295,6 +333,10 @@ impl TextField {
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
+        if disabled {
+            self.blink_enabled = false;
+            self.reset_blink(cx);
+        }
         cx.notify();
     }
 
@@ -325,6 +367,7 @@ impl TextField {
         self.marked = None;
         self.undo.clear();
         self.redo.clear();
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.emit(TextFieldEvent::Changed);
         cx.notify();
@@ -341,6 +384,7 @@ impl TextField {
         };
         self.selection = clamp(range.start)..clamp(range.end.max(range.start));
         self.reversed = false;
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.notify();
     }
@@ -366,6 +410,7 @@ impl TextField {
         self.last_edit = EditKind::Other;
         self.selection = offset..offset;
         self.reversed = false;
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.notify();
     }
@@ -382,6 +427,7 @@ impl TextField {
             self.reversed = !self.reversed;
             self.selection = self.selection.end..self.selection.start;
         }
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.notify();
     }
@@ -621,6 +667,7 @@ impl TextField {
         self.reversed = false;
         self.marked = None;
         self.goal_x = None;
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.emit(TextFieldEvent::Changed);
         cx.notify();
@@ -719,6 +766,7 @@ impl TextField {
         self.reversed = false;
         self.marked = None;
         self.last_edit = EditKind::Other;
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.emit(TextFieldEvent::Changed);
         cx.notify();
@@ -759,6 +807,7 @@ impl TextField {
         if self.disabled {
             return;
         }
+        self.reset_blink(cx);
         self.refresh_layout(window);
         window.focus(&self.focus, cx);
         let offset = self.offset_at(event.position);
@@ -908,6 +957,7 @@ impl EntityInputHandler for TextField {
             .unwrap_or(range.start + text.len()..range.start + text.len());
         self.reversed = false;
         self.last_edit = EditKind::Other;
+        self.reset_blink(cx);
         self.reveal_caret = true;
         cx.emit(TextFieldEvent::Changed);
         cx.notify();
@@ -938,12 +988,25 @@ impl EntityInputHandler for TextField {
 
 impl Render for TextField {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.blink_subscriptions.is_empty() {
+            let focus = self.focus.clone();
+            self.blink_subscriptions = vec![
+                cx.on_focus(&focus, _window, |this, window, cx| this.sync_blink(window, cx)),
+                cx.on_blur(&focus, _window, |this, window, cx| this.sync_blink(window, cx)),
+                cx.observe_window_activation(_window, |this, window, cx| this.sync_blink(window, cx)),
+            ];
+        }
+        self.sync_blink(_window, cx);
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let focused = self.focus.is_focused(_window);
         let mut field = div()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(|this, _, _, cx| {
+                this.reset_blink(cx);
+                cx.notify();
+            }))
             .cursor_text()
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -1027,5 +1090,63 @@ impl Render for TextField {
                 .child(div().text_ui(crate::theme::TypeSize::Caption).text_color(c.danger).child(error))
                 .into_any_element(),
         }
+    }
+}
+
+#[cfg(test)]
+mod blink_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn focus_and_activation_cancel_timer(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::Theme::init(crate::Appearance::Light, cx));
+        let (field, cx) = cx.add_window_view(|_, cx| TextField::new(cx));
+        cx.update(|window, _| window.activate_window());
+        cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+        cx.run_until_parked();
+        assert!(field.read_with(cx, |field, _| field.blink_task.is_some()));
+        cx.update(|window, cx| window.blur(cx));
+        cx.run_until_parked();
+        assert!(field.read_with(cx, |field, _| field.blink_task.is_none()));
+        cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+        cx.run_until_parked();
+        assert!(field.read_with(cx, |field, _| field.blink_task.is_some()));
+        cx.deactivate_window();
+        assert!(field.read_with(cx, |field, _| field.blink_task.is_none()));
+    }
+
+    #[gpui::test]
+    fn timer_toggles_and_input_restarts_solid_period(cx: &mut TestAppContext) {
+        let field = cx.new(TextField::new);
+        field.update(cx, |field, cx| {
+            field.blink_enabled = true;
+            field.reset_blink(cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(!field.read_with(cx, |field, _| field.caret_visible));
+        field.update(cx, |field, cx| field.set_text("a", cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(499));
+        cx.run_until_parked();
+        assert!(field.read_with(cx, |field, _| field.caret_visible));
+        field.update(cx, |field, cx| field.move_to(0, cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(!field.read_with(cx, |field, _| field.caret_visible));
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(field.read_with(cx, |field, _| field.caret_visible));
+        field.update(cx, |field, cx| {
+            field.blink_enabled = false;
+            field.reset_blink(cx);
+            assert!(field.blink_task.is_none());
+        });
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert!(field.read_with(cx, |field, _| field.caret_visible));
     }
 }
