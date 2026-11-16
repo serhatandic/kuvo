@@ -118,6 +118,13 @@ impl BoxClient {
         self.get(&format!("kuvo/work/background/{}", paths::segment(session)))
     }
 
+    /// What runs for `session` besides its turn, each one, now and as it changes (a command past
+    /// the counts' limit included).
+    pub fn follow_session_background(&self, session: &str, timing: Timing) -> Follow<Followed<Background>> {
+        let route = format!("kuvo/work/background/{}", paths::segment(session));
+        follow_lines(self, "kuvo-box session background", format!("{route}/events"), route, timing)
+    }
+
     /// How many run for each session, now and as it changes.
     pub fn follow_background(&self, timing: Timing) -> Follow<Followed<Counts>> {
         follow_lines(self, "kuvo-box background", "kuvo/work/background/events".into(), "kuvo/work/background".into(), timing)

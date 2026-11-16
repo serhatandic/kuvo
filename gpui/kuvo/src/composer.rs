@@ -262,7 +262,10 @@ impl Composer {
         if read && !matches!(composer.target, Target::Group { .. }) {
             composer.read_models(cx);
             composer.read_offers(cx);
-            composer.read_approval(cx);
+            // (A conversation's mode is read as it's shown: `set_shown`.)
+            if matches!(composer.target, Target::New(_)) {
+                composer.read_approval(cx);
+            }
         }
         composer
     }
@@ -876,14 +879,18 @@ impl Composer {
                             // Started: what was written, its attached files, and what the box said
                             // of it go with the conversation; this composer is left empty for the
                             // next one.
-                            Ok((started, sent)) => cx.emit(ComposerEvent::Started {
+                            Ok((started, sent)) => {
+                                // (The box keeps the mode picked as the next one's to start in.)
+                                this.picked_approval = None;
+                                cx.emit(ComposerEvent::Started {
                                 session: started.session,
                                 folder: started.folder,
                                 project: started.project,
                                 written: text.clone(),
                                 files,
                                 sent,
-                            }),
+                            })
+                            }
                             Err(error) => {
                                 this.attach(files, cx);
                                 this.put_back(&text, Some(error.to_string()), cx)
@@ -1372,6 +1379,7 @@ impl Composer {
         let worktree = self.worktree;
         let trigger = div().debug_selector(|| "worktree-chip".into()).child(
             Button::new("worktree-chip", if worktree { "Worktree" } else { "Local" })
+                .disabled(self.client.gate().is_held())
                 .ghost()
                 .size(ButtonSize::Small)
                 .icon(if worktree { IconName::Branch } else { IconName::Folder })

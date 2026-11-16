@@ -434,7 +434,7 @@ impl Settings {
                 }
                 (200, self.config.clone())
             }
-            ("GET", ["kuvo", "approval"]) => (200, self.approval.clone()),
+            ("GET", ["kuvo", "approval"]) => (200, super::work_bars::with_options(&self.approval)),
             // (Full Access confirmed on this computer, from a composer's mode menu; your other
             // computers' starts, from Settings.)
             ("PATCH", ["kuvo", "approval"]) => {
@@ -448,7 +448,7 @@ impl Settings {
                 if let Some(allowed) = others {
                     self.approval["otherComputers"] = json!(allowed);
                 }
-                (200, self.approval.clone())
+                (200, super::work_bars::with_options(&self.approval))
             }
             ("GET", ["kuvo", "sandbox"]) => (200, self.sandbox.clone()),
             ("POST", ["kuvo", "sandbox", "check"]) => (200, json!({})),

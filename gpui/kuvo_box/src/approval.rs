@@ -128,8 +128,18 @@ pub struct Autos {
     pub agents: AutoHere,
 }
 
+/// Each mode a new conversation can start in, on the engine and on the coding agents, as the box
+/// says them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct HereOptions {
+    #[serde(default)]
+    pub engine: Vec<Choice>,
+    #[serde(default)]
+    pub agents: Vec<Choice>,
+}
+
 /// A computer's modes (`GET kuvo/approval`): whether you confirmed Full Access there, the one a new
-/// conversation starts with, and why Auto asks first there for now.
+/// conversation starts with, why Auto asks first there for now, and each a new one can start in.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Here {
@@ -137,27 +147,17 @@ pub struct Here {
     pub default: Approval,
     #[serde(default)]
     pub auto: Autos,
+    #[serde(default)]
+    pub options: HereOptions,
 }
 
 impl Here {
-    /// As a new conversation's composer shows `approval` (none to read yet): Full Access not to be
-    /// had until it's confirmed here, Auto asking first while the box says it's held.
+    /// As a new conversation's composer shows `approval` (none to read yet): each mode as the box
+    /// offers it here; one it holds asks first for now.
     pub fn shown(&self, approval: Approval) -> Shown {
-        let held = self.auto.engine.held.clone();
-        let off = Why { reason: "fullAccessOff".into(), why: "Confirm it once on this computer first.".into() };
-        Shown {
-            effective: if approval == Approval::Auto && held.is_some() { Approval::AskFirst } else { approval.clone() },
-            held: if approval == Approval::Auto { held.clone() } else { None },
-            options: Approval::ALL
-                .iter()
-                .map(|each| Choice {
-                    approval: each.clone(),
-                    held: if *each == Approval::Auto { held.clone() } else { None },
-                    unavailable: (*each == Approval::FullAccess && !self.full_access).then(|| off.clone()),
-                })
-                .collect(),
-            approval,
-        }
+        let options = self.options.engine.clone();
+        let held = options.iter().find(|choice| choice.approval == approval).and_then(|choice| choice.held.clone());
+        Shown { effective: if held.is_some() { Approval::AskFirst } else { approval.clone() }, held, options, approval }
     }
 }
 
@@ -218,13 +218,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_conversation_shows_full_access_unavailable_until_confirmed_here() {
-        let here: Here = serde_json::from_str(r#"{"fullAccess":false,"default":"auto","auto":{"engine":{"held":{"reason":"sandbox","why":"The sandbox isn't running."}},"agents":{}}}"#).unwrap();
+    fn a_new_conversation_shows_each_mode_as_the_box_offers_it_here() {
+        let here: Here = serde_json::from_str(r#"{"fullAccess":false,"default":"auto","auto":{"engine":{},"agents":{}},"options":{"engine":[{"approval":"askFirst"},{"approval":"acceptEdits"},{"approval":"auto","held":{"reason":"sandbox","why":"The sandbox isn't running."}},{"approval":"fullAccess","unavailable":{"reason":"fullAccessOff","why":"Confirm it once on this computer first."}}],"agents":[]}}"#).unwrap();
         let shown = here.shown(Approval::Auto);
         assert_eq!(shown.effective, Approval::AskFirst, "Auto asks first while the box holds it");
         assert_eq!(shown.choice(&Approval::FullAccess).and_then(|choice| choice.unavailable.as_ref()).map(|why| why.reason.as_str()), Some("fullAccessOff"));
-        let confirmed = Here { full_access: true, ..here };
-        assert!(confirmed.shown(Approval::FullAccess).choice(&Approval::FullAccess).unwrap().unavailable.is_none());
+        assert_eq!(here.shown(Approval::AskFirst).effective, Approval::AskFirst);
     }
 
     #[test]

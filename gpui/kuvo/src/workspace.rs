@@ -642,6 +642,14 @@ impl Workspace {
                     self.landing_place = Some(place.clone());
                     self.landing.update(cx, |composer, cx| composer.set_start(place, cx));
                 }
+                // The conversation open is a bot's, as the list says now (it may not have known it
+                // as the conversation opened): its sessions' bar follows the bot's work.
+                if let Open::Conversation { view, session } = &self.open {
+                    let bot = self.listing.facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
+                    if bot.is_some() {
+                        view.read(cx).bars().clone().update(cx, |bars, cx| bars.set_bot(bot, cx));
+                    }
+                }
                 // Sessions started here are in the list now: what their box said of them goes.
                 let listing = &self.listing;
                 self.started.retain(|session, _| listing.facts(session).is_none());
@@ -710,8 +718,10 @@ impl Workspace {
 
     /// The computer as a question names it: "this Mac", or its name.
     fn computer_asked(&self) -> SharedString {
-        let name = self.box_name();
-        if name == "This Mac" { "this Mac".into() } else { name }
+        match &self.info {
+            Some(info) if !info.is_mac() || !self.client.here() => info.name.clone().into(),
+            _ => "this Mac".into(),
+        }
     }
 
     /// The box's name as the sidebar's foot says it: "This Mac" for this Mac's own.

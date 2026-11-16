@@ -470,7 +470,7 @@ impl BoxClient {
 
     /// Every session of a bot's work stopped (Stop All).
     pub fn stop_bot_work(&self, bot: &str) -> Result<()> {
-        let response = self.send(&Request::post(format!("kuvo/bots/{bot}/stop-all"), serde_json::json!({})))?;
+        let response = self.send(&Request::post(format!("kuvo/bots/{}/stop-all", crate::paths::segment(bot)), serde_json::json!({})))?;
         if !response.is_success() {
             return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
         }

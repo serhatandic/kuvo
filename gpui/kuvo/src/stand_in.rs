@@ -2191,6 +2191,28 @@ impl Transport for StandIn {
             }
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
+        if let ["kuvo", "work", "background", session, "events"] = route.split('/').collect::<Vec<_>>().as_slice() {
+            let session = decoded(session);
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let id = state.next;
+                state.next += 1;
+                let _ = sender.send(state.work_bars.of(&session).to_string());
+                state.work_bars.session_followers.insert(id, (session, sender));
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.work_bars.session_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
         if matches!(route, "kuvo/work/background/events" | "kuvo/work/events") {
             let background = route == "kuvo/work/background/events";
             let (sender, receiver) = channel();

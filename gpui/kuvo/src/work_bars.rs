@@ -14,7 +14,7 @@ use gpui::{
     Anchor, AnyElement, App, AppContext as _, Context, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
 };
-use kuvo_box::background::{Background, Command, Counts, Output};
+use kuvo_box::background::{Background, Command, Output};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
 use kuvo_box::models::effort_title;
@@ -74,7 +74,7 @@ pub struct WorkBars {
     opener: Option<Opener>,
     /// The moment it's seen at, where one's set (tests and shots); else the clock's.
     now: Option<f64>,
-    _background_follow: Option<Follow<Followed<Counts>>>,
+    _background_follow: Option<Follow<Followed<Background>>>,
     _work_follow: Option<Follow<Followed<WorkChanged>>>,
     /// When the bot's work was last said to change, as last seen.
     work_seen: Option<f64>,
@@ -114,19 +114,14 @@ impl WorkBars {
             tasks: Vec::new(),
         };
         if live {
-            // Read again whenever what runs for it changes (or did while nothing here showed).
-            let follow = client.follow_background(Timing::default());
+            // What runs for it, now and as the box says it changes (one past the counts' limit too).
+            let follow = client.follow_session_background(&bars.session, Timing::default());
             let updates = follow.updates().clone();
             bars._background_follow = Some(follow);
             bars.tasks.push(cx.spawn(async move |this, cx| {
                 while let Ok(update) = updates.recv().await {
-                    let Followed::Now(counts) = update else { continue };
-                    let went = this.update(cx, |this, cx| {
-                        if counts.sessions.contains_key(&this.session) || !this.background.commands.is_empty() || !this.background.subagents.is_empty() {
-                            this.read_background(cx);
-                        }
-                    });
-                    if went.is_err() {
+                    let Followed::Now(background) = update else { continue };
+                    if this.update(cx, |this, cx| this.take_background(background, cx)).is_err() {
                         break;
                     }
                 }
@@ -231,8 +226,13 @@ impl WorkBars {
 
     /// What runs for it besides its turn, as its box said.
     pub fn take_background(&mut self, background: Background, cx: &mut Context<Self>) {
-        // A command whose Output shows and that's gone ended: what was read of it stays.
+        // (One stopping that's gone isn't stopping any more.)
         self.stopping.retain(|id| background.commands.iter().any(|command| &command.id == id) || background.subagents.iter().any(|subagent| &subagent.session == id));
+        // A command gone takes its Output with it (its row's gone), and stops reading it.
+        if self.output.as_ref().is_some_and(|shown| !background.commands.iter().any(|command| command.id == shown.command.id)) {
+            self.output = None;
+            self.reading_output = None;
+        }
         self.background = background;
         // Its time goes on while commands run.
         if self.live && !self.background.commands.is_empty() && self.ticking.is_none() {

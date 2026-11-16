@@ -21,8 +21,10 @@ pub struct WorkBars {
     pub printed: HashMap<String, String>,
     /// Commands stopped, in order.
     pub stopped: Vec<String>,
-    /// Those following the counts (`kuvo/work/background/events`) and bots' work (`kuvo/work/events`).
+    /// Those following the counts (`kuvo/work/background/events`), one conversation's
+    /// (`kuvo/work/background/<session>/events`, with its session) and bots' work (`kuvo/work/events`).
     pub followers: HashMap<u64, Sender<String>>,
+    pub session_followers: HashMap<u64, (String, Sender<String>)>,
     pub work_followers: HashMap<u64, Sender<String>>,
     /// When each bot's work last changed.
     pub work_changed: BTreeMap<String, f64>,
@@ -67,10 +69,21 @@ impl WorkBars {
         json!({ "sessions": sessions })
     }
 
-    /// The counts' followers hear them as they are now.
+    /// What runs for `session`, each one.
+    pub fn of(&self, session: &str) -> Value {
+        self.background.get(session).cloned().unwrap_or_else(|| json!({ "commands": [], "subagents": [] }))
+    }
+
+    /// The counts' followers, and each conversation's, hear them as they are now.
     pub fn changed(&mut self) {
         let line = self.counts().to_string();
         self.followers.retain(|_, sender| sender.send(line.clone()).is_ok());
+        let lines: Vec<(u64, String)> = self.session_followers.iter().map(|(id, (session, _))| (*id, self.of(session).to_string())).collect();
+        for (id, line) in lines {
+            if self.session_followers.get(&id).is_some_and(|(_, sender)| sender.send(line).is_err()) {
+                self.session_followers.remove(&id);
+            }
+        }
     }
 
     /// A bot's work changed: its clients read it again.
@@ -98,7 +111,7 @@ impl WorkBars {
                 (200, self.shown(session, here))
             }
             ("GET", ["kuvo", "work", "background"]) => (200, self.counts()),
-            ("GET", ["kuvo", "work", "background", session]) => (200, self.background.get(*session).cloned().unwrap_or_else(|| json!({ "commands": [], "subagents": [] }))),
+            ("GET", ["kuvo", "work", "background", session]) => (200, self.of(session)),
             ("POST", ["kuvo", "shell", id, "stop"]) => {
                 let id = (*id).to_owned();
                 let mut found = false;
@@ -130,4 +143,27 @@ impl WorkBars {
             _ => return None,
         })
     }
+}
+
+/// This computer's modes (`kuvo/approval`, `here`) with each one a new conversation can start in,
+/// as a box says them (`options`, on the engine and on the coding agents).
+pub fn with_options(here: &Value) -> Value {
+    let held = here["auto"]["engine"]["held"].clone();
+    let full_access = here["fullAccess"] == json!(true);
+    let options: Vec<Value> = MODES
+        .iter()
+        .map(|mode| {
+            let mut option = json!({ "approval": mode });
+            if *mode == "auto" && !held.is_null() {
+                option["held"] = held.clone();
+            }
+            if *mode == "fullAccess" && !full_access {
+                option["unavailable"] = json!({ "reason": "fullAccessOff", "why": "Confirm it once on this computer first." });
+            }
+            option
+        })
+        .collect();
+    let mut said = here.clone();
+    said["options"] = json!({ "engine": options, "agents": options });
+    said
 }
