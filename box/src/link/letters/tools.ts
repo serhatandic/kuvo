@@ -30,6 +30,7 @@ import { allowed, takeBack } from "./limits";
 import { OUTSIDE, seatRefusal, startedWords, startSession } from "./start";
 import { answerTo } from "./take";
 import { noteOversightBy } from "../work/oversight";
+import { noteSent } from "../work/sent";
 import { notifyUserTool } from "../notices/notify";
 import { planLimitsTool } from "../work/plan-limits";
 import { useResetTool } from "../work/plan-reset";
@@ -214,6 +215,8 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
     }
     // A bot writing to a session of its own: for clients to show it looking after it.
     noteOversightBy(caller, { ...here.data, id: target.session }, "told");
+    // (A session's report sent to its starter isn't told it again as it finishes.)
+    if (caller) noteSent(caller, target.session, text);
     // Stopped by the user: it waits there for them, and nothing waits for its answer.
     if (went === "waits") return said(pausedNote(target.name));
     if (!waits) return said(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
@@ -232,6 +235,7 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
   } catch {
     return failed(`It didn't reach ${target.name}.`);
   }
+  if (caller) noteSent(caller, target.session, text);
   if (!wait) return said(waits && caller && offline ? offlineNote() : `On its way to ${target.name}${target.machine ? ` on ${target.machine}` : ""}. Its answer, if it writes one, comes to you as a message.`);
   const answer = await letterAnswer(id, place.signal, { step: place.step });
   if (answer && "failed" in answer) return failed(`It didn't reach ${target.name}: ${answer.failed}`);

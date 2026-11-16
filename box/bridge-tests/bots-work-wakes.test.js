@@ -136,6 +136,64 @@ test("a bot's session that finishes is marked for clients to show the bot seeing
   assert.deepEqual(marks.map(mark => [mark.bot, mark.session, mark.kind]), [["bot_pixel00001", "ses_tests", "finished"]]);
 });
 
+// #768: the bot's conversation showed a session's report twice, once as its message and again in
+// its finish; and a turn the user had with the session came to the bot as its report.
+const letter = (id, words) => ({ id, type: "user", time: { created: 100 }, text: `[Message from Pixel · ses_pixel] (They get your last reply when you finish.)\n\n${words}` });
+const answer = (id, words) => ({ id, type: "assistant", time: { created: 200 }, content: [{ type: "text", text: words }] });
+// Where a turn ended, as the engine marks it.
+const ended = id => ({ id, type: "idle", time: { created: 250 } });
+const report = "Merged kuvo/update-1116 into the branch; the tip is e5bc1f1. Ready to build: the queue, Steer and Send Now work as 0.7's did, and the reviewers' two findings are fixed, with a test for each of them.";
+
+test("a session that sent its bot its report with send_message, then finished saying it, doesn't tell the bot again; its bot still sees it finish", async () => {
+  conversations.ses_signin = [ended("msg_2i"), answer("msg_2", report), letter("msg_1", "Merge the update branch, then report.")];
+  try {
+    const sent = await link.agentTool("send_message", { to: "ses_pixel", text: report }, "ses_signin", { readEngine: () => source, bridge: () => null });
+    assert.equal(sent.isError, false, sent.text);
+    assert.equal(prompts.length, 1, "its message reached the bot");
+    const { schedule, runAll } = clock();
+    const watch = link.workWatcher(source, () => [source], { schedule });
+    await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_signin" } });
+    await runAll();
+    assert.equal(prompts.length, 1, "its finish says nothing the bot hasn't had");
+    assert.ok(!fs.existsSync(wakesFile) || !JSON.parse(fs.readFileSync(wakesFile, "utf8")).ses_pixel, "nothing waits for the bot");
+    const marks = JSON.parse(fs.readFileSync(path.join(home, "run", "work", "oversight.json"), "utf8"));
+    assert.ok(marks.some(mark => mark.session === "ses_signin" && mark.kind === "finished"), "its bot is shown seeing it finish");
+    // Its next turn, asked by the bot, ends with something it didn't send: told as ever.
+    conversations.ses_signin = [ended("msg_4i"), answer("msg_4", "Built 0.8.0-beta.24; it's signed and on the private feed."), letter("msg_3", "Build it."), ...conversations.ses_signin];
+    await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_signin" } });
+    await runAll();
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1].text, /^\[Session finished\] "Sign-in"[\s\S]*Built 0\.8\.0-beta\.24/);
+  } finally {
+    delete conversations.ses_signin;
+  }
+});
+
+test("a turn the user had with a bot's session, writing to it directly, doesn't reach the bot as its report", async () => {
+  conversations.ses_signin = [ended("msg_2i"), answer("msg_2", report), letter("msg_1", "Merge the update branch, then report.")];
+  try {
+    const { schedule, runAll } = clock();
+    const watch = link.workWatcher(source, () => [source], { schedule });
+    await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_signin" } });
+    await runAll();
+    assert.equal(prompts.length, 1, "its report, the first time, as ever");
+    // The user writes to it, and it answers them.
+    conversations.ses_signin = [ended("msg_4i"), answer("msg_4", "The tip is e5bc1f1 because the merge brought in the update branch's fixes; nothing else changed."), { id: "msg_3", type: "user", time: { created: 300 }, text: "Why is the tip different?" }, ...conversations.ses_signin];
+    await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_signin" } });
+    await watch({ type: "session.execution.failed", data: { sessionID: "ses_signin", error: { name: "APIError", data: { message: "Overloaded." } } } });
+    await runAll();
+    assert.equal(prompts.length, 1, "its answer to the user, or its failing, is theirs");
+    // The bot writes to it again: its answer is the bot's.
+    conversations.ses_signin = [ended("msg_6i"), answer("msg_6", "Rebased on main; the tip is now 9a1b2c3, and the tests pass."), letter("msg_5", "Rebase it."), ...conversations.ses_signin];
+    await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_signin" } });
+    await runAll();
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1].text, /Rebased on main/);
+  } finally {
+    delete conversations.ses_signin;
+  }
+});
+
 test("what a box had gathered as it stopped still reaches the bot", async () => {
   fs.mkdirSync(path.dirname(wakesFile), { recursive: true });
   fs.writeFileSync(wakesFile, JSON.stringify({ ses_pixel: { lines: ["[Session finished] \"Sign-in\" in tidepool (address ses_signin):\nDone."], asks: false, since: 1 } }));

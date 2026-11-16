@@ -150,7 +150,8 @@ const started = (session = "ses_tests") => ({ type: "session.execution.started",
 const delivered = (session = "ses_tests") => ({ type: "session.inbox.delivered", data: { sessionID: session, inboxID: `inb_${state.counter}` } });
 
 const said = (text, session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "assistant", time: { created: at() }, content: text ? [{ type: "text", text }] : [] });
-const asked = (text = "Run the tests.", session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "user", text, time: { created: at() } });
+// Its lead asking, as its message reaches the session.
+const asked = (text = "Run the tests.", session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "user", text: `[Message from Pixel · ses_pixel] (To answer, use send_message to ses_pixel.)\n\n${text}`, time: { created: at() } });
 const ownWord = (session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "synthetic", text: "<shell>done</shell>", metadata: { source: "shell" }, time: { created: at() } });
 const notice = (text = "Going on with another account.", session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "synthetic", text, time: { created: at() } });
 const boxWord = (text = '[Session finished] "Part" in tidepool (address ses_part)\n\nDone.', session = "ses_tests") => state.messages[session].unshift({ id: `msg_${state.counter + 1}`, type: "user", text, time: { created: at() } });
