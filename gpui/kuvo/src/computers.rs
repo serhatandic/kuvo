@@ -679,7 +679,7 @@ impl ComputersView {
         items.push(Item::Group("About".into()));
         // (What it hasn't said isn't drawn: a computer whose Kuvo is older, or that hasn't been
         // reached, says little, and a row of "Not said yet" tells you nothing.)
-        let version = match (&computer.version, computer.is_older()) {
+        let version = match (&computer.version, computer.is_behind()) {
             (Some(version), true) => Some(format!("{version}, older than this app")),
             (Some(version), false) => Some(version.clone()),
             (None, true) => Some("Older than this app".to_owned()),
@@ -802,7 +802,7 @@ impl ComputersView {
                 match act.does.clone() {
                     Some(UpdateDoes::Update(key)) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_computer(&key).map(|_| ()))),
                     Some(UpdateDoes::SetUp(key)) => ("Starting…", Box::new(move |_: &BoxClient| lister.setup_computer(&key).map(|_| ()))),
-                    Some(UpdateDoes::Here) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
+                    Some(UpdateDoes::Here | UpdateDoes::HereNow) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
                     // (Asked first, then what only this app does.)
                     Some(UpdateDoes::OwnBox { now }) => return cx.emit(ComputersEvent::UpdateOwnBox { now }),
                     Some(UpdateDoes::AddMachine { address }) => return cx.emit(ComputersEvent::AddAt(address)),
@@ -899,6 +899,11 @@ impl ComputersView {
         if computer.is_older() {
             let (title, words) = held_words(Some(name), computer.here && self.this_mac);
             return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words, action: None });
+        }
+        // (Only behind: used as it is, what it lacks not drawn there.)
+        if computer.is_behind() {
+            let (title, _) = held_words(Some(name), false);
+            return Some(Item::Notice { key: "notice-behind".into(), tone: Tone::Info, title, words: behind_words().into(), action: None });
         }
         if computer.apart {
             return Some(Item::Notice {
@@ -1483,4 +1488,9 @@ mod tests {
         assert_eq!(reached(&computer(r#"{"name":"mini","via":"peer","through":"devbox"}"#)).as_deref(), Some("Only by devbox’s word"));
         assert_eq!(reached(&computer(r#"{"name":"Studio","here":true,"via":"here"}"#)).as_deref(), Some("Shown in this window"));
     }
+}
+
+/// What's said of a computer whose Kuvo lacks some of what this app shows: it's used as it is.
+pub fn behind_words() -> &'static str {
+    "It works here as it is. What’s new in this app shows there once it’s updated."
 }

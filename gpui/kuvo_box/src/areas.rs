@@ -430,9 +430,15 @@ impl Computer {
         self.kind == "mac"
     }
 
-    /// Its box is older than this client needs (the update gate, PROTOCOL.md): this client would
-    /// hold it. Only where the list says what it has; one that doesn't say isn't called older.
+    /// Its box is one this client can't speak to at all (the update gate, PROTOCOL.md: it lacks
+    /// the baseline), so it would hold it. Only where the list says what it has; one that doesn't
+    /// say isn't called older. One that's only behind (`is_behind`) is used as it is.
     pub fn is_older(&self) -> bool {
+        self.features.as_deref().is_some_and(|features| !crate::gate::missing_baseline(features).is_empty())
+    }
+
+    /// Its box lacks some of what this client draws: used as it is, its update offered.
+    pub fn is_behind(&self) -> bool {
         self.features.as_deref().is_some_and(|features| !crate::gate::missing(features).is_empty())
     }
 

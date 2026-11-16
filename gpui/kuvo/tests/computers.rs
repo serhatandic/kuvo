@@ -220,10 +220,11 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
     assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none"));
     // Connect is the card's own button, beside why.
     assert!(shown(cx, "notice-away-action") && !shown(cx, "action-reconnect"));
-    // Older: the window's own held words for it.
+    // Older, but with what this app can't do without: used as it is, and says so.
     click(cx, "computer-key_old");
-    let (held_title, held_next) = held_words(Some("old-mini"), false);
-    assert_eq!(said(&page, cx, "notice-older"), Some((held_title, held_next)));
+    let (held_title, _) = held_words(Some("old-mini"), false);
+    assert_eq!(said(&page, cx, "notice-behind"), Some((held_title, kuvo::computers::behind_words().to_owned())));
+    assert!(!shown(cx, "notice-older"), "never said to wait for its update");
     assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("0.9.180, older than this app"));
     assert!(!shown(cx, "at-work-none"), "an older computer's count isn't claimed");
     // Shared with another setup: filed apart, and it says nothing of what runs there.

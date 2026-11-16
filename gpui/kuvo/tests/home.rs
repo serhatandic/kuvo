@@ -151,6 +151,22 @@ fn when_this_apps_computer_was_blocked_the_boxs_words_show_whole_on_computers(cx
     assert!(shown(cx, "notice-pairing"));
 }
 
+/// This Mac's own Kuvo held for its update (the user's beta.30): your other computers stay listed
+/// and usable, each its own box whatever this one's version.
+#[gpui::test]
+fn a_held_this_mac_still_lists_and_opens_your_other_computers(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_older(true);
+    let (home, cx) = open(cx, stand_in.clone());
+    assert!(shown(cx, "blocked-held"), "this Mac's own areas wait for its update");
+    click(cx, "computer-switcher");
+    assert!(shown(cx, "menu-item-devbox"), "devbox, as this Mac's list has it");
+    click(cx, "menu-item-devbox");
+    assert_eq!(name(&home, cx), "devbox");
+    assert!(!shown(cx, "blocked-held"));
+    assert!(shown(cx, "session-project-ses_releases"), "devbox's own sessions");
+}
+
 /// devbox's box older than this app, which the box that lists your computers brings up to date:
 /// the window opened on devbox.
 fn on_an_older_devbox<'a>(cx: &'a mut TestAppContext, state: &'static str, working: usize) -> (StandIn, Entity<Home>, &'a mut VisualTestContext) {
