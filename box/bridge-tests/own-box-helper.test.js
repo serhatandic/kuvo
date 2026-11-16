@@ -49,7 +49,7 @@ test("helper install: the launch agent starts Kuvo Helper at login, with this bo
   const where = home("mac");
   const done = helper(where, ["install", "--app", "run.kuvo.code.trial4"]);
   assert.equal(done.status, 0, done.stderr);
-  assert.deepEqual(done.said, { written: true, loaded: false, message: "Kuvo Helper starts this Mac's box at login." });
+  assert.deepEqual(done.said, { written: true, loaded: false, message: "Kuvo Helper starts Kuvo on this Mac at login." });
   const plist = read(plistOf(where));
   const program = path.join(where.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
   assert.match(plist, /<key>Label<\/key><string>run\.kuvo\.code\.machine<\/string>/);
@@ -116,11 +116,11 @@ test("helper start: the whole start through the helper, its launch agent put in 
   // Not in place: written and loaded.
   const first = helper(where, ["start", "--app", "run.kuvo.code.trial5"]);
   assert.equal(first.status, 0, first.stderr);
-  assert.deepEqual(first.said, { started: true, mac: true, message: "Kuvo Helper runs this Mac's box now, and at login." });
+  assert.deepEqual(first.said, { started: true, mac: true, message: "Kuvo Helper runs Kuvo on this Mac now, and at login." });
   assert.match(read(plistOf(where)), /<string>run\.kuvo\.code\.trial5<\/string>/);
   assert.equal(asked().filter(line => line.startsWith("bootstrap")).length, 1);
   // Loaded: started if it isn't running (kickstart leaves one running as it is).
-  assert.deepEqual(helper(where, ["start"]).said, { started: true, mac: true, message: "Kuvo Helper runs this Mac's box." });
+  assert.deepEqual(helper(where, ["start"]).said, { started: true, mac: true, message: "Kuvo Helper runs Kuvo on this Mac." });
   assert.deepEqual(asked(), [`print gui/${uid}/run.kuvo.code.machine`, `kickstart gui/${uid}/run.kuvo.code.machine`]);
   // In place but not loaded: loaded, then started.
   fs.rmSync(path.join(where.home, "loaded"));
@@ -145,7 +145,7 @@ test("helper start: the whole start through the helper, its launch agent put in 
   write(path.join(where.tools, "launchctl"), `#!/bin/sh\necho "$*" >>"${where.home}/launchctl"\ncase "$1" in print) exit 113 ;; bootstrap) echo "Bootstrap failed: 5: Input/output error" >&2; exit 5 ;; print-disabled) printf '\\t"run.kuvo.code.machine" => disabled\\n' ;; esac\n`, 0o755);
   const off = helper(where, ["start"]);
   assert.equal(off.status, 0, off.stderr);
-  assert.deepEqual(off.said, { started: true, mac: true, disabled: true, opened: true, message: "Kuvo Helper is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login." });
+  assert.deepEqual(off.said, { started: true, mac: true, disabled: true, opened: true, message: "Kuvo Helper is turned off in System Settings › General › Login Items, so it was opened for now, to run Kuvo on this Mac until you log out. Turn it on there to start it at login." });
   assert.deepEqual(read(path.join(where.home, "opened")).trim().split("\n"), ["-g", "-j", "-n", path.join(where.K, "bin", "Kuvo Helper.app"), "--args", "keep", "--home", where.K]);
   // --if-missing leaves one switched off as it is: not opened.
   fs.rmSync(path.join(where.home, "opened"));
@@ -168,7 +168,7 @@ test("helper start: the whole start through the helper, its launch agent put in 
   const refused = helper(bare, ["start"]);
   assert.equal(refused.status, 1);
   assert.equal(refused.said.mac, true);
-  assert.match(refused.said.message, /isn't in this box's bin/);
+  assert.match(refused.said.message, /isn't in Kuvo's bin folder/);
   // Not a Mac's own box: nothing asked, and it says so.
   const machine = home("machine");
   const other = helper(machine, ["start"]);
@@ -183,16 +183,16 @@ test("helper install refuses what isn't a Mac's own box in a home of its own, an
   const refused = helper(machine, ["install"]);
   assert.equal(refused.status, 1);
   assert.equal(refused.said.written, false);
-  assert.match(refused.said.message, process.platform === "darwin" ? /Only a Mac's own box in a home of its own/ : /Only a Mac's own box/);
+  assert.match(refused.said.message, process.platform === "darwin" ? /Only Kuvo on a Mac in its own folder runs under Kuvo Helper/ : /Only Kuvo on a Mac runs under Kuvo Helper/);
   assert.equal(exists(plistOf(machine)), false);
   if (process.platform !== "darwin") return;
   // No helper in its bin yet.
   const bare = home("mac", { helper: false });
-  assert.match(helper(bare, ["install"]).said.message, /isn't in this box's bin/);
+  assert.match(helper(bare, ["install"]).said.message, /isn't in Kuvo's bin folder/);
   assert.equal(exists(plistOf(bare)), false);
   // A test's home without stand-ins: this computer's launchd and LaunchAgents are left alone.
   const alone = home("mac");
-  assert.match(helper(alone, ["install"], { KUVO_TEST_UNINSTALL_TOOLS: "" }).said.message, /Only the box in ~\/\.kuvo-code/);
+  assert.match(helper(alone, ["install"], { KUVO_TEST_UNINSTALL_TOOLS: "" }).said.message, /Only Kuvo in ~\/\.kuvo-code starts at login/);
   assert.equal(exists(plistOf(alone)), false);
 });
 
