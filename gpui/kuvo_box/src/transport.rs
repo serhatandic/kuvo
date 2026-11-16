@@ -119,4 +119,9 @@ pub trait Transport: Send + Sync {
 
     /// Where it goes, in words (for a refusal of the client's own): "this Mac", a machine's name.
     fn describe(&self) -> String;
+
+    /// Stop: the messages under these ids (`idempotency-key`) waiting to be sent again that never
+    /// reached the box don't go (PROTOCOL.md, "Sending again"). One that may have reached it still
+    /// goes, and its box takes it once.
+    fn take_back(&self, _keys: &[String]) {}
 }

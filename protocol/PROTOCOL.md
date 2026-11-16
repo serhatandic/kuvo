@@ -91,6 +91,12 @@ has handed its WebSocket since the last ping that was answered, a minute more at
 out behind those, and a picture on a slow connection holds its pong up as long as it takes to send
 (#144), while a path gone dead behind a big body is still noticed within about 70 s.
 
+A client also keeps its own pong to the relay's ping from waiting behind a body: a relay from before
+the change below ends a connection whose pong is about a minute late (kuvolink.porigam.com.tr did on
+2026-11-16), and a picture on a slow connection takes longer than that to go. The desktop app hands its socket one relay message at a time, reading what came in
+between, with its system send buffer set to 256 KB (a Mac's grows to 4 MB), so its pong goes within
+seconds whatever it's sending.
+
 The relay counts a device as there while it answers its pings or sends anything: a phone sending a
 picture on a slow connection has its pong behind it, later than the relay's next ping (#144).
 **Deploy order:** that relay goes out with or before the phone build that sends messages again.
@@ -3525,6 +3531,9 @@ gone (it was put on a session, so the computer may have it), though, a computer 
 tried again like a dropped link (the relay or its link started again, and it's still connecting).
 One that never went still says offline at once, as its computer can't have it. A try whose wait
 ends after its two minutes (the app was suspended meanwhile) fails then, rather than going late.
+The desktop app sends one message at a time from each conversation, so it keeps no line per
+computer: each message goes again on its own, with the same waits, and a computer's box that must
+be read again first (its session ended) is read with the same patience.
 
 Stopping a request (the client stops reading, or cancels it) ends it at once: one waiting to go
 again never goes. The phone's Stop waits up to 3 s for messages still on their way, then takes back

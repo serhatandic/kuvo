@@ -338,6 +338,8 @@ impl BoxClient {
     /// waits to go, then stops the run, taking with it `on_their_way`, messages this client sent
     /// that may not have reached it yet (`queue.stop.arriving`): none waits here for them.
     pub fn stop_session(&self, session: &str, on_their_way: &[String]) -> Result<()> {
+        // (Those waiting to be sent again that never got there don't go after it.)
+        self.transport().take_back(on_their_way);
         let response = self.send(&Request::post(format!("kuvo/sessions/{}/stop", paths::segment(session)), json!({ "items": on_their_way })))?;
         if response.is_success() { Ok(()) } else { Err(Error::Refused(Refusal::from_answer(response.status, &response.body))) }
     }

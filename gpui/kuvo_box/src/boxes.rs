@@ -245,6 +245,10 @@ impl Transport for Via {
     fn describe(&self) -> String {
         self.inner.describe()
     }
+
+    fn take_back(&self, keys: &[String]) {
+        self.inner.take_back(keys)
+    }
 }
 
 /// Why this app cannot pair when its key could not be kept.
