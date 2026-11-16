@@ -140,6 +140,8 @@ pub struct AreaView {
     followed_meanwhile: Option<BotsSaid>,
 }
 
+pub struct QueueDelivered(pub Option<QueueSaid>);
+impl EventEmitter<QueueDelivered> for AreaView {}
 impl EventEmitter<Picked> for AreaView {}
 impl EventEmitter<Go> for AreaView {}
 
@@ -569,6 +571,7 @@ impl AreaView {
                 }
             }
             Read::Queue(queue) => {
+                cx.emit(QueueDelivered(queue.as_ref().as_ref().ok().cloned()));
                 self.queue = reading(*queue, &self.queue);
                 // The same reading, handed to the page.
                 if let Some(page) = &self.queue_page {

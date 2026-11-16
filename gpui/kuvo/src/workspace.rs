@@ -310,6 +310,8 @@ pub struct Workspace {
     /// where its box streams, else read again as its session list changes.
     waiting: Waiting,
     queue_badge_open_pending: bool,
+    queue_waiting: Option<usize>,
+    queue_badge_loaded: bool,
     queue_badge_items: Vec<kuvo_box::work_queue::Item>,
     queue_badge_task: Option<Task<()>>,
     waiting_task: Option<Task<()>>,
@@ -374,6 +376,14 @@ impl Workspace {
         let permissions = cx.new(|cx| crate::permissions::HeadsUp::new(client.clone(), live, window, cx));
         let areas = areas::views(&client, live, cx);
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
+        for (_, view) in &areas {
+            area_subscriptions.push(cx.subscribe(view, |this: &mut Workspace, _, said: &areas::QueueDelivered, cx| {
+                match &said.0 {
+                    Some(said) => this.take_queue_badge(said.clone(), cx),
+                    None => { this.queue_badge_open_pending = false; cx.notify(); }
+                }
+            }));
+        }
         if let Some(view) = areas.iter().find(|(area, _)| *area == Area::Queue).map(|(_, view)| view) {
             area_subscriptions.push(cx.observe(view, |_, _, cx| cx.notify()));
         }
@@ -464,6 +474,8 @@ impl Workspace {
             chat_open: None,
             waiting: Waiting::default(),
             queue_badge_open_pending: false,
+            queue_waiting: None,
+            queue_badge_loaded: false,
             queue_badge_items: Vec::new(),
             queue_badge_task: None,
             waiting_task: None,
@@ -1986,10 +1998,10 @@ impl Workspace {
         let at = crate::yours::queue_watermark(&self.queue_badge_items);
         crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
         self.queue_badge_open_pending = true;
-        self.read_queue_badge(cx);
     }
 
     fn take_queue_badge(&mut self, said: kuvo_box::work_queue::QueueSaid, cx: &mut Context<Self>) {
+        self.queue_badge_loaded = true;
         self.queue_badge_items = said.items;
         if self.queue_badge_open_pending {
             self.queue_badge_open_pending = false;
@@ -2000,6 +2012,8 @@ impl Workspace {
     }
 
     pub fn queue_badge(&self, cx: &App) -> usize {
+        if self.queue_badge_open_pending { return 0; }
+        if !self.queue_badge_loaded { return self.queue_waiting.unwrap_or(0); }
         let yours = crate::yours::now(cx);
         let opened = yours.queue_last_opened.get(&self.queue_computer()).copied();
         crate::yours::queue_badge(&self.queue_badge_items, opened)
@@ -2063,7 +2077,10 @@ impl Workspace {
             self.show_area(area, window, cx);
             return;
         }
-        if area == Area::Queue { self.queue_opened(cx); }
+        if area == Area::Queue {
+            let at = crate::yours::queue_watermark(&self.queue_badge_items);
+            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+        }
         self.toggle_sidebar(window, cx);
     }
 
@@ -2168,7 +2185,14 @@ impl Workspace {
     }
 
     fn take_waiting(&mut self, read: kuvo_box::Result<Waiting>, cx: &mut Context<Self>) {
-        if read.is_ok() { self.read_queue_badge(cx); }
+        if let Ok(waiting) = &read {
+            // Waiting has counts, not item stamps. The first delivery is a baseline;
+            // only a changed queue count warrants an off-screen read for new items.
+            let previous = self.queue_waiting.replace(waiting.queue);
+            if previous.is_some_and(|count| count != waiting.queue) {
+                self.read_queue_badge(cx);
+            }
+        }
         // Couldn't be read now: what was said stands until it can.
         if let Ok(waiting) = read
             && self.waiting != waiting
