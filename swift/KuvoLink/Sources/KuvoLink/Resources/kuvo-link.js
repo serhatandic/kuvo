@@ -45780,7 +45780,7 @@ async function learnCompatibility(engine, file = COMPATIBILITY_FILE, layerFile =
     writePrivate(file, text);
   return applyCompatibility(layer, layerFile) || before !== text;
 }
-function engineConfigContent(content) {
+function engineConfigContent(content, tools) {
   let given = {};
   if (content?.trim()) {
     try {
@@ -45792,7 +45792,24 @@ function engineConfigContent(content) {
   if (!isObject(given))
     return JSON.stringify(given);
   const instructions = Array.isArray(given.instructions) ? given.instructions : [];
-  return JSON.stringify({ ...given, instructions: [...new Set([...instructions, SANDBOX_NOTE])] });
+  const config = { ...given, instructions: [...new Set([...instructions, SANDBOX_NOTE])] };
+  return JSON.stringify(tools ? withOwnTools(config, tools.runtime, tools.home ?? K) : config);
+}
+var OWN_TOOLS_SERVER = "kuvo-browser";
+var OWN_TOOLS_TIMEOUT = 960000;
+function withOwnTools(config, runtime, home) {
+  const mcp = isObject(config.mcp) ? config.mcp : {};
+  const servers = isObject(mcp.servers) ? mcp.servers : {};
+  if (servers[OWN_TOOLS_SERVER] !== undefined)
+    return config;
+  const server = {
+    type: "local",
+    command: [runtime, "--config=/dev/null", "--no-env-file", path146.join(home, "bin", "kuvo-browser.js"), "mcp"],
+    environment: { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: home },
+    codemode: false,
+    timeout: { execution: OWN_TOOLS_TIMEOUT }
+  };
+  return { ...config, mcp: { ...mcp, servers: { ...servers, [OWN_TOOLS_SERVER]: server } } };
 }
 
 // box/src/link/engine/defaults.ts
@@ -51772,7 +51789,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "55c348774c91";
+var BRIDGE_VERSION = "1cc32fa25acd";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -66340,7 +66357,7 @@ if (main) {
         applyCompatibility();
       } catch {}
     }
-    process.stdout.write(engineConfigContent(process.env.OPENCODE_CONFIG_CONTENT));
+    process.stdout.write(engineConfigContent(process.env.OPENCODE_CONFIG_CONTENT, argument === "tools" ? { runtime: process.execPath } : undefined));
   } else if (mode === "login-path") {
     const found = await loginPath();
     if (found)

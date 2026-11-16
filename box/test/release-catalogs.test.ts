@@ -82,8 +82,9 @@ test("a release's files are what the Swift Mac app last wrote, byte for byte, wh
     // (A file changed on purpose in box/src: take its line out of fixtures/release/swift-made.json,
     // and `bin/.kuvo-boot`'s with a keeper file's. The fixture goes when #713 is done.)
     expect(written).toEqual(made.files)
-    // And nothing a release didn't have then, but what's built or named for the version.
-    expect([...files.keys()].filter(path => !(path in made.files))).toEqual(["bin/box-version", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-link.js"])
+    // And nothing a release didn't have then, but what's built or named for the version, and what's
+    // been changed on purpose since (kuvo-launch: its engine given Kuvo Code's own tools).
+    expect([...files.keys()].filter(path => !(path in made.files))).toEqual(["bin/.kuvo-boot", "bin/box-version", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-launch", "bin/kuvo-link.js"])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
