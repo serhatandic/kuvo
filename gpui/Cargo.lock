@@ -2748,6 +2748,7 @@ dependencies = [
  "base64",
  "getrandom 0.3.4",
  "hmac",
+ "image",
  "kuvo_box",
  "libc",
  "percent-encoding",

@@ -13,6 +13,8 @@ async-channel = "2.5"
 base64 = "0.22"
 getrandom = "0.3"
 hmac = "0.12"
+# Pictures made smaller before they go to another computer, as the phone makes them (`parts::carried`).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "gif", "webp"] }
 percent-encoding = "2.3"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }

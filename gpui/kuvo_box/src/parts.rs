@@ -146,8 +146,8 @@ pub const CARRIED_MESSAGE_MOST: u64 = 100 * 1024 * 1024;
 /// The files attached to a message, as its box takes them. `here`: the box is on this computer,
 /// which opens them where they are (`File::at`), but for those the client keeps only a while
 /// (`passing`: a pasted picture), which go as another computer's do. Another computer can't open
-/// them, so each goes with its bytes (`data:`, as a phone sends them), and its box keeps it there
-/// and notes where. One that can't be read, or is too large to send, is said, by name, in plain
+/// them, so each goes with its bytes (`data:`, as a phone sends them; a big picture made smaller as
+/// the phone makes it, `smaller_picture`), and its box keeps it there and notes where. One that can't be read, or is too large to send, is said, by name, in plain
 /// words: the message doesn't go without it.
 pub fn carried(paths: &[std::path::PathBuf], here: bool, passing: &dyn Fn(&std::path::Path) -> bool) -> Result<Vec<File>, String> {
     use base64::Engine as _;
@@ -168,10 +168,51 @@ pub fn carried(paths: &[std::path::PathBuf], here: bool, passing: &dyn Fn(&std::
             return Err("These files together are over 100 MB, more than can go to another computer with one message.".into());
         }
         let bytes = std::fs::read(path).map_err(|_| format!("“{name}” couldn’t be read."))?;
-        let mime = mime_of(path);
+        let (bytes, mime, name) = match smaller_picture(&bytes, mime_of(path)) {
+            Some(smaller) => (smaller, "image/jpeg", jpeg_name(&name)),
+            None => (bytes, mime_of(path), name),
+        };
         files.push(File { uri: format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)), name: Some(name) });
     }
     Ok(files)
+}
+
+/// A picture over this many bytes goes smaller (the phone's `Attachment.keptAsIs`).
+pub const PICTURE_KEPT_MOST: usize = 4 * 1024 * 1024;
+/// A picture made smaller is at most this many pixels on its longest side, a JPEG of this quality
+/// (the phone's `maxSide` and its 0.85).
+pub const PICTURE_SIDE_MOST: u32 = 2048;
+const PICTURE_QUALITY: u8 = 85;
+
+/// A picture as it goes to another computer, as the phone sends one: a PNG or JPEG of 4 MB or less
+/// as it is (none here); anything bigger, or of another kind, a JPEG at most 2048 px on its longest
+/// side. A Retina screenshot (5 MB as a PNG) goes as a few hundred KB. None for what isn't a
+/// picture this can read (it goes as it is).
+pub fn smaller_picture(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
+    let format = match mime {
+        "image/png" => image::ImageFormat::Png,
+        "image/jpeg" => image::ImageFormat::Jpeg,
+        "image/gif" => image::ImageFormat::Gif,
+        "image/webp" => image::ImageFormat::WebP,
+        "image/tiff" => image::ImageFormat::Tiff,
+        "image/bmp" => image::ImageFormat::Bmp,
+        _ => return None,
+    };
+    // (A GIF may move: it goes as it is, as long as it isn't too big to send.)
+    if bytes.len() <= PICTURE_KEPT_MOST && matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP) {
+        return None;
+    }
+    let picture = image::load_from_memory_with_format(bytes, format).ok()?;
+    let picture = if picture.width().max(picture.height()) > PICTURE_SIDE_MOST { picture.resize(PICTURE_SIDE_MOST, PICTURE_SIDE_MOST, image::imageops::FilterType::Triangle) } else { picture };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, PICTURE_QUALITY).encode_image(&picture.to_rgb8()).ok()?;
+    Some(out)
+}
+
+/// `name` as a JPEG's: its extension `.jpg`.
+fn jpeg_name(name: &str) -> String {
+    let stem = std::path::Path::new(name).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_owned());
+    format!("{stem}.jpg")
 }
 
 /// A file's type, by its extension, as a message carries it (words as `text/plain`, which the
