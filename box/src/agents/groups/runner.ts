@@ -74,6 +74,9 @@ export interface RunnerContext {
   place?: string
   /** The key a bot's own conversation remembers these chats under (`memoryKey` unless given). */
   memoryKey?: string
+  /** A key the bots here remembered these chats under before (a Mac's own box's, `kuvo.groups.machine`,
+   * before it took the Mac's own key): taken away the first time each bot is remembered. */
+  formerMemoryKey?: string
   /** A coding agent's account, by its provider: its name, and whether it needs a sign-in it hasn't got. */
   agentAccount?: (provider: string) => Promise<{ name: string; signedOut: boolean } | undefined>
   /** Your other computers and their bots, which take their turns in chats here on their own computer. */
@@ -179,6 +182,9 @@ export class GroupRunner {
   get peers(): PeerDirectory | undefined {
     return this.context.peers
   }
+
+  /** The bots' conversations whose memory under the former key is gone (`formerMemoryKey`). */
+  private formerKeyGone = new Set<string>()
 
   private get memoryKey(): string {
     return this.context.memoryKey ?? memoryKey
@@ -1421,6 +1427,13 @@ export class GroupRunner {
     if (!bot) return
     const api = this.ownAPI(bot)
     if (!api) return
+    // (A Mac's own box's bots' memory under the machine's key, from before it took the Mac's own:
+    // only boxes made before #763, none released. Goes with formerGroupsMemoryKey.)
+    const former = this.context.formerMemoryKey
+    if (former && former !== this.memoryKey && !this.formerKeyGone.has(bot.sessionID)) {
+      this.formerKeyGone.add(bot.sessionID)
+      await api.removeInstruction(bot.sessionID, former).catch(() => {})
+    }
     const folder = bot.folder + "/groups"
     if (options.forgetting) this.context.store.removeFile(`${folder}/${options.forgetting}.md`)
     const chats = [...this.chats.values()]

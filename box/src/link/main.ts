@@ -25,7 +25,8 @@ import { fileURLToPath } from "node:url";
 import { plainName } from "../shared/text";
 import { sleep } from "../shared/wait";
 import { HangWatch, isBridge as runsBridge } from "../shared/hang";
-import { joinPath, loginPath, saveLoginPath, savedLoginPath } from "../shared/platform";
+import { joinPath, loginEnvironment, loginPath, saveLoginPath, savedLoginPath } from "../shared/platform";
+import { launchFromLogin } from "./run-command";
 import { watchAsks } from "./areas/asks";
 import { watchWorkAsks } from "./work/asks";
 import { watchGoals } from "./work/goals";
@@ -1167,6 +1168,14 @@ if (main) {
     const found = await loginPath();
     if (found) saveLoginPath(K, found);
     process.stdout.write(found ?? "");
+  }
+  // A Mac's own box's start (`kuvo-launch`): your login shell's whole environment, its PATH kept as
+  // `login-path` keeps it, for the engine and what it starts (launchd gives Kuvo Helper, and so the
+  // box, a bare one). Nothing when the shell doesn't give it, for the start to read its PATH alone.
+  else if (mode === "login-env") {
+    const found = await loginEnvironment();
+    if (found?.PATH) saveLoginPath(K, found.PATH);
+    process.stdout.write(found?.PATH ? launchFromLogin(found) : "");
   }
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or

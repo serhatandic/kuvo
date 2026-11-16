@@ -46,3 +46,30 @@ test("a Mac's box in a home of its own keeps your default accounts where they ar
   // And as its app starts it in its folder.
   expect(homes({ AGENTS: join(base, "app", "agents") })).toEqual({ claude: "yours", codex: "yours", grok: "yours", added: "<bridge>/claude/accounts/<id>" })
 })
+
+// A bot moved from an earlier Kuvo Code remembers this Mac's group chats in its own conversation
+// under the key the Mac's app always used (`kuvo.groups`). Its box's bridge, started as a machine's
+// in its home of its own, keeps them under that same key: another would leave the moved one there
+// as it was, beside the new (the runner writes and removes only its own key: groups-runner.test.ts).
+test("a Mac's box in a home of its own remembers its group chats under the Mac's key; a machine's, under its own", () => {
+  const machine = join(base, "machine-groups", ".kuvo-code"), mac = join(base, "mac-groups", ".kuvo-code")
+  mkdirSync(join(mac, "box"), { recursive: true })
+  writeFileSync(join(mac, "box", "kind"), "mac\n")
+  mkdirSync(machine, { recursive: true })
+  const script = join(base, "memory-key.ts")
+  writeFileSync(script, [
+    `import { groupsMemoryKey } from ${JSON.stringify(join(import.meta.dir, "../../src/agents/machine"))}`,
+    `import { memoryKey } from ${JSON.stringify(join(import.meta.dir, "../../src/agents/groups/runner"))}`,
+    "process.stdout.write(groupsMemoryKey ?? memoryKey)",
+  ].join("\n"))
+  const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("KUVO_"))) as Record<string, string>
+  const key = (env: Record<string, string>) => {
+    const ran = Bun.spawnSync([process.execPath, script], { cwd: base, env: { ...clean, ...env }, stderr: "pipe" })
+    expect(ran.stderr.toString()).toBe("")
+    return ran.stdout.toString()
+  }
+  expect(key({ KUVO_AGENTS_REMOTE: "1", KUVO_HOME: mac })).toBe("kuvo.groups")
+  expect(key({ KUVO_AGENTS_REMOTE: "1", KUVO_HOME: machine })).toBe("kuvo.groups.machine")
+  // As the retired app started it in its folder, naming it.
+  expect(key({ KUVO_GROUPS_MEMORY_KEY: "kuvo.groups" })).toBe("kuvo.groups")
+})

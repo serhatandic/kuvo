@@ -52,6 +52,30 @@ integrationScenarios({ link, home: box, mac: true, store: {
   keep: (name, value) => host.keys.set(name, value),
 } });
 
+// Its engine is kept by its keeper (`kuvo-start keep`, under Kuvo Helper), as a machine's is: while
+// it keeps stopping, the keeper notes its next start (`run/engine.retry`), and a client hears when
+// that is, rather than that it's starting, for as long as it keeps failing. (The retired app, which
+// kept the engine of the box in its folder, wrote why it gave up instead: no keeper of this box does.)
+test("this Mac's engine stopping again and again: a client hears when it's started again; starting, that it's starting", async () => {
+  const ask = async () => {
+    const parts = [];
+    for await (const part of link.engineHandler(() => { throw new Error("no record"); })({ method: "GET", path: "api/session", headers: {}, body: Buffer.alloc(0) }, {}, undefined)) parts.push(part);
+    return { status: parts[0].head.status, json: JSON.parse(Buffer.concat(parts.filter(part => part.body).map(part => part.body)).toString()) };
+  };
+  const starting = { status: 503, json: { message: "This Mac's engine is starting. Try again in a moment." } };
+  assert.deepEqual(await ask(), starting);
+  const retry = path.join(box, "run", "engine.retry");
+  fs.mkdirSync(path.dirname(retry), { recursive: true });
+  try {
+    fs.writeFileSync(retry, `${Math.floor(Date.now() / 1000) + 300}\n`);
+    assert.deepEqual((await ask()).json, { message: "This Mac's engine keeps stopping. It's started again in about 5 minutes." });
+    fs.writeFileSync(retry, `${Math.floor(Date.now() / 1000) + 5}\n`);
+    assert.deepEqual(await ask(), starting);
+  } finally {
+    fs.rmSync(retry, { force: true });
+  }
+});
+
 const fileOf = name => path.join(keys, name);
 const read = file => { try { return fs.readFileSync(file, "utf8"); } catch { return null; } };
 

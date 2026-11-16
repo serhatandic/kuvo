@@ -19,7 +19,7 @@ import { cut, oneLine } from "../../shared/text";
 import { IS_MAC } from "../home";
 import { askBook } from "../notices/asking";
 import type { Notice } from "../notices/notice";
-import { commandEnv, runCommand } from "../run-command";
+import { askedEnv, runCommand } from "../run-command";
 import type { Caller } from "../vault/who";
 import { markedFullAccess } from "../work/full";
 import { findConversation, heldUnreached, inAuto, inFullAccess, refusalWords, reviewIn } from "../work/reviewing";
@@ -324,9 +324,11 @@ function stillOff(agents: boolean): string | null {
 }
 
 /** `command` run outside the sandbox in `folder`, for at most `seconds`: its output, cut to the
- * end where it's long. */
+ * end where it's long. With your login shell's environment on a Mac, as what you ask for yourself
+ * (`askedEnv`): what you export there (a key, a proxy, an SSH agent's socket) counts, as it does for
+ * the engine's commands and did in Kuvo Code 0.7, whose app started the box with it. */
 async function runOutside(command: string, folder: string, seconds: number, signal?: AbortSignal) {
-  const { output, code, timedOut } = await runCommand(command, folder, commandEnv(), seconds * 1000, signal);
+  const { output, code, timedOut } = await runCommand(command, folder, await askedEnv(), seconds * 1000, signal);
   const shown = output.length > MOST_OUTPUT ? "…" + output.slice(-MOST_OUTPUT).replace(/^[^\n]*\n/, "") : output;
   return { shown, code, timedOut };
 }

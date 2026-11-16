@@ -13,6 +13,7 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
 import type { RehomeStatus, RehomeStep } from "../../shared/routes/box";
+import { RELEASE_FILES } from "../add/files";
 import { readAsks } from "../areas/asks";
 import { listOf, writePrivate } from "../files";
 import { IN_TEST_FOLDER, accountHome, homeFolder, located, recordedKind } from "../home";
@@ -57,10 +58,12 @@ export const DESKTOP = "desktop";
 /** The box's release must bring its helper, which starts it in its home at login (#333 piece 4): a
  * box moved or made there without it would start with nothing. */
 const RELEASE_HELPER = path.join("bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
+/** The engine's plugin, one of a release's files outside `bin`, which every box has in place. */
+const ENGINE_PLUGIN = path.join("config", "opencode", "plugins", "kuvo-code.js");
 /** Why a release folder can't be a box's files in its home, or null. */
 export function releaseRefusal(release: string | null): string | null {
   const fileAt = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
-  if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js"))) return "Kuvo's own files to put in its new home weren't given.";
+  if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js")) || !fileAt(path.join(release, ENGINE_PLUGIN))) return "Kuvo's own files to put in its new home weren't given.";
   if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home.";
   return null;
 }
@@ -894,6 +897,17 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
     fs.rmSync(`${bin}.new`, { recursive: true, force: true });
     clone(path.join(release!, "bin"), `${bin}.new`, true);
     fs.renameSync(`${bin}.new`, bin);
+    // And its files outside `bin`, as every box has them: the engine's plugin, which gives the
+    // commands agents run your own folders back (0.7's app wrote it at each start; a machine's add,
+    // the move and an update put it in place, so a new Mac's must too).
+    for (const [name, mode] of RELEASE_FILES) {
+      if (name.startsWith("bin/")) continue;
+      const to = path.join(home, name);
+      fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 });
+      fs.copyFileSync(path.join(release!, name), `${to}.new`);
+      fs.chmodSync(`${to}.new`, mode);
+      fs.renameSync(`${to}.new`, to);
+    }
     // The engine: cloned (moments, almost no room), copied where the disk can't clone.
     const engine = path.join(home, "engine");
     fs.rmSync(`${engine}.new`, { recursive: true, force: true });

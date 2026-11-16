@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { askedEnv, forgetLoginEnv, loginEnvRead } from "../src/link/run-command"
+import { askedEnv, forgetLoginEnv, launchFromLogin, loginEnvRead } from "../src/link/run-command"
 
 // What you ask git for yourself (Commit, Push, Merge into…) runs with your login shell's
 // environment as it is now on a Mac, read again once it's a minute old, never waiting long for a
@@ -65,4 +65,19 @@ test("on Linux, without a home, or in a test's box told not to: the environment 
   expect((await askedEnv({ ...from, HOME: undefined }, "darwin", Date.now(), 30_000)).GPG_TTY).toBeUndefined()
   expect((await askedEnv({ ...from, KUVO_TEST_LOGIN_ENV: "off" }, "darwin", Date.now(), 30_000)).GPG_TTY).toBeUndefined()
   expect((await askedEnv(from, "linux", Date.now(), 30_000)).BUN_BE_BUN).toBeUndefined()
+})
+
+// A Mac's own box's engine starts with your login shell's environment (`kuvo-link.js login-env`,
+// which `kuvo-launch` reads a line at a time and exports), as Kuvo Code 0.7's app gave its engine:
+// what you export, and your own Bun's folder for the commands agents run, but never the box's own
+// variables, nor what runs before a program's code, nor a value a line can't hold.
+test("the engine's start takes what your login shell exports, never the box's own or what runs before a program", () => {
+  const lines = launchFromLogin({
+    PATH: "/opt/homebrew/bin:/usr/bin", JAVA_HOME: "/opt/java", ANTHROPIC_API_KEY: "sk-1", HTTPS_PROXY: "http://proxy:8080", BUN_INSTALL: "/Users/me/.bun",
+    KUVO_HOME: "/elsewhere", OPENCODE_CONFIG: "/x.json", BUN_BE_BUN: "1", DYLD_INSERT_LIBRARIES: "/evil.dylib", NODE_OPTIONS: "--require /evil.js", PWD: "/tmp", SHLVL: "2", _: "/usr/bin/env",
+    MULTI: "one\ntwo", "NOT-A-NAME": "x",
+    // A shell's own (read-only ones stop a start that exports them), and the home it names its folders from.
+    SHELLOPTS: "braceexpand", UID: "501", IFS: ":", ENV: "/x", BASH_ENV: "/x", HOME: "/elsewhere",
+  }).split("\n").filter(Boolean)
+  expect(lines.sort()).toEqual(["ANTHROPIC_API_KEY=sk-1", "BUN_INSTALL=/Users/me/.bun", "HTTPS_PROXY=http://proxy:8080", "JAVA_HOME=/opt/java", "PATH=/opt/homebrew/bin:/usr/bin"])
 })

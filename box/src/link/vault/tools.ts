@@ -17,7 +17,7 @@ import { LEFT_UNDONE_WORDS } from "../work/autopilot";
 import { type Caller, grantFor, untilOnAutopilot } from "./who";
 import { allowOnce, AUTOPILOT_HOW, alwaysFor, mayUse, noteUse } from "./use";
 import { note } from "./activity";
-import { commandEnv, runCommand } from "../run-command";
+import { askedEnv, runCommand } from "../run-command";
 
 /** What a tool answers: words for the agent, and whether it failed. */
 export interface ToolAnswer {
@@ -190,7 +190,8 @@ async function runWith(caller: Caller, args: Record<string, unknown>, signal?: A
     allowed.set(item.id, may.how);
   }
   const scratch = path.join(RUN_FOLDER, crypto.randomBytes(8).toString("hex"));
-  const env = commandEnv();
+  // (With your login shell's environment on a Mac, as the engine's commands have it: `askedEnv`.)
+  const env = await askedEnv();
   const hidden: Hidden[] = [];
   try {
     fs.mkdirSync(scratch, { recursive: true, mode: 0o700 });

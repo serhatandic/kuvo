@@ -194,6 +194,14 @@ private final class InTheTests {}
         return false
     }
 
+    /// What the keeper and `serve` start with, from what launchd gives Kuvo Helper: a shell's few and
+    /// the SSH agent's socket macOS runs for you, nothing else of its own.
+    @Test func itsChildrenGetAShellsFewAndTheSSHAgentsSocket() {
+        let given = BoxHelper.childEnvironment(["HOME": "/Users/me", "PATH": "/usr/bin", "SHELL": "/bin/zsh", "SSH_AUTH_SOCK": "/private/tmp/launchd/Listeners", "XPC_SERVICE_NAME": "run.kuvo.code.machine", "DYLD_INSERT_LIBRARIES": "/x"])
+        #expect(given == ["HOME": "/Users/me", "PATH": "/usr/bin", "SHELL": "/bin/zsh", "SSH_AUTH_SOCK": "/private/tmp/launchd/Listeners"])
+        #expect(BoxHelper.childEnvironment([:]) == ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"])
+    }
+
     @Test func theAppsItemsAreCopiedForTheHelperAloneAndTheOriginalsStay() throws {
         defer { cleanUp() }
         addOriginals()

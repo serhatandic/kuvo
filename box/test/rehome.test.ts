@@ -204,6 +204,7 @@ function world(given: (w: World) => void = () => {}, { appFolder = "App Support"
   put(join(w.release, "bin", "kuvo-start"), "#!/bin/sh\n")
   put(join(w.release, "bin", "kuvo-link.js"), "// the link")
   put(join(w.release, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "the helper")
+  put(join(w.release, "config", "opencode", "plugins", "kuvo-code.js"), "// the engine's plugin")
   given(w)
   return w
 }
@@ -504,6 +505,7 @@ function newMac(given: (w: World) => void = () => {}): World {
   put(join(w.release, "bin", "kuvo-start"), "#!/bin/sh\n")
   put(join(w.release, "bin", "kuvo-link.js"), "// the link")
   put(join(w.release, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "the helper")
+  put(join(w.release, "config", "opencode", "plugins", "kuvo-code.js"), "// the engine's plugin")
   given(w)
   return w
 }
@@ -523,6 +525,8 @@ test.if(mac)("a new Mac's box is made in its home of its own from the start, wit
   expect(readFileSync(join(w.K, "box", "kind"), "utf8")).toBe("mac\n")
   expect(readFileSync(join(w.K, "bin", "kuvo-start"), "utf8")).toBe("#!/bin/sh\n")
   expect(readFileSync(join(w.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper"), "utf8")).toBe("the helper")
+  // And the engine's plugin, which gives the commands agents run your own folders back.
+  expect(readFileSync(join(w.K, "config", "opencode", "plugins", "kuvo-code.js"), "utf8")).toBe("// the engine's plugin")
   expect(existsSync(join(w.K, "engine", "2.2.6", "opencode"))).toBe(true)
   expect(JSON.parse(readFileSync(join(w.K, "box", "work.json"), "utf8"))).toMatchObject({ keepsAwake: false })
   const [aside] = readdirSync(join(w.K, "trash")).filter(name => name.startsWith("earlier-box-"))

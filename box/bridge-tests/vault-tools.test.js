@@ -32,7 +32,11 @@ const write = (file, text) => {
 const tool = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url));
 const script = path.join(home, "bin", "kuvo-link.js");
 write(script, fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)));
-const env = { ...process.env, KUVO_HOME: home, HOME: home, KUVO_VAULT_AGENTS: "1" };
+// Your login shell, in this home, and what it exports: on a Mac a command run with values from the
+// vault has it, as the engine's commands do (and did in Kuvo Code 0.7, whose app started the box with
+// your login shell's environment).
+for (const file of [".zprofile", ".bash_profile", ".profile"]) write(path.join(home, file), "export KUVO763_FROM_LOGIN=yours\n");
+const env = { ...process.env, KUVO_HOME: home, HOME: home, KUVO_VAULT_AGENTS: "1", SHELL: process.platform === "darwin" ? "/bin/zsh" : "/bin/sh" };
 for (const name of ["KUVO_HOST_URL", "KUVO_HOST_PASSWORD", "KUVO_KEYS", "KUVO_KEYS_ON_HOST", "KUVO_BOX"]) delete env[name];
 
 const TOKEN = "glpat-very-secret-token-0001";
@@ -143,9 +147,10 @@ test("its bot uses what it's granted, through its box, and never sees a value", 
   assert.match(before.content[0].text, /You may use nothing in the vault yet/);
   assert.equal((await client("POST", "kuvo/vault/grants", { item: added.value.item.id, who: { bot: "bot_ship" }, how: "own" })).status, 200);
   assert.match((await call("vault_items", {})).content[0].text, /“GitLab token”: a key on gitlab\.com; yours to use/);
-  const ran = await call("vault_run", { command: "echo \"using $T\"", variables: { T: "GitLab token" }, why: "To list the merge requests." });
+  const ran = await call("vault_run", { command: "echo \"using $T, ${KUVO763_FROM_LOGIN-not from your login}\"", variables: { T: "GitLab token" }, why: "To list the merge requests." });
   assert.equal(ran.isError, false, ran.content[0].text);
   assert.match(ran.content[0].text, /using \[vault: GitLab token\]/);
+  assert.match(ran.content[0].text, process.platform === "darwin" ? /, yours/ : /, not from your login/);
   assert.ok(!JSON.stringify(ran).includes(TOKEN));
   const activity = (await client("GET", "kuvo/vault/activity")).value.entries;
   assert.ok(activity.some(entry => entry.what === "used" && entry.botName === "Ship" && entry.program === "echo"));

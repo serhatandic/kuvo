@@ -26,6 +26,17 @@ export const onMacBox = onMachine && !!machineHome && (() => {
  * they keep them for you: on a Mac, whichever way its box runs. On a machine, in Kuvo Code's folder. */
 export const yourHomes = !onMachine || onMacBox
 
+/** The key a bot's own conversation remembers the group chats here under: on a Mac, the one its app
+ * always used (`kuvo.groups`), whichever way its box runs, which a bot moved from an earlier Kuvo
+ * Code remembers them under already (another key would leave that one as it was, beside the new);
+ * on a machine, its own (the runner's). The retired app named it (KUVO_GROUPS_MEMORY_KEY). */
+export const groupsMemoryKey: string | undefined = process.env.KUVO_GROUPS_MEMORY_KEY || (onMacBox ? "kuvo.groups" : undefined)
+// (Only Mac boxes made before #763 have it, none released: goes once the dogfood and trial copies
+// have run this bridge.)
+/** The key a Mac's own box's bots remembered its chats under before it took the Mac's (the
+ * machine's, since #713), which its bridge takes away from each: one copy, never two. */
+export const formerGroupsMemoryKey: string | undefined = onMacBox ? "kuvo.groups.machine" : undefined
+
 /**
  * The machine's own folders (XDG_…, npm's cache, Bun's), as they were before its engine's launch
  * pointed them into Kuvo Code's folder (`KUVO_OWN_…`; undefined: not set). The agents keep theirs

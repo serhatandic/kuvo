@@ -358,9 +358,12 @@ public final class BoxHelper {
         return String(named) == home.lastPathComponent
     }
 
-    /// What its children start with: a shell's few, from its own (launchd's, or a test's).
+    /// What its children start with: a shell's few, from its own (launchd's, or a test's), and the
+    /// socket of the SSH agent macOS runs for you (launchd's `SSH_AUTH_SOCK`), which Kuvo Code
+    /// 0.7's app had and handed on: `git push` over SSH and adding a computer from this Mac use the
+    /// keys you added to it, as in your Terminal.
     nonisolated static func childEnvironment(_ own: [String: String]) -> [String: String] {
-        var environment = own.filter { ["HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "PATH"].contains($0.key) }
+        var environment = own.filter { ["HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "PATH", "SSH_AUTH_SOCK"].contains($0.key) }
         if environment["PATH"]?.isEmpty ?? true { environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin" }
         return environment
     }

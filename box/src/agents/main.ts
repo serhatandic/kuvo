@@ -27,7 +27,7 @@ import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { VoiceWords } from "./voice"
 import { setToolProgram } from "./kuvotools"
-import { dropCarriedSignIns, dropOwnPrograms, machineHome, onMachine, takeOwnFolders } from "./machine"
+import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
 import { cancelSignIns, handler, signInsWaiting } from "./server"
@@ -208,7 +208,7 @@ const groupFolders = onMachine
   : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH
     ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH }
     : undefined
-const groupMemoryKey = process.env.KUVO_GROUPS_MEMORY_KEY || undefined
+const groupMemoryKey = groupsMemoryKey
 // What this bridge tells your other computers (its group chats' mail, its plan limits), through the
 // box's link, and who they are, as the link says.
 const post = new PeerPost(groupFolders ? join(groupFolders.root, "peer-outbox.json") : undefined)
@@ -240,6 +240,7 @@ if (groupFolders) {
       listen: (session, listener) => link.listen(session, listener),
       place: onMachine ? "this machine" : undefined,
       memoryKey: groupMemoryKey,
+      formerMemoryKey: formerGroupsMemoryKey,
       // A coding agent's own account, as Settings › Accounts shows it: one with a way to sign in, not signed in.
       agentAccount: async (provider) => {
         const agent = roster.find(provider)

@@ -10557,8 +10557,8 @@ On both, for a paired phone:
 
 A machine keeps itself running: its keeper (`bin/kuvo-start keep`, `run/box.pid`) starts its
 engine again when it ends, unless it was stopped on purpose (`run/stopped`), and keeps the bridge
-running while it has something to answer: a phone paired, a pairing waiting, or peers
-(`run/link.needed`, which the bridge writes). The bridge stays up while the engine is down, and
+running while it has something to answer: a phone paired, a pairing waiting, peers, or a vault,
+which only the bridge holds (`run/link.needed`, which the bridge writes). The bridge stays up while the engine is down, and
 starts the keeper when it isn't running. A Mac quitting or disconnecting leaves all of it running.
 
 **Kept for clients** (`box.serve`, #333 piece 3). While a client wants the box's own server here

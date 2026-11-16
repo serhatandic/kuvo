@@ -800,6 +800,23 @@ describe("a group chat on any computer", () => {
     expect(engine.requests.some((request) => request.path.endsWith("/kuvo.groups.machine"))).toBe(false)
   }, 15_000)
 
+  // A Mac's own box's bots remembered its chats under the machine's key before it took the Mac's
+  // (#763): that copy goes as each is remembered, once, so a bot has one memory of its chats.
+  test("on a Mac's own box, a bot's memory under the key it had before goes, once, as it's remembered under the Mac's", async () => {
+    const { groups } = runner({ memoryKey: "kuvo.groups", formerMemoryKey: "kuvo.groups.machine" })
+    engine.lines = { Ada: ["Hello.", "Again."], Ben: ["Hi.", "PASS"] }
+    groups.put(group(), [], "active", false)
+    groups.send(id, "Say hello.")
+    await until(() => engine.requests.some((request) => request.method === "PUT" && request.path === "/api/experimental/session/ses_own_Ada/instructions/entries/kuvo.groups"))
+    const gone = (session: string) => engine.requests.filter((request) => request.method === "DELETE" && request.path === `/api/experimental/session/${session}/instructions/entries/kuvo.groups.machine`)
+    expect(gone("ses_own_Ada").length).toBe(1)
+    // Remembered again: not asked again.
+    groups.send(id, "And again.")
+    await until(() => engine.requests.filter((request) => request.method === "PUT" && request.path === "/api/experimental/session/ses_own_Ada/instructions/entries/kuvo.groups").length > 1)
+    expect(gone("ses_own_Ada").length).toBe(1)
+    expect(engine.requests.some((request) => request.method === "PUT" && request.path.endsWith("/kuvo.groups.machine"))).toBe(false)
+  }, 15_000)
+
   test("your message while a bot talks reaches it straight away, and isn't told it again at its next turn", async () => {
     const { groups } = runner()
     engine.slow.set("Ada", 800)
