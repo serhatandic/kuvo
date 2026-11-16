@@ -20,7 +20,8 @@ export type InstallVerdict = "fresh" | "ours" | "app-07" | "app-box" | "moving" 
 export type InstallVerb = "new" | "move" | null;
 
 /** What's in the old app's folder that isn't anyone's data: its engine's download and caches, the
- * desktop app's own folder there (window state, `gpui/kuvo`), and its box's folder, judged apart. */
+ * folder early builds of the desktop app kept there (`desktop`; it keeps to `~/.kuvo-code/desktop`
+ * now), and its box's folder, judged apart. */
 const NOT_DATA = new Set(["engine", "box", "desktop", "Caches", "cache", "tmp", "logs", "Logs"]);
 const listOf = (folder: string): string[] => { try { return fs.readdirSync(folder); } catch { return []; } };
 const exists = (file: string): boolean => { try { fs.lstatSync(file); return true; } catch { return false; } };

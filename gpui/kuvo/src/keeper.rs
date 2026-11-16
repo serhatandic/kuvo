@@ -73,14 +73,30 @@ impl Keeper for PrivateFile {
     }
 }
 
-/// The app's own folder for what it keeps as a client, under `home`: beside its box's on a Mac,
-/// in `~/.kuvo-code` elsewhere. Nothing of a box's is in it.
+/// The app's own folder for what it keeps as a client, under `home`: `~/.kuvo-code/desktop` on
+/// every computer. Never in `~/Library/Application Support/<bundle ID>`, which on a Mac is the
+/// earlier Kuvo Code's folder (0.7's), only ever read by the move from it. Nothing of a box's is
+/// in it.
 pub fn folder(home: &std::path::Path) -> PathBuf {
-    folder_of(home, kuvo_box::install::REAL_ROOT, kuvo_box::install::REAL_APP)
+    folder_of(home, kuvo_box::install::REAL_ROOT)
 }
 
-/// The same for a copy of the app (a demo's, a test's): under its own bundle ID on a Mac, in its
-/// own root elsewhere, never the real app's.
-pub fn folder_of(home: &std::path::Path, root: &str, app_id: &str) -> PathBuf {
-    if cfg!(target_os = "macos") { home.join("Library/Application Support").join(app_id).join("desktop") } else { home.join(root).join("desktop") }
+/// The same for a copy of the app (a demo's, a test's): in its own root, never the real app's.
+pub fn folder_of(home: &std::path::Path, root: &str) -> PathBuf {
+    home.join(root).join("desktop")
+}
+
+/// Your computers, as this app follows them: what it keeps of them (`boxes.json`) in its own
+/// folder under `home`, this device's key with `keeper`, `nearest` the box on this computer.
+pub fn boxes(home: &std::path::Path, root: &str, nearest: Option<std::sync::Arc<dyn kuvo_box::transport::Transport>>, keeper: std::sync::Arc<dyn kuvo_box::link::Keeper>, dial: std::sync::Arc<dyn kuvo_box::link::Dial>) -> kuvo_box::boxes::Boxes {
+    kuvo_box::boxes::Boxes::new(kuvo_box::boxes::Options {
+        nearest,
+        keeper,
+        dial,
+        name: kuvo_box::boxes::device_name(),
+        // (The bundle's version where it was built into one: scripts/build-desktop-app.sh.)
+        app: option_env!("KUVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_owned(),
+        kept: Some(folder_of(home, root).join("boxes.json")),
+        timing: Default::default(),
+    })
 }
