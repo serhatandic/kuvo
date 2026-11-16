@@ -347,7 +347,6 @@ impl Launch {
                 let line = if moving { "Still moving your sessions" } else { "Kuvo is still being set up" };
                 self.stop(line.into(), said.unwrap_or_else(|| format!("It’s taking longer than expected on {HERE_IN_WORDS}. It goes on by itself: try again in a while.").into()), None, cx);
             }
-            // (A move that stopped leaves nothing running where no earlier box answers: said.)
             End::Stopped if outcome.ran == Some(Verb::Move) => {
                 // Where it stopped, as the box says (else the step it was last at); and whether
                 // it stopped where it only goes forward from, which trying again finishes.
@@ -357,11 +356,11 @@ impl Launch {
                     moving.finishing = false;
                 }
                 let line = if stuck { "Couldn’t finish moving" } else { "Couldn’t move your sessions" };
-                self.attach(Some(line.into()), said, Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx)
+                self.attach(Some(line.into()), said, None, window, cx)
             }
             End::Stopped => self.attach(Some("Couldn’t set up Kuvo".into()), said, None, window, cx),
-            // (An installer that broke under a move's card: said there, as nothing runs meanwhile.)
-            End::Broken if self.moving.is_some() => self.attach(Some("Couldn’t move your sessions".into()), Some(format!("Kuvo couldn’t go on with the move on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx),
+            // (An installer that broke under a move's card: said there.)
+            End::Broken if self.moving.is_some() => self.attach(Some("Couldn’t move your sessions".into()), Some(format!("Kuvo couldn’t go on with the move on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), None, window, cx),
             End::Broken => self.attach(Some("Couldn’t set up Kuvo".into()), Some(format!("Kuvo couldn’t be set up on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), None, window, cx),
         }
     }
@@ -682,7 +681,7 @@ impl Launch {
                 .items_center()
                 .gap(space::S3)
                 .pt(space::S1)
-                .child(div().debug_selector(|| "launch-note".into()).flex_1().min_w_0().text_ui(TypeSize::Caption).text_color(c.text_faint).children(note.clone()))
+                .child(div().flex_1().min_w_0().children(note.clone().map(|note| div().debug_selector(|| "launch-note".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))))
                 .child(self.try_again(cx)),
             None => div()
                 .flex()
@@ -692,7 +691,7 @@ impl Launch {
                 .text_ui(TypeSize::Caption)
                 .text_color(c.text_faint)
                 .children(starting.clone().map(|_| spinner("launch-starting", IconSize::Nav, c.text_muted)))
-                .child(div().debug_selector(|| "launch-note".into()).child(starting.unwrap_or_else(|| format!("This takes a few minutes. Nothing runs on {HERE_IN_WORDS} until it’s done.").into()))),
+                .child(div().debug_selector(|| "launch-note".into()).child(starting.unwrap_or_else(|| "This takes a few minutes.".into()))),
         };
         card.push(div().id("launch-body").min_h_0().flex().flex_col().overflow_y_scroll().child(self.steps(moving, cx)).into_any_element());
         card.push(foot.into_any_element());
