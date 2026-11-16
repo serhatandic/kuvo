@@ -379,7 +379,7 @@ var init_home = __esm(() => {
   APP_FOLDER = process.env.KUVO_BOX === "mac" ? path4.dirname(path4.resolve(K)) : null;
   OWN_HOME_MAC = IS_MAC && APP_FOLDER === null;
   if (APP_FOLDER && [homeFolder(), accountHome()].some((home) => located(APP_FOLDER) === located(home))) {
-    throw new Error(`This Mac's box was started as the app's (KUVO_BOX=mac) in ${K}, a home of its own: its folder around it is your home, not the app's.`);
+    throw new Error(`Kuvo on this Mac was started as the app's (KUVO_BOX=mac) in ${K}, a home of its own: its folder around it is your home, not the app's.`);
   }
   RUN = path4.join(K, "run");
   LINK_FILE = path4.join(RUN, "link.json");
@@ -421,7 +421,7 @@ var init_home = __esm(() => {
   HERE = IS_MAC ? "this Mac" : "this machine";
   ENGINE_CONFIG = process.env.KUVO_ENGINE_CONFIG || (OWN_HOME_MAC ? path4.join(K, "config") : undefined);
   if (IS_MAC && !ENGINE_CONFIG)
-    throw new Error("This Mac's box was started without KUVO_ENGINE_CONFIG, the folder its engine's settings are in.");
+    throw new Error("Kuvo on this Mac was started without KUVO_ENGINE_CONFIG, the folder its engine's settings are in.");
   LAUNCH_HOST = process.env.KUVO_HOST_URL && process.env.KUVO_HOST_PASSWORD ? { url: process.env.KUVO_HOST_URL.replace(/\/+$/, ""), password: process.env.KUVO_HOST_PASSWORD } : null;
   KEYS_ON_HOST = process.env.KUVO_KEYS_ON_HOST === "1" || Boolean(process.env.KUVO_HOST_URL) || OWN_HOME_MAC;
   delete process.env.KUVO_HOST_PASSWORD;
@@ -535,7 +535,7 @@ async function proveHost(host, signal) {
 }
 async function proveVaultHost(host) {
   if (!HOST_VAULT_SECRET) {
-    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by its running box, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
+    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by Kuvo running on this Mac, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
   }
   if (vaultProvenBy === host.said)
     return;
@@ -3105,13 +3105,22 @@ function macNeeded(link, now = Date.now()) {
   const pairing = ["pairing", "appPairing"].some((slot) => link?.[slot] && now < link[slot].expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
 }
-function saveMacConfig(config) {
+function saveMacConfig(config, own = false) {
   const { phones, relay, name, app } = config;
   try {
-    writePrivate(MAC_LINK_FILE, JSON.stringify({ phones, relay, name, app }));
+    writePrivate(MAC_LINK_FILE, JSON.stringify({ phones, relay, name, app, ...own ? { own: true } : {} }));
   } catch (error) {
     console.error(`This Mac's link settings couldn't be kept: ${error.message}`);
   }
+}
+function keepsOwnConfig(file = MAC_LINK_FILE) {
+  let kept;
+  try {
+    kept = JSON.parse(fs103.readFileSync(file, "utf8"));
+  } catch {
+    return !fs103.existsSync(file);
+  }
+  return isObject(kept) && kept.own === true;
 }
 function savedMacConfig(file = MAC_LINK_FILE) {
   let kept;
@@ -3128,6 +3137,9 @@ function savedMacConfig(file = MAC_LINK_FILE) {
   } catch {
     return null;
   }
+  const own = kept.own === true ? ownMacConfig() : null;
+  if (own)
+    return { ...own, phones: kept.phones };
   return {
     phones: kept.phones,
     machines: anyMachines(),
@@ -3780,7 +3792,7 @@ function open2(file, readonly = false) {
   try {
     sqlite = createRequire2(import.meta.url)(["bun", "sqlite"].join(":"));
   } catch {
-    throw new Error("The engine's database can only be rewritten by the box run with the engine's Bun.");
+    throw new Error("The engine's database can only be rewritten by Kuvo running with the engine's Bun.");
   }
   return new sqlite.Database(file, readonly ? { readonly: true } : { readwrite: true });
 }
@@ -4860,7 +4872,7 @@ var init_rewrite = __esm(() => {
       if (!folder || !databasesIn(folder).length)
         return null;
       if (!process.versions.bun)
-        return "This Mac's box moves only when run by its engine's Bun.";
+        return "Kuvo on this Mac moves only when run by its engine's Bun.";
       return schemaRefusal(folder);
     },
     rewrite(move) {
@@ -4902,14 +4914,14 @@ var init_rewrite = __esm(() => {
       const { map, placements, way, home } = move;
       const left = ownLeftovers(placements, way, home, map);
       if (left.length)
-        throw new Error(`The box's files still name where it was: ${left.slice(0, 5).join(", ")}${left.length > 5 ? "…" : ""}`);
+        throw new Error(`Kuvo's files still name where it was: ${left.slice(0, 5).join(", ")}${left.length > 5 ? "…" : ""}`);
       const notes = [];
       const data = placementOf(move, "data");
       const engineData = data ? path168.join(data.staged, "opencode") : null;
       for (const database of engineData ? databasesIn(engineData) : []) {
         const { rewritten, elsewhere } = databaseLeftovers(database, map);
         if (rewritten.length)
-          throw new Error(`The engine's database still names where the box was: ${rewritten.join(", ")}`);
+          throw new Error(`The engine's database still names where Kuvo was: ${rewritten.join(", ")}`);
         notes.push(...elsewhere.map((each) => `${path168.basename(database)}: ${each}`));
         const before = JSON.parse(fs160.readFileSync(countsFile(move), "utf8"))[path168.basename(database)];
         if (!before)
@@ -5565,6 +5577,11 @@ function link2({ prefs, staged, home }) {
   const named = spawnSync13("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
 }
+function welcomed({ staged }) {
+  const file = staged("run/welcomed.json");
+  if (!exists4(file))
+    writeWhole(file, JSON.stringify({ moved: true }));
+}
 function listedBots(S) {
   const list = readJSON2(path169.join(S, "bots.json"));
   return (Array.isArray(list) ? list : []).filter((bot) => isObject(bot) && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.folder === "string" && typeof bot.sessionID === "string");
@@ -5884,7 +5901,7 @@ function runUpgrades(run, move) {
   const madeHere = places.filter((name) => !exists4(upgrade.staged(name)));
   for (const name of places)
     fs161.mkdirSync(upgrade.staged(name), { recursive: true, mode: 448 });
-  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link2, bots, personalities, groupChats, letters, usage, said6])
+  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link2, welcomed, bots, personalities, groupChats, letters, usage, said6])
     each(upgrade);
   enginePlugin(run.release, upgrade);
   for (const name of madeHere)
@@ -9244,6 +9261,7 @@ var FEATURES = [
   "computers.facts",
   "computers.manage",
   "computers.reach",
+  "computers.reach-words",
   "computers.words",
   "config",
   "config.apply",
@@ -11149,7 +11167,7 @@ function readOnlyHere(unshare, at) {
 }
 var TRY_FOR = 1e4;
 var namespaceTry = (unshare, own) => ["-Urm", "/bin/sh", "-c", HIDE, unshare, String(process.getuid?.() ?? -1), String(process.getgid?.() ?? -1), "", own, "/dev/null", "", "", "", "", "", "/bin/sh", "-c", '[ "$(id -u)" = "$0" ]', String(process.getuid?.() ?? -1)];
-var LANDLOCK_RUNNER = String.raw`// Kuvo Code writes this each time its box starts: changes here don't last.
+var LANDLOCK_RUNNER = String.raw`// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Runs a command's shell in the sandbox (Landlock), as bin/kuvo-fence asks.
 import { dlopen, FFIType, ptr, read } from "bun:ffi";
 import fs from "node:fs";
@@ -11461,7 +11479,7 @@ function launcherScript(places) {
   ];
   return [
     "#!/bin/sh",
-    "# Kuvo Code writes this each time its box starts: changes here don't last.",
+    "# Kuvo Code writes this each time Kuvo starts: changes here don't last.",
     "# The engine runs each command an agent (or you, with !) runs through this: the command's own",
     "# shell, in the sandbox (outside it for a conversation in Full Access). Its plugin",
     "# (kuvo-sandbox.js) names the conversation's folder.",
@@ -11566,14 +11584,14 @@ function launcherScript(places) {
 function agentShellScript(places) {
   return [
     "#!/bin/sh",
-    "# Kuvo Code writes this each time its box starts: changes here don't last.",
+    "# Kuvo Code writes this each time Kuvo starts: changes here don't last.",
     `exec ${sh(places.launcher)} "$@"`,
     ""
   ].join(`
 `);
 }
 function pluginScript(places, version) {
-  return `// Kuvo Code writes this each time its box starts: changes here don't last.
+  return `// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Each command the engine runs (the agent's, and yours with !) goes through Kuvo Code's sandbox:
 // its shell in bin/kuvo-fence, which may write only in this conversation's folder and its git
 // repository, and can't read Kuvo Code's own folders or your secrets.
@@ -14097,7 +14115,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const matches = (file, sha) => fs36.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs36.readFileSync(file)) === sha;
     for (const file of files) {
       if (!BOX_FILE.test(file) || file.split("/").includes(".."))
-        throw new Error("The release names a file outside the box.");
+        throw new Error("The release names a file outside Kuvo’s folder.");
       if (!matches(path40.join(stage, "files", file), box.files[file]))
         throw new Error("The release's files aren't what it says.");
     }
@@ -14107,10 +14125,10 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     for (const bundle of bundles) {
       const listed = box.bundles[bundle];
       if (!BUNDLE.test(bundle) || files.includes(bundle) || !isObject(listed))
-        throw new Error("The release names a file outside the box.");
+        throw new Error("The release names a file outside Kuvo’s folder.");
       for (const [inner, sha] of Object.entries(listed)) {
         if (!BUNDLE_PART.test(inner))
-          throw new Error("The release names a file outside the box.");
+          throw new Error("The release names a file outside Kuvo’s folder.");
         if (!matches(path40.join(stage, "files", bundle, inner), sha))
           throw new Error("The release's files aren't what it says.");
       }
@@ -14520,7 +14538,7 @@ async function* boxUpdateRoute({ request, json }) {
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
   if (!request.fromApp && !request.fromMac)
-    return yield* json(403, { message: "Only Kuvo Code offers this box a release." });
+    return yield* json(403, { message: "Only Kuvo Code offers Kuvo on this computer a release." });
   const given = parsed(request.body);
   const offered = offerUpdate(isObject(given) ? given.from : undefined);
   if (offered.status !== 202)
@@ -15018,7 +15036,8 @@ function rehomeStatus(home, now = Date.now()) {
     from: kept.from ?? underWay?.from ?? null,
     to: kept.to ?? underWay?.to ?? null,
     progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : phaseProgress(home),
-    dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each) => typeof each === "string") : []
+    dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each) => typeof each === "string") : [],
+    steps: STEPS.filter((each) => each !== "done").map((step) => ({ step, title: STEP_TITLES[step] }))
   };
 }
 var STEP_TITLES = {
@@ -17238,7 +17257,7 @@ async function* browserDataRoute(context, match) {
   const { sites } = await browserSites();
   return yield* json(200, { sites: site === null ? [] : sites.filter((each) => each.site !== site) });
 }
-var NO_VIEW_ON_MAC = "A Mac's box has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
+var NO_VIEW_ON_MAC = "Kuvo on a Mac has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
 async function* browserViewRoute({ json }) {
   if (IS_MAC)
     return yield* json(404, { message: NO_VIEW_ON_MAC });
@@ -30893,7 +30912,7 @@ async function setJobTool(args, calling, readEngine, bridge) {
     return refused3("message" in value && value.message ? value.message : `Couldn't keep it (${status}).`);
   const kept = "bot" in value ? value.bot?.job : undefined;
   if (typeof kept !== "string")
-    return refused3("The box returned an unreadable job response. Check the job before trying again.");
+    return refused3("Kuvo on this computer returned an unreadable job response. Check the job before trying again.");
   return said3(kept ? `Kept. Kuvo Code shows "${kept}" under your name.` : "Kept: you have no job now.");
 }
 var isFullPath = (given) => given.startsWith("/") && !given.split("/").some((part) => part === "." || part === "..");
@@ -32480,6 +32499,23 @@ async function setupGift(again) {
     return null;
   return { mac: ownKey(link), macSign: ownSign(link), docs, replaces: link.keysBefore ?? [] };
 }
+async function letDevicesConnect(on) {
+  const before = macLink.config;
+  if (!before)
+    return false;
+  if (before.phones === on)
+    return true;
+  const own = keepsOwnConfig();
+  macLink.config = { ...before, phones: on };
+  saveMacConfig(macLink.config, own);
+  if (!on)
+    macLink.host?.keepOnly(new Set);
+  await macKeys();
+  macLinkCheck();
+  macLink.wake?.();
+  macDocsChanged();
+  return true;
+}
 async function* macLinkRoute(route, request, signal) {
   const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const method = request.method.toUpperCase();
@@ -32611,7 +32647,7 @@ async function* macLinkRoute(route, request, signal) {
           });
         }
       } catch {
-        return yield* json(500, { message: "This Mac's box couldn't keep them." });
+        return yield* json(500, { message: "Kuvo on this Mac couldn't keep them." });
       }
       macSendOutbox();
       return yield* json(200, {});
@@ -43724,7 +43760,15 @@ function computerWords(computer, here) {
   const { reach, name, through, working } = computer;
   const title = { connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: "Not reached directly" }[reach];
   const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` } : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` } : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
-  return { title, ...notice ? { detail: notice.detail, notice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
+  return { title, reachTitles: {
+    connecting: "Connecting…",
+    held: "Needs an update",
+    away: "Can’t be reached",
+    notPaired: "Hasn’t taken this app yet",
+    shared: "Shared machine",
+    apart: "Another setup’s",
+    unreached: "Can’t be reached from this app"
+  }, ...notice ? { detail: notice.detail, notice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
 }
 async function listComputers(name, bridge, signal, now = Date.now()) {
   let link = null;
@@ -45733,7 +45777,7 @@ function keptFolders() {
   return [...new Set(folders.flatMap((folder) => [folder, realish(folder)]))];
 }
 function defaultsPlugin(kept) {
-  return `// Kuvo Code writes this each time its box starts: changes here don't last.
+  return `// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Working in a folder outside a conversation's project asks you first, as Settings › Permissions
 // says. The engine's own agents get that rule after their own and before your settings', so what
 // you set there wins. What's kept for the agent to open stays open to it: files sent with a
@@ -51327,10 +51371,10 @@ async function* serveRoute({ request, json }) {
   if (method !== "GET" && method !== "POST")
     return yield* json(405, {});
   if (IS_MAC)
-    return yield* json(409, { message: "This Mac's box has its server run by Kuvo Code itself." });
+    return yield* json(409, { message: "Kuvo Code itself runs the server on this Mac." });
   if (method === "POST") {
     if (!request.fromApp && !request.fromMac)
-      return yield* json(403, { message: "Only Kuvo Code asks for the box's server." });
+      return yield* json(403, { message: "Only Kuvo Code asks for Kuvo's server on this computer." });
     const given = parsed(request.body);
     if (!isObject(given) || typeof given.needed !== "boolean")
       return yield* json(400, { message: "Say whether it's needed (needed: true or false)." });
@@ -51496,7 +51540,7 @@ function uninstallCommand(args) {
     return 2;
   }
   if (APP_FOLDER || path159.basename(path159.dirname(path159.resolve(K))).toLowerCase().startsWith("run.kuvo.code")) {
-    const message = "This Mac's box runs in Kuvo Code's own folder: remove Kuvo Code itself (its background work goes with it).";
+    const message = "Kuvo on this Mac runs in Kuvo Code's own folder: remove Kuvo Code itself (its background work goes with it).";
     console.log(JSON.stringify({ result: "refused", message }));
     console.error(message);
     return 1;
@@ -51540,13 +51584,13 @@ function helperPlist(app) {
 }
 function refusal3() {
   if (process.platform !== "darwin")
-    return "Only a Mac's own box runs under Kuvo Helper.";
+    return "Only Kuvo on a Mac runs under Kuvo Helper.";
   if (APP_FOLDER || recordedKind() !== "mac")
-    return "Only a Mac's own box in a home of its own runs under Kuvo Helper.";
+    return "Only Kuvo on a Mac in its own folder runs under Kuvo Helper.";
   if (!launchTools())
-    return "Only the box in ~/.kuvo-code starts at login.";
+    return "Only Kuvo in ~/.kuvo-code starts at login.";
   if (!fs153.existsSync(helperProgram()))
-    return `${HELPER_NAME} isn't in this box's bin: its release brings it.`;
+    return `${HELPER_NAME} isn't in Kuvo's bin folder: its release brings it.`;
   return null;
 }
 function helperStatus() {
@@ -51563,6 +51607,22 @@ function helperStatus() {
   }
   return { helper: fs153.existsSync(helperProgram()), agent, loaded };
 }
+function helperAtLogin() {
+  const tools = launchTools();
+  if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac")
+    return null;
+  let agent = false;
+  try {
+    agent = fs153.readFileSync(path160.join(tools.agents, `${LAUNCH_AGENT}.plist`), "utf8").includes(`<string>${xml(helperProgram())}</string>`);
+  } catch {}
+  if (!agent)
+    return null;
+  const asked = spawnSync11(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  if (asked.error || asked.status !== 0)
+    return null;
+  return !SWITCHED_OFF.test(asked.stdout ?? "");
+}
+var SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`);
 function installHelperAgent({ load, app }) {
   const why = refusal3();
   if (why)
@@ -51574,7 +51634,7 @@ function installHelperAgent({ load, app }) {
   fs153.writeFileSync(temporary, helperPlist(app), { mode: 420 });
   fs153.renameSync(temporary, plist);
   if (!load)
-    return { written: true, loaded: false, message: `${HELPER_NAME} starts this Mac's box at login.` };
+    return { written: true, loaded: false, message: `${HELPER_NAME} starts Kuvo on this Mac at login.` };
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const run = (args) => spawnSync11(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
   if (run(["bootout", `${domain}/${LAUNCH_AGENT}`]).status === 0) {
@@ -51591,7 +51651,7 @@ function installHelperAgent({ load, app }) {
   return {
     written: true,
     loaded,
-    message: loaded ? `${HELPER_NAME} runs this Mac's box now, and at login.` : `${HELPER_NAME} starts this Mac's box at login, but launchd didn't start it now: ${(started.stderr || "").trim().slice(0, 300) || "it said nothing"}.`
+    message: loaded ? `${HELPER_NAME} runs Kuvo on this Mac now, and at login.` : `${HELPER_NAME} starts Kuvo on this Mac at login, but launchd didn't start it now: ${(started.stderr || "").trim().slice(0, 300) || "it said nothing"}.`
   };
 }
 function startHelperAgent({ app, ifMissing = false }) {
@@ -51604,11 +51664,11 @@ function startHelperAgent({ app, ifMissing = false }) {
   const run = (args) => spawnSync11(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
   const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
-    if (disabled.status !== 0 || !new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`).test(disabled.stdout ?? ""))
+    if (disabled.status !== 0 || !SWITCHED_OFF.test(disabled.stdout ?? ""))
       return null;
     const opened = spawnSync11(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
-      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login.` };
+      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run Kuvo on this Mac until you log out. Turn it on there to start it at login.` };
     }
     return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
@@ -51626,7 +51686,7 @@ function startHelperAgent({ app, ifMissing = false }) {
       return refusedBy("load", loaded);
   }
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
-  return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs this Mac's box.` } : refusedBy("start", started);
+  return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }
 function helperCommand(args) {
   const [what, ...rest] = args;
@@ -51670,7 +51730,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c99ccc6e99f4";
+var BRIDGE_VERSION = "84aac47032c5";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -51957,14 +52017,14 @@ function releaseRefusal(release) {
     }
   };
   if (!release || !fileAt(path171.join(release, "bin", "kuvo-start")) || !fileAt(path171.join(release, "bin", "kuvo-link.js")))
-    return "The box's own files to put in its new home weren't given.";
+    return "Kuvo's own files to put in its new home weren't given.";
   if (!fileAt(path171.join(release, RELEASE_HELPER)))
-    return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home.";
+    return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home.";
   return null;
 }
-var NOT_MOVED = "This Mac's box hasn't moved: there's nothing to move back.";
+var NOT_MOVED = "Kuvo on this Mac hasn't moved: there's nothing to move back.";
 var NOT_BACK = "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back.";
-var NOTHING_TO_MOVE = "This machine's box is in its own home already: there's nothing to move.";
+var NOTHING_TO_MOVE = "Kuvo on this machine is in its own home already: there's nothing to move.";
 var exists6 = (file) => {
   try {
     fs163.lstatSync(file);
@@ -52124,19 +52184,19 @@ function moveRefusal({ appFolder, home }, { appVersion, release, bridgeVersion =
   const box = path171.join(appFolder, "box");
   const state = readRecord(home);
   if (state.state === "done" && state.way !== "back")
-    return "This Mac's box has moved already.";
+    return "Kuvo on this Mac has moved already.";
   let served = null;
   try {
     served = JSON.parse(fs163.readFileSync(path171.join(box, "run", SERVED_FILE), "utf8"));
   } catch {}
   if (!isObject(served) || served.bridge !== bridgeVersion || appVersion !== null && served.app !== appVersion) {
-    return "This Mac's box hasn't started since Kuvo Code updated: it moves once it has.";
+    return "Kuvo on this Mac hasn't started since Kuvo Code updated: it moves once it has.";
   }
   const running = checkRunning ? runningIn(path171.join(box, "run"), { keeper: false }) : [];
   if (running.length)
-    return `Something is running in this Mac's box (${running.join(", ")}): it moves once that's stopped.`;
+    return `Something is running in Kuvo on this Mac (${running.join(", ")}): it moves once that's stopped.`;
   if (located(home) === located(path171.join(accountHome(), ".kuvo-code")) && path171.basename(appFolder) !== "run.kuvo.code")
-    return "Only Kuvo Code itself moves its box into ~/.kuvo-code: a copy moves into a home of its own.";
+    return "Only Kuvo Code itself moves its data into ~/.kuvo-code: a copy moves into a home of its own.";
   if (release !== undefined) {
     const refusal = releaseRefusal(release);
     if (refusal)
@@ -52144,17 +52204,17 @@ function moveRefusal({ appFolder, home }, { appVersion, release, bridgeVersion =
   }
   const there = runsAt(home);
   if (there !== "gone" && (there === "running" || foundAt2(home, false) !== null))
-    return "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are.";
+    return "Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are.";
   if (runningIn(path171.join(home, "run")).length)
     return "Something is running in this Mac's ~/.kuvo-code: it moves once that's stopped.";
   const target = nearest(home);
   if (fs163.statSync(appFolder).dev !== fs163.statSync(target).dev || diskKind(appFolder) !== "apfs")
-    return "Kuvo Code can't move its box on this disk.";
+    return "Kuvo Code can't move its data on this disk.";
   const database = path171.join(appFolder, "opencode", "data", "opencode");
   const needed = (sizeOf(path171.join(database, "opencode.db")) + sizeOf(path171.join(database, "opencode.db-wal"))) * 1.1 + 200000000;
   const free = freeBytes(target);
   if (free !== null && free < needed)
-    return `There isn't room to move this Mac's box: it needs ${Math.ceil(needed / 1e6)} MB free.`;
+    return `There isn't room to move Kuvo on this Mac: it needs ${Math.ceil(needed / 1e6)} MB free.`;
   const plan = planMove({ appFolder, home }, release ?? path171.join(home, "bin"));
   return rewriter.refuses({ way: "move", home, appFolder, placements: plan.placements, map: mapOf("move", { appFolder, home }, plan.placements), work: path171.join(staging(home), "work") });
 }
@@ -52168,12 +52228,12 @@ function backRefusal({ appFolder, home }, { running: checkRunning = true, rewrit
     return NOT_BACK;
   const running = checkRunning ? runningIn(path171.join(home, "run"), { keeper: false }) : [];
   if (running.length)
-    return `Something is running in this Mac's box (${running.join(", ")}): it moves back once that's stopped.`;
+    return `Something is running in Kuvo on this Mac (${running.join(", ")}): it moves back once that's stopped.`;
   const old = path171.join(appFolder, "box", "run");
   if (["setup-card.json", "link.json"].some((file) => exists6(path171.join(old, file))) || runningIn(old).length)
-    return "Kuvo Code has a box of its own in its folder again: this one can't move back beside it.";
+    return "Kuvo Code has data in its own folder again: this one can't move back beside it.";
   if (!exists6(appFolder) || fs163.statSync(appFolder).dev !== fs163.statSync(home).dev)
-    return "Kuvo Code can't move its box back on this disk.";
+    return "Kuvo Code can't move its data back on this disk.";
   const plan = planBack({ appFolder, home }, readRecord(home).merged);
   return rewriter.refuses({ way: "back", home, appFolder, placements: plan.placements, map: mapOf("back", { appFolder, home }, plan.placements), work: path171.join(staging(home), "work") });
 }
@@ -52419,7 +52479,7 @@ async function carryOn2(journal, rewriter) {
         throw new Error(`${placement.from} wasn't staged.`);
     }
     if (journal.way === "move" && !exists6(path171.join(journal.placements.find((each) => each.installed && path171.basename(each.to) === "bin").staged, "kuvo-start")))
-      throw new Error("The box's own files weren't staged.");
+      throw new Error("Kuvo's own files weren't staged.");
     const leftovers = await rewriter.check(move);
     noteRecord(home, { leftovers });
     if (journal.run)
@@ -52461,7 +52521,7 @@ async function carryOn2(journal, rewriter) {
       const run = journal.way === "move" ? path171.join(journal.from, "box", "run") : path171.join(home, "run");
       const running = runningIn(run, { keeper: false });
       if (running.length)
-        throw new Error(`Something started in the box as it moved (${running.join(", ")}), so it went back.`);
+        throw new Error(`Something started in Kuvo as it moved (${running.join(", ")}), so it went back.`);
       const written = journal.way === "move" && journal.clonedAt ? changedSince(journal.clearing.filter((each) => each !== path171.join(journal.from, "opencode")), journal.clonedAt, path171.join(journal.from, "box", "run")) : null;
       if (written)
         throw new Error(`${written} changed as it moved, so it went back.`);
@@ -52636,17 +52696,17 @@ function newRefusal({ appFolder, home }, { release, engineData, engine = path171
       return refusal;
   }
   if (appBoxRan(path171.join(appFolder, "box"), engineData ?? path171.join(appFolder, "opencode", "data", "opencode")))
-    return "Kuvo Code's own box is in its folder: it moves into its home instead.";
+    return "Kuvo Code's data is in its folder: it moves into its home instead.";
   if (located(home) === located(path171.join(accountHome(), ".kuvo-code")) && path171.basename(appFolder) !== "run.kuvo.code")
-    return "Only Kuvo Code itself makes its box in ~/.kuvo-code: a copy makes it in a home of its own.";
+    return "Only Kuvo Code itself sets up Kuvo in ~/.kuvo-code: a copy makes it in a home of its own.";
   const there = makingCutShort(home) ? "gone" : runsAt(home);
   const someones = foundAt2(home, false) !== null || recordedKind(path171.join(home, "box", "kind")) === "machine" || exists6(path171.join(home, "box", "keys"));
   if (there !== "gone" && (there === "running" || someones))
-    return "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are.";
+    return "Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are.";
   if (runningIn(path171.join(home, "run")).length)
     return "Something is running in this Mac's ~/.kuvo-code: it's made there once that's stopped.";
   if (!listOf(engine).length)
-    return "The engine isn't downloaded yet: this Mac's box is made once it is.";
+    return "The engine isn't downloaded yet: Kuvo is set up on this Mac once it is.";
   return null;
 }
 function newMarker(home) {
@@ -52667,7 +52727,7 @@ function newReadiness(folders, { engineData } = {}) {
   if (process.platform !== "darwin")
     return { ready: false, made: false, why: NOTHING_TO_MOVE };
   if (moveUnderWay(folders.home))
-    return { ready: false, made: false, why: "A move of this Mac's box is under way: it's finished first." };
+    return { ready: false, made: false, why: "Kuvo on this Mac is moving: that finishes first." };
   if (recordedKind(path171.join(folders.home, "box", "kind")) === "mac" && !makingCutShort(folders.home))
     return { ready: false, made: true };
   const why = newRefusal(folders, { release: undefined, engineData });
@@ -52681,7 +52741,7 @@ async function rehomeNew(folders, options = {}) {
   const release = options.release ? path171.resolve(options.release) : null;
   const why = () => {
     if (moveUnderWay(home))
-      return { result: "refused", message: "A move of this Mac's box is under way: it's finished first.", status: rehomeStatus(home) };
+      return { result: "refused", message: "Kuvo on this Mac is moving: that finishes first.", status: rehomeStatus(home) };
     if (recordedKind(path171.join(home, "box", "kind")) === "mac" && !makingCutShort(home))
       return { result: "nothing", status: rehomeStatus(home) };
     const refusal = newRefusal(folders, { release, engineData: options.engineData, engine: engineFrom });
@@ -52809,11 +52869,11 @@ async function rehomeReady(home, appFolder, { appVersion = null, release, now = 
     return say(false, null, refusal);
   }
   if (moved)
-    return say(false, null, "This Mac's box has moved.");
+    return say(false, null, "Kuvo on this Mac has moved.");
   if (record.movedBack && record.asked !== "now")
     return say(false, null, "It was moved back: it moves again only on Move Now.");
   if (!appFolder)
-    return say(false, null, "Only the app's own box, in its folder, moves.");
+    return say(false, null, "Only Kuvo's data in the app's folder moves.");
   const refusal = moveRefusal({ appFolder, home }, { appVersion, release, running: false });
   if (refusal)
     return say(false, null, refusal);
@@ -52867,7 +52927,7 @@ function askRehome(home, ask) {
   if (ask === "back" && record.app)
     return NOT_BACK;
   if (ask === "now" && moved)
-    return "This Mac's box has moved already.";
+    return "Kuvo on this Mac has moved already.";
   noteRecord(home, { asked: ask });
   return null;
 }
@@ -53053,7 +53113,7 @@ async function installCommand(args) {
     if (verbs[0] === "--status") {
       const judgement = judged();
       tidyStaging(home, judgement, option("--release"));
-      say(judgement);
+      say({ ...judgement, ...judgement.verdict === "two" ? { message: NOT_MOVED2.two } : {} });
       return 0;
     }
     const release = option("--release"), engine = option("--engine");
@@ -53206,7 +53266,7 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   }
   const after = judged();
   if (after.verdict !== "ours")
-    return { result: "failed", verdict: after.verdict, message: "This Mac's box couldn't be made." };
+    return { result: "failed", verdict: after.verdict, message: "Kuvo couldn't be set up on this Mac." };
   const asideNow = earlier().filter((name) => !asideBefore.has(name)).sort().pop();
   const setAside = asideNow ? { setAside: path173.join(home, "trash", asideNow) } : {};
   if (!launchTools()) {
@@ -53239,13 +53299,13 @@ async function newMachine({ home, release, engine }, judged) {
     const now = judged();
     if (now.verdict === "fresh")
       return runningIn(path173.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped." } : null;
-    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
+    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "Kuvo on this computer is moving: that's finished first." };
   };
   const before = refusal();
   if (before)
     return before;
   if (path173.basename(home) !== ".kuvo-code")
-    return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
+    return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path173.join(engine, engineVersion, "opencode");
   if (!fs165.existsSync(staged))
@@ -53718,7 +53778,7 @@ async function rehomeCommand(root, args) {
     }
     const asked = process.env.KUVO_HOME ? path176.resolve(process.env.KUVO_HOME) : null;
     if (located(home) === located(path176.join(accountHome(), ".kuvo-code")) && asked && located(asked) !== located(home) && path176.basename(path176.dirname(asked)) !== "run.kuvo.code") {
-      const why = "Only Kuvo Code itself moves the box in ~/.kuvo-code.";
+      const why = "Only Kuvo Code itself moves its data in ~/.kuvo-code.";
       say(args.includes("--ready") ? { ready: false, how: null, why, status: rehomeStatus(home) } : { result: "refused", message: why, status: rehomeStatus(home) });
       return args.includes("--ready") ? 0 : EXIT2.refused;
     }
@@ -55106,8 +55166,8 @@ init_settle();
 function compactionWords(value) {
   if (!isObject(value) || value.type !== "compaction")
     return value;
-  const title = value.status === "running" ? "Compacting conversation…" : value.status === "completed" ? "Conversation compacted" : value.status === "failed" ? "Couldn’t compact conversation" : "Conversation compaction";
-  return { ...value, title, ...value.status === "running" ? { workingTitle: "Summarizing the conversation…" } : {} };
+  const title = value.status === "running" ? "Summarizing the conversation…" : value.status === "completed" ? "Conversation summarized" : value.status === "failed" ? "Couldn’t summarize the conversation" : "Conversation summary";
+  return { ...value, title, ...value.status === "running" ? { workingTitle: title } : {} };
 }
 function compactionPage(value) {
   if (!isObject(value))
@@ -56642,13 +56702,13 @@ async function* rehomeRoute({ request, json }) {
   if (method !== "POST")
     return yield* json(405, {});
   if (!request.fromApp && !request.fromMac)
-    return yield* json(403, { message: "Only Kuvo Code on this Mac moves its box." });
+    return yield* json(403, { message: "Only Kuvo Code on this Mac moves its data." });
   const given = parsed(request.body);
   const ask = isObject(given) ? given.now === true ? "now" : given.back === true ? "back" : null : null;
   if (!ask)
     return yield* json(400, { message: "Say Move Now (now) or Move Back (back)." });
   if (!home)
-    return yield* json(409, { message: "This copy of Kuvo Code has no home to move its box to." });
+    return yield* json(409, { message: "This copy of Kuvo Code has no home to move its data to." });
   const refused = askRehome(home, ask);
   return yield* refused ? json(409, { message: refused }) : json(200, rehomeStatus(home));
 }
@@ -57484,7 +57544,7 @@ function askHolder(request, signal) {
 }
 // box/src/link/areas/sandbox.ts
 init_state();
-var NOT_OPEN = "This computer's box isn't running its own process: try again in a moment.";
+var NOT_OPEN = "Kuvo on this computer isn't running its own process: try again in a moment.";
 var NOT_CALLING = "Only a conversation's own tool call can ask, and this one isn't running in it.";
 var NOT_ON = "Commands aren't in the sandbox on this computer now, so there's nothing to ask: run the command with your shell tool.";
 var shown3 = () => {
@@ -59159,7 +59219,7 @@ function adding() {
   const can = canAdd();
   return { can: can.can, ...can.can ? {} : { why: can.message }, hosts: can.can ? suggestedHosts(takenAddresses()) : [], tries: allTries() };
 }
-var ONCE = "Ask this through Kuvo Code’s running box on this computer: a single request can’t stay to do it.";
+var ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.";
 async function* computersAddRoute(context, match) {
   const { request, signal, json } = context;
   const method = request.method.toUpperCase();
@@ -61938,8 +61998,8 @@ async function* settingsRoute(context) {
 
 // box/src/link/areas/settings-pages.ts
 import crypto63 from "node:crypto";
-import fs191 from "node:fs";
-import path198 from "node:path";
+import fs192 from "node:fs";
+import path199 from "node:path";
 init_home();
 
 // box/src/link/areas/work.ts
@@ -62233,16 +62293,132 @@ function budgetConfirmation(older) {
 // box/src/link/areas/settings-pages.ts
 init_shape();
 init_home();
+init_link();
+
+// box/src/link/permissions.ts
+init_files2();
+import { spawnSync as spawnSync19 } from "node:child_process";
+import fs190 from "node:fs";
+import path197 from "node:path";
+init_home();
+function runs(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function startedAt(pid) {
+  const asked = spawnSync19("/bin/ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
+  const ran = asked.status === 0 ? (asked.stdout ?? "").trim().match(/^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/) : null;
+  if (!ran)
+    return null;
+  const seconds = Number(ran[1] ?? 0) * 86400 + Number(ran[2] ?? 0) * 3600 + Number(ran[3]) * 60 + Number(ran[4]);
+  return Date.now() / 1000 - seconds;
+}
+function wroteIt(pid, started) {
+  if (!runs(pid))
+    return false;
+  const began = startedAt(pid);
+  return began !== null && Math.abs(began - started) <= 3;
+}
+var PERMISSIONS = [
+  { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
+  { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
+];
+var LATER = () => path197.join(K, "box", "permissions-later.json");
+function putOff() {
+  try {
+    const kept = parsed(fs190.readFileSync(LATER(), "utf8"));
+    return new Set(isObject(kept) && Array.isArray(kept.later) ? kept.later.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set;
+  }
+}
+function keepPutOff(later) {
+  if (!later.size)
+    return fs190.rmSync(LATER(), { force: true });
+  fs190.mkdirSync(path197.dirname(LATER()), { recursive: true, mode: 448 });
+  writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
+}
+function boxPermissions() {
+  const applies = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
+  const later = applies ? putOff() : new Set;
+  const said = (allowed) => ({
+    applies,
+    name: applies ? HELPER_NAME : null,
+    known: allowed !== null,
+    screenRecording: allowed ? allowed.screenRecording : null,
+    accessibility: allowed ? allowed.accessibility : null,
+    bundle: applies ? helperBundle() : null,
+    list: applies ? PERMISSIONS.map((each) => ({ ...each, allowed: allowed ? allowed[each.id] : null, asks: allowed !== null && !allowed[each.id] && !later.has(each.id) })) : []
+  });
+  const unknown = said(null);
+  if (!applies)
+    return unknown;
+  let noted;
+  try {
+    noted = parsed(fs190.readFileSync(path197.join(K, "run", "permissions.json"), "utf8"));
+  } catch {
+    return unknown;
+  }
+  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0)
+    return unknown;
+  if (typeof noted.started !== "number" || !Number.isFinite(noted.started) || !wroteIt(noted.pid, noted.started))
+    return unknown;
+  if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")
+    return unknown;
+  const allowed = { screenRecording: noted.screenRecording, accessibility: noted.accessibility };
+  const still = new Set([...later].filter((id) => PERMISSIONS.some((each) => each.id === id && !allowed[each.id])));
+  if (still.size !== later.size) {
+    try {
+      keepPutOff(still);
+    } catch {}
+    later.clear();
+    for (const id of still)
+      later.add(id);
+  }
+  return said(allowed);
+}
+async function* permissionsRoute({ request, json }) {
+  const method = request.method.toUpperCase();
+  if (method === "GET")
+    return yield* json(200, boxPermissions());
+  if (method !== "POST")
+    return yield* json(405, {});
+  let asked;
+  try {
+    asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8"));
+  } catch {
+    asked = null;
+  }
+  const id = isObject(asked) ? asked.later : null;
+  if (typeof id !== "string" || !PERMISSIONS.some((each) => each.id === id))
+    return yield* json(400, { message: "Say which permission to ask about later." });
+  const now = boxPermissions();
+  if (!now.applies)
+    return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
+  try {
+    keepPutOff(new Set([...putOff(), id]));
+  } catch {
+    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
+  }
+  return yield* json(200, boxPermissions());
+}
+
+// box/src/link/areas/settings-pages.ts
+init_state();
 
 // box/src/link/mac/keeper-runs.ts
 init_home();
-import fs190 from "node:fs";
-import path197 from "node:path";
+import fs191 from "node:fs";
+import path198 from "node:path";
 var boxAnswers = (route) => route === "kuvo/engine/restart" && keeperRuns2();
 function keeperRuns2() {
   let pid = 0;
   try {
-    pid = Number(JSON.parse(fs190.readFileSync(path197.join(RUN, "keeper.json"), "utf8"))?.pid);
+    pid = Number(JSON.parse(fs191.readFileSync(path198.join(RUN, "keeper.json"), "utf8"))?.pid);
   } catch {
     return false;
   }
@@ -62261,6 +62437,14 @@ init_settle();
 init_state();
 init_zone();
 var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
+var COMPUTER = {
+  id: "computer",
+  title: "This Computer",
+  group: "System",
+  icon: "computer",
+  line: "Whether Kuvo runs here, its version and updates, and what may connect.",
+  keywords: ["running", "restart", "version", "update", "devices", "phone", "connect", "login items", "kuvo helper", "screen recording", "accessibility", "macos"]
+};
 var SECTIONS = [
   {
     id: "clock",
@@ -62286,6 +62470,7 @@ var SECTIONS = [
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"]
   },
+  COMPUTER,
   {
     id: "git",
     title: "Git",
@@ -62700,9 +62885,9 @@ async function worktreesChange(context, at, value) {
   if ((config.value.worktree?.directory ?? "") !== at.value)
     return STALE;
   const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
-  if (folder && !path198.isAbsolute(folder))
+  if (folder && !path199.isAbsolute(folder))
     return { status: 400, message: "Give a full path to the folder." };
-  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path198.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path199.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
 }
 async function worktreesAct(context, at, action) {
   if (action.id !== "remove" || !at.id.startsWith("tree-"))
@@ -62788,7 +62973,7 @@ async function archivedPage(context) {
   if (all && all.status !== 200)
     return unreadPage("archived", "Archived Sessions", all);
   const projects = readProjects();
-  const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path198.basename(project);
+  const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path199.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
     { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "Archived sessions show here." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
@@ -62872,12 +63057,141 @@ async function clockChange(_context, at, value) {
     return { status: 503, message: "Your time zone couldn't be changed here just now: try again in a moment." };
   }
 }
+var computerFacts = {
+  kind: () => !IS_MAC ? "machine" : APP_FOLDER ? "appMac" : "ownMac",
+  restarts: () => !IS_MAC || !APP_FOLDER || boxAnswers("kuvo/engine/restart"),
+  running: (context) => {
+    try {
+      return Boolean(context.readEngine()?.port);
+    } catch {
+      return false;
+    }
+  },
+  atLogin: helperAtLogin,
+  permissions: boxPermissions,
+  update: updateStatus,
+  working: () => agentsWorking(),
+  restart: () => engineControl("restart"),
+  devices: () => macLink.config?.phones ?? null,
+  letDevices: letDevicesConnect
+};
+var computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer");
+var computerHere = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+var LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
+var ALLOWS = {
+  screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
+  accessibility: { allowed: "For agents that click and type in other apps.", not: "Not allowed. Agents can’t click or type in other apps." }
+};
+async function computerPage(context) {
+  const here = context.request.fromApp === true;
+  const where = computerHere(context), name = context.info.name || where;
+  const kind = computerFacts.kind();
+  const ownMac = kind === "ownMac" && process.platform === "darwin";
+  const atLogin = ownMac ? computerFacts.atLogin() : null;
+  const working = await computerFacts.working().catch(() => null);
+  const opensHere = (id, title, address) => here ? { id, title, opens: address } : { id, title, can: { why: `Open it on ${name} itself.` } };
+  const stops = working === true ? `Agents are at work on ${where} now: what they’re doing stops.` : working === false ? `Nothing is at work on ${where} now.` : `What agents are doing on ${where} now stops.`;
+  const restarts = computerFacts.restarts();
+  const running = computerFacts.running(context);
+  const rows = [row({
+    id: "state",
+    title: running ? "Running" : "Not running",
+    kind: "actions",
+    value: running,
+    ...running ? {} : { tone: "warning" },
+    line: !running ? "Its engine isn’t running, so no agent works here. Restart starts it again." : ownMac ? atLogin === false ? `${HELPER_NAME} keeps it running.` : `${HELPER_NAME} keeps it running, and starts it at login.` : kind === "appMac" ? `Kuvo Code on ${where} runs it.` : "It runs whether or not an app is open.",
+    actions: [{
+      id: "restart",
+      title: "Restart…",
+      ...restarts ? {} : { can: { why: `Kuvo Code on ${name} restarts it: restart it there.` } },
+      confirm: { title: `Restart Kuvo on ${where}?`, body: `${stops} Kuvo is back in a moment.`, button: "Restart" }
+    }]
+  })];
+  const update = computerFacts.update();
+  const version = update.version ? `Kuvo Code ${update.version}` : "Kuvo Code";
+  const ready = newerVersion(update.latest, update.version) ? update.latest : null;
+  const failed = update.last?.result === "failed" ? `Its last update didn’t go through${update.last.message ? `: ${update.last.message}` : "."}` : null;
+  const now = (title) => ({
+    id: "update",
+    title,
+    ...working === false ? {} : { confirm: { title: `Update Kuvo on ${where} now?`, body: `${stops} A newer version, if there is one, installs now.`, button: "Update Now" } }
+  });
+  const looking = update.updating === "checking";
+  if (update.updating)
+    rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
+  else if (!update.setUp || update.blocked)
+    rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...update.blocked ? { tone: "warning" } : {} }));
+  else if (ready)
+    rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs when nothing’s at work, or now.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: ready, actions: [now("Update Now")] }));
+  else if (update.offered && newerVersion(update.offered, update.version))
+    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, line: "It installs when nothing’s at work.", kind: "status", value: update.offered }));
+  else
+    rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself when nothing’s at work.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: update.version, actions: [now("Check Now")] }));
+  const devices = computerFacts.devices();
+  const reach = `Your phone and other computers reach ${where}, end to end encrypted.`;
+  if (kind === "machine")
+    rows.push(row({ id: "devices", title: "Let my devices connect", line: `${reach} A computer you added always lets them in.`, kind: "status", value: "On" }));
+  else if (kind === "appMac")
+    rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices === true, can: { why: `Change it in Kuvo Code on ${name}.` } }));
+  else if (devices === null)
+    rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: false, can: { why: "This copy of Kuvo has no relay for your devices to connect through." } }));
+  else if (!here)
+    rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices, can: { why: `Change it in Kuvo Code on ${name} itself.` } }));
+  else
+    rows.push(row({
+      id: "devices",
+      title: "Let my devices connect",
+      line: reach,
+      kind: "switch",
+      value: devices,
+      can: true,
+      ...devices ? { confirm: { title: "Stop letting your devices connect?", body: `Your phone, and Kuvo Code on your other computers, can’t reach ${where} until you turn this on again.`, button: "Turn Off" } } : {}
+    }));
+  const groups = [{ id: "computer", rows }];
+  const permissions = computerFacts.permissions();
+  if (permissions.applies) {
+    const helper = permissions.name ?? HELPER_NAME;
+    const allows = [];
+    if (atLogin !== null) {
+      allows.push(atLogin ? row({ id: "login-items", title: "Login Items", line: `Kuvo starts when you log in to ${where}.`, kind: "status", value: "On" }) : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
+    }
+    for (const each of permissions.list) {
+      const words = ALLOWS[each.id] ?? { allowed: "", not: "Not allowed." };
+      if (each.allowed === false)
+        allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
+      else
+        allows.push(row({ id: `allows-${each.id}`, title: each.name, line: each.allowed ? words.allowed : `${helper} hasn’t said yet. ${words.allowed}`.trim(), kind: "status", value: each.allowed ? "Allowed" : "Not known yet" }));
+    }
+    allows.push(row({ id: "allows-files", title: "Files and Folders", line: "macOS asks when an agent first opens Desktop, Documents or Downloads.", kind: "status", value: "Asked when needed" }));
+    groups.push({ id: "macos", title: `What macOS Allows ${helper}`, note: `${helper} is the program your agents run under. Only you allow these, in System Settings.`, rows: allows });
+  }
+  return { id: "computer", title: computerTitle(context), groups };
+}
+var updateAnswer = (context) => updateRoute(context);
+async function computerChange(_context, at, value) {
+  if (at.id !== "devices")
+    return { status: 400, message: "That isn't something to change." };
+  try {
+    return await computerFacts.letDevices(value === true) ? null : { status: 409, message: "This copy of Kuvo has no relay for your devices to connect through." };
+  } catch {
+    return { status: 503, message: "It couldn’t be changed just now: try again in a moment." };
+  }
+}
+async function computerAct(context, at, action) {
+  if (at.id === "state" && action.id === "restart") {
+    const { status, message } = await computerFacts.restart();
+    return refusal5({ status, value: message ? { message } : {} });
+  }
+  if (at.id === "version" && action.id === "update")
+    return refusal5(await asked8(context, updateAnswer, "POST", "kuvo/update", { now: true }));
+  return noActions();
+}
 async function noActions() {
   return { status: 404, message: "That isn't something it does." };
 }
 var mtime2 = (file) => {
   try {
-    return fs191.statSync(file).mtimeMs;
+    return fs192.statSync(file).mtimeMs;
   } catch {
     return 0;
   }
@@ -62901,7 +63215,8 @@ var PAGES2 = {
   git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime2(CONFIG_FILE)}` },
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
-  archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) }
+  archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path199.join(RUN, "permissions.json"))} ${mtime2(path199.join(RUN, "update.json"))} ${mtime2(path199.join(RUN, "update.lock"))} ${mtime2(path199.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
 };
 var followers2 = new Set;
 var changed5 = () => {
@@ -62947,7 +63262,7 @@ async function* settingsPageRoute(context, match) {
   if (sectionPart === undefined) {
     if (method !== "GET")
       return yield* json(405, { message: "Read them with GET." });
-    return yield* json(200, { sections: SECTIONS });
+    return yield* json(200, { sections: SECTIONS.map((each) => each === COMPUTER ? { ...each, title: computerTitle(context) } : each) });
   }
   const id = idOf6(sectionPart);
   const section = id && Object.hasOwn(PAGES2, id) ? PAGES2[id] : undefined;
@@ -62973,7 +63288,7 @@ async function* settingsPageRoute(context, match) {
   if (!holdsVault()) {
     const answer = await askHolder(request, signal);
     if (answer) {
-      const body = answer.status === 404 && !/"message"/.test(Buffer.from(answer.body, "base64").toString()) ? Buffer.from(JSON.stringify({ message: "This computer's box is updating: try again in a moment." })) : Buffer.from(answer.body, "base64");
+      const body = answer.status === 404 && !/"message"/.test(Buffer.from(answer.body, "base64").toString()) ? Buffer.from(JSON.stringify({ message: "Kuvo on this computer is updating: try again in a moment." })) : Buffer.from(answer.body, "base64");
       return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body }];
     }
   }
@@ -63062,7 +63377,7 @@ async function* movesRoute(context) {
     given = null;
   }
   if (!isObject(given) || !KINDS6.includes(given.kind) || typeof given.id !== "string" || typeof given.to !== "string") {
-    return yield* json(400, { message: `Say what moves where: {"kind": "bot" | "chat" | "group", "id": …, "to": <its box's key>}.` });
+    return yield* json(400, { message: `Say what moves where: {"kind": "bot" | "chat" | "group", "id": …, "to": <its computer's key>}.` });
   }
   const outcome = await startMove(given.kind, given.id, given.to);
   if (signal?.aborted)
@@ -63092,118 +63407,6 @@ async function* movePlacesRoute(context) {
 
 // box/src/link/server/router.ts
 init_machines();
-
-// box/src/link/permissions.ts
-init_files2();
-import { spawnSync as spawnSync19 } from "node:child_process";
-import fs192 from "node:fs";
-import path199 from "node:path";
-init_home();
-function runs(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function startedAt(pid) {
-  const asked = spawnSync19("/bin/ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
-  const ran = asked.status === 0 ? (asked.stdout ?? "").trim().match(/^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/) : null;
-  if (!ran)
-    return null;
-  const seconds = Number(ran[1] ?? 0) * 86400 + Number(ran[2] ?? 0) * 3600 + Number(ran[3]) * 60 + Number(ran[4]);
-  return Date.now() / 1000 - seconds;
-}
-function wroteIt(pid, started) {
-  if (!runs(pid))
-    return false;
-  const began = startedAt(pid);
-  return began !== null && Math.abs(began - started) <= 3;
-}
-var PERMISSIONS = [
-  { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
-  { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
-];
-var LATER = () => path199.join(K, "box", "permissions-later.json");
-function putOff() {
-  try {
-    const kept = parsed(fs192.readFileSync(LATER(), "utf8"));
-    return new Set(isObject(kept) && Array.isArray(kept.later) ? kept.later.filter((id) => typeof id === "string") : []);
-  } catch {
-    return new Set;
-  }
-}
-function keepPutOff(later) {
-  if (!later.size)
-    return fs192.rmSync(LATER(), { force: true });
-  fs192.mkdirSync(path199.dirname(LATER()), { recursive: true, mode: 448 });
-  writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
-}
-function boxPermissions() {
-  const applies = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
-  const later = applies ? putOff() : new Set;
-  const said = (allowed) => ({
-    applies,
-    name: applies ? HELPER_NAME : null,
-    known: allowed !== null,
-    screenRecording: allowed ? allowed.screenRecording : null,
-    accessibility: allowed ? allowed.accessibility : null,
-    bundle: applies ? helperBundle() : null,
-    list: applies ? PERMISSIONS.map((each) => ({ ...each, allowed: allowed ? allowed[each.id] : null, asks: allowed !== null && !allowed[each.id] && !later.has(each.id) })) : []
-  });
-  const unknown = said(null);
-  if (!applies)
-    return unknown;
-  let noted;
-  try {
-    noted = parsed(fs192.readFileSync(path199.join(K, "run", "permissions.json"), "utf8"));
-  } catch {
-    return unknown;
-  }
-  if (!isObject(noted) || noted.v !== 1 || typeof noted.pid !== "number" || !Number.isInteger(noted.pid) || noted.pid <= 0)
-    return unknown;
-  if (typeof noted.started !== "number" || !Number.isFinite(noted.started) || !wroteIt(noted.pid, noted.started))
-    return unknown;
-  if (typeof noted.screenRecording !== "boolean" || typeof noted.accessibility !== "boolean")
-    return unknown;
-  const allowed = { screenRecording: noted.screenRecording, accessibility: noted.accessibility };
-  const still = new Set([...later].filter((id) => PERMISSIONS.some((each) => each.id === id && !allowed[each.id])));
-  if (still.size !== later.size) {
-    try {
-      keepPutOff(still);
-    } catch {}
-    later.clear();
-    for (const id of still)
-      later.add(id);
-  }
-  return said(allowed);
-}
-async function* permissionsRoute({ request, json }) {
-  const method = request.method.toUpperCase();
-  if (method === "GET")
-    return yield* json(200, boxPermissions());
-  if (method !== "POST")
-    return yield* json(405, {});
-  let asked;
-  try {
-    asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8"));
-  } catch {
-    asked = null;
-  }
-  const id = isObject(asked) ? asked.later : null;
-  if (typeof id !== "string" || !PERMISSIONS.some((each) => each.id === id))
-    return yield* json(400, { message: "Say which permission to ask about later." });
-  const now = boxPermissions();
-  if (!now.applies)
-    return yield* json(409, { message: "Nothing on this computer needs macOS's permission." });
-  try {
-    keepPutOff(new Set([...putOff(), id]));
-  } catch {
-    return yield* json(500, { message: "Kuvo couldn't keep that on this Mac. Try again." });
-  }
-  return yield* json(200, boxPermissions());
-}
 
 // box/src/link/mac/app.ts
 import fs193 from "node:fs";
@@ -63417,7 +63620,7 @@ async function hostOpens(bundle) {
     if (response.status === 410)
       return GONE3;
     if (response.status === 404)
-      return couldntOpen("what runs this box can't open it yet");
+      return couldntOpen("Kuvo on this Mac can't open it yet");
     const why = isObject(answer) && typeof answer.message === "string" && answer.message.trim() ? answer.message.slice(0, 300) : `it said ${response.status}`;
     return couldntOpen(why);
   } catch (error) {
@@ -63452,7 +63655,7 @@ function waitUntil(ready, deadline, signal) {
   });
 }
 var OPEN_WAYS = { open: hostOpens, now: () => Date.now(), until: waitUntil };
-var ONLY_MAC = "Only a Mac's box in a home of its own has its app register with it.";
+var ONLY_MAC = "Only Kuvo on a Mac in its own folder has its app register with it.";
 async function* appRoute({ request, json }) {
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "POST")
@@ -63508,7 +63711,7 @@ init_known();
 init_state();
 import crypto64 from "node:crypto";
 var ONLY_APP = "Only Kuvo Code on this Mac can ask for that.";
-var ONLY_OWN_HOME = "Only a Mac's box in a home of its own does this for its app.";
+var ONLY_OWN_HOME = "Only Kuvo on a Mac in its own folder does this for its app.";
 var KEY_TEXT2 = /^[A-Za-z0-9_-]{43}$/;
 var MACHINE = /^[^\0]{1,300}$/;
 async function macIdentity() {
