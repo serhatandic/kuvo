@@ -651,6 +651,32 @@ private final class InTheTests {}
         #expect(text(home.appending(path: "keep.log")) == "ended\n", "started once, never again")
     }
 
+    /// Stop Kuvo on this Mac (`kuvo-start pause`): marked, then its keeper ended. The helper goes
+    /// cleanly (launchd doesn't start it again), its server with it; the next helper to start (at
+    /// login, or as the app opens) runs the box again, the mark from before it notwithstanding.
+    @Test func kuvoStoppedUntilItNextStartsTakesItsHelperWithItAndTheNextStartRunsItAgain() throws {
+        try standIns()
+        let helper = try keeping()
+        defer { cleanUp([helper]) }
+        until { !text(home.appending(path: "serve.stdin")).isEmpty && !text(run.appending(path: "box.pid")).isEmpty }
+        try write(run.appending(path: "paused"), "")
+        try write(home.appending(path: "keep.end"), "")
+        until { !helper.isRunning }
+        #expect(helper.ended.value == 0)
+        #expect(text(home.appending(path: "serve.log")) == "closed\n")
+        #expect(text(home.appending(path: "keep.log")) == "ended\n", "started once, never again")
+        // The next start: the mark is older than it, so it keeps the box again.
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-60)], ofItemAtPath: run.appending(path: "paused").path)
+        try FileManager.default.removeItem(at: home.appending(path: "keep.end"))
+        try FileManager.default.removeItem(at: home.appending(path: "serve.stdin"))
+        try FileManager.default.removeItem(at: run.appending(path: "box.pid"))
+        let next = try keeping()
+        defer { cleanUp([next]) }
+        until { !text(home.appending(path: "serve.stdin")).isEmpty && !text(run.appending(path: "box.pid")).isEmpty }
+        #expect(next.isRunning)
+        #expect(!text(run.appending(path: "box.pid")).isEmpty, "its keeper runs again")
+    }
+
     @Test func aSecondHelperForTheSameBoxGoesAtOnce() throws {
         try standIns()
         let first = try keeping()
