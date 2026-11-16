@@ -296,6 +296,7 @@ export const WORK_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work/background", answers: { 200: BACKGROUND_LIST } },
   { route: "GET kuvo/work/background/events", answers: { 200: BACKGROUND_LIST } },
   { route: "GET kuvo/work/background/:session", answers: { 200: SESSION_BACKGROUND } },
+  { route: "GET kuvo/work/background/:session/events", answers: { 200: SESSION_BACKGROUND } },
   { route: "POST kuvo/bots/:id/stop-all", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/work/oversight", answers: { 200: OVERSIGHT } },
   { route: "GET kuvo/work/oversight/events", answers: { 200: OVERSIGHT } },

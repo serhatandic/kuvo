@@ -75,6 +75,114 @@
         }
        }
       },
+      "options?": {
+       "object": {
+        "engine": {
+         "list": {
+          "object": {
+           "approval": {
+            "oneOf": [
+             {
+              "literal": "askFirst"
+             },
+             {
+              "literal": "acceptEdits"
+             },
+             {
+              "literal": "auto"
+             },
+             {
+              "literal": "fullAccess"
+             }
+            ]
+           },
+           "unavailable?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           },
+           "held?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           }
+          }
+         }
+        },
+        "agents": {
+         "list": {
+          "object": {
+           "approval": {
+            "oneOf": [
+             {
+              "literal": "askFirst"
+             },
+             {
+              "literal": "acceptEdits"
+             },
+             {
+              "literal": "auto"
+             },
+             {
+              "literal": "fullAccess"
+             }
+            ]
+           },
+           "unavailable?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           },
+           "held?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      },
       "otherComputers?": "bool"
      }
     }
@@ -138,6 +246,114 @@
              ]
             },
             "why": "string"
+           }
+          }
+         }
+        }
+       }
+      },
+      "options?": {
+       "object": {
+        "engine": {
+         "list": {
+          "object": {
+           "approval": {
+            "oneOf": [
+             {
+              "literal": "askFirst"
+             },
+             {
+              "literal": "acceptEdits"
+             },
+             {
+              "literal": "auto"
+             },
+             {
+              "literal": "fullAccess"
+             }
+            ]
+           },
+           "unavailable?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           },
+           "held?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           }
+          }
+         }
+        },
+        "agents": {
+         "list": {
+          "object": {
+           "approval": {
+            "oneOf": [
+             {
+              "literal": "askFirst"
+             },
+             {
+              "literal": "acceptEdits"
+             },
+             {
+              "literal": "auto"
+             },
+             {
+              "literal": "fullAccess"
+             }
+            ]
+           },
+           "unavailable?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
+           },
+           "held?": {
+            "object": {
+             "reason": {
+              "oneOf": [
+               {
+                "literal": "sandbox"
+               },
+               {
+                "literal": "fullAccessOff"
+               }
+              ]
+             },
+             "why": "string"
+            }
            }
           }
          }
@@ -25931,6 +26147,39 @@
   },
   {
    "route": "GET kuvo/work/background/:session",
+   "answers": {
+    "200": {
+     "object": {
+      "commands": {
+       "list": {
+        "object": {
+         "id": "string",
+         "command": "string",
+         "started": "number",
+         "folder?": "string",
+         "ports?": {
+          "list": "number"
+         },
+         "agents?": "bool"
+        }
+       }
+      },
+      "subagents": {
+       "list": {
+        "object": {
+         "session": "string",
+         "since": "number",
+         "title?": "string",
+         "asking?": "bool"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work/background/:session/events",
    "answers": {
     "200": {
      "object": {

@@ -37,7 +37,7 @@ import { workAccounts } from "../work/accounts";
 import type { BotWork, WorkAnswer } from "../../shared/routes/work";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
-export const WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+))?)?|bots\/([^/]+)\/stop-all)$/;
+export const WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+)(\/events)?)?)?|bots\/([^/]+)\/stop-all)$/;
 export const WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
 export const GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
 export const APP_ICON_ROUTE = "kuvo/work/apps/icon";
@@ -103,17 +103,24 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   }
   // One session's, each one: the bars over a client's composer (commands left running, subagents
   // at work), each subagent with its title and whether it waits on you, as the session lists say.
+  // (Followed, a line now and one as it changes: a command past the counts' limit included.)
   if (match[1] !== undefined) {
     if (method !== "GET") return yield* json(405, {});
-    const { commands, subagents } = readSessionBackground(decodeURIComponent(match[1]));
-    const listed = keptList()?.sessions ?? {};
-    return yield* json(200, {
-      commands,
-      subagents: subagents.map(each => {
-        const facts = listed[each.id]?.facts;
-        return { session: each.id, since: each.since, ...(facts?.title ? { title: facts.title } : {}), ...(facts?.asked !== undefined ? { asking: true } : {}) };
-      }),
-    });
+    const session = decodeURIComponent(match[1]);
+    const now = () => {
+      const { commands, subagents } = readSessionBackground(session);
+      const listed = keptList()?.sessions ?? {};
+      return {
+        commands,
+        subagents: subagents.map(each => {
+          const facts = listed[each.id]?.facts;
+          return { session: each.id, since: each.since, ...(facts?.title ? { title: facts.title } : {}), ...(facts?.asked !== undefined ? { asking: true } : {}) };
+        }),
+      };
+    };
+    if (!match[2]) return yield* json(200, now());
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(now, backgroundFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
   }
   // What bots just did to their sessions: a list now, and again with each mark.
   if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
@@ -136,7 +143,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   }
   // Every session of a bot's work stopped.
   if (method !== "POST") return yield* json(405, {});
-  const bot = decodeURIComponent(match[2] ?? "");
+  const bot = decodeURIComponent(match[3] ?? "");
   if (!botHere(bot)) return yield* json(404, { message: "There's no such bot here." });
   const targets = targetsOf({ readEngine, bridge });
   if (!targets.length) return yield* json(503, { message: "The engine isn't running." });

@@ -211,7 +211,13 @@ export function approvalHere(): ApprovalHere {
     const not = unavailable("auto", { agents });
     return not ? { held: not } : {};
   };
-  return { fullAccess: fullAccessAllowed(), default: defaultApproval(), auto: { engine: auto(false), agents: auto(true) }, otherComputers: otherComputersAllowed() };
+  // Each one a new conversation can start in, on the engine and on the coding agents, as a
+  // conversation's own `options` say them (#764: no client works out what can be had here).
+  const options = (agents: boolean) => APPROVALS.map(each => {
+    const not = unavailable(each, { agents });
+    return { approval: each, ...(not ? (not.reason === "sandbox" ? { held: not } : { unavailable: not }) : {}) };
+  });
+  return { fullAccess: fullAccessAllowed(), default: defaultApproval(), auto: { engine: auto(false), agents: auto(true) }, options: { engine: options(false), agents: options(true) }, otherComputers: otherComputersAllowed() };
 }
 
 /** Each conversation kept with an approval that comes to something else now (the sandbox started

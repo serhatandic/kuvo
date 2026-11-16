@@ -1706,6 +1706,7 @@ var init_work = __esm(() => {
     { route: "GET kuvo/work/background", answers: { 200: BACKGROUND_LIST } },
     { route: "GET kuvo/work/background/events", answers: { 200: BACKGROUND_LIST } },
     { route: "GET kuvo/work/background/:session", answers: { 200: SESSION_BACKGROUND } },
+    { route: "GET kuvo/work/background/:session/events", answers: { 200: SESSION_BACKGROUND } },
     { route: "POST kuvo/bots/:id/stop-all", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
     { route: "GET kuvo/work/oversight", answers: { 200: OVERSIGHT } },
     { route: "GET kuvo/work/oversight/events", answers: { 200: OVERSIGHT } },
@@ -27984,7 +27985,11 @@ function approvalHere() {
     const not = unavailable("auto", { agents });
     return not ? { held: not } : {};
   };
-  return { fullAccess: fullAccessAllowed(), default: defaultApproval(), auto: { engine: auto(false), agents: auto(true) }, otherComputers: otherComputersAllowed() };
+  const options = (agents) => APPROVALS.map((each) => {
+    const not = unavailable(each, { agents });
+    return { approval: each, ...not ? not.reason === "sandbox" ? { held: not } : { unavailable: not } : {} };
+  });
+  return { fullAccess: fullAccessAllowed(), default: defaultApproval(), auto: { engine: auto(false), agents: auto(true) }, options: { engine: options(false), agents: options(true) }, otherComputers: otherComputersAllowed() };
 }
 var MOST_PAGES = 2500;
 async function reapplyApprovals(engine, bridge, settings = false) {
@@ -41765,7 +41770,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "34e5d9c520f4";
+var BRIDGE_VERSION = "20143389a9fa";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62207,7 +62212,7 @@ init_home();
 // box/src/link/areas/work.ts
 import fs189 from "node:fs";
 init_home();
-var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+))?)?|bots\/([^/]+)\/stop-all)$/;
+var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+)(\/events)?)?)?|bots\/([^/]+)\/stop-all)$/;
 var WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
 var GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
 var APP_ICON_ROUTE = "kuvo/work/apps/icon";
@@ -62269,15 +62274,22 @@ async function* workRoute(context, match) {
   if (match[1] !== undefined) {
     if (method !== "GET")
       return yield* json(405, {});
-    const { commands, subagents } = readSessionBackground(decodeURIComponent(match[1]));
-    const listed = keptList()?.sessions ?? {};
-    return yield* json(200, {
-      commands,
-      subagents: subagents.map((each) => {
-        const facts = listed[each.id]?.facts;
-        return { session: each.id, since: each.since, ...facts?.title ? { title: facts.title } : {}, ...facts?.asked !== undefined ? { asking: true } : {} };
-      })
-    });
+    const session = decodeURIComponent(match[1]);
+    const now = () => {
+      const { commands, subagents } = readSessionBackground(session);
+      const listed = keptList()?.sessions ?? {};
+      return {
+        commands,
+        subagents: subagents.map((each) => {
+          const facts = listed[each.id]?.facts;
+          return { session: each.id, since: each.since, ...facts?.title ? { title: facts.title } : {}, ...facts?.asked !== undefined ? { asking: true } : {} };
+        })
+      };
+    };
+    if (!match[2])
+      return yield* json(200, now());
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(now, backgroundFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
   }
   if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
     if (method !== "GET")
@@ -62304,7 +62316,7 @@ async function* workRoute(context, match) {
   }
   if (method !== "POST")
     return yield* json(405, {});
-  const bot = decodeURIComponent(match[2] ?? "");
+  const bot = decodeURIComponent(match[3] ?? "");
   if (!botHere(bot))
     return yield* json(404, { message: "There's no such bot here." });
   const targets = targetsOf({ readEngine, bridge });

@@ -2364,8 +2364,9 @@ client shows it from the same routes.
     Every command it left running however long it has run (`agents`: a coding agent's, whose output is
     `kuvo/agents/api/shell/<id>/output`; else the engine's `api/shell/<id>/output` in `folder`), stopped
     with `POST kuvo/shell/<id>/stop`; each subagent with its title and whether it waits on you, as the
-    session lists say. A client reads it again as `kuvo/work/background/events` or what the
-    conversation asks changes.
+    session lists say. **`GET kuvo/work/background/<session>/events`** (ndjson) is the same now and at
+    each change, a command past the counts' limit included (one that ends then goes); a client reads
+    it again too as what the conversation asks changes.
   - **Counting at work**: `kuvo/work`'s `state` and `today.working`, a bot's limits,
     `list_sessions` and every client's At work all go by the same fact. One running 6 hours (a dev server) stops counting, though
     it may still run, and a client's list of commands still shows it. A goal's Mac stays awake for it
@@ -9373,6 +9374,8 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   isn't one of them, 409 `{message, reason}` for Full Access where it can't be picked
   (`fullAccessOff`), 502 where the engine didn't take it.
 - `GET kuvo/approval`: this computer's `{fullAccess, default, auto: {engine, agents}, otherComputers?}`
+  (#764: and `options: {engine, agents}`, each mode a new conversation can start in there, as a
+  conversation's own `options` say them, which a new conversation's mode menu shows as they are)
   (`otherComputers`: whether your other computers may start work here, "Peers",
   Starts; `PATCH {otherComputers}` sets it alone): whether you
   confirmed Full Access here (`box/approval.json`), the one a new conversation starts with
