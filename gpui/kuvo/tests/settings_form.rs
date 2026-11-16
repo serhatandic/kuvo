@@ -166,43 +166,19 @@ fn a_file_not_chosen_goes_as_it_opened_and_one_too_big_by_its_name_and_size(cx: 
     assert_eq!(value(&sheet, cx, "key"), json!({ "name": "huge.bin", "size": 1_000_001 }));
 }
 
+/// What a secret keeps isn't read here (that asks a client to make sure it's you first, which this
+/// app can't yet): its eye shows only what's typed, and the sheet says where to see what's kept.
 #[gpui::test]
-fn show_reads_a_kept_secret_only_when_asked_and_hides_it_again(cx: &mut TestAppContext) {
+fn show_reads_nothing_kept_and_shows_only_whats_typed(cx: &mut TestAppContext) {
     let (the_box, sheet, cx) = open(cx);
-    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN), "nothing read as it opens");
     click(cx, "settings-form-password-show");
-    assert_eq!(the_box.seen.lock().unwrap().iter().filter(|seen| seen.route() == SHOWN).count(), 1);
-    assert_eq!(value(&sheet, cx, "password"), json!("kept pass"), "the kept value, and only its own");
-    assert!(sheet.read_with(cx, |sheet, _| sheet.reveals("password")));
-    // What's shown is still checked as dots.
-    let checks = the_box.bodies("POST", &format!("{FORM}/check"));
-    assert_eq!(checks.last().unwrap()["values"]["password"], json!("•••••••••"));
-    assert!(!serde_json::to_string(&checks).unwrap().contains("kept pass") && !serde_json::to_string(&checks).unwrap().contains("never shown"));
-    // Hide: dots again, nothing asked; Show again shows what's there, without asking again.
-    click(cx, "settings-form-password-show");
-    assert!(!sheet.read_with(cx, |sheet, _| sheet.reveals("password")));
-    click(cx, "settings-form-password-show");
-    assert!(sheet.read_with(cx, |sheet, _| sheet.reveals("password")));
-    assert_eq!(the_box.seen.lock().unwrap().iter().filter(|seen| seen.route() == SHOWN).count(), 1);
-    assert_eq!(value(&sheet, cx, "password"), json!("kept pass"));
-
-    // Typed first, Show shows what's typed: nothing's read.
+    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN), "nothing read");
+    assert_eq!(value(&sheet, cx, "password"), json!(""));
     click(cx, "settings-form-pin-field");
     cx.simulate_input("1234");
     click(cx, "settings-form-pin-show");
     assert!(sheet.read_with(cx, |sheet, _| sheet.reveals("pin")));
-    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != "kuvo/things/one/gone"));
-}
-
-#[gpui::test]
-fn a_kept_secret_that_cant_be_read_says_so_and_the_field_stays_empty(cx: &mut TestAppContext) {
-    let (the_box, sheet, cx) = open(cx);
-    click(cx, "settings-form-pin-show");
-    assert!(the_box.seen.lock().unwrap().iter().any(|seen| seen.route() == "kuvo/things/one/gone"));
-    assert!(sheet.read_with(cx, |sheet, _| sheet.refused().is_some()));
-    assert!(shown(cx, "settings-form-refused"));
-    assert_eq!(value(&sheet, cx, "pin"), json!(""));
-    assert!(!sheet.read_with(cx, |sheet, _| sheet.reveals("pin")));
+    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN && seen.route() != "kuvo/things/one/gone"));
 }
 
 #[gpui::test]

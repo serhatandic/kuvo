@@ -29,6 +29,14 @@ use kuvo_box::accounts::said;
 /// The most choices a `choice` field shows side by side; more are a menu.
 const MOST_SEGMENTS: usize = 4;
 
+/// Whether Show reads what a secret field keeps (`shows`). Not yet: reading a kept value asks a
+/// client to make sure it's you first (Touch ID, as the old Mac app did), which this app can't yet;
+/// until it can, Show only shows what's typed, and the sheet says where to see what's kept.
+const READS_KEPT: bool = false;
+
+/// Where to see what's kept meanwhile.
+const KEPT_ELSEWHERE: &str = "To see what’s kept, use Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet.";
+
 /// How long after the last key the values are checked.
 const SETTLE: Duration = Duration::from_millis(300);
 
@@ -211,6 +219,11 @@ impl FormSheet {
         cx.notify();
     }
 
+    /// Whether nothing on the form can be changed from here (each field's `can` or `verified`).
+    pub fn all_locked(&self) -> bool {
+        !self.form.fields.is_empty() && self.form.fields.iter().all(is_locked)
+    }
+
     /// The why drawn under a field: the box's words, or that it makes sure it's you first.
     pub fn field_why(&self, id: &str) -> Option<String> {
         self.form.fields.iter().find(|field| field.id == id).and_then(why_of)
@@ -231,7 +244,7 @@ impl FormSheet {
             cx.notify();
             return;
         }
-        let Some(shows) = field.shows.clone().filter(|_| entity.read(cx).text().is_empty()) else {
+        let Some(shows) = field.shows.clone().filter(|_| READS_KEPT && entity.read(cx).text().is_empty()) else {
             if !field.multi {
                 entity.update(cx, |text, cx| text.set_masked(false, cx));
                 self.revealed.insert(id.to_owned());
@@ -377,7 +390,7 @@ impl FormSheet {
     }
 
     pub fn submit(&mut self, cx: &mut Context<Self>) {
-        if !self.is_ready() {
+        if !self.is_ready() || self.all_locked() {
             return;
         }
         self.sending = true;
@@ -478,7 +491,11 @@ impl Render for FormSheet {
             body.push(self.field(&field, &values, cx));
         }
         let ready = self.is_ready();
-        let footer_note = self.form.note.clone();
+        // (Nothing here can be changed from this app: its one reason, once, and nothing to send.)
+        let all_locked = self.all_locked();
+        let kept_elsewhere = (!READS_KEPT && self.form.fields.iter().any(|field| field.shows.is_some())).then_some(KEPT_ELSEWHERE);
+        let footer_note = if all_locked { self.form.fields.first().and_then(why_of) } else { [self.form.note.as_deref(), kept_elsewhere].into_iter().flatten().collect::<Vec<_>>().join(" ").into() };
+        let footer_note = footer_note.filter(|note| !note.is_empty());
         div()
             .id("settings-form")
             .debug_selector(|| "settings-form".into())
@@ -539,8 +556,8 @@ impl Render for FormSheet {
                             .gap(space::S2)
                             .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text_muted).children(footer_note))
                             .when(self.sending, |d| d.child(spinner("settings-form-sending", IconSize::Nav, c.text_muted)))
-                            .child(Button::new("settings-form-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
-                            .child(Button::new("settings-form-submit", self.form.submit.clone()).primary().disabled(!ready).on_click(cx.listener(|this, _, _, cx| this.submit(cx)))),
+                            .child(Button::new("settings-form-cancel", if all_locked { "Close" } else { "Cancel" }).on_click(cx.listener(|this, _, _, cx| this.cancel(cx))))
+                            .when(!all_locked, |d| d.child(Button::new("settings-form-submit", self.form.submit.clone()).primary().disabled(!ready).on_click(cx.listener(|this, _, _, cx| this.submit(cx))))),
                     ),
             )
     }
@@ -551,7 +568,8 @@ impl FormSheet {
         let c = cx.theme().colors.clone();
         let id = field.id.clone();
         let selector = format!("settings-form-{id}");
-        let why = why_of(field);
+        // (Where none of the form can be changed here, its reason is said once, under the fields.)
+        let why = if self.all_locked() { None } else { why_of(field) };
         let disabled = why.is_some() || is_locked(field);
         let control: AnyElement = match field.kind {
             FieldKind::Text | FieldKind::Lines => match self.texts.get(&id).cloned() {
@@ -581,7 +599,8 @@ impl FormSheet {
                     .into_any_element()
             }
             // More choices than fit side by side (a model): a menu, as a choice row's.
-            FieldKind::Choice if field.choices.len() > MOST_SEGMENTS => {
+            // (And any whose choices have lines, which a segment can't show.)
+            FieldKind::Choice if field.choices.len() > MOST_SEGMENTS || field.choices.iter().any(|choice| choice.line.is_some()) => {
                 let chosen = values.get(&id).and_then(Value::as_str).unwrap_or_default().to_owned();
                 let shown = field.choices.iter().find(|choice| choice.id == chosen).map(|choice| choice.title.clone()).unwrap_or_else(|| chosen.clone());
                 let trigger_id = SharedString::from(format!("settings-form-{id}-menu"));
@@ -740,7 +759,7 @@ impl FormSheet {
                 Some(entity) => {
                     let revealed = self.revealed.contains(&id);
                     // (A note's lines show as they are: its eye is there only to read what's kept.)
-                    let eye = !disabled && (!field.multi || (field.shows.is_some() && entity.read(cx).text().is_empty()));
+                    let eye = !disabled && (!field.multi || (READS_KEPT && field.shows.is_some() && entity.read(cx).text().is_empty()));
                     let (icon, label) = if revealed { (IconName::EyeOff, "Hide") } else { (IconName::Eye, "Show") };
                     let id = id.clone();
                     div()

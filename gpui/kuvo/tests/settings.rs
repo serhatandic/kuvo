@@ -1476,9 +1476,9 @@ fn add_item_checks_what_is_typed_without_the_value_and_sends_it_only_to_add_it(c
     assert!(shown(cx, "settings-form"));
     assert!(shown(cx, "settings-form-password") && !shown(cx, "settings-form-value") && !shown(cx, "settings-form-file"));
     click(cx, "settings-form-name-field");
-    cx.simulate_input("GitHub");
+    cx.simulate_input("Linear");
     click(cx, "settings-form-site-field");
-    cx.simulate_input("github.com");
+    cx.simulate_input("linear.app");
     click(cx, "settings-form-password-field");
     cx.simulate_input("abc");
     assert!(form_words(&view, cx).contains(&("password".into(), "A value needs at least 4 characters, so it can be hidden from agents.".into())));
@@ -1499,32 +1499,35 @@ fn add_item_checks_what_is_typed_without_the_value_and_sends_it_only_to_add_it(c
     assert!(!shown(cx, "settings-form"), "done: the sheet closes");
 }
 
+/// What a secret keeps isn't read here: that asks a client to make sure it's you first (Touch ID),
+/// which this app can't yet. Its eye shows only what's typed, and a sheet left with the page goes,
+/// with what was typed in it.
 #[gpui::test]
-fn a_value_shows_only_when_asked_and_is_gone_with_the_sheet(cx: &mut TestAppContext) {
+fn a_kept_value_isnt_read_here_and_whats_typed_goes_with_the_sheet(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.show_vault();
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "vault");
     let github = vault_item("GitHub");
-    let id = github.trim_start_matches("item-").to_owned();
-    let secret = kuvo::stand_in::settings::vault::made_up(&id, "password");
     click(cx, &format!("row-{github}-menu"));
     click(cx, "menu-item-Edit…");
     assert!(shown(cx, "settings-form"));
-    // Opened empty: nothing read from the vault.
     assert_eq!(form_text(&view, cx, "password").as_deref(), Some(""));
-    assert!(stand_in.with_vault(|vault| vault.shown.is_empty()));
     click(cx, "settings-form-password-show");
-    assert_eq!(stand_in.with_vault(|vault| vault.shown.clone()), vec![id.clone()]);
-    assert_eq!(form_text(&view, cx, "password").as_deref(), Some(secret.as_str()));
-    // Nowhere but its field: not on the page under the sheet.
-    assert!(!view.read_with(cx, |view, _| view.page_words()).contains(&secret));
-    click(cx, "settings-form-cancel");
+    assert!(stand_in.with_vault(|vault| vault.shown.is_empty()), "nothing read from the vault");
+    assert_eq!(form_text(&view, cx, "password").as_deref(), Some(""));
+    // What's typed shows when asked.
+    click(cx, "settings-form-password-field");
+    cx.simulate_input("a-new-password");
+    click(cx, "settings-form-password-show");
+    assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).reveals("password")));
+    assert!(stand_in.with_vault(|vault| vault.shown.is_empty()));
+    // Another section: the sheet and what was typed in it are gone.
+    section(&workspace, cx, "clock");
+    assert!(view.read_with(cx, |view, _| view.form().is_none()));
+    section(&workspace, cx, "vault");
     assert!(!shown(cx, "settings-form"));
-    click(cx, &format!("row-{github}-menu"));
-    click(cx, "menu-item-Edit…");
-    assert_eq!(form_text(&view, cx, "password").as_deref(), Some(""), "opened again: empty, read only when asked");
-    assert_eq!(stand_in.with_vault(|vault| vault.shown.len()), 1);
+    assert!(stand_in.with_vault(|vault| vault.sent.is_empty()));
 }
 
 #[gpui::test]
@@ -1541,6 +1544,9 @@ fn who_can_use_it_shows_who_may_and_leaves_changing_it_to_where_its_made_sure_it
     click(cx, "settings-form-bot-bot_scout-no");
     assert_eq!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["bot-bot_scout"].clone()), json!("own"));
     assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).field_why("bot-bot_scout")).is_some_and(|why| why.contains("iPhone")));
+    // Nothing on it can be changed here: said once, with nothing to send.
+    assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).all_locked()));
+    assert!(!shown(cx, "settings-form-submit") && shown(cx, "settings-form-cancel"));
 }
 
 #[gpui::test]

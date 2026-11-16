@@ -14,6 +14,11 @@ const NOT_YET: &str = "Not in the desktop app yet";
 /// Why what makes sure it's you first (`verified`) isn't done here: this app can't yet.
 pub(super) const VERIFIED_ELSEWHERE: &str = "Do this in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet.";
 
+/// Why one action that makes sure it's you first can't be pressed here, by its name.
+pub(super) fn verified_elsewhere(title: &str) -> String {
+    format!("{} is done in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet.", title.trim_end_matches('…'))
+}
+
 /// How a page is drawn from here.
 pub struct Drawing<'a> {
     pub section: &'a str,
@@ -254,9 +259,12 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Unknown => Control::Text(NEWER.into()),
         }
     };
-    // One that makes sure it's you first is drawn, and can't be pressed here: its row says why.
-    if why.is_none() && described.actions.iter().chain(described.add.iter()).any(|action| action.verified) {
-        why = Some(VERIFIED_ELSEWHERE.into());
+    // One that makes sure it's you first is drawn, and can't be pressed here: its row says why,
+    // naming it (the row's other actions work here).
+    if why.is_none()
+        && let Some(action) = described.actions.iter().chain(described.add.iter()).find(|action| action.verified)
+    {
+        why = Some(verified_elsewhere(&action.title));
     }
     let mut drawn = Row::new(key, described.title.clone(), described.line.clone().unwrap_or_default(), control).warning(described.tone == Said::Warning).why(why);
     // An action's row with a size: the size before its buttons.
@@ -324,7 +332,7 @@ mod tests {
         ] }] }))
         .unwrap();
         let filters = std::collections::HashMap::new();
-        let drawing = Drawing { section: "asks", busy: &[], replacing: &[], here: true, filters: &filters };
+        let drawing = Drawing { section: "asks", busy: &[], replacing: &[], here: true, filters: &filters, expanded: &[] };
         match blocks(&page, &drawing).into_iter().next() {
             Some(Block::Group(_, _, mut rows)) => rows.remove(0).control,
             _ => panic!("no group"),
@@ -358,10 +366,10 @@ mod tests {
         ] }] }))
         .unwrap();
         let filters = std::collections::HashMap::new();
-        let drawing = Drawing { section: "things", busy: &[], replacing: &[], here: true, filters: &filters };
+        let drawing = Drawing { section: "things", busy: &[], replacing: &[], here: true, filters: &filters, expanded: &[] };
         let Some(Block::Group(_, _, rows)) = blocks(&page, &drawing).into_iter().next() else { panic!("no group") };
         let Control::Buttons(pushes) = &rows[0].control else { panic!("not buttons") };
         assert!(pushes[0].act.is_none() && pushes[1].act.is_some());
-        assert_eq!(rows[0].why.as_deref(), Some(VERIFIED_ELSEWHERE));
+        assert_eq!(rows[0].why.as_deref(), Some("Let It Use is done in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet."));
     }
 }

@@ -528,6 +528,9 @@ impl SettingsView {
         if self.place() != before {
             self.problem = None;
             self.confirm = None;
+            // (A form open for the page left goes with it, and what was typed in it.)
+            self.form = None;
+            self.form_events = None;
             self.folder_picker = None;
             self.replacing.clear();
             self.list_filters.clear();
