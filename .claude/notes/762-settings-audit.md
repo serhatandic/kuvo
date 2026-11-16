@@ -114,7 +114,7 @@ Ours means:
 | Appearance | UI font and size; agent panel font and size | Yes, not in the desktop app yet (0.7) | Yours › Appearance (G4) |
 | Appearance | Reduce motion | No (macOS's own Reduce Motion should be followed) | — (skip as a setting) |
 | Keymap | Base keymap, edit keybindings | No | — (G9: list first) |
-| AI › Agent | Default model; commit message and thread summary models | Yes: Models (new sessions, titles, subagents) | Models |
+| AI › Agent | Default model (commit message and thread summary models exist only in its settings files, not on a page) | Yes: Models (new sessions, titles, subagents) | Models |
 | AI › Agent | Notify when agent waiting: primary screen / all / never | Yes, not in the desktop app yet | Yours › Notifications (G3) |
 | AI › Agent | Play sound when done: never / when hidden / always | Yes, not in the desktop app yet (0.7: switch) | Yours › Notifications (G3) |
 | AI › Agent | Prevent idle sleep | Yes, not in the desktop app yet | Box page This Mac (G1) |
@@ -151,7 +151,7 @@ Many of its sections show only as names in our screenshots; their contents are u
 | Server settings | Storage | Delete files, clear caches and logs | Partly: What Agents Made; 0.7 had logs and downloads | Box page Storage (G6) |
 | Server settings | Sites, Browser profiles | — | No | — (skip) |
 | Server settings | Providers | — | Yes: Accounts | Accounts |
-| Server settings | Import | Agents from a Grok Bot .zip | Partly: 0.7 "Bring Over" from opencode, and import from Claude Code | Yours › General / box page Agents (§4) |
+| Server settings | Import | Agents from a Grok Bot .zip | Partly: 0.7 "Bring Over" from opencode, and import from Claude Code | Box page Engine (§4) |
 | Server settings | Transfer | unconfirmed | Partly: bots and sessions move between computers | — |
 | Server settings | Routines | — | Yes: bots' wake-ups (in bots, not Settings) | Bot editor |
 | Unconfirmed | — | Send key, font size, language, launch at login, export | — | — |
@@ -172,7 +172,7 @@ Box side always means a row the box describes (`kuvo/settings/<section>`, kinds 
 - **Who needs it:** anyone who leaves work running and walks away. On by default; laptop users on battery turn it off.
 - **Who has it:** Codex ("Prevent sleep while running"), Claude ("Keep computer awake"), Zed ("Prevent idle sleep"), 0.7.
 - **Side:** the box. It's a fact about that computer.
-- **What it needs:** the box already keeps the setting (`kuvo/work/settings`, `keepsAwake`, `awakeNow`; `work/awake.ts`). Add one `switch` row to This Mac, written through `PATCH kuvo/work/settings`, with a line that says when it's keeping the Mac awake now (`awakeNow`). On Linux, say plainly that it doesn't apply, or hide the row.
+- **What it needs:** the box already keeps the setting (`kuvo/work/settings`, `keepsAwake`, `awakeNow`; `work/awake.ts`). Add one `switch` row to This Mac, written through `PATCH kuvo/work/settings`, with a line that says when it's keeping the Mac awake now (`awakeNow`). Show the row only where the box keeps its Mac awake itself: a Mac's own Kuvo (`keepsMacAwakeItself()`, `work/awake.ts`), shown from the box's own answer (`awakeNow` present), not from the operating system. A Mac added as a machine, a box beside 0.7, and Linux refuse `keepsAwake` today (`areas/work.ts`); there the page says nothing about it.
 - **Size:** S.
 - **Recommendation:** **Add before the user's move.** Every product has it, it's on by default, and today the desktop app can't turn it off.
 
@@ -279,7 +279,7 @@ Box side always means a row the box describes (`kuvo/settings/<section>`, kinds 
 - **Who has it:** OpenBot (two switches), Zed (diagnostics, metrics), 0.7 (Share anonymous usage). Codex and Claude: unconfirmed in the app.
 - **Side:**
   - Yours, for what the app sends.
-  - If #222 also has boxes send events (they run without an app), the box needs its own switch on its This Mac page, and the app's switch should write both. #222 decides; list it in its brief.
+  - If #222 also has boxes send events (they run without an app), each box gets its own switch on its This Computer page, set there. The app's switch covers only what the app sends, never writing every box's (that would make the Mac a hub). #222 decides; list it in its brief.
 - **Size:** S.
 - **Recommendation:** **Add with #222, before its first event,** so before 0.8. One switch, "Share anonymous usage", on Yours › Privacy, with a link to the privacy page. Not two switches like Zed.
 
@@ -341,7 +341,7 @@ Box side always means a row the box describes (`kuvo/settings/<section>`, kinds 
   - **Stop Kuvo on this Mac…**: confirm, then it stays off until you open the app or log in again. On a machine: "Stop".
   - **Remove Kuvo from this Mac…**: confirm with the box's words of what stops and where its folder is. Runs the uninstall.
   - Each is an `actions` row with a confirm.
-- **Size:** M.
+- **Size:** S–M for Stop; M for Remove.
 - **Recommendation:** **Stop: Add before the user's move,** since 0.7 users had it and the menu bar item (#761) may cover it, so check there first. **Remove: Add before 0.8.**
 
 ### G18. Defaults for new bots
@@ -382,7 +382,6 @@ Section names are rows.rs ids. "Box" means a section the box should describe, so
 - Sessions side by side (halves / compact / joined)
 - Swipe between computers (direction)
 - Open code and text in (editor)
-- Bring Over… from opencode. Its work is the box's, as an action; the row can sit in Yours and call the box.
 - Show in the menu bar (new, G2)
 - Send with Return / ⌘Return (new, G7)
 - Background work, now a fact on This Mac (G2, G17)
@@ -495,12 +494,14 @@ Section names are rows.rs ids. "Box" means a section the box should describe, so
 
 **Box › Engine** (`engine`)
 - Status (Restart / Start). This Mac has Restart.
+- Bring Over… from opencode: an `actions` row. It copies opencode's setup into this computer's engine, so it belongs to the computer, not to Yours.
 - Data folder › Show in Finder
 - Summarize long conversations automatically
 - Format files after changes
 - Shell
 - Web Search (service, API key)
 - Plugins
+- Keep snapshots of files: stays in the settings file, not on the page. Turning it off breaks Undo From Here, so it shouldn't be one click away.
 - Settings file › Open / Show in Finder
 - The rest stays in the file (§3).
 
