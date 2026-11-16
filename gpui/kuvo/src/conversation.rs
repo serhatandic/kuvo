@@ -609,6 +609,20 @@ impl ConversationView {
         }
     }
 
+    /// Reads a picture that couldn't be read again (Try Again), by its source's key.
+    pub fn read_picture_again(&mut self, key: &str, cx: &mut Context<Self>) {
+        if matches!(self.pictures.get(key), Some(Read::Failed { .. })) {
+            self.pictures.remove(key);
+            self.read_pictures(cx);
+            for (ix, entry) in self.entries.iter().enumerate() {
+                if Self::pictures_of(entry, &self.open).iter().any(|picture| picture.source.key() == key) {
+                    self.list.changed(ix);
+                }
+            }
+            cx.notify();
+        }
+    }
+
     /// Opens picture `id` over the conversation.
     pub fn open_picture(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.viewing = Some(id.to_owned());
@@ -893,6 +907,10 @@ impl Render for ConversationView {
             let open: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |id: &str, window: &mut Window, cx: &mut App| {
                 opener.update(cx, |this, cx| this.open_picture(id, window, cx));
             });
+            let reader = view.clone();
+            let again: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |key: &str, _: &mut Window, cx: &mut App| {
+                reader.update(cx, |this, cx| this.read_picture_again(key, cx));
+            });
             let list = chat_list(&self.list, move |ix, _window, cx| {
                 let cx: &App = cx;
                 let this = list_view.read(cx);
@@ -905,7 +923,7 @@ impl Render for ConversationView {
                 };
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
-                let looks = Looks { read: &this.pictures, open: open.clone() };
+                let looks = Looks { read: &this.pictures, open: open.clone(), again: again.clone() };
                 entries::render(ix, entry, &this.open, toggle, own, &this.selection, &looks, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A

@@ -1262,6 +1262,37 @@ fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_message_of_only_pictures_from_the_phone_shows_them_and_one_that_fails_says_so_with_try_again(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let png = |width: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, 10).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // As the box keeps a phone's photos: one the model reads, carried in the message; one kept on
+    // its disk, named in the message's parts. No words.
+    let kept = "/home/sam/.kuvo-code/attachments/ses_recipes/b10bd6c5/Photo 2.jpeg";
+    stand_in.add_message("ses_recipes", json!({ "type": "user", "id": "msg_ph", "time": { "created": NOW - 60_000.0 }, "text": "",
+        "files": [{ "mime": "image/png", "name": "Photo 1.png", "data": base64::engine::general_purpose::STANDARD.encode(png(30)) }],
+        "metadata": { "kuvo": { "parts": { "words": "", "phone": true, "paths": [kept] } } } }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    cx.run_until_parked();
+    assert!(bounds(cx, "picture-msg_ph#0").is_some(), "the photo it carried");
+    // The one kept on its computer couldn't be read: said plainly, with Try Again.
+    let failed = bounds(cx, &format!("picture-msg_ph@{kept}")).expect("a tile in its place");
+    assert!(failed.size.width > px(0.));
+    let again = bounds(cx, &format!("picture-again-msg_ph@{kept}")).expect("Try Again");
+    stand_in.put_file(kept, png(40));
+    cx.simulate_click(again.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, &format!("picture-again-msg_ph@{kept}")).is_none());
+    let shown = bounds(cx, &format!("picture-msg_ph@{kept}")).unwrap();
+    assert_eq!((shown.size.width, shown.size.height), (px(40.), px(10.)), "shown once read");
+}
+
+#[gpui::test]
 fn pictures_in_a_conversation_show_in_it_and_open_larger(cx: &mut TestAppContext) {
     use base64::Engine as _;
     let png = |width: u32, height: u32| {
