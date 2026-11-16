@@ -1,3 +1,4 @@
+import "./safety"
 // A Mac's own box whose Kuvo Helper isn't running is started by the app: the installer's verdict
 // counts the helper in place only while launchd has it running, not merely loaded. (Seen on a Mac
 // whose helper had ended cleanly: launchd starts it again only after a crash, the app found it

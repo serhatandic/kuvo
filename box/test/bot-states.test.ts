@@ -1,3 +1,4 @@
+import "./safety"
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { botNow, botsNow, botStateTurns } from "../src/link/lists/rule"

@@ -1,3 +1,4 @@
+import "./safety"
 // An engine's start stops the engines this box started before that still run though none is noted
 // (seen on a Mac: ten engines of the box's own, each on a port of its own, after updates and
 // restarts lost their notes). Only by the number each start noted, and only while that number is
