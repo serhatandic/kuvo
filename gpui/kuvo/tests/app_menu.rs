@@ -160,6 +160,22 @@ fn the_menu_bar_has_kuvo_file_edit_view_window_and_help_and_names_its_window_men
     assert_eq!(names(&menus, "Help"), ["Kuvo Help"]);
 }
 
+/// Where the app updates itself, Kuvo › Check for Updates… is after About, as 0.7's, and looks now.
+#[gpui::test]
+fn check_for_updates_follows_about_where_the_app_updates_itself_and_looks_now(cx: &mut TestAppContext) {
+    let updater = std::rc::Rc::new(kuvo::updates::stand_in::StandIn::new("1.0.0", Some(NOW)));
+    let installed = updater.clone();
+    cx.update(|cx| {
+        kuvo::updates::Updates::install(installed, None, cx);
+    });
+    start(cx);
+    let menus = cx.update(|cx| cx.get_menus()).expect("the menu bar is set");
+    assert_eq!(names(&menus, "Kuvo")[..4], ["About Kuvo", "Check for Updates…", "—", "Settings…"]);
+    cx.update(|cx| cx.dispatch_action(&kuvo::CheckForUpdates));
+    cx.run_until_parked();
+    assert_eq!(*updater.asked.borrow(), ["check"]);
+}
+
 #[gpui::test]
 fn each_item_shows_the_mac_apps_key(cx: &mut TestAppContext) {
     start(cx);

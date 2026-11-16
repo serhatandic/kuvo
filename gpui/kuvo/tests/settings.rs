@@ -1443,14 +1443,16 @@ fn agents_are_listed_as_the_box_says_and_edited_in_its_form(cx: &mut TestAppCont
     let sent = bodies(&stand_in, "PATCH", "kuvo/settings/agents");
     assert_eq!((sent[0]["row"].clone(), sent[0]["value"].clone()), (json!("agent-docs-writer"), json!(true)));
 
-    // Edit…: its form, with how it's used side by side and its model from a menu.
+    // Edit…: its form, with how it's used and its model each from a menu (how it's used: its
+    // choices have lines, which side-by-side buttons can't show).
     click(cx, "row-agent-reviewer-menu");
     click(cx, "menu-item-Edit…");
     assert!(shown(cx, "settings-form"));
     assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).is_ready()));
-    assert!(shown(cx, "settings-form-mode-subagent") && shown(cx, "settings-form-may-edit-deny"));
+    assert!(shown(cx, "settings-form-mode-menu") && shown(cx, "settings-form-may-edit-deny"));
     assert!(form_words(&view, cx).contains(&("mode".into(), "New sessions can start in it, and it works when you name it or another agent hands it part of the work.".into())));
-    click(cx, "settings-form-mode-subagent");
+    click(cx, "settings-form-mode-menu");
+    click(cx, "menu-item-Subagent");
     click(cx, "settings-form-model-menu");
     click(cx, "menu-item-Claude Sonnet 4.5");
     click(cx, "settings-form-submit");
