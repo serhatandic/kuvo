@@ -17,10 +17,10 @@ use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look};
 use kuvo_box::work_queue::QueueSaid;
 use kuvo_box::bots::{BotsSaid, Elsewhere, Held, Refused};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TextRole, TypeSize,
     row::{NavRow, SectionHeader},
     menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
-    small::{count_badge, spinner, status_dot},
+    small::{count_badge, spinner, status_dot, status_words},
     theme::{radius, space},
 };
 
@@ -619,7 +619,7 @@ impl AreaView {
             .pl(space::S2)
             .pr(space::S1)
             .mb(space::S1)
-            .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child("Bots"))
+            .child(div().text_role(TextRole::PaneTitle).text_color(c.text).child("Bots"))
             .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).selected(self.is_selected("new")).tooltip("New Bot").disabled(self.client.gate().is_held()).on_click(self.row_click("new".into(), cx)))
             .into_any_element();
         let bots = match &self.bots {
@@ -637,7 +637,8 @@ impl AreaView {
             // What it's doing now is the box's (`now`): its sessions at work and waiting on you,
             // or when the newest finished; with none of them, its job.
             let (working, asking) = (bot.now.working, bot.now.asking);
-            let words = doing(&bot.now, self.now()).unwrap_or_else(|| bot.job.clone());
+            // Only what waits on you is coloured, never the rest of its status.
+            let (words, waiting) = doing_parts(&bot.now, self.now()).map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
             let id = bot.id.clone();
             let trailing: Option<AnyElement> = if asking > 0 {
                 Some(div().debug_selector(move || format!("bot-asking-{id}")).child(count_badge(asking, cx)).into_any_element())
@@ -665,15 +666,7 @@ impl AreaView {
                     .on_click(self.row_click(key, cx))
                     // Still, as the user asked: the Mac's animated faces aren't brought over yet.
                     .child(bot_face(&bot.look, px(28.)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(bot.name.clone()))
-                            .child(div().truncate().text_ui(TypeSize::Small).text_color(if asking > 0 { c.accent } else { c.text_muted }).child(words)),
-                    )
+                    .child(two_lines(bot.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx)), &c))
                     .children(trailing.map(|trailing| div().flex_none().child(trailing)))
                     .into_any_element(),
             );
@@ -716,15 +709,7 @@ impl AreaView {
                         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                         .on_click(self.row_click(key, cx))
                         .child(face)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(there.name.clone()))
-                                .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(line)),
-                        )
+                        .child(two_lines(there.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(line), &c))
                         .into_any_element(),
                 );
             }
@@ -749,7 +734,7 @@ impl AreaView {
             let selected = self.is_selected(&key) || self.is_selected(&format!("edit-group:{}", group.id));
             let row = NavRow::new(SharedString::from(selector.clone()), group.name.clone())
                 .leading(leading)
-                .trailing(div().debug_selector(move || when_selector).text_ui(TypeSize::Caption).text_color(c.text_faint).child(when))
+                .trailing(div().debug_selector(move || when_selector).text_role(TextRole::Meta).text_color(c.text_faint).child(when))
                 .selected(selected)
                 .on_click(self.row_click(key, cx));
             rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(row).into_any_element());
@@ -766,10 +751,10 @@ impl AreaView {
         };
         // The counts are the box's (`counts`, across your computers): none is counted here.
         let counts = &queue.counts;
-        let count = |n: usize| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(n.to_string());
+        let count = |n: usize| div().text_role(TextRole::Meta).text_color(c.text_faint).child(n.to_string());
         let mut rows = Vec::new();
         let open = counts.open;
-        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).trailing(div().debug_selector(move || format!("queue-open-{open}")).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{open} open"))).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
+        let all = NavRow::new("queue-all", "All Items").icon(kuvo_ui::IconName::Queue).trailing(div().debug_selector(move || format!("queue-open-{open}")).text_role(TextRole::Meta).text_color(c.text_faint).child(format!("{open} open"))).selected(self.selected.is_none()).on_click(cx.listener(|this, _, _, cx| {
             this.select(None, cx);
             cx.emit(Picked);
         }));
@@ -919,7 +904,7 @@ impl AreaView {
                 .items_center()
                 .gap(space::S1)
                 .child(spinner(SharedString::from(format!("computer-spin-{id}")), IconSize::Nav, c.text_muted))
-                .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(working.to_string()))
+                .child(div().text_role(TextRole::Meta).text_color(c.text_faint).child(working.to_string()))
         });
         div()
             .id(SharedString::from(selector.clone()))
@@ -936,15 +921,7 @@ impl AreaView {
             .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
             .on_click(self.row_click(key, cx))
             .child(crate::computers::tile(computer, px(28.), cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(name))
-                    .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(computer_line(computer))),
-            )
+            .child(two_lines(name, div().truncate().text_role(TextRole::RowDetail).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(computer_line(computer)), &c))
             .children(working)
             .into_any_element()
     }
@@ -976,17 +953,56 @@ pub fn computer_line(computer: &Computer) -> String {
 /// What a bot is doing, in words, from the box's facts: "1 at work, 1 waiting on you", "Waiting
 /// on you", "2 at work"; with neither, "Finished 3h ago" from when its newest session last changed;
 /// none where the box says none of them (its row shows its job).
+#[cfg(test)]
 pub(crate) fn doing(now: &BotNow, at: f64) -> Option<String> {
+    doing_parts(now, at).map(|doing| doing.words)
+}
+
+/// A bot's [`doing`] words, with where in them what waits on you is: the only part drawn in the
+/// attention colour.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Doing {
+    pub words: String,
+    pub waiting: Option<std::ops::Range<usize>>,
+}
+
+impl Doing {
+    pub fn into_parts(self) -> (String, Option<std::ops::Range<usize>>) {
+        (self.words, self.waiting)
+    }
+}
+
+pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
     let at_work = (now.working > 0).then(|| format!("{} at work", now.working));
     let waiting = (now.asking > 0).then(|| if now.working > 0 { format!("{} waiting on you", now.asking) } else { "Waiting on you".to_owned() });
-    match (at_work, waiting) {
-        (Some(at_work), Some(waiting)) => Some(format!("{at_work}, {waiting}")),
-        (None, None) => now.finished.map(|finished| match time::ago(finished, at).as_str() {
-            "now" => "Finished just now".to_owned(),
-            ago => format!("Finished {ago} ago"),
-        }),
-        (at_work, waiting) => at_work.or(waiting),
-    }
+    Some(match (at_work, waiting) {
+        (Some(at_work), Some(waiting)) => {
+            let words = format!("{at_work}, {waiting}");
+            Doing { waiting: Some(words.len() - waiting.len()..words.len()), words }
+        }
+        (None, Some(waiting)) => Doing { waiting: Some(0..waiting.len()), words: waiting },
+        (Some(at_work), None) => Doing { words: at_work, waiting: None },
+        (None, None) => Doing {
+            words: match time::ago(now.finished?, at).as_str() {
+                "now" => "Finished just now".to_owned(),
+                ago => format!("Finished {ago} ago"),
+            },
+            waiting: None,
+        },
+    })
+}
+
+/// A two-line row's words: its name over the line under it, set as the type ramp says
+/// (`TextRole::RowTitle` over `RowDetail`).
+pub(crate) fn two_lines(name: impl Into<SharedString>, detail: impl IntoElement, c: &kuvo_ui::theme::Colors) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(div().truncate().text_role(TextRole::RowTitle).text_color(c.text).child(name.into()))
+        .child(detail)
+        .into_any_element()
 }
 
 /// A look's colour, by its name (graphite for one this doesn't know).
@@ -1097,7 +1113,7 @@ pub fn views(client: &BoxClient, live: bool, cx: &mut App) -> Vec<(Area, gpui::E
 
 #[cfg(test)]
 mod tests {
-    use super::{computer_line, doing};
+    use super::{computer_line, doing, doing_parts};
     use kuvo_box::areas::BotNow;
 
     #[test]
@@ -1129,5 +1145,11 @@ mod tests {
         assert_eq!(doing(&now(0, 0, Some(hour)), 4. * hour).as_deref(), Some("Finished 3h ago"));
         assert_eq!(doing(&now(0, 0, Some(hour)), hour).as_deref(), Some("Finished just now"));
         assert_eq!(doing(&now(0, 0, None), 0.), None, "a bot with no session listed shows its job");
+        // Only the part that waits on you is coloured: "1 at work" stays quiet.
+        let words = |n| doing_parts(&n, 0.).map(|doing| doing.waiting.map(|range| doing.words[range].to_owned()));
+        assert_eq!(words(now(1, 1, None)), Some(Some("1 waiting on you".into())));
+        assert_eq!(words(now(0, 1, None)), Some(Some("Waiting on you".into())));
+        assert_eq!(words(now(2, 0, None)), Some(None));
+        assert_eq!(words(now(0, 0, Some(hour))), Some(None));
     }
 }

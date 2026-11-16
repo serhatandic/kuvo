@@ -39,7 +39,7 @@ pub(crate) fn is_built(_block: Block) -> bool {
 pub(crate) fn shot_height(block: Block) -> f32 {
     match block {
         Block::Theme => 1640.,
-        Block::Icons => 1600.,
+        Block::Icons => 1690.,
         Block::Buttons => 1100.,
         Block::TextField => 1000.,
         Block::ChatList => 840.,
