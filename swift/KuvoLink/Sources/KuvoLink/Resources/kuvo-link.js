@@ -9409,6 +9409,7 @@ var FEATURES = [
   "computers.reach",
   "computers.reach-words",
   "computers.update",
+  "computers.update.here",
   "computers.words",
   "config",
   "config.apply",
@@ -14111,6 +14112,7 @@ function ran(command, args, env = {}, timeout = 120000) {
   const result = spawnSync4(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
+var UPDATING_ALREADY = "It's updating already.";
 function isUpdating() {
   return updateUnderWay(RUN);
 }
@@ -14213,7 +14215,7 @@ async function cameUp(version, withAgents, timeout = 120000, readEngine = readEn
 }
 var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
 var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
-async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {} } = {}) {
+async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
   if (!keys.length)
     return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked)
@@ -14224,7 +14226,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   if (!before)
     return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock())
-    return { result: "busy", message: "It's updating already." };
+    return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
   try {
     step("checking");
@@ -14247,7 +14249,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       return { result: "current", version: before };
     if (!now && !from && clock() - (Date.parse(manifest.released) || clock()) < RELEASE_AGE)
       return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
-    if (await boxBusy())
+    if (!whileBusy && await boxBusy())
       return { result: "busy", message: "Something is running there now." };
     step("downloading");
     stage = path40.join(UPDATES, manifest.version);
@@ -14330,7 +14332,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       throw new Error("The new link doesn't work with it here.");
     if (ran("sh", ["-n", path40.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
       throw new Error("The new keeper doesn't read.");
-    if (!now && await boxBusy())
+    if (!whileBusy && await boxBusy())
       return { result: "busy", message: "Something is running there now." };
     step("installing");
     let previous = {};
@@ -14549,7 +14551,11 @@ var updating = null;
 function startUpdate(options = {}) {
   if (updating || isUpdating())
     return null;
-  updating = update({ ...options, step: (running) => noteUpdate({ running }) }).then((outcome) => {
+  const { offered, ...rest } = options;
+  const step = (running) => noteUpdate({ running });
+  updating = (offered ? takeOffer({ ...rest, step }) : update({ ...rest, step })).then((outcome) => {
+    if (!outcome || outcome.result === "busy" && outcome.message === UPDATING_ALREADY)
+      return outcome;
     noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
     if (outcome.result === "updated")
       setTimeout(() => process.exit(0), 1000);
@@ -14572,7 +14578,11 @@ async function* updateRoute(context) {
     const blocked = updatesBlocked();
     if (blocked)
       return yield* json(409, { message: blocked });
-    return yield* startUpdate({ now: true }) ? json(202, updateStatus()) : json(409, { message: "It's updating already." });
+    const offered = offerWaits();
+    const held = offered ? offerHeld() : null;
+    if (held)
+      return yield* json(409, { message: held });
+    return yield* startUpdate({ now: true, offered }) ? json(202, updateStatus()) : json(409, { message: UPDATING_ALREADY });
   }
   return yield* json(405, {});
 }
@@ -14586,6 +14596,17 @@ function offeredVersion() {
   }
 }
 var dropOffer = () => fs37.rmSync(OFFERED, { recursive: true, force: true });
+function offerHeld() {
+  if (fs37.existsSync(path40.join(RUN, "stopped")))
+    return "Its engine is stopped: start it to update it.";
+  if (updateOnTrial())
+    return "It’s finishing its last update. Try again in a moment.";
+  return null;
+}
+function offerWaits() {
+  const offered = offeredVersion(), version = boxVersion();
+  return !!offered && !!version && newerVersion(offered, version);
+}
 function offerRests(version, now) {
   const { offerFailed: failed, trial } = updateState();
   if (failed?.version === version && now - failed.at < (failed.takenBack || (failed.tries ?? 1) > 1 ? OFFER_REST : OFFER_RETRY))
@@ -14603,7 +14624,7 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
   if (!before)
     return { status: 409, message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (updating || isUpdating())
-    return { status: 409, message: "It's updating already." };
+    return { status: 409, message: UPDATING_ALREADY };
   let boxes, manifest, name;
   try {
     boxes = readRelease(path40.join(from, "boxes.json"), 1e6);
@@ -14631,7 +14652,7 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
   if (hexSHA256(pack) !== manifest.pack.sha256)
     return { status: 422, message: "The release's files aren't what it says." };
   if (!takeUpdateLock())
-    return { status: 409, message: "It's updating already." };
+    return { status: 409, message: UPDATING_ALREADY };
   const partial = `${OFFERED}.partial`;
   try {
     fs37.rmSync(partial, { recursive: true, force: true });
@@ -14648,7 +14669,7 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
   }
   return { status: 202, version: manifest.version };
 }
-async function offerDue({ blocked = updatesBlocked(), clock = Date.now } = {}) {
+async function offerDue({ blocked = updatesBlocked(), clock = Date.now, now = false } = {}) {
   const offered = offeredVersion(), before = boxVersion();
   if (!offered)
     return false;
@@ -14657,7 +14678,11 @@ async function offerDue({ blocked = updatesBlocked(), clock = Date.now } = {}) {
       dropOffer();
     return false;
   }
-  return !blocked && !!before && !updating && !isUpdating() && !updateOnTrial() && !fs37.existsSync(path40.join(RUN, "stopped")) && !offerRests(offered, clock()) && !await boxBusy();
+  if (blocked || !before || isUpdating() || updateOnTrial() || fs37.existsSync(path40.join(RUN, "stopped")))
+    return false;
+  if (now)
+    return true;
+  return !updating && !offerRests(offered, clock()) && !await boxBusy();
 }
 async function takeOffer(options = {}) {
   if (!await offerDue(options))
@@ -14679,9 +14704,45 @@ async function takeOffer(options = {}) {
     dropOffer();
   return outcome;
 }
-async function startOfferedUpdate() {
-  if (!await offerDue())
+var HERE2 = process.platform === "darwin" ? "this Mac" : "this computer";
+var installerSteps = {
+  waiting: {
+    step: "waiting",
+    title: `Kuvo on ${HERE2} updates once your sessions finish.`,
+    confirm: { title: `Update Kuvo on ${HERE2} now?`, message: `What your sessions on ${HERE2} are doing stops as Kuvo restarts. It’s back in a moment.`, label: "Update Now" }
+  },
+  updating: { step: "updating", title: `Updating Kuvo on ${HERE2}…` }
+};
+async function untilFree(from, { keys = UPDATE_KEYS, blocked } = {}) {
+  const every = !REAL_BOX && Number(process.env.KUVO_TEST_UNTIL_FREE_EVERY) > 0 ? Number(process.env.KUVO_TEST_UNTIL_FREE_EVERY) : 15000;
+  let version;
+  try {
+    version = verifyBoxes(readRelease(path40.join(from, "boxes.json"), 1e6).toString("utf8"), keys).version;
+  } catch {
+    return true;
+  }
+  const parent = process.ppid;
+  let said = false;
+  for (;; ) {
+    const before = boxVersion();
+    if (!before || !newerVersion(version, before) || (blocked === undefined ? updatesBlocked() : blocked))
+      return true;
+    if (!isUpdating() && !await boxBusy())
+      return true;
+    if (!said) {
+      console.log(JSON.stringify(installerSteps.waiting));
+      said = true;
+    }
+    await sleep(every);
+    if (process.ppid !== parent)
+      return false;
+  }
+}
+var offerSpawned = 0;
+async function startOfferedUpdate(clock = Date.now) {
+  if (clock() - offerSpawned < 60000 || !await offerDue())
     return false;
+  offerSpawned = clock();
   spawn4(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--offered"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
   return true;
 }
@@ -41940,7 +42001,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "46a60802e7d6";
+var BRIDGE_VERSION = "f37d04e4fb5f";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -45377,25 +45438,34 @@ function keepMachinesUp() {
   const round = () => {
     keepUpRound().catch((error) => console.error(`Kuvo's round keeping machines up to date failed: ${String(error)}`));
   };
-  setTimeout(round, 60000).unref?.();
+  setTimeout(round, 20000).unref?.();
   setInterval(round, KEEP_UP_ROUND).unref?.();
 }
 var sessions = (count) => `${count} ${count === 1 ? "session is" : "sessions are"}`;
 function keepingUp(computer, here, now = Date.now()) {
   const none = { actions: [] };
-  if (computer.here || computer.apart || computer.kind !== "machine" || !computer.key)
+  if (computer.here)
+    return keepingSelfUp(computer.name || here, computer.working);
+  if (computer.apart || computer.kind !== "machine" || !computer.key)
     return none;
   const mine = boxVersion();
-  const at = mine ? sshAddressOf(computer.key) : null;
-  if (!mine || !at || !canAdd().can)
+  if (!mine || !canAdd().can)
     return none;
+  const at = sshAddressOf(computer.key);
   const name = computer.name || "this machine";
+  if (!at) {
+    const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected";
+    if (!older || computer.reach === "away")
+      return none;
+    return { update: { state: "waiting", title: `Kuvo on ${name} needs an update. Set it up over SSH from ${here} to update it.`, detail: "" }, actions: [{ id: "add", label: "Set Up Over SSH…" }] };
+  }
   const under = underWay2(at.destination);
   const line = (state, title, long = false) => ({ state, title, detail: "", ...long ? { long: true } : {} });
   if (under?.seen.kind === "update")
     return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
   const was = readKept9()[computer.key];
-  const older = computer.version ? newerVersion(mine, computer.version) : was?.older === true && was.mine === mine;
+  const looked = was?.mine === mine ? was.older : undefined;
+  const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected" ? looked !== false : looked === true;
   if (!older || computer.reach === "away")
     return none;
   const said = computer.version && typeof computer.working === "number" ? computer.working : null;
@@ -45416,6 +45486,25 @@ function keepingUp(computer, here, now = Date.now()) {
   if (working === 0)
     return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions };
   return { update: line("waiting", `Kuvo on ${name} updates once nothing’s at work there.`), actions };
+}
+function keepingSelfUp(name, working, blocked) {
+  const none = { actions: [] };
+  if (!offerWaits())
+    return none;
+  const status = updateStatus();
+  if (blocked !== undefined)
+    status.blocked = blocked;
+  const line = (state, title) => ({ state, title, detail: "" });
+  if (isUpdating() && status.updating && status.updating !== "checking")
+    return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
+  if (status.blocked || offerHeld())
+    return none;
+  const at = working ?? 0;
+  const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
+  const actions = [{ id: "update-here", label: "Update Now", confirm }];
+  if (status.offerFailed && status.offerFailed.version === status.offered)
+    return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
+  return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions };
 }
 
 // box/src/link/areas/computers.ts
@@ -66574,6 +66663,7 @@ var computerFacts = {
   atLogin: helperAtLogin,
   permissions: () => freshBoxPermissions(),
   update: updateStatus,
+  offerHeld: () => offerHeld(),
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
   devices: () => macLink.config?.phones ?? null,
@@ -66627,9 +66717,10 @@ async function computerPage(context) {
     rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...update.blocked ? { tone: "warning" } : {} }));
   else if (ready)
     rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs when nothing’s at work, or now.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: ready, actions: [now("Update Now")] }));
-  else if (update.offered && newerVersion(update.offered, update.version))
-    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, line: "It installs when nothing’s at work.", kind: "status", value: update.offered }));
-  else
+  else if (update.offered && newerVersion(update.offered, update.version)) {
+    const held = computerFacts.offerHeld();
+    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...held ? { line: held, kind: "status" } : { line: "It installs once nothing’s at work, or now.", kind: "actions", actions: [now("Update Now")] }, value: update.offered }));
+  } else
     rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself when nothing’s at work.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: update.version, actions: [now("Check Now")] }));
   const devices = computerFacts.devices();
   const reach = `Your phone and other computers reach ${where}, end to end encrypted.`;
@@ -68343,6 +68434,10 @@ async function run7() {
   };
   setTimeout(nightly, 60000);
   setInterval(nightly, 600000);
+  setInterval(() => {
+    if (offerWaits())
+      startOfferedUpdate().catch(() => {});
+  }, 20000).unref?.();
   keepSkillTrashClear();
   clearStaging();
   setInterval(() => {
@@ -68515,7 +68610,7 @@ async function box(command) {
         return say({ status: 409, message: blocked });
       if (isUpdating())
         return say({ status: 409, message: "It's updating already." });
-      spawn21(process.execPath, [...OWN_RUNTIME, fileURLToPath4(import.meta.url), "update", "--now"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+      spawn21(process.execPath, [...OWN_RUNTIME, fileURLToPath4(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
       return say({ status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route": {
@@ -68985,8 +69080,30 @@ if (main) {
     const from = option("--from");
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
-    const step = (running) => noteUpdate({ running });
-    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path210.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
+    const installer = args.includes("--installer") && !!from && path210.isAbsolute(from);
+    const now = args.includes("--now");
+    let told = false;
+    const step = (running) => {
+      noteUpdate({ running });
+      if (installer && !told && running !== "checking") {
+        told = true;
+        console.log(JSON.stringify(installerSteps.updating));
+      }
+    };
+    let outcome;
+    for (;; ) {
+      told = false;
+      if (installer && !now && !await untilFree(from, test))
+        process.exit(0);
+      while (installer && now && isUpdating()) {
+        await sleep(1000);
+        if (process.ppid === 1)
+          process.exit(0);
+      }
+      outcome = offered ? await takeOffer({ step, ...test }) : from && !path210.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, ...test });
+      if (!(installer && !now && outcome?.result === "busy"))
+        break;
+    }
     if (outcome && !(offered && outcome.result === "busy"))
       noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
     if (outcome?.result === "updated") {
@@ -69001,6 +69118,8 @@ if (main) {
       }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
+    if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current")
+      process.exitCode = 1;
   } else if (mode === "browser") {
     const args = process.argv.slice(3);
     if (argument === "install") {
@@ -69244,6 +69363,7 @@ export {
   keepUpRound,
   keepWorkRead,
   keeperOf,
+  keepingSelfUp,
   keptAwake,
   keptComputer,
   keptFeatures,
@@ -69315,7 +69435,9 @@ export {
   noticeFor,
   noticeJSON,
   offerDue,
+  offerHeld,
   offerUpdate,
+  offerWaits,
   offeredVersion,
   openMail,
   openOneWay,

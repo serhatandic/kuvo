@@ -5007,6 +5007,12 @@
               },
               {
                "literal": "update"
+              },
+              {
+               "literal": "update-here"
+              },
+              {
+               "literal": "add"
               }
              ]
             },
@@ -5193,6 +5199,12 @@
               },
               {
                "literal": "update"
+              },
+              {
+               "literal": "update-here"
+              },
+              {
+               "literal": "add"
               }
              ]
             },
@@ -5570,6 +5582,9 @@
            },
            {
             "literal": "computers.update"
+           },
+           {
+            "literal": "computers.update.here"
            },
            {
             "literal": "computers.words"
@@ -6272,6 +6287,9 @@
            },
            {
             "literal": "computers.update"
+           },
+           {
+            "literal": "computers.update.here"
            },
            {
             "literal": "computers.words"
