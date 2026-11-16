@@ -63,6 +63,20 @@ pub enum Nav {
     BotChat { bot: String },
 }
 
+/// What's still to open of where the window was last time ([`crate::yours::Spot`]), once the
+/// box says it's there: until then nothing's drawn in its place (no landing view first), and
+/// what's gone since, or a box that can't be reached, leaves the area's own list, quietly.
+#[derive(Default)]
+struct Restoring {
+    /// The conversation open in Sessions: once the session list is read.
+    session: Option<String>,
+    /// The bot whose conversation was open in Bots: once Bots' list is read, with Bots in front.
+    bot: Option<String>,
+    /// The rows picked in the other areas, picked again at once: unpicked once their list is
+    /// read without them.
+    picks: Vec<(Area, String)>,
+}
+
 /// A bot's own conversation, shown in Bots in its page's place.
 struct BotChat {
     bot: String,
@@ -312,6 +326,16 @@ pub struct Workspace {
     /// Where the window has been, and where in that it is now.
     history: Vec<Nav>,
     at: usize,
+    /// The window it's drawn in (a restore finishes in it once the lists arrive).
+    window_handle: AnyWindowHandle,
+    /// The key this computer's place is kept under in your settings, once the window said it
+    /// ([`Workspace::restore`]); none keeps nothing.
+    place_key: Option<String>,
+    restoring: Restoring,
+    /// Opening what's restored now: not a move of yours, which calls the rest off.
+    restoring_now: bool,
+    /// The area kept as the one in front (Settings isn't one to open on: the one before stays).
+    kept_area: Option<String>,
     /// The first run, while the box says it hasn't been had; and the keyboard to go to the
     /// landing view once it's done.
     welcome: Welcome,
@@ -349,6 +373,8 @@ impl Workspace {
         if let Some(view) = areas.iter().find(|(area, _)| *area == Area::Queue).map(|(_, view)| view) {
             area_subscriptions.push(cx.observe(view, |_, _, cx| cx.notify()));
         }
+        // A row picked again as the window opened, gone from its list since: the list instead.
+        area_subscriptions.extend(areas.iter().map(|(_, view)| cx.observe(view, |this: &mut Workspace, _, cx| this.check_picks(cx))));
 
         area_subscriptions.extend(areas.iter().map(|(_, view)| {
             cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
@@ -438,11 +464,17 @@ impl Workspace {
             computers_task: None,
             _waiting_follow: None,
             _computers_follow: None,
-            folded: false,
+            // (As it was last folded away, on this device.)
+            folded: crate::yours::now(cx).place.sidebar_folded,
             shown_narrow: false,
             narrow: false,
             history: vec![Nav::Landing],
             at: 0,
+            window_handle: window.window_handle(),
+            place_key: None,
+            restoring: Restoring::default(),
+            restoring_now: false,
+            kept_area: None,
             // (Tests and shots hand it what to show: asked in `read_at_once`.)
             welcome: if live { Welcome::Unknown } else { Welcome::Had },
             welcome_answered: !live,
@@ -717,6 +749,7 @@ impl Workspace {
         }
         self.area = Area::Sessions;
         self.open = Open::Landing;
+        self.restoring = Restoring::default();
         self.pick_place(place, cx);
         let landing = self.landing.clone();
         self.show_composer(Some(&landing), cx);
@@ -780,18 +813,30 @@ impl Workspace {
                 if self._waiting_follow.is_none() {
                     self.read_waiting(cx);
                 }
+                // The conversation open last time, opened again now the list says whether it's
+                // there (in the window, once this is done).
+                if self.restoring.session.is_some() {
+                    let (this, handle) = (cx.entity().downgrade(), self.window_handle);
+                    App::defer(cx, move |cx| {
+                        handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.restore_session(window, cx))).ok();
+                    });
+                }
                 self.session_menu.mark_changed_actions(&previous_listing, &self.listing);
                 self.prune_session_popover(cx);
                 self.refresh_active_row_actions(cx);
             }
             ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
             ListUpdate::Held { .. } => {
+                // (Held for its update: the held view, not last time's conversation.)
+                self.restoring.session = None;
                 self.lists = Lists::Held;
                 self.box_state = BoxState::Held;
                 self.session_menu.clear_actions();
                 self.session_menu.active_popover = None;
             }
             ListUpdate::Failed(error) => {
+                // Not reached: the list it would have been in, quietly.
+                self.restoring.session = None;
                 if !self.listing.is_read() {
                     self.box_state = BoxState::Unreachable(error.to_string());
                 }
@@ -1171,7 +1216,7 @@ impl Workspace {
         self.area = Area::Sessions;
         self.session_menu.active_popover = None;
         self.session_menu.action_error = None;
-        self.record(Nav::Session(session.to_owned()));
+        self.record(Nav::Session(session.to_owned()), cx);
         if self.opened() == Some(session) {
             // Already open (back to it from another area): the keyboard goes back to it.
             if let Some(view) = self.conversation() {
@@ -1230,12 +1275,15 @@ impl Workspace {
     /// Opens a bot's own conversation in Bots, in its page's place, its row still picked; `draft`
     /// goes in its composer where nothing's written there (a new bot's job, to edit and send).
     pub fn open_bot_chat(&mut self, bot: &str, session: &str, draft: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.restoring_now {
+            self.restoring.bot = None;
+        }
         self.area = Area::Bots;
         self.bring_out_sidebar(window);
         if let Some(view) = self.area_view(Area::Bots).cloned() {
             view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
         }
-        self.record(Nav::BotChat { bot: bot.to_owned() });
+        self.record(Nav::BotChat { bot: bot.to_owned() }, cx);
         self.in_bot_chat = true;
         let composer = self.composer_for(session, window, cx);
         if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
@@ -1271,6 +1319,7 @@ impl Workspace {
     /// The box's bots were read again: a conversation shown for a bot whose conversation is
     /// another session now (a coding agent's model carried it on) goes to that one.
     fn bots_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore_bot(window, cx);
         let Some(chat) = &self.bot_chat else { return };
         let (bot, session) = (chat.bot.clone(), chat.session.clone());
         match self.bot_session(&bot, cx) {
@@ -1289,8 +1338,9 @@ impl Workspace {
     /// From a bot's conversation back to its page.
     pub fn close_bot_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bot) = self.bot_chat().map(|(bot, _)| bot.to_owned()) else { return };
+        self.restoring.bot = None;
         self.in_bot_chat = false;
-        self.record(Nav::Area(Area::Bots, Some(format!("bot:{bot}"))));
+        self.record(Nav::Area(Area::Bots, Some(format!("bot:{bot}"))), cx);
         self.show_composer_on_screen(cx);
         window.focus(&self.focus, cx);
         cx.notify();
@@ -1344,7 +1394,7 @@ impl Workspace {
         self.area = Area::Sessions;
         self.session_menu.active_popover = None;
         self.session_menu.action_error = None;
-        self.record(Nav::Landing);
+        self.record(Nav::Landing, cx);
         if let Some(project) = project {
             self.landing_place = Some(StartIn::Project(project));
             self.landing_picked = true;
@@ -1819,7 +1869,7 @@ impl Workspace {
         match area {
             Area::Sessions => {
                 let nav = self.opened().map_or(Nav::Landing, |session| Nav::Session(session.to_owned()));
-                self.record(nav);
+                self.record(nav, cx);
                 match self.conversation() {
                     Some(view) => window.focus(&view.focus_handle(cx), cx),
                     None => window.focus(&self.landing.focus_handle(cx), cx),
@@ -1830,8 +1880,8 @@ impl Workspace {
                     let picked = view.read(cx).selected().map(str::to_owned);
                     // (Bots comes back to the conversation it showed, as Sessions does.)
                     match self.bot_chat().map(|(bot, _)| bot.to_owned()) {
-                        Some(bot) => self.record(Nav::BotChat { bot }),
-                        None => self.record(Nav::Area(area, picked)),
+                        Some(bot) => self.record(Nav::BotChat { bot }, cx),
+                        None => self.record(Nav::Area(area, picked), cx),
                     }
                     view.update(cx, |view, cx| view.shown(cx));
                 }
@@ -1883,6 +1933,7 @@ impl Workspace {
             self.shown_narrow = !self.shown_narrow;
         } else {
             self.folded = !self.folded;
+            crate::yours::change(crate::yours::Change::SidebarFolded(self.folded), cx);
         }
         self.prune_session_popover(cx);
         // Folded with the keyboard in it (its search, its list): the keyboard goes to the main view.
@@ -1908,6 +1959,9 @@ impl Workspace {
     fn area_picked(&mut self, view: &Entity<AreaView>, window: &mut Window, cx: &mut Context<Self>) {
         let (area, picked) = view.read_with(cx, |view, _| (view.area(), view.selected().map(str::to_owned)));
         if area == Area::Bots {
+            self.restoring.bot = None;
+        }
+        if area == Area::Bots {
             if let Some(bot) = picked.as_deref().and_then(|key| key.strip_prefix("bot:")) {
                 if let Some(session) = self.bot_session(bot, cx) {
                     self.open_bot_chat(bot, &session, None, window, cx);
@@ -1920,7 +1974,7 @@ impl Workspace {
             self.in_bot_chat = false;
             self.show_composer_on_screen(cx);
         }
-        self.record(Nav::Area(area, picked));
+        self.record(Nav::Area(area, picked), cx);
         cx.notify();
     }
 
@@ -2014,10 +2068,166 @@ impl Workspace {
         }
     }
 
+    // MARK: Where the window was
+
+    /// Opens where this computer's window was last time, as kept under `key` in your settings
+    /// (`yours::Place`), and keeps where it goes from now on. Called once, as the window makes it.
+    pub fn restore(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        let spot = crate::yours::now(cx).place.computers.get(&key).cloned().unwrap_or_default();
+        self.place_key = Some(key);
+        self.kept_area = spot.area.clone();
+        self.restoring_now = true;
+        for area in [Area::Bots, Area::Queue, Area::Computers] {
+            let (Some(picked), Some(view)) = (spot.picked.get(area.slug()), self.area_view(area).cloned()) else { continue };
+            view.update(cx, |view, cx| view.select(Some(picked.clone()), cx));
+            self.restoring.picks.push((area, picked.clone()));
+        }
+        self.restoring.session = spot.session;
+        self.restoring.bot = spot.bot;
+        let area = spot.area.as_deref().and_then(|slug| Area::ALL.into_iter().find(|area| area.slug() == slug && !matches!(area, Area::Settings | Area::Sessions)));
+        if let Some(area) = area {
+            self.show_area_as_kept(area, window, cx);
+        }
+        self.restoring_now = false;
+        if self.listing.is_read() || matches!(self.lists, Lists::Failed(_) | Lists::Held) {
+            self.restore_session(window, cx);
+        }
+        self.restore_bot(window, cx);
+        self.check_picks(cx);
+        cx.notify();
+    }
+
+    /// Shows `area` with the sidebar as it was (restoring isn't you asking for it).
+    fn show_area_as_kept(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
+        let (folded, shown_narrow) = (self.folded, self.shown_narrow);
+        self.show_area(area, window, cx);
+        (self.folded, self.shown_narrow) = (folded, shown_narrow);
+    }
+
+    /// The session list is read (or can't be): last time's conversation opens again where it's
+    /// still there, behind whichever area is in front now; gone, or its box not reached, Sessions
+    /// stays on its own view.
+    fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.restoring.session.take() else { return };
+        if !self.listing.is_read() {
+            return cx.notify();
+        }
+        if kuvo_box::sessions::place(self.listing.facts(&session)).is_none() {
+            // (Gone for good: no longer kept.)
+            self.keep_place(cx);
+            return cx.notify();
+        }
+        let area = self.area;
+        self.restoring_now = true;
+        self.open_session_now(&session, window, cx);
+        if area != Area::Sessions {
+            self.show_area_as_kept(area, window, cx);
+        }
+        self.restoring_now = false;
+        cx.notify();
+    }
+
+    /// Bots' list is read: last time's bot conversation opens again where Bots is in front and
+    /// the bot's still there; gone, Bots shows its own page.
+    fn restore_bot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bot) = self.restoring.bot.clone() else { return };
+        let Some(view) = self.area_view(Area::Bots).cloned() else { return };
+        match view.read(cx).bots() {
+            Reading::NotYet => return,
+            // (Not read: what Bots shows says so.)
+            Reading::Failed(_) => {
+                self.restoring.bot = None;
+                return;
+            }
+            Reading::Ready(_) if self.area != Area::Bots => return,
+            Reading::Ready(_) => {}
+        }
+        self.restoring.bot = None;
+        match self.bot_session(&bot, cx) {
+            Some(session) => {
+                self.restoring_now = true;
+                let (folded, shown_narrow) = (self.folded, self.shown_narrow);
+                self.open_bot_chat(&bot, &session, None, window, cx);
+                (self.folded, self.shown_narrow) = (folded, shown_narrow);
+                self.restoring_now = false;
+            }
+            None => {
+                let key = format!("bot:{bot}");
+                if view.read(cx).selected() == Some(key.as_str()) {
+                    view.update(cx, |view, cx| view.select(None, cx));
+                }
+                self.keep_place(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Rows picked again as the window opened: one its list no longer has is unpicked (the list
+    /// shows instead of a page saying it's gone). One picked anew since is left as it is.
+    fn check_picks(&mut self, cx: &mut Context<Self>) {
+        if self.restoring.picks.is_empty() {
+            return;
+        }
+        let mut left = Vec::new();
+        let mut unpicked = false;
+        for (area, key) in std::mem::take(&mut self.restoring.picks) {
+            let Some(view) = self.area_view(area).cloned() else { continue };
+            if view.read(cx).selected() != Some(key.as_str()) {
+                continue;
+            }
+            match view.read(cx).still_there(&key) {
+                None => left.push((area, key)),
+                Some(true) => {}
+                Some(false) => {
+                    view.update(cx, |view, cx| view.select(None, cx));
+                    unpicked = true;
+                }
+            }
+        }
+        self.restoring.picks = left;
+        if unpicked {
+            self.keep_place(cx);
+            cx.notify();
+        }
+    }
+
+    /// Keeps where the window is now in your settings, for the next time it opens: what's still
+    /// to be restored is kept as it was.
+    fn keep_place(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.place_key.clone() else { return };
+        if self.area != Area::Settings {
+            self.kept_area = Some(self.area.slug().to_owned());
+        }
+        // (What only lasts while it's open isn't a place to open on: New Bot, Add a Machine.)
+        let keeps = |key: &str| !matches!(key, "new" | "add" | "new-group") && !key.starts_with("edit-group:");
+        let mut picked = std::collections::BTreeMap::new();
+        for area in [Area::Bots, Area::Queue, Area::Computers] {
+            if let Some(selected) = self.area_view(area).and_then(|view| view.read(cx).selected()).filter(|key| keeps(key)) {
+                picked.insert(area.slug().to_owned(), selected.to_owned());
+            }
+        }
+        let session = self.restoring.session.clone().or_else(|| self.opened().map(str::to_owned));
+        let bot = self.restoring.bot.clone().or_else(|| self.bot_chat.as_ref().filter(|_| self.in_bot_chat).map(|chat| chat.bot.clone()));
+        let spot = crate::yours::Spot { area: self.kept_area.clone(), session, bot, picked };
+        crate::yours::change(crate::yours::Change::Spot(key, spot), cx);
+    }
+
+    /// Whether last time's conversation is still to open (nothing's drawn in its place meanwhile).
+    pub fn is_restoring(&self) -> bool {
+        self.restoring.session.is_some()
+    }
+
     // MARK: Back and forward
 
     /// Notes going to `nav`, unless that's where the window is (or it's going back or forward).
-    fn record(&mut self, nav: Nav) {
+    /// Where the window is now is kept as it settles (`keep_place`).
+    fn record(&mut self, nav: Nav, cx: &mut Context<Self>) {
+        // A move of yours in Sessions: the conversation it was to open again goes unopened.
+        if !self.restoring_now && matches!(nav, Nav::Session(_) | Nav::Landing) {
+            self.restoring.session = None;
+        }
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| drop(this.update(cx, |this, cx| this.keep_place(cx))));
         if self.history.get(self.at) == Some(&nav) {
             return;
         }
@@ -2818,6 +3028,9 @@ impl Render for Workspace {
                 (None, None, None) => areas::placeholder(self.area, view.read(cx).title(cx), cx),
             },
             (Open::Conversation { view, .. }, _) => view.clone().into_any_element(),
+            // Last time's conversation, till the list says whether it's there: nothing yet, not
+            // the landing view first.
+            _ if self.restoring.session.is_some() => div().debug_selector(|| "restoring".into()).size_full().into_any_element(),
             _ => landing::render(self, window, cx),
         } };
         let area_view = (!sessions).then(|| self.area_view(self.area).cloned()).flatten();

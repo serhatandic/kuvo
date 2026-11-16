@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The desktop app opens again where you left it, even after a crash: the computer you were on, the part of the window in front (Sessions, Bots, the Work Queue or Computers), the conversation or item open in each, and the sidebar shown or hidden. Each computer remembers its own place. A conversation that's gone, or a computer that can't be reached yet, opens on the list instead, and opening from a notification still goes to the notification's conversation.
 - In the desktop app, every place you pick a model (the composer, a bot's settings, Settings › Models) uses one picker, as 0.7's: your starred models and each provider's logo down the left, **Search models…** at the top, each model's name over where it's from, ⌘1… on the first rows, and a ☆ on each to star it. It opens at once and stays smooth with hundreds of models. ⇧⌘M opens it from the composer. Effort is its own pick beside the model, offering only the efforts that model has.
 - Starred models are kept by Kuvo on each computer rather than in the app, so they're the same wherever you pick a model for that computer. Moving from the earlier Kuvo Code brings your starred models along.
 - The composer's picks (mode, model, effort) no longer have arrows beside them, and they sit on one line with the paperclip and Send.

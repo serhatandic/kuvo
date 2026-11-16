@@ -461,6 +461,35 @@ impl AreaView {
         self.selected.as_deref()
     }
 
+    /// Whether the row `key` names is still in the area's list, as the box last said it (none:
+    /// not read yet). One the list can't say of (a filter, this computer, a list that couldn't
+    /// be read) counts as there.
+    pub fn still_there(&self, key: &str) -> Option<bool> {
+        let (kind, id) = key.split_once(':').unwrap_or((key, ""));
+        match (self.area, kind) {
+            (Area::Bots, "bot" | "elsewhere" | "group") => match &self.bots {
+                Reading::NotYet => None,
+                Reading::Failed(_) => Some(true),
+                Reading::Ready(bots) => Some(match kind {
+                    "bot" => bots.bots.iter().any(|bot| bot.id == id),
+                    "elsewhere" => bots.elsewhere.iter().any(|bot| bot.id == id),
+                    _ => bots.groups.iter().any(|group| group.id == id),
+                }),
+            },
+            (Area::Queue, "item") => match &self.queue {
+                Reading::NotYet => None,
+                Reading::Failed(_) => Some(true),
+                Reading::Ready(said) => Some(said.items.iter().chain(&said.removed).any(|item| item.id == id)),
+            },
+            (Area::Computers, "computer") => match &self.computers {
+                Reading::NotYet => None,
+                Reading::Failed(_) => Some(true),
+                Reading::Ready(computers) => Some(computers.iter().any(|computer| computer.key == id)),
+            },
+            _ => Some(true),
+        }
+    }
+
     /// Picks a row (or none: the area's own page), as going back or forward does.
     pub fn select(&mut self, key: Option<String>, cx: &mut Context<Self>) {
         self.selected = key;
