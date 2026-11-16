@@ -311,6 +311,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 computer["title"] = json!("Connecting");
                 computer["detail"] = json!("Studio hasn’t heard from it yet.");
                 computer["notice"] = json!({"title": format!("Connecting to {}…", computer["name"].as_str().unwrap()), "detail": "Studio hasn’t heard from it yet."});
+                computer["settingsNotice"] = json!({"title": format!("Connecting to {}…", computer["name"].as_str().unwrap()), "detail": "Its settings show here once Studio hears from it."});
                 if let Some(actions) = computer["actions"].as_array_mut() {
                     actions.retain(|action| action["id"] != json!("connect"));
                 }
@@ -367,7 +368,13 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
     for computer in &mut computers {
         computer["reachTitles"] = reach_titles();
         let reach = computer["reach"].as_str().unwrap_or("connected");
-        let title = match reach { "away" => "Can’t be reached", "connecting" => "Connecting", "unknown" => "Not reached directly", _ => "Connected" };
+        let title = match (reach, computer["through"].as_str()) {
+            ("away", _) => "Can’t be reached".to_owned(),
+            ("connecting", _) => "Connecting".to_owned(),
+            ("unknown", Some(through)) => format!("Known through {through}"),
+            ("unknown", None) => "Not reached directly".to_owned(),
+            _ => "Connected".to_owned(),
+        };
         computer["title"] = json!(title);
         if let Some(count) = computer["working"].as_u64() {
             computer["workingTitle"] = json!(format!("{count} {} at work", if count == 1 { "session" } else { "sessions" }));
@@ -376,6 +383,8 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
             let detail = "Studio hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.";
             computer["detail"] = json!(detail);
             computer["notice"] = json!({"title": format!("{} can’t be reached", computer["name"].as_str().unwrap()), "detail": detail});
+            let name = computer["name"].as_str().unwrap().to_owned();
+            computer["settingsNotice"] = json!({"title": format!("{name} can’t be reached"), "detail": format!("Its settings are kept on {name}, so they can’t be read or changed until Studio hears from it again. They show here by themselves once it’s back.")});
         }
     }
     computers

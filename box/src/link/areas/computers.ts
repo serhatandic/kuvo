@@ -142,17 +142,23 @@ function reachOf(link: LinkState | null, address: string | undefined): { address
 }
 
 /** Display words belong to the answering box; reach remains a machine-readable state. */
-export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "through" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "workingTitle" | "reachTitles"> {
+export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "through" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "settingsNotice" | "workingTitle" | "reachTitles"> {
   const { reach, name, through, working } = computer;
-  const title = ({ connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: "Not reached directly" })[reach];
+  // (One known only through another names it, as its notice does; "Not reached directly" where
+  // this box can't say through which.)
+  const title = ({ connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: through ? `Known through ${through}` : "Not reached directly" })[reach];
   const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` }
     : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` }
     : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
+  // The same standing where its settings would show: what can't be read or changed, not what it runs.
+  const settingsNotice = reach === "away" ? { title: `${name} can’t be reached`, detail: `Its settings are kept on ${name}, so they can’t be read or changed until ${here} hears from it again. They show here by themselves once it’s back.` }
+    : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `Its settings show here once ${here} hears from it.` }
+    : reach === "unknown" ? { title: `${name}’s settings can’t be shown here`, detail: `${here} doesn’t reach ${name} itself, so its settings can’t be read or changed from here.` } : undefined;
   return { title, reachTitles: {
     connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached",
     notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s",
     unreached: "Can’t be reached from this app",
-  }, ...(notice ? { detail: notice.detail, notice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
+  }, ...(notice ? { detail: notice.detail, notice } : {}), ...(settingsNotice ? { settingsNotice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
 }
 
 /** How the peer `key` stands from here: `away` when it was found away or not heard from lately;

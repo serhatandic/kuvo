@@ -66,7 +66,7 @@ const COMPUTER: SettingsSection = {
 
 const SECTIONS: SettingsSection[] = [
   {
-    id: "clock", title: "Clock", group: "General", icon: "settings",
+    id: "clock", title: "Clock", group: "General", icon: "clock",
     line: "Your time zone, which bots' wake-ups and times of day go by on all your computers.",
     keywords: ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"],
   },
@@ -577,9 +577,9 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
   const projects = readProjects();
   const projectTitle = (project: string) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find(each => each.directory === project)?.name ?? path.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
-    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "Archived sessions show here." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Archive a session from its menu to put it away." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
-  ], ...(states.length ? {} : { notes: [{ words: "Archived sessions show here.", tone: "quiet" as const }] }) };
+  ], ...(states.length ? {} : { notes: [{ words: "None yet. Archive a session from its menu to put it away.", tone: "quiet" as const }] }) };
 }
 
 async function archivedAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {

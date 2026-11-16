@@ -109,6 +109,8 @@ public enum Typed {
         public var agent: String?
         public var toggleAutopilot: Bool?
         public var compact: Bool?
+        /// The box's line for what the client did (a summary asked for), for a client that shows one.
+        public var said: String?
         public var shell: String?
         public var command: Run?
         public var send: Send?

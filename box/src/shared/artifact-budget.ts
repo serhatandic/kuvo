@@ -1,6 +1,8 @@
 // Display units only: stored budgets and defaults remain byte counts.
 export function fileSizeUnit(bytes: number) {
-  const scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0
+  let scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0
+  // (999,999 bytes rounds to 1,000 KB: said in the next unit, 1 MB.)
+  if (scale < 4 && Math.round(bytes / 1000 ** scale * 10) / 10 >= 1000) scale += 1
   return { name: ["bytes", "KB", "MB", "GB", "TB"][scale]!, factor: 1000 ** scale, decimals: 1, rounding: "nearest" as const }
 }
 

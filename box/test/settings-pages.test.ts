@@ -60,7 +60,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
   const { status, json } = await ask(handler, "GET", "kuvo/settings")
   expect(status).toBe(200)
   expect(json.sections.map((section: any) => [section.id, section.title, section.group, section.icon])).toEqual([
-    ["clock", "Clock", "General", "settings"],
+    ["clock", "Clock", "General", "clock"],
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
     ["computer", process.platform === "darwin" ? "This Mac" : "This Computer", "System", "computer"],

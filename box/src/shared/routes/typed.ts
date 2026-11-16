@@ -28,7 +28,7 @@ export const TYPED = object({
   "goal?": any, "goalCleared?": bool, "askedBot?": bool, "autopilot?": SESSION_AUTOPILOT,
   "wakeUp?": object({ due: number, every: string, note: string }),
   "sideQuestion?": any, "handoff?": any, "review?": any,
-  "showGoal?": bool, "agent?": string, "toggleAutopilot?": bool, "compact?": bool,
+  "showGoal?": bool, "agent?": string, "toggleAutopilot?": bool, "compact?": bool, "said?": string,
   "shell?": string, "command?": object({ name: string, arguments: string }),
   "send?": object({ text: string, "typed?": string, "quoted?": bool, "steer?": bool }),
   "sideThread?": bool,

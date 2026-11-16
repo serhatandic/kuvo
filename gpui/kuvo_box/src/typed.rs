@@ -147,6 +147,8 @@ pub struct Answer {
     pub agent: Option<String>,
     pub toggle_autopilot: Option<bool>,
     pub compact: Option<bool>,
+    /// The box's line for what the client did (a summary asked for), to show under the composer.
+    pub said: Option<String>,
     /// A command to run in the conversation's folder.
     pub shell: Option<String>,
     pub command: Option<Run>,

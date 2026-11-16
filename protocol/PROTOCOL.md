@@ -1570,10 +1570,13 @@ sessions").
 
 ### Computer display words (`computers.words`)
 
-Each `kuvo/computers` row has `title`, the display title of its `reach` value.
+Each `kuvo/computers` row has `title`, the display title of its `reach` value
+(“Connected”, “Connecting”, “Can’t be reached”; for `unknown`, “Known through <name>”
+with the computer it's known through, `through`, or “Not reached directly” without one).
 For an unavailable reach (`away`, `connecting`, `unknown`), `detail` gives a short
-explanation and `notice: {title, detail}` supplies the named notice shown in Computers
-and Settings. Connected computers have no notice. `workingTitle`, present whenever
+explanation and `notice: {title, detail}` supplies the named notice shown in Computers;
+`settingsNotice: {title, detail}` is the same standing in words about its settings, shown
+where its settings would be (a box that sends none: `notice`). Connected computers have neither. `workingTitle`, present whenever
 `working` is present, words that count (including zero), such as “1 session at work”.
 Clients draw these words; `reach` and `working` remain the values used for behavior.
 The same fields are sent in `kuvo/computers/events` snapshots.
@@ -3587,7 +3590,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `compaction` message with a required `title` (the box’s words for its status) and,
     while running, required `workingTitle` (`messages.compaction-words`) ("Summarizing the conversation…") for the working row.
     These fields are supplied on both engine and agents message reads, including older stored
-    records; compaction events cause the client to read these messages again (`api/event`,
+    records. The compaction events of both feeds carry them too, in their `data`: `title` always
+    (the engine's own events get it from the link as it forwards the feed), `workingTitle` on
+    `session.compaction.started`. Compaction events also cause the client to read these messages again (`api/event`,
     `kuvo/agents/api/event`). Clients draw the fields without a local status word table.
     It has `reason: "manual"` and `session.compaction.started`, `.ended` or
     `.failed`, then `idle`. It adds no reply, and what's there stays. Its `status` says how it went:
@@ -6709,7 +6714,7 @@ client does with the rest; a client keeps the draft, puts back what it's told to
     "/goal", which is a goal's).
   - What the client does: `showGoal` (show the goal bar), `agent` (the mode the box switched the
     conversation to, to show: `plan`, or, for "/plan" alone in Plan, the one a conversation starts in
-    there: Build, or the first mode there is where Build is off), `toggleAutopilot`, `compact`, `shell` (run it in the conversation's folder), `command`
+    there: Build, or the first mode there is where Build is off), `toggleAutopilot`, `compact` (ask `…/session/<id>/compact`; `said` is the box's line to show once that's asked, "Asked to summarize the conversation.": a client writes none of its own), `shell` (run it in the conversation's folder), `command`
     (`{name, arguments}`, run with the composer's files), `send` (`{text, typed?, quoted?, steer?}`:
     send it as a message with the composer's files; `typed` is the keyword as typed, "/plan", to
     send it with; `quoted`: what the composer replies to goes with it; `steer`: to the agent now,

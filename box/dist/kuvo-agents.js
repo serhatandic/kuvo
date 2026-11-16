@@ -1406,7 +1406,9 @@ function walk(folder, own = []) {
 
 // box/src/shared/artifact-budget.ts
 function fileSizeUnit(bytes) {
-  const scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0;
+  let scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0;
+  if (scale < 4 && Math.round(bytes / 1000 ** scale * 10) / 10 >= 1000)
+    scale += 1;
   return { name: ["bytes", "KB", "MB", "GB", "TB"][scale], factor: 1000 ** scale, decimals: 1, rounding: "nearest" };
 }
 function fileSize(bytes) {
@@ -36814,4 +36816,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 4f627e105a28b7f40293cc333c4f72177975307f19b919216fdfd736f04ecf53
+// Built from Packages/Box/src/agents 7193598516d12485ac8e089fb74b7c80c194e21348b0c5254ca63310e3070306

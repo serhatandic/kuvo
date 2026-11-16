@@ -147,7 +147,7 @@ enum TypedStandIn {
             if !rest.isEmpty { decision["send"] = ["text": rest, "typed": "/autopilot"] }
             return decision
         case .compact:
-            return ["compact": true]
+            return ["compact": true, "said": "Asked to summarize the conversation."]
         case .loop:
             let loop = LoopCommand(rest)
             guard let schedule = loop.schedule else { return ["restore": writtenBack(written), "error": loopNoSchedule] }

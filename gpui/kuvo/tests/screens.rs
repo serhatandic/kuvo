@@ -1403,7 +1403,7 @@ fn compaction_shows_its_row_active_status_and_refusals_in_composer(cx: &mut Test
     cx.simulate_keystrokes("escape enter");
     cx.run_until_parked();
     assert_eq!(typed(&composer, cx), (String::new(), None));
-    assert_eq!(composer.read_with(cx, |composer, _| composer.note().cloned()), Some(kuvo::composer::Note { text: "Compaction requested.".into(), warning: false }));
+    assert_eq!(composer.read_with(cx, |composer, _| composer.note().cloned()), Some(kuvo::composer::Note { text: "Asked to summarize the conversation.".into(), warning: false }));
     assert_eq!(stand_in.seen_at("POST", "api/session/ses_recipes/compact").len(), 1);
     assert_eq!(stand_in.seen_at("GET", "api/session/ses_recipes").len(), where_gets_before, "place is known; no extra where_is GET");
 

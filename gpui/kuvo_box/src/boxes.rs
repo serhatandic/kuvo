@@ -503,7 +503,6 @@ impl Boxes {
                             Pairing::Removed(refusal.message)
                         } else if response.status == 503 {
                             Pairing::Waiting(refusal.message)
-
                         } else {
                             Pairing::Refused(refusal.message)
                         }

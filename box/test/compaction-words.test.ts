@@ -1,3 +1,4 @@
+import "./safety"
 import { describe, expect, test } from "bun:test";
 import { compactionPage } from "../src/shared/compaction-words";
 
