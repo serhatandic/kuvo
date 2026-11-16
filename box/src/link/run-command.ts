@@ -42,13 +42,16 @@ const NOT_FROM_LOGIN = /^(DYLD_|BUN_|KUVO_|OPENCODE_)|^(NODE_OPTIONS|PWD|OLDPWD|
  * login-env`, from `kuvo-launch`), one `NAME=value` a line: what you export in your startup files
  * (a provider's key, `JAVA_HOME`, a proxy), for the engine and what it runs (agents' commands, MCP
  * servers, the agents' bridge), as Kuvo Code 0.7's app gave its engine your login shell's. Never
- * what `NOT_FROM_LOGIN` names, but `BUN_INSTALL`, a folder of yours the start gives back to the
+ * what `NOT_FROM_LOGIN` or `SHELLS_OWN` names, but `BUN_INSTALL`, a folder of yours the start gives back to the
  * commands agents run (`KUVO_OWN_BUN_INSTALL`); nor a value of more than one line, which the start
  * reads a line at a time.
  */
+// What a shell keeps for itself, some of it read-only (exporting one stops the start that does), and
+// the home the start names its folders from: never from your login shell.
+const SHELLS_OWN = /^(BASH|BASHOPTS|BASHPID|BASH_[A-Z_]+|SHELLOPTS|POSIXLY_CORRECT|ENV|IFS|CDPATH|UID|EUID|PPID|PS[1-4]|OPTIND|OPTARG|LINENO|RANDOM|SECONDS|FUNCNAME|GROUPS|HOME)$/;
 export function launchFromLogin(found: Record<string, string>): string {
   return Object.entries(found)
-    .filter(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (name === "BUN_INSTALL" || !NOT_FROM_LOGIN.test(name)) && !/[\r\n\0]/.test(value))
+    .filter(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (name === "BUN_INSTALL" || !NOT_FROM_LOGIN.test(name)) && !SHELLS_OWN.test(name) && !/[\r\n\0]/.test(value))
     .map(([name, value]) => `${name}=${value}\n`)
     .join("");
 }

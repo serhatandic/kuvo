@@ -76,6 +76,8 @@ test("the engine's start takes what your login shell exports, never the box's ow
     PATH: "/opt/homebrew/bin:/usr/bin", JAVA_HOME: "/opt/java", ANTHROPIC_API_KEY: "sk-1", HTTPS_PROXY: "http://proxy:8080", BUN_INSTALL: "/Users/me/.bun",
     KUVO_HOME: "/elsewhere", OPENCODE_CONFIG: "/x.json", BUN_BE_BUN: "1", DYLD_INSERT_LIBRARIES: "/evil.dylib", NODE_OPTIONS: "--require /evil.js", PWD: "/tmp", SHLVL: "2", _: "/usr/bin/env",
     MULTI: "one\ntwo", "NOT-A-NAME": "x",
+    // A shell's own (read-only ones stop a start that exports them), and the home it names its folders from.
+    SHELLOPTS: "braceexpand", UID: "501", IFS: ":", ENV: "/x", BASH_ENV: "/x", HOME: "/elsewhere",
   }).split("\n").filter(Boolean)
   expect(lines.sort()).toEqual(["ANTHROPIC_API_KEY=sk-1", "BUN_INSTALL=/Users/me/.bun", "HTTPS_PROXY=http://proxy:8080", "JAVA_HOME=/opt/java", "PATH=/opt/homebrew/bin:/usr/bin"])
 })

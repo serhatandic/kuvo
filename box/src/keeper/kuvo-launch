@@ -12,11 +12,13 @@ K="$HOME/.kuvo-code"
 # engine yours. launchd gives Kuvo Helper, and so this, a bare one. First, so your own folders in it
 # (XDG_…) are what the commands agents run get back. A machine's start (over SSH, at boot) keeps the
 # one it has, its PATH read below.
+# (Read once: one that gave nothing, a shell that didn't answer, isn't asked again for its PATH
+# below. Never the names this script has set already; the link leaves out the shell's own.)
 login_read=
 if [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ] && [ -f "$K/bin/kuvo-link.js" ]; then
-  login=$(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" login-env 2>/dev/null </dev/null) || login=
+  login=$(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" login-env 2>/dev/null </dev/null) && login_read=1 || login=
   while IFS= read -r line; do
-    case "$line" in PATH=/*) login_read=1 ;; esac
+    case "${line%%=*}" in lines | line | port | record | aport | replace | starting | V | K | login | login_read) continue ;; esac
     case "$line" in [A-Za-z_]*=*) export "$line" ;; esac
   done <<EOF
 $login
