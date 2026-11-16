@@ -284,9 +284,11 @@ test.if(!!ENGINE)("a computer's first box, installed and started the real way: i
   expect(env.BUN_BE_BUN).toBeUndefined()
   expect(env.KUVO763_TOOL_HOME ?? "not given").toBe(mac ? "/opt/tool-763" : "not given")
 
-  // The agents' bridge answers where the engine's record says.
-  expect(engine.agentsPort).toBeTruthy()
-  const bridge = await fetch(`http://127.0.0.1:${engine.agentsPort}/api/info`, { headers: { authorization: "Basic " + Buffer.from(`opencode:${engine.agentsPassword}`).toString("base64") } })
+  // The agents' bridge, kept by the keeper apart from the engine (which no longer names it), answers
+  // where its own record says.
+  expect(engine.agentsPort).toBeUndefined()
+  const record = await until(() => { try { const said = JSON.parse(fs.readFileSync(path.join(K, "run", "bridge.json"), "utf8")); return said?.port ? said as { port: number; password: string } : null } catch { return null } }, "the agents' bridge")
+  const bridge = await fetch(`http://127.0.0.1:${record.port}/api/info`, { headers: { authorization: "Basic " + Buffer.from(`opencode:${record.password}`).toString("base64") } })
   expect(bridge.status).toBe(200)
 
   // The vault answers a client: on a Mac, `serve`, as the desktop app asks it; on a machine, one
