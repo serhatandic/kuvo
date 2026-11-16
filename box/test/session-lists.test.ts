@@ -873,3 +873,10 @@ test("what waits on you is read with GET only", async () => {
     { directory: "/p", title: "Project", kind: "project", sessions: ["a", "z"] },
   ]);
 });
+
+test("archived groups retain the saved name of a removed project with only archived sessions", () => {
+  const session = { kind: "project", directory: "/old", project: "/old", updated: 1, archived: true } as any;
+  expect(archivedGroups({ archived: session }, {}, [{ directory: "/old", name: "Saved Name" }])).toEqual([
+    { directory: "/old", title: "Saved Name", kind: "project", sessions: ["archived"] },
+  ]);
+});
