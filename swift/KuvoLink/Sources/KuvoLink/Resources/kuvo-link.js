@@ -51892,6 +51892,11 @@ function startHelperAgent({ app, ifMissing = false }) {
     if (loaded.status !== 0)
       return refusedBy("load", loaded);
   }
+  if (fs153.existsSync(path162.join(K, "run", "paused"))) {
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (let waited = 0;waited < 100 && /\bpid = \d+/.test(run(["print", `${domain}/${LAUNCH_AGENT}`]).stdout ?? ""); waited++)
+      Atomics.wait(pause, 0, 0, 100);
+  }
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
   return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }
@@ -51937,7 +51942,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e597aadb117e";
+var BRIDGE_VERSION = "a1fa59898085";
 
 // box/src/link/rehome/move.ts
 init_outside();
