@@ -126,7 +126,9 @@ export async function installCommand(args: string[]): Promise<number> {
     if (verbs[0] === "--status") {
       const judgement = judged();
       tidyStaging(home, judgement, option("--release"));
-      say(judgement);
+      // (What's here with nothing to run that the person at the Mac should still be told: an
+      // earlier Kuvo Code's sessions left where they are, unseen, beside a machine's setup.)
+      say({ ...judgement, ...(judgement.verdict === "two" ? { message: NOT_MOVED.two } : {}) });
       return 0;
     }
     const release = option("--release"), engine = option("--engine");

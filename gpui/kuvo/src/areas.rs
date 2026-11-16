@@ -30,7 +30,7 @@ use crate::computers::{ComputersEvent, ComputersView};
 use crate::groups::{GroupsEvent, GroupsView};
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
-use crate::settings::{AddMachine, Pick, SettingsView};
+use crate::settings::{AddMachine, Opened, Pick, SettingsView};
 use crate::time;
 
 
@@ -80,6 +80,8 @@ pub enum Go {
     ReadComputers,
     /// The Computers area's Add a Machine page.
     AddMachine,
+    /// A row in Settings opened this address (it's open already).
+    Opened(String),
 }
 
 /// One area's sidebar.
@@ -105,6 +107,7 @@ pub struct AreaView {
     settings: Option<gpui::Entity<SettingsView>>,
     _settings_picks: Option<gpui::Subscription>,
     _settings_adds: Option<gpui::Subscription>,
+    _settings_opens: Option<gpui::Subscription>,
     /// Settings' sidebar is drawn here: redrawn as Settings changes (a search, a reading, a sheet).
     _settings_changes: Option<gpui::Subscription>,
     /// Bots' main view: a bot's page and New Bot.
@@ -139,6 +142,7 @@ impl AreaView {
             })
         });
         let adds = settings.as_ref().map(|settings| cx.subscribe(settings, |_: &mut AreaView, _, _: &AddMachine, cx| cx.emit(Go::AddMachine)));
+        let opens = settings.as_ref().map(|settings| cx.subscribe(settings, |_: &mut AreaView, _, opened: &Opened, cx| cx.emit(Go::Opened(opened.address.clone()))));
         let changes = settings.as_ref().map(|settings| cx.observe(settings, |_, _, cx| cx.notify()));
         let page = (area == Area::Bots).then(|| cx.new(|cx| BotsView::new(client.clone(), live, cx)));
         let page_subscriptions = page
@@ -236,7 +240,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_changes: changes }
+        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.

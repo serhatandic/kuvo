@@ -40,7 +40,13 @@ import { ALLOWED_FILE } from "../fence/allowed";
 import { fenceState, SOFTWARE_UPDATE } from "../fence/state";
 import { followedLive } from "../follow";
 import { APPROVAL_FILE } from "../work/approval";
-import { IS_MAC } from "../home";
+import { APP_FOLDER, IS_MAC, RUN } from "../home";
+import { HELPER_NAME, helperAtLogin } from "../helper";
+import { MAC_LINK_FILE } from "../mac/link";
+import { letDevicesConnect } from "../mac/routes";
+import { boxPermissions } from "../permissions";
+import { macLink } from "../state";
+import { agentsWorking, newerVersion, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
 import { sharedMachine } from "../setup/settle";
@@ -50,6 +56,13 @@ import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
+
+/** This computer's own section, titled for who asks (`computerTitle`). */
+const COMPUTER: SettingsSection = {
+  id: "computer", title: "This Computer", group: "System", icon: "computer",
+  line: "Whether Kuvo runs here, its version and updates, and what may connect.",
+  keywords: ["running", "restart", "version", "update", "devices", "phone", "connect", "login items", "kuvo helper", "screen recording", "accessibility", "macos"],
+};
 
 const SECTIONS: SettingsSection[] = [
   {
@@ -67,6 +80,7 @@ const SECTIONS: SettingsSection[] = [
     line: "The browser's search engine, and offering to save sign-ins.",
     keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"],
   },
+  COMPUTER,
   { id: "git", title: "Git", group: "Projects", icon: "branch",
     line: "How sessions' branches are named, and commit messages and pull requests are written.",
     keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"],
@@ -653,6 +667,138 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
   }
 }
 
+// MARK: This computer
+
+/** What this computer's page is made from. A test's own, where it has no Mac to ask. */
+export const computerFacts = {
+  /** A Mac's own box in a home of its own (the one its helper keeps), a Mac's in its app's
+   * folder (the retired app's), or a computer you added. */
+  kind: (): "ownMac" | "appMac" | "machine" => (!IS_MAC ? "machine" : APP_FOLDER ? "appMac" : "ownMac"),
+  /** Whether this box restarts what it runs itself. */
+  restarts: (): boolean => !IS_MAC || !APP_FOLDER || boxAnswers("kuvo/engine/restart"),
+  /** Whether its engine runs now (its record names where it answers). */
+  running: (context: RouteContext): boolean => { try { return Boolean(context.readEngine()?.port); } catch { return false; } },
+  atLogin: helperAtLogin,
+  permissions: boxPermissions,
+  update: updateStatus,
+  working: () => agentsWorking(),
+  restart: () => engineControl("restart"),
+  devices: (): boolean | null => macLink.config?.phones ?? null,
+  letDevices: letDevicesConnect,
+};
+
+/** The page's name: "This Mac" to the app beside its box; this computer's name to any other. */
+const computerTitle = (context: RouteContext): string =>
+  context.request.fromApp === true ? (process.platform === "darwin" ? "This Mac" : "This Computer") : context.info.name || (IS_MAC ? "Mac" : "Computer");
+/** This computer, in a sentence: "this Mac" to the app beside its box; its name to any other. */
+const computerHere = (context: RouteContext): string =>
+  context.request.fromApp === true ? (process.platform === "darwin" ? "this Mac" : "this computer") : context.info.name || "this computer";
+
+const LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
+/** What each permission is for, and what's missing without it. */
+const ALLOWS: Record<string, { allowed: string; not: string }> = {
+  screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
+  accessibility: { allowed: "For agents that click and type in other apps.", not: "Not allowed. Agents can’t click or type in other apps." },
+};
+
+async function computerPage(context: RouteContext): Promise<SettingsPage> {
+  const here = context.request.fromApp === true;
+  const where = computerHere(context), name = context.info.name || where;
+  const kind = computerFacts.kind();
+  const ownMac = kind === "ownMac" && process.platform === "darwin";
+  const atLogin = ownMac ? computerFacts.atLogin() : null;
+  const working = await computerFacts.working().catch(() => null);
+  /** What opens only on this computer: given to the app beside its box, said to any other. */
+  const opensHere = (id: string, title: string, address: string): SettingAction => (here ? { id, title, opens: address } : { id, title, can: { why: `Open it on ${name} itself.` } });
+  const stops = working === true ? `Agents are at work on ${where} now: what they’re doing stops.` : working === false ? `Nothing is at work on ${where} now.` : `What agents are doing on ${where} now stops.`;
+
+  // How it stands, and Restart.
+  const restarts = computerFacts.restarts();
+  const running = computerFacts.running(context);
+  const rows: SettingRow[] = [row({
+    id: "state", title: running ? "Running" : "Not running", kind: "actions", value: running,
+    ...(running ? {} : { tone: "warning" as const }),
+    line: !running ? "Its engine isn’t running, so no agent works here. Restart starts it again." : ownMac ? (atLogin === false ? `${HELPER_NAME} keeps it running.` : `${HELPER_NAME} keeps it running, and starts it at login.`) : kind === "appMac" ? `Kuvo Code on ${where} runs it.` : "It runs whether or not an app is open.",
+    actions: [{
+      id: "restart", title: "Restart…",
+      ...(restarts ? {} : { can: { why: `Kuvo Code on ${name} restarts it: restart it there.` } }),
+      confirm: { title: `Restart Kuvo on ${where}?`, body: `${stops} Kuvo is back in a moment.`, button: "Restart" },
+    }],
+  })];
+
+  // Its version, and its update.
+  const update = computerFacts.update();
+  const version = update.version ? `Kuvo Code ${update.version}` : "Kuvo Code";
+  const ready = newerVersion(update.latest, update.version) ? update.latest : null;
+  const failed = update.last?.result === "failed" ? `Its last update didn’t go through${update.last.message ? `: ${update.last.message}` : "."}` : null;
+  const now = (title: string): SettingAction => ({
+    id: "update", title,
+    ...(working === false ? {} : { confirm: { title: `Update Kuvo on ${where} now?`, body: `${stops} A newer version, if there is one, installs now.`, button: "Update Now" } }),
+  });
+  // (Looking for one, and fetching it, change nothing yet: only then is it being installed.)
+  const looking = update.updating === "checking";
+  if (update.updating) rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
+  else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...(update.blocked ? { tone: "warning" as const } : {}) }));
+  else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs when nothing’s at work, or now.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: ready, actions: [now("Update Now")] }));
+  else if (update.offered && newerVersion(update.offered, update.version)) rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, line: "It installs when nothing’s at work.", kind: "status", value: update.offered }));
+  else rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself when nothing’s at work.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: update.version, actions: [now("Check Now")] }));
+
+  // "Let my devices connect": a Mac's switch. A computer you added always lets them in.
+  const devices = computerFacts.devices();
+  const reach = `Your phone and other computers reach ${where}, end to end encrypted.`;
+  if (kind === "machine") rows.push(row({ id: "devices", title: "Let my devices connect", line: `${reach} A computer you added always lets them in.`, kind: "status", value: "On" }));
+  else if (kind === "appMac") rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices === true, can: { why: `Change it in Kuvo Code on ${name}.` } }));
+  else if (devices === null) rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: false, can: { why: "This copy of Kuvo has no relay for your devices to connect through." } }));
+  // (Switched on the Mac itself: turned off from a device, that device would cut itself off with
+  // no way to turn it on again.)
+  else if (!here) rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices, can: { why: `Change it in Kuvo Code on ${name} itself.` } }));
+  else rows.push(row({
+    id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices, can: true,
+    ...(devices ? { confirm: { title: "Stop letting your devices connect?", body: `Your phone, and Kuvo Code on your other computers, can’t reach ${where} until you turn this on again.`, button: "Turn Off" } } : {}),
+  }));
+  const groups: SettingGroup[] = [{ id: "computer", rows }];
+
+  // What macOS allows the program a Mac's own agents run under: only there.
+  const permissions = computerFacts.permissions();
+  if (permissions.applies) {
+    const helper = permissions.name ?? HELPER_NAME;
+    const allows: SettingRow[] = [];
+    if (atLogin !== null) {
+      allows.push(atLogin
+        ? row({ id: "login-items", title: "Login Items", line: `Kuvo starts when you log in to ${where}.`, kind: "status", value: "On" })
+        : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
+    }
+    for (const each of permissions.list) {
+      const words = ALLOWS[each.id] ?? { allowed: "", not: "Not allowed." };
+      if (each.allowed === false) allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
+      else allows.push(row({ id: `allows-${each.id}`, title: each.name, line: each.allowed ? words.allowed : `${helper} hasn’t said yet. ${words.allowed}`.trim(), kind: "status", value: each.allowed ? "Allowed" : "Not known yet" }));
+    }
+    allows.push(row({ id: "allows-files", title: "Files and Folders", line: "macOS asks when an agent first opens Desktop, Documents or Downloads.", kind: "status", value: "Asked when needed" }));
+    groups.push({ id: "macos", title: `What macOS Allows ${helper}`, note: `${helper} is the program your agents run under. Only you allow these, in System Settings.`, rows: allows });
+  }
+  return { id: "computer", title: computerTitle(context), groups };
+}
+
+const updateAnswer = (context: RouteContext) => updateRoute(context);
+
+async function computerChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<Refused | null> {
+  if (at.id !== "devices") return { status: 400, message: "That isn't something to change." };
+  try {
+    return (await computerFacts.letDevices(value === true)) ? null : { status: 409, message: "This copy of Kuvo has no relay for your devices to connect through." };
+  } catch {
+    return { status: 503, message: "It couldn’t be changed just now: try again in a moment." };
+  }
+}
+
+async function computerAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (at.id === "state" && action.id === "restart") {
+    const { status, message } = await computerFacts.restart();
+    return refusal({ status, value: message ? { message } : {} });
+  }
+  if (at.id === "version" && action.id === "update") return refusal(await asked(context, updateAnswer, "POST", "kuvo/update", { now: true }));
+  return noActions();
+}
+
 async function noActions(): Promise<Refused | null> {
   return { status: 404, message: "That isn't something it does." };
 }
@@ -684,6 +830,7 @@ const PAGES: Record<string, Section> = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
 
 // Told as a change is made here, so a page followed shows it at once.
@@ -722,7 +869,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   const [, sectionPart, events, rowPart, actionPart] = match;
   if (sectionPart === undefined) {
     if (method !== "GET") return yield* json(405, { message: "Read them with GET." });
-    return yield* json(200, { sections: SECTIONS });
+    return yield* json(200, { sections: SECTIONS.map(each => (each === COMPUTER ? { ...each, title: computerTitle(context) } : each)) });
   }
   const id = idOf(sectionPart);
   const section = id && Object.hasOwn(PAGES, id) ? PAGES[id] : undefined;

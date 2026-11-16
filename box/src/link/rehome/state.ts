@@ -108,6 +108,7 @@ export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
     to: kept.to ?? underWay?.to ?? null,
     progress: underWay && underWay.way === "move" && underWay.run ? progressOf(underWay.step) : phaseProgress(home),
     dropped: Array.isArray(kept.dropped) ? kept.dropped.filter((each): each is string => typeof each === "string") : [],
+    steps: STEPS.filter((each): each is Exclude<RehomeStep, "done"> => each !== "done").map(step => ({ step, title: STEP_TITLES[step] })),
   };
 }
 

@@ -257,6 +257,11 @@ impl Workspace {
                         this.read_computers(cx);
                     }
                 }
+                // System Settings opened from Settings › This Mac: a permission added by hand
+                // gets the tile beside it, as from the heads-up.
+                Go::Opened(address) => {
+                    this.permissions.update(cx, |permissions, cx| permissions.opened(address, cx));
+                }
                 Go::AddMachine => {
                     if let Some(view) = this.area_view(Area::Computers).cloned() {
                         view.update(cx, |view, cx| view.select(Some("add".into()), cx));
@@ -2070,7 +2075,7 @@ impl Workspace {
         let Some(confirm) = confirm else {
             self.session_menu.active_popover = None;
             self.session_menu.action_error = Some(
-                kuvo_box::Error::BadAnswer("Kuvo on this computer didn’t say what deleting comes to.".into()).to_string(),
+                kuvo_box::Error::BadAnswer("Kuvo didn’t say what deleting comes to.".into()).to_string(),
             );
             cx.notify();
             return;

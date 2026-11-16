@@ -594,7 +594,7 @@ fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: i
     div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), busy, failed, cx)
         .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit))))
         .children(output)
-        .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output truncated by Kuvo")))
+        .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output cut short")))
         .into_any_element()
 }
 

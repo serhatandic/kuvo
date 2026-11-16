@@ -191,6 +191,14 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-a-permissions", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
     Screen { slug: "settings-a-permissions-services", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
     Screen { slug: "settings-a-browser", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(browser) },
+    // Settings › This Mac (`kuvo/settings/computer`): how Kuvo stands here; what needs you; a
+    // confirmation in the box's words; what macOS allows Kuvo Helper.
+    Screen { slug: "settings-this-mac", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(this_mac) },
+    Screen { slug: "settings-this-mac-allowed", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(this_mac) },
+    Screen { slug: "settings-this-mac-attention", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(this_mac) },
+    Screen { slug: "settings-this-mac-restart", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(this_mac_restart) },
+    Screen { slug: "settings-this-mac-devices-off", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(this_mac_devices) },
+    Screen { slug: "settings-this-mac-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(this_mac) },
     Screen { slug: "settings-a-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(elsewhere) },
     Screen { slug: "settings-a-machine", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(machine) },
     Screen { slug: "settings-a-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(picker) },
@@ -538,6 +546,26 @@ fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<
     if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
         view.update(cx, |view, cx| view.act(kuvo::settings::Act::Change { at: kuvo::settings::At::of("storage", &row), value: serde_json::json!(536_870_912), asked: false }, cx));
     }
+}
+fn this_mac(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "computer", window, cx);
+}
+/// A row's action or change on This Mac's page, asked first in the box's words.
+fn this_mac_asks(w: &mut Workspace, row: &str, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "computer", window, cx);
+    let Some(row) = w.client().settings_page("computer").ok().and_then(|page| page.row(row).cloned()) else { return };
+    let at = kuvo::settings::At::of("computer", &row);
+    let act = match row.actions.first() {
+        Some(action) => kuvo::settings::Act::Do { at, action: action.id.clone(), confirm: action.confirm.clone(), asked: false },
+        None => kuvo::settings::Act::Change { at, value: serde_json::json!(false), asked: false },
+    };
+    view.update(cx, |view, cx| view.act(act, cx));
+}
+fn this_mac_restart(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    this_mac_asks(w, "state", window, cx);
+}
+fn this_mac_devices(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    this_mac_asks(w, "devices", window, cx);
 }
 fn clock(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Clock", window, cx);
@@ -991,6 +1019,23 @@ fn main() -> anyhow::Result<()> {
                 let (section, page) = kuvo::stand_in::settings::every_kind();
                 stand_in.add_settings_section(section, page);
             }
+            if screen.slug.starts_with("settings-this-mac") {
+                use kuvo::stand_in::permissions::Permissions;
+                // (All put off, so the page is seen without the heads-up over it.)
+                let later = vec!["screenRecording".to_owned(), "accessibility".to_owned()];
+                match screen.slug {
+                    "settings-this-mac-attention" | "settings-this-mac-narrow" => {
+                        stand_in.set_permissions(|permissions| *permissions = Permissions { accessibility: true, later, ..Permissions::nothing_allowed() });
+                        stand_in.set_computer(|computer| {
+                            computer.at_login = false;
+                            computer.ready = Some("1.0.1".into());
+                        });
+                    }
+                    "settings-this-mac-restart" => stand_in.set_computer(|computer| computer.working = true),
+                    "settings-this-mac" | "settings-this-mac-devices-off" => {}
+                    _ => stand_in.set_permissions(|permissions| *permissions = Permissions { screen_recording: true, accessibility: true, ..Permissions::nothing_allowed() }),
+                }
+            }
             if screen.slug == "settings-a-unreached" {
                 stand_in.forget_peers();
             }
@@ -1125,7 +1170,7 @@ fn main() -> anyhow::Result<()> {
 /// System Settings' window). `SHOTS_HELPER_ICON`: an `.icns` for the tile's stand-in helper
 /// (`scripts/helper-icon.sh`'s); without it the tile draws a plain one.
 fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
-    use kuvo::launch::{Launch, Opens, Stage};
+    use kuvo::launch::{Launch, Moving, Opens, Said, Stage};
     use kuvo::stand_in::permissions::Permissions;
     use kuvo_box::install::{OnlyAttaches, Verb};
     let wanted = |slug: &str, group: &str| only.is_empty() || only.iter().any(|only| only == slug || only == group);
@@ -1143,7 +1188,31 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
     };
     let offline = "The engine couldn’t be downloaded. Check that this Mac is online, then try again.";
     let not_yet = "This Mac has 2.1 GB free, and moving needs 6.4 GB. Free up some space, then try again.";
-    for slug in ["launch-setting-up", "launch-moving", "launch-starting", "launch-done", "launch-failed", "launch-move-refused", "launch-failed-narrow", "launch-not-running"] {
+    // A move's steps, as the box lists them (`kuvo/box/rehome`'s `steps`).
+    let steps: Vec<(String, gpui::SharedString)> = [
+        ("plan", "Checking this Mac"),
+        ("install", "Getting ready"),
+        ("keys", "Handing over your keys"),
+        ("clone", "Copying your sessions and settings"),
+        ("upgrade", "Bringing your settings along"),
+        ("database", "Bringing your sessions up to date"),
+        ("rewrite", "Pointing everything at its new place"),
+        ("check", "Checking nothing is missing"),
+        ("place", "Putting everything in place"),
+        ("fix", "Reconnecting your worktrees"),
+        ("clear", "Finishing up"),
+    ]
+    .into_iter()
+    .map(|(step, title)| (step.to_owned(), title.into()))
+    .collect();
+    let nothing_runs: gpui::SharedString = "Nothing runs on this Mac until this is done.".into();
+    let stuck = "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way. Try again to finish.";
+    let two = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
+    let dropped = "New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.";
+    for slug in [
+        "launch-setting-up", "launch-setting-up-step", "launch-starting", "launch-done", "launch-failed", "launch-failed-narrow", "launch-not-running",
+        "launch-moving", "launch-move-getting-ready", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two",
+    ] {
         if !wanted(slug, "launch") {
             continue;
         }
@@ -1160,7 +1229,9 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                 None => Err("Kuvo Code isn’t set up on this Mac.".into()),
             });
             let opens = Opens { waits_within: kuvo::launch::WAITS_WITHIN, installer: Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into())), attach };
-            let (width, height) = if slug == "launch-failed-narrow" { (720., 620.) } else { (1280., 820.) };
+            let (width, height) = if slug.ends_with("-narrow") { (720., 620.) } else { (1280., 820.) };
+            let steps = steps.clone();
+            let nothing_runs = nothing_runs.clone();
             let window = cx.open_window(size(px(width), px(height)), |window, cx| cx.new(|cx| Launch::new(opens, false, window, cx)))?;
             let any = window.into();
             cx.run_until_parked();
@@ -1168,10 +1239,22 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                 let launch = root.downcast::<Launch>().expect("the launch");
                 launch.update(cx, |launch, cx| match slug {
                     "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None, at: None }, true, cx),
-                    "launch-moving" => launch.show(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((3, 12)) }, true, cx),
+                    "launch-setting-up-step" => launch.show(Stage::SettingUp { verb: Verb::New, title: Some("Downloading the engine".into()), at: None }, true, cx),
+                    "launch-moving" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((4, 11)) }, Moving { steps, at: Some(4), of: Some(11), ..Moving::default() }, None, cx),
+                    "launch-move-getting-ready" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: None, at: None }, Moving { steps, title: Some("Downloading the engine".into()), ..Moving::default() }, None, cx),
+                    "launch-move-starting" => launch.show_move(Stage::Starting, Moving { steps, at: Some(11), of: Some(11), title: Some("Starting Kuvo on this Mac".into()), finishing: true, ..Moving::default() }, None, cx),
+                    "launch-move-refused" | "launch-move-refused-narrow" => launch.show_move(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(1), of: Some(11), stopped_at: Some(1), ..Moving::default() }, None, cx),
+                    "launch-move-stuck" => launch.show_move(Stage::Stopped { line: "Couldn’t finish moving".into(), message: stuck.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(11), of: Some(11), stopped_at: Some(11), ..Moving::default() }, None, cx),
+                    "launch-move-waiting-long" => launch.show_move(Stage::Stopped { line: "Still moving your sessions".into(), message: "It’s taking longer than expected on this Mac. It goes on by itself: try again in a while.".into(), note: None }, Moving { steps, at: Some(6), of: Some(11), ..Moving::default() }, None, cx),
+                    "launch-moved" | "launch-moved-dropped" | "launch-two" => {
+                        let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));
+                        let first = boxes.nearest().expect("the stand-in is the nearest box");
+                        let what = if slug == "launch-two" { Said::Left(two.into()) } else { Said::Moved };
+                        let dropped = if slug == "launch-moved-dropped" { vec![dropped.into(), "A bot on your machines was described only on this Mac by the earlier Kuvo Code, and may not show there. Its work is still on that machine: make it again if it's missing.".into()] } else { Vec::new() };
+                        launch.show_move(Stage::Said { what, boxes, first }, Moving { steps, finishing: true, dropped, ..Moving::default() }, (slug != "launch-two").then_some("Kuvo Helper"), cx)
+                    }
                     "launch-starting" => launch.show(Stage::Starting, true, cx),
                     "launch-failed" | "launch-failed-narrow" => launch.show(Stage::Stopped { line: "Couldn’t set up Kuvo".into(), message: offline.into(), note: None }, true, cx),
-                    "launch-move-refused" => launch.show(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: Some("Nothing runs on this Mac until this is done.".into()) }, true, cx),
                     "launch-done" => {
                         let home = launch.home().cloned().expect("the app, open");
                         home.update(cx, |home, cx| {
