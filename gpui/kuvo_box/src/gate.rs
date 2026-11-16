@@ -96,6 +96,16 @@ impl Gate {
         }
     }
 
+    /// Whether the box has `feature` (one of [`REQUIRED`]): drawn where it has, drawn without where
+    /// it hasn't; nothing while it's unknown or held.
+    pub fn has(&self, feature: &str) -> bool {
+        match self {
+            Gate::Open => true,
+            Gate::Behind { missing } => !missing.iter().any(|name| name == feature),
+            Gate::Unknown | Gate::Held { .. } => false,
+        }
+    }
+
     /// This client can't speak to it: only its update, and what keeps work there going.
     pub fn is_held(&self) -> bool {
         matches!(self, Gate::Held { .. })

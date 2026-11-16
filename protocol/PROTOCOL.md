@@ -6367,13 +6367,16 @@ in the All view, and its own (`owner=usr_you`; `owners` names it `{owner: "usr_y
 title: "Your own"}`); no agent's view has it, and it never moves to another computer with a conversation.
 
 **What may be done** (`can`, on every item of a view and of an answer to a client): `{edit, set,
-assign, close, delete, restore, why?}`, so a client offers nothing the box would refuse, and works none of it out
+assign, close, delete, restore, attach, why?}`, so a client offers nothing the box would refuse, and works none of it out
 itself; `why`, where something can't be done, says so in words a client shows as they are. `edit`: its title and description (never an issue's or a pull request's: GitHub's).
 `set`: its status among the open ones, its priority, labels, due day and place (nothing of an
 issue while GitHub has it closed: every such change is refused, not only its status). `assign`:
 its assignee, from the view's `assignees` (the bots of the box asked: false for an item another
 computer keeps, which is assigned there). `close`: Done or Canceled (never an issue's: GitHub closes
-it). `delete`; `restore` (a deleted one, and nothing else then). All false while its conversation
+it). `delete`; `restore` (a deleted one, and nothing else then). `attach` (`work-queue.attachments`):
+files may go with a change to it (`files`), as `edit`, but false where the computer it's on doesn't
+say `work-queue.attachments`; a client offers no way to attach without it (none from a box without
+the feature). All false while its conversation
 moves to another computer, or while the computer it's on isn't answering or doesn't take a
 client's changes from another box; only `delete` while it's on its way to another computer
 (`handing`). An item as another computer told it between boxes carries none.
@@ -6514,9 +6517,14 @@ isn't a label is refused, never made); `assignee` `{kind, id}`, or null for no o
 null for none; `before`/`after` an item of the same status, `top` the top of its status. An issue's
 or a pull request's title and description are GitHub's, and so is closing it: refused (400).
 With `work-queue.attachments`, both create and edit take `files`, the composer's carried
-`{uri, name?}` files: a local `file://` URL on the box asked, or a base64 `data:` URI carrying
-bytes to another computer. The box copies them into the item's existing file storage; an edit
-appends and preserves earlier files. File limits and duplicate names follow the tools' rules.
+`{uri, name?}` files: a base64 `data:` URI with the bytes, or a local `file://` URL, taken only from
+Kuvo Code's app on the box's own computer (over its own server, `x-kuvo-from: app` or `mac`) and
+refused (400) from a phone, the relay, `box route` or another box, so nothing reads the box's files
+through an item. For an item on another computer the box sends each file's bytes there (`data:`;
+409 when that computer lacks `work-queue.attachments`). The box copies them into the item's own
+files, as an agent's (25 MB each, 50 an item, a name taken twice numbered); an edit appends and
+keeps earlier files; they go when the item is deleted for good. A client offers attaching on a new
+item where its box has `work-queue.attachments`, and on an item where `can.attach`.
 `DELETE kuvo/work-queue/items/<item>` and `POST …/restore`; `POST kuvo/work-queue/labels`
 `{add, color?}` (a colour the fewest labels have, unless said), `{change, name?, color?}` (a label
 by its id or name) or `{remove}` (taken off every item on this box, deleted ones too, then gone)
@@ -7371,8 +7379,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work` | a bot's work ("Work"): `kuvo/work`, `…/events`, `kuvo/bots/<id>/stop-all`, `start_session`'s and `kuvo/sessions`' new fields, the work tools, `limits` in `kuvo/bots` (bridge 0.9.106) |
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
 | `work-queue.anywhere` | an item no computer told this box of is asked of each of your other computers, for a client: read, its files, and what you do to it; 503 `{message, computers}` while some couldn't say ("The Work Queue", Across your computers, Found where it's kept; #668) |
+| `work-queue.attachments` | a client's `POST kuvo/work-queue/items` and `PATCH …/items/<item>` take `files` and keep them with the item; `attach` in `can` ("The Work Queue") |
 | `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
-| `work-queue.attachments` | client create/edit takes carried files and keeps their bytes with the item ("The Work Queue") |
 | `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |

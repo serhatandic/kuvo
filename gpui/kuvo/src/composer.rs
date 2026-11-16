@@ -214,8 +214,15 @@ pub struct Composer {
     noted: String,
     /// Files and pictures that go with what's written, in the order they were added.
     attached: Vec<PathBuf>,
+    /// An item's description (`Composer::item`) in place of a message: the same paste and drop of
+    /// files, without a conversation's controls.
     item_editor: bool,
+    /// An item's description takes files: only where the item's computer keeps them
+    /// (`set_attaching`); with none offered, ⌘V pastes text and nothing can be dropped.
+    item_attaching: bool,
+    /// Which draft of attachments is the latest: a paste or copy finishing for an earlier one is left.
     attachment_generation: u64,
+    /// The pictures an item keeps already: a new one's name (`[Image n]`) follows them.
     image_offset: usize,
     /// What you're replying to (a message, or a part of one), ahead of your words as it's sent,
     /// each with your answer to it in a field of its own (`answers`, in the same order), as 0.7's.
@@ -289,7 +296,7 @@ impl Composer {
         let takes_files = !matches!(target, Target::Group { .. });
         let field = cx.new(|cx| {
             let field = TextField::new(cx).multi_line(if item_editor { 3 } else { 1 }, if item_editor { 12 } else { 10 }).bare().submits_on_enter(!item_editor).placeholder(if item_editor { "Add a description. Markdown works.".into() } else { placeholder.clone() });
-            if takes_files { field.takes_files() } else { field }
+            if takes_files && !item_editor { field.takes_files() } else { field }
         });
         let pasting = cx.subscribe(&field, |this: &mut Composer, _, pasted: &Pasted, cx| this.paste(pasted.clone(), cx));
         let subscription = cx.subscribe(&field, |this: &mut Composer, _, event: &TextFieldEvent, cx| {
@@ -316,6 +323,7 @@ impl Composer {
         });
         let mut composer = Composer {
             item_editor,
+            item_attaching: false,
             attachment_generation: 0,
             image_offset: 0,
             client,
@@ -1261,6 +1269,14 @@ impl Composer {
     /// Continue picture names after the images already kept with an item.
     pub fn set_image_offset(&mut self, count: usize) {
         self.image_offset = count;
+    }
+
+    /// Whether an item's description takes files (its computer keeps them, as its box says): where
+    /// it doesn't, there's simply nothing to paste or drop them into.
+    pub fn set_attaching(&mut self, attaching: bool, cx: &mut Context<Self>) {
+        self.item_attaching = attaching;
+        self.field.update(cx, |field, _| field.set_takes_files(attaching));
+        cx.notify();
     }
 
     /// What goes with what's written: files and pictures, in order.
@@ -2251,7 +2267,7 @@ impl Render for Composer {
             return div().id("item-composer").debug_selector(|| "item-composer".into()).w_full().flex().flex_col().gap(space::S2)
                 .children(self.attachments(cx)).child(self.field.clone())
                 .children(self.note.as_ref().map(|note| div().child(note.text.clone())))
-                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_named(paths.paths().to_vec(), cx)))
+                .when(self.item_attaching, |editor| editor.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_named(paths.paths().to_vec(), cx))))
                 .into_any_element();
         }
         let held = self.client.gate().is_held();

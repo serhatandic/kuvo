@@ -96,9 +96,9 @@ beforeEach(() => {
 
 // The box's answer to one request, from a client (this Mac's app): answered here, by the real routes.
 const handle = link.engineHandler();
-async function route(method, pathname, body) {
+async function route(method, pathname, body, as = { fromApp: true }, phone = undefined) {
   const pieces = [];
-  for await (const piece of handle({ method, path: pathname, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)), fromApp: true }, undefined)) pieces.push(piece);
+  for await (const piece of handle({ method, path: pathname, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)), ...as }, phone)) pieces.push(piece);
   const head = pieces.find(each => each.head).head;
   const bytes = Buffer.concat(pieces.filter(each => each.body).map(each => each.body));
   let parsed = bytes.toString();
@@ -1394,21 +1394,35 @@ test("every agent kind gets the tools through its tool server: a machine's kuvo-
 });
 
 
-test("client carried files are copied on create and appended on edit, including remote bytes", async () => {
+test("a picture you attach to an item is kept with it: a file of this computer only from Kuvo Code here, never from a phone", async () => {
+  const app = { fromApp: true, served: true };
   const local = path.join(home, "pasted image.png");
   fs.writeFileSync(local, "first image");
-  const created = await route("POST", "kuvo/work-queue/items", { title: "Pictures", files: [{ uri: new URL(`file://${local}`).href, name: "first.png" }] });
+  const created = await route("POST", "kuvo/work-queue/items", { title: "Pictures", files: [{ uri: new URL(`file://${local}`).href, name: "first.png" }] }, app);
   assert.equal(created.status, 200);
+  assert.equal(created.body.item.can.attach, true, "attaching is offered for one kept here");
   const id = created.body.item.id;
   fs.unlinkSync(local);
   for (const uri of [new URL(`file://${local}`).href, "file://%invalid"]) {
-    const missing = await route("PATCH", `kuvo/work-queue/items/${id}`, { files: [{ uri, name: "gone.png" }] });
+    const missing = await route("PATCH", `kuvo/work-queue/items/${id}`, { files: [{ uri, name: "gone.png" }] }, app);
     assert.equal(missing.status, 400);
     assert.match(missing.body.message, /attach it again/);
   }
   assert.equal((await route("GET", `kuvo/work-queue/items/${id}/files/first.png`)).raw, "first image");
-  const changed = await route("PATCH", `kuvo/work-queue/items/${id}`, { body: "[Image 1] [Image 2]", files: [{ uri: "data:image/png;base64," + Buffer.from("remote image").toString("base64"), name: "second.png" }] });
-  assert.equal(changed.status, 200);
+
+  // A phone (or anything not Kuvo Code's app on this computer) names no file here: it sends the bytes.
+  const secret = path.join(home, "secret.txt");
+  fs.writeFileSync(secret, "not yours");
+  for (const [as, phone] of [[{}, { key: Buffer.alloc(32, 7) }], [{ fromApp: true }, undefined], [{ fromMac: true, desktop: true }, { key: Buffer.alloc(32, 8), kind: "desktop" }]]) {
+    const added = await route("POST", "kuvo/work-queue/items", { title: "Sneaky", files: [{ uri: new URL(`file://${secret}`).href, name: "secret.txt" }] }, { ...as }, phone);
+    assert.equal(added.status, 400, "a path is refused");
+    const changed = await route("PATCH", `kuvo/work-queue/items/${id}`, { files: [{ uri: new URL(`file://${secret}`).href, name: "secret.txt" }] }, { ...as }, phone);
+    assert.equal(changed.status, 400);
+  }
+  assert.equal((await route("GET", `kuvo/work-queue/items/${id}/files/secret.txt`)).status, 404, "nothing of it kept");
+
+  const changed = await route("PATCH", `kuvo/work-queue/items/${id}`, { body: "[Image 1] [Image 2]", files: [{ uri: "data:image/png;base64," + Buffer.from("remote image").toString("base64"), name: "second.png" }] }, {}, { key: Buffer.alloc(32, 7) });
+  assert.equal(changed.status, 200, "a phone's bytes are kept");
   const item = (await route("GET", `kuvo/work-queue/items/${id}`)).body.item;
   assert.deepEqual(item.files.map(file => file.name), ["first.png", "second.png"]);
   assert.equal(item.body, "[Image 1] [Image 2]");
@@ -1416,4 +1430,5 @@ test("client carried files are copied on create and appended on edit, including 
   const refused = await route("PATCH", `kuvo/work-queue/items/${id}`, { title: "", files: [{ uri: "data:image/png;base64,eA==", name: "third.png" }] });
   assert.equal(refused.status, 400);
   assert.deepEqual((await route("GET", `kuvo/work-queue/items/${id}`)).body.item.files.map(file => file.name), ["first.png", "second.png"]);
+
 });

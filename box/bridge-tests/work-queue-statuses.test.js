@@ -366,7 +366,7 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   const plain = (await ok("POST", "kuvo/work-queue/items", { title: "  Mine,\n plainly  " })).item;
   assert.deepEqual([plain.number, plain.title, plain.status, plain.priority, plain.labels, plain.owner, plain.assignee, plain.due], [2, "Mine, plainly", "todo", "normal", [], "usr_you", undefined, undefined]);
   assert.deepEqual(plain.created.by, { user: true });
-  assert.deepEqual(plain.can, { edit: true, set: true, assign: true, close: true, delete: true, restore: false });
+  assert.deepEqual(plain.can, { edit: true, set: true, assign: true, close: true, delete: true, restore: false, attach: true });
   const full = (await ok("POST", "kuvo/work-queue/items", { title: "Fix the crash", body: "It **crashes**.", status: "Backlog", priority: "urgent", labels: ["Bug"], assignee: { kind: "agent", id: "codex-cli" }, due: "2026-12-01" })).item;
   assert.deepEqual([full.number, full.status, full.priority, full.labels, full.assignee, full.due, full.owner], [3, "backlog", "urgent", ["lbl_bug"], { kind: "agent", id: "codex-cli", name: "Codex" }, "2026-12-01", "usr_you"]);
   assert.equal((await ok("GET", `kuvo/work-queue/items/${full.id}`)).item.body, "It **crashes**.");
@@ -477,10 +477,10 @@ test("the box says what may be done to each item, and refuses the rest", async (
   write(path.join(queues, "queues", "ses_lead.json"), JSON.stringify(kept));
   const seen = await view("ses_lead");
   const can = title => [...seen.items, ...seen.removed].find(item => item.title === title).can;
-  assert.deepEqual(can("Plain"), { edit: true, set: true, assign: true, close: true, delete: true, restore: false });
-  assert.deepEqual(can("To delete"), { edit: false, set: false, assign: false, close: false, delete: false, restore: true, why: "It's deleted: bring it back to change it." });
-  assert.deepEqual(can("Item 3"), { edit: false, set: true, assign: true, close: false, delete: true, restore: false, why: "Its title, its description and closing it are GitHub's." });
-  assert.deepEqual(can("Item 4"), { edit: false, set: false, assign: false, close: false, delete: true, restore: false, why: "It's on its way to Far on another computer: it can be changed there once it's arrived." });
+  assert.deepEqual(can("Plain"), { edit: true, set: true, assign: true, close: true, delete: true, restore: false, attach: true });
+  assert.deepEqual(can("To delete"), { edit: false, set: false, assign: false, close: false, delete: false, restore: true, attach: false, why: "It's deleted: bring it back to change it." });
+  assert.deepEqual(can("Item 3"), { edit: false, set: true, assign: true, close: false, delete: true, restore: false, attach: false, why: "Its title, its description and closing it are GitHub's." });
+  assert.deepEqual(can("Item 4"), { edit: false, set: false, assign: false, close: false, delete: true, restore: false, attach: false, why: "It's on its way to Far on another computer: it can be changed there once it's arrived." });
   assert.deepEqual((await ok("GET", `kuvo/work-queue/items/${id(3)}`)).item.can, can("Item 3"), "an item whole says the same");
 
   // What it says can't be done is refused.

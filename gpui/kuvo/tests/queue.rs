@@ -1392,3 +1392,27 @@ fn images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
     let sent = bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_234");
     assert_eq!(sent.last().unwrap()["files"].as_array().unwrap().len(), 2);
 }
+
+#[gpui::test]
+fn a_computer_without_attachments_offers_none_in_its_item_forms(cx: &mut TestAppContext) {
+    use gpui::{ClipboardItem, Image, ImageFormat};
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_lacks(&["work-queue.attachments"]);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    let pasted = tempfile::tempdir().unwrap();
+    cx.update(|_, cx| cx.set_global(kuvo::pasted::PastedFolder(pasted.path().to_path_buf())));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(3, 2).write_to(&mut out, image::ImageFormat::Png).unwrap();
+    click(cx, "queue-new");
+    cx.simulate_input("No pictures here");
+    keys(cx, "enter");
+    cx.write_to_clipboard(ClipboardItem::from(Image::from_bytes(ImageFormat::Png, out.into_inner())));
+    keys(cx, "cmd-v");
+    let composer = page.read_with(cx, |page, _| page.item_composer().clone());
+    assert!(composer.read_with(cx, |composer, _| composer.attached().is_empty()), "nothing attached");
+    assert!(!shown(cx, "attachments"));
+    assert_eq!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().to_owned()), "", "and no picture's name written");
+    keys(cx, "cmd-enter");
+    let sent = bodies(&stand_in, "POST", "kuvo/work-queue/items");
+    assert!(sent.last().unwrap().get("files").is_none());
+}

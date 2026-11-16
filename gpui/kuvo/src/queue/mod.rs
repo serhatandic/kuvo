@@ -1010,7 +1010,12 @@ impl QueueView {
             }
             Act::New => {
                 self.title.update(cx, |field, cx| field.set_text("", cx));
-                self.body_composer.update(cx, |composer, cx| composer.clear_attachments(cx));
+                // (Files go with a new one where this computer keeps them.)
+                let attaching = self.client.gate().has("work-queue.attachments");
+                self.body_composer.update(cx, |composer, cx| {
+                    composer.clear_attachments(cx);
+                    composer.set_attaching(attaching, cx);
+                });
                 self.body.update(cx, |field, cx| field.set_text("", cx));
                 // What the box says a new item starts as (`new`), shown and sent, so what's shown
                 // is what's made; then as the list shown: its status, or its label.
@@ -1028,7 +1033,12 @@ impl QueueView {
                 // (Its title and description, where the box says they may be changed.)
                 let Some(whole) = self.whole().filter(|whole| whole.item.can.edit).cloned() else { return };
                 self.title.update(cx, |field, cx| field.set_text(whole.item.title.clone(), cx));
-                self.body_composer.update(cx, |composer, cx| { composer.clear_attachments(cx); composer.set_image_offset(whole.files.iter().filter(|file| file.kind.starts_with("image/")).count()); });
+                self.body_composer.update(cx, |composer, cx| {
+                    composer.clear_attachments(cx);
+                    composer.set_image_offset(whole.files.iter().filter(|file| file.kind.starts_with("image/")).count());
+                    // (As its box says: where its computer keeps them.)
+                    composer.set_attaching(whole.item.can.attach, cx);
+                });
                 self.body.update(cx, |field, cx| {
                     field.set_text(whole.body.clone(), cx);
                     // (From its start, so a long one opens on its first lines.)

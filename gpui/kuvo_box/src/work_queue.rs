@@ -83,6 +83,9 @@ pub struct Can {
     pub delete: bool,
     #[serde(default)]
     pub restore: bool,
+    /// Files may go with a change to it (its computer keeps them: `work-queue.attachments`).
+    #[serde(default)]
+    pub attach: bool,
     /// Where something can't be done, why, in the box's words: shown as they are.
     #[serde(default)]
     pub why: Option<String>,

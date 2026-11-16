@@ -47,13 +47,13 @@ const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before
 /** An item you add from a client (`POST kuvo/work-queue/items`): in the queue `owner` names (a
  * conversation's, the one you're looking at); else, for a bot of this box, in that bot's; else in
  * your own (`usr_you`). Todo and Normal unless said. */
-export function addHere(given: Record<string, unknown>): Acted {
+export function addHere(given: Record<string, unknown>, local = false): Acted {
   const now = Date.now();
   const primary = primaryOf();
   let staged: ReturnType<typeof stageClientFiles> | undefined;
   try {
     return changed(() => {
-      staged = stageClientFiles(given.files);
+      staged = stageClientFiles(given.files, local);
       return changeQueues(book => {
         if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner))) throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
         const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
@@ -72,7 +72,7 @@ export function addHere(given: Record<string, unknown>): Acted {
 
 /** What a client does to an item this box keeps (`ref`), as the route answers it: read whole, delete,
  * bring back or change (`given`: what it says, where it stands, its place). */
-export async function actHere({ method, action, ref, given = {}, targets, signal }: { method: Act["method"]; action?: "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null }): Promise<Acted> {
+export async function actHere({ method, action, ref, given = {}, targets, signal, local = false }: { method: Act["method"]; action?: "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null; local?: boolean }): Promise<Acted> {
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   if (method === "GET") {
     const item = find(allItems());
@@ -117,7 +117,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   let staged: ReturnType<typeof stageClientFiles> | undefined;
   try {
     return changed(() => {
-      staged = stageClientFiles(given.files);
+      staged = stageClientFiles(given.files, local);
       return inBook((item, book) => {
         if (item.removed) throw new Refusal("It's deleted: bring it back first.");
         const fields = fieldsOf(given);

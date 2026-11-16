@@ -19,7 +19,7 @@ import { frozen } from "../moves/records";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
-import { Refusal, refuseMoving } from "../work-queue/ops";
+import { carriedFiles, Refusal, refuseMoving } from "../work-queue/ops";
 import { TOLD, type ToldItem } from "../work-queue/told";
 import { readLink } from "../state";
 import { ownKey } from "../peers/known";
@@ -29,9 +29,9 @@ import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
-import { forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
+import { ATTACHMENTS, forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
 export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
@@ -139,7 +139,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     today: todayHere(),
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key) }) })),
+      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key), attaching: takesForwarded(item.computer.key, ATTACHMENTS) }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
     removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary).filter(kept),
@@ -254,7 +254,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (part === "items") {
     if (method !== "POST") return yield* json(405, {});
     if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
-    return yield* answered(addHere(given), json);
+    return yield* answered(addHere(given, fromLocalApp(context.request)), json);
   }
 
   if (part === "import") {
@@ -335,7 +335,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (whole) return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || !takesForwarded(far.computer.key) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || !takesForwarded(far.computer.key), attaching: takesForwarded(far.computer.key, ATTACHMENTS) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
@@ -382,8 +382,14 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       far = sought?.far ?? null;
     }
   }
-  if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal }), json);
-  const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } = given;
+  if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal, local: fromLocalApp(context.request) }), json);
+  const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
+  // (Files go to that computer's box with their bytes: it never reads a path it's sent.)
+  let files: unknown;
+  try { files = carriedFiles(given.files, fromLocalApp(context.request)); } catch (error) {
+    if (error instanceof Refusal) return yield* json(400, { message: error.message });
+    throw error;
+  }
   const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {}) }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
   // What this box has of it now, as that computer's box answered (not when it next tells).

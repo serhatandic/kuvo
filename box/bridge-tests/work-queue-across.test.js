@@ -115,9 +115,9 @@ const mailTo = to => {
 
 // The box's answer to one request, from a client (this Mac's app).
 const handle = link.engineHandler(() => target);
-async function route(method, pathname, body) {
+async function route(method, pathname, body, as = { fromApp: true }) {
   const pieces = [];
-  for await (const piece of handle({ method, path: pathname, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)), fromApp: true }, undefined)) pieces.push(piece);
+  for await (const piece of handle({ method, path: pathname, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)), ...as }, undefined)) pieces.push(piece);
   const bytes = Buffer.concat(pieces.filter(each => each.body).map(each => each.body));
   let parsed = bytes.toString();
   try { parsed = JSON.parse(parsed); } catch {}
@@ -176,7 +176,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal(far.progress.note, "Writing the test");
   assert.deepEqual([far.status, far.priority, far.labels], ["in-progress", "high", ["lbl_tests"]], "where it stands, as lab said");
   assert.deepEqual(lead.labels, [{ id: "lbl_tests", name: "Tests", color: "mint" }], "a label only lab has is listed for its items");
-  assert.deepEqual(far.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, why: "It's on lab: change it there." }, "lab takes no change from another box yet, and the box says so");
+  assert.deepEqual(far.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, attach: false, why: "It's on lab: change it there." }, "lab takes no change from another box yet, and the box says so");
   assert.equal(lead.owners.find(each => each.owner === "ses_far")?.title, "Far away");
   const all = await view("all");
   assert.deepEqual(new Set(all.items.map(item => item.number)), new Set([100, 500, 501, 502]));
@@ -263,7 +263,7 @@ test("a computer that isn't answering: its items show as it last told them, none
   const item = away.items.find(each => each.number === 500);
   assert.deepEqual(item.sessions.map(each => each.working), [false], "nothing on a computer that's off can be seen at work");
   assert.equal(item.status, "in-progress", "its status is as lab set it: nothing works that out");
-  assert.deepEqual(item.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, why: "lab isn't answering now (it may be asleep, off or offline): it can be changed once it's back." }, "and nothing may be done to it, the box saying why");
+  assert.deepEqual(item.can, { edit: false, set: false, assign: false, close: false, delete: false, restore: false, attach: false, why: "lab isn't answering now (it may be asleep, off or offline): it can be changed once it's back." }, "and nothing may be done to it, the box saying why");
   assert.equal(item.progress.note, "Writing the test", "what it said is kept");
   assert.deepEqual(away.computers.map(each => [each.name, each.away]), [["lab", since]]);
   assert.equal((await route("GET", "kuvo/work-queue/refs?refs=500")).body.refs["500"].status, "in-progress", "its chip says where it stands");
@@ -895,12 +895,17 @@ test("what you do to an item another computer keeps, asked of this box, is done 
   assert.equal(mailTo(lab).length, 0, "never silently drop attachments on an older peer");
 
   forwardsTold(true);
-  const files = [{ uri: "data:image/png;base64,eA==", name: "image.png" }];
+  assert.equal((await view("all")).items.find(item => item.number === 500).can.attach, true, "lab keeps attached files now");
+  // A picture of this computer goes to lab with its bytes: lab never reads a path it's sent.
+  const attaching = path.join(home, "shot.png");
+  fs.writeFileSync(attaching, "x");
+  const files = [{ uri: new URL(`file://${attaching}`).href, name: "image.png" }];
   // Moved: the move goes to lab, and lab's answer is this box's.
-  const moving = route("PATCH", `kuvo/work-queue/items/500`, { status: "backlog", top: true, files });
+  const moving = route("PATCH", `kuvo/work-queue/items/500`, { status: "backlog", top: true, files }, { fromApp: true, served: true });
   const [asked] = await sentTo(lab);
   const act = asked.workQueue.act;
-  assert.deepEqual({ method: act.method, action: act.action, item: act.item, body: act.body }, { method: "PATCH", action: undefined, item: told(500).id, body: { status: "backlog", top: true, files } });
+  assert.deepEqual({ method: act.method, action: act.action, item: act.item, body: act.body }, { method: "PATCH", action: undefined, item: told(500).id, body: { status: "backlog", top: true, files: [{ uri: "data:image/png;base64,eA==", name: "image.png" }] } });
+  fs.rmSync(attaching);
   // (Only from the box it went to: one from the Mac for it isn't lab's answer.)
   receive(mac, { workQueue: { acted: { id: act.id, status: 200, value: { item: told(500, "ses_far", { status: "todo" }) } } } });
   receive(lab, { workQueue: { acted: { id: act.id, status: 200, value: { item: told(500, "ses_far", { status: "backlog", order: 0 }) } } } });

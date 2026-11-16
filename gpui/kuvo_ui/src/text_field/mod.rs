@@ -357,6 +357,11 @@ impl TextField {
         self
     }
 
+    /// The same, changed on a field that's made: off, ⌘V pastes text as any field's.
+    pub fn set_takes_files(&mut self, takes: bool) {
+        self.takes_files = takes;
+    }
+
     /// Drawn as a dot a character, and never copied or cut: for a key or a password.
     pub fn masked(mut self) -> Self {
         self.masked = true;
