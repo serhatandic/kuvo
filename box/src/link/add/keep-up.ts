@@ -16,10 +16,11 @@ import type { ComputerAction, ComputerUpdate, ListedComputer } from "../../share
 import { isObject } from "../../shared/json";
 import { peerReach } from "../areas/computers";
 import { writePrivate } from "../files";
-import { RUN } from "../home";
+import { IS_MAC, RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { peersOf } from "../peers/known";
+import { mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
 import { boxVersion, isUpdating, newerVersion, offerFailedAgain, offerHeld, offerWaits, updateStatus } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
@@ -55,7 +56,9 @@ interface Kept {
   working?: number | null;
   busyLooks?: number;
   unreached?: number;
-  failed?: { at: number; tries: number };
+  /** Why it couldn't be reached then, in words (what ssh said is in the log). */
+  unreachedWhy?: string;
+  failed?: { at: number; tries: number; why?: string };
   stopped?: number;
 }
 
@@ -93,7 +96,8 @@ export function bringUp(key: string, auto: boolean, clock: () => number = Date.n
     const now = clock();
     if (seen.state === "failed") {
       console.error(`Kuvo couldn't bring ${seen.name} up to date: ${seen.failure?.message ?? "it failed"}`);
-      return changeKept(key, was => ({ older: true, mine: boxVersion() ?? "", checked: now, ...(was ?? {}), since: undefined, failed: { at: now, tries: (was?.failed?.tries ?? 0) + 1 } }));
+      const why = seen.failure?.message?.slice(0, 400);
+      return changeKept(key, was => ({ older: true, mine: boxVersion() ?? "", checked: now, ...(was ?? {}), since: undefined, failed: { at: now, tries: (was?.failed?.tries ?? 0) + 1, ...(why ? { why } : {}) } }));
     }
     // (Stopped, by you: not begun again by itself for a while.)
     changeKept(key, was => ({ older: true, mine: boxVersion() ?? "", checked: now, ...(was ?? {}), stopped: now }));
@@ -102,15 +106,27 @@ export function bringUp(key: string, auto: boolean, clock: () => number = Date.n
 }
 
 let going = false;
+/** Why the last round didn't run, as logged: said once each time it changes, never every round. */
+let notRunning: string | null = null;
+
+/** Logs why keeping machines up to date doesn't run now (`why`), or that it runs again (null). */
+function noteRunning(why: string | null): void {
+  if (why === notRunning) return;
+  notRunning = why;
+  console.error(why ? `Kuvo isn’t keeping your machines up to date now: ${why}` : "Kuvo keeps your machines up to date again.");
+}
 
 /** One round: each machine this box set up over SSH, that's reached now and whose Kuvo is older than
  * its own (by what it said of itself, or, where it says nothing, by looking over SSH), is brought up
  * to date if nothing is at work there; otherwise it waits. Never two rounds at once, never one under
  * way for that machine, never while one rests after failing or being stopped. */
 export async function keepUpRound(clock: () => number = Date.now): Promise<void> {
-  if (going || !canAdd().can) return;
+  if (going) return;
+  const can = canAdd();
+  if (!can.can) return noteRunning(can.message);
   const mine = boxVersion();
-  if (!mine) return;
+  if (!mine) return noteRunning("its own version can’t be read (bin/box-version).");
+  noteRunning(null);
   going = true;
   try {
     const link = readLink();
@@ -145,7 +161,8 @@ export async function keepUpRound(clock: () => number = Date.now): Promise<void>
       } catch (error) {
         // (Not reached over SSH: no failed update, and tried again at the next round.)
         console.error(`Kuvo couldn't reach ${at.name} over SSH to keep it up to date: ${error instanceof Error ? error.message : String(error)}`);
-        changeKept(peer.key, before => ({ older: true, mine, checked: now, ...(before ?? {}), unreached: now }));
+        const why = error instanceof Error ? error.message.slice(0, 400) : undefined;
+        changeKept(peer.key, before => ({ older: true, mine, checked: now, ...(before ?? {}), unreached: now, unreachedWhy: why }));
         continue;
       }
       if (!looked) continue;
@@ -155,10 +172,10 @@ export async function keepUpRound(clock: () => number = Date.now): Promise<void>
       }
       if (looked.working !== 0) {
         const working = looked.working;
-        changeKept(peer.key, before => ({ ...(before ?? {}), older: true, mine, checked: now, since: before?.since ?? now, working, busyLooks: (before?.busyLooks ?? 0) + 1, unreached: undefined, failed: undefined }));
+        changeKept(peer.key, before => ({ ...(before ?? {}), older: true, mine, checked: now, since: before?.since ?? now, working, busyLooks: (before?.busyLooks ?? 0) + 1, unreached: undefined, unreachedWhy: undefined, failed: undefined }));
         continue;
       }
-      changeKept(peer.key, before => ({ ...(before ?? {}), older: true, mine, checked: now, working: 0, since: undefined, busyLooks: undefined, unreached: undefined, failed: undefined }));
+      changeKept(peer.key, before => ({ ...(before ?? {}), older: true, mine, checked: now, working: 0, since: undefined, busyLooks: undefined, unreached: undefined, unreachedWhy: undefined, failed: undefined }));
       bringUp(peer.key, true, clock);
     }
   } finally {
@@ -176,28 +193,41 @@ export function keepMachinesUp(): void {
 
 const sessions = (count: number): string => `${count} ${count === 1 ? "session is" : "sessions are"}`;
 
-/** How bringing `computer` up to date stands, in one line (`update`: its `title`, and an empty
- * `detail`), and Update Now (`actions`), on the box that set it up over SSH: being brought up,
- * waiting for nothing to be at work there (over a day: `long`), or failed (tried again by itself).
- * Nothing for one as new as this box, one it didn't set up, and one that's away now. */
+/** How bringing `computer` up to date stands (`update`: what's true now, its `title`, and the next
+ * step where there's one to say, its `detail`), and the one action that moves it on (`actions`), on
+ * the box that set it up over SSH: being brought up, waiting for nothing to be at work there (over
+ * a day: `long`), not reached over SSH or failed (Try Again: it tries again by itself too). Where
+ * this box can't bring it up, why, and what to do: set it up over SSH from here once (`add`), or
+ * what keeps this box from it (`canAdd`'s words). Nothing for one as new as this box, one that's
+ * away now, and one this box neither set up nor could. */
 export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "apart" | "reach" | "version" | "working">, here: string, now = Date.now()): { update?: ComputerUpdate; actions: ComputerAction[] } {
   const none = { actions: [] };
   if (computer.here) return keepingSelfUp(computer.name || here, computer.working);
   if (computer.apart || computer.kind !== "machine" || !computer.key) return none;
   const mine = boxVersion();
-  if (!mine || !canAdd().can) return none;
-  const at = sshAddressOf(computer.key);
+  if (!mine) return none;
   const name = computer.name || "this machine";
-  // One older that this box didn't set up over SSH (another Mac did, or its record didn't come
-  // along): it can't be brought up from here until it's set up over SSH from here, which Set Up
-  // Over SSH begins (a client opens Add a Machine at its address, `id`, for you to confirm).
+  const line = (state: ComputerUpdate["state"], title: string, detail = "", long = false): ComputerUpdate => ({ state, title, detail, ...(long ? { long: true as const } : {}) });
+  const can = canAdd();
+  const at = can.can ? sshAddressOf(computer.key) : null;
+  // One older that this box can't bring up (nothing it set up over SSH, or something keeps it from
+  // that now): said, with what to do. (Older by what it said; one that says nothing is from before
+  // boxes said their version, so older, once it's heard from.)
   if (!at) {
     const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected";
     if (!older || computer.reach === "away") return none;
-    return { update: { state: "waiting", title: `Kuvo on ${name} needs an update. Set it up over SSH from ${here} to update it.`, detail: "" }, actions: [{ id: "add", label: "Set Up Over SSH…" }] };
+    // (Something keeps this box from it: the old app attached, no link yet, files missing. Its own
+    // words say what to do; nothing to press here.)
+    // (Only where it's this box's to clear, a Mac's that isn't another's member: a Linux box or a
+    // member never brings machines up, so it says nothing, and a client draws what the box that
+    // does says.)
+    if (!can.can) return IS_MAC && !mainElsewhere(readLink()) ? { update: line("waiting", `Kuvo on ${name} needs an update`, can.message), actions: [] } : none;
+    // One older that this box didn't set up over SSH (another Mac did, or its record didn't come
+    // along): set up over SSH from here once, which Set Up Over SSH begins (a client opens Add a
+    // Machine at its address, `id`, for you to confirm).
+    return { update: line("waiting", `Kuvo on ${name} needs an update`, `${here} hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays.`), actions: [{ id: "add", label: "Set Up Over SSH…" }] };
   }
   const under = underWay(at.destination);
-  const line = (state: ComputerUpdate["state"], title: string, long = false): ComputerUpdate => ({ state, title, detail: "", ...(long ? { long: true as const } : {}) });
   if (under?.seen.kind === "update") return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
   const was = readKept()[computer.key];
   // (One heard from that never says its version is from before boxes said it, so older than this
@@ -217,13 +247,22 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
       : `Something may be at work on ${name}. It keeps going, but ${name} may be out of reach for a moment as Kuvo there restarts.`,
     label: "Update Now",
   };
-  const actions: ComputerAction[] = [{ id: "update", label: "Update Now", ...(confirm ? { confirm } : {}), ...(under ? { why: "Something else is being done with it now." } : {}) }];
-  if (was?.failed) return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
-  if (was?.unreached && was.unreached >= was.checked) return { update: line("waiting", `Kuvo on ${name} updates once ${here} can reach it.`), actions };
-  if (was?.since !== undefined && working !== 0 && now - was.since >= LONG_WAIT) return { update: line("waiting", `Kuvo on ${name} hasn’t been free for a day.`, true), actions };
-  if (working === 0) return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions };
-  return { update: line("waiting", `Kuvo on ${name} updates once nothing’s at work there.`), actions };
+  const action = (label: string): ComputerAction[] => [{ id: "update", label, ...(confirm ? { confirm } : {}), ...(under ? { why: "Something else is being done with it now." } : {}) }];
+  // (A failure or a miss says so, with Try Again: a new try replaces it. Its words where they're
+  // more than "it couldn't be reached", which the title says.)
+  const missed = (title: string, why: string | undefined) => {
+    const own = why && !why.startsWith("Couldn’t reach ") ? sentence(why) : "Make sure it’s on and connected, then Try Again. ";
+    return { update: line("failed", title, `${own}Kuvo also tries again by itself later.`), actions: action("Try Again") };
+  };
+  if (was?.failed) return missed(was.failed.why?.startsWith("Couldn’t reach ") ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
+  if (was?.unreached && was.unreached >= was.checked) return missed(was.unreachedWhy?.includes("couldn’t be checked") ? `Couldn’t check ${name}` : `Couldn’t reach ${name}`, was.unreachedWhy);
+  if (was?.since !== undefined && working !== 0 && now - was.since >= LONG_WAIT) return { update: line("waiting", `Kuvo on ${name} hasn’t been free for a day`, "It updates once nothing’s at work there, or now with Update Now.", true), actions: action("Update Now") };
+  if (working === 0) return { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: action("Update Now") };
+  return { update: line("waiting", `Kuvo on ${name} updates once nothing’s at work there`, "Or now with Update Now: what’s at work there keeps going."), actions: action("Update Now") };
 }
+
+/** Words ending as a sentence does, with a space after, to go before more; none for none. */
+const sentence = (words: string): string => (words.trim() ? `${words.trim()}${/[.!?…]$/.test(words.trim()) ? "" : "."} ` : "");
 
 /** How this box's own update stands, in one line (`update`), and Update Now (`update-here`, which
  * is `POST kuvo/update {now}`): the release Kuvo Code here offered, newer than this box, is taken

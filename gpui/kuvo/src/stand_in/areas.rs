@@ -54,6 +54,10 @@ pub struct Areas {
     pub to_set_up: Vec<String>,
     /// The computers it lists as Macs (`kind: mac`), by key.
     pub as_macs: Vec<String>,
+    /// The older computers it can't bring up itself, by key, with why in its words (no action).
+    pub cant_bring_up: Vec<(String, String)>,
+    /// An empty box that lists your computers all the same (another computer's, in a test).
+    pub lists_yours: bool,
 }
 
 /// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
@@ -73,20 +77,20 @@ fn update_said(updating: &Updating, name: &str) -> (Value, Option<Value>) {
         1 => Some("1 session is".to_owned()),
         count => Some(format!("{count} sessions are")),
     };
-    // (One line, as the box says it: `detail` empty.)
-    let title = match (updating.state, updating.long) {
-        ("updating", _) => format!("Updating Kuvo on {name}…"),
-        ("failed", _) => format!("Kuvo on {name} couldn’t be updated. It tries again later."),
-        (_, true) => format!("Kuvo on {name} hasn’t been free for a day."),
-        _ => format!("Kuvo on {name} updates once nothing’s at work there."),
+    // (What's true now, and the next step, as the box says them.)
+    let (title, detail) = match (updating.state, updating.long) {
+        ("updating", _) => (format!("Updating Kuvo on {name}…"), String::new()),
+        ("failed", _) => (format!("Couldn’t reach {name}"), "Make sure it’s on and connected, then Try Again. Kuvo also tries again by itself later.".to_owned()),
+        (_, true) => (format!("Kuvo on {name} hasn’t been free for a day"), "It updates once nothing’s at work there, or now with Update Now.".to_owned()),
+        _ if updating.working == 0 => (format!("Kuvo on {name} updates in a moment"), String::new()),
+        _ => (format!("Kuvo on {name} updates once nothing’s at work there"), "Or now with Update Now: what’s at work there keeps going.".to_owned()),
     };
-    let detail = "";
     let mut update = json!({ "state": updating.state, "title": title, "detail": detail });
     if updating.long {
         update["long"] = json!(true);
     }
     let action = (updating.state != "updating").then(|| {
-        let mut action = json!({ "id": "update", "label": "Update Now" });
+        let mut action = json!({ "id": "update", "label": if updating.state == "failed" { "Try Again" } else { "Update Now" } });
         if let Some(at_work) = at_work {
             action["confirm"] = json!({ "title": format!("Update Kuvo on {name} now?"), "message": format!("{at_work} at work on {name}. They keep going, but {name} may be out of reach for a moment as Kuvo there restarts."), "label": "Update Now" });
         }
@@ -359,7 +363,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 setup,
                 { "id": "uninstall", "label": "Uninstall", "confirm": { "title": format!("Uninstall Kuvo Code from {name}?"), "message": format!("{} connects to {name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on {name}.", super::NAME), "label": "Uninstall" } }] })
     });
-    computers(areas.empty || areas.computers_alone, areas.more_computers)
+    computers((areas.empty && !areas.lists_yours) || areas.computers_alone, areas.more_computers)
         .into_iter()
         .chain(added)
         .filter(|computer| !areas.removed.iter().any(|key| computer["key"] == json!(key)))
@@ -384,9 +388,13 @@ fn listed(areas: &Areas) -> Vec<Value> {
             if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
                 computer["kind"] = json!("mac");
             }
+            if let Some((_, why)) = areas.cant_bring_up.iter().find(|(key, _)| computer["key"] == json!(key)) {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                computer["update"] = json!({ "state": "waiting", "title": format!("Kuvo on {name} needs an update"), "detail": why });
+            }
             if areas.to_set_up.iter().any(|key| computer["key"] == json!(key)) {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
-                computer["update"] = json!({ "state": "waiting", "title": format!("Kuvo on {name} needs an update. Set it up over SSH from {} to update it.", super::NAME), "detail": "" });
+                computer["update"] = json!({ "state": "waiting", "title": format!("Kuvo on {name} needs an update"), "detail": format!("{} hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays.", super::NAME) });
                 if let Some(actions) = computer["actions"].as_array_mut() {
                     actions.push(json!({ "id": "add", "label": "Set Up Over SSH…" }));
                 }

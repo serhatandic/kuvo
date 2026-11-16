@@ -119,10 +119,12 @@ const keyTwo = Buffer.concat([Buffer.from("0000000b7373682d656432353531390000002
 fs.writeFileSync(path.join(fake, "hostkey"), hostKey(keyOne));
 write(path.join(fake, "ssh"), `#!/bin/sh
 F="$FAKE_SSH"
-strict=; known=; pubkey=yes; control=
+strict=; known=; pubkey=yes; control=; alias=; config=
 while [ $# -gt 0 ]; do
   case "$1" in
+    -G) config=1; shift ;;
     -o) echo "$2" >>"$F/options"; case "$2" in
+          HostKeyAlias=*) alias=\${2#*=} ;;
           StrictHostKeyChecking=*) strict=\${2#*=} ;;
           UserKnownHostsFile=*) known=\${2#*=} ;;
           PubkeyAuthentication=*) pubkey=\${2#*=} ;;
@@ -133,9 +135,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 dest=$1; cmd=$2
+[ -n "$config" ] && { printf 'hostname %s\\nport 22\\n' "\${dest#*@}"; exit 0; }
 echo "$dest $strict \${control:-run}" >>"$F/log"
 [ -n "$control" ] && exit 0
 case "$dest" in nowhere) echo "ssh: Could not resolve hostname nowhere: Name or service not known" >&2; exit 255 ;; esac
+[ -f "$F/away-$dest" ] && { echo "ssh: connect to host $dest port 22: No route to host" >&2; exit 255; }
+# (Reached at another of its addresses: its key is checked as the one known for the first's.)
+[ -n "$alias" ] && dest=$alias
 key=$(cat "$F/hostkey")
 eval "set -- $known"
 if [ "$strict" = accept-new ]; then
@@ -418,7 +424,8 @@ test("a host that can't be reached, one that refuses your keys, and one whose ke
   const nowhere = await fails("nowhere");
   assert.equal(nowhere.state, "failed");
   assert.deepEqual(steps(nowhere), ["checking:failed", "files:waiting", "engine:waiting", "starting:waiting", "seeding:waiting", "joining:waiting"]);
-  assert.equal(nowhere.failure.message, "Couldn’t reach nowhere. ssh: Could not resolve hostname nowhere: Name or service not known.");
+  // (In words, with what to do next: what ssh said is in the log alone.)
+  assert.equal(nowhere.failure.message, "Couldn’t reach nowhere. Make sure it’s on and connected, then Try Again.");
   assert.equal(nowhere.failure.again, true);
 
   // A key in your own known hosts that isn't the host's now: never asked about, never replaced.
@@ -509,7 +516,10 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
   } finally {
     fs.rmSync(path.join(fake, "refuse"), { force: true });
   }
-  assert.deepEqual((await listed()).update, { state: "waiting", title: "Kuvo on studio updates once Studio can reach it.", detail: "" });
+  const missed = await listed();
+  assert.deepEqual([missed.update.state, missed.update.title], ["failed", "Couldn’t reach studio"]);
+  assert.match(missed.update.detail, /^studio didn’t accept Studio’s SSH keys\..* Kuvo also tries again by itself later\.$/);
+  assert.deepEqual(missed.actions.find(each => each.id === "update")?.label, "Try Again", "a way on, never a card alone");
   assert.equal(read(link.KEEP_UP_FILE)[peer.key].failed, undefined);
   const busy = path.join(there, "busy");
   fs.writeFileSync(busy, "");
@@ -518,7 +528,7 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
     assert.equal(link.allTries().some(each => each.kind === "update"), false, "nothing begun while something is at work there");
     assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "0.9.0");
     let it = await listed();
-    assert.deepEqual(it.update, { state: "waiting", title: "Kuvo on studio updates once nothing’s at work there.", detail: "" });
+    assert.deepEqual(it.update, { state: "waiting", title: "Kuvo on studio updates once nothing’s at work there", detail: "Or now with Update Now: what’s at work there keeps going." });
     const updateNow = it.actions.find(each => each.id === "update");
     assert.deepEqual(updateNow, { id: "update", label: "Update Now", confirm: { title: "Update Kuvo on studio now?", message: "2 sessions are at work on studio. They keep going, but studio may be out of reach for a moment as Kuvo there restarts.", label: "Update Now" } });
     // Still at work a day on: it says so, and Update Now is what's left to you.
@@ -528,7 +538,7 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
     fs.writeFileSync(link.KEEP_UP_FILE, JSON.stringify(kept));
     await link.keepUpRound();
     it = await listed();
-    assert.deepEqual(it.update, { state: "waiting", long: true, title: "Kuvo on studio hasn’t been free for a day.", detail: "" });
+    assert.deepEqual(it.update, { state: "waiting", long: true, title: "Kuvo on studio hasn’t been free for a day", detail: "It updates once nothing’s at work there, or now with Update Now." });
     assert.ok(it.actions.some(each => each.id === "update" && each.confirm));
     assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "0.9.0", "never while something is at work there");
   } finally {
@@ -578,7 +588,7 @@ test("a machine heard from that never says its version (a box from before they s
     fs.writeFileSync(list, "[]");
     try {
       const apart = await listed();
-      assert.deepEqual(apart.update, { state: "waiting", title: "Kuvo on studio needs an update. Set it up over SSH from Studio to update it.", detail: "" });
+      assert.deepEqual(apart.update, { state: "waiting", title: "Kuvo on studio needs an update", detail: "Studio hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays." });
       assert.deepEqual(apart.actions.find(each => each.id === "add"), { id: "add", label: "Set Up Over SSH…" });
     } finally {
       fs.writeFileSync(list, saved);
@@ -590,6 +600,80 @@ test("a machine heard from that never says its version (a box from before they s
     assert.equal(after.actions.some(each => each.id === "update"), false);
   } finally {
     if (before === null) fs.rmSync(told, { force: true }); else fs.writeFileSync(told, before);
+  }
+});
+
+test("a machine whose address doesn't answer (a home network's while you're away) is reached at another it tells its Mac, its key checked as the one known; with none, it's said in words with Try Again", async () => {
+  const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
+  const versionFile = path.join(remote, "bin", "box-version");
+  const listed = async () => (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key);
+  const told = path.join(home, "run", "peer-agents.json");
+  const before = fs.existsSync(told) ? fs.readFileSync(told, "utf8") : null;
+  const all = before ? JSON.parse(before) : {};
+  // (None of the addresses you added it under answers: the one it was added at, and any other.)
+  const own = read(path.join(home, "machines.json")).find(each => each.destination === peer.id);
+  const away = [peer.id, ...(own.otherAddresses ?? [])].map(address => path.join(fake, `away-${address}`));
+  fs.writeFileSync(versionFile, "0.9.0\n");
+  fs.rmSync(link.KEEP_UP_FILE, { force: true });
+  for (const file of away) fs.writeFileSync(file, "");
+  try {
+    // Nowhere else to try: in words, with Try Again, and what ssh said in the log alone.
+    fs.writeFileSync(told, JSON.stringify({ ...all, [peer.key]: { ...(all[peer.key] ?? {}), at: Date.now(), heard: Date.now(), computer: { version: "0.9.0", working: 0 } } }));
+    const failed = await over((await ask("POST", `kuvo/computers/${peer.key}/update`)).body.try.id);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.failure.message, `Couldn’t reach ${peer.name}. Make sure it’s on and connected, then Try Again.`);
+    const it = await listed();
+    assert.deepEqual([it.update.state, it.update.title, it.update.detail], ["failed", `Couldn’t reach ${peer.name}`, "Make sure it’s on and connected, then Try Again. Kuvo also tries again by itself later."]);
+    assert.equal(it.actions.find(each => each.id === "update")?.label, "Try Again");
+    // It tells its Mac its tailnet's address: Try Again reaches it there, as the user it was set
+    // up as, its host key checked against the one known for its first address; nothing is asked.
+    fs.writeFileSync(told, JSON.stringify({ ...all, [peer.key]: { ...(all[peer.key] ?? {}), at: Date.now(), heard: Date.now(), computer: { version: "0.9.0", working: 0, addresses: ["100.101.2.3", "bad address", peer.id] } } }));
+    assert.deepEqual(link.otherAddressesOf(peer.id), [...(own.otherAddresses ?? []).map(address => ({ address, own: true })), { address: "100.101.2.3", own: false }]);
+    fs.rmSync(path.join(fake, "options"), { force: true });
+    const done = await over((await ask("POST", `kuvo/computers/${peer.key}/update`)).body.try.id);
+    assert.equal(done.state, "done", JSON.stringify(done.failure));
+    assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "1.0.0");
+    assert.ok(sshLog().some(line => line.startsWith("100.101.2.3 yes run")), "reached at its other address, strictly checked");
+    assert.ok(fs.readFileSync(path.join(fake, "options"), "utf8").split("\n").includes(`HostKeyAlias=${peer.id}`));
+    // (Started again, it tells its Mac its new version: nothing more is said.)
+    fs.writeFileSync(told, JSON.stringify({ ...all, [peer.key]: { ...(all[peer.key] ?? {}), at: Date.now(), heard: Date.now(), computer: { version: "1.0.0", working: 0 } } }));
+    assert.equal((await listed()).update, undefined);
+  } finally {
+    for (const file of away) fs.rmSync(file, { force: true });
+    if (before === null) fs.rmSync(told, { force: true }); else fs.writeFileSync(told, before);
+  }
+});
+
+test("a machine says where else its Macs may reach it: its tailnet's address first, then its name, never a loopback or link-local one", () => {
+  const interfaces = { lo0: [{ family: "IPv4", address: "127.0.0.1", internal: true }], en0: [{ family: "IPv4", address: "192.168.1.101", internal: false }, { family: "IPv6", address: "fe80::1", internal: false }], awdl0: [{ family: "IPv4", address: "169.254.3.4", internal: false }], tailscale0: [{ family: "IPv4", address: "100.88.7.6", internal: false }] };
+  assert.deepEqual(link.ownAddresses(interfaces, "lokum"), ["100.88.7.6", "lokum", "192.168.1.101"]);
+  assert.deepEqual(link.ownAddresses({}, "localhost"), []);
+});
+
+test("once this Mac has moved from the old app, the old app opening again stops nothing: it's told it was replaced, and machines are still kept up to date", async () => {
+  const config = link.macLink.config;
+  const record = path.join(home, "updates", "rehome", "state.json");
+  const appConfig = { phones: true, machines: true, relay: "ws://127.0.0.1:1", name: "Studio", app: "0.7.4" };
+  const quietly = async run => { const said = console.error; console.error = () => {}; try { return await run(); } finally { console.error = said; } };
+  try {
+    // Before a move, the old app attached keeps this box from adding machines, and says so.
+    assert.equal((await ask("PUT", "kuvo/link/config", appConfig)).status, 200);
+    assert.equal(link.oldAppAttached(), true);
+    assert.match(link.canAdd().message ?? "", /^Quit the old Kuvo Code app on Studio first/);
+    // Moved: the old app is refused with words, takes nothing over, and stops nothing.
+    write(record, JSON.stringify({ state: "done", movedAt: Date.now() }));
+    link.macLink.config = config;
+    const refused = await ask("PUT", "kuvo/link/config", appConfig);
+    assert.deepEqual([refused.status, refused.body.message], [410, "Kuvo Code 1.0 has replaced this app on Studio. Quit it and move it to the Trash: everything it did is in Kuvo Code now."]);
+    assert.equal(link.macLink.config, config, "what the old app said isn't taken");
+    assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [] })).status, 410, "nor its list of machines");
+    assert.equal(link.oldAppAttached(), false);
+    assert.equal(link.canAdd().can, true);
+    await quietly(() => link.keepUpRound());
+  } finally {
+    fs.rmSync(path.join(home, "updates"), { recursive: true, force: true });
+    link.macLink.config = config;
+    link.macLink.appSaid = undefined;
   }
 });
 
@@ -640,7 +724,7 @@ test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this b
 
   // One that can't be reached: why, in the box's words.
   const nowhere = await ask("POST", "kuvo/machines", { destination: "nowhere" });
-  assert.deepEqual([nowhere.status, nowhere.body.message], [502, "Couldn’t reach nowhere. ssh: Could not resolve hostname nowhere: Name or service not known."]);
+  assert.deepEqual([nowhere.status, nowhere.body.message], [502, "Couldn’t reach nowhere. Make sure it’s on and connected, then Try Again."]);
 });
 
 test("uninstalling while it's being set up waits for the start under way, then nothing runs there and nothing starts it again (#603)", async () => {

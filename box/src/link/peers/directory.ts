@@ -111,7 +111,8 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
   const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 10_000 ? given.working : undefined;
   return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
-    ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}) };
+    ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
+    ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}) };
 }
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
