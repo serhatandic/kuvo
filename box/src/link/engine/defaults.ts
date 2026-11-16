@@ -34,7 +34,7 @@ export function keptFolders(): string[] {
 }
 
 export function defaultsPlugin(kept: string[]): string {
-  return `// Kuvo Code writes this each time its box starts: changes here don't last.
+  return `// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Working in a folder outside a conversation's project asks you first, as Settings › Permissions
 // says. The engine's own agents get that rule after their own and before your settings', so what
 // you set there wins. What's kept for the agent to open stays open to it: files sent with a

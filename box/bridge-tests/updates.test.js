@@ -647,7 +647,7 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   const odds = [
     [{ extra: { "bin/Kuvo Helper.app/Contents/MacOS/unnamed": "not in box.json" } }, /aren't what it says/],
     [{ link: true }, /aren't what it says/],
-    [{ bundle: { ".hidden/x": "y" } }, /outside the box/],
+    [{ bundle: { ".hidden/x": "y" } }, /outside Kuvo’s folder/],
   ];
   for (const [odd, words] of odds) {
     when = later();

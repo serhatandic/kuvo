@@ -89,7 +89,9 @@ const REHOME_STEP = words("plan", "install", "keys", "clone", "upgrade", "databa
  * yet; `waiting` for a quiet moment; `moving` or `clearing`, under way, and the step; `done`;
  * `failed`, gone back; `back`, moved back), which way, its tries and the next one, since when it
  * waits and whether that's three days (`overdue`), why it last failed, when it moved and when its
- * kept copy goes, what the app still owes it, Move Now or Move Back asked, and both folders. */
+ * kept copy goes, what the app still owes it, Move Now or Move Back asked, and both folders;
+ * and every step of a move the box runs itself, in order and in its words (`steps`), for a list of
+ * them to be drawn ahead of where it is (`progress.index` counts into it, from 1). */
 export const REHOME = object({
   state: nullable(words("waiting", "moving", "clearing", "done", "failed", "back")),
   way: nullable(words("move", "back")),
@@ -107,6 +109,7 @@ export const REHOME = object({
   to: nullable(string),
   "progress?": nullable(object({ step: REHOME_STEP, title: string, index: number, of: number })),
   "dropped?": list(string),
+  "steps?": list(object({ step: REHOME_STEP, title: string })),
 });
 
 /** What macOS allows the program this Mac's box runs under (`kuvo/box/permissions`, PROTOCOL.md,
@@ -302,7 +305,7 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * was removed, in words a client shows as they are. */
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
-  title: string, "detail?": string, "notice?": object({ title: string, detail: string }), "workingTitle?": string,
+  title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "workingTitle?": string,
   shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
   via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,

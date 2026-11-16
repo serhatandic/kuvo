@@ -18,6 +18,7 @@ computers.add
 computers.facts
 computers.manage
 computers.reach
+computers.reach-words
 computers.words
 devices.allow
 devices.pair

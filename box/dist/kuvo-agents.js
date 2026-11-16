@@ -3030,10 +3030,40 @@ function ascending() {
 var newID = (prefix) => `${prefix}_${ascending()}`;
 var messageID = (eventID) => "msg_" + eventID.slice("evt_".length);
 
+// box/src/shared/json.ts
+function sortedJSON(value) {
+  if (Array.isArray(value))
+    return `[${value.map(sortedJSON).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value;
+    return `{${Object.keys(object).sort().filter((k) => object[k] !== undefined).map((k) => `${JSON.stringify(k)}:${sortedJSON(object[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+var isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+var sameJSON = (a, b) => sortedJSON(a ?? null) === sortedJSON(b ?? null);
+
+// box/src/shared/compaction-words.ts
+function compactionWords(value) {
+  if (!isObject(value) || value.type !== "compaction")
+    return value;
+  const title = value.status === "running" ? "Summarizing the conversation\u2026" : value.status === "completed" ? "Conversation summarized" : value.status === "failed" ? "Couldn\u2019t summarize the conversation" : "Conversation summary";
+  return { ...value, title, ...value.status === "running" ? { workingTitle: title } : {} };
+}
+function compactionEventWords(type, data) {
+  const status = type === "session.compaction.started" ? "running" : type === "session.compaction.ended" ? "completed" : type === "session.compaction.failed" ? "failed" : undefined;
+  if (!status)
+    return data;
+  const message = compactionWords({ type: "compaction", status });
+  if (!isObject(message))
+    return data;
+  return { ...data, title: message.title, ...message.workingTitle ? { workingTitle: message.workingTitle } : {} };
+}
+
 // box/src/agents/events.ts
 var listeners = new Set;
 function emit(type, data, directory) {
-  const event = { id: newID("evt"), type, created: Date.now(), data };
+  const event = { id: newID("evt"), type, created: Date.now(), data: compactionEventWords(type, data) };
   if (directory)
     event.location = { directory };
   for (const listener of listeners)
@@ -5100,21 +5130,6 @@ import { AsyncLocalStorage } from "async_hooks";
 import crypto3 from "crypto";
 import fs5 from "fs";
 import path4 from "path";
-
-// box/src/shared/json.ts
-function sortedJSON(value) {
-  if (Array.isArray(value))
-    return `[${value.map(sortedJSON).join(",")}]`;
-  if (value && typeof value === "object") {
-    const object = value;
-    return `{${Object.keys(object).sort().filter((k) => object[k] !== undefined).map((k) => `${JSON.stringify(k)}:${sortedJSON(object[k])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-var isObject = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-var sameJSON = (a, b) => sortedJSON(a ?? null) === sortedJSON(b ?? null);
-
-// box/src/shared/session-notes.ts
 var NOTES_STEP = 30000;
 var NOTES_STALE = 2 * NOTES_STEP + 5000;
 var turns2 = new Map;
@@ -11325,7 +11340,7 @@ class CursorClient {
   }
   async accessToken(fresh = false) {
     if (!cursorReachable())
-      throw new LimitsProblem("none", "Cursor isn't asked from this box.", undefined, false);
+      throw new LimitsProblem("none", "Cursor isn't asked from this computer.", undefined, false);
     const key = this.key();
     if (!key && this.unreadable())
       throw new LimitsProblem("failed", "Cursor's sign-in here can't be read just now.", undefined, false);
@@ -11400,7 +11415,7 @@ class CursorClient {
 }
 async function send(url, init, timeout) {
   if (!cursorReachable())
-    throw new Error("Cursor isn't asked from this box.");
+    throw new Error("Cursor isn't asked from this computer.");
   const response = await fetch(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeout) });
   const text = await response.text();
   let body;
@@ -12225,7 +12240,7 @@ class AntigravityPlan {
   }
   async read(now) {
     if (!antigravityTransport.live && this.bases === productionBases)
-      return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside a real box folder.", undefined, false));
+      return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside Kuvo\u2019s data folder.", undefined, false));
     const raw = this.raw();
     if (!raw)
       throw new LimitsProblem("none", "Sign in to Antigravity in Kuvo Code.", undefined, false);
@@ -36799,4 +36814,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 9c5cc2cf78a11c22f312f30cfed54e0531afba45f702635b6a147526cbf5cec5
+// Built from Packages/Box/src/agents 61cfee3792fe22976079b7ea56e7e6ec64684c1eec881d92b0cde4e6d24ea7cc

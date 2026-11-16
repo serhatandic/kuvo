@@ -226,6 +226,12 @@ enum Item {
 
 impl EventEmitter<Pick> for SettingsView {}
 impl EventEmitter<AddMachine> for SettingsView {}
+impl EventEmitter<Opened> for SettingsView {}
+
+/// An address a row opened (System Settings, a web page), opened already.
+pub struct Opened {
+    pub address: String,
+}
 
 impl Focusable for SettingsView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -1179,7 +1185,11 @@ impl SettingsView {
                     cx,
                 );
             }
-            Act::Open(url) => cx.open_url(&url),
+            Act::Open(url) => {
+                cx.open_url(&url);
+                // (Said to the window, which helps a permission along where that's what it is.)
+                cx.emit(Opened { address: url });
+            }
             Act::SetNotice(notice, on) => {
                 let Reading::Ready(usage) = &self.usage else { return };
                 let mut notices = usage.notices;

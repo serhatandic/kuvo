@@ -583,7 +583,8 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   assert.equal(status, 200);
   const [own, ...others] = body.computers;
   // (Where a client of your own reaches each: its box's address, and this box's relay.)
-  const reached = address => ({ address, relay: link.readLink().relay });
+  const reachTitles = { connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached", notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s", unreached: "Can’t be reached from this app" };
+  const reached = address => ({ address, relay: link.readLink().relay, reachTitles });
   assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [] });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
   assert.deepEqual(others, [

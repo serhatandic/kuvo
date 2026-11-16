@@ -152,7 +152,7 @@ export async function setJobTool(args: Record<string, unknown>, calling: Calling
   const { status, value } = await changeBot(bot.id, { job }, readEngine, bridge);
   if (status !== 200) return refused("message" in value && value.message ? value.message : `Couldn't keep it (${status}).`);
   const kept = "bot" in value ? value.bot?.job : undefined;
-  if (typeof kept !== "string") return refused("The box returned an unreadable job response. Check the job before trying again.");
+  if (typeof kept !== "string") return refused("Kuvo on this computer returned an unreadable job response. Check the job before trying again.");
   return said(kept ? `Kept. Kuvo Code shows "${kept}" under your name.` : "Kept: you have no job now.");
 }
 

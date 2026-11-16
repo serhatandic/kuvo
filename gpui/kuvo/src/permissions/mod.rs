@@ -150,9 +150,28 @@ impl HeadsUp {
         if !permission.settings.starts_with("x-apple.systempreferences:") {
             return;
         }
+        cx.open_url(&permission.settings);
+        self.ask_for(permission, cx);
+    }
+
+    /// System Settings was opened at `address` from somewhere else in the window (Settings › This
+    /// Mac, where the permissions are looked up after "Not Now"): where that's the list of a
+    /// permission this Mac's Kuvo says isn't allowed, it's helped along as the heads-up's own
+    /// button does, with the tile for one added by hand. Says whether it was one.
+    pub fn opened(&mut self, address: &str, cx: &mut Context<Self>) -> bool {
+        if !self.client.here() || self.client.gate().is_held() {
+            return false;
+        }
+        let Some(permission) = self.facts.as_ref().and_then(|facts| facts.list.iter().find(|permission| permission.settings == address && permission.allowed == Some(false))).cloned() else { return false };
+        self.ask_for(permission, cx);
+        true
+    }
+
+    /// System Settings is open on `permission`'s list: the tile beside it where macOS has you
+    /// add the program by hand, and the box asked until it's allowed.
+    fn ask_for(&mut self, permission: Permission, cx: &mut Context<Self>) {
         self.stop_asking(cx);
         self.problem = None;
-        cx.open_url(&permission.settings);
         let (name, bundle) = match &self.facts {
             Some(facts) => (facts.name.clone().unwrap_or_default(), facts.bundle.clone()),
             None => (String::new(), None),

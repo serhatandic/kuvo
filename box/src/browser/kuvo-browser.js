@@ -278,7 +278,7 @@ async function setUp(told, { repair = false, wait = 15 * 60_000 } = {}) {
   let status = await startSetUp({ repair });
   let said = "";
   while (true) {
-    if (!status) return { kind: "missing", message: "This machine's box can't set up the browser. Connect to the machine from Kuvo Code on your Mac." };
+    if (!status) return { kind: "missing", message: "Kuvo on this machine can't set up the browser. Connect to the machine from Kuvo Code on your Mac." };
     const underWay = ["checking", "downloading", "installing"].includes(status.state);
     const now = JSON.stringify([status.state, status.progress]);
     if (now !== said) {
@@ -289,7 +289,7 @@ async function setUp(told, { repair = false, wait = 15 * 60_000 } = {}) {
       if (status.state === "ready" && browserBinary(CURRENT)) return null;
       // Failed, or waits to try again: kind "missing", so an older Kuvo Code on a Mac puts the
       // browser there itself.
-      return { kind: "missing", message: status.message || "The browser isn't on this machine, and its box couldn't set it up." };
+      return { kind: "missing", message: status.message || "The browser isn't on this machine, and Kuvo couldn't set it up." };
     }
     if (Date.now() - began > wait) {
       const done = status.state === "downloading" && typeof status.progress === "number" ? ` (${Math.round(status.progress * 100)}% downloaded)` : "";
@@ -3469,8 +3469,8 @@ async function mcp() {
         // The vault's, the sandbox's and the Work Queue's, which this machine's box carries out (and
         // may ask you).
         const boxTool = typeof params.name === "string" && (params.name.startsWith("vault_") ? ["kuvo/vault/tools", "This machine's vault can't be reached now. Try again in a moment."]
-          : params.name.startsWith("sandbox_") ? ["kuvo/sandbox/tools", "This machine's box can't be reached now. Try again in a moment."]
-          : params.name.startsWith("queue_") ? ["kuvo/work-queue/tools", "This machine's box can't be reached now. Try again in a moment."] : null);
+          : params.name.startsWith("sandbox_") ? ["kuvo/sandbox/tools", "Kuvo on this machine can't be reached now. Try again in a moment."]
+          : params.name.startsWith("queue_") ? ["kuvo/work-queue/tools", "Kuvo on this machine can't be reached now. Try again in a moment."] : null);
         if (boxTool) {
           const asked = call;
           vaultRoute({ method: "POST", path: boxTool[0], body: { name: params.name, arguments: params.arguments || {}, session: asked.session } }, asked, 16 * 60_000)

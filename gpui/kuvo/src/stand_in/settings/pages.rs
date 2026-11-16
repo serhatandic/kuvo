@@ -53,8 +53,14 @@ impl Settings {
     pub(super) fn pages_answer(&mut self, method: &str, segments: &[&str], body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
         let ["kuvo", "settings", rest @ ..] = segments else { return None };
         Some(match (method, rest) {
-            ("GET", []) if self.pages_down => refused(503, "The box isn’t answering."),
-            ("GET", []) => (200, json!({ "sections": self.sections() })),
+            ("GET", []) if self.pages_down => refused(503, "Kuvo on this computer isn’t answering."),
+            ("GET", []) => {
+                let mut sections = self.sections();
+                if let Some(listed) = sections.as_array_mut() {
+                    listed.insert(3.min(listed.len()), Settings::computer_section(name, here));
+                }
+                (200, json!({ "sections": sections }))
+            }
             ("GET", [section]) | ("GET", [section, "events"]) => match self.page(section, name, here) {
                 Some(page) => (200, page),
                 None => refused(404, "This computer has no settings by that name."),
@@ -107,11 +113,73 @@ impl Settings {
         Value::Array(sections)
     }
 
+    /// This computer's own section, titled for who asks: "This Mac" to the app beside it.
+    fn computer_section(name: &str, here: bool) -> Value {
+        json!({ "id": "computer", "title": if here { "This Mac" } else { name }, "group": "System", "icon": "computer", "line": "Whether Kuvo runs here, its version and updates, and what may connect.", "keywords": ["running", "restart", "version", "update", "devices", "phone", "connect", "login items", "kuvo helper", "screen recording", "accessibility", "macos"] })
+    }
+
+    /// This computer's page, as a Mac's own box describes it (PROTOCOL.md, "A box's settings",
+    /// This computer): how it stands, its version, your devices let in, and what macOS allows
+    /// the program its agents run under.
+    fn computer_page(&self, name: &str, here: bool) -> Value {
+        let at = &self.computer;
+        let place = if here { "this Mac" } else { name };
+        let opens_here = |id: &str, title: &str, address: &str| if here { json!({ "id": id, "title": title, "opens": address }) } else { json!({ "id": id, "title": title, "can": { "why": format!("Open it on {name} itself.") } }) };
+        let stops = if at.working { format!("Agents are at work on {place} now: what they’re doing stops.") } else { format!("Nothing is at work on {place} now.") };
+        let mut rows = vec![row(json!({
+            "id": "state", "title": "Running", "kind": "actions",
+            "line": if at.at_login { "Kuvo Helper keeps it running, and starts it at login." } else { "Kuvo Helper keeps it running." },
+            "actions": [{ "id": "restart", "title": "Restart…", "confirm": { "title": format!("Restart Kuvo on {place}?"), "body": format!("{stops} Kuvo is back in a moment."), "button": "Restart" } }],
+        }))];
+        let mut update = json!({ "id": "update", "title": if at.ready.is_some() { "Update Now" } else { "Check Now" } });
+        if at.working {
+            update["confirm"] = json!({ "title": format!("Update Kuvo on {place} now?"), "body": format!("{stops} A newer version, if there is one, installs now."), "button": "Update Now" });
+        }
+        rows.push(match (&at.updating, &at.ready) {
+            (true, _) => row(json!({ "id": "version", "title": format!("Kuvo Code {}", at.version), "line": "A newer version is being installed.", "kind": "status", "busy": "Updating…" })),
+            (_, Some(ready)) => row(json!({ "id": "version", "title": format!("Kuvo Code {ready} is ready"), "line": "It installs when nothing’s at work, or now.", "kind": "actions", "value": ready, "actions": [update] })),
+            _ => row(json!({ "id": "version", "title": format!("Kuvo Code {}", at.version), "line": "Up to date. It updates itself when nothing’s at work.", "kind": "actions", "value": at.version, "actions": [update] })),
+        });
+        let mut devices = json!({ "id": "devices", "title": "Let my devices connect", "line": format!("Your phone and other computers reach {place}, end to end encrypted."), "kind": "switch", "value": at.devices, "can": true });
+        if !here {
+            devices["can"] = json!({ "why": format!("Change it in Kuvo Code on {name} itself.") });
+        } else if at.devices {
+            devices["confirm"] = json!({ "title": "Stop letting your devices connect?", "body": format!("Your phone, and Kuvo Code on your other computers, can’t reach {place} until you turn this on again."), "button": "Turn Off" });
+        }
+        rows.push(row(devices));
+        let mut groups = vec![json!({ "id": "computer", "rows": rows })];
+        let permissions = &at.permissions;
+        if permissions.applies {
+            let mut allows = vec![if at.at_login {
+                row(json!({ "id": "login-items", "title": "Login Items", "line": format!("Kuvo starts when you log in to {place}."), "kind": "status", "value": "On" }))
+            } else {
+                row(json!({ "id": "login-items", "title": "Login Items", "line": format!("Off, so Kuvo on {place} doesn’t start at login."), "tone": "warning", "kind": "actions", "value": "Off", "actions": [opens_here("open-login-items", "Open Login Items", "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")] }))
+            }];
+            for (id, title, pane, allowed, is_for, not) in [
+                ("screenRecording", "Screen Recording", "Privacy_ScreenCapture", permissions.screen_recording, "For agents that look at the screen.", "Not allowed. Agents can’t look at the screen."),
+                ("accessibility", "Accessibility", "Privacy_Accessibility", permissions.accessibility, "For agents that click and type in other apps.", "Not allowed. Agents can’t click or type in other apps."),
+            ] {
+                let row_id = format!("allows-{id}");
+                allows.push(if !permissions.known {
+                    row(json!({ "id": row_id, "title": title, "line": format!("Kuvo Helper hasn’t said yet. {is_for}"), "kind": "status", "value": "Not known yet" }))
+                } else if allowed {
+                    row(json!({ "id": row_id, "title": title, "line": is_for, "kind": "status", "value": "Allowed" }))
+                } else {
+                    row(json!({ "id": row_id, "title": title, "line": not, "tone": "warning", "kind": "actions", "value": "Not allowed", "actions": [opens_here(&format!("open-{id}"), "Open System Settings", &format!("x-apple.systempreferences:com.apple.preference.security?{pane}"))] }))
+                });
+            }
+            allows.push(row(json!({ "id": "allows-files", "title": "Files and Folders", "line": "macOS asks when an agent first opens Desktop, Documents or Downloads.", "kind": "status", "value": "Asked when needed" })));
+            groups.push(json!({ "id": "macos", "title": "What macOS Allows Kuvo Helper", "note": "Kuvo Helper is the program your agents run under. Only you allow these, in System Settings.", "rows": allows }));
+        }
+        json!({ "id": "computer", "title": if here { "This Mac" } else { name }, "groups": groups })
+    }
+
     fn page(&self, section: &str, name: &str, here: bool) -> Option<Value> {
         match section {
             "clock" => Some(self.clock(name)),
             "permissions" => Some(self.permissions(name, here)),
             "browser" => Some(self.browser_page()),
+            "computer" => Some(self.computer_page(name, here)),
             other => self.more_sections.iter().find(|(section, _)| section["id"] == json!(other)).map(|(_, page)| stamped(page.clone())),
         }
     }
@@ -272,6 +340,10 @@ impl Settings {
                 }
                 self.browser["searchEngine"] = value.clone();
             }
+            ("computer", "devices") => match value.as_bool() {
+                Some(on) => self.computer.devices = on,
+                None => return Some(refused(400, "A switch is on or off.")),
+            },
             ("browser", "tidies" | "offers") => {
                 if !value.is_boolean() {
                     return Some(refused(400, "A switch is on or off."));
@@ -309,6 +381,17 @@ impl Settings {
             && let Some(never) = self.browser["never"].as_array_mut()
         {
             never.retain(|each| each != &json!(host));
+        }
+        match (id, action) {
+            ("state", "restart") => self.computer.restarted += 1,
+            // (Update Now: the newer version is what it has from then on.)
+            ("version", "update") => {
+                self.computer.asked_to_update += 1;
+                if let Some(ready) = self.computer.ready.take() {
+                    self.computer.version = ready;
+                }
+            }
+            _ => {}
         }
         // (The sandbox's own buttons check it again, which changes nothing here.)
     }

@@ -45,10 +45,10 @@ export function helperPlist(app: string): string {
 
 /** Why the helper's launch agent can't be put in place here, or null. */
 function refusal(): string | null {
-  if (process.platform !== "darwin") return "Only a Mac's own box runs under Kuvo Helper.";
-  if (APP_FOLDER || recordedKind() !== "mac") return "Only a Mac's own box in a home of its own runs under Kuvo Helper.";
-  if (!launchTools()) return "Only the box in ~/.kuvo-code starts at login.";
-  if (!fs.existsSync(helperProgram())) return `${HELPER_NAME} isn't in this box's bin: its release brings it.`;
+  if (process.platform !== "darwin") return "Only Kuvo on a Mac runs under Kuvo Helper.";
+  if (APP_FOLDER || recordedKind() !== "mac") return "Only Kuvo on a Mac in its own folder runs under Kuvo Helper.";
+  if (!launchTools()) return "Only Kuvo in ~/.kuvo-code starts at login.";
+  if (!fs.existsSync(helperProgram())) return `${HELPER_NAME} isn't in Kuvo's bin folder: its release brings it.`;
   return null;
 }
 
@@ -67,6 +67,23 @@ export function helperStatus() {
   return { helper: fs.existsSync(helperProgram()), agent, loaded };
 }
 
+/** Whether Kuvo Helper is switched on in System Settings › General › Login Items (`launchctl
+ * print-disabled`): false where you turned it off there, so launchd won't start it at login; null
+ * where that can't be asked (not a Mac's own box in the real home, its launch agent not in place,
+ * or launchd didn't say). */
+export function helperAtLogin(): boolean | null {
+  const tools = launchTools();
+  if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac") return null;
+  // (With no launch agent of its helper's in place there's nothing for Login Items to switch.)
+  let agent = false;
+  try { agent = fs.readFileSync(path.join(tools.agents, `${LAUNCH_AGENT}.plist`), "utf8").includes(`<string>${xml(helperProgram())}</string>`); } catch {}
+  if (!agent) return null;
+  const asked = spawnSync(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+  if (asked.error || asked.status !== 0) return null;
+  return !SWITCHED_OFF.test(asked.stdout ?? "");
+}
+const SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`);
+
 /** The launch agent's file written (whole, in place of any there: one per computer), and with
  * `load`, launchd told to start it now (a launch agent with that label already loaded, let go of
  * first). */
@@ -79,7 +96,7 @@ export function installHelperAgent({ load, app }: { load: boolean; app: string }
   const temporary = `${plist}.${process.pid}.new`;
   fs.writeFileSync(temporary, helperPlist(app), { mode: 0o644 });
   fs.renameSync(temporary, plist);
-  if (!load) return { written: true, loaded: false, message: `${HELPER_NAME} starts this Mac's box at login.` };
+  if (!load) return { written: true, loaded: false, message: `${HELPER_NAME} starts Kuvo on this Mac at login.` };
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const run = (args: string[]) => spawnSync(tools.launchctl, args, { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
   // What had the label let go of first, and waited for (its helper takes a few seconds to stop
@@ -98,11 +115,11 @@ export function installHelperAgent({ load, app }: { load: boolean; app: string }
   return {
     written: true,
     loaded,
-    message: loaded ? `${HELPER_NAME} runs this Mac's box now, and at login.` : `${HELPER_NAME} starts this Mac's box at login, but launchd didn't start it now: ${(started.stderr || "").trim().slice(0, 300) || "it said nothing"}.`,
+    message: loaded ? `${HELPER_NAME} runs Kuvo on this Mac now, and at login.` : `${HELPER_NAME} starts Kuvo on this Mac at login, but launchd didn't start it now: ${(started.stderr || "").trim().slice(0, 300) || "it said nothing"}.`,
   };
 }
 
-/** This Mac's box started through its helper, the whole of it (`helper start`): its launch agent
+/** Kuvo on this Mac started through its helper, the whole of it (`helper start`): its launch agent
  * put in place and loaded where it isn't there (`install --load`), loaded where it's there but not
  * loaded, and started where it's loaded but not running (`launchctl kickstart`, which leaves one
  * running as it is: one that found the box moving went, and launchd leaves it so until it's
@@ -124,12 +141,12 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
   // isn't switched off there.
   const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
-    if (disabled.status !== 0 || !new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`).test(disabled.stdout ?? "")) return null;
+    if (disabled.status !== 0 || !SWITCHED_OFF.test(disabled.stdout ?? "")) return null;
     const opened = spawnSync(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
       // (Asked of macOS, which took it: whether it then keeps the box is the helper's to say, in
       // its own records. Nothing here says it runs.)
-      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run this Mac's box until you log out. Turn it on there to start it at login.` };
+      return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run Kuvo on this Mac until you log out. Turn it on there to start it at login.` };
     }
     return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
@@ -146,7 +163,7 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
     if (loaded.status !== 0) return refusedBy("load", loaded);
   }
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
-  return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs this Mac's box.` } : refusedBy("start", started);
+  return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }
 
 /** `helper install [--load] [--app <bundle ID>] | start [--if-missing] [--app <bundle ID>] | status`:

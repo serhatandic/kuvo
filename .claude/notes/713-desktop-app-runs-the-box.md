@@ -979,6 +979,36 @@ rehearsal account: the real installer from a signed bundle; the tile as a panel 
 System Settings, the drag into its list (the bundle's URL is handed without a trailing slash),
 the tile following its window; macOS's own alert beside the heads-up; VoiceOver and larger text.
 
+## 8f. Piece 7 as built (2026-11-16): the screens the user picked
+
+Drafts: branch `kuvo/713-piece-7-drafts-the-desktop-app-s`, `.claude/notes/drafts/713-p7/`. Shots:
+`gpui/shots/screens-launch-*` and `screens-settings-this-mac-*`.
+
+- **A move (B):** `launch.rs` draws a card of its own ahead of the Welcome (no steps' dots): the
+  box's steps as a list (`kuvo/box/rehome`'s new `steps`, handed on by the installer's `status`),
+  where it is (`progress.index`), where it stopped (`failed.step`, else the step last heard of)
+  and why in the box's words above the list, the note and Try Again. `stuck` reads "Couldn't
+  finish moving". Done: "This Mac is ready", with what wasn't brought along (`dropped`) and, where
+  that Mac's Kuvo says there's such a program, that macOS may ask again for it; then the app.
+- **A new Mac (A):** the Welcome's row, "Setting up · <the installer's own words>" (`kuvo-install`'s
+  steps have `title` now).
+- **Welcomed after a move:** the move's `upgrade` step writes `run/welcomed.json`.
+- **Settings › This Mac (A), permissions (C + A's group):** the box's section `computer`
+  (`settings-pages.ts`), drawn by kind with no code of the app's own for it. A permission's row
+  opens System Settings; the app's `HeadsUp::opened` matches that address to
+  `kuvo/box/permissions`' list and puts the tile beside it.
+- **`two`:** `status` says it in words (`message`); the app says them in a card with Continue,
+  then opens with what's here.
+
+**BOX-NEEDED / left:** the titles of the cards and their fixed lines are the app's (a phone
+drawing the same needs them from the box); `two`'s card comes up at each open (nothing keeps
+that it was read); what a move dropped is said only by the open that watched it finish;
+"Restart…" is `kuvo-start restart` (the engine and its agents, not the link's own process), and
+on a helper-run Mac it wasn't tried on a real one; Login Items is read with `launchctl
+print-disabled`, not tried against a real switched-off helper from this page; Uninstall and the
+folder aren't on the page; the phone doesn't draw described settings yet, so it has no This Mac
+page.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**

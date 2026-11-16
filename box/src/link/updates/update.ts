@@ -415,7 +415,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // (Each a file, never a link to one elsewhere.)
     const matches = (file: string, sha: unknown): boolean => fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs.readFileSync(file)) === sha;
     for (const file of files) {
-      if (!BOX_FILE.test(file) || file.split("/").includes("..")) throw new Error("The release names a file outside the box.");
+      if (!BOX_FILE.test(file) || file.split("/").includes("..")) throw new Error("The release names a file outside Kuvo’s folder.");
       if (!matches(path.join(stage, "files", file), box.files[file])) throw new Error("The release's files aren't what it says.");
     }
     // Its bundles, each swapped whole, so nothing in one that `box.json` doesn't name. A Mac's
@@ -424,9 +424,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const bundles = Object.keys(box.bundles ?? {}).sort();
     for (const bundle of bundles) {
       const listed = box.bundles![bundle];
-      if (!BUNDLE.test(bundle) || files.includes(bundle) || !isObject(listed)) throw new Error("The release names a file outside the box.");
+      if (!BUNDLE.test(bundle) || files.includes(bundle) || !isObject(listed)) throw new Error("The release names a file outside Kuvo’s folder.");
       for (const [inner, sha] of Object.entries(listed)) {
-        if (!BUNDLE_PART.test(inner)) throw new Error("The release names a file outside the box.");
+        if (!BUNDLE_PART.test(inner)) throw new Error("The release names a file outside Kuvo’s folder.");
         if (!matches(path.join(stage, "files", bundle, inner), sha)) throw new Error("The release's files aren't what it says.");
       }
       for (const entry of fs.readdirSync(path.join(stage, "files", bundle), { recursive: true, encoding: "utf8" })) {
@@ -868,7 +868,7 @@ export async function startOfferedUpdate(): Promise<boolean> {
 // (never a phone), checked now, taken at the next quiet moment.
 export async function* boxUpdateRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
-  if (!request.fromApp && !request.fromMac) return yield* json(403, { message: "Only Kuvo Code offers this box a release." });
+  if (!request.fromApp && !request.fromMac) return yield* json(403, { message: "Only Kuvo Code offers Kuvo on this computer a release." });
   const given = parsed(request.body);
   const offered = offerUpdate(isObject(given) ? given.from : undefined);
   if (offered.status !== 202) return yield* json(offered.status, { message: offered.message });

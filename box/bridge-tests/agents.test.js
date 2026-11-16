@@ -70,7 +70,7 @@ test("the coding agents' bridge gets what a phone asks, with its password; where
   const engineHandle = link.engineHandler(() => ({ port: bridge.port, password: "engine", version: "2.0.32" }), { name: "my-server" }, () => record);
   for (const route of ["api/session/ses_1/message", "kuvo/agents/api/session/ses_1/message"]) {
     const messages = await ask(engineHandle, "GET", route);
-    assert.equal(messages.json.data[0].title, "Compacting conversation…");
+    assert.equal(messages.json.data[0].title, "Summarizing the conversation…");
     assert.equal(messages.json.data[0].workingTitle, "Summarizing the conversation…");
   }
 

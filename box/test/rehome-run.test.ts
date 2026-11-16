@@ -324,7 +324,7 @@ test.if(!mac)("on Linux there's nothing to move: `--run` says so and makes nothi
   const K = join(home, ".kuvo-code")
   const refused = rehome({ home, K } as Parameters<typeof rehome>[0], ["--run", "--app", bundle, "--release", join(K, "updates", "install", "release"), "--engine", join(K, "updates", "install", "engine")])
   expect(refused.status).toBe(1)
-  expect(refused.said).toMatchObject({ result: "refused", message: "This machine's box is in its own home already: there's nothing to move." })
+  expect(refused.said).toMatchObject({ result: "refused", message: "Kuvo on this machine is in its own home already: there's nothing to move." })
   expect(existsSync(join(K, "bin"))).toBe(false)
   expect(existsSync(join(K, "box"))).toBe(false)
 }, LIMIT)
