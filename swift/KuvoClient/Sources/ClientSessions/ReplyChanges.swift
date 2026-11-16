@@ -41,7 +41,8 @@ public struct ReplyChanges: Hashable, Sendable {
     /// nothing yet).
     public mutating func summarized(_ compaction: Message.Compaction) {
         guard compaction.status != "running" else { return }
-        add(compaction.title)
+        // (A fragment among lowercase ones, "switched to Plan": the box's title, its first letter lowered.)
+        add(compaction.title.prefix(1).lowercased() + compaction.title.dropFirst())
     }
 
     /// A note from the engine, the box or the bridge: a change it tells of, if any. It shows
