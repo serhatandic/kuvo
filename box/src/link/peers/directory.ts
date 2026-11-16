@@ -12,7 +12,7 @@ import { RUN } from "../home";
 import { KEY, MOST_PEERS, cleanPeer, fitsPeer, ownKey, peersOf } from "./known";
 import { SETUP_ID } from "../setup/record";
 import type { LinkState } from "../state";
-import type { AgentsFile, AtWorkSession, ListedAgent, ToldAgents, ToldComputer } from "../../shared/records";
+import type { AgentsFile, AskingSession, AtWorkSession, ListedAgent, ToldAgents, ToldComputer } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 import { type BotLook, LOOKS as LOOK_WORDS } from "../../shared/routes/bots";
 import type { Peer } from "./known";
@@ -104,14 +104,26 @@ export const MOST_AT_WORK = 20;
 export const keptAtWork = (given: unknown[]): AtWorkSession[] => given.filter((each): each is { id: string; title?: unknown } => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id))
   .slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...(typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {}) }));
 
+/** The most sessions waiting on you a box names to its peers (it counts them all). */
+export const MOST_ASKING = 10;
+
+/** Sessions waiting on you as a box said them, checked: an id, a title and what it asks, each of a
+ * size it would have. */
+export const keptAsking = (given: unknown[]): AskingSession[] => given.filter((each): each is { id: string; title?: unknown; asks?: unknown } => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id))
+  .slice(0, MOST_ASKING).map(({ id, title, asks }) => ({ id,
+    ...(typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {}),
+    ...(typeof asks === "string" && plainName(asks) ? { asks: plainName(asks).slice(0, 200) } : {}) }));
+
 /** What a peer said of itself, checked: only what's of a size it would have. What it didn't say
  * (an older box says no `working`) is left out, never taken as none. */
 export function keptComputer(given: unknown): ToldComputer | undefined {
   if (!isObject(given)) return undefined;
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
-  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 10_000 ? given.working : undefined;
+  const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000 ? value : undefined;
+  const working = count(given.working), waiting = count(given.waiting);
   return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
-    ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
+    ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
+    ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
     ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}) };
 }
 

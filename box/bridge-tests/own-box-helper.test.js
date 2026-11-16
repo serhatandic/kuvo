@@ -386,7 +386,10 @@ test("kuvo/box/at-work and kuvo/box/stop: what Kuvo Helper draws in the menu bar
   const said = await box.ask("kuvo/box/at-work");
   assert.equal(said.status, 200);
   // A Mac's own box is in its menu bar; with no engine read, nothing is known to work.
-  assert.deepEqual(said.body, { applies: true, working: 0, sessions: [], asking: [], waiting: { sessions: 0, bots: 0, queue: 0 }, background: 0, busy: false, rings: [] });
+  const { computers, ...facts } = said.body;
+  assert.deepEqual(facts, { applies: true, working: 0, sessions: [], asking: [], waiting: { sessions: 0, bots: 0, queue: 0 }, background: 0, busy: false, rings: [] });
+  // Your computers, this Mac alone so far.
+  assert.deepEqual(computers.map(({ kind, here, reach, working, waiting }) => ({ kind, here, reach, working, waiting })), [{ kind: "mac", here: true, reach: "connected", working: 0, waiting: 0 }]);
   const stopping = await box.ask("kuvo/box/stop", "POST", {});
   assert.deepEqual(stopping, { status: 202, body: { stopping: true } });
   // In a process of its own (it outlasts the server, which goes with the helper), its HOME the

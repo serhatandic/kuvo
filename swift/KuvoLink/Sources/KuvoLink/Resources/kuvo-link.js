@@ -2065,13 +2065,15 @@ function keptComputer(given) {
   if (!isObject(given))
     return;
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
-  const working = typeof given.working === "number" && Number.isInteger(given.working) && given.working >= 0 && given.working <= 1e4 ? given.working : undefined;
+  const count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1e4 ? value : undefined;
+  const working = count(given.working), waiting = count(given.waiting);
   return {
     ...version ? { version } : {},
     ...engine ? { engine } : {},
     ...system ? { system } : {},
     ...working !== undefined ? { working } : {},
     ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {},
+    ...waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {},
     ...given.oldApp === true ? { oldApp: true } : {},
     ...Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each) => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}
   };
@@ -2145,7 +2147,11 @@ var PEER_AGENTS_FILE, MAC_AGENTS_FILE, AGENTS_FILE, PEER_LOCK, MOST_AGENTS = 120
   ...typeof project === "string" && project ? { project: project.slice(0, 200) } : {},
   ...typeof about === "string" && about ? { about: about.slice(0, 500) } : {},
   ...typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}
-}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), keptBoxes = (boxes) => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name })), VOUCHED_EACH = 16, vouchedKept = null, isPutAway = (session) => session?.metadata?.["kuvo.archived"] === true || Boolean(session?.metadata?.kuvo?.archived) || Boolean(session?.time?.archived);
+}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), MOST_ASKING = 10, keptAsking = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_ASKING).map(({ id, title, asks }) => ({
+  id,
+  ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {},
+  ...typeof asks === "string" && plainName(asks) ? { asks: plainName(asks).slice(0, 200) } : {}
+})), keptBoxes = (boxes) => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name })), VOUCHED_EACH = 16, vouchedKept = null, isPutAway = (session) => session?.metadata?.["kuvo.archived"] === true || Boolean(session?.metadata?.kuvo?.archived) || Boolean(session?.time?.archived);
 var init_directory = __esm(() => {
   init_text();
   init_files2();
@@ -42885,7 +42891,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9b80cf60f103";
+var BRIDGE_VERSION = "6f17ee963e0f";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -46521,9 +46527,18 @@ var system = null;
 function atWorkHere() {
   return Object.entries(keptList()?.sessions ?? {}).filter(([, { facts }]) => facts.running && facts.asked === undefined && !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden").sort(([one, a], [other, b]) => b.facts.updated - a.facts.updated || (one < other ? -1 : 1)).map(([id, { facts }]) => ({ id, ...plainName(facts.title) ? { title: plainName(facts.title).slice(0, 200) } : {} }));
 }
+function askingOf(list) {
+  const asks = new Map((list?.needsYou ?? []).map((each) => [each.session, each.asks.summary]));
+  return Object.entries(list?.sessions ?? {}).filter(([, { facts }]) => facts.asked !== undefined && !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden").sort(([one, a], [other, b]) => b.facts.asked - a.facts.asked || (one < other ? -1 : 1)).map(([id, { facts }]) => {
+    const title = plainName(facts.title).slice(0, 200);
+    const said = asks.get(id);
+    return { id, ...title ? { title } : {}, ...said ? { asks: said } : {} };
+  });
+}
 function ownComputer() {
   system ??= { name: systemName() };
   const atWork = atWorkHere();
+  const asking = askingOf(keptList());
   let engine;
   try {
     engine = readEngineFile()?.version || undefined;
@@ -46535,6 +46550,8 @@ function ownComputer() {
     ...system.name ? { system: system.name } : {},
     working: atWork.length,
     atWork: atWork.slice(0, MOST_AT_WORK),
+    waiting: asking.length,
+    asking: asking.slice(0, MOST_ASKING),
     ...oldAppAttached() ? { oldApp: true } : {},
     ...IS_MAC ? {} : { addresses: ownAddresses() }
   };
@@ -54375,6 +54392,10 @@ init_files2();
 import { spawn as spawn18 } from "node:child_process";
 import fs166 from "node:fs";
 import path177 from "node:path";
+init_directory();
+init_known();
+init_settle();
+init_state();
 init_home();
 var AT_WORK_ROUTE = /^kuvo\/box\/at-work(\/events)?$/;
 var MOST_NAMED2 = 20;
@@ -54390,7 +54411,7 @@ function ringOf(said) {
     return;
   return { used: Math.min(1, Math.max(0, said.used)), level: said.level };
 }
-async function ringsOf(bridge, signal) {
+async function ringsOn(bridge, signal) {
   if (!bridge)
     return [];
   const limits = await call(bridge, "GET", "/api/kuvo/limits", undefined, signal ? AbortSignal.any([signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000)).catch(() => null);
@@ -54403,9 +54424,54 @@ async function ringsOf(bridge, signal) {
     const rings = isObject(row.rings) ? row.rings : {};
     const short = ringOf(rings.short);
     const long = ringOf(rings.long);
-    return [{ service: row.service, title: row.title, ...short ? { short } : {}, ...long ? { long } : {} }];
+    const on = (Array.isArray(row.boxes) ? row.boxes : []).flatMap((box) => !isObject(box) ? [] : box.here === true ? ["here"] : typeof box.key === "string" ? [box.key] : []);
+    return [{ rings: { service: row.service, title: row.title, ...short ? { short } : {}, ...long ? { long } : {} }, on: [...new Set(on)] }];
   });
 }
+function computersOf(here, rings, link = readLinkSafely(), now = Date.now()) {
+  const own = link ? ownKey(link) : null;
+  const ringsFor = (key) => rings.filter((each) => each.on.includes(key) || key === "here" && own !== null && each.on.includes(own)).map((each) => each.rings);
+  const computers = [{
+    key: own ?? "",
+    name: ownComputerName(),
+    kind: IS_MAC ? "mac" : "machine",
+    here: true,
+    reach: "connected",
+    working: here.working,
+    sessions: here.sessions,
+    waiting: here.waiting.sessions,
+    asking: here.asking,
+    rings: ringsFor("here")
+  }];
+  if (!link || sharedMachine(link))
+    return computers;
+  const told = readPeerAgents();
+  const peers = peersOf(link).filter((peer) => !isApart(peer.key, link, told)).sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+  for (const peer of peers) {
+    const said = told[peer.key]?.computer;
+    const { away, reach } = peerReach(peer.key, told, undefined, undefined, now);
+    const known = !away && said?.working !== undefined;
+    computers.push({
+      key: peer.key,
+      name: peer.name,
+      kind: peer.kind,
+      reach,
+      ...known ? { working: said.working } : {},
+      sessions: known ? said.atWork ?? [] : [],
+      ...!away && said?.waiting !== undefined ? { waiting: said.waiting } : {},
+      asking: !away ? said?.asking ?? [] : [],
+      rings: ringsFor(peer.key)
+    });
+  }
+  return computers;
+}
+var readLinkSafely = () => {
+  try {
+    return readLink();
+  } catch {
+    return null;
+  }
+};
 function atWorkOf(list, rings, background = readBackground()) {
   const sessions = Object.entries(list?.sessions ?? {}).map(([id, { facts }]) => ({ id, facts })).filter(({ facts }) => !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden");
   const working = sessions.filter(({ facts }) => facts.running && facts.asked === undefined).sort((a, b) => b.facts.updated - a.facts.updated || (a.id < b.id ? -1 : 1));
@@ -54444,7 +54510,11 @@ async function* atWorkRoute(context, match) {
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, { message: "Only GET." });
   await listNow(context, signal ?? undefined).catch(() => null);
-  const read = async () => atWorkOf(keptList(), await ringsOf(bridge(), signal ?? undefined));
+  const read = async () => {
+    const rings = await ringsOn(bridge(), signal ?? undefined);
+    const here = atWorkOf(keptList(), rings.map((each) => each.rings));
+    return { ...here, computers: computersOf(here, rings) };
+  };
   if (!match[1])
     return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
@@ -54467,7 +54537,8 @@ async function* atWorkRoute(context, match) {
       botFollowers.delete(changed);
     };
   };
-  return yield* followedLive(read, listen, signal, { look: () => String(mtime2(path177.join(RUN, "work", "background.json"))) });
+  const look = () => [path177.join(RUN, "work", "background.json"), PEER_AGENTS_FILE, PEER_REACH].map(mtime2).join(" ");
+  return yield* followedLive(read, listen, signal, { look });
 }
 async function* stopRoute({ request, json }) {
   if (request.method.toUpperCase() !== "POST")
@@ -69089,7 +69160,7 @@ function readApp() {
   const said = readJSON3(APP_FILE());
   if (!isObject(said))
     return null;
-  return { bundle: bundleOf2(said.bundle), tools: toolsOf(said.tools), host: hostOf3(said.host), at: typeof said.at === "number" ? said.at : 0 };
+  return { bundle: bundleOf2(said.bundle), desktop: bundleOf2(said.desktop), tools: toolsOf(said.tools), host: hostOf3(said.host), at: typeof said.at === "number" ? said.at : 0 };
 }
 var isOpen = () => readApp()?.tools != null;
 function readFailed() {
@@ -69110,12 +69181,18 @@ function updating2(now = Date.now()) {
 function registerApp(given, now = Date.now()) {
   const before = readApp();
   const host = given.tools === null ? null : given.host ?? null;
-  const record = { bundle: given.bundle ?? before?.bundle ?? null, tools: given.tools, host, at: now };
+  const record = { bundle: given.bundle ?? before?.bundle ?? null, desktop: before?.desktop ?? null, tools: given.tools, host, at: now };
   writePrivate(APP_FILE(), JSON.stringify(record));
   if (record.tools) {
     fs201.rmSync(FAILED_FILE(), { force: true });
     fs201.rmSync(UPDATING_FILE(), { force: true });
   }
+  return record;
+}
+function registerDesktop(desktop, now = Date.now()) {
+  const before = readApp();
+  const record = { bundle: before?.bundle ?? null, desktop, tools: before?.tools ?? null, host: before?.host ?? null, at: before?.at ?? now };
+  writePrivate(APP_FILE(), JSON.stringify(record));
   return record;
 }
 function forgetTools(token, now = Date.now()) {
@@ -69140,6 +69217,7 @@ function appStatus(now = Date.now()) {
   const opening = readOpening();
   return {
     bundle: app?.bundle ?? null,
+    desktop: app?.desktop ?? null,
     open: app?.tools != null,
     updating: updating2(now),
     opening: opening !== null && !stale(opening, now),
@@ -69286,6 +69364,13 @@ async function* appRoute({ request, json }) {
     return yield* json(400, { message: "Say where its tools answer (tools), or that it quits (tools: null)." });
   if (given.updating === true) {
     noteUpdating();
+    return yield* json(200, appStatus());
+  }
+  if ("desktop" in given && !("tools" in given)) {
+    const desktop = bundleOf2(given.desktop);
+    if (!desktop)
+      return yield* json(400, { message: "Say where the desktop app is: a whole path to it (…/Kuvo.app)." });
+    registerDesktop(desktop);
     return yield* json(200, appStatus());
   }
   if (!("tools" in given))

@@ -8305,6 +8305,12 @@
         "null"
        ]
       },
+      "desktop?": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
       "open": "bool",
       "updating": "bool",
       "opening": "bool",
@@ -8334,6 +8340,12 @@
         "null"
        ]
       },
+      "desktop?": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
       "open": "bool",
       "updating": "bool",
       "opening": "bool",
@@ -8358,6 +8370,12 @@
     "200": {
      "object": {
       "bundle": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
+      "desktop?": {
        "oneOf": [
         "string",
         "null"
@@ -8445,6 +8463,80 @@
          }
         }
        }
+      },
+      "computers?": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "here?": {
+          "literal": true
+         },
+         "reach": {
+          "oneOf": [
+           {
+            "literal": "connected"
+           },
+           {
+            "literal": "connecting"
+           },
+           {
+            "literal": "away"
+           }
+          ]
+         },
+         "working?": "number",
+         "sessions": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string",
+            "bot?": "string"
+           }
+          }
+         },
+         "waiting?": "number",
+         "asking": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string",
+            "asks?": "string"
+           }
+          }
+         },
+         "rings": {
+          "list": {
+           "object": {
+            "service": "string",
+            "title": "string",
+            "short?": {
+             "object": {
+              "used": "number",
+              "level": "string"
+             }
+            },
+            "long?": {
+             "object": {
+              "used": "number",
+              "level": "string"
+             }
+            }
+           }
+          }
+         }
+        }
+       }
       }
      }
     },
@@ -8504,6 +8596,80 @@
           "object": {
            "used": "number",
            "level": "string"
+          }
+         }
+        }
+       }
+      },
+      "computers?": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "mac"
+           },
+           {
+            "literal": "machine"
+           }
+          ]
+         },
+         "here?": {
+          "literal": true
+         },
+         "reach": {
+          "oneOf": [
+           {
+            "literal": "connected"
+           },
+           {
+            "literal": "connecting"
+           },
+           {
+            "literal": "away"
+           }
+          ]
+         },
+         "working?": "number",
+         "sessions": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string",
+            "bot?": "string"
+           }
+          }
+         },
+         "waiting?": "number",
+         "asking": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title?": "string",
+            "asks?": "string"
+           }
+          }
+         },
+         "rings": {
+          "list": {
+           "object": {
+            "service": "string",
+            "title": "string",
+            "short?": {
+             "object": {
+              "used": "number",
+              "level": "string"
+             }
+            },
+            "long?": {
+             "object": {
+              "used": "number",
+              "level": "string"
+             }
+            }
+           }
           }
          }
         }
