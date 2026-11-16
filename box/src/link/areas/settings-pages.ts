@@ -894,7 +894,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     if (answer) {
       // (A holder from before this, as the box updates, has no such route: said in words.)
       const body = answer.status === 404 && !/"message"/.test(Buffer.from(answer.body, "base64").toString())
-        ? Buffer.from(JSON.stringify({ message: "This computer's box is updating: try again in a moment." }))
+        ? Buffer.from(JSON.stringify({ message: "Kuvo on this computer is updating: try again in a moment." }))
         : Buffer.from(answer.body, "base64");
       return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body }];
     }

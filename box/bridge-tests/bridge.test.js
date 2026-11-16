@@ -1598,6 +1598,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "computers.manage": ["DELETE", "kuvo/computers/none"],
     // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
     "computers.reach": ["GET", "kuvo/computers"],
+    "computers.reach-words": ["GET", "kuvo/computers"],
     "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],

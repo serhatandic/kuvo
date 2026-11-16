@@ -7,6 +7,7 @@
 //! added side by side may land in either order, which is fine).
 
 pub const REQUIRED: &[&str] = &[
+    "account-action-sheet-title",
     "agent-tools.own",
     "auto.lists",
     "bots.deletes",
@@ -20,6 +21,7 @@ pub const REQUIRED: &[&str] = &[
     "computers.facts",
     "computers.manage",
     "computers.reach",
+    "computers.reach-words",
     "computers.words",
     "devices.allow",
     "devices.pair",
@@ -71,7 +73,6 @@ pub const REQUIRED: &[&str] = &[
     "sign-in.accounts.kinds",
     "sign-in.accounts.plan",
     "sign-in.accounts.state",
-    "account-action-sheet-title",
     "sign-in.codes",
     "typed",
     "usage.notices",

@@ -273,7 +273,7 @@ async function newMac({ home, appFolder, app, release, engine }: NewMac, judged:
     made = outcome.result === "done";
   }
   const after = judged();
-  if (after.verdict !== "ours") return { result: "failed", verdict: after.verdict, message: "This Mac's box couldn't be made." };
+  if (after.verdict !== "ours") return { result: "failed", verdict: after.verdict, message: "Kuvo couldn't be set up on this Mac." };
   const asideNow = earlier().filter(name => !asideBefore.has(name)).sort().pop();
   const setAside = asideNow ? { setAside: path.join(home, "trash", asideNow) } : {};
   // Started by the box's own link, on its own engine, the whole start (`helper start`): its
@@ -309,11 +309,11 @@ async function newMachine({ home, release, engine }: { home: string; release: st
     const now = judged();
     // (As a Mac's new box: nothing is made, or set aside, under something that still runs there.)
     if (now.verdict === "fresh") return runningIn(path.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped." } : null;
-    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "A move is under way in this computer's box: that's finished first." };
+    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "Kuvo on this computer is moving: that's finished first." };
   };
   const before = refusal();
   if (before) return before;
-  if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code's box is always in ~/.kuvo-code." };
+  if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path.join(engine, engineVersion, "opencode");
   if (!fs.existsSync(staged)) throw new Said(NO_ENGINE("this computer"));

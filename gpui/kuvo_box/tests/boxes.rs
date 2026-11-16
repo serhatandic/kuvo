@@ -288,11 +288,6 @@ fn while_the_main_computer_isnt_answering_the_app_waits_and_says_so_in_the_boxs_
     setup.pairs(|_| (409, json!({ "message": "“Let my devices connect” is off on Mac mini." })));
     boxes.settle();
     assert_eq!(boxes.pairing(), Pairing::Refused("“Let my devices connect” is off on Mac mini.".into()));
-
-    // One from before this says it needs an update, never a raw 404.
-    *setup.macbook.pair.lock().unwrap() = None;
-    boxes.settle();
-    assert!(matches!(boxes.pairing(), Pairing::Refused(words) if words.contains("needs an update")));
 }
 
 #[test]

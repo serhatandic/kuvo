@@ -40,7 +40,7 @@ export async function* movesRoute(context: RouteContext): AsyncGenerator<AnswerP
   let given: unknown;
   try { given = JSON.parse(Buffer.from(request.body ?? []).toString("utf8") || "{}"); } catch { given = null; }
   if (!isObject(given) || !KINDS.includes(given.kind as MoveKind) || typeof given.id !== "string" || typeof given.to !== "string") {
-    return yield* json(400, { message: `Say what moves where: {"kind": "bot" | "chat" | "group", "id": …, "to": <its box's key>}.` });
+    return yield* json(400, { message: `Say what moves where: {"kind": "bot" | "chat" | "group", "id": …, "to": <its computer's key>}.` });
   }
   // It goes on if the client goes: the box it leaves sees it through.
   const outcome = await startMove(given.kind as MoveKind, given.id, given.to);

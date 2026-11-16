@@ -1578,6 +1578,14 @@ and Settings. Connected computers have no notice. `workingTitle`, present whenev
 Clients draw these words; `reach` and `working` remain the values used for behavior.
 The same fields are sent in `kuvo/computers/events` snapshots.
 
+### App reach display words (`computers.reach-words`)
+
+Each computer also carries `reachTitles`, a map of display words for the app’s own
+reach states: `connecting`, `held` (an update is needed), `away`, `notPaired`, `shared`,
+`apart` and `unreached`. A client’s direct connection may stand differently from the
+answering computer’s connection; it selects the matching supplied title instead of
+writing a title itself. The capability is gate-required.
+
 ### Box display names (`names.titles`)
 
 Computers include `limitServices: [{id, title}]` alongside the legacy `limits` ids. Clients draw each title unchanged. The box names known services by their plan (ChatGPT, SuperGrok, Copilot, OpenRouter, Z.ai, Ollama, OpenCode Go); unknown service ids have their initial letter capitalized.

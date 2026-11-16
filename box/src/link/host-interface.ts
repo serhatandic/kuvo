@@ -113,7 +113,7 @@ async function proveVaultHost(host: HostAddress): Promise<void> {
   if (!HOST_VAULT_SECRET) {
     // A Mac's box in a home of its own: only its service (`serve`) is given the vault's secret, so a
     // command of its own (`box route`) can't reach its vault.
-    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by its running box, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
+    throw new KeysUnavailable(OWN_HOME_MAC ? "This Mac's vault can only be reached by Kuvo running on this Mac, not by a one-off command." : "Kuvo Code on this Mac didn't give its vault its secret. Quit Kuvo Code and open it again.");
   }
   if (vaultProvenBy === host.said) return;
   const nonce = crypto.randomBytes(32).toString("hex");

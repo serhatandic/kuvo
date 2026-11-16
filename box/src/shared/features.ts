@@ -68,6 +68,7 @@ export const FEATURES = [
   "computers.facts",
   "computers.manage",
   "computers.reach",
+  "computers.reach-words",
   "computers.words",
   "config",
   "config.apply",

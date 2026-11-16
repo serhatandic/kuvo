@@ -96,7 +96,7 @@ export function launcherScript(places: FencePlaces): string {
       ];
   return [
     "#!/bin/sh",
-    "# Kuvo Code writes this each time its box starts: changes here don't last.",
+    "# Kuvo Code writes this each time Kuvo starts: changes here don't last.",
     "# The engine runs each command an agent (or you, with !) runs through this: the command's own",
     "# shell, in the sandbox (outside it for a conversation in Full Access). Its plugin",
     "# (kuvo-sandbox.js) names the conversation's folder.",
@@ -260,7 +260,7 @@ export function launcherScript(places: FencePlaces): string {
 export function agentShellScript(places: FencePlaces): string {
   return [
     "#!/bin/sh",
-    "# Kuvo Code writes this each time its box starts: changes here don't last.",
+    "# Kuvo Code writes this each time Kuvo starts: changes here don't last.",
     `exec ${sh(places.launcher)} "$@"`,
     "",
   ].join("\n");
@@ -269,7 +269,7 @@ export function agentShellScript(places: FencePlaces): string {
 /** The engine's plugin (`kuvo-sandbox.js` in its plugins folder). `version` names this box's
  * sandbox files, so the box knows its engine has these and not an older plugin's. */
 export function pluginScript(places: FencePlaces, version: string): string {
-  return `// Kuvo Code writes this each time its box starts: changes here don't last.
+  return `// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Each command the engine runs (the agent's, and yours with !) goes through Kuvo Code's sandbox:
 // its shell in bin/kuvo-fence, which may write only in this conversation's folder and its git
 // repository, and can't read Kuvo Code's own folders or your secrets.

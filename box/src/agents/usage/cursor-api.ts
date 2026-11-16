@@ -141,7 +141,7 @@ export class CursorClient {
 
   /** An access token for the sign-in now; `fresh`, exchanged again whatever's kept. */
   async accessToken(fresh = false): Promise<string> {
-    if (!cursorReachable()) throw new LimitsProblem("none", "Cursor isn't asked from this box.", undefined, false)
+    if (!cursorReachable()) throw new LimitsProblem("none", "Cursor isn't asked from this computer.", undefined, false)
     const key = this.key()
     // (What was read of it stays, and it's tried again soon.)
     if (!key && this.unreadable()) throw new LimitsProblem("failed", "Cursor's sign-in here can't be read just now.", undefined, false)
@@ -216,7 +216,7 @@ export class CursorClient {
 }
 
 async function send(url: string, init: RequestInit, timeout: number): Promise<CursorAnswer> {
-  if (!cursorReachable()) throw new Error("Cursor isn't asked from this box.")
+  if (!cursorReachable()) throw new Error("Cursor isn't asked from this computer.")
   const response = await fetch(url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeout) })
   const text = await response.text()
   let body: any

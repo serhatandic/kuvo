@@ -46,7 +46,7 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
         return None;
     }
     if route == "kuvo/computers" && areas.computers_down {
-        return Some((503, json!({ "message": "The box isn’t answering." })));
+        return Some((503, json!({ "message": "Kuvo on this computer isn’t answering." })));
     }
     let answer = match route {
         "kuvo/computers" => json!({ "computers": listed(areas) }),
@@ -264,6 +264,12 @@ pub fn adding_goes_on(areas: &mut Areas) -> bool {
 }
 
 /// The computers as listed now: those removed gone, those being reached again so.
+fn reach_titles() -> Value {
+    json!({ "connecting": "Connecting…", "held": "Needs an update", "away": "Can’t be reached",
+        "notPaired": "Hasn’t taken this app yet", "shared": "Shared machine", "apart": "Another setup’s",
+        "unreached": "Can’t be reached from this app" })
+}
+
 fn listed(areas: &Areas) -> Vec<Value> {
     let added = areas.added.iter().map(|name| {
         let busy = areas.tries.iter().any(|each| each["destination"] == json!(name) && each["state"] == json!("working"));
@@ -283,6 +289,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
         .chain(added)
         .filter(|computer| !areas.removed.iter().any(|key| computer["key"] == json!(key)))
         .map(|mut computer| {
+            computer["reachTitles"] = reach_titles();
             // (Removing waits while the old app is open on the Mac, saying so.)
             if areas.old_app {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
@@ -358,6 +365,7 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
         computer
     }));
     for computer in &mut computers {
+        computer["reachTitles"] = reach_titles();
         let reach = computer["reach"].as_str().unwrap_or("connected");
         let title = match reach { "away" => "Can’t be reached", "connecting" => "Connecting", "unknown" => "Not reached directly", _ => "Connected" };
         computer["title"] = json!(title);

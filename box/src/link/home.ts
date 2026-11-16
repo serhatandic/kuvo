@@ -39,7 +39,7 @@ export const OWN_HOME_MAC = IS_MAC && APP_FOLDER === null;
 // (The app's keeper names a folder of the app's: one whose folder around it is your home is a home
 // of its own, started as the app's by mistake, which would take your home for the app's folder.)
 if (APP_FOLDER && [homeFolder(), accountHome()].some(home => located(APP_FOLDER) === located(home))) {
-  throw new Error(`This Mac's box was started as the app's (KUVO_BOX=mac) in ${K}, a home of its own: its folder around it is your home, not the app's.`);
+  throw new Error(`Kuvo on this Mac was started as the app's (KUVO_BOX=mac) in ${K}, a home of its own: its folder around it is your home, not the app's.`);
 }
 
 /** Your own data folder (`XDG_DATA_HOME`, else `~/.local/share`), as apps other than Kuvo Code's
@@ -206,7 +206,7 @@ export const HERE = IS_MAC ? "this Mac" : "this machine";
 // of its own (a machine's are in `box`).
 export const ENGINE_CONFIG = process.env.KUVO_ENGINE_CONFIG || (OWN_HOME_MAC ? path.join(K, "config") : undefined);
 // (This Mac's box in its app's folder has them there, always: BoxProcess gives both.)
-if (IS_MAC && !ENGINE_CONFIG) throw new Error("This Mac's box was started without KUVO_ENGINE_CONFIG, the folder its engine's settings are in.");
+if (IS_MAC && !ENGINE_CONFIG) throw new Error("Kuvo on this Mac was started without KUVO_ENGINE_CONFIG, the folder its engine's settings are in.");
 /** Whether the box writes the files its engine reads its integrations' keys from itself, as a
  * machine's does (`box/keys`), while their values are kept on its host
  * (this Mac's Keychain): a Mac's box in a home of its own, which no app writes them for (KUVO_KEYS). */

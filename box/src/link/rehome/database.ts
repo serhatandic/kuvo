@@ -43,7 +43,7 @@ function open(file: string, readonly = false): Database {
   try {
     sqlite = createRequire(import.meta.url)(["bun", "sqlite"].join(":"));
   } catch {
-    throw new Error("The engine's database can only be rewritten by the box run with the engine's Bun.");
+    throw new Error("The engine's database can only be rewritten by Kuvo running with the engine's Bun.");
   }
   return new sqlite.Database(file, readonly ? { readonly: true } : { readwrite: true });
 }

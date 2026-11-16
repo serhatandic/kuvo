@@ -49,9 +49,9 @@ export function stopKeptServe() {
 export async function* serveRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "POST") return yield* json(405, {});
-  if (IS_MAC) return yield* json(409, { message: "This Mac's box has its server run by Kuvo Code itself." });
+  if (IS_MAC) return yield* json(409, { message: "Kuvo Code itself runs the server on this Mac." });
   if (method === "POST") {
-    if (!request.fromApp && !request.fromMac) return yield* json(403, { message: "Only Kuvo Code asks for the box's server." });
+    if (!request.fromApp && !request.fromMac) return yield* json(403, { message: "Only Kuvo Code asks for Kuvo's server on this computer." });
     const given = parsed(request.body);
     if (!isObject(given) || typeof given.needed !== "boolean") return yield* json(400, { message: "Say whether it's needed (needed: true or false)." });
     if (given.needed) {

@@ -56,7 +56,7 @@ export async function* browserDataRoute(context: RouteContext, match: RegExpMatc
 
 /** Why a Mac's box has no live view (PROTOCOL.md, "The browser's live view"): its agents browse
  * in its app's panel, until a Mac's box has a browser of its own. */
-export const NO_VIEW_ON_MAC = "A Mac's box has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
+export const NO_VIEW_ON_MAC = "Kuvo on a Mac has no browser of its own yet: its agents browse in Kuvo Code's panel on that Mac.";
 
 /** The ordinary HTTP path tells clients to open the authenticated socket (a Mac's box: why there's
  * none). */
