@@ -1,7 +1,8 @@
-//! What macOS allows this Mac's agents, as someone meets it in the window, against the stand-in
-//! box (nothing asks macOS anything, System Settings is never opened, and the tile's window is a
-//! test's own): the heads-up for a permission the box says to bring up, Open System Settings with
-//! the drag tile, the tile going once the box says it's allowed, and Not Now kept by the box.
+//! What macOS allows this Mac's agents, as someone meets it in the window once it's set up, against
+//! the stand-in box (nothing asks macOS anything, System Settings is never opened, and the tile's
+//! window is a test's own): nothing brought up over the main window, and Settings › This Mac's
+//! Open System Settings with the drag tile, going once the box says it's allowed. The step that
+//! asks while setting up is in `first_run.rs` and `launch.rs`.
 
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use kuvo_box::BoxClient;
 use kuvo_ui::{Appearance, Theme};
 
 const NOW: f64 = 1_794_650_000_000.0;
-const SCREEN: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+const ACCESSIBILITY: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const SECOND: Duration = Duration::from_secs(1);
 
 fn open(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut VisualTestContext) {
@@ -68,11 +69,6 @@ fn heads_up(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity
     workspace.read_with(cx, |workspace, _| workspace.permissions().clone())
 }
 
-/// The permission the heads-up is about, by the box's name for it.
-fn about(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<String> {
-    heads_up(workspace, cx).read_with(cx, |heads_up, _| heads_up.shown().map(|permission| permission.name.clone()))
-}
-
 fn tile_open(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> bool {
     heads_up(workspace, cx).read_with(cx, |heads_up, _| heads_up.tile().is_some())
 }
@@ -82,54 +78,54 @@ fn wait(cx: &mut VisualTestContext, how_long: Duration) {
     cx.run_until_parked();
 }
 
-#[gpui::test]
-fn nothing_is_brought_up_where_the_box_says_nothing_needs_you(cx: &mut TestAppContext) {
-    // A box that runs under no such program (the stand-in's sample), and one with both allowed.
-    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
-    assert!(!shown(cx, "permission-heads-up"));
-    let allowed = StandIn::at(Replies::Never, NOW);
-    allowed.set_permissions(|permissions| *permissions = Permissions { screen_recording: true, accessibility: true, ..Permissions::nothing_allowed() });
-    let (_, cx) = open(cx, allowed);
-    assert!(!shown(cx, "permission-heads-up"));
-    // One whose helper hasn't said yet: nothing's brought up on a guess.
-    let unknown = StandIn::at(Replies::Never, NOW);
-    unknown.set_permissions(|permissions| *permissions = Permissions { known: false, ..Permissions::nothing_allowed() });
-    let (_, cx) = open(cx, unknown);
-    assert!(!shown(cx, "permission-heads-up"));
+/// Settings › This Mac, open.
+fn this_mac(cx: &mut VisualTestContext) {
+    click(cx, "rail-settings");
+    if !shown(cx, "setting-computer") {
+        click(cx, "settings-foot");
+    }
+    click(cx, "setting-computer");
 }
 
 #[gpui::test]
-fn open_system_settings_opens_the_box_s_pane_with_the_helper_to_drag_beside_it(cx: &mut TestAppContext) {
+fn nothing_is_brought_up_over_the_main_window(cx: &mut TestAppContext) {
+    // A Mac's own Kuvo whose helper says neither is allowed, past its first run: the window opens
+    // on its sessions, with nothing over them and System Settings never opened.
+    let (workspace, cx) = open(cx, nothing_allowed());
+    assert!(shown(cx, "rail-settings"));
+    assert!(!shown(cx, "permissions-step") && !shown(cx, "permission-screenRecording-open"));
+    assert!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asks()), "the box still says they're not allowed");
+    assert_eq!(cx.opened_url(), None);
+}
+
+/// Settings › This Mac is where a permission is looked up and allowed after setting up: its row
+/// opens System Settings with the tile to drag beside it, which goes once the box says it's allowed.
+#[gpui::test]
+fn settings_this_mac_opens_the_permission_with_the_tile(cx: &mut TestAppContext) {
     let stand_in = nothing_allowed();
     let (workspace, cx) = open(cx, stand_in.clone());
-    assert!(shown(cx, "permission-heads-up"));
-    assert_eq!(about(&workspace, cx).as_deref(), Some("Screen Recording"));
-    assert!(!tile_open(&workspace, cx));
-    click(cx, "permission-open");
-    // The pane the box named, and the tile, holding the helper's bundle as the box said it.
-    assert_eq!(cx.opened_url().as_deref(), Some(SCREEN));
+    this_mac(cx);
+    assert!(shown(cx, "row-allows-screenRecording") && shown(cx, "row-allows-accessibility"));
+    click(cx, "row-allows-accessibility-open-system-settings");
+    assert_eq!(cx.opened_url().as_deref(), Some(ACCESSIBILITY));
     let tile = heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.tile()).expect("the tile");
     assert_eq!(tile.read_with(cx, |tile, _| tile.bundle().clone()).unwrap().to_str(), Some(helper().as_str()));
+    assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asking().map(str::to_owned)).as_deref(), Some("accessibility"));
     // Not allowed yet, a few seconds on: it stays.
     wait(cx, 3 * SECOND);
     assert!(tile_open(&workspace, cx) && cx.windows().len() == 2);
-    // Dragged in and switched on: the box says so at its next ask, and the tile goes by itself.
-    stand_in.set_permissions(|permissions| permissions.screen_recording = true);
+    // Allowed in System Settings: the box says so, and the tile goes by itself.
+    stand_in.set_permissions(|permissions| permissions.accessibility = true);
     wait(cx, SECOND);
     assert!(!tile_open(&workspace, cx));
     assert_eq!(cx.windows().len(), 1);
-    // The next one the box brings up takes its place.
-    assert_eq!(about(&workspace, cx).as_deref(), Some("Accessibility"));
-    stand_in.set_permissions(|permissions| permissions.accessibility = true);
-    click(cx, "permission-open");
-    wait(cx, SECOND);
-    assert!(!shown(cx, "permission-heads-up") && !tile_open(&workspace, cx));
 }
 
 #[gpui::test]
 fn the_helper_s_icon_is_what_s_dragged_and_the_tile_closes_when_you_close_it(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, nothing_allowed());
-    click(cx, "permission-open");
+    this_mac(cx);
+    click(cx, "row-allows-screenRecording-open-system-settings");
     let tile = heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.tile()).expect("the tile");
     let mut tile_cx = VisualTestContext::from_window(tile.into(), cx);
     tile_cx.run_until_parked();
@@ -142,84 +138,19 @@ fn the_helper_s_icon_is_what_s_dragged_and_the_tile_closes_when_you_close_it(cx:
     assert!(tile_cx.update(|_, cx| cx.has_active_drag()));
     tile_cx.simulate_mouse_up(icon + point(px(12.), px(12.)), MouseButton::Left, Modifiers::default());
     tile_cx.run_until_parked();
-    // Closed by its own button: it goes, and the heads-up stays for another try.
+    // Closed by its own button: it goes, and nothing's asked of the box any more.
     click(&mut tile_cx, "permission-tile-close");
     cx.run_until_parked();
     assert!(!tile_open(&workspace, cx));
-    assert!(shown(cx, "permission-heads-up"));
-    assert_eq!(about(&workspace, cx).as_deref(), Some("Screen Recording"));
+    assert!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asking().is_none()));
 }
 
 #[gpui::test]
-fn a_helper_that_isnt_where_the_box_says_is_said_and_nothing_is_offered_to_drag(cx: &mut TestAppContext) {
-    let stand_in = nothing_allowed();
-    stand_in.set_permissions(|permissions| permissions.bundle = "/nowhere/Kuvo Helper.app".into());
-    let (workspace, cx) = open(cx, stand_in);
-    click(cx, "permission-open");
-    // System Settings opens all the same (its + can still add it); no tile, and why.
-    assert_eq!(cx.opened_url().as_deref(), Some(SCREEN));
-    assert!(!tile_open(&workspace, cx) && cx.windows().len() == 1);
-    assert!(shown(cx, "permission-heads-up-problem"));
-}
-
-#[gpui::test]
-fn not_now_is_kept_by_the_box_and_not_brought_up_at_the_next_open(cx: &mut TestAppContext) {
-    let stand_in = nothing_allowed();
-    let (workspace, cx) = open(cx, stand_in.clone());
-    click(cx, "permission-later");
-    let sent = stand_in.seen_at("POST", "kuvo/box/permissions");
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].body.as_ref().map(|body| body["later"].clone()), Some(serde_json::json!("screenRecording")));
-    // The next one, then none; System Settings was never opened.
-    assert_eq!(about(&workspace, cx).as_deref(), Some("Accessibility"));
-    click(cx, "permission-later");
-    assert!(!shown(cx, "permission-heads-up"));
-    assert_eq!(cx.opened_url(), None);
-    // The app opened again on the same box: still not brought up.
-    let (_, cx) = open(cx, stand_in);
-    assert!(!shown(cx, "permission-heads-up"));
-}
-
-#[gpui::test]
-fn not_now_the_box_cant_take_says_so_and_keeps_the_heads_up(cx: &mut TestAppContext) {
-    let stand_in = nothing_allowed();
-    let (workspace, cx) = open(cx, stand_in.clone());
-    stand_in.set_permissions(|permissions| permissions.fails = true);
-    click(cx, "permission-later");
-    assert!(shown(cx, "permission-heads-up") && shown(cx, "permission-heads-up-problem"));
-    assert_eq!(about(&workspace, cx).as_deref(), Some("Screen Recording"));
-}
-
-#[gpui::test]
-fn another_computer_s_permissions_arent_brought_up_here(cx: &mut TestAppContext) {
+fn another_computer_s_permissions_arent_asked_about_here(cx: &mut TestAppContext) {
     // System Settings can't be opened on another computer from this one.
     let stand_in = nothing_allowed();
     stand_in.set_elsewhere(true);
-    let (_, cx) = open(cx, stand_in.clone());
-    assert!(!shown(cx, "permission-heads-up"));
-    assert!(stand_in.seen_at("GET", "kuvo/box/permissions").is_empty());
-}
-
-/// After "Not Now" the heads-up stays away, and Settings › This Mac is where a permission is
-/// looked up and allowed: its row opens System Settings with the same tile to drag.
-#[gpui::test]
-fn after_not_now_settings_this_mac_opens_the_permission_with_the_tile(cx: &mut TestAppContext) {
-    let stand_in = nothing_allowed();
     let (workspace, cx) = open(cx, stand_in.clone());
-    click(cx, "permission-later");
-    click(cx, "permission-later");
-    assert!(!shown(cx, "permission-heads-up") && cx.opened_url().is_none());
-    click(cx, "rail-settings");
-    if !shown(cx, "setting-computer") {
-        click(cx, "settings-foot");
-    }
-    click(cx, "setting-computer");
-    click(cx, "row-allows-accessibility-open-system-settings");
-    assert_eq!(cx.opened_url().as_deref(), Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"));
-    assert!(tile_open(&workspace, cx));
-    assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asking().map(str::to_owned)).as_deref(), Some("accessibility"));
-    // Allowed in System Settings: the box says so, the tile goes, and the row says Allowed.
-    stand_in.set_permissions(|permissions| permissions.accessibility = true);
-    wait(cx, Duration::from_secs(1));
-    assert!(!tile_open(&workspace, cx));
+    assert!(!heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asks()));
+    assert!(stand_in.seen_at("GET", "kuvo/box/permissions").is_empty());
 }

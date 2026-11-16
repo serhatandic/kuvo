@@ -29,17 +29,14 @@ fn main() {
     }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
+        // Your settings, kept in the app's own folder (none for the made-up box: kept while it runs).
+        kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
+        // Who its notifications are from (macOS takes it from the bundle; Linux from this).
+        cx.set_app_identity("run.kuvo.code", "Kuvo");
         // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one). The
         // first time, on a Mac whose Kuvo stays at work in the menu bar, a note says so first
-        // (`kuvo::quit_note`), remembered in the app's own folder.
-        if !stand_in() {
-            let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-            if let Some(names) = std::env::current_exe().ok().and_then(|executable| kuvo_box::install::names_for(&executable, demo_root.as_deref(), &home)) {
-                cx.set_global(kuvo::quit_note::QuitNoteFile::in_folder(&kuvo::keeper::folder_of(&home, &names.root)));
-            }
-        }
-        // (After the key's dispatch: the window it came through is busy until then.)
+        // (`kuvo::quit_note`), remembered in your settings. (After the key's dispatch: the window
+        // it came through is busy until then.)
         cx.on_action(|_: &Quit, cx| cx.defer(kuvo::quit_note::quit));
         cx.set_menus([Menu { name: "Kuvo".into(), items: vec![MenuItem::action("Quit Kuvo", Quit)], disabled: false }]);
         cx.on_window_closed(|cx, _| {
@@ -59,7 +56,7 @@ fn main() {
         let opened = if stand_in() {
             let (boxes, first) = stand_in_boxes();
             cx.open_window(options, |window, cx| {
-                Theme::init(Appearance::of(window), cx);
+                Theme::init(kuvo::yours::appearance(Appearance::of(window), cx), cx);
                 cx.new(|cx| Home::new(boxes, first, true, window, cx))
             })
             .map(|window| {
@@ -74,7 +71,7 @@ fn main() {
             // This computer's Kuvo, set up where it isn't yet, then the app.
             let opens = opens();
             cx.open_window(options, |window, cx| {
-                Theme::init(Appearance::of(window), cx);
+                Theme::init(kuvo::yours::appearance(Appearance::of(window), cx), cx);
                 cx.new(|cx| Launch::new(opens, true, window, cx))
             })
             .map(|_| ())
@@ -149,6 +146,15 @@ fn opens() -> Opens {
             None => Err("This copy of Kuvo has no folder of its own to use.".to_owned()),
         }),
     }
+}
+
+/// Where your settings are kept: `settings.json` in this build's own folder (`~/.kuvo-code/desktop`;
+/// a copy of the app's in its own root), none where it has no folder of its own.
+fn your_settings() -> Option<PathBuf> {
+    let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let names = kuvo_box::install::names_for(&std::env::current_exe().ok()?, demo_root.as_deref(), &home)?;
+    Some(kuvo::keeper::folder_of(&home, &names.root).join(kuvo::yours::FILE))
 }
 
 /// Your boxes: the one on this computer (the nearest), and every other of your computers, each

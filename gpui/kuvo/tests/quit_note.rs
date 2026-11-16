@@ -6,16 +6,16 @@
 
 use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext, px, size};
 use kuvo::Home;
-use kuvo::quit_note::QuitNoteFile;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo_ui::{Appearance, Theme};
 
 fn open<'a>(cx: &'a mut TestAppContext, stand_in: StandIn, folder: &std::path::Path) -> (Entity<Home>, &'a mut VisualTestContext) {
-    let file = QuitNoteFile::in_folder(folder);
+    let file = Some(folder.join(kuvo::yours::FILE));
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
         kuvo::bind_keys(cx);
-        cx.set_global(file);
+        // Your settings, as main.rs reads them: the note is remembered with them.
+        kuvo::yours::init(file, cx);
         // As the app routes ⌘Q (main.rs).
         cx.on_action(|_: &kuvo::Quit, cx| cx.defer(kuvo::quit_note::quit));
     });
@@ -61,6 +61,10 @@ fn the_first_quit_says_kuvo_keeps_working_and_cancel_stays(cx: &mut TestAppConte
     assert_eq!(cx.update(|window, cx| window.focused(cx)), before, "back where you were");
     let kept = std::fs::read_to_string(folder.path().join("settings.json")).expect("remembered in the app's own folder");
     assert!(kept.contains("\"quitNoteSeen\": true"), "{kept}");
+    // One file, one writer: a setting changed after keeps the note, and the note kept it.
+    cx.update(|_, cx| kuvo::yours::change(kuvo::yours::Change::Editor(Some("dev.zed.Zed".into())), cx));
+    let kept = std::fs::read_to_string(folder.path().join("settings.json")).unwrap();
+    assert!(kept.contains("\"quitNoteSeen\": true") && kept.contains("dev.zed.Zed"), "{kept}");
     // Seen: the next ⌘Q quits without it.
     cx.simulate_keystrokes("cmd-q");
     assert!(!shown(cx, "quit-note"), "shown once on this device");

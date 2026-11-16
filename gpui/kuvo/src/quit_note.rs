@@ -2,14 +2,12 @@
 //! at work (its sessions, bots and wake-ups), and nothing on screen would say so but the menu bar
 //! item. So the first time you quit (⌘Q, or closing the window), a card says it, and shows where
 //! Kuvo is: Quit goes on, Cancel stays. It shows once on this device, either way, remembered in the
-//! app's own folder (`~/.kuvo-code/desktop/settings.json`, `quitNoteSeen`).
+//! app's own settings (`yours`: `~/.kuvo-code/desktop/settings.json`, `quitNoteSeen`).
 //!
 //! Whether it applies is the box's to say (`kuvo/box/at-work`'s `applies`: a Mac's own box, which
 //! Kuvo Helper draws in the menu bar); the app only remembers that you've seen it.
 
-use std::path::{Path, PathBuf};
-
-use gpui::{AnyElement, App, Global, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled, Window, div, px};
+use gpui::{AnyElement, App, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled, Window, div, px};
 use kuvo_ui::{ActiveTheme, Button, StyledType, TypeSize, theme::{radius, space}};
 
 /// Quit (⌘Q, its menu): through the window's [`crate::Home`] where it's open (which notes the
@@ -33,44 +31,14 @@ pub fn quit(cx: &mut App) {
     cx.quit();
 }
 
-/// Where this app remembers the note was seen: its own settings file. None for one that keeps
-/// nothing (tests and shots, unless they say).
-#[derive(Clone, Debug, Default)]
-pub struct QuitNoteFile(pub Option<PathBuf>);
-
-impl Global for QuitNoteFile {}
-
-impl QuitNoteFile {
-    /// The app's own settings file in `folder` (its `desktop` folder).
-    pub fn in_folder(folder: &Path) -> QuitNoteFile {
-        QuitNoteFile(Some(folder.join("settings.json")))
-    }
-}
-
-/// Whether the note was seen on this device.
+/// Whether the note was seen on this device (your settings, `yours`).
 pub fn seen(cx: &App) -> bool {
-    let Some(file) = cx.try_global::<QuitNoteFile>().and_then(|file| file.0.clone()) else { return false };
-    read(&file).get("quitNoteSeen").and_then(serde_json::Value::as_bool).unwrap_or(false)
+    crate::yours::now(cx).quit_note_seen
 }
 
-/// Notes it was seen, keeping whatever else the file holds.
-pub fn note_seen(cx: &App) {
-    let Some(file) = cx.try_global::<QuitNoteFile>().and_then(|file| file.0.clone()) else { return };
-    let mut kept = read(&file);
-    kept.insert("quitNoteSeen".into(), serde_json::Value::Bool(true));
-    if let Some(folder) = file.parent() {
-        let _ = std::fs::create_dir_all(folder);
-    }
-    let text = serde_json::to_string_pretty(&serde_json::Value::Object(kept)).unwrap_or_default();
-    // (Written whole, then moved in place: a quit halfway never leaves half a file.)
-    let next = file.with_extension("json.new");
-    if std::fs::write(&next, text + "\n").is_ok() {
-        let _ = std::fs::rename(&next, &file);
-    }
-}
-
-fn read(file: &Path) -> serde_json::Map<String, serde_json::Value> {
-    std::fs::read(file).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()).and_then(|value| value.as_object().cloned()).unwrap_or_default()
+/// Notes it was seen, in your settings' file with the rest of them.
+pub fn note_seen(cx: &mut App) {
+    crate::yours::change(crate::yours::Change::QuitNoteSeen, cx);
 }
 
 /// The card, over the window: where Kuvo is (a strip of the menu bar with its item), what goes on,

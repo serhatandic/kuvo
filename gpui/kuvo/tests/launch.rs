@@ -544,3 +544,33 @@ fn an_installer_that_breaks_under_a_move_is_said_in_the_move_s_card(cx: &mut Tes
     assert_eq!(line(&launch, cx), "Couldn’t move your sessions");
     assert!(shown(cx, "launch-steps") && !shown(cx, "launch-note") && shown(cx, "launch-again") && !opened(&launch, cx));
 }
+
+#[gpui::test]
+fn after_a_move_what_macos_must_allow_kuvo_helper_is_asked_before_the_app_opens(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[&to_move()]);
+    let done = format!(r#"{{"result":"done","verdict":"ours","started":true,"status":{{{STEPS}}}}}"#);
+    bundle.says("move", None, 0, &[r#"{"step":"plan","title":"Checking this Mac","index":1,"of":5}"#, &done]);
+    let here = Here::default();
+    // This Mac's own Kuvo, moved, whose helper macOS allows neither yet.
+    let moved = StandIn::at(Replies::Never, NOW);
+    moved.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions::nothing_allowed());
+    here.answers(&moved);
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(matches!(launch.read_with(cx, |launch, _| launch.stage().clone()), Stage::Said { what: Said::Moved, .. }));
+    // (The step says it next: not this card.)
+    assert!(!shown(cx, "launch-helper"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(matches!(launch.read_with(cx, |launch, _| launch.stage().clone()), Stage::Allow { .. }));
+    assert!(shown(cx, "permissions-step") && shown(cx, "permission-screenRecording-open") && !opened(&launch, cx));
+    // Return waits while something's asked about; Not Now puts it off and opens the app.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(!opened(&launch, cx));
+    click(cx, "launch-not-now");
+    assert_eq!(moved.seen_at("POST", "kuvo/box/permissions").len(), 2);
+    assert!(opened(&launch, cx));
+    assert!(shown(cx, "rail-settings") && !shown(cx, "permissions-step"));
+}

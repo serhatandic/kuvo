@@ -45,8 +45,10 @@ const OPEN_WITHIN = 25_000;
 export const GONE = "Kuvo Code isn't where it was installed on this Mac any more (it was moved or deleted), so its browser can't be opened. Ask the user to open Kuvo Code, then try again.";
 export const couldntOpen = (why: string) => `Kuvo Code couldn't be opened in the background on this Mac for its browser (${why.trim()}). Ask the user to open Kuvo Code, then try again.`;
 export const NOT_READY = `Kuvo Code was opened in the background on this Mac, but its browser wasn't ready within ${WAIT / 1000} seconds. Try again in a few minutes; if it still isn't ready, ask the user to open Kuvo Code.`;
-/** What a browser call says where the app never registered with this box: there's nothing to open. */
-export const NEEDS_APP = "This tool needs Kuvo Code open on this Mac, and it isn't open now. Ask the user to open Kuvo Code, then try again.";
+/** What a browser call says where no app ever registered with this box: there's nothing to open. So
+ * far that's this Mac with the desktop app, which has no browser for agents yet (only 0.7's Mac app
+ * registered); Kuvo Code's other tools work without it. */
+export const NEEDS_APP = "Kuvo Code on this Mac has no browser for agents yet, so this tool can't run here. Use webfetch to read a page instead, or tell the user what you'd need to do in a browser.";
 /** Where nothing that opens it runs (no host interface): the keeper, or the helper after it. */
 const NO_OPENER = "nothing that opens it is running on this Mac";
 

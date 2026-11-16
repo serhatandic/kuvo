@@ -17,6 +17,9 @@ pub struct Permission {
     pub id: String,
     /// What System Settings calls it.
     pub name: String,
+    /// What agents need it for, in a sentence (none from a box older than these words).
+    #[serde(default)]
+    pub line: Option<String>,
     /// Whether it's allowed; none while the box can't say.
     pub allowed: Option<bool>,
     /// The address that opens its list in System Settings, on the box's own Mac.
