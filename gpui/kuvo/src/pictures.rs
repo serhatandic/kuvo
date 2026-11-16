@@ -81,6 +81,17 @@ pub fn read(client: &BoxClient, source: &Source) -> Read {
     shown(bytes)
 }
 
+/// Whether two sources are the same place to read a picture from (a message's own bytes are the
+/// same for as long as it has that id, so they aren't compared: a photo's are megabytes).
+pub fn same_place(a: &Source, b: &Source) -> bool {
+    match (a, b) {
+        (Source::Inline(_), Source::Inline(_)) => true,
+        (Source::File(a), Source::File(b)) => a == b,
+        (Source::Local(a), Source::Local(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Bytes as a picture to draw, by what they are (whatever the name says).
 pub fn shown(bytes: Vec<u8>) -> Read {
     let Some(format) = format_of(&bytes) else { return failed(false) };
@@ -110,11 +121,24 @@ fn thumbnail(format: ImageFormat, bytes: &[u8], width: u32, height: u32) -> Opti
     if width.max(height) <= THUMB_SIDE || matches!(format, ImageFormat::Svg | ImageFormat::Gif) {
         return None;
     }
-    let decoded = image::load_from_memory(bytes).ok()?;
+    use image::ImageDecoder as _;
+    // Turned as the camera says it was held (a photo's EXIF), as the viewer shows it.
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok();
+    let mut decoded = image::DynamicImage::from_decoder(decoder).ok()?;
+    if let Some(orientation) = orientation {
+        decoded.apply_orientation(orientation);
+    }
     let small = decoded.thumbnail(THUMB_SIDE, THUMB_SIDE);
     let mut out = std::io::Cursor::new(Vec::new());
-    small.write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(Image::from_bytes(ImageFormat::Png, out.into_inner()))
+    // A JPEG where nothing shows through (a photo, a screenshot): far smaller than a PNG of it.
+    if small.color().has_alpha() {
+        small.write_to(&mut out, image::ImageFormat::Png).ok()?;
+        Some(Image::from_bytes(ImageFormat::Png, out.into_inner()))
+    } else {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85).encode_image(&small.to_rgb8()).ok()?;
+        Some(Image::from_bytes(ImageFormat::Jpeg, out.into_inner()))
+    }
 }
 
 fn format_of(bytes: &[u8]) -> Option<ImageFormat> {
@@ -172,7 +196,8 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
         read => {
             let (w, h) = (most_w.min(240.), most_h.min(140.));
             let (lead, words, again): (AnyElement, String, bool) = match read {
-                Some(Read::Failed { why, again }) => (Icon::new(IconName::Image).size(IconSize::Card).color(c.text_faint).into_any_element(), why.clone(), *again),
+                // (Named, as a file that can't be drawn here is still what was sent: a HEIC photo.)
+                Some(Read::Failed { why, again }) => (Icon::new(IconName::Image).size(IconSize::Card).color(c.text_faint).into_any_element(), picture.name.as_ref().map_or_else(|| why.clone(), |name| format!("{name}\n{why}")), *again),
                 _ => (spinner(SharedString::from(format!("reading-{}", picture.id)), IconSize::Nav, c.text_faint).into_any_element(), name, false),
             };
             let (retry, key) = (looks.again.clone(), picture.id.as_str().to_owned());
@@ -295,4 +320,35 @@ pub fn words_pictures(step: &str, n: usize, text: &str, most: (f32, f32), looks:
         }
         div().text_color(c.text_muted).child(words).into_any_element()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn png(width: u32, height: u32, alpha: bool) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        if alpha {
+            image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        } else {
+            image::RgbImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        }
+        out.into_inner()
+    }
+
+    /// A screenshot of a large screen is drawn in the conversation from a small copy made as it's
+    /// read (its shape kept), and opens whole; a small one is drawn as it is.
+    #[test]
+    fn a_large_picture_is_drawn_from_a_small_copy_and_opens_whole() {
+        let Read::Shown { image, thumb, width, height } = shown(png(2880, 1800, false)) else { panic!("read") };
+        assert_eq!((width, height), (2880, 1800));
+        assert_eq!(image.format(), ImageFormat::Png);
+        assert_eq!(thumb.format(), ImageFormat::Jpeg, "nothing shows through it");
+        let small = image::load_from_memory(thumb.bytes()).unwrap();
+        assert_eq!((small.width(), small.height()), (1120, 700));
+        let Read::Shown { thumb, .. } = shown(png(3000, 600, true)) else { panic!("read") };
+        assert_eq!(thumb.format(), ImageFormat::Png, "one that shows through keeps it");
+        let Read::Shown { image, thumb, .. } = shown(png(400, 300, false)) else { panic!("read") };
+        assert!(Arc::ptr_eq(&image, &thumb), "small already");
+    }
 }

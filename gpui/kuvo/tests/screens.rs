@@ -1415,6 +1415,42 @@ fn a_picture_you_send_is_a_thumbnail_on_your_message_in_every_state(cx: &mut Tes
     assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some(format!("{failed}#0")));
 }
 
+/// Its box's copy takes over from what was read here: this Mac's box names a picture sent from here
+/// by its path, and it's read from the box, as small as it went.
+#[gpui::test]
+fn a_picture_you_sent_shows_from_its_box_copy_once_it_comes(cx: &mut TestAppContext) {
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let (note, shot) = (folder.path().join("list.txt"), folder.path().join("shelf.png"));
+    std::fs::write(&note, "rice").unwrap();
+    std::fs::write(&shot, png(480, 300)).unwrap();
+    composer.update(cx, |composer, cx| composer.attach_named([note.clone(), shot.clone()], cx));
+    cx.simulate_input("Which shelf?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let body = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap();
+    let id = body["id"].as_str().unwrap().to_owned();
+    let size = |cx: &mut VisualTestContext| bounds(cx, &format!("picture-{id}#1")).map(|b| (f32::from(b.size.width).round(), f32::from(b.size.height).round()));
+    assert_eq!(size(cx), Some((240., 150.)), "read here while it goes");
+    // Its copy has it, by its path on the box's computer (this Mac): read from there.
+    stand_in.put_file(&shot.to_string_lossy(), png(480, 300));
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    let copy = bounds(cx, &format!("picture-{id}@{}", shot.to_string_lossy())).expect("its copy's picture");
+    assert_eq!((f32::from(copy.size.width).round(), f32::from(copy.size.height).round()), (240., 150.));
+    assert!(!stand_in.seen_at("GET", "kuvo/file").is_empty(), "asked of its box");
+}
+
 #[gpui::test]
 fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

@@ -91,6 +91,9 @@ pub struct ConversationView {
     running: bool,
     /// Its pictures as read, by their ids (each read once).
     pictures: HashMap<String, Read>,
+    /// Where each picture was read from: one whose place changes (yours on its way, read from this
+    /// Mac, then its box's copy) is read again from there.
+    read_from: HashMap<String, kuvo_box::pictures::Source>,
     /// Each row's pictures, found as it changed (its revision, and which of its steps were open),
     /// not at each drawing: finding them copies what a message carries.
     row_pictures: HashMap<String, (u64, Vec<(String, usize)>, Vec<Picture>)>,
@@ -152,6 +155,7 @@ impl ConversationView {
             _outgoing: outgoing,
             running: false,
             pictures: HashMap::new(),
+            read_from: HashMap::new(),
             row_pictures: HashMap::new(),
             sent_pictures: HashMap::new(),
             viewing: None,
@@ -716,19 +720,29 @@ impl ConversationView {
     fn read_pictures(&mut self, cx: &mut Context<Self>) {
         for picture in self.all_pictures() {
             let key = picture.id.clone();
-            if self.pictures.contains_key(&key) {
+            let moved = self.read_from.get(&key).is_some_and(|was| !pictures::same_place(was, &picture.source));
+            if self.pictures.contains_key(&key) && !moved {
                 continue;
             }
-            self.pictures.insert(key.clone(), Read::Reading);
+            // (One read from elsewhere before stays shown until it's read from where it is now.)
+            if !moved {
+                self.pictures.insert(key.clone(), Read::Reading);
+            }
+            self.read_from.insert(key.clone(), picture.source.clone());
             let (client, source) = (self.client.clone(), picture.source.clone());
-            let task = cx.background_executor().spawn(async move { pictures::read(&client, &source) });
+            let read_source = source.clone();
+            let task = cx.background_executor().spawn(async move { pictures::read(&client, &read_source) });
             self.tasks.retain(|task| !task.is_ready());
             self.tasks.push(cx.spawn(async move |this, cx| {
                 let read = task.await;
                 this.update(cx, |this, cx| {
-                    this.pictures.insert(key.clone(), read);
-                    this.picture_changed(&key);
-                    cx.notify();
+                    // (Unless it has moved again since; and one shown stays, if where it is now can't give it.)
+                    let keeps = matches!(read, Read::Failed { .. }) && matches!(this.pictures.get(&key), Some(Read::Shown { .. }));
+                    if !keeps && this.read_from.get(&key).is_some_and(|now| pictures::same_place(now, &source)) {
+                        this.pictures.insert(key.clone(), read);
+                        this.picture_changed(&key);
+                        cx.notify();
+                    }
                 })
                 .ok();
             }));
