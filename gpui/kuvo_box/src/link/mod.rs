@@ -9,6 +9,7 @@ pub mod client;
 pub mod frames;
 pub mod keys;
 pub mod linked;
+pub mod log;
 pub mod noise;
 pub mod relay;
 #[cfg(feature = "stand-in")]

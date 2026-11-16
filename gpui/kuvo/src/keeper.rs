@@ -81,9 +81,16 @@ pub fn folder_of(home: &std::path::Path, root: &str) -> PathBuf {
     home.join(root).join("desktop")
 }
 
+/// The link's log, in the app's own folder ([`kuvo_box::link::log`]).
+pub const LINK_LOG: &str = "link.log";
+
 /// Your computers, as this app follows them: what it keeps of them (`boxes.json`) in its own
 /// folder under `home`, this device's key with `keeper`, `nearest` the box on this computer.
 pub fn boxes(home: &std::path::Path, root: &str, nearest: Option<std::sync::Arc<dyn kuvo_box::transport::Transport>>, keeper: std::sync::Arc<dyn kuvo_box::link::Keeper>, dial: std::sync::Arc<dyn kuvo_box::link::Dial>) -> kuvo_box::boxes::Boxes {
+    // How the link to your other computers fares (each connection lost, and why), for a report:
+    // `link.log` beside them, never on screen.
+    kuvo_box::link::log::to_file(folder_of(home, root).join(LINK_LOG));
+    kuvo_box::link::log::note(format!("Kuvo {} started", option_env!("KUVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))));
     kuvo_box::boxes::Boxes::new(kuvo_box::boxes::Options {
         nearest,
         keeper,

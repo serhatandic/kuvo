@@ -504,3 +504,26 @@ fn what_it_keeps_is_yours_alone_even_where_a_wider_file_was_there_already() {
     assert_eq!((mode(&path), mode(&folder)), (0o600, 0o700));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "kept");
 }
+
+#[test]
+fn the_list_taken_again_while_a_message_goes_keeps_the_computers_client_and_session() {
+    // The list's follow brings it every few seconds, each computer's other facts changed (whether
+    // it's connected, its version, what's at work): a send on its way there is never cut off.
+    let setup = Setup::new();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    let devbox = named(&boxes, "devbox");
+    let held = boxes.client(&devbox).unwrap();
+    held.get::<Value>("whoami").unwrap();
+    let (before, hellos) = (boxes.client_made(&devbox), setup.devbox.1.hellos().len());
+    let mut list = setup.list();
+    list["computers"][2]["reach"] = json!("connecting");
+    list["computers"][2]["version"] = json!("0.8.9");
+    list["computers"][2]["working"] = json!(2);
+    *setup.macbook.computers.lock().unwrap() = list;
+    boxes.read_list().unwrap();
+    held.get::<Value>("whoami").unwrap();
+    assert_eq!(boxes.client_made(&devbox), before, "the same client");
+    assert_eq!(setup.devbox.1.hellos().len(), hellos, "on the same session");
+}

@@ -28,6 +28,7 @@ struct RelayState {
     at: HashMap<Address, Connected>,
     down: bool,
     dials: usize,
+    turned_away: usize,
 }
 
 /// The stand-in relay. Cheap to clone: clones share it.
@@ -53,6 +54,11 @@ impl Relay {
     /// Whether it takes connections (`true`: none, as with the network down).
     pub fn set_down(&self, down: bool) {
         self.state().down = down;
+    }
+
+    /// How many times a device tried to connect while it was down.
+    pub fn turned_away(&self) -> usize {
+        self.state().turned_away
     }
 
     /// How many times a device has connected to it.
@@ -161,6 +167,7 @@ impl Dial for Relay {
         {
             let mut state = self.state();
             if state.down {
+                state.turned_away += 1;
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, "the stand-in relay is down"));
             }
             state.dials += 1;

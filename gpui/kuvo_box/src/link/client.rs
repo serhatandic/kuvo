@@ -8,7 +8,7 @@
 //! goes away fails what waits on it; what follows a route opens it again by its own backoff
 //! ([`crate::follow`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 
 use super::frames::{self, FromRelay, Kind};
 use super::keys::{Address, Host, Identity};
+use super::log;
 use super::noise::{self, Initiator};
 use super::relay::{Dial, Incoming, Outgoing};
 use crate::error::{Error, Refusal, Result};
@@ -38,6 +39,13 @@ pub struct Timing {
     /// After the relay couldn't be reached: not tried again before this, doubling up to `retry_most`.
     pub retry_first: Duration,
     pub retry_most: Duration,
+    /// How long a request safe to send again (a message under its id) is sent again for, from when
+    /// it first failed (PROTOCOL.md, "Sending again"): 2 minutes.
+    pub repeat_for: Duration,
+    /// The wait before its second try, doubling up to `repeat_most` (1, 2, 4, 8 s); a relay
+    /// connection made meanwhile sends it at once. (The first goes again at once.)
+    pub repeat_first: Duration,
+    pub repeat_most: Duration,
 }
 
 impl Default for Timing {
@@ -49,6 +57,9 @@ impl Default for Timing {
             check: Duration::from_secs(15),
             retry_first: Duration::from_millis(500),
             retry_most: Duration::from_secs(30),
+            repeat_for: Duration::from_secs(120),
+            repeat_first: Duration::from_secs(1),
+            repeat_most: Duration::from_secs(8),
         }
     }
 }
@@ -111,6 +122,13 @@ struct Session {
     answers: HashMap<u64, Sender<Piece>>,
     heard: Instant,
     checking: Option<Instant>,
+    /// What the box has had for sure, in bytes handed to the relay connection (what went before a
+    /// request it answered, or a ping): a check waits longer for what may still be on its way.
+    arrived: u64,
+    /// Requests with no answer yet, and the pings on their way: how much had been handed over once
+    /// each had gone.
+    unanswered: HashMap<u64, u64>,
+    pings: VecDeque<u64>,
 }
 
 enum Connection {
@@ -131,6 +149,8 @@ struct State {
     over: HashMap<Address, u64>,
     /// Why each box's last session ended, by its token, for what waited on its handshake.
     ended: HashMap<Address, (u64, Error)>,
+    /// Bytes handed to relay connections so far.
+    handed: u64,
 }
 
 struct Inner {
@@ -178,7 +198,7 @@ impl LinkClient {
                 app: app.into(),
                 dial,
                 timing,
-                state: Mutex::new(State { connection: Connection::Down, connections: 0, failed: None, sessions: HashMap::new(), tokens: 0, over: HashMap::new(), ended: HashMap::new() }),
+                state: Mutex::new(State { connection: Connection::Down, connections: 0, failed: None, sessions: HashMap::new(), tokens: 0, over: HashMap::new(), ended: HashMap::new(), handed: 0 }),
                 changed: Condvar::new(),
             }),
         }
@@ -186,6 +206,10 @@ impl LinkClient {
 
     pub fn relay(&self) -> &str {
         &self.inner.relay
+    }
+
+    pub fn timing(&self) -> Timing {
+        self.inner.timing
     }
 
     /// Where this device is on its relay.
@@ -210,7 +234,7 @@ impl LinkClient {
 
     /// What `host` said of itself, opening a session if there's none.
     pub fn hello(&self, host: &Host) -> Result<BoxHello> {
-        let state = self.session(self.state(), host, None)?;
+        let state = self.session(self.state(), host, None, false)?;
         match state.sessions.get(&host.address).map(|session| &session.phase) {
             Some(Phase::Open(_, hello)) => Ok(hello.clone()),
             _ => Err(Error::Unreachable(words::CLOSED.into())),
@@ -222,7 +246,7 @@ impl LinkClient {
     pub fn pair(&self, host: &Host, token: &str) -> Result<BoxHello> {
         let mut state = self.state();
         self.end(&mut state, &host.address, Error::Unreachable(words::CLOSED.into()), true);
-        let state = self.session(state, host, Some(token.to_owned()))?;
+        let state = self.session(state, host, Some(token.to_owned()), false)?;
         match state.sessions.get(&host.address).map(|session| &session.phase) {
             Some(Phase::Open(_, hello)) => Ok(hello.clone()),
             _ => Err(Error::Unreachable(words::CLOSED.into())),
@@ -239,13 +263,38 @@ impl LinkClient {
     /// changed: it may have died without closing). The next thing asked connects again.
     pub fn let_go(&self) {
         let mut state = self.state();
+        if !matches!(state.connection, Connection::Down) {
+            log::note(format!("relay {}: let go (the computer woke, the network changed, or this device was let go)", self.inner.relay));
+        }
         self.drop_connection(&mut state, None);
+    }
+
+    /// How many relay connections have been made so far: one made after a number says the relay's
+    /// back ([`LinkClient::wait_for_relay`]).
+    pub fn connections(&self) -> u64 {
+        self.state().connections
+    }
+
+    /// Waits until a relay connection after the `after`th is up, or `until`: whether one is.
+    pub fn wait_for_relay(&self, after: u64, until: Instant) -> bool {
+        let mut state = self.state();
+        loop {
+            if state.connections > after && matches!(state.connection, Connection::Up { .. }) {
+                return true;
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            state = self.inner.changed.wait_timeout(state, left).unwrap_or_else(|poisoned| poisoned.into_inner()).0;
+        }
     }
 
     // MARK: The relay connection
 
-    /// With the relay connection up, making it if it's down.
-    fn connected<'a>(&'a self, mut state: MutexGuard<'a, State>) -> Result<MutexGuard<'a, State>> {
+    /// With the relay connection up, making it if it's down. `eager`: now, even within the wait
+    /// after a try that failed (a message sent again, which someone waits on).
+    fn connected<'a>(&'a self, mut state: MutexGuard<'a, State>, eager: bool) -> Result<MutexGuard<'a, State>> {
         let inner = &self.inner;
         let unreachable = || Error::Unreachable(words::RELAY.into());
         loop {
@@ -259,7 +308,7 @@ impl LinkClient {
                     }
                 }
                 Connection::Down => {
-                    if let Some((at, tries)) = state.failed {
+                    if let Some((at, tries)) = state.failed.filter(|_| !eager) {
                         let wait = inner.timing.retry_first.saturating_mul(1 << tries.saturating_sub(1).min(8)).min(inner.timing.retry_most);
                         if at.elapsed() < wait {
                             return Err(unreachable());
@@ -274,11 +323,16 @@ impl LinkClient {
                         state.failed = Some((Instant::now(), state.failed.map_or(1, |(_, tries)| tries + 1)));
                         inner.changed.notify_all();
                     };
-                    let Ok((mut out, incoming)) = dialed else {
-                        fail(&mut state);
-                        return Err(unreachable());
+                    let (mut out, incoming) = match dialed {
+                        Ok(halves) => halves,
+                        Err(error) => {
+                            log::note(format!("relay {}: couldn’t connect ({error})", inner.relay));
+                            fail(&mut state);
+                            return Err(unreachable());
+                        }
                     };
                     if out.send(frames::relay_hello(&inner.secret)).is_err() {
+                        log::note(format!("relay {}: couldn’t say hello", inner.relay));
                         fail(&mut state);
                         return Err(unreachable());
                     }
@@ -293,6 +347,7 @@ impl LinkClient {
                             Connection::Welcoming { id: waiting, .. } if *waiting == id => {
                                 let left = deadline.saturating_duration_since(Instant::now());
                                 if left.is_zero() {
+                                    log::note(format!("relay {}: connected, no welcome within {:?}", inner.relay, inner.timing.welcome));
                                     fail(&mut state);
                                     return Err(unreachable());
                                 }
@@ -311,10 +366,18 @@ impl LinkClient {
     fn read(&self, id: u64, mut incoming: Box<dyn Incoming>) {
         let client = self.clone();
         let spawned = std::thread::Builder::new().name("kuvo-link".into()).spawn(move || {
-            while let Ok(bytes) = incoming.next() {
-                client.received(id, &bytes);
-            }
+            let why = loop {
+                match incoming.next() {
+                    Ok(bytes) => client.received(id, &bytes),
+                    Err(error) => break error.to_string(),
+                }
+            };
             let mut state = client.state();
+            let current = matches!(&state.connection, Connection::Welcoming { id: now, .. } | Connection::Up { id: now, .. } if *now == id);
+            if current {
+                let sessions = state.sessions.values().map(|session| session.answers.len()).collect::<Vec<_>>();
+                log::note(format!("relay {}: connection {id} lost: {why}; {} session(s) with {} request(s) under way end", client.inner.relay, sessions.len(), sessions.iter().sum::<usize>()));
+            }
             client.drop_connection(&mut state, Some(id));
         });
         if spawned.is_err() {
@@ -346,11 +409,18 @@ impl LinkClient {
 
     /// Sends `payload` to `to` on the relay; a connection that won't take it is over.
     fn relay_send(&self, state: &mut State, to: &Address, payload: &[u8]) -> bool {
+        let message = frames::relay_send(to, payload);
+        let length = message.len() as u64;
         let sent = match &mut state.connection {
-            Connection::Up { out, .. } => out.send(frames::relay_send(to, payload)).is_ok(),
+            Connection::Up { out, .. } => out.send(message).is_ok(),
             _ => false,
         };
-        if !sent {
+        if sent {
+            state.handed += length;
+        } else {
+            if matches!(state.connection, Connection::Up { .. }) {
+                log::note(format!("relay {}: the connection wouldn’t take what was sent", self.inner.relay));
+            }
             self.drop_connection(state, None);
         }
         sent
@@ -359,11 +429,11 @@ impl LinkClient {
     // MARK: Sessions
 
     /// With a session with `host` open, opening one if there's none.
-    fn session<'a>(&'a self, mut state: MutexGuard<'a, State>, host: &Host, pair: Option<String>) -> Result<MutexGuard<'a, State>> {
+    fn session<'a>(&'a self, mut state: MutexGuard<'a, State>, host: &Host, pair: Option<String>, eager: bool) -> Result<MutexGuard<'a, State>> {
         let inner = &self.inner;
         let mut mine: Option<(u64, Instant)> = None;
         loop {
-            state = self.connected(state)?;
+            state = self.connected(state, eager)?;
             let found = state.sessions.get(&host.address).map(|session| (session.token, session.key == host.key, matches!(session.phase, Phase::Open(..))));
             match (found, mine) {
                 // Another box's key at that address: never that session.
@@ -377,6 +447,7 @@ impl LinkClient {
                     mine = Some((token, since));
                     let left = inner.timing.handshake.saturating_sub(since.elapsed());
                     if left.is_zero() {
+                        log::note(format!("{}: no answer to the handshake within {:?}", address_text(&host.address), inner.timing.handshake));
                         self.end(&mut state, &host.address, Error::Unreachable(words::TIMED_OUT.into()), false);
                         return Err(Error::Unreachable(words::TIMED_OUT.into()));
                     }
@@ -392,7 +463,7 @@ impl LinkClient {
                 (None, None) => {
                     state.tokens += 1;
                     let token = state.tokens;
-                    let mut session = Session { token, number: random_number(), key: host.key, pair: pair.clone(), phase: Phase::Shaking(None), next: 1, answers: HashMap::new(), heard: Instant::now(), checking: None };
+                    let mut session = Session { token, number: random_number(), key: host.key, pair: pair.clone(), phase: Phase::Shaking(None), next: 1, answers: HashMap::new(), heard: Instant::now(), checking: None, arrived: state.handed, unanswered: HashMap::new(), pings: VecDeque::new() };
                     let message = self.handshake(&mut session);
                     let number = session.number;
                     state.sessions.insert(host.address, session);
@@ -456,7 +527,12 @@ impl LinkClient {
         }
         match message {
             FromRelay::Deliver { from, payload } => self.delivered(&mut state, from, &payload),
-            FromRelay::Unreachable(address) => self.end(&mut state, &address, Error::Unreachable(words::OFFLINE.into()), false),
+            FromRelay::Unreachable(address) => {
+                if state.sessions.contains_key(&address) {
+                    log::note(format!("{}: the relay says it isn’t connected", address_text(&address)));
+                }
+                self.end(&mut state, &address, Error::Unreachable(words::OFFLINE.into()), false)
+            }
             FromRelay::Gone { address, .. } => {
                 // A handshake on its way may have reached the box's old connection, which won't
                 // answer, or its new one: sent again under a new number, the new one answers that.
@@ -470,6 +546,9 @@ impl LinkClient {
                         self.relay_send(&mut state, &address, &frames::frame(Kind::Handshake1, number, &message));
                     }
                 } else {
+                    if state.sessions.contains_key(&address) {
+                        log::note(format!("{}: its relay connection went or was replaced (it started again, or reconnected)", address_text(&address)));
+                    }
                     self.end(&mut state, &address, Error::Unreachable(words::CLOSED.into()), false);
                 }
             }
@@ -505,6 +584,7 @@ impl LinkClient {
             Kind::Transport => {
                 let Phase::Open(transport, _) = &mut session.phase else { return };
                 let Ok(plain) = transport.open(body) else {
+                    log::note(format!("{}: a message that couldn’t be opened; its session ends", address_text(&from)));
                     return self.end(state, &from, Error::Unreachable(words::CLOSED.into()), true);
                 };
                 session.heard = Instant::now();
@@ -514,6 +594,10 @@ impl LinkClient {
                 let ends = head.get("end").and_then(Value::as_bool) == Some(true);
                 match (head.get("t").and_then(Value::as_str), id) {
                     (Some(kind @ ("res" | "data")), Some(id)) => {
+                        // It got there: what was handed over before it did too.
+                        if let Some(at) = session.unanswered.remove(&id) {
+                            session.arrived = session.arrived.max(at);
+                        }
                         let Some(answer) = session.answers.get(&id) else { return };
                         let mut gone = false;
                         if kind == "res" {
@@ -531,6 +615,11 @@ impl LinkClient {
                             session.answers.remove(&id);
                         }
                     }
+                    (Some("pong"), _) => {
+                        if let Some(at) = session.pings.pop_front() {
+                            session.arrived = session.arrived.max(at);
+                        }
+                    }
                     (Some("cancel"), Some(id)) => {
                         if let Some(answer) = session.answers.remove(&id) {
                             let _ = answer.send(Piece::Failed(Error::Unreachable(words::CLOSED.into())));
@@ -543,6 +632,7 @@ impl LinkClient {
             // removal), and what was under way is gone.
             Kind::Close => {
                 let error = if matches!(session.phase, Phase::Shaking(_)) { unpaired() } else { Error::Unreachable(words::CLOSED.into()) };
+                log::note(format!("{}: the box closed the session ({})", address_text(&from), if matches!(session.phase, Phase::Shaking(_)) { "it doesn’t take this device" } else { "it started again, or ended it" }));
                 self.end(state, &from, error, false);
             }
             Kind::Handshake1 | Kind::Mail => {}
@@ -561,7 +651,13 @@ impl LinkClient {
 
     /// Sends `request` to `host`: its answer, to read as it comes.
     pub fn request(&self, host: &Host, request: &Request) -> Result<Answer> {
-        let mut state = self.session(self.state(), host, None)?;
+        self.request_now(host, request, false)
+    }
+
+    /// As [`LinkClient::request`]; `eager`: the relay is dialed now even within its wait after a
+    /// try that failed (a message sent again, which someone waits on).
+    pub fn request_now(&self, host: &Host, request: &Request, eager: bool) -> Result<Answer> {
+        let mut state = self.session(self.state(), host, None, eager)?;
         let session = state.sessions.get_mut(&host.address).ok_or_else(|| Error::Unreachable(words::CLOSED.into()))?;
         let (id, token) = (session.next, session.token);
         session.next += 1;
@@ -589,6 +685,10 @@ impl LinkClient {
                 return Err(Error::Unreachable(words::RELAY.into()));
             }
         }
+        let handed = state.handed;
+        if let Some(session) = state.sessions.get_mut(&host.address).filter(|session| session.token == token) {
+            session.unanswered.insert(id, handed);
+        }
         Ok(Answer { handle, receiver, ended: false })
     }
 
@@ -600,6 +700,7 @@ impl LinkClient {
         // What was sent is still going out (a picture, on a slow connection): its answer can't have
         // come yet, and the box isn't asked whether it's there behind it.
         let sending = matches!(&state.connection, Connection::Up { out, .. } if out.busy());
+        let handed = state.handed;
         let Some(session) = state.sessions.get_mut(address).filter(|session| session.token == token) else {
             return Err(Error::Unreachable(words::CLOSED.into()));
         };
@@ -608,15 +709,25 @@ impl LinkClient {
             session.checking = None;
             return Ok(());
         }
+        // What's been handed over that the box hasn't said it had may still be on its way, ahead of
+        // the ping (in the system's buffers, on a slow connection): a second more for each 64 KB.
+        let behind = handed.saturating_sub(session.arrived);
+        let allowed = timing.check + super::relay::behind(behind);
         match session.checking {
-            Some(since) if since.elapsed() >= timing.check => {
+            Some(since) if since.elapsed() >= allowed => {
+                log::note(format!("{}: no answer to a check within {allowed:?} ({behind} bytes it hadn’t said it had); its session ends", address_text(address)));
                 self.end(&mut state, address, Error::Unreachable(words::TIMED_OUT.into()), true);
                 Err(Error::Unreachable(words::TIMED_OUT.into()))
             }
             Some(_) => Ok(()),
             None if session.heard.elapsed() >= timing.answer_within => {
                 session.checking = Some(Instant::now());
-                if self.seal(&mut state, address, &frames::encode_message(&json!({ "t": "ping" }), &[])) { Ok(()) } else { Err(Error::Unreachable(words::RELAY.into())) }
+                let sealed = self.seal(&mut state, address, &frames::encode_message(&json!({ "t": "ping" }), &[]));
+                let handed = state.handed;
+                if let Some(session) = state.sessions.get_mut(address) {
+                    session.pings.push_back(handed);
+                }
+                if sealed { Ok(()) } else { Err(Error::Unreachable(words::RELAY.into())) }
             }
             None => Ok(()),
         }
@@ -637,6 +748,7 @@ impl Handle {
     pub fn cancel(&self) {
         let mut state = self.client.state();
         let Some(session) = state.sessions.get_mut(&self.address).filter(|session| session.token == self.token) else { return };
+        session.unanswered.remove(&self.id);
         if session.answers.remove(&self.id).is_some() && matches!(session.phase, Phase::Open(..)) {
             self.client.seal(&mut state, &self.address, &frames::encode_message(&json!({ "t": "cancel", "id": self.id }), &[]));
         }
@@ -749,4 +861,10 @@ impl Read for AnswerReader {
         self.at += count;
         Ok(count)
     }
+}
+
+/// A box's address on the relay, for the log: its first characters, enough to tell boxes apart.
+fn address_text(address: &Address) -> String {
+    let text = super::keys::encode(address);
+    format!("box {}", &text[..text.len().min(8)])
 }

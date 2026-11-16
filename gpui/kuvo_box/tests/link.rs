@@ -500,3 +500,38 @@ fn a_request_still_going_out_on_a_slow_connection_isnt_given_up_on_until_its_gon
     busy.store(false, Ordering::SeqCst);
     assert_eq!(finished.recv().unwrap(), Err(Error::Unreachable(words::TIMED_OUT.into())));
 }
+
+#[test]
+fn a_message_sent_while_the_network_is_down_goes_once_the_relay_is_back_and_its_box_takes_it_once() {
+    // A Wi-Fi drop of more than a moment (#144, the desktop app's "Not sent. Couldn't connect"): the
+    // message waits, and goes as soon as a relay connection is made, within its two minutes.
+    let world = World::new();
+    // (Only the relay coming back sends it again here, never a wait running out.)
+    let patient = Timing { repeat_first: Duration::from_secs(3600), repeat_most: Duration::from_secs(3600), ..at_once() };
+    let (client, linked) = world.linked(patient);
+    linked.send(&Request::get("kuvo/info")).expect("there");
+    world.relay.set_down(true);
+    world.relay.drop_device(&client.address());
+    let message = Request::post("send", json!({ "id": "msg_2", "words": "hi" })).header("idempotency-key", "msg_2");
+    let (done, finished) = channel();
+    let sender = std::thread::spawn(move || done.send(linked.send(&message)).unwrap());
+    // It tried, and at once again, and waits.
+    while world.relay.turned_away() < 2 {
+        std::thread::yield_now();
+    }
+    assert!(finished.try_recv().is_err(), "not said to have failed while it waits");
+    // The network's back: the next connection made (a follow coming back, a view reading) sends it.
+    world.relay.set_down(false);
+    let reader = LinkBox::new(client.clone(), world.host.facts(), "devbox");
+    let read = std::thread::spawn(move || reader.send(&Request::get("kuvo/info")));
+    assert_eq!(finished.recv().unwrap().map(|answer| answer.status), Ok(200));
+    sender.join().unwrap();
+    let _ = read.join().unwrap();
+    assert_eq!(world.served.seen.lock().unwrap().iter().filter(|request| request.route() == "send").count(), 1, "it reached the box once");
+
+    // One the box turned away isn't sent again; nor is one to a computer that isn't on the relay,
+    // which never went: said at once, as before.
+    world.host.stop();
+    let away = LinkBox::new(client, world.host.facts(), "devbox").send(&Request::post("send", json!({})).header("idempotency-key", "msg_3"));
+    assert_eq!(away.map(|answer| answer.status), Err(Error::Unreachable(words::OFFLINE.into())));
+}
