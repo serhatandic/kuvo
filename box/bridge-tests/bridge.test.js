@@ -1674,13 +1674,21 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "messages.commands": ["POST", "kuvo/messages/parts"],
     "messages.compaction-words": ["GET", "api/session/none/message"],
     "messages.send": ["POST", "kuvo/messages/parts"],
+    // (Each message page the box forwards: a tool step's title and doing, a lead's news of its sessions.)
+    "messages.session-news": ["GET", "api/session/none/message"],
+    "messages.tool-titles": ["GET", "api/session/none/message"],
+    // (A wake-up's or watch's message as a card: its summary and note, in the same pages.)
+    "messages.wake-cards": ["GET", "api/session/none/message"],
     "models.offered": ["GET", "kuvo/models/offered"],
     // (A project's own, its folder asked; each model's side, efforts and aliases; on the same route.)
     "models.offered.folder": ["GET", "kuvo/models/offered?folder=%2F"],
     "models.offered.free": ["GET", "kuvo/models/offered"],
+    "models.offered.providers": ["GET", "kuvo/models/offered"],
     "models.offered.sides": ["GET", "kuvo/models/offered"],
     // (What a model that can't run means for a composer, on kuvo/sessions/models.)
     "models.readiness": ["GET", "kuvo/sessions/models?sessions=ses_x"],
+    // (Your starred models, kept by the box: its own route.)
+    "models.starred": ["GET", "kuvo/models/starred"],
     moves: ["GET", "kuvo/moves"],
     // (Moves with a coding agent's own conversation: what kuvo/moves takes besides.)
     "moves.agents": ["GET", "kuvo/moves"],
@@ -1705,6 +1713,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (queue/add taking a message once by its id, sent again.)
     "queue.once": ["POST", "kuvo/sessions/ses_none/queue/add"],
     "queue.removed.keyword": ["DELETE", "kuvo/sessions/ses_none/queue/msg_none"],
+    // (An item sent at the agent's next step; one that isn't waiting is a 404 of its own.)
+    "queue.steer": ["POST", "kuvo/sessions/ses_none/queue/msg_none/steer"],
     "queue.stop.arriving": ["POST", "kuvo/sessions/ses_none/stop"],
     "queue.waits": ["POST", "kuvo/sessions/ses_none/queue/add"],
     reviews: ["GET", "kuvo/agents/api/kuvo/reviews"],
@@ -1778,6 +1788,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     work: ["GET", "kuvo/work"],
     "work-queue": ["GET", "kuvo/work-queue/labels"],
     "work-queue.anywhere": ["GET", "kuvo/work-queue/items/1"],
+    // (Files carried with an item: on the same items.)
+    "work-queue.attachments": ["GET", "kuvo/work-queue/items/1"],
     "work-queue.counts": ["GET", "kuvo/work-queue?owner=all&counts=1"],
     // (Statuses, priorities, labels and a search, on the view; a client's own add and change answer only a client.)
     "work-queue.edit": ["GET", "kuvo/work-queue?owner=all&q=none"],
