@@ -1,7 +1,7 @@
 # Icon sources
 
 Lucide-static 1.73.0, converted with `tools/convert.py`. No Zed SVGs used.
-All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg.
+All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. Stop is the filled variant of square, preserving Lucide rounded corners.
 
 | Ours | Lucide |
 | --- | --- |
@@ -55,8 +55,8 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg.
 | sidebar | panel-left |
 | sliders | sliders-horizontal |
 | sparkle | sparkles |
-| spinner | loader |
-| stop | square |
+| spinner | loader-circle |
+| stop | square (filled) |
 | sun | sun |
 | terminal | terminal |
 | trash | trash |

@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 MAP = {name: name for name in '''archive arrow-down arrow-left arrow-right arrow-up bell bot check chevron-down chevron-left chevron-right chevron-up clock copy eye eye-off file folder folder-open globe hand image info link mic minus moon panel-right paperclip pencil pin plus search settings shield sun terminal trash undo user'''.split()}
-MAP.update(dict(bolt='zap', branch='git-branch', close='x', compose='square-pen', computer='monitor', drive='hard-drive', external='external-link', message='message-square', more='ellipsis', question='circle-help', queue='list-todo', **{'return': 'corner-down-left'}, sidebar='panel-left', sliders='sliders-horizontal', sparkle='sparkles', spinner='loader', stop='square', warning='triangle-alert'))
+MAP.update(dict(bolt='zap', branch='git-branch', close='x', compose='square-pen', computer='monitor', drive='hard-drive', external='external-link', message='message-square', more='ellipsis', question='circle-help', queue='list-todo', **{'return': 'corner-down-left'}, sidebar='panel-left', sliders='sliders-horizontal', sparkle='sparkles', spinner='loader-circle', stop='square', warning='triangle-alert'))
 
 def fmt(n):
     return f'{n:.6f}'.rstrip('0').rstrip('.') if n else '0'
@@ -61,7 +61,7 @@ def path(d):
             cmd = 'l'
     return ' '.join(result)
 
-def convert(source):
+def convert(source, *, filled=False):
     root = ET.parse(source).getroot()
     children = []
     for element in root:
@@ -81,15 +81,16 @@ def convert(source):
             children.append(f'<{tag} points="{" ".join(fmt(float(n)/2+2) for n in points)}"/>')
         else:
             raise ValueError(f'Unsupported SVG element: {tag}')
-    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">\n  ' + '\n  '.join(children) + '\n</svg>\n'
+    fill = "#000" if filled else "none"
+    return f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="{fill}" stroke="#000" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">\n  ' + '\n  '.join(children) + '\n</svg>\n'
 
 def main():
     package = Path(sys.argv[1]).resolve()
     for ours, lucide in sorted(MAP.items()):
-        (HERE.parent / f'{ours}.svg').write_text(convert(package / 'icons' / f'{lucide}.svg'))
+        (HERE.parent / f'{ours}.svg').write_text(convert(package / 'icons' / f'{lucide}.svg', filled=ours == 'stop'))
     (HERE.parent / 'LICENSES').write_bytes((package / 'LICENSE').read_bytes())
     version = json.loads((package / 'package.json').read_text())['version']
-    (HERE.parent / 'MAPPING.md').write_text(f'# Icon sources\n\nLucide-static {version}, converted with `tools/convert.py`. No Zed SVGs used.\nAll icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg.\n\n| Ours | Lucide |\n| --- | --- |\n' + ''.join(f'| {ours} | {lucide} |\n' for ours, lucide in sorted(MAP.items())) + '| sidebar-left (alias of sidebar) | panel-left |\n')
+    (HERE.parent / 'MAPPING.md').write_text(f'# Icon sources\n\nLucide-static {version}, converted with `tools/convert.py`. No Zed SVGs used.\nAll icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. Stop is the filled variant of square, preserving Lucide rounded corners.\n\n| Ours | Lucide |\n| --- | --- |\n' + ''.join(f'| {ours} | {lucide}{" (filled)" if ours == "stop" else ""} |\n' for ours, lucide in sorted(MAP.items())) + '| sidebar-left (alias of sidebar) | panel-left |\n')
 
 if __name__ == '__main__':
     main()
