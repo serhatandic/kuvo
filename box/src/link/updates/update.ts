@@ -10,7 +10,7 @@
 // checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
 // (the box's helper), swapped whole.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -78,6 +78,12 @@ export function newerVersion(version: string | null | undefined, than: string | 
   if (!b) return true;
   for (let i = 0; i < 4; i++) if (a[i] !== b[i]) return a[i] > b[i];
   return false;
+}
+
+// Whether `version` is the same version as `than` (both versions).
+export function sameVersion(version: string | null | undefined, than: string | null | undefined): boolean {
+  const a = versionOrder(version), b = versionOrder(than);
+  return !!a && !!b && a.every((part, i) => part === b[i]);
 }
 
 /** A release's manifest (in `boxes.json`, signed): its version, its engine's, when it came out,
@@ -224,7 +230,13 @@ function ran(command: string, args: string[], env: Record<string, string> = {}, 
 }
 
 
-const UPDATING_ALREADY = "It's updating already.";
+export const UPDATING_ALREADY = "It's updating already.";
+/** Why no update goes now: the last one is still on trial (until it's said to be well, or taken back). */
+export const ON_TRIAL = "Its last update is still being checked: try again in a few minutes.";
+
+/** An update's outcome that says nothing of how updates go (something at work, or the last update
+ * still on trial): it neither replaces how the last one went nor ends the night's try. */
+export const passingOutcome = (outcome: UpdateOutcome | null | undefined): boolean => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL);
 
 // An update under way, by its process (`run/.updating/pid`): one at a time, and one whose process
 // went isn't one.
@@ -244,11 +256,15 @@ function takeUpdateLock(): boolean {
   return true;
 }
 
-// Keeps what's there now of each of a release's files, and with another engine version the
-// engine's data (stopped), with `restore.sh`, which puts them back: run by the update when the new
-// version doesn't come up, or by the keeper once the update's trial runs out (not while an update
-// runs). Each step checked: one that fails leaves what was kept, for the next try.
-function keepForRollback(files: string[], withData: boolean, bundles: ReadonlySet<string> = new Set()): void {
+// Keeps what's there now of each of a release's files, with `restore.sh`, which puts them back: run
+// by the update when the new version doesn't come up, or by the keeper once the update's trial runs
+// out (not while an update runs). Each step checked: one that fails leaves what was kept, for the
+// next try. Code only: the engine's data is never put back (what was written since would be lost).
+// With a newer engine (`engine`, the release's), once that engine was put in place and started
+// (`ENGINE_STARTED`, which the update notes as it starts it), the engine stays the new one, as the
+// older engine may not read what the newer wrote: the keeper put back starts it (its `V=`). Before
+// that, the older engine never ran on anything newer, and goes back with the rest.
+function keepForRollback(files: string[], engine: string | null, bundles: ReadonlySet<string> = new Set()): void {
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   fs.mkdirSync(path.join(ROLLBACK, "files"), { recursive: true, mode: 0o700 });
   const lines = [
@@ -273,38 +289,69 @@ function keepForRollback(files: string[], withData: boolean, bundles: ReadonlySe
     } else if (fs.existsSync(from)) {
       fs.mkdirSync(path.dirname(path.join(ROLLBACK, "files", file)), { recursive: true, mode: 0o700 });
       fs.copyFileSync(from, path.join(ROLLBACK, "files", file));
-      fs.chmodSync(path.join(ROLLBACK, "files", file), fs.statSync(from).mode & 0o777);
-      lines.push(`cp -p "$B/files/"${quote(file)} "$K/"${quote(file)}.new && mv -f "$K/"${quote(file)}.new "$K/"${quote(file)} || exit 1`);
+      const mode = fs.statSync(from).mode & 0o777;
+      fs.chmodSync(path.join(ROLLBACK, "files", file), mode);
+      const put = `cp -p "$B/files/"${quote(file)} "$K/"${quote(file)}.new && mv -f "$K/"${quote(file)}.new "$K/"${quote(file)} || exit 1`;
+      if (engine && file === "bin/kuvo-start") {
+        lines.push(`if [ -f "$B/engine-started" ]; then sed 's/^V=.*/V=${engine}/' "$B/files/bin/kuvo-start" >"$K/bin/kuvo-start.new" && chmod ${mode.toString(8)} "$K/bin/kuvo-start.new" && mv -f "$K/bin/kuvo-start.new" "$K/bin/kuvo-start" || exit 1; else ${put}; fi`);
+      } else {
+        lines.push(put);
+      }
     } else {
       lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
     }
-  }
-  if (withData) {
-    // The database as it was kept, moved back (on the same disk: no room needed), with its own
-    // journal and index (none, when it was closed cleanly), never the new engine's beside it. Only
-    // once it was kept (the update may have stopped before).
-    lines.push(
-      `D="$K/data/opencode"`,
-      `if [ -f "$B/data/opencode.db" ]; then`,
-      `  rm -f "$D/opencode.db-wal" "$D/opencode.db-shm" || exit 1`,
-      `  for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then mv -f "$B/data/$n" "$D/$n" || exit 1; fi; done`,
-      `fi`,
-    );
   }
   lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
   writePrivate(path.join(ROLLBACK, "restore.sh"), lines.join("\n") + "\n");
 }
 
-// The engine's data as it is, the engine stopped, beside what's put back: whole or not at all (a
-// copy cut short is never put back).
-function keepData(): void {
-  const folder = path.join(K, "data", "opencode"), partial = path.join(ROLLBACK, "data.partial");
-  fs.rmSync(partial, { recursive: true, force: true });
-  fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
-  for (const name of ["opencode.db", "opencode.db-wal", "opencode.db-shm"]) {
-    if (fs.existsSync(path.join(folder, name))) fs.copyFileSync(path.join(folder, name), path.join(partial, name));
+// Noted in what an update kept as it starts a newer engine (put in place): from then on, a rollback
+// keeps that engine (`keepForRollback`).
+const ENGINE_STARTED = path.join(ROLLBACK, "engine-started");
+
+/** Where a copy of the engine's data is kept as an update changes its engine (`updates/backups`):
+ * never put back by anything, a last resort to restore by hand; only the latest, for 30 days. */
+export const BACKUPS = path.join(UPDATES, "backups");
+const BACKUP_DAYS = 30 * 86_400_000;
+
+/** Copies of the engine's data kept longer than 30 days (since they were made) taken away. */
+export function dropOldBackups(now = Date.now()): void {
+  for (const name of listOf(BACKUPS)) {
+    let at = 0;
+    try { at = fs.statSync(path.join(BACKUPS, name)).mtimeMs; } catch {}
+    if (now - at > BACKUP_DAYS) fs.rmSync(path.join(BACKUPS, name), { recursive: true, force: true });
   }
-  fs.renameSync(partial, path.join(ROLLBACK, "data"));
+}
+
+// What the copies kept take, in bytes.
+function backupsSize(): number {
+  let size = 0;
+  for (const name of listOf(BACKUPS)) for (const each of listOf(path.join(BACKUPS, name))) try { size += fs.statSync(path.join(BACKUPS, name, each)).size; } catch {}
+  return size;
+}
+
+// The engine's data as it is, the engine stopped, before another engine reads it: kept whole or not
+// at all in `updates/backups/<date>-<engine>-to-<engine>`, and the one before it goes. What it says:
+// how the data was as it was copied (`dataNow`), to tell later whether an engine wrote to it since.
+function keepData(name: string): string {
+  const folder = path.join(K, "data", "opencode"), partial = path.join(BACKUPS, `.${name}.partial`);
+  fs.mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
+  // (The one before goes first: its room is what this one takes, `roomForData`.)
+  for (const other of listOf(BACKUPS)) fs.rmSync(path.join(BACKUPS, other), { recursive: true, force: true });
+  fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
+  for (const each of ["opencode.db", "opencode.db-wal", "opencode.db-shm"]) {
+    if (fs.existsSync(path.join(folder, each))) fs.copyFileSync(path.join(folder, each), path.join(partial, each));
+  }
+  fs.renameSync(partial, path.join(BACKUPS, name));
+  return dataNow();
+}
+
+// The engine's data, each file's size and when it was last written (none: "-"): what changes as
+// any engine writes to it.
+function dataNow(): string {
+  return ["opencode.db", "opencode.db-wal"].map(each => {
+    try { const stat = fs.statSync(path.join(K, "data", "opencode", each)); return `${stat.size}:${stat.mtimeMs}`; } catch { return "-"; }
+  }).join(" ");
 }
 
 // Whether there's room to keep the engine's data beside it, with some to spare.
@@ -312,12 +359,14 @@ function roomForData(): boolean {
   let size = 0;
   for (const name of ["opencode.db", "opencode.db-wal"]) try { size += fs.statSync(path.join(K, "data", "opencode", name)).size; } catch {}
   const free = ran("df", ["-Pk", K]).output.split("\n").pop()?.trim().split(/\s+/)[3];
-  return !free || Number(free) * 1024 > size * 1.1 + 200_000_000;
+  // (The copy kept before goes as the new one's made: its room counts.)
+  return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200_000_000;
 }
 
 // Whether the engine came up as `version` and answers, and the coding agents' bridge with it when
 // it ran before, within `timeout` ms.
-async function cameUp(version: string, withAgents: boolean, timeout = 120_000, readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
+// `answered`: told once the engine of `version` answered, whatever came of the bridge.
+async function cameUp(version: string, withAgents: boolean, timeout = 120_000, answered: () => void = () => {}, readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
   const began = Date.now();
   while (Date.now() - began < timeout) {
     await sleep(Math.min(2000, timeout / 10));
@@ -325,6 +374,7 @@ async function cameUp(version: string, withAgents: boolean, timeout = 120_000, r
     try { engine = readEngine(); } catch {}
     if (engine?.version !== version) continue;
     if (!(await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))) continue;
+    answered();
     if (!withAgents) return true;
     let bridge: BridgeRecord | null = null;
     try { bridge = readBridge(); } catch {}
@@ -372,6 +422,33 @@ interface BoxFiles {
   bundles?: Record<string, Record<string, string>>;
 }
 
+// Whether a release's files (its `box.json`) aren't all what's in place here: one of them missing,
+// or another, by its SHA-256 (a Mac's bundles too, on a Mac). A release of the box's own version
+// whose files are the same is the one it has; one whose files differ (an app rebuilt under the same
+// version) is taken.
+function differsHere(box: BoxFiles, root = K): boolean {
+  const here = (file: string, sha: unknown): boolean => {
+    try { return fs.lstatSync(file).isFile() && hexSHA256(fs.readFileSync(file)) === sha; } catch { return false; }
+  };
+  if (Object.entries(box.files ?? {}).some(([file, sha]) => !here(path.join(root, file), sha))) return true;
+  if (process.platform !== "darwin" || !isObject(box.bundles)) return false;
+  return Object.entries(box.bundles).some(([bundle, listed]) => isObject(listed) && Object.entries(listed).some(([inner, sha]) => !here(path.join(root, bundle, inner), sha)));
+}
+
+// The `box.json` in a release's `pack` (checked against its manifest already), unpacked in a folder
+// of its own that goes after; it throws for a pack that has none, or not for `version`.
+function packedBox(pack: Buffer, version: string): BoxFiles {
+  // (Only `box.json`, read from tar's output: nothing unpacked. Packed from a folder, `./box.json`.)
+  for (const name of ["./box.json", "box.json"]) {
+    const read = spawnSync("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 10_000_000, timeout: 120_000 });
+    if (read.status !== 0 || !read.stdout?.length) continue;
+    const box: BoxFiles = JSON.parse(read.stdout.toString("utf8"));
+    if (box?.version !== version || !isObject(box.files)) throw new Error("not this release");
+    return box;
+  }
+  throw new Error("no box.json");
+}
+
 // Whether the last `update` failed in a way that's passing, before anything changed: a download
 // that broke off (the release, its files or its engine), or its engine that couldn't be stopped
 // (a start of it under way): what the installer's update tries once more by itself (`main.ts`),
@@ -404,10 +481,15 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (blocked) return { result: "blocked", message: blocked };
   // COMPAT(0.7 engine-stop): no update while an older Mac's Stop holds the engine down. Goes on the user's word, once no Mac from before 1.0 connects.
   if (fs.existsSync(path.join(RUN, "stopped"))) return { result: "blocked", message: "Its engine is stopped: start it to update it." };
+  // Never over an update still on trial: what it kept to go back to would be lost.
+  if (updateOnTrial()) return { result: "blocked", message: ON_TRIAL };
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
+  // The engine's data as it was copied before a newer engine ran (`keepData`), and whether that
+  // engine ever answered: one that never did and wrote nothing goes back with the rest.
+  let dataKept: string | null = null, newAnswered = false;
   // The box's keeper, as the update runs it (its stop, its start, putting back what was there): with
   // HOME spelled as the running engine was started with, so a keeper of any age knows that engine
   // as its own, never starting a second beside it (Kuvo Helper gave its keeper "/Users/you/", and
@@ -440,7 +522,16 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     taking(manifest.version);
     // (Only GitHub's says what the newest release is.)
     if (!from) noteUpdate({ latest: manifest.version, checked: clock() });
-    if (!newerVersion(manifest.version, before)) return { result: "current", version: before };
+    // Never an older version. The same one from a folder here (the release an app carries, rebuilt
+    // under its version) is taken when its files aren't the ones in place (below); GitHub's is the
+    // one this version came from.
+    const again = !!from && sameVersion(manifest.version, before);
+    if (!newerVersion(manifest.version, before) && !again) return { result: "current", version: before };
+    // (Its files read from the folder's pack, before anything's said to be under way.)
+    if (again && !folderDiffers(from!, manifest)) return { result: "current", version: before };
+    // Never an older engine than the one running: it may not read what the newer one wrote.
+    const behind = engineBehind(manifest.engine);
+    if (behind) return { result: "blocked", message: behind };
     if (!now && !from && clock() - (Date.parse(manifest.released!) || clock()) < RELEASE_AGE) return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
     // (Now, on your word, whatever is at work: a client asks you first, saying what stops.)
     if (!whileBusy && await boxBusy()) return { result: "busy", message: "Something is running there now." };
@@ -534,7 +625,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
     // What's there kept, and how to put it back, before the engine stops: a stop the update
     // doesn't get past (the machine going down) is put back too, its engine started again.
-    keepForRollback(files, otherEngine, new Set(bundles));
+    const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
+    keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
     fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
     trial = true;
@@ -548,7 +640,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       stopFailed = true;
       throw new Error(`Kuvo's engine on ${HERE} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
     }
-    if (otherEngine) keepData();
+    // (A copy of its data, never put back by anything: for you to restore by hand, as a last resort.)
+    if (otherEngine) dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     swapped = true;
     swapping();
     if (staged) {
@@ -566,9 +659,11 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       fs.chmodSync(`${to}.new`, fs.statSync(from).mode & 0o777);
       fs.renameSync(`${to}.new`, to);
     }
+    // (A newer engine about to run on the data: from here, a rollback keeps it.)
+    if (newerEngine) writePrivate(ENGINE_STARTED, manifest.engine);
     ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
-    if (!(await cameUp(manifest.engine, withAgents, upWithin))) throw new Error("The new version didn't come up.");
+    if (!(await cameUp(manifest.engine, withAgents, upWithin, () => { newAnswered = true; }))) throw new Error("The new version didn't come up.");
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
     // (Not its bundles: the helper's own keeper may put its own back, which is never drift.)
     writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
@@ -587,6 +682,11 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // Room first: what was downloaded goes before anything's put back.
     if (stage) fs.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
+      // A newer engine that never answered and wrote nothing to the data: it goes back too, the old
+      // engine reading only what it wrote itself. (The keeper's own rollback, later, keeps the new.)
+      // (Looked at before restore.sh stops it: a commit it lands in that moment goes unseen. A narrow
+      // window, taken as it is: an engine that hasn't answered in two minutes is still starting.)
+      if (!newAnswered && dataKept !== null && dataNow() === dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
       ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
     } else {
       // Nothing changed: what was kept goes, and the engine starts again if it was stopped.
@@ -627,6 +727,23 @@ function readRelease(file: string, limit: number): Buffer {
   throw new Error("That release can't be read.");
 }
 
+// Why a release with engine `engine` isn't taken: the engine running here is newer (it may have
+// written what an older one can't read); null when it isn't, or that can't be told.
+function engineBehind(engine: string): string | null {
+  let running: string | null | undefined = null;
+  try { running = readEngineFile()?.version; } catch {}
+  return running && newerVersion(running, engine) ? `Its engine (${running}) is newer than the release's (${engine}), and it never goes back to an older engine.` : null;
+}
+
+// Whether the release in folder `from` (its `manifest` checked) has other files than those in place;
+// one whose pack can't be read or isn't what it says differs (the update then says why).
+function folderDiffers(from: string, manifest: BoxRelease): boolean {
+  try {
+    const pack = readRelease(path.join(from, packName(manifest)), 100_000_000);
+    return hexSHA256(pack) !== manifest.pack.sha256 || differsHere(packedBox(pack, manifest.version));
+  } catch { return true; }
+}
+
 // The name of a release's pack, as its address ends: in a folder here, it's beside `boxes.json`.
 function packName(manifest: BoxRelease): string {
   let name = "";
@@ -636,11 +753,11 @@ function packName(manifest: BoxRelease): string {
 }
 
 /** What an update staged in `updates` taken away as it ends, whatever came of it: never what's kept
- * there for good (its rollback, what it installed, a release offered from a folder here, and a
- * move of this Mac's box, `rehome`: its state and kept originals, which `rehome/state.ts` keeps
+ * there for good (its rollback, what it installed, a release offered from a folder here, the copy
+ * of the engine's data its last engine change kept (`backups`), and a move of this Mac's box, `rehome`: its state and kept originals, which `rehome/state.ts` keeps
  * there). */
 export function clearUpdateStaging(folder = UPDATES): void {
-  const kept = new Set(["rollback", "installed.json", "rehome", "offered"]);
+  const kept = new Set(["rollback", "installed.json", "rehome", "offered", "backups"]);
   for (const name of listOf(folder)) if (!kept.has(name)) fs.rmSync(path.join(folder, name), { recursive: true, force: true });
 }
 
@@ -655,6 +772,7 @@ export function confirmUpdate(clock = Date.now): boolean {
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   if (engine) for (const name of listOf(path.join(K, "engine"))) if (name !== engine && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
   noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
+  dropOldBackups(clock());
   return true;
 }
 
@@ -768,24 +886,26 @@ export function updateStatus(): UpdateStatus {
   };
 }
 
-// An update run by the bridge (a phone's or a Mac's Update Now, or the night's): one at a time;
-// once it's "updated", the bridge goes, for the keeper to start the new one.
-let updating: Promise<UpdateOutcome | null> | null = null;
-export function startUpdate(options: UpdateOptions & { offered?: boolean } = {}): Promise<UpdateOutcome | null> | null {
-  if (updating || isUpdating()) return null;
-  const { offered, ...rest } = options;
-  const step = (running: UpdateStep) => noteUpdate({ running });
-  // (The release Kuvo Code here offered, where it's the newer: taken now, as `takeOffer` takes it.)
-  updating = (offered ? takeOffer({ ...rest, step }) : update({ ...rest, step }))
-    .then(outcome => {
-      // (Another process updating it already, as the offered release's take: that one says how it goes.)
-      if (!outcome || (outcome.result === "busy" && outcome.message === UPDATING_ALREADY)) return outcome;
-      noteUpdate({ running: null, ...(outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } }) });
-      if (outcome.result === "updated") setTimeout(() => process.exit(0), 1000);
-      return outcome;
-    }, () => null)
-    .finally(() => { updating = null; });
-  return updating;
+// An update in a process of its own (`kuvo-link.js update [--now] [--offered] [--night <night>]`,
+// as the offered release's is): a phone's or a Mac's Update Now, or the night's. Never in the
+// process that asks (a client's server, a machine's bridge), which the update restarts, or which may
+// be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Once
+// "updated", it stops a machine's bridge for the keeper to start the new one (a Mac's server goes
+// by itself, its files changed). One at a time: false when one runs, or this process just started
+// one. `night`: the night it's for, noted by it unless something was at work. `keys` and `url`: a
+// test's (a test's folder only).
+let updateStarted: ChildProcess | null = null;
+export function startUpdate({ now = false, offered = false, night, keys, url }: { now?: boolean; offered?: boolean; night?: string; keys?: string[]; url?: string } = {}): boolean {
+  if (updateStarted || isUpdating()) return false;
+  const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...(url ? ["--url", url] : [])] : [];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(night ? ["--night", night] : []), ...test];
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: K, env: process.env });
+  updateStarted = child;
+  const done = () => { if (updateStarted === child) updateStarted = null; };
+  child.once("exit", done);
+  child.once("error", done);
+  child.unref();
+  return true;
 }
 
 // This box's updates (PROTOCOL.md, "Updates"): how it stands, Update Now. It always updates
@@ -802,9 +922,10 @@ export async function* updateRoute(context: RouteContext): AsyncGenerator<Answer
     // A release Kuvo Code here offered, newer than this box, is what Update Now takes, whatever is
     // at work (the client asked first); else the newest from GitHub.
     const offered = offerWaits();
-    const held = offered ? offerHeld() : null;
+    const held = offered ? offerHeld() : updateOnTrial() ? ON_TRIAL : null;
     if (held) return yield* json(409, { message: held });
-    return yield* (startUpdate({ now: true, offered }) ? json(202, updateStatus()) : json(409, { message: UPDATING_ALREADY }));
+    // (Said as under way at once: its own process takes the update's lock a moment later.)
+    return yield* (startUpdate({ now: true, offered }) ? json(202, { ...updateStatus(), updating: "checking" }) : json(409, { message: UPDATING_ALREADY }));
   }
   return yield* json(405, {});
 }
@@ -821,18 +942,37 @@ export function offeredVersion(): string | null {
 
 const dropOffer = (): void => fs.rmSync(OFFERED, { recursive: true, force: true });
 
+// The SHA-256 of the offered release's pack, as its manifest says (checked as it was offered), or null.
+function offeredPack(): string | null {
+  try {
+    const given = JSON.parse(fs.readFileSync(path.join(OFFERED, "boxes.json"), "utf8"));
+    const sha = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.pack?.sha256;
+    return typeof sha === "string" ? sha : null;
+  } catch { return null; }
+}
+
+// An offered release of the box's own version whose files differ from those in place, marked so as
+// it was offered (`updates/offered/.differs`): what's offered is ahead of the box then too.
+const OFFER_DIFFERS = ".differs";
+
+// Whether the offered release `offered` is still ahead of the box at `version`: newer, or the same
+// version with other files.
+const offerAhead = (offered: string, version: string): boolean =>
+  newerVersion(offered, version) || (sameVersion(offered, version) && fs.existsSync(path.join(OFFERED, OFFER_DIFFERS)));
+
 /** Why the release Kuvo Code here offered can't be taken even on your word now, in words to show
  * as they are: its engine stopped on purpose, or its last update not yet said to be well. */
 export function offerHeld(): string | null {
   if (fs.existsSync(path.join(RUN, "stopped"))) return "Its engine is stopped: start it to update it.";
-  if (updateOnTrial()) return "It’s finishing its last update. Try again in a moment.";
+  if (updateOnTrial()) return ON_TRIAL;
   return null;
 }
 
-/** Whether a release Kuvo Code here offered waits to be taken: newer than this box. */
+/** Whether a release Kuvo Code here offered waits to be taken: newer than this box, or its own
+ * version with other files. */
 export function offerWaits(): boolean {
   const offered = offeredVersion(), version = boxVersion();
-  return !!offered && !!version && newerVersion(offered, version);
+  return !!offered && !!version && offerAhead(offered, version);
 }
 
 /** What offering a release says: 202 and its version, or why not (400 not asked right, 409 not
@@ -872,7 +1012,7 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
   if (blocked) return { status: 409, message: blocked };
   const before = boxVersion();
   if (!before) return { status: 409, message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
-  if (updating || isUpdating()) return { status: 409, message: UPDATING_ALREADY };
+  if (updateStarted || isUpdating()) return { status: 409, message: UPDATING_ALREADY };
   let boxes: Buffer, manifest: BoxRelease, name: string;
   try {
     boxes = readRelease(path.join(from, "boxes.json"), 1_000_000);
@@ -881,13 +1021,18 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
   } catch (error) {
     return { status: 422, message: String((error as Error | undefined)?.message ?? error).slice(0, 300) };
   }
-  if (!newerVersion(manifest.version, before)) return { status: 409, message: `It has ${before} already, and takes only a newer version.` };
+  // Never an older version; its own version only with other files than those in place (below).
+  const again = sameVersion(manifest.version, before);
+  if (!newerVersion(manifest.version, before) && !again) return { status: 409, message: `It has ${before} already, and takes only a newer version.` };
+  const behind = engineBehind(manifest.engine);
+  if (behind) return { status: 409, message: behind };
   const offered = offeredVersion();
   if (offered && newerVersion(offered, manifest.version)) return { status: 409, message: `A newer release (${offered}) waits to be taken already.` };
   const { offerFailed: failed } = updateState();
   if (offerRests(manifest.version, clock()) && (failed?.version !== manifest.version || failed.takenBack)) return { status: 409, message: `It tried ${manifest.version} lately and went back to what it had: it takes it again tomorrow.` };
-  // The same, offered again (as Kuvo Code reconnects): it's there already.
-  if (offered === manifest.version) return { status: 202, version: manifest.version };
+  // The same, offered again (as Kuvo Code reconnects): it's there already. (The same version built
+  // again, other files under it: it takes its place.)
+  if (offered === manifest.version && offeredPack() === manifest.pack.sha256) return { status: 202, version: manifest.version };
   let pack: Buffer;
   try {
     pack = readRelease(path.join(from, name), 100_000_000);
@@ -899,10 +1044,22 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
   if (!takeUpdateLock()) return { status: 409, message: UPDATING_ALREADY };
   const partial = `${OFFERED}.partial`;
   try {
+    // Its own version: taken only when its files aren't those in place (an app rebuilt under the
+    // same version); the same files are what it has.
+    if (again) {
+      let differs: boolean;
+      try {
+        differs = differsHere(packedBox(pack, manifest.version));
+      } catch {
+        return { status: 422, message: "The release's files aren't what it says." };
+      }
+      if (!differs) return { status: 409, message: `It has ${before} already, with these same files.` };
+    }
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(partial, "boxes.json"), boxes, { mode: 0o600 });
     fs.writeFileSync(path.join(partial, name), pack, { mode: 0o600 });
+    if (again) fs.writeFileSync(path.join(partial, OFFER_DIFFERS), "", { mode: 0o600 });
     dropOffer();
     fs.renameSync(partial, OFFERED);
   } catch (error) {
@@ -922,14 +1079,14 @@ export async function offerDue({ blocked = updatesBlocked(), clock = Date.now, n
   const offered = offeredVersion(), before = boxVersion();
   // (None, or one being written: nothing to do yet.)
   if (!offered) return false;
-  if (before && !newerVersion(offered, before)) {
+  if (before && !offerAhead(offered, before)) {
     // (Not while an update could be writing a new one in its place.)
     if (!isUpdating()) dropOffer();
     return false;
   }
   if (blocked || !before || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, "stopped"))) return false;
   if (now) return true;
-  return !updating && !offerRests(offered, clock()) && !(await boxBusy());
+  return !updateStarted && !offerRests(offered, clock()) && !(await boxBusy());
 }
 
 /** The release offered from a folder here, taken when it's due (`offerDue`), as `update --offered`
@@ -970,13 +1127,19 @@ export const installerSteps = {
  * the app that asked is gone (this process left to another): it's taken by the box itself then. */
 export async function untilFree(from: string, { keys = UPDATE_KEYS, blocked }: Pick<UpdateOptions, "keys" | "blocked"> = {}): Promise<boolean> {
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_UNTIL_FREE_EVERY) > 0 ? Number(process.env.KUVO_TEST_UNTIL_FREE_EVERY) : 15_000;
-  let version: string;
-  try { version = verifyBoxes(readRelease(path.join(from, "boxes.json"), 1_000_000).toString("utf8"), keys).version; } catch { return true; }
+  let manifest: BoxRelease;
+  try { manifest = verifyBoxes(readRelease(path.join(from, "boxes.json"), 1_000_000).toString("utf8"), keys); } catch { return true; }
+  const { version } = manifest;
   const parent = process.ppid;
   let said = false;
+  // (Its own version: something to wait for only with other files than those in place, read once
+  // for each version the box has: they change only as it updates.)
+  let differs = null as { at: string; differs: boolean } | null;
   for (;;) {
     const before = boxVersion();
-    if (!before || !newerVersion(version, before) || (blocked === undefined ? updatesBlocked() : blocked)) return true;
+    if (before && sameVersion(version, before) && differs?.at !== before) differs = { at: before, differs: folderDiffers(from, manifest) };
+    const ahead = !!before && (newerVersion(version, before) || (sameVersion(version, before) && differs!.differs));
+    if (!before || !ahead || (blocked === undefined ? updatesBlocked() : blocked)) return true;
     // (The box taking it itself meanwhile: waited for, and then it's there.)
     if (!isUpdating() && !(await boxBusy())) return true;
     if (!said) { console.log(JSON.stringify(installerSteps.waiting)); said = true; }

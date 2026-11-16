@@ -28,7 +28,7 @@ use kuvo_ui::{
 
 use crate::areas::{Reading, reading};
 use crate::settings::page::{ConfirmIds, confirm_card, sheet};
-use crate::workspace::{HeldUpdate, UpdateDoes, held_words};
+use crate::workspace::{HeldUpdate, UpdateDoes, behind_words, held_words};
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 720.;
@@ -679,7 +679,7 @@ impl ComputersView {
         items.push(Item::Group("About".into()));
         // (What it hasn't said isn't drawn: a computer whose Kuvo is older, or that hasn't been
         // reached, says little, and a row of "Not said yet" tells you nothing.)
-        let version = match (&computer.version, computer.is_older()) {
+        let version = match (&computer.version, computer.is_behind()) {
             (Some(version), true) => Some(format!("{version}, older than this app")),
             (Some(version), false) => Some(version.clone()),
             (None, true) => Some("Older than this app".to_owned()),
@@ -802,7 +802,7 @@ impl ComputersView {
                 match act.does.clone() {
                     Some(UpdateDoes::Update(key)) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_computer(&key).map(|_| ()))),
                     Some(UpdateDoes::SetUp(key)) => ("Starting…", Box::new(move |_: &BoxClient| lister.setup_computer(&key).map(|_| ()))),
-                    Some(UpdateDoes::Here) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
+                    Some(UpdateDoes::Here | UpdateDoes::HereNow) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
                     // (Asked first, then what only this app does.)
                     Some(UpdateDoes::OwnBox { now }) => return cx.emit(ComputersEvent::UpdateOwnBox { now }),
                     Some(UpdateDoes::AddMachine { address }) => return cx.emit(ComputersEvent::AddAt(address)),
@@ -908,6 +908,12 @@ impl ComputersView {
                 words: "Someone else’s setup shares this machine, so what runs there isn’t shown.".into(),
                 action: None,
             });
+        }
+        // (Only behind, and reached: used as it is, what it lacks not drawn there. Away or being
+        // reached, that comes first, with its way on.)
+        if computer.is_behind() && computer.reach == "connected" {
+            let (title, _) = held_words(Some(name), false);
+            return Some(Item::Notice { key: "notice-behind".into(), tone: Tone::Info, title, words: behind_words().into(), action: None });
         }
         // (Not reached: Try Again, where the box offers to reach it again.)
         let connect = computer.action("connect").map(|action| NoticeAction {

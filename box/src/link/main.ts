@@ -114,7 +114,8 @@ import { runningServe, SERVE_FILE, SERVE_NEEDED, stopKeptServe } from "./serve-k
 import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { keepMachinesUp } from "./add/keep-up";
-import { type UpdateOptions, agentsWorking, checkDrift, failedInPassing, offerWaits, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { serveCheck, servedFiles, servedLink } from "./updates/serve-current";
+import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -189,7 +190,8 @@ export { engineConnect, engineControl, toolRun } from "./areas/engine";
 export { botPersonalities, changePersonalities, mergePersonalities, personalitiesDocument, readPersonalities } from "./personalities/library";
 export { keyFilesWait, syncKeyFiles } from "./keys";
 export { KEEP_UP_FILE, keepUpRound, keepingSelfUp } from "./add/keep-up";
-export { UPDATE_KEYS, agentsWorking, boxVersion, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { serveCheck, servedFiles } from "./updates/serve-current";
+export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -472,10 +474,12 @@ async function run(): Promise<void> {
     noteLauncher();
     noteOlderMacs();
     try { checkDrift(); } catch {}
+    try { dropOldBackups(); } catch {}
     startOfferedUpdate().catch(() => {});
     const night = updateNight();
     if (!night || updateState().night === night || !UPDATE_KEYS.length) return;
-    startUpdate({})?.then(outcome => { if (outcome && outcome.result !== "busy") noteUpdate({ night }); });
+    // (In a process of its own, which notes the night once it went, unless something was at work.)
+    startUpdate({ night });
   };
   setTimeout(nightly, 60_000);
   setInterval(nightly, 600_000);
@@ -645,6 +649,7 @@ async function box(command: string): Promise<void> {
       const blocked = updatesBlocked();
       if (blocked) return say({ status: 409, message: blocked });
       if (isUpdating()) return say({ status: 409, message: "It's updating already." });
+      if (updateOnTrial()) return say({ status: 409, message: ON_TRIAL });
       // (Now whatever its age, but never through work: nobody was asked first here.)
       spawn(process.execPath, [...OWN_RUNTIME, fileURLToPath(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
       return say({ status: 202, ...updateStatus(), updating: "checking" });
@@ -807,6 +812,11 @@ async function serve(): Promise<void> {
     process.exit(2);
   }
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  // The box's files it runs on, as it starts: an update that changes them under it is seen (below).
+  const started = servedFiles();
+  // It goes for the new ones only where its helper starts it again (`kuvo-start serve`, from the
+  // box's own `bin/kuvo-link.js`): never an app's own box, which its app starts.
+  const leaves = !APP_FOLDER && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(servedLink());
   // (Sessions' turns' lock folders left by a box cut off: `engine/notes.ts`.)
   clearNotesLocks();
   // This Mac's settings with what its engine starts with, before a client reads them.
@@ -914,6 +924,27 @@ async function serve(): Promise<void> {
     try { if (OWN_HOME_MAC && JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
     process.exit(0);
   };
+  // The box's files changed under it (an update put new ones there, and is done): it goes, as its
+  // app gone does, for its helper to start the new ones. An update to the version it runs, on trial
+  // and up, said to be well once it's up and answering (its first look, then each while one's open),
+  // so the keeper doesn't take it back: on a Mac nothing else says so (no relay welcomes a machine's
+  // bridge here). And the copy of the engine's data an update kept, gone after its 30 days (a Mac
+  // runs no bridge whose rounds would). As soon as it answers, then every 30 seconds. (A test's box
+  // looks as often as it says.)
+  const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30_000;
+  let leaving = false;
+  const look = (): void => {
+    if (leaving) return;
+    try { dropOldBackups(); } catch {}
+    const check = serveCheck(started, { leaves });
+    if (check === "confirm") updateIsWell();
+    if (check !== "leave") return;
+    leaving = true;
+    console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
+    void leave();
+  };
+  look();
+  setInterval(look, every).unref?.();
   process.stdin.on("end", leave);
   process.stdin.on("close", leave);
   process.stdin.resume();
@@ -1190,7 +1221,8 @@ if (main) {
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or
     // `update --offered` (the one Kuvo Code here offered, `kuvo/box/update`, when it's due: nothing
-    // to do otherwise), and for a test's folder only, `--url <boxes.json> --key <public key>` (or
+    // to do otherwise; with `--now`, on your word, whatever is at work); `--night <night>`: the
+    // night's, which it notes once it went; and for a test's folder only, `--url <boxes.json> --key <public key>` (or
     // `--key` alone, with `--from` or `--offered`). Once it's updated, the running bridge goes, for
     // the keeper to start the new one.
     const args = process.argv.slice(3);
@@ -1226,7 +1258,7 @@ if (main) {
         if (process.ppid === 1) process.exit(0);
       }
       outcome = offered
-        ? await takeOffer({ step, ...test })
+        ? await takeOffer({ now, step, ...test })
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
           : await update({ now, whileBusy: now && !args.includes("--free"), from, step, swapping: () => { swapped = true; }, ...test });
@@ -1240,7 +1272,12 @@ if (main) {
       break;
     }
     // (None due, or another process took it just before this one: nothing happened to note.)
-    if (outcome && !(offered && outcome.result === "busy")) noteUpdate({ running: null, ...(outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } }) });
+    // (Something at work, or the last update still on trial: how the last went stays as it was.)
+    if (outcome && !(outcome.result === "busy" && (offered || outcome.message === UPDATING_ALREADY))) noteUpdate({ running: null, ...(outcome.result === "updated" || passingOutcome(outcome) ? {} : { last: { at: Date.now(), ...outcome } }) });
+    // (The night's, started by the bridge: that night's done, unless something was at work or the
+    // last update is still on trial, when it's tried again that night.)
+    const night = option("--night");
+    if (night && outcome && !passingOutcome(outcome)) noteUpdate({ night });
     if (outcome?.result === "updated") {
       const pid = runningBridge();
       if (pid) process.kill(pid, "SIGTERM");

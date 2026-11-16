@@ -129,6 +129,24 @@ if kuvo_runs "$old" "$K/engine/"; then
   
   
 fi
+# Never two on the same data: an engine a start before this one began (each is noted in
+# run/engines by its number) that still runs though none is noted now (its note lost: an update
+# or a rollback cut short, a stop that didn't reach it) is stopped first, by that number and only
+# while that number is still this box's engine: its engine's own command (`<K>/engine/<version>/opencode
+# serve --port`), never the box's server or bridge the same program runs (`… kuvo-link.js serve`).
+# Never by its name: one this box didn't start isn't touched.
+engine_runs() { kuvo_runs "$1" "$K/engine/" && kuvo_runs "$1" "/opencode serve --port"; }
+mkdir -p "$R/engines" && chmod 700 "$R/engines"
+for f in "$R"/engines/*; do
+  [ -f "$f" ] || continue
+  p=${f##*/}
+  if engine_runs "$p"; then
+    kill "$p" 2>/dev/null; n=0
+    while engine_runs "$p" && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+    engine_runs "$p" && kill -9 "$p" 2>/dev/null
+  fi
+  rm -f "$f"
+done
 unset KUVO_BOOT
 # COMPAT(0.7 settings): the settings an older Mac still sends, left out. Goes 3 months after 0.8.0.
 # A box of its own (KuvoLink's PROTOCOL.md, "Settings per box"): its own settings and keys,
@@ -196,6 +214,7 @@ done
 # Noted, or it's stopped (by the trap): one nothing knows of would run on unseen.
 (umask 077; printf '{"pid":%s,%s\n' "$pid" "$record" >"$R/engine.json") || { echo "Its engine couldn't be noted down there." >&2; exit 3; }
 noted=1
+: >"$R/engines/$pid"
 if [ -n "$aport" ] && [ -n "${KUVO_AGENTS_PASSWORD-}" ] && [ -f "$K/bin/kuvo-agents.js" ]; then
   apid=$(cat "$R/agents.pid" 2>/dev/null)
 if kuvo_runs "$apid" kuvo-agents; then kill -- "-$apid" 2>/dev/null || kill "$apid" 2>/dev/null; i=0; while kill -0 "$apid" 2>/dev/null && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done; fi

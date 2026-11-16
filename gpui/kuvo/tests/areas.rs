@@ -476,11 +476,14 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
     assert!(bounds(cx, "blocked-held").is_some());
     assert!(bounds(cx, "no-accounts").is_none());
     workspace.read_with(cx, |workspace, _| {
-        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It finishes updating once the work running on it now ends.".into())));
+        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It can’t be used here until it’s updated.".into())));
         assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
         let blocked = workspace.blocked().expect("the view");
-        assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("This Mac’s Kuvo is older than this app", "It finishes updating once the work running on it now ends."));
+        assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("This Mac’s Kuvo is older than this app", "It can’t be used here until it’s updated."));
+        // Never words without a way on: Update Now, here as everywhere.
+        assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
     });
+    assert!(bounds(cx, "blocked-action").is_some());
     for (rail, empty) in [("rail-bots", "bots-empty"), ("rail-queue", "queue-empty"), ("rail-computers", "computers-page")] {
         click(cx, rail);
         assert!(bounds(cx, "update-chip").is_some());
@@ -495,6 +498,47 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
     click(cx, "settings-foot");
     assert!(bounds(cx, "settings-held").is_some());
     assert!(bounds(cx, "update-chip").is_some());
+}
+
+/// This Mac's own Kuvo held, and nothing says how its update stands (the user's beta.30): Update
+/// Now asks this Mac's box itself to update, asking first since what's at work there isn't known.
+#[gpui::test]
+fn update_now_on_a_held_mac_asks_its_own_box_to_update(cx: &mut TestAppContext) {
+    let stand_in = StandIn::held_older(Replies::Never);
+    let (_, cx) = open(cx, stand_in.clone());
+    click(cx, "blocked-action");
+    assert!(stand_in.seen_at("POST", "kuvo/update").is_empty(), "asked first");
+    click(cx, "update-confirm");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/update").len(), 1);
+}
+
+/// A box that lacks only features this app draws elsewhere (beta.30's bot states, on an earlier
+/// Kuvo) is used as it is: no area is held, each draws what the box has, and its update is offered.
+#[gpui::test]
+fn a_box_behind_on_a_feature_is_used_as_it_is_with_its_update_offered(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_lacks(&["bots.state", "settings.vault", "work.background.items"]);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    assert!(bounds(cx, "blocked-held").is_none());
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.lists().clone()), kuvo::workspace::Lists::Ready);
+    click(cx, "rail-bots");
+    assert!(bounds(cx, "blocked-held").is_none());
+    assert!(bounds(cx, "held-area").is_none());
+    assert!(bounds(cx, "bot-bot_mira").is_some(), "its bots, as it says them");
+    let chip = workspace.read_with(cx, |workspace, _| workspace.update_chip()).expect("its update, offered");
+    assert_eq!(chip.detail, kuvo::workspace::behind_words(), "never said to wait while it's in use");
+    assert_eq!(chip.action.map(|action| action.label), Some("Update Now".into()));
+    // It updates under the open window (its server new): read again, the chip gone.
+    stand_in.set_lacks(&[]);
+    workspace.update_in(cx, |workspace, _, cx| {
+        workspace.client().connect().unwrap();
+        let mut listing = kuvo_box::Listing::new();
+        listing.take(workspace.client().session_list(None).unwrap());
+        workspace.take_list(kuvo_box::follow::ListUpdate::Listing(listing), cx);
+    });
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, _| workspace.update_chip()).is_none());
+    assert!(bounds(cx, "update-chip").is_none());
 }
 
 #[gpui::test]

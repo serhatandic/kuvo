@@ -1,0 +1,206 @@
+// The box's keeper (`kuvo-start keep`) and what boxes from before left (PROTOCOL.md, "Updates"; "For
+// released Macs"): a rollback kept by an update from before rollbacks were code only never puts the
+// engine's data back over what was written since; and the watchdog a Mac with Kuvo Code 0.7 starts
+// beside its engine never stops it, with nothing killed by a pattern. The real keeper script, in a
+// home of the test's own, with stand-ins for what it would reach of this computer (`pkill`,
+// `caffeinate`, `crontab`, `launchctl`); times set on the files, never waited for.
+//
+// Run with `node --test box/bridge-tests/keeper-rollback.test.js`.
+import "./test-safety.js";
+import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { atEnd, removeAtEnd } from "./at-end.js";
+
+const keeper = fileURLToPath(new URL("../src/keeper/kuvo-start", import.meta.url));
+const write = (file, text, mode = 0o600) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text, { mode });
+  fs.chmodSync(file, mode);
+};
+const exists = file => fs.existsSync(file);
+const aged = (file, ms) => fs.utimesSync(file, new Date(Date.now() - ms), new Date(Date.now() - ms));
+async function until(check, what) {
+  for (let i = 0; i < 600; i++) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail(`never: ${what}`);
+}
+
+// A machine's box, its keeper's script as the release has it.
+function home(kind = "machine") {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-keeper-rollback-")));
+  removeAtEnd(folder);
+  const K = path.join(folder, ".kuvo-code");
+  write(path.join(K, "box", "kind"), `${kind}\n`);
+  write(path.join(K, "bin", "kuvo-start"), fs.readFileSync(keeper, "utf8").replace("@ENGINE@", "1.0.0"), 0o700);
+  write(path.join(K, "bin", "box-version"), "0.9.0");
+  // (What it starts things in a session of their own with, where the system has no `setsid`.)
+  write(path.join(K, "bin", "kuvo-setsid"), fs.readFileSync(fileURLToPath(new URL("../src/keeper/kuvo-setsid", import.meta.url)), "utf8"), 0o755);
+  fs.mkdirSync(path.join(K, "run"), { recursive: true });
+  const tools = path.join(folder, "tools");
+  for (const tool of ["pkill", "caffeinate", "crontab", "launchctl"]) write(path.join(tools, tool), `#!/bin/sh\necho "${tool} $*" >>"${folder}/reached"\n`, 0o755);
+  const env = { PATH: `${tools}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: folder };
+  return { folder, K, R: path.join(K, "run"), env };
+}
+
+// Its keeper's loop, running until the test ends it (its group, which it started).
+function keep(where) {
+  const child = spawn("sh", [path.join(where.K, "bin", "kuvo-start"), "keep"], { env: where.env, detached: true, stdio: "ignore" });
+  const gone = new Promise(done => child.once("exit", done));
+  const stop = async () => {
+    try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    await gone;
+  };
+  atEnd(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} });
+  return stop;
+}
+
+test("a rollback an older update kept, with the engine's data in it, puts back code only: what was written since stays", async () => {
+  const where = home();
+  const { K, R } = where;
+  // An update from before, on trial over twenty minutes, its rollback as that update wrote it: the
+  // database it kept, and its restore.sh, which puts that back whenever it's there.
+  write(path.join(K, "updates", "rollback", "data", "opencode.db"), "the data before the update");
+  // The keeper it kept, which starts the engine from before (1.0.0); the engine that ran since is newer.
+  write(path.join(K, "updates", "rollback", "files", "bin", "kuvo-start"), "#!/bin/sh\nV=1.0.0\ncase \"$1\" in\nkeep) ;;\nesac\n", 0o700);
+  write(path.join(R, "engine.json"), JSON.stringify({ pid: 999999, port: 1, password: "x", version: "1.1.0" }));
+  write(path.join(K, "updates", "rollback", "restore.sh"), [
+    "#!/bin/sh",
+    `K='${K}'; B='${K}/updates/rollback'`,
+    `cp -p "$B/files/"'bin/kuvo-start' "$K/"'bin/kuvo-start'.new && mv -f "$K/"'bin/kuvo-start'.new "$K/"'bin/kuvo-start' || exit 1`,
+    `D="$K/data/opencode"`,
+    `if [ -f "$B/data/opencode.db" ]; then`,
+    `  rm -f "$D/opencode.db-wal" "$D/opencode.db-shm" || exit 1`,
+    `  for n in opencode.db opencode.db-wal opencode.db-shm; do if [ -f "$B/data/$n" ]; then mv -f "$B/data/$n" "$D/$n" || exit 1; fi; done`,
+    `fi`,
+    `rm -f "$K/run/update-trial" "$K/run/update-restore"`,
+    `rm -rf "$B"`,
+  ].join("\n") + "\n", 0o700);
+  write(path.join(R, "update-trial"), "0.10.0");
+  aged(path.join(R, "update-trial"), 30 * 60_000);
+  // (A try at it before, ten minutes ago: the keeper starting now doesn't count its twenty minutes again.)
+  write(path.join(R, "update-restore"), "1");
+  aged(path.join(R, "update-restore"), 10 * 60_000);
+  // What the new engine wrote since: a conversation.
+  write(path.join(K, "data", "opencode", "opencode.db"), "a conversation after the update");
+  write(path.join(K, "data", "opencode", "opencode.db-wal"), "its last message");
+
+  const stop = keep(where);
+  await until(() => !exists(path.join(R, "update-trial")), "the rollback ran");
+  await stop();
+  assert.equal(fs.readFileSync(path.join(K, "data", "opencode", "opencode.db"), "utf8"), "a conversation after the update");
+  assert.equal(fs.readFileSync(path.join(K, "data", "opencode", "opencode.db-wal"), "utf8"), "its last message");
+  // The copy from before, aside, where nothing puts it back.
+  const kept = fs.readdirSync(path.join(K, "updates", "backups"));
+  assert.equal(kept.length, 1);
+  assert.match(kept[0], /^\d{4}-\d{2}-\d{2}-kept-for-a-rollback$/);
+  assert.equal(fs.readFileSync(path.join(K, "updates", "backups", kept[0], "opencode.db"), "utf8"), "the data before the update");
+  assert.equal(exists(path.join(K, "updates", "rollback")), false);
+  // The keeper it put back starts the engine that ran (an older one never opens what it wrote).
+  assert.match(fs.readFileSync(path.join(K, "bin", "kuvo-start"), "utf8"), /^V=1\.1\.0$/m);
+});
+
+test("an update on trial counts its twenty minutes from the keeper's start: a Mac asleep right after it isn't taken back as it wakes", async () => {
+  const where = home();
+  const { K, R, folder } = where;
+  write(path.join(R, "update-trial"), "0.10.0");
+  aged(path.join(R, "update-trial"), 30 * 60_000);
+  write(path.join(K, "updates", "rollback", "restore.sh"), `#!/bin/sh\ntouch '${folder}/restored'\nrm -f '${R}/update-trial'\n`, 0o700);
+  // Its engine's program, which notes when the keeper's first round asks it to set up the browser
+  // (after the round looked at the trial).
+  write(path.join(K, "bin", "kuvo-link.js"), "// the link\n");
+  write(path.join(K, "engine", "1.0.0", "opencode"), `#!/bin/sh\n[ "$4" = browser ] && touch '${folder}/round'\nexit 0\n`, 0o755);
+  const stop = keep(where);
+  await until(() => exists(path.join(folder, "round")), "its first round");
+  await stop();
+  assert.equal(exists(path.join(folder, "restored")), false, "not taken back");
+  assert.ok(Date.now() - fs.statSync(path.join(R, "update-trial")).mtimeMs < 5 * 60_000, "counted from now");
+});
+
+test("an update taken by a Mac's box from before: the server still on the old code is ended, the new one says it's well, nothing's taken back", { timeout: 60_000 }, async () => {
+  const where = home("mac");
+  const { K, R, folder, env } = where;
+  write(path.join(K, "bin", "box-version"), "0.10.0");
+  write(path.join(R, "update.json"), JSON.stringify({ trial: { from: "0.9.0", to: "0.10.0", at: Date.now(), healthy: true } }));
+  write(path.join(R, "update-trial"), "0.10.0");
+  write(path.join(K, "updates", "rollback", "restore.sh"), `#!/bin/sh\ntouch '${folder}/restored'\n`, 0o700);
+  // Its server as its helper started it before the update, on the old link (which never says so).
+  // (From the box's own link, as its helper runs it: the file is replaced under it by the update.)
+  const old = path.join(K, "bin", "kuvo-link.js");
+  const up = path.join(folder, "old-serve-up");
+  write(old, `require("fs").writeFileSync(${JSON.stringify(up)}, "");\nsetInterval(() => {}, 1000);\n`);
+  const server = spawn(process.execPath, [old, "serve"], { stdio: "ignore" });
+  atEnd(() => { try { server.kill("SIGKILL"); } catch {} });
+  const ended = new Promise(done => server.once("exit", (code, signal) => done(signal)));
+  write(path.join(R, "serve.json"), JSON.stringify({ pid: server.pid, port: 1, password: "x", kept: false }));
+  // (Running the old code before the update replaces the file under it.)
+  await until(() => exists(up), "the old server");
+  // The new link, put there after that server started, with the release's own time on it (a
+  // release's files all say 2026-01-01, and a Mac's disk clones a big file with its time): only
+  // when it was put there (its change time) is now.
+  write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)), "utf8"));
+  const released = new Date("2026-01-01T00:00:00Z");
+  fs.utimesSync(path.join(K, "bin", "kuvo-link.js"), released, released);
+
+  const stop = keep(where);
+  assert.equal(await ended, "SIGTERM", "the old server, ended");
+  // Its helper starts it again: the new link, as it is now.
+  const fresh = spawn(process.execPath, [path.join(K, "bin", "kuvo-link.js"), "serve"], { env: { ...env, KUVO_HOME: K, TMPDIR: folder, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_NO_PEERS: "1" }, stdio: ["pipe", "ignore", "ignore"] });
+  const freshGone = new Promise(done => fresh.once("exit", done));
+  atEnd(() => { try { fresh.kill("SIGKILL"); } catch {} });
+  await until(() => !exists(path.join(R, "update-trial")), "said to be well");
+  fresh.stdin.end();
+  await freshGone;
+  await stop();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(R, "update.json"), "utf8")).last.result, "updated");
+  assert.equal(exists(path.join(folder, "restored")), false);
+  assert.equal(exists(path.join(K, "updates", "rollback")), false);
+});
+
+test("the engine the keeper stops is no longer one a start looks for among those it began", async () => {
+  const { K, R, env } = home();
+  write(path.join(K, "engine", "1.0.0", "opencode"), "#!/bin/sh\nwhile :; do sleep 1; done\n", 0o755);
+  // (Not this test's child, as the keeper's launch leaves it: gone the moment it's stopped.)
+  const pid = Number(spawnSync("sh", ["-c", `sh '${path.join(K, "engine", "1.0.0", "opencode")}' serve --port 1 >/dev/null 2>&1 </dev/null & echo $!`], { encoding: "utf8" }).stdout.trim());
+  atEnd(() => { try { process.kill(pid, "SIGKILL"); } catch {} });
+  write(path.join(R, "engine.json"), `{"pid":${pid},"port":1,"password":"x"}`);
+  write(path.join(R, "engines", String(pid)), "");
+  const stopped = spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "stop"], { env, encoding: "utf8", timeout: 60_000 });
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.throws(() => process.kill(pid, 0), "the engine stopped");
+  assert.equal(exists(path.join(R, "engines", String(pid))), false);
+});
+
+test("an older Mac's mark a day old is taken away, so the watchdog its start brought never stops the engine; its visit still counts", async () => {
+  const where = home();
+  const { K, R } = where;
+  // The box marked two days ago; a Mac with Kuvo Code 0.7 connected since, 23½ hours ago (its
+  // watchdog stops the engine once this mark is a day old).
+  aged(path.join(K, "bin", "box-version"), 2 * 86_400_000);
+  write(path.join(R, "attached"), "");
+  aged(path.join(R, "attached"), 23.5 * 3_600_000);
+  const visit = fs.statSync(path.join(R, "attached")).mtimeMs;
+
+  const stop = keep(where);
+  await until(() => !exists(path.join(R, "attached")), "the mark taken away");
+  await stop();
+  assert.equal(Math.round(fs.statSync(path.join(R, "older-mac")).mtimeMs / 1000), Math.round(visit / 1000), "the visit kept, when it was");
+
+  // One from before the box was last marked (most likely the same Mac before it updated): taken
+  // away, and not counted.
+  const before = home();
+  write(path.join(before.R, "attached"), "");
+  aged(path.join(before.R, "attached"), 2 * 86_400_000);
+  const stopBefore = keep(before);
+  await until(() => !exists(path.join(before.R, "attached")), "the mark taken away");
+  await stopBefore();
+  assert.equal(exists(path.join(before.R, "older-mac")), false);
+  // And nothing killed by a pattern.
+  for (const each of [where, before]) assert.doesNotMatch(exists(path.join(each.folder, "reached")) ? fs.readFileSync(path.join(each.folder, "reached"), "utf8") : "", /pkill/);
+});

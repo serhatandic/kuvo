@@ -351,8 +351,11 @@ impl Home {
         // Each computer's window opens where it was last time on this device.
         let key = if slot == NEAREST { crate::yours::NEAREST.to_owned() } else { slot.to_owned() };
         workspace.update(cx, |workspace, cx| workspace.restore(key, window, cx));
-        let own = self.own_update.clone();
-        workspace.update(cx, |workspace, cx| workspace.set_own_update(own, cx));
+        let (own, carries) = (self.own_update.clone(), self.installer.is_some());
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_own_update(own, cx);
+            workspace.set_carries_release(carries, cx);
+        });
         if let Some(now) = self.now {
             workspace.update(cx, |workspace, cx| workspace.set_now(now, cx));
         }
@@ -473,9 +476,12 @@ impl Home {
     pub fn update_own_box(&mut self, installer: Installer, cx: &mut Context<Self>) {
         let Some(nearest) = self.boxes.nearest() else { return };
         self.installer = Some(installer);
+        for (workspace, _) in self.workspaces.values() {
+            workspace.update(cx, |workspace, cx| workspace.set_carries_release(true, cx));
+        }
         // Whether this app brings it up (none: it can't be reached now, to be asked again).
         let needs = move || match nearest.connect() {
-            Ok(info) => Some(!info.has(UPDATES_ITSELF) || nearest.gate().is_held()),
+            Ok(info) => Some(!info.has(UPDATES_ITSELF) || nearest.gate().is_older()),
             Err(kuvo_box::Error::NeedsUpdating { .. }) => Some(true),
             Err(_) => None,
         };

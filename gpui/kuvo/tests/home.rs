@@ -151,6 +151,38 @@ fn when_this_apps_computer_was_blocked_the_boxs_words_show_whole_on_computers(cx
     assert!(shown(cx, "notice-pairing"));
 }
 
+/// This Mac's own Kuvo held for its update (the user's beta.30): your other computers stay listed
+/// and usable, each its own box whatever this one's version.
+#[gpui::test]
+fn a_held_this_mac_still_lists_and_opens_your_other_computers(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_older(true);
+    let (home, cx) = open(cx, stand_in.clone());
+    assert!(shown(cx, "blocked-held"), "this Mac's own areas wait for its update");
+    click(cx, "computer-switcher");
+    assert!(shown(cx, "menu-item-devbox"), "devbox, as this Mac's list has it");
+    click(cx, "menu-item-devbox");
+    assert_eq!(name(&home, cx), "devbox");
+    assert!(!shown(cx, "blocked-held"));
+    assert!(shown(cx, "session-project-ses_releases"), "devbox's own sessions");
+}
+
+/// Update Now on a held This Mac with a session at work there: it asks first, naming that session
+/// and saying what happens to it, then asks this Mac's own box to update.
+#[gpui::test]
+fn update_now_on_a_held_this_mac_names_whats_at_work_before_it_goes(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_older(true);
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "blocked-action");
+    let confirm = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip().and_then(|chip| chip.action).and_then(|action| action.confirm)).expect("asked first");
+    assert_eq!(confirm.message, "“Plan limits” is at work on this Mac. What it’s doing stops as Kuvo restarts. Kuvo is back in a moment.");
+    assert!(shown(cx, "update-confirm"));
+    assert!(stand_in.seen_at("POST", "kuvo/update").is_empty());
+    click(cx, "update-confirm");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/update").len(), 1);
+}
+
 /// devbox's box older than this app, which the box that lists your computers brings up to date:
 /// the window opened on devbox.
 fn on_an_older_devbox<'a>(cx: &'a mut TestAppContext, state: &'static str, working: usize) -> (StandIn, Entity<Home>, &'a mut VisualTestContext) {

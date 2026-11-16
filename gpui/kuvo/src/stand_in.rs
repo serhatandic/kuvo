@@ -76,6 +76,8 @@ struct State {
     /// The boxes of your other computers it reaches, by key.
     peers: HashMap<String, StandIn>,
     older: bool,
+    /// What its `kuvo/info` leaves out of what this app draws (a box behind on those features).
+    lacks: Vec<String>,
     /// It doesn't answer (asleep, off, offline): every request fails.
     down: bool,
     /// It's from before it took the release its app carries the moment its work ended, saying how
@@ -386,6 +388,11 @@ impl StandIn {
     /// Change the compatibility answer without replacing the transport.
     pub fn set_older(&self, older: bool) {
         self.state().older = older;
+    }
+
+    /// Leaves these out of what its `kuvo/info` says it has: a box behind on them, used as it is.
+    pub fn set_lacks(&self, lacks: &[&str]) {
+        self.state().lacks = lacks.iter().map(|name| (*name).to_owned()).collect();
     }
 
     /// It stops answering (asleep, off, offline), or answers again.
@@ -1723,6 +1730,7 @@ impl StandIn {
                 features.extend(["queue", "asks"]);
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push(crate::home::UPDATES_ITSELF); }
+                features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
                 answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
