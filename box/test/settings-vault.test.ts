@@ -18,7 +18,6 @@ const asks = await import("../src/link/vault/asks")
 
 const handler = engineHandler((() => { throw new Error("No engine here.") }) as any, { name: "lokum" }, (() => null) as any)
 const held = holdVault(handler, () => () => {})
-afterAll(() => held.close())
 
 const SECRET = "hunter2-correct-horse"
 const here = process.platform === "darwin" ? "this Mac" : "this computer"
@@ -29,12 +28,21 @@ function bot(id: string, name: string) {
   writeFileSync(join(BOTS, id, "session"), `ses_${id}`)
 }
 
-beforeEach(() => {
-  client = {}
+/** Nothing of a test's left: its vault, bots and asks (the files share one process, and one home). */
+function cleared() {
   rmSync(VAULT_FOLDER, { recursive: true, force: true })
   rmSync(BOTS, { recursive: true, force: true })
   store.forgetKeys()
   for (const each of asks.listAsks()) asks.answer(each.id, { answer: "no" })
+}
+
+beforeEach(() => {
+  client = {}
+  cleared()
+})
+afterAll(() => {
+  cleared()
+  held.close()
 })
 
 /** The client asking: one that says it makes sure it's you first (Touch ID) before what lets
