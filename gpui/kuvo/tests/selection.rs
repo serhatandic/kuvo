@@ -321,12 +321,12 @@ fn choose(item: &str, cx: &mut VisualTestContext) {
 #[gpui::test]
 fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_answer(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");
-    // Part of the reply selected, then its menu's Quote: the composer has it, the keyboard there.
+    // Part of the reply selected, then its menu’s Add to Chat: the composer has it, the keyboard there.
     let from = at(&view, "msg_s2", &[3, 0], "When the server", false, cx);
     let to = at(&view, "msg_s2", &[3, 0], "(the email is taken)", true, cx);
     drag(from, to, cx);
     right_click_at(to, cx);
-    choose("Quote", cx);
+    choose("Add to Chat", cx);
     let composer = view.read_with(cx, |view, _| view.composer().clone());
     assert_eq!(composer.read_with(cx, |composer, _| composer.quotes().iter().map(|quote| quote.text.clone()).collect::<Vec<_>>()), ["When the server answers 409 (the email is taken)"]);
     assert!(cx.debug_bounds("quote-0").is_some(), "shown above the field");
@@ -347,7 +347,7 @@ fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_a
     let mine = at(&view, "msg_s1", &[0], "completely", false, cx);
     clicks(mine, 1, cx);
     right_click_at(mine, cx);
-    choose("Quote Message", cx);
+    choose("Reply", cx);
     let quoted = composer.read_with(cx, |composer, _| composer.quotes().first().map(|quote| quote.text.clone()));
     assert!(quoted.is_some_and(|text| text.contains("completely wiped if the email is already taken")));
 }

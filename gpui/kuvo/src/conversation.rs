@@ -278,7 +278,7 @@ impl ConversationView {
                 let text = copy_view.read(cx).selected_text();
                 selection::copy_to_clipboard(text, cx);
             }))
-            .entry(MenuEntry::new(if has_selection { "Quote" } else { "Quote Message" }).disabled(!quotes).on_select(move |window, cx| {
+            .entry(MenuEntry::new(if has_selection { "Add to Chat" } else { "Reply" }).disabled(!quotes).on_select(move |window, cx| {
                 let text = match under {
                     Some(ix) => quote_view.read(cx).message_text(ix),
                     None => quote_view.read(cx).selected_text(),
