@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- In the desktop Work Queue, paste or drop images into a new item or its description while editing. Images stay with the item, including on another computer, and open from thumbnails in the image viewer.
+
 - A bot conversation now offers connected API-key providers such as OpenCode Go in its model picker. Connecting or removing a provider refreshes the list without restarting. When changing engines requires Edit Bot, the picker explains where to do it.
 
 - In the desktop app, your bots come alive wherever they appear: in the sidebar, a conversation's header, group chats, the Work Queue and their own page. Each shows what it's doing: calm and blinking now and then at rest, eyes down at its work while working, a small orbit while thinking, looking at you when it needs you, a stop bar when it's blocked by an error or a usage limit, a short celebration when it finishes, and asleep while paused or far from its next wake-up. Finished and blocked stay until you open its conversation, on any of your devices. With Reduce Motion on, each shows a still pose. The spinner and count beside a bot in the sidebar are gone: the bot says it. Looks are calmer, all bodies the same size, with three new ones (loaf, capsule and dome).
