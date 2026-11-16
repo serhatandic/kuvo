@@ -1175,6 +1175,77 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn what_you_send_shows_at_once_and_the_boxs_copy_takes_its_place(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let rows = |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect::<Vec<_>>());
+    let before = rows(cx);
+
+    // Sent: in the conversation at once, as you wrote it, before its box's word of it has come.
+    cx.simulate_input("Something with lentils?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let sent = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send");
+    let id = sent.last().and_then(|seen| seen.body.as_ref()).and_then(|body| body["id"].as_str()).expect("sent with its id").to_owned();
+    let now = rows(cx);
+    assert_eq!(now.len(), before.len() + 1);
+    assert_eq!(now.last(), Some(&id));
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Outgoing { words, failed: None, .. }) if words == "Something with lentils?"));
+    assert!(bounds(cx, "sending").is_some(), "it says it's on its way");
+
+    // The box's copy comes (the same id): it takes the row's place, once.
+    let conversation = read_now(&client, "ses_recipes").unwrap();
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation), cx));
+    cx.run_until_parked();
+    let after = rows(cx);
+    assert_eq!(after.iter().filter(|key| **key == id).count(), 1, "no copy twice");
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    assert!(bounds(cx, "sending").is_none());
+
+    // One that couldn't go stays in the conversation, saying so, with Retry; the composer is free.
+    stand_in.fail_sends();
+    cx.simulate_input("And with rice?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Outgoing { failed: Some(why), .. }) if why == "The engine isn't answering. Try again in a moment."));
+    assert!(bounds(cx, "not-sent").is_some());
+    let composer = view.read_with(cx, |view, _| view.composer().clone());
+    assert_eq!(typed(&composer, cx), (String::new(), None));
+    let failed = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap();
+
+    // Retry sends it again, under the same id, and it's on its way again.
+    stand_in.sends_go();
+    let retry = bounds(cx, &format!("retry-{}", failed["id"].as_str().unwrap())).expect("Retry");
+    cx.simulate_click(retry.center(), Modifiers::default());
+    cx.run_until_parked();
+    let again = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap();
+    assert_eq!(again["id"], failed["id"]);
+    assert_eq!(again["words"], "And with rice?");
+    assert!(bounds(cx, "not-sent").is_none());
+    assert!(bounds(cx, "sending").is_some());
+
+    // Edit, on one that couldn't go, puts it back in the composer to change.
+    stand_in.fail_sends();
+    let field = composer.read_with(cx, |composer, _| composer.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_input("Or with beans?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let beans = view.read_with(cx, |view, _| view.entries().iter().rev().find_map(|entry| match entry {
+        Entry::Outgoing { id, failed: Some(_), .. } => Some(id.clone()),
+        _ => None,
+    })).expect("not sent");
+    let edit = bounds(cx, &format!("edit-unsent-{beans}")).expect("Edit");
+    cx.simulate_click(edit.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx).0, "Or with beans?");
+    assert!(!rows(cx).contains(&beans));
+}
+
+#[gpui::test]
 fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: &mut TestAppContext) {
     use gpui::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat};
     let stand_in = StandIn::at(Replies::Never, NOW);

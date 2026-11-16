@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::asks::Asks;
 use kuvo_box::queue::{Item, Queue};
@@ -23,7 +23,7 @@ use kuvo_ui::{
 };
 
 use crate::ask_card::AskCard;
-use crate::composer::Composer;
+use crate::composer::{Composer, ComposerEvent};
 use crate::entries::{self, COLUMN, Entry, Fold};
 use crate::work_bars::WorkBars;
 
@@ -81,6 +81,8 @@ pub struct ConversationView {
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
     tasks: Vec<Task<()>>,
+    /// Yours on its way, drawn again as the composer says it changed.
+    _outgoing: Subscription,
 }
 
 impl Focusable for ConversationView {
@@ -94,6 +96,11 @@ impl ConversationView {
     /// A conversation of `client`'s box. `live`: follow it there (the app); else it shows what
     /// it's handed ([`ConversationView::take`]), for tests and shots.
     pub fn new(client: BoxClient, session: String, composer: Entity<Composer>, live: bool, cx: &mut Context<Self>) -> ConversationView {
+        let outgoing = cx.subscribe(&composer, |this: &mut ConversationView, _, event: &ComposerEvent, cx| {
+            if matches!(event, ComposerEvent::Outgoing) {
+                this.show_outgoing(cx);
+            }
+        });
         let mut view = ConversationView {
             session: session.clone(),
             read: false,
@@ -125,6 +132,7 @@ impl ConversationView {
             live,
             _queue_follow: None,
             tasks: Vec::new(),
+            _outgoing: outgoing,
         };
         if live {
             let follow = Rc::new(client.follow_conversation(&session, Timing::default()));
@@ -271,10 +279,43 @@ impl ConversationView {
         self.problem.as_ref()
     }
 
-    /// What waits its turn, as the box says it.
+    /// What waits its turn, as the box says it. One of yours on its way that it holds for after the
+    /// run (Stop held it, or it was queued) shows there from now on, not in the conversation.
     pub fn take_queue(&mut self, queue: Queue, cx: &mut Context<Self>) {
+        let held: HashSet<String> = queue.items.iter().flatten().filter(|item| item.held || item.delivery != "steer").map(|item| item.id.clone()).collect();
         self.queue = queue;
         self.queue_failed = None;
+        if !held.is_empty() {
+            self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id), cx));
+        }
+        cx.notify();
+    }
+
+    /// What waits its turn as it's drawn over the composer: not yours on its way to the agent's
+    /// next step, which the conversation shows.
+    fn queued_shown(&self, cx: &App) -> Vec<Item> {
+        let outgoing = self.composer.read(cx).outgoing();
+        self.queued().iter().filter(|item| item.held || item.delivery != "steer" || !outgoing.iter().any(|sent| sent.id == item.id)).cloned().collect()
+    }
+
+    /// The rows of the box's conversation (`rows`), with yours on their way after them (before the
+    /// run under way, which stays last).
+    fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
+        let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().map(Entry::outgoing).unzip();
+        rows.splice(at..at, outgoing);
+        revisions.splice(at..at, outgoing_revisions);
+        (rows, revisions)
+    }
+
+    /// Yours on their way drawn again, as the composer says they changed.
+    fn show_outgoing(&mut self, cx: &mut Context<Self>) {
+        if !self.read {
+            return;
+        }
+        let (rows, revisions): (Vec<Entry>, Vec<u64>) = self.entries.iter().zip(&self.revisions).filter(|(entry, _)| !matches!(entry, Entry::Outgoing { .. })).map(|(entry, revision)| (entry.clone(), *revision)).unzip();
+        let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
+        self.show(rows, revisions);
         cx.notify();
     }
 
@@ -370,7 +411,11 @@ impl ConversationView {
                 self.models_changed = Some(models_changed);
                 self.earlier = conversation.earlier.clone();
                 self.read = true;
+                // Yours on their way that it has now: its copy takes their place.
+                let has: HashSet<&str> = conversation.messages.iter().map(|message| message.id()).collect();
+                self.composer.update(cx, |composer, cx| composer.arrived(|id| has.contains(id), cx));
                 let (rows, revisions) = entries::entries(conversation);
+                let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
                 self.show(rows, revisions);
                 self.composer.update(cx, |composer, cx| {
                     composer.set_running(running, cx);
@@ -409,12 +454,15 @@ impl ConversationView {
         }
         let state = self.list.list_state().clone();
         let is_earlier = |entries: &[Entry]| matches!(entries.first(), Some(Entry::Earlier));
-        let is_working = |entries: &[Entry]| matches!(entries.last(), Some(Entry::Working { .. }));
+        // The rows at the end that aren't the box's messages: yours on their way, then the run
+        // under way. They go as one and come again after what's added.
+        let tail = |entries: &[Entry]| entries.iter().rev().take_while(|entry| matches!(entry, Entry::Working { .. } | Entry::Outgoing { .. })).count();
+        let (old_tail, new_tail) = (tail(&old), tail(new));
         // Each message's row by its key and revision: nothing is compared deeper.
         fn messages<'a>(entries: &'a [Entry], revisions: &[u64]) -> Vec<(&'a str, u64)> {
-            entries.iter().zip(revisions).filter(|(entry, _)| !matches!(entry, Entry::Earlier | Entry::Working { .. })).map(|(entry, revision)| (entry.key(), *revision)).collect()
+            entries.iter().zip(revisions).filter(|(entry, _)| !matches!(entry, Entry::Earlier)).map(|(entry, revision)| (entry.key(), *revision)).collect()
         }
-        let (old_messages, new_messages) = (messages(&old, &old_revisions), messages(new, &self.revisions));
+        let (old_messages, new_messages) = (messages(&old[..old.len() - old_tail], &old_revisions), messages(&new[..new.len() - new_tail], &self.revisions));
         // Where what was shown sits among what's shown now.
         let ahead = match old_messages.first() {
             None => 0,
@@ -434,7 +482,8 @@ impl ConversationView {
         }
         let added = new_messages.len() - ahead - old_messages.len();
         let mut had_earlier = is_earlier(&old);
-        let mut had_working = is_working(&old);
+        let same_tail = old_tail == new_tail && old[old.len() - old_tail..].iter().zip(&new[new.len() - new_tail..]).all(|(was, now)| was.key() == now.key());
+        let mut had_tail = old_tail > 0;
         let mut count = old.len();
         // An earlier page: the way back goes from where it was and comes again above the page, so
         // what the reader had under it stays where it was (the anchor moves with it).
@@ -443,9 +492,9 @@ impl ConversationView {
             had_earlier = false;
             count -= 1;
         }
-        if had_working && (!is_working(new) || added > 0) {
-            state.splice(count - 1..count, 0);
-            had_working = false;
+        if had_tail && (!same_tail || added > 0) {
+            state.splice(count - old_tail..count, 0);
+            had_tail = false;
         }
         let offset = usize::from(had_earlier);
         if ahead > 0 {
@@ -462,10 +511,15 @@ impl ConversationView {
         if !had_earlier && is_earlier(new) {
             state.splice(0..0, 1);
         }
-        if !had_working && is_working(new) {
-            self.list.push(1);
-        } else if had_working && old.last() != new.last() {
-            self.list.changed(new.len() - 1);
+        if !had_tail && new_tail > 0 {
+            self.list.push(new_tail);
+        } else if had_tail {
+            let (from_old, from_new) = (old.len() - old_tail, new.len() - new_tail);
+            for n in 0..new_tail {
+                if old[from_old + n] != new[from_new + n] || old_revisions[from_old + n] != self.revisions[from_new + n] {
+                    self.list.changed(from_new + n);
+                }
+            }
         }
         debug_assert_eq!(state.item_count(), self.entries.len());
     }
@@ -495,6 +549,26 @@ impl ConversationView {
     }
 
     /// The top row, while there are earlier messages: they're read as it comes into view.
+    /// Under one of yours that couldn't go: Retry sends it again, Edit puts it back in the composer.
+    fn unsent_actions(&self, id: &str, cx: &App) -> AnyElement {
+        let sending = self.composer.read(cx).is_sending();
+        let (retry, edit) = (self.composer.clone(), self.composer.clone());
+        let (retry_id, edit_id) = (id.to_owned(), id.to_owned());
+        let (retry_selector, edit_selector) = (format!("retry-{id}"), format!("edit-unsent-{id}"));
+        div()
+            .flex()
+            .gap(space::S1)
+            .child(div().debug_selector(move || retry_selector).child(Button::new(SharedString::from(format!("retry-{id}")), "Retry").size(ButtonSize::Small).disabled(sending).on_click(move |_, _, cx| {
+                retry.update(cx, |composer, cx| composer.retry(&retry_id, cx));
+            })))
+            .child(div().debug_selector(move || edit_selector).child(Button::new(SharedString::from(format!("edit-unsent-{id}")), "Edit").ghost().size(ButtonSize::Small).on_click(move |_, window, cx| {
+                edit.update(cx, |composer, cx| composer.edit_unsent(&edit_id, cx));
+                let focus = edit.focus_handle(cx);
+                window.focus(&focus, cx);
+            })))
+            .into_any_element()
+    }
+
     fn earlier_row(&self, cx_view: &Entity<ConversationView>, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
         if let Some(error) = &self.earlier_failed {
@@ -538,7 +612,7 @@ impl ConversationView {
     /// What waits its turn, over the composer: each message as you wrote it (who it's from, when
     /// it isn't yours), with Edit (yours) and Remove under the pointer.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let items = self.queued();
+        let items = self.queued_shown(cx);
         if items.is_empty() {
             return None;
         }
@@ -647,10 +721,14 @@ impl Render for ConversationView {
                 let cx: &App = cx;
                 let this = list_view.read(cx);
                 let Some(entry) = this.entries.get(ix) else { return div().into_any_element() };
-                let earlier = if matches!(entry, Entry::Earlier) { this.earlier_row(&list_view, cx) } else { div().into_any_element() };
+                let own = match entry {
+                    Entry::Earlier => this.earlier_row(&list_view, cx),
+                    Entry::Outgoing { id, failed: Some(_), .. } => this.unsent_actions(id, cx),
+                    _ => div().into_any_element(),
+                };
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
-                entries::render(ix, entry, &this.open, toggle, earlier, &this.selection, cx)
+                entries::render(ix, entry, &this.open, toggle, own, &this.selection, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.

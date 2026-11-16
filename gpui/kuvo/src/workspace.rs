@@ -1417,8 +1417,8 @@ impl Workspace {
                     self.unsent.insert(session.clone());
                 }
             }
-            // (A group chat's composer is its chat's.)
-            ComposerEvent::Wrote => {}
+            // (A group chat's composer is its chat's; what's on its way, its conversation's.)
+            ComposerEvent::Wrote | ComposerEvent::Outgoing => {}
         }
     }
 

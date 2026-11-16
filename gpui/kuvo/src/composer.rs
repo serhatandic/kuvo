@@ -74,6 +74,26 @@ pub enum ComposerEvent {
     Started { session: String, folder: Option<String>, project: Option<String>, written: String, files: Vec<PathBuf>, sent: Result<Sent, String> },
     /// A group chat took what was written, or stopped: it's to be read again.
     Wrote,
+    /// What's on its way from here changed (`outgoing`): the conversation draws it again.
+    Outgoing,
+}
+
+/// A message sent from here, drawn in its conversation at once as your message (0.7's "Sending"
+/// bubble) until its box's copy, made under the same id, takes its place; one that couldn't go
+/// stays there, saying why, with Retry. This is the client's own record of what it sent
+/// (PROTOCOL.md, "The queue": the in-flight record stays with the client that sends it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outgoing {
+    pub id: String,
+    /// As written.
+    pub words: String,
+    pub files: Vec<PathBuf>,
+    /// Why it couldn't go, once it couldn't.
+    pub failed: Option<String>,
+    /// Its box took it: it's the agent's to read, at its next step.
+    pub taken: bool,
+    /// What goes again on Retry, under the same id (the box takes one id once).
+    draft: Draft,
 }
 
 /// What the chips show, as the box says it.
@@ -112,6 +132,8 @@ pub struct Composer {
     sending: bool,
     /// The message on its way to the conversation's box, for Stop to take with it.
     on_its_way: Option<String>,
+    /// Messages sent from here that the conversation doesn't have yet, in the order sent.
+    outgoing: Vec<Outgoing>,
     /// Whether it reads the box by itself (the app), or shows what it's handed (tests and shots).
     live: bool,
     models: Models,
@@ -230,6 +252,7 @@ impl Composer {
             running: false,
             sending: false,
             on_its_way: None,
+            outgoing: Vec::new(),
             live: read,
             models: Models::default(),
             picked: None,
@@ -385,6 +408,13 @@ impl Composer {
     /// couldn't go, both and why.
     pub fn take_sent(&mut self, written: &str, files: Vec<PathBuf>, sent: Result<Sent, String>, cx: &mut Context<Self>) {
         match sent {
+            // Shown in it at once, until its read has it.
+            Ok(Sent::Message { id }) => {
+                let mut draft = Draft::new(id.clone(), written.to_owned());
+                draft.files = files.iter().map(|path| File::at(path)).collect();
+                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, draft });
+                cx.emit(ComposerEvent::Outgoing);
+            }
             Ok(sent) => self.sent(sent, written, files, cx),
             Err(error) => {
                 self.attach(files, cx);
@@ -854,22 +884,16 @@ impl Composer {
                 });
             }
             Target::Session { id, place } => {
-                // (One at a time: `send` refuses another while this one's on its way.)
-                debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
                 draft.place = self.place_known.then_some(place);
-                self.on_its_way = Some(draft.id.clone());
-                self.spawn(cx, move || client.send_draft(&id, &draft, None), move |this, result, cx| {
-                    this.sending = false;
-                    this.on_its_way = None;
-                    match result {
-                        Ok(sent) => this.sent(sent, &text, files, cx),
-                        Err(error) => {
-                            this.attach(files, cx);
-                            this.put_back(&text, Some(error.to_string()), cx)
-                        }
-                    }
-                    cx.notify();
-                });
+                // A plain message shows in the conversation at once, as you wrote it ("/" and "!"
+                // texts are the box's to say what they are; one kept for a model that can't run
+                // goes back to the composer, saying why).
+                let shows = !typed::asks_box(&text) && typed::plain_answer(&text, draft.side, draft.refusal.as_deref()).is_none();
+                if shows {
+                    self.outgoing.push(Outgoing { id: draft.id.clone(), words: text.clone(), files: files.clone(), failed: None, taken: false, draft: draft.clone() });
+                    cx.emit(ComposerEvent::Outgoing);
+                }
+                self.go(id, draft, text, files, shows, cx);
             }
             Target::New(place) => {
                 let model = self.picked.clone();
@@ -908,6 +932,97 @@ impl Composer {
                     },
                 );
             }
+        }
+    }
+
+    /// Sends `draft` to conversation `session` (`send` or Retry): one at a time, Stop taking it as
+    /// it goes. `shows`: it's drawn in the conversation (`outgoing`), which says what became of it;
+    /// else what was written goes back to the composer if it couldn't go.
+    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, shows: bool, cx: &mut Context<Self>) {
+        // (One at a time: `send` and Retry refuse another while this one's on its way.)
+        debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
+        self.sending = true;
+        let client = self.client.clone();
+        let id = draft.id.clone();
+        self.on_its_way = Some(id.clone());
+        self.spawn(cx, move || client.send_draft(&session, &draft, None), move |this, result, cx| {
+            this.sending = false;
+            this.on_its_way = None;
+            match result {
+                Ok(Sent::Message { .. }) if shows => this.mark(&id, |outgoing| outgoing.taken = true, cx),
+                Ok(sent) => {
+                    this.forget(&id, cx);
+                    this.sent(sent, &text, files, cx);
+                }
+                Err(error) if shows => {
+                    let why = error.to_string();
+                    this.mark(&id, |outgoing| outgoing.failed = Some(why), cx);
+                }
+                Err(error) => {
+                    this.attach(files, cx);
+                    this.put_back(&text, Some(error.to_string()), cx)
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    /// Whether a message is on its way now (another waits until it's gone).
+    pub fn is_sending(&self) -> bool {
+        self.sending
+    }
+
+    /// Messages sent from here that the conversation doesn't have yet, in the order sent.
+    pub fn outgoing(&self) -> &[Outgoing] {
+        &self.outgoing
+    }
+
+    /// Those the conversation (or its queue) now has (`has`, by id), let go: its copy takes their
+    /// place. (One said not to have gone that the box has did go: its answer was lost on the way.)
+    pub fn arrived(&mut self, has: impl Fn(&str) -> bool, cx: &mut Context<Self>) {
+        let before = self.outgoing.len();
+        self.outgoing.retain(|outgoing| !has(&outgoing.id));
+        if self.outgoing.len() != before {
+            cx.emit(ComposerEvent::Outgoing);
+        }
+    }
+
+    /// Sends one that couldn't go again, under its id; not while another's on its way.
+    pub fn retry(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Target::Session { id: session, .. } = self.target.clone() else { return };
+        if self.sending || self.client.gate().is_held() {
+            return;
+        }
+        let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id && outgoing.failed.is_some()) else { return };
+        outgoing.failed = None;
+        let (draft, text, files) = (outgoing.draft.clone(), outgoing.words.clone(), outgoing.files.clone());
+        cx.emit(ComposerEvent::Outgoing);
+        self.go(session, draft, text, files, true, cx);
+        cx.notify();
+    }
+
+    /// One that couldn't go, back in the composer (ahead of anything written since) to change.
+    pub fn edit_unsent(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(at) = self.outgoing.iter().position(|outgoing| outgoing.id == id && outgoing.failed.is_some()) else { return };
+        let outgoing = self.outgoing.remove(at);
+        self.attach(outgoing.files, cx);
+        self.put_back(&outgoing.words, None, cx);
+        cx.emit(ComposerEvent::Outgoing);
+        cx.notify();
+    }
+
+    fn mark(&mut self, id: &str, change: impl FnOnce(&mut Outgoing), cx: &mut Context<Self>) {
+        if let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id) {
+            change(outgoing);
+            cx.emit(ComposerEvent::Outgoing);
+        }
+    }
+
+    fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
+        let before = self.outgoing.len();
+        self.outgoing.retain(|outgoing| outgoing.id != id);
+        if self.outgoing.len() != before {
+            cx.emit(ComposerEvent::Outgoing);
         }
     }
 
