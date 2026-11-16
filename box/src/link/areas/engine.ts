@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { EngineRecord, Target } from "../../shared/records";
 import { canonicalPath, signInReturn, socketAllowed } from "../server/paths";
-import { HERE, IS_MAC, K, RUN } from "../home";
+import { HERE, IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
 import { plainName } from "../../shared/text";
 import { macLink, readLink } from "../state";
 import { phoneHere } from "../compat/leave-running";
@@ -24,10 +24,15 @@ import type { UpdateStep } from "../../shared/routes/box";
 import type { SessionPhone, SocketEvents, SocketHandle } from "../relay/host";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
+/** The engine here, at the start of a sentence: this Mac's, or this machine's. */
+const ENGINE_HERE = IS_MAC ? "This Mac's engine" : "This machine's engine";
+
 export const engineDown = (): string => {
   // COMPAT(0.7 engine-stop): an engine an older Mac's Stop left down. Goes on the user's word, once no Mac from before 1.0 connects.
   if (fs.existsSync(path.join(RUN, "stopped"))) return "The engine isn't running.";
-  if (IS_MAC) {
+  // (The retired app, which kept its box in its folder, wrote why it gave up. A Mac's box in a
+  // home of its own is kept as a machine's is, by its keeper, which notes its next start.)
+  if (IS_MAC && !OWN_HOME_MAC) {
     let why = "";
     try { why = fs.readFileSync(path.join(RUN, "engine-stopped"), "utf8").trim(); } catch {}
     // (While it's tried again by itself, `run/engine.retry`, its reason says so.)
@@ -38,9 +43,9 @@ export const engineDown = (): string => {
   // (The keeper looks every fifteen seconds, and a start takes a few more.)
   const minutes = Math.ceil((retry - Date.now() / 1000) / 60);
   if (Number.isFinite(retry) && retry - Date.now() / 1000 > 30) {
-    return `This machine's engine keeps stopping. It's started again in ${minutes === 1 ? "about a minute" : `about ${minutes} minutes`}.`;
+    return `${ENGINE_HERE} keeps stopping. It's started again in ${minutes === 1 ? "about a minute" : `about ${minutes} minutes`}.`;
   }
-  return "This machine's engine is starting. Try again in a moment.";
+  return `${ENGINE_HERE} is starting. Try again in a moment.`;
 };
 
 /** What starting the engine here came to: its status (202, under way), and why not, when it isn't. */
