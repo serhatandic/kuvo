@@ -31,6 +31,19 @@ pub fn ago(then: f64, now: f64) -> String {
     }
 }
 
+/// When something last looked (the app for an update), at `now`: "Last checked 5 minutes ago."
+pub fn last_checked(checked: Option<f64>, now: f64) -> String {
+    let Some(checked) = checked else { return "Not checked yet.".into() };
+    let minutes = ((now - checked) / 60_000.0).max(0.0) as u64;
+    let (count, unit) = match minutes {
+        0 => return "Last checked just now.".into(),
+        1..60 => (minutes, "minute"),
+        60..1440 => (minutes / 60, "hour"),
+        _ => (minutes / 1440, "day"),
+    };
+    format!("Last checked {count} {unit}{} ago.", if count == 1 { "" } else { "s" })
+}
+
 /// How long until `then`, at `now`: "52 min", "3 h 40 min", "4 days".
 pub fn until(then: f64, now: f64) -> String {
     let minutes = (((then - now) / 60_000.0).max(0.0)).ceil() as u64;
@@ -133,6 +146,16 @@ pub fn due_words(due: &str, today: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_check_is_said_in_words() {
+        let now = 1_000_000_000_000.0;
+        assert_eq!(last_checked(None, now), "Not checked yet.");
+        assert_eq!(last_checked(Some(now - 20_000.0), now), "Last checked just now.");
+        assert_eq!(last_checked(Some(now - 60_000.0), now), "Last checked 1 minute ago.");
+        assert_eq!(last_checked(Some(now - 5.0 * 3_600_000.0), now), "Last checked 5 hours ago.");
+        assert_eq!(last_checked(Some(now - 3.0 * 86_400_000.0), now), "Last checked 3 days ago.");
+    }
 
     #[test]
     fn times_read_as_a_sidebar_says_them() {

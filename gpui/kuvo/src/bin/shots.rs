@@ -226,6 +226,9 @@ const SCREENS: &[Screen] = &[
     // A file of this Mac's, with the editor picked in General.
     Screen { slug: "file-open-in", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(file_open_in) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
+    // Your settings › Updates (`settings/rows.rs`, `updates`): the app's version and its updates.
+    Screen { slug: "settings-a-updates", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
+    Screen { slug: "settings-a-updates-narrow", width: 760., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
     Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
     Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -610,6 +613,9 @@ fn settings(workspace: &mut Workspace, section: &str, window: &mut Window, cx: &
 
 fn yours(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/appearance", window, cx);
+}
+fn updates(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/updates", window, cx);
 }
 /// General, with the editors a Mac might have.
 fn yours_general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1184,6 +1190,8 @@ fn main() -> anyhow::Result<()> {
         // what's yours more (never asked here: nothing is pressed).
         cx.set_global(kuvo::confirm_you::ConfirmYou(std::sync::Arc::new(|_: &str| false)));
         bind_keys(cx);
+        // The app's updater, made up: a release that updates itself, last checked two hours ago.
+        kuvo::updates::Updates::install(std::rc::Rc::new(kuvo::updates::stand_in::StandIn::new("0.8.0", Some(NOW - 2.0 * 3_600_000.0))), None, cx);
     });
     for screen in SCREENS {
         if !only.is_empty() && !only.iter().any(|slug| slug == screen.slug) {

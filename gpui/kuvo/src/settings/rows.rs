@@ -12,6 +12,7 @@ use kuvo_ui::IconName;
 use serde_json::Value;
 
 use crate::areas::Reading;
+use crate::updates::{Can, Facts as UpdateFacts};
 
 /// One of Settings' sections this app lists itself.
 pub struct Listed {
@@ -34,6 +35,7 @@ pub const YOURS: &[Listed] = &[
     listed("general", "General", IconName::Settings, "", "open files editor code text"),
     listed("appearance", "Appearance", IconName::Sun, "", "theme light dark system auto colours colors text size font bigger smaller larger zoom"),
     listed("notifications", "Notifications", IconName::Bell, "", "sound badge dock finished waits asks alerts"),
+    listed("updates", "Updates", IconName::ArrowDown, "", "version beta check new release automatic download install sparkle"),
 ];
 
 /// Yours that the desktop app hasn't yet: each opens a page saying so.
@@ -41,7 +43,6 @@ pub const YOURS_LATER: &[Listed] = &[
     listed("voice", "Voice", IconName::Mic, "", "microphone dictation speech"),
     listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
     listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
-    listed("updates", "Updates", IconName::ArrowDown, "", "version beta"),
     listed("privacy", "Privacy", IconName::Info, "", "crash reports"),
 ];
 
@@ -111,6 +112,8 @@ pub enum Act {
     SetNotice(Notice, bool),
     /// One of your own settings changed, kept on this device.
     Yours(crate::yours::Change),
+    /// The app's own updates (`crate::updates`).
+    Update(UpdateAct),
     /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
     /// its confirm, where it has one, was answered).
     Change { at: At, value: Value, asked: bool },
@@ -136,6 +139,15 @@ pub enum Act {
     Form { at: At, action: String, form: Box<Form> },
     /// A flow's pasted address, sent with the action that takes it (`code`'s).
     Code { at: At, action: String },
+}
+
+/// What Settings › Updates asks of the app's updater.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateAct {
+    Check,
+    Checks(bool),
+    Downloads(bool),
+    Betas(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,6 +419,12 @@ pub struct YoursFacts<'a> {
     pub problem: Option<&'a str>,
     /// Where System Settings shows this app's notifications.
     pub notification_settings: &'a str,
+    /// How the app stands with updating itself (none: this app has no updater, as in tests that
+    /// set none). Sparkle keeps these settings itself, so they aren't in `yours`.
+    pub updates: Option<&'a UpdateFacts>,
+    /// The window's computer is this one, and its name ("This Mac").
+    pub here: Option<&'a str>,
+    pub now: f64,
 }
 
 /// A switch of your own settings: on, and the change flipping it makes.
@@ -451,6 +469,7 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
             );
             vec![Block::Group(String::new(), String::new(), vec![theme, size])]
         }
+        "updates" => updates(facts),
         "notifications" => {
             let now = &facts.yours.notifications;
             let rows = vec![
@@ -465,6 +484,49 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
     };
     if let Some(problem) = facts.problem.filter(|_| !blocks.is_empty()) {
         blocks.push(Block::Note { key: "note-yours-problem".into(), words: format!("Your change couldn’t be kept for next time: {problem}"), busy: false, warning: true });
+    }
+    blocks
+}
+
+// MARK: Updates
+
+/// The app's version and its updates. Kuvo on this computer isn't updated here: it updates itself,
+/// taking the release each new app brings, and its version is under its own settings.
+fn updates(yours: &YoursFacts) -> Vec<Block> {
+    let without = UpdateFacts::without(crate::updates::version(), crate::updates::NOT_THIS_BUILD);
+    let facts = yours.updates.unwrap_or(&without);
+    let detail = match &facts.can {
+        Can::Not(why) => why.clone(),
+        // (A check, a download, or Sparkle's window waiting on you: its window says which.)
+        Can::Update if facts.busy => "An update is under way.".to_owned(),
+        // (Sparkle couldn't start: it said why once, in its own window.)
+        Can::Update if !facts.can_check => "Kuvo can’t check for updates now.".to_owned(),
+        Can::Update => crate::time::last_checked(facts.checked, yours.now),
+    };
+    let control = if facts.updates() { Control::Buttons(vec![Push { label: "Check Now".into(), act: (facts.can_check || facts.busy).then_some(Act::Update(UpdateAct::Check)) }]) } else { Control::None };
+    let mut version = Row::new("row-version", format!("Kuvo {}", facts.version), detail, control);
+    if crate::updates::is_beta(&facts.version) {
+        version.badge = Some(("Beta".into(), BadgeTone::Quiet));
+    }
+    let mut rows = vec![version];
+    // (Its own version and updates are the computer's: under its settings, described by its box.)
+    if let Some(name) = yours.here {
+        rows.push(Row::new("row-update-computer", format!("Kuvo on {name}"), "Updates itself when nothing’s at work, taking what each new version of the app brings.", Control::Opens(Act::Go(super::box_key("", "computer")))));
+    }
+    let mut blocks = vec![Block::Group("Version".into(), String::new(), rows)];
+    if facts.updates() {
+        let switch = |on: bool, act: fn(bool) -> UpdateAct| Control::Switch { on, act: Some(Act::Update(act(!on))) };
+        let mut rows = vec![Row::new("row-update-checks", "Check for updates automatically", "Kuvo looks once a day, and tells you when there’s a new version.", switch(facts.checks, UpdateAct::Checks))];
+        if let Some(downloads) = facts.downloads {
+            let line = "New versions download in the background and install the next time Kuvo quits.";
+            rows.push(if facts.checks {
+                Row::new("row-update-downloads", "Download and install automatically", line, switch(downloads, UpdateAct::Downloads))
+            } else {
+                Row::new("row-update-downloads", "Download and install automatically", line, Control::Switch { on: false, act: None }).why(Some("Turn on automatic checks first.".into()))
+            });
+        }
+        rows.push(Row::new("row-update-betas", "Get beta updates", "Try new features before they’re released. Betas can have bugs.", switch(facts.betas, UpdateAct::Betas)));
+        blocks.push(Block::Group("Getting Updates".into(), "Signed updates from Kuvo’s releases.".into(), rows));
     }
     blocks
 }

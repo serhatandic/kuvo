@@ -33,8 +33,9 @@ use kuvo_ui::{IconName, TextField, TextFieldEvent};
 use serde_json::Value;
 
 use crate::areas::Reading;
+use crate::updates::Updates;
 
-pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
+pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone, UpdateAct};
 use form::{FormEvent, FormSheet};
 
 /// What's said when you didn't confirm it was you: nothing was sent.
@@ -205,6 +206,8 @@ pub struct SettingsView {
     /// The confirm asks for the keyboard as it opens (Escape cancels it).
     confirm_focus: FocusHandle,
     focus_confirm: bool,
+    /// The app's updater, and how it stood when last drawn (Updates).
+    updates: Option<(Entity<Updates>, crate::updates::Facts)>,
     /// The editors on this Mac General offers (read as Settings opens).
     editors: Vec<crate::yours::editors::Editor>,
     /// Where System Settings shows this app's notifications.
@@ -319,6 +322,7 @@ impl SettingsView {
             codes: HashMap::new(),
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
+            updates: None,
             editors: if live { crate::yours::editors::installed() } else { Vec::new() },
             notification_settings: crate::yours::desk::notification_settings(),
             yours_now: Default::default(),
@@ -332,6 +336,18 @@ impl SettingsView {
             // (Your settings changed, here or by a key: their pages show it.)
             _subscriptions: vec![subscription, cx.observe_global::<crate::yours::Store>(|this: &mut SettingsView, cx| this.rebuild(cx))],
         };
+        // The app's updates, followed as they change (a check starting or ending, a choice made
+        // in Sparkle's own window).
+        if let Some(updates) = Updates::get(cx) {
+            view._subscriptions.push(cx.observe(&updates, |this: &mut SettingsView, updates, cx| {
+                let facts = updates.read(cx).facts().clone();
+                if this.updates.as_ref().is_some_and(|(_, was)| *was != facts) {
+                    this.updates = Some((updates, facts));
+                    this.rebuild(cx);
+                }
+            }));
+            view.updates = Some((updates.clone(), updates.read(cx).facts().clone()));
+        }
         view.rebuild(cx);
         let sized = kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
         view._subscriptions.push(sized);
@@ -633,7 +649,9 @@ impl SettingsView {
         match entry.drawn {
             Drawn::Yours => {
                 let (yours, problem) = &self.yours_now;
-                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, problem: problem.as_deref(), notification_settings: &self.notification_settings })
+                // (Kuvo on this computer, where the window's box is this computer's.)
+                let here = self.home.here().then_some(self.this_box.as_str());
+                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, problem: problem.as_deref(), notification_settings: &self.notification_settings, updates: self.updates.as_ref().map(|(_, facts)| facts), here, now: self.now.unwrap_or_else(crate::time::now_ms) })
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
@@ -1486,6 +1504,17 @@ impl SettingsView {
                 let based = usage.version.clone();
                 // A part changed on another computer meanwhile is turned away: the box's is shown.
                 self.change(key, move |client| client.set_usage_notices(notices, based.as_deref()), |this, usage| this.usage = Reading::Ready(usage), cx)
+            }
+            Act::Update(asked) => {
+                let Some((updates, _)) = self.updates.clone() else { return };
+                updates.update(cx, |updates, cx| match asked {
+                    UpdateAct::Check => updates.check(cx),
+                    UpdateAct::Checks(on) => updates.set_checks(on, cx),
+                    UpdateAct::Downloads(on) => updates.set_downloads(on, cx),
+                    UpdateAct::Betas(on) => updates.set_betas(on, cx),
+                });
+                // (What it says now, at once: the observer above goes after this.)
+                self.updates = Some((updates.clone(), updates.read(cx).facts().clone()));
             }
             Act::Yours(change) => crate::yours::change(change, cx),
         }

@@ -3,22 +3,19 @@
 #   scripts/set-update-key.sh
 # Sets SPARKLE_PRIVATE_KEY from the key in your login keychain, the one every
 # Kuvo app signs its updates with, after checking that it matches the public key
-# in scripts/build-app.sh. macOS asks you to allow access to the key.
+# the desktop app trusts (scripts/build-desktop-app.sh, REAL_UPDATE_PUBLIC_KEY; 0.7 trusts the
+# same). macOS asks you to allow access to the key. Run it yourself, in Terminal.
 set -eu
 cd "$(dirname "$0")/.."
 
 REPO=${REPO:-serhatandic/kuvo-code}
 
-TOOL=$(find build/SourcePackages/artifacts -path '*/Sparkle/bin/generate_keys' -type f | head -n 1)
-if [ -z "$TOOL" ]; then
-    echo "generate_keys not found; build the app first (scripts/build-app.sh)." >&2
-    exit 1
-fi
+TOOL="$(./scripts/sparkle.sh)/bin/generate_keys"
 
-EXPECTED=$(sed -n 's/^UPDATE_PUBLIC_KEY="\(.*\)"/\1/p' scripts/build-app.sh)
+EXPECTED=$(sed -n 's/^REAL_UPDATE_PUBLIC_KEY="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)
 ACTUAL=$("$TOOL" -p 2>/dev/null || true)
-if [ "$ACTUAL" != "$EXPECTED" ]; then
-    echo "The update key in your keychain doesn't match scripts/build-app.sh. Nothing was uploaded." >&2
+if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "The update key in your keychain doesn't match scripts/build-desktop-app.sh. Nothing was uploaded." >&2
     exit 1
 fi
 

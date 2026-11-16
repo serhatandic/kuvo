@@ -98,9 +98,11 @@ fn general_and_notifications_open_with_their_rows_and_the_rest_say_theyre_coming
     }
     click(cx, "setting-appearance");
     assert!(shown(cx, "row-theme"));
+    click(cx, "setting-updates");
+    assert!(shown(cx, "row-version"));
     // The others aren't in the desktop app yet, and say so.
     click(cx, "settings-later");
-    for later in ["voice", "shortcuts", "panel", "updates", "privacy"] {
+    for later in ["voice", "shortcuts", "panel", "privacy"] {
         click(cx, &format!("setting-{later}"));
         assert!(shown(cx, "placeholder"), "{later}");
     }

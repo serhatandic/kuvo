@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 use kuvo::launch::{Launch, Opens};
+use kuvo::updates::Updates;
 use kuvo::{Home, bind_keys};
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::Boxes;
@@ -27,6 +28,11 @@ fn main() {
     if std::env::args().any(|argument| argument == "--install-status") {
         std::process::exit(install_status());
     }
+    // Whether this build's Sparkle loads as the app would load it, and the feed it names; nothing
+    // started, nothing reached (`kuvo --updater-status`: the release and a signed copy check it).
+    if std::env::args().any(|argument| argument == "--updater-status") {
+        std::process::exit(updater_status());
+    }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
         // Touch ID, or this Mac's password, before what lets something use what's yours from now on.
@@ -35,9 +41,17 @@ fn main() {
         kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
         // Who its notifications are from (macOS takes it from the bundle; Linux from this).
         cx.set_app_identity("run.kuvo.code", "Kuvo");
-        // Its menu bar (Quit with ⌘Q among it), and quitting as its window closes (it has only the
-        // one). The first Quit, on a Mac whose Kuvo stays at work in the menu bar, says so first
-        // (`kuvo::quit_note`, answered in `app_menu`), remembered in your settings.
+        // Its updates: Sparkle, where the bundle carries it and names a feed (`updates`). The
+        // stand-in's app has a made-up updater, so Settings › Updates shows as it would.
+        if stand_in() {
+            stand_in_updates(cx);
+        } else {
+            kuvo::updates::start(cx);
+        }
+        // Its menu bar (Quit with ⌘Q among it, and Check for Updates… where it updates itself), and
+        // quitting as its window closes (it has only the one). The first Quit, on a Mac whose Kuvo
+        // stays at work in the menu bar, says so first (`kuvo::quit_note`, answered in
+        // `app_menu`), remembered in your settings.
         kuvo::app_menu::init(cx);
         cx.on_window_closed(|cx, _| {
             // (The small window beside System Settings isn't the app's own.)
@@ -125,6 +139,17 @@ fn install_status() -> i32 {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn updater_status() -> i32 {
+    kuvo::updates::sparkle::status()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn updater_status() -> i32 {
+    eprintln!("This build has no updater of its own.");
+    1
+}
+
 /// Whether it's run against the made-up box (`--stand-in`, with the `stand-in` feature).
 fn stand_in() -> bool {
     cfg!(feature = "stand-in") && std::env::args().any(|argument| argument == "--stand-in")
@@ -199,6 +224,18 @@ fn stand_in_boxes() -> (Boxes, BoxClient) {
     let boxes = kuvo::home::stand_in_boxes(stand_in);
     let first = boxes.nearest().expect("the stand-in is the nearest box");
     (boxes, first)
+}
+
+/// A made-up updater for the stand-in's app: it updates itself, and was last checked an hour ago.
+#[cfg(feature = "stand-in")]
+fn stand_in_updates(cx: &mut App) -> gpui::Entity<Updates> {
+    let updater = kuvo::updates::stand_in::StandIn::new(kuvo::updates::version(), Some(kuvo::time::now_ms() - 3_600_000.0));
+    Updates::install(std::rc::Rc::new(updater), None, cx)
+}
+
+#[cfg(not(feature = "stand-in"))]
+fn stand_in_updates(cx: &mut App) -> gpui::Entity<Updates> {
+    kuvo::updates::start(cx)
 }
 
 #[cfg(not(feature = "stand-in"))]

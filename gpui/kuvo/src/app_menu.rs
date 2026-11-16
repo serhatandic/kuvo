@@ -10,7 +10,7 @@ use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window, ac
 use kuvo_ui::text_field::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 
 use crate::area::{Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings};
-use crate::{NewSession, Quit, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar};
+use crate::{CheckForUpdates, NewSession, Quit, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar};
 
 actions!(app_menu, [About, Hide, HideOthers, ShowAll, Minimize, Zoom, BringAllToFront]);
 
@@ -24,7 +24,8 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 /// Answers the menu's app and window items, and sets the menu bar. After the keys are bound,
-/// so each item shows its key.
+/// so each item shows its key, and after the app's updater started (`crate::updates`), so Check
+/// for Updates… is there where it updates itself.
 pub fn init(cx: &mut App) {
     // Quit: the first time, on a Mac whose Kuvo stays at work in the menu bar, a note says so
     // first (`crate::quit_note`). After the key's dispatch: the window it came through is busy
@@ -39,14 +40,29 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &BringAllToFront, cx| bring_all_to_front(cx));
     // Help, from a window without the workspace too (the one setting up Kuvo).
     cx.on_action(|_: &OpenHelp, cx| cx.open_url(crate::area::HELP));
-    cx.set_menus(menus());
+    cx.on_action(|_: &CheckForUpdates, cx| {
+        if let Some(updates) = crate::updates::Updates::get(cx) {
+            updates.update(cx, |updates, cx| updates.check(cx));
+        }
+    });
+    let updates = crate::updates::Updates::get(cx).is_some_and(|updates| updates.read(cx).facts().updates());
+    cx.set_menus(menus_with(updates));
 }
 
-/// The menu bar's menus.
+/// The menu bar's menus, in an app that doesn't update itself.
 pub fn menus() -> Vec<Menu> {
+    menus_with(false)
+}
+
+/// The menu bar's menus; with Check for Updates… after About where the app updates itself
+/// (`updates`), as 0.7's.
+pub fn menus_with(updates: bool) -> Vec<Menu> {
+    let mut about = vec![MenuItem::action("About Kuvo", About)];
+    if updates {
+        about.push(MenuItem::action("Check for Updates…", CheckForUpdates));
+    }
     vec![
-        Menu::new("Kuvo").items([
-            MenuItem::action("About Kuvo", About),
+        Menu::new("Kuvo").items(about.into_iter().chain([
             MenuItem::separator(),
             MenuItem::action("Settings…", ShowSettings),
             MenuItem::action("Accounts…", ShowAccounts),
@@ -58,7 +74,7 @@ pub fn menus() -> Vec<Menu> {
             MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
             MenuItem::action("Quit Kuvo", Quit),
-        ]),
+        ])),
         Menu::new("File").items([MenuItem::action("New Session", NewSession)]),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", Undo, OsAction::Undo),

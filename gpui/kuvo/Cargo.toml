@@ -27,8 +27,9 @@ libc = "0.2"
 objc2 = "0.6"
 raw-window-handle = "0.6"
 # Your settings' Notifications and General: the Dock's count, and which editors
-# are on this Mac (notifications.rs, yours/mac.rs).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL"] }
+# are on this Mac (notifications.rs, yours/mac.rs); and the app updating itself, Sparkle loaded
+# from the bundle and driven through its classes (updates/sparkle.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL", "NSSet", "NSUserDefaults", "NSDate", "NSError", "NSDictionary", "NSArray", "NSObject", "NSEnumerator"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace"] }
 # Posting notifications with macOS's own sound (Focus and System Settings silence it), clicks
 # going to GPUI's delegate by the same identifier.
