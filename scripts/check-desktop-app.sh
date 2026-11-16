@@ -8,7 +8,8 @@
 #       as the app; the box's release is whole: boxes.json's signature is its key's, its version
 #       the app's, its pack the one it names (SHA-256), every file in the pack what the pack's
 #       box.json says (as `kuvo-install` and the box check it), and Kuvo Helper in it still signed,
-#       as <ID>.box.
+#       as <ID>.box. Sparkle, the app's updater, is in Contents/Frameworks, signed, for Apple silicon,
+#       with Info.plist naming its feed and key (Kuvo Code's own for run.kuvo.code).
 #   scripts/check-desktop-app.sh --run <Kuvo.app>
 #       That, then a dry run: a COPY of the bundle with another bundle ID (<ID>.check, signed ad
 #       hoc again), in a home folder made for it, is asked what the computer holds
@@ -18,6 +19,8 @@
 #       written in your own home folder: the copy, its home and the engine `status` fetches (it
 #       needs the network) are in a temporary folder that goes when this ends.
 #   NODE   the Node to read the release with (default: node)
+#   WITHOUT_KEYS   1: an app with no kuvo-keys passes, said (a release signing's dry run, which takes
+#          it out: scripts/sign-desktop-app.sh). Never for an app that's published.
 set -eu
 
 RUN=0
@@ -50,9 +53,34 @@ if signed "$APP" | grep -q '^Signature=adhoc$'; then SIGNER="ad hoc"; else SIGNE
 # kuvo-keys, where the box's move looks for it (<bundle>/Contents/MacOS/kuvo-keys), as the app
 # itself to the Keychain.
 KEYS="$APP/Contents/MacOS/kuvo-keys"
-test -x "$KEYS" || fail "it carries no kuvo-keys (Contents/MacOS/kuvo-keys): the move from Kuvo Code 0.7 couldn't hand over its Keychain items."
-codesign --verify --strict "$KEYS" || fail "kuvo-keys's signature doesn't hold."
-[ "$(identifier "$KEYS")" = "$ID" ] || fail "kuvo-keys is signed as $(identifier "$KEYS"), not as $ID."
+KEYS_SAY="kuvo-keys"
+if [ ! -e "$KEYS" ] && [ "${WITHOUT_KEYS:-}" = 1 ]; then
+    KEYS_SAY="NO kuvo-keys (it can't hand Kuvo Code 0.7's Keychain items over)"
+else
+    test -x "$KEYS" || fail "it carries no kuvo-keys (Contents/MacOS/kuvo-keys): the move from Kuvo Code 0.7 couldn't hand over its Keychain items."
+    codesign --verify --strict "$KEYS" || fail "kuvo-keys's signature doesn't hold."
+    [ "$(identifier "$KEYS")" = "$ID" ] || fail "kuvo-keys is signed as $(identifier "$KEYS"), not as $ID."
+fi
+
+# Sparkle, the app's updater (updates/sparkle.rs loads it from here), and its feed and key.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+test -d "$SPARKLE" || fail "it carries no Sparkle (Contents/Frameworks/Sparkle.framework): it can't update itself."
+for part in "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" "$SPARKLE"; do
+    codesign --verify --strict "$part" || fail "Sparkle's ${part#"$SPARKLE"/} isn't signed as it should be."
+    signed "$part" | grep -q 'flags=.*runtime' || fail "Sparkle's ${part#"$SPARKLE"/} isn't signed with the hardened runtime."
+done
+for binary in "$SPARKLE/Versions/B/Sparkle" "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app/Contents/MacOS/Updater"; do
+    [ "$(lipo -archs "$binary")" = arm64 ] || fail "Sparkle's ${binary#"$SPARKLE"/} isn't for Apple silicon alone."
+done
+test ! -e "$SPARKLE/Versions/B/XPCServices" || fail "Sparkle still has its XPC services, which only a sandboxed app uses."
+FEED=$(info SUFeedURL) || fail "its Info.plist names no update feed (SUFeedURL)."
+UPDATE_KEY=$(info SUPublicEDKey) || fail "its Info.plist names no update key (SUPublicEDKey)."
+[ "$(info SUVerifyUpdateBeforeExtraction)" = true ] || fail "its Info.plist doesn't have updates checked before they're unpacked (SUVerifyUpdateBeforeExtraction)."
+if [ "$ID" = run.kuvo.code ]; then
+    [ "$FEED" = "$(sed -n 's/^REAL_FEED_URL="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)" ] || fail "Kuvo Code reads $FEED, not its own feed."
+    [ "$UPDATE_KEY" = "$(sed -n 's/^REAL_UPDATE_PUBLIC_KEY="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)" ] || fail "Kuvo Code trusts updates signed with another key than its own."
+fi
+SPARKLE_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$SPARKLE/Resources/Info.plist")
 
 # The box's release, where the app looks for it.
 RELEASE="$APP/Contents/Resources/box-release"
@@ -107,7 +135,7 @@ test -d "$HELPER" || fail "its release's pack has no Kuvo Helper (bin/Kuvo Helpe
 codesign --verify --deep --strict "$HELPER" || fail "Kuvo Helper, as packed, isn't signed as it was."
 [ "$(identifier "$HELPER")" = "$ID.box" ] || fail "Kuvo Helper is signed as $(identifier "$HELPER"), not as $ID.box."
 
-echo "Checked $APP: $ID $VERSION, signed $SIGNER; kuvo-keys; the box's $VERSION release (signed with $KEY_SAYS) with Kuvo Helper."
+echo "Checked $APP: $ID $VERSION, signed $SIGNER; $KEYS_SAY; Sparkle $SPARKLE_VERSION reading $FEED; the box's $VERSION release (signed with $KEY_SAYS) with Kuvo Helper."
 [ "$RUN" = 1 ] || exit 0
 
 # The dry run: a copy with an ID of its own, in a home of its own. Never the bundle itself, which

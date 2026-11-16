@@ -3,8 +3,11 @@
 # feed's "beta" channel, which only copies that get betas read); scripts/merge-appcast.py adds
 # the newest of the other kind from the feed that's out:
 #   scripts/appcast.sh VERSION FILE URL [NOTES] > appcast.xml
-# URL is where FILE will be downloaded from. The file is signed with the update
-# key from SPARKLE_PRIVATE_KEY if set (CI), or else from the login keychain.
+# URL is where FILE (the desktop app's disk image) will be downloaded from. The file is signed
+# with the update key from SPARKLE_PRIVATE_KEY if set (CI), or else from the login keychain, by
+# the sign_update of the Sparkle the app carries (scripts/sparkle.sh). Kuvo Code 0.7 reads the same
+# feed and takes these items too: their sparkle:version (scripts/build-version.sh) goes on from
+# 0.7's, so 0.7 updates into the desktop app.
 # NOTES is a Markdown file the update window shows (see scripts/release-notes.sh).
 set -eu
 
@@ -30,11 +33,7 @@ $(cat "$NOTES")
 ]]></description>"
 fi
 
-TOOL=$(find build/SourcePackages/artifacts -path '*/Sparkle/bin/sign_update' -type f | head -n 1)
-if [ -z "$TOOL" ]; then
-    echo "sign_update not found; build the app first." >&2
-    exit 1
-fi
+TOOL="$(./scripts/sparkle.sh)/bin/sign_update"
 
 if [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
     SIGNATURE=$(printf '%s' "$SPARKLE_PRIVATE_KEY" | "$TOOL" --ed-key-file - "$FILE")
@@ -52,7 +51,7 @@ cat <<XML
   <channel>
     <title>Kuvo Code</title>
     <item>
-      <title>Kuvo Code $VERSION</title>
+      <title>Kuvo $VERSION</title>
       <sparkle:version>$BUILD</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>$CHANNEL
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
