@@ -14994,6 +14994,7 @@ class ClaudeAgent {
   listed = [];
   program = 0;
   signOut;
+  signOutShared;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
@@ -15013,7 +15014,8 @@ class ClaudeAgent {
           this.modelList = undefined;
         }
       };
-    } else if (instance.id === "default" && instance.home) {
+    } else if (instance.id === "default") {
+      this.signOutShared = !instance.home;
       this.signOut = async () => {
         await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env());
         this.programUpdated();
@@ -17511,13 +17513,15 @@ class CodexAgent {
     return { windows, ...typeof type === "string" && type !== "unknown" ? { plan: codexPlan(type) } : {}, ...extras.length ? { extras } : {} };
   }
   signOut;
+  signOutShared;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
     this.providerID = providerID("codex", instance.id);
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home;
       this.signOut = async () => {
-        await signOutWith("Codex", this.executable(), ["logout"], { ...process.env, CODEX_HOME: instance.home });
+        await signOutWith("Codex", this.executable(), ["logout"], instance.home ? { ...process.env, CODEX_HOME: instance.home } : process.env);
         this.shutdown();
         this.known.reset();
         this.modelList = undefined;
@@ -19973,6 +19977,8 @@ class CursorAgent {
     rmSync14(this.authFile, { force: true });
     this.known.reset();
     this.modelList = undefined;
+    if (!this.instance.home && process.env.CURSOR_API_KEY?.trim())
+      throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell\u2019s environment. Remove it there to sign out.");
   }
   async models() {
     const sdk = await this.sdk();
@@ -21041,11 +21047,13 @@ class GrokAgent {
     } catch {}
   }
   signOut;
+  signOutShared;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
     this.providerID = providerID("grok", instance.id);
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home;
       this.signOut = async () => {
         await signOutWith("Grok", this.executable(), ["logout"], this.env());
         this.programUpdated();
@@ -35904,6 +35912,7 @@ async function integration(agent, fresh = false, auto) {
       account: account.label,
       install: agent.install,
       signsOut: Boolean(agent.signOut),
+      signOutShared: Boolean(agent.signOut && agent.signOutShared),
       version: maintained?.installed,
       latestVersion: maintained?.latest,
       outdated: maintained ? isOutdated(maintained) : false,
@@ -36046,6 +36055,8 @@ function handler(context) {
             return error2(400, `Sign out of ${agent.name} where you signed in.`);
           await agent.signOut();
           await signIns.ask(agent);
+          emit("integration.updated", { integrationID: agent.providerID });
+          emit("model.updated", {});
           return json15({});
         }
       }
@@ -36245,6 +36256,7 @@ function handler(context) {
           sessions.forgetProvider(target.providerID);
           await target.removeAccount?.().catch(() => {});
           target.shutdown?.();
+          signIns.record(target.providerID, { signedIn: false });
           roster.accounts.remove(target.providerID);
           roster.sync();
           emit("integration.updated", { integrationID: target.providerID });
@@ -37784,4 +37796,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 342b357620aaf996cfe4253a386ba0b2ec196fbfa040ef9b399a7a1add2b3955
+// Built from Packages/Box/src/agents 827fc1c267ad14f124e53f6ef8ecd01ba71d5d1459a1949725499088f629c301

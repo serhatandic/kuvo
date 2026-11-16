@@ -43232,7 +43232,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cd125eeca281";
+var BRIDGE_VERSION = "d4a0d29bedce";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -59539,7 +59539,17 @@ function accountState(account, offered, { agents = false, ended, computer }) {
   const remove = {
     id: "remove",
     label: "Remove Account",
-    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" }
+    confirm: { title: `Remove ${name}?`, message: `This account is signed out and forgotten on ${computer}: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.`, label: "Remove Account" }
+  };
+  const shared = meta.signOutShared === true;
+  const signOut = {
+    id: "signOut",
+    label: "Sign Out",
+    confirm: {
+      title: `Sign out of ${name}?`,
+      message: shared ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. Your sessions stay; sign in again to use it.` : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
+      label: "Sign Out"
+    }
   };
   if (agents) {
     if (installs)
@@ -59552,8 +59562,8 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
       actions.push({ id: "update", label: `Update to ${latest}` });
-    if (meta.signsOut === true && said.length)
-      actions.push({ id: "signOut", label: "Sign Out" });
+    if (!added && !installs && meta.signsOut === true && (said.length || state === "ended"))
+      actions.push(signOut);
     if (added)
       actions.push({ id: "rename", label: "Rename" }, remove);
     return finish();
