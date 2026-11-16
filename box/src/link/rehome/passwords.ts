@@ -8,7 +8,7 @@
 // As the app's own hand-over went (`Passwords.swift`, read only): each a sign-in of its site, to
 // sign in with only; one whose site and account the vault has already is left as it is (so a
 // hand-over cut short adds nothing twice); a site you let agents sign in to by themselves, with
-// that account, stays so. The Keychain's own stay where they are.
+// that account, stays so. Each Keychain original goes only after its vault value is read back.
 // Platform: a Mac's alone.
 // COMPAT(0.7 move): takes the sign-ins Kuvo Code 0.5 to 0.7.2 and 0.8.0-beta.1 saved in the Keychain into the vault, from kuvo-keys. Goes on the user's word, once no 0.7 Mac is expected to update.
 
@@ -89,6 +89,12 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
         taken.add(name.toLowerCase());
         items.push(item);
       }
+      // Read the stored secret, including on retries: a matching site/account alone isn't proof
+      // that this password is safe. Keep a different original in the Keychain.
+      const checked = await ask("GET", `kuvo/vault/items/${encodeURIComponent(String(item.id))}/values`);
+      if (checked.status !== 200 || !isObject(checked.value.values) || checked.value.values.password !== login.password) {
+        return { done: false, why: "a saved sign-in couldn't be confirmed in the vault", added, short };
+      }
       // A site agents signed in to by themselves, with that account, stays so: asked again where
       // a hand-over cut short left the sign-in without it.
       if (agentSites.includes(login.host) && agentAccounts[login.host] === login.account && !granted.has(item.id)) {
@@ -96,6 +102,8 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
         if (grant.status !== 200) return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short };
         granted.add(item.id);
       }
+      const removed = spawnSync(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180_000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+      if (removed.status !== 0) return { done: false, why: "a saved sign-in's Keychain copy couldn't be removed", added, short };
     }
   } catch (error) {
     return { done: false, why: (error as Error).message, added, short };

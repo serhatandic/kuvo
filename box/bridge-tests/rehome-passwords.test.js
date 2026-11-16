@@ -39,7 +39,7 @@ test("saved sign-ins go into the vault once this Mac's box answers: each a sign-
   write(path.join(K, "box", "kind"), "mac\n");
   write(path.join(K, "updates", "rehome", "state.json"), JSON.stringify({ state: "done", way: "move", owed: ["passwords"], from: S, to: K, app: { bundle, id: APP } }));
   write(path.join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${APP}</string></dict></plist>\n`);
-  write(path.join(bundle, "Contents", "MacOS", "kuvo-keys"), `#!/bin/sh\nverb=$1; shift; H=""\nwhile [ $# -gt 0 ]; do case "$1" in --home) H=$2; shift 2 ;; *) shift ;; esac; done\n[ "$(cat "$H/updates/rehome/lock/pid" 2>/dev/null)" = "$PPID" ] || { echo "not the move" >&2; exit 2; }\n[ "$verb" = passwords ] && cat "$HOME/logins.json"\n`, 0o755);
+  write(path.join(bundle, "Contents", "MacOS", "kuvo-keys"), `#!/bin/sh\nverb=$1; shift; H=""\nwhile [ $# -gt 0 ]; do case "$1" in --home) H=$2; shift 2 ;; *) shift ;; esac; done\n[ "$(cat "$H/updates/rehome/lock/pid" 2>/dev/null)" = "$PPID" ] || { echo "not the move" >&2; exit 2; }\ncase "$verb" in passwords) cat "$HOME/logins.json" ;; delete-originals) cat >/dev/null; exit 0 ;; esac\n`, 0o755);
   write(path.join(home, "logins.json"), JSON.stringify({ v: 1, logins: LOGINS }));
   // What the earlier Kuvo Code let agents sign in to alone, and with which account (its preferences).
   write(path.join(home, "Library", "Preferences", `${APP}.plist`), `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>passwords.agentSignIn</key><array><string>github.com</string></array><key>passwords.agentSignInAccounts</key><dict><key>github.com</key><string>ada</string></dict></dict></plist>\n`);
