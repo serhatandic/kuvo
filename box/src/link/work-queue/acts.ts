@@ -8,7 +8,7 @@ import { ownName } from "../letters/start";
 import { callOffHanding, refuseLiveElsewhere, twinOf } from "./hand";
 import { readSeen } from "./github";
 import { numberWaiting, primaryOf } from "./numbers";
-import { addItem, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, removeItem, restoreItem, type Fields } from "./ops";
+import { addItem, applyFileOps, stageClientFiles, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, removeItem, restoreItem, type Acting, type Fields } from "./ops";
 import { assignable, assigneeFor, botSession } from "./assignees";
 import { frozen } from "../moves/records";
 import { allItems, changeQueues, FILE_NAME, filesOf, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
@@ -42,7 +42,7 @@ function changed(work: () => Item): Acted {
 }
 
 /** What a client may say of an item it adds or changes: nothing else is taken from it. */
-const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before, after, top }: Record<string, unknown>): Fields => ({ title, body, status, priority, labels, assignee, due, before, after, top });
+const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before, after, top, files }: Record<string, unknown>): Fields => ({ title, body, status, priority, labels, assignee, due, before, after, top, files });
 
 /** An item you add from a client (`POST kuvo/work-queue/items`): in the queue `owner` names (a
  * conversation's, the one you're looking at); else, for a bot of this box, in that bot's; else in
@@ -50,16 +50,24 @@ const fieldsOf = ({ title, body, status, priority, labels, assignee, due, before
 export function addHere(given: Record<string, unknown>): Acted {
   const now = Date.now();
   const primary = primaryOf();
-  return changed(() => changeQueues(book => {
-    if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner))) throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
-    const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
-    const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
-    refuseMoving([owner]);
-    const { before: _, after: __, ...fields } = fieldsOf(given);
-    const item = addItem(book, owner, fields, { who: YOU, now, fileOps: [] }, primary);
-    numberWaiting(book, primary, null);
-    return item;
-  }));
+  let staged: ReturnType<typeof stageClientFiles> | undefined;
+  try {
+    return changed(() => {
+      staged = stageClientFiles(given.files);
+      return changeQueues(book => {
+        if (given.owner !== undefined && (typeof given.owner !== "string" || !OWNER.test(given.owner))) throw new Refusal("That's no queue to add it to (owner): a conversation's address, or a group chat's id.");
+        const assignee = given.assignee === undefined || given.assignee === null ? null : assigneeFor(given.assignee);
+        const owner = (given.owner as string | undefined) ?? botSession(assignee ?? undefined) ?? YOURS;
+        refuseMoving([owner]);
+        const { before: _, after: __, ...fields } = fieldsOf(given);
+        const acting: Acting = { who: YOU, now, staged: staged!.staged, fileOps: [] };
+        const item = addItem(book, owner, fields, acting, primary);
+        applyFileOps(acting);
+        numberWaiting(book, primary, null);
+        return item;
+      });
+    });
+  } finally { staged?.clear(); }
 }
 
 /** What a client does to an item this box keeps (`ref`), as the route answers it: read whole, delete,
@@ -106,21 +114,29 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
       restoreItem(book, item, YOU, now);
     }));
   }
-  return changed(inBook((item, book) => {
-    if (item.removed) throw new Refusal("It's deleted: bring it back first.");
-    const fields = fieldsOf(given);
-    if ([fields.before, fields.after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
-    if (item.source && (fields.title !== undefined || fields.body !== undefined)) throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
-    // (An issue GitHub closed stands as it is until it's reopened there: nothing of it is set here.)
-    refuseClosedThere(item);
-    changeItem(book, item, fields, { who: YOU, now, fileOps: [] });
-    // (One of your own given to a bot here goes into that bot's queue, where its agent sees it.)
-    const to = item.owner === YOURS && fields.assignee !== undefined ? botSession(item.assignee) : null;
-    if (to) {
-      refuseMoving([to]);
-      handItem(book, item, to, YOU, now);
-    }
-  }));
+  let staged: ReturnType<typeof stageClientFiles> | undefined;
+  try {
+    return changed(() => {
+      staged = stageClientFiles(given.files);
+      return inBook((item, book) => {
+        if (item.removed) throw new Refusal("It's deleted: bring it back first.");
+        const fields = fieldsOf(given);
+        if ([fields.before, fields.after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
+        if (item.source && (fields.title !== undefined || fields.body !== undefined)) throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
+        // (An issue GitHub closed stands as it is until it's reopened there: nothing of it is set here.)
+        refuseClosedThere(item);
+        const acting: Acting = { who: YOU, now, staged: staged!.staged, fileOps: [] };
+        changeItem(book, item, fields, acting);
+        // (One of your own given to a bot here goes into that bot's queue, where its agent sees it.)
+        const to = item.owner === YOURS && fields.assignee !== undefined ? botSession(item.assignee) : null;
+        if (to) {
+          refuseMoving([to]);
+          handItem(book, item, to, YOU, now);
+        }
+        applyFileOps(acting);
+      })();
+    });
+  } finally { staged?.clear(); }
 }
 
 /** The bytes of a file kept with an item here, by its name, or null when there's no such file. */

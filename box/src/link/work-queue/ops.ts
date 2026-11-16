@@ -6,6 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { inline } from "../server/attached";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { accountHome, APP_FOLDER, BOTS, homeFolder, K, OWN_HOME_MAC } from "../home";
@@ -15,7 +17,7 @@ import { isClosed, priorityNamed, PRIORITIES, statusName, statusNamed, STATUSES 
 import { assigneeFor } from "./assignees";
 import { takeNumber, type Primary } from "./numbers";
 import {
-  changeQueues, dayOf, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
+  changeQueues, dayOf, FILE_NAME, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
   type Book, type Item, type ItemEvent, type KeptFile, type Source, type Who,
 } from "./store";
 import { nameOf, refOf } from "./view";
@@ -147,6 +149,48 @@ export function stageFiles(given: unknown, places: FilePlaces | null): { staged:
     clear();
     throw error;
   }
+}
+
+/** Client attachments use the composer's carried files: local file URLs or inline bytes.
+ * Stage copies before taking the queue lock; existing item file operations keep them. */
+export function stageClientFiles(given: unknown): { staged: Staged[]; clear: () => void } {
+  if (given === undefined) return { staged: [], clear: () => {} };
+  if (!Array.isArray(given) || given.length > MOST_FILES) refuse(`Send at most ${MOST_FILES} files.`);
+  const folder = path.join(STAGING, crypto.randomBytes(8).toString("hex"));
+  const clear = () => fs.rmSync(folder, { recursive: true, force: true });
+  try {
+    const staged = (given as unknown[]).map((entry, index) => {
+      if (!isObject(entry) || typeof entry.uri !== "string") return refuse("A file needs its carried URI.");
+      const carried = inline(entry);
+      let bytes: Buffer;
+      let name = typeof entry.name === "string" ? entry.name : "";
+      if (carried) {
+        bytes = carried.bytes;
+        name ||= `attachment${Object.entries(TYPES).find(([, mime]) => mime === carried.mime)?.[0] ?? ".bin"}`;
+      }
+      else {
+        if (!entry.uri.startsWith("file://")) return refuse("Send a file URL or its bytes.");
+        try {
+          const local = fileURLToPath(entry.uri);
+          const stat = fs.statSync(local);
+          if (!stat.isFile() || stat.size > MOST_FILE) return refuse("That file is too big or isn't a regular file.");
+          bytes = fs.readFileSync(local);
+          name ||= path.basename(local);
+        } catch (error) {
+          if (error instanceof Refusal) throw error;
+          return refuse("That attached file can't be read: attach it again.");
+        }
+      }
+      if (bytes.length > MOST_FILE) return refuse(`A file is over ${MOST_FILE} bytes.`);
+      name = shortName(path.basename(name.replace(/\\/g, "/")));
+      if (!FILE_NAME.test(name)) return refuse("That file needs a valid name.");
+      fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+      const staged = path.join(folder, String(index));
+      fs.writeFileSync(staged, bytes, { mode: 0o600 });
+      return { staged, name, size: bytes.length };
+    });
+    return { staged, clear };
+  } catch (error) { clear(); throw error; }
 }
 
 const TYPES: Record<string, string> = {

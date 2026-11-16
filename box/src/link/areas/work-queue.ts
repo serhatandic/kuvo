@@ -383,8 +383,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     }
   }
   if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal }), json);
-  const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
-  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } } : {}) }, signal);
+  const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } = given;
+  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {}) }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
   // What this box has of it now, as that computer's box answered (not when it next tells).
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id) changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);

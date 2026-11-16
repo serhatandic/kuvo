@@ -1392,3 +1392,28 @@ test("every agent kind gets the tools through its tool server: a machine's kuvo-
   assert.match(called.content[0].text, /^Added #1 "From Claude Code" as Todo/);
   mcp.kill();
 });
+
+
+test("client carried files are copied on create and appended on edit, including remote bytes", async () => {
+  const local = path.join(home, "pasted image.png");
+  fs.writeFileSync(local, "first image");
+  const created = await route("POST", "kuvo/work-queue/items", { title: "Pictures", files: [{ uri: new URL(`file://${local}`).href, name: "first.png" }] });
+  assert.equal(created.status, 200);
+  const id = created.body.item.id;
+  fs.unlinkSync(local);
+  for (const uri of [new URL(`file://${local}`).href, "file://%invalid"]) {
+    const missing = await route("PATCH", `kuvo/work-queue/items/${id}`, { files: [{ uri, name: "gone.png" }] });
+    assert.equal(missing.status, 400);
+    assert.match(missing.body.message, /attach it again/);
+  }
+  assert.equal((await route("GET", `kuvo/work-queue/items/${id}/files/first.png`)).raw, "first image");
+  const changed = await route("PATCH", `kuvo/work-queue/items/${id}`, { body: "[Image 1] [Image 2]", files: [{ uri: "data:image/png;base64," + Buffer.from("remote image").toString("base64"), name: "second.png" }] });
+  assert.equal(changed.status, 200);
+  const item = (await route("GET", `kuvo/work-queue/items/${id}`)).body.item;
+  assert.deepEqual(item.files.map(file => file.name), ["first.png", "second.png"]);
+  assert.equal(item.body, "[Image 1] [Image 2]");
+  assert.equal((await route("GET", `kuvo/work-queue/items/${id}/files/second.png`)).raw, "remote image");
+  const refused = await route("PATCH", `kuvo/work-queue/items/${id}`, { title: "", files: [{ uri: "data:image/png;base64,eA==", name: "third.png" }] });
+  assert.equal(refused.status, 400);
+  assert.deepEqual((await route("GET", `kuvo/work-queue/items/${id}`)).body.item.files.map(file => file.name), ["first.png", "second.png"]);
+});

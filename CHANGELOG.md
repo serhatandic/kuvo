@@ -7,6 +7,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A machine you set up from more than one of your Macs (or first from Kuvo Code 0.7) is no longer listed under "Shared Machines" as someone else's: it's one of your computers on each of those Macs, under **Computers** with what runs there, and its bots, wake-ups and time zone work with your other computers again. It sorts itself out once the machine updates; there's nothing to do.
+- In the desktop Work Queue, paste or drop images into a new item or its description while editing. Images stay with the item, including on another computer, and open from thumbnails in the image viewer.
+
 - A bot conversation now offers connected API-key providers such as OpenCode Go in its model picker. Connecting or removing a provider refreshes the list without restarting. When changing engines requires Edit Bot, the picker explains where to do it.
 - Desktop menus and cards appear with a brief slide and fade; active progress labels gently pulse. These respect Reduce Motion.
 

@@ -862,8 +862,8 @@ test("an issue another computer told of shows as it said, with no gh here; this 
 // ---- What you do to an item another computer keeps (PROTOCOL.md, "The Work Queue", What you do to one)
 
 // Lab and the Mac take what you do from another box.
-const forwardsTold = () => agentsTold({
-  [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: [], features: ["work-queue", "work-queue.elsewhere", "work-queue.forward", "work-queue.edit"] },
+const forwardsTold = (attachments = false) => agentsTold({
+  [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: [], features: ["work-queue", "work-queue.elsewhere", "work-queue.forward", "work-queue.edit", ...(attachments ? ["work-queue.attachments"] : [])] },
   [mac.pub]: { at: 1, heard: Date.now(), kind: "mac", list: [], features: ["work-queue", "work-queue.elsewhere", "work-queue.forward", "work-queue.edit"] },
 });
 // This box's relay connection as its link has it: what goes to `to`, as it's sent.
@@ -889,11 +889,18 @@ test("what you do to an item another computer keeps, asked of this box, is done 
   const { connection, sentTo } = relay();
   link.queueForwardsSoon.send = () => link.sendQueueForwards(connection);
 
+  const unsupported = await route("PATCH", "kuvo/work-queue/items/500", { body: "Image", files: [{ uri: "data:image/png;base64,eA==", name: "image.png" }] });
+  assert.equal(unsupported.status, 409);
+  assert.match(unsupported.body.message, /needs an update/);
+  assert.equal(mailTo(lab).length, 0, "never silently drop attachments on an older peer");
+
+  forwardsTold(true);
+  const files = [{ uri: "data:image/png;base64,eA==", name: "image.png" }];
   // Moved: the move goes to lab, and lab's answer is this box's.
-  const moving = route("PATCH", `kuvo/work-queue/items/500`, { status: "backlog", top: true });
+  const moving = route("PATCH", `kuvo/work-queue/items/500`, { status: "backlog", top: true, files });
   const [asked] = await sentTo(lab);
   const act = asked.workQueue.act;
-  assert.deepEqual({ method: act.method, action: act.action, item: act.item, body: act.body }, { method: "PATCH", action: undefined, item: told(500).id, body: { status: "backlog", top: true } });
+  assert.deepEqual({ method: act.method, action: act.action, item: act.item, body: act.body }, { method: "PATCH", action: undefined, item: told(500).id, body: { status: "backlog", top: true, files } });
   // (Only from the box it went to: one from the Mac for it isn't lab's answer.)
   receive(mac, { workQueue: { acted: { id: act.id, status: 200, value: { item: told(500, "ses_far", { status: "todo" }) } } } });
   receive(lab, { workQueue: { acted: { id: act.id, status: 200, value: { item: told(500, "ses_far", { status: "backlog", order: 0 }) } } } });

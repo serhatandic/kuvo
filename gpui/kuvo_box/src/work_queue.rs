@@ -426,6 +426,7 @@ impl Narrow {
 pub struct NewItem {
     pub title: String,
     pub body: String,
+    pub files: Vec<crate::parts::File>,
     pub status: Option<String>,
     pub priority: Option<String>,
     pub labels: Vec<String>,
@@ -439,6 +440,8 @@ pub struct NewItem {
 pub struct ItemChange {
     pub title: Option<String>,
     pub body: Option<String>,
+    /// New files to append; existing files stay with the item.
+    pub files: Vec<crate::parts::File>,
     pub status: Option<String>,
     pub priority: Option<String>,
     /// All of its labels, in place of those it had.
@@ -457,6 +460,7 @@ impl ItemChange {
                 body.insert(name.into(), value);
             }
         };
+        if !self.files.is_empty() { put("files", Some(json!(self.files))); }
         put("title", self.title.as_ref().map(|title| json!(title)));
         put("body", self.body.as_ref().map(|body| json!(body)));
         put("status", self.status.as_ref().map(|status| json!(status)));
@@ -526,10 +530,20 @@ impl BoxClient {
         })
     }
 
+    /// Reads a file kept with an item, including one routed to another computer.
+    pub fn work_item_file(&self, item: &str, name: &str) -> Result<Vec<u8>> {
+        let response = self.send(&Request::get(format!("{}/files/{}", item_route(item), paths::segment(name))))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        Ok(response.body)
+    }
+
     /// Adds an item. Whose queue it goes in, and what's left out, are the box's to decide.
     pub fn add_work_item(&self, new: &NewItem) -> Result<Item> {
         let mut body = Map::new();
         body.insert("title".into(), json!(new.title));
+        if !new.files.is_empty() { body.insert("files".into(), json!(new.files)); }
         if !new.body.is_empty() {
             body.insert("body".into(), json!(new.body));
         }
@@ -647,6 +661,13 @@ mod tests {
         let by = Narrow { q: "sign up".into(), computers: vec![String::new(), "key_1".into()], sources: vec!["github-pr".into()], owners: vec![], labels: vec!["lbl_a".into(), "lbl_b".into()] };
         assert_eq!(by.route(), "kuvo/work-queue?owner=all&counts=1&q=sign%20up&computers=,key_1&sources=github-pr&labels=lbl_a,lbl_b");
         assert!(Narrow::default().is_empty() && !by.is_empty());
+    }
+
+    #[test]
+    fn attached_files_use_the_composers_wire_shape_and_empty_edits_preserve_files() {
+        let change = ItemChange { body: Some("[Image 1]".into()), files: vec![crate::parts::File { uri: "data:image/png;base64,AQID".into(), name: Some("shot.png".into()) }], ..Default::default() };
+        assert_eq!(change.body(), json!({ "body": "[Image 1]", "files": [{ "uri": "data:image/png;base64,AQID", "name": "shot.png" }] }));
+        assert_eq!(ItemChange::default().body(), json!({}));
     }
 
     #[test]
