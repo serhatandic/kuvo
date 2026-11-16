@@ -27857,7 +27857,7 @@ ${others.join(`
     }
     this.store.save(id, true);
   }
-  setDelivery(id, inputID, delivery) {
+  setDelivery(id, inputID, delivery, into = false) {
     const record = this.record(id);
     const input = this.queue(record).find((waiting) => waiting.id === inputID);
     if (!input)
@@ -27869,8 +27869,15 @@ ${others.join(`
       this.store.save(id, true);
       emit("session.inbox.delivery.changed", { sessionID: id, inboxID: inputID, delivery }, record.session.location.directory);
     }
-    if (delivery === "steer")
-      this.wake(id);
+    if (delivery !== "steer")
+      return;
+    const live = this.live.get(id);
+    const doing = live?.doing;
+    if (into && live && doing?.kind === "running" && !doing.run.compacting && doing.run.agent?.thread.steer && !live.steering.has(inputID)) {
+      this.steerNow(id, live, doing.run, input);
+      return;
+    }
+    this.wake(id);
   }
   cancelInput(id, inputID) {
     const handing = this.live.get(id)?.steering.get(inputID);
@@ -36079,7 +36086,8 @@ function handler(context) {
               return json15({});
             }
             if (method === "PATCH" && c) {
-              sessions.setDelivery(id, c, (await body()).delivery);
+              const asked = await body();
+              sessions.setDelivery(id, c, asked.delivery, asked.into === true);
               return json15({});
             }
             return json15({ data: sessions.inbox(id) });
@@ -37715,4 +37723,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents eb3b004ad4dd54e820d5916850f31a4bd1d28b098a6cb44bdf45d25887afcd97
+// Built from Packages/Box/src/agents 9b644a6bafd474aeb0325fd60062505ee538dce7e9e55adabe9c22f5c63b3a89
