@@ -1,7 +1,9 @@
 //! The small window beside System Settings while it's open for a permission macOS has you add by
 //! hand: the program's icon, to drag into the list, the way you'd drag an app from Finder. It
-//! floats over System Settings, follows its window, and goes once the box says the permission is
-//! allowed, or when you close it.
+//! floats over System Settings, put beside its window once and then left where it is (or where you
+//! move it), never taking the keyboard. One tile serves the whole step: hidden while you're back in
+//! Kuvo between permissions and shown again in the same place for the next, and gone once nothing's
+//! left to allow by hand, when System Settings closes, or when you close it.
 //!
 //! The drag is GPUI's own: an element's drag that leaves its window is handed to the system as a
 //! file drag (`external_drag_payload`), here the program's bundle.
@@ -57,6 +59,14 @@ impl Tile {
 
     pub fn bundle(&self) -> &PathBuf {
         &self.bundle
+    }
+
+    /// The program to drag, for the next permission asked for in the same tile.
+    pub fn set(&mut self, name: SharedString, bundle: PathBuf, cx: &mut Context<Self>) {
+        if self.name != name || self.bundle != bundle {
+            *self = Tile::new(name, bundle);
+            cx.notify();
+        }
     }
 
     /// Opens the tile's window: over everything, taking no keyboard, at the right of the main

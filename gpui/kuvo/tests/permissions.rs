@@ -99,7 +99,9 @@ fn nothing_is_brought_up_over_the_main_window(cx: &mut TestAppContext) {
 }
 
 /// Settings › This Mac is where a permission is looked up and allowed after setting up: its row
-/// opens System Settings with the tile to drag beside it, which goes once the box says it's allowed.
+/// opens System Settings with the tile to drag beside it. One tile serves them all: put away once
+/// the box says one's allowed, the same window shown again (where it was) for the next, and gone
+/// once none is left to add.
 #[gpui::test]
 fn settings_this_mac_opens_the_permission_with_the_tile(cx: &mut TestAppContext) {
     let stand_in = nothing_allowed();
@@ -114,10 +116,23 @@ fn settings_this_mac_opens_the_permission_with_the_tile(cx: &mut TestAppContext)
     // Not allowed yet, a few seconds on: it stays.
     wait(cx, 3 * SECOND);
     assert!(tile_open(&workspace, cx) && cx.windows().len() == 2);
-    // Allowed in System Settings: the box says so, and the tile goes by itself.
+    // Allowed in System Settings: the box says so, and the tile is put away by itself, its
+    // window kept for Screen Recording, still to add.
     stand_in.set_permissions(|permissions| permissions.accessibility = true);
     wait(cx, SECOND);
     assert!(!tile_open(&workspace, cx));
+    assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.kept_tile()), Some(tile));
+    wait(cx, 3 * SECOND);
+    assert_eq!(cx.windows().len(), 2);
+    // Screen Recording next: the same window, not a new one in a new place.
+    click(cx, "row-allows-screenRecording-open-system-settings");
+    assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.tile()), Some(tile));
+    assert_eq!(cx.windows().len(), 2);
+    // Allowed too: none is left to add, and the tile goes for good.
+    stand_in.set_permissions(|permissions| permissions.screen_recording = true);
+    wait(cx, SECOND);
+    assert!(!tile_open(&workspace, cx) && heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.kept_tile()).is_none());
+    wait(cx, SECOND);
     assert_eq!(cx.windows().len(), 1);
 }
 
@@ -142,7 +157,9 @@ fn the_helper_s_icon_is_what_s_dragged_and_the_tile_closes_when_you_close_it(cx:
     click(&mut tile_cx, "permission-tile-close");
     cx.run_until_parked();
     assert!(!tile_open(&workspace, cx));
-    assert!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asking().is_none()));
+    assert!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asking().is_none() && heads_up.kept_tile().is_none()));
+    wait(cx, SECOND);
+    assert_eq!(cx.windows().len(), 1);
 }
 
 #[gpui::test]

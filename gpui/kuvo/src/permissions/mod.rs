@@ -34,9 +34,21 @@ const ASKS_EVERY: u32 = 4;
 /// and after how many the tile is given up on whatever happens (ten minutes).
 const GONE_AFTER: u32 = 8;
 const GIVEN_UP_AFTER: u32 = 2400;
+/// How long a tile that's gone is kept, hidden, before its window is let go: well past AppKit's
+/// next look at the app's windows (see [`HeadsUp::close_tile`]).
+const LET_GO_AFTER: Duration = Duration::from_secs(1);
 
-/// The tile's window, and hearing it closed.
-type OpenTile = (WindowHandle<Tile>, Subscription);
+/// The tile: one window from the first permission added by hand until none is left to add, hidden
+/// in between and shown again where it was.
+struct KeptTile {
+    window: WindowHandle<Tile>,
+    shown: bool,
+    /// Whether it's been put beside System Settings yet: only once, so it stays where it is, or
+    /// where you moved it, from one permission to the next.
+    placed: bool,
+    /// Hearing it closed with its own button.
+    _closed: Subscription,
+}
 
 pub struct HeadsUp {
     client: BoxClient,
@@ -45,8 +57,10 @@ pub struct HeadsUp {
     facts: Option<Permissions>,
     /// Which read is the latest asked for: an older one's answer is dropped.
     asked: u64,
-    /// The permission System Settings was opened for, and the tile beside it.
-    asking: Option<(String, Option<OpenTile>)>,
+    /// The permission System Settings was opened for.
+    asking: Option<String>,
+    /// The tile to drag the program from, where one's added by hand.
+    tile: Option<KeptTile>,
     /// A change that couldn't be made, in the box's words.
     problem: Option<SharedString>,
     _follow: Option<Task<()>>,
@@ -62,7 +76,7 @@ impl HeadsUp {
                 this.read(cx);
             }
         });
-        HeadsUp { client, live, facts: None, asked: 0, asking: None, problem: None, _follow: None, tasks: Vec::new(), _activation: activation }
+        HeadsUp { client, live, facts: None, asked: 0, asking: None, tile: None, problem: None, _follow: None, tasks: Vec::new(), _activation: activation }
     }
 
     /// Whether this is the box on this computer, and can be asked (System Settings can't be
@@ -100,14 +114,24 @@ impl HeadsUp {
         self.facts.is_some()
     }
 
-    /// The permission System Settings was opened for, while its tile is up.
+    /// The permission System Settings was opened for, while it's asked for.
     pub fn asking(&self) -> Option<&str> {
-        self.asking.as_ref().map(|(id, _)| id.as_str())
+        self.asking.as_deref()
     }
 
-    /// The tile's window, while it's open.
+    /// The tile's window, while it's shown.
     pub fn tile(&self) -> Option<WindowHandle<Tile>> {
-        self.asking.as_ref().and_then(|(_, tile)| tile.as_ref().map(|(window, _)| *window))
+        self.tile.as_ref().filter(|kept| kept.shown).map(|kept| kept.window)
+    }
+
+    /// The tile's window, shown or kept hidden for the next permission.
+    pub fn kept_tile(&self) -> Option<WindowHandle<Tile>> {
+        self.tile.as_ref().map(|kept| kept.window)
+    }
+
+    /// Whether one still asked about is added by hand, with the tile.
+    fn asks_by_hand(&self) -> bool {
+        self.list().iter().any(|permission| permission.asks && permission.by_hand)
     }
 
     fn run<T: Send + 'static>(&mut self, work: impl FnOnce(&BoxClient) -> T + Send + 'static, then: impl FnOnce(&mut HeadsUp, T, &mut Context<HeadsUp>) + 'static, cx: &mut Context<Self>) {
@@ -151,17 +175,26 @@ impl HeadsUp {
     }
 
     fn take(&mut self, facts: Permissions, cx: &mut Context<Self>) {
-        // Allowed, the one System Settings was opened for: its tile goes, and Kuvo comes back to
-        // the front.
-        let allowed = self.asking.as_ref().is_some_and(|(id, _)| facts.of(id).is_some_and(|permission| permission.allowed == Some(true)));
+        // Allowed, the one System Settings was opened for: its tile is put away, and Kuvo comes
+        // back to the front.
+        let allowed = self.asking.as_ref().is_some_and(|id| facts.of(id).is_some_and(|permission| permission.allowed == Some(true)));
         // (One the box no longer lists at all isn't asked for any more, with nothing claimed.)
-        let gone = self.asking.as_ref().is_some_and(|(id, _)| facts.of(id).is_none());
+        let gone = self.asking.as_ref().is_some_and(|id| facts.of(id).is_none());
         self.facts = Some(facts);
         if allowed || gone {
-            self.stop_asking(cx);
-            if allowed && self.live {
-                cx.activate(true);
+            self.asking = None;
+        }
+        // Between permissions the tile waits, hidden, for the next one added by hand; with none
+        // left, it goes.
+        if self.asking.is_none() {
+            if self.asks_by_hand() {
+                self.hide_tile(cx);
+            } else {
+                self.close_tile(cx);
             }
+        }
+        if allowed && self.live {
+            cx.activate(true);
         }
         cx.notify();
     }
@@ -194,7 +227,6 @@ impl HeadsUp {
     /// System Settings is open on `permission`'s list: the tile beside it where macOS has you
     /// add the program by hand, and the box asked until it's allowed.
     fn ask_for(&mut self, permission: Permission, cx: &mut Context<Self>) {
-        self.stop_asking(cx);
         self.problem = None;
         let (name, bundle) = match &self.facts {
             Some(facts) => (facts.name.clone().unwrap_or_default(), facts.bundle.clone()),
@@ -206,15 +238,19 @@ impl HeadsUp {
         if let Some(missing) = bundle.as_ref().filter(|bundle| !(bundle.extension().is_some_and(|extension| extension == "app") && bundle.is_dir())) {
             self.problem = Some(format!("{name} isn’t where it should be ({}), so there’s nothing to drag. Try again once Kuvo has finished starting.", missing.display()).into());
         }
-        let bundle = bundle.filter(|_| self.problem.is_none());
-        let tile = bundle.and_then(|bundle| Tile::open(name.into(), bundle, cx)).map(|window| {
-            let closed = window.entity(cx).ok().map(|tile| cx.subscribe(&tile, |this: &mut HeadsUp, _, _: &tile::Closed, cx| this.stop_asking(cx)));
-            (window, closed)
-        });
-        let tile = tile.and_then(|(window, closed)| closed.map(|closed| (window, closed)));
-        self.asking = Some((permission.id.clone(), tile));
-        // While it's asked for: the tile kept beside System Settings, and the box asked each
-        // second whether it's allowed yet (macOS says nothing when Screen Recording changes).
+        match bundle.filter(|_| self.problem.is_none()) {
+            Some(bundle) => self.show_tile(name.into(), bundle, cx),
+            None => self.hide_tile(cx),
+        }
+        self.asking = Some(permission.id.clone());
+        self.follow(cx);
+        cx.notify();
+    }
+
+    /// While it's asked for, or the tile waits for the next: the tile put beside System Settings,
+    /// and the box asked each second whether it's allowed yet (macOS says nothing when Screen
+    /// Recording changes).
+    fn follow(&mut self, cx: &mut Context<Self>) {
         self._follow = Some(cx.spawn(async move |this, cx| {
             let mut ticks = 0u32;
             // System Settings' window seen, and how long it's been gone since.
@@ -223,7 +259,7 @@ impl HeadsUp {
                 cx.background_executor().timer(FOLLOWS_EVERY).await;
                 ticks += 1;
                 let going = this.update(cx, |this, cx| {
-                    if this.asking.is_none() {
+                    if this.asking.is_none() && this.tile.is_none() {
                         return false;
                     }
                     // System Settings closed without it (its window gone two seconds), or left
@@ -247,22 +283,85 @@ impl HeadsUp {
                 }
             }
         }));
-        cx.notify();
     }
 
-    /// Puts the tile beside System Settings' window, where it has one on screen. Says whether
-    /// that window is there (none where that isn't looked for: tests and shots follow no real
-    /// window).
+    /// The tile shown for the program to drag: the one kept from the permission before, where
+    /// it was, or a new one.
+    fn show_tile(&mut self, name: SharedString, bundle: PathBuf, cx: &mut Context<Self>) {
+        let live = self.live;
+        if let Some(kept) = &mut self.tile {
+            let shown = kept
+                .window
+                .update(cx, |tile, window, cx| {
+                    tile.set(name.clone(), bundle.clone(), cx);
+                    #[cfg(target_os = "macos")]
+                    if live {
+                        mac::set_shown(window, true);
+                    }
+                    let _ = (window, live);
+                })
+                .is_ok();
+            if shown {
+                kept.shown = true;
+                return;
+            }
+            // (Its window went some other way: a new one.)
+            self.tile = None;
+        }
+        let Some(window) = Tile::open(name, bundle, cx) else { return };
+        let Ok(tile) = window.entity(cx) else { return };
+        let closed = cx.subscribe(&tile, |this: &mut HeadsUp, _, _: &tile::Closed, cx| this.stop_asking(cx));
+        #[cfg(target_os = "macos")]
+        if live {
+            window.update(cx, |_, window, _| mac::never_key(window)).ok();
+        }
+        self.tile = Some(KeptTile { window, shown: true, placed: false, _closed: closed });
+    }
+
+    /// The tile hidden where it is, kept for the next permission.
+    fn hide_tile(&mut self, cx: &mut Context<Self>) {
+        let live = self.live;
+        let Some(kept) = self.tile.as_mut().filter(|kept| kept.shown) else { return };
+        kept.shown = false;
+        #[cfg(target_os = "macos")]
+        if live {
+            kept.window.update(cx, |_, window, _| mac::set_shown(window, false)).ok();
+        }
+        let _ = (cx, live);
+    }
+
+    /// The tile gone: hidden at once, and its window let go a moment later. (A window AppKit
+    /// still watched as it went, for the Touch Bar, stopped the app; this one never takes the
+    /// keyboard, so isn't watched, and is out of sight well before it's let go all the same.)
+    fn close_tile(&mut self, cx: &mut Context<Self>) {
+        let Some(kept) = self.tile.take() else { return };
+        let window = kept.window;
+        #[cfg(target_os = "macos")]
+        if self.live {
+            window.update(cx, |_, window, _| mac::set_shown(window, false)).ok();
+        }
+        // (Let go whatever becomes of this: the step may be over by then.)
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(LET_GO_AFTER).await;
+            window.update(cx, |_, window, _| window.remove_window()).ok();
+        })
+        .detach();
+    }
+
+    /// Puts the tile beside System Settings' window the first time it has one on screen, and
+    /// leaves it be after that. Says whether that window is there (none where that isn't looked
+    /// for: tests and shots follow no real window).
     fn place(&mut self, cx: &mut Context<Self>) -> Option<bool> {
         #[cfg(target_os = "macos")]
         if self.live {
             let Some(settings) = mac::settings_window() else { return Some(false) };
-            if let Some(tile) = self.tile() {
+            if let Some(kept) = self.tile.as_mut().filter(|kept| kept.shown && !kept.placed) {
                 let displays: Vec<_> = cx.displays().iter().map(|display| display.bounds()).collect();
                 let main = cx.primary_display().map(|display| display.bounds())?;
                 let screen = displays.into_iter().find(|display| display.intersects(&settings)).unwrap_or(main);
                 let to = tile::beside(settings, screen);
-                tile.update(cx, |_, window, _| mac::move_window(window, to, main.size.height)).ok();
+                kept.placed = true;
+                kept.window.update(cx, |_, window, _| mac::move_window(window, to, main.size.height)).ok();
             }
             return Some(true);
         }
@@ -272,10 +371,8 @@ impl HeadsUp {
 
     /// The tile goes, and the box is no longer asked each second.
     pub fn stop_asking(&mut self, cx: &mut Context<Self>) {
-        if let Some((_, Some((tile, _)))) = self.asking.take() {
-            tile.update(cx, |_, window, _| window.remove_window()).ok();
-        }
         self.asking = None;
+        self.close_tile(cx);
         self._follow = None;
         cx.notify();
     }

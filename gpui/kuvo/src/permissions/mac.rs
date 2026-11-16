@@ -1,6 +1,7 @@
-//! The two things the tile beside System Settings needs from macOS itself, which GPUI doesn't
-//! give: where System Settings' window is, and moving the tile's own window there. macOS only;
-//! reads no window's contents or title (frames are given without Screen Recording).
+//! What the tile beside System Settings needs from macOS itself, which GPUI doesn't give: where
+//! System Settings' window is, and moving, showing, hiding and never focusing the tile's own
+//! window. macOS only; reads no window's contents or title (frames are given without Screen
+//! Recording).
 
 use std::ffi::c_void;
 
@@ -64,20 +65,57 @@ unsafe impl Encode for CGPoint {
     const ENCODING: Encoding = Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
 }
 
+/// The NSWindow (here the tile's NSPanel) GPUI drew `window` in, where it has one.
+fn native(window: &Window) -> Option<*mut AnyObject> {
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return None };
+    let view = handle.ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: `view` is the window's live NSView, on the main thread (GPUI's windows only exist
+    // there).
+    let native: *mut AnyObject = unsafe { msg_send![view, window] };
+    (!native.is_null()).then_some(native)
+}
+
 /// Moves `window` so its top left is at `to` (from the top left of the main display, as
 /// [`settings_window`] gives frames), `main_height` being that display's height: AppKit counts
 /// from its bottom.
 pub fn move_window(window: &Window, to: Point<Pixels>, main_height: Pixels) {
-    let Ok(handle) = HasWindowHandle::window_handle(window) else { return };
-    let RawWindowHandle::AppKit(handle) = handle.as_raw() else { return };
-    let view = handle.ns_view.as_ptr().cast::<AnyObject>();
+    let Some(native) = native(window) else { return };
     let top_left = CGPoint { x: f64::from(f32::from(to.x)), y: f64::from(f32::from(main_height) - f32::from(to.y)) };
-    // SAFETY: `view` is the window's live NSView, on the main thread (GPUI's windows only exist
-    // there); its window, where it has one, takes a point.
+    // SAFETY: a live NSWindow on the main thread, which takes a point.
     unsafe {
-        let native: *mut AnyObject = msg_send![view, window];
-        if !native.is_null() {
-            let _: () = msg_send![native, setFrameTopLeftPoint: top_left];
+        let _: () = msg_send![native, setFrameTopLeftPoint: top_left];
+    }
+}
+
+/// Keeps the tile's panel from ever becoming the key window, clicked or dragged from: the
+/// keyboard stays with System Settings (or Kuvo), and AppKit's Touch Bar, which watches the key
+/// window's views, never watches the tile's. (It did, on a Mac with a Touch Bar: when the tile
+/// went, AppKit later stopped watching views already gone, and the app was stopped with
+/// "removeObserver … not registered".) GPUI's windows all say they can become key; an NSPanel
+/// that `becomesKeyOnlyIfNeeded` only does for a view that needs the keyboard, which GPUI's
+/// doesn't ask for. The mouse still reaches it: the icon is dragged and the buttons pressed as before.
+pub fn never_key(window: &Window) {
+    let Some(native) = native(window) else { return };
+    // SAFETY: a live NSWindow on the main thread; only an NSPanel is sent the panel's setter.
+    unsafe {
+        let panel: bool = msg_send![native, isKindOfClass: objc2::class!(NSPanel)];
+        if panel {
+            let _: () = msg_send![native, setBecomesKeyOnlyIfNeeded: true];
+        }
+    }
+}
+
+/// Shows or hides `window` where it is, without making it key or bringing Kuvo forward.
+pub fn set_shown(window: &Window, shown: bool) {
+    let Some(native) = native(window) else { return };
+    let nothing = std::ptr::null_mut::<AnyObject>();
+    // SAFETY: a live NSWindow on the main thread.
+    unsafe {
+        if shown {
+            let _: () = msg_send![native, orderFront: nothing];
+        } else {
+            let _: () = msg_send![native, orderOut: nothing];
         }
     }
 }
