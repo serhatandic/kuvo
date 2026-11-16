@@ -12,3 +12,13 @@ test("computer reach and working display words are supplied by the box", () => {
   expect(computerWords({ reach: "connected", name: "mini", working: 1 }, "Studio").workingTitle).toBe("1 session at work");
   expect(computerWords({ reach: "unknown", name: "mini" }, "Studio").workingTitle).toBeUndefined();
 });
+
+
+test("local app reach states have box supplied words even when the answering computer is connected", () => {
+  const { reachTitles } = computerWords({ reach: "connected", name: "mini" }, "Studio");
+  expect(reachTitles).toEqual({
+    connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached",
+    notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s",
+    unreached: "Can’t be reached from this app",
+  });
+});

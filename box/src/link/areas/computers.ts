@@ -142,13 +142,17 @@ function reachOf(link: LinkState | null, address: string | undefined): { address
 }
 
 /** Display words belong to the answering box; reach remains a machine-readable state. */
-export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "through" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "workingTitle"> {
+export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | "through" | "working">, here: string): Pick<ListedComputer, "title" | "detail" | "notice" | "workingTitle" | "reachTitles"> {
   const { reach, name, through, working } = computer;
   const title = ({ connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: "Not reached directly" })[reach];
   const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` }
     : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` }
     : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
-  return { title, ...(notice ? { detail: notice.detail, notice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
+  return { title, reachTitles: {
+    connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached",
+    notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s",
+    unreached: "Can’t be reached from this app",
+  }, ...(notice ? { detail: notice.detail, notice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
 }
 
 /** Your computers: this box first, then its peers by name, then the boxes they vouch for, each
@@ -165,7 +169,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const atWork = atWorkHere();
   // (A machine by the name its Macs' records give it, renamed there, else its own.)
   const named = !IS_MAC && own ? namedBoxes(link).find(box => box.key === own)?.name : undefined;
-  const computers: Omit<ListedComputer, "actions" | "limitServices" | "title">[] = [{
+  const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
     name: (IS_MAC ? macLink.config?.name : named || name) || name || os.hostname(),
     kind: IS_MAC ? "mac" : "machine",

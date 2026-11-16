@@ -957,10 +957,11 @@ fn computer_key(computer: &Computer) -> String {
 /// that isn't reached says that, one the box only knows of through another says through which; else its system, or Kuvo Code's version there, as it said them.
 pub fn computer_line(computer: &Computer) -> String {
     if computer.here {
+        // BOX-NEEDED: only this window knows which computer it currently shows.
         return "Shown in this window".into();
     }
     if computer.is_older() {
-        return "Needs an update".into();
+        return computer.reach_title("held");
     }
     if computer.reach == "connected" {
         computer.system.clone().or_else(|| computer.version.as_ref().map(|version| format!("Kuvo Code {version}"))).unwrap_or_else(|| computer.title.clone())

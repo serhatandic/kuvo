@@ -260,7 +260,7 @@ async function hostOpens(bundle: string): Promise<string | null> {
     if (response.ok) return null;
     // Not there any more (410); or a host that doesn't know the call (404, an older keeper's).
     if (response.status === 410) return GONE;
-    if (response.status === 404) return couldntOpen("what runs this box can't open it yet");
+    if (response.status === 404) return couldntOpen("Kuvo on this Mac can't open it yet");
     const why = isObject(answer) && typeof answer.message === "string" && answer.message.trim() ? answer.message.slice(0, 300) : `it said ${response.status}`;
     return couldntOpen(why);
   } catch (error) {
@@ -292,7 +292,7 @@ function waitUntil(ready: () => boolean, deadline: number, signal?: AbortSignal)
 
 const OPEN_WAYS: OpenWays = { open: hostOpens, now: () => Date.now(), until: waitUntil };
 
-const ONLY_MAC = "Only a Mac's box in a home of its own has its app register with it.";
+const ONLY_MAC = "Only Kuvo on a Mac in its own folder has its app register with it.";
 
 /** `kuvo/box/app`: how this Mac's app stands (`GET`, for any client), and its registration (`POST`, from Kuvo Code
  * itself): `{tools: {url, token}, bundle, host?}` as it opens, `{tools: null}` as it quits, `{updating:

@@ -108,6 +108,8 @@ pub struct ComputerNotice {
 /// One of your computers, as a box knows it (`kuvo/computers`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Computer {
+    #[serde(default, rename = "reachTitles")]
+    pub reach_titles: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -344,6 +346,11 @@ pub struct AtWork {
 }
 
 impl Computer {
+    /// Display words for this app’s local reach state, supplied by kuvo/computers.
+    pub fn reach_title(&self, state: &str) -> String {
+        self.reach_titles.get(state).cloned().unwrap_or_default()
+    }
+
     pub fn is_mac(&self) -> bool {
         self.kind == "mac"
     }

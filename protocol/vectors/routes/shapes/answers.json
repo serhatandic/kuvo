@@ -4508,6 +4508,9 @@
          },
          "id?": "string",
          "title": "string",
+         "reachTitles": {
+          "map": "string"
+         },
          "detail?": "string",
          "notice?": {
           "object": {
@@ -4660,6 +4663,9 @@
          },
          "id?": "string",
          "title": "string",
+         "reachTitles": {
+          "map": "string"
+         },
          "detail?": "string",
          "notice?": {
           "object": {
@@ -5098,6 +5104,9 @@
            },
            {
             "literal": "computers.reach"
+           },
+           {
+            "literal": "computers.reach-words"
            },
            {
             "literal": "computers.words"
@@ -5779,6 +5788,9 @@
            },
            {
             "literal": "computers.reach"
+           },
+           {
+            "literal": "computers.reach-words"
            },
            {
             "literal": "computers.words"

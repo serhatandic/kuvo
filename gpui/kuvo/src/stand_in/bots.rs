@@ -174,7 +174,7 @@ impl Bots {
     pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, projects: &[(String, String)], now: f64) -> Option<(u16, Value)> {
         let segments: Vec<&str> = route.split('/').collect();
         Some(match (method, segments.as_slice()) {
-            ("GET", ["kuvo", "bots"]) if self.down => (503, json!({ "message": "The box isn’t answering." })),
+            ("GET", ["kuvo", "bots"]) if self.down => (503, json!({ "message": "Kuvo on this computer isn’t answering." })),
             ("GET", ["kuvo", "bots"]) => {
                 // The lists, empty too; none of the three while it can't check its seals (as a box does).
                 if self.unsealed { (200, json!({ "bots": self.listed() })) } else { (200, json!({ "bots": self.listed(), "held": self.held, "refused": self.refused, "elsewhere": self.elsewhere_said() })) }

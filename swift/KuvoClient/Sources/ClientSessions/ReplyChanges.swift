@@ -39,12 +39,9 @@ public struct ReplyChanges: Hashable, Sendable {
 
     /// The conversation summarized, as its compaction's `status` says ("running" is under way:
     /// nothing yet).
-    public mutating func summarized(_ status: String) {
-        switch status {
-        case "running": break
-        case "failed": add("couldn’t summarize")
-        default: add("summarized")
-        }
+    public mutating func summarized(_ compaction: Message.Compaction) {
+        guard compaction.status != "running" else { return }
+        add(compaction.title)
     }
 
     /// A note from the engine, the box or the bridge: a change it tells of, if any. It shows

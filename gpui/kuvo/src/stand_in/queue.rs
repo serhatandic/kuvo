@@ -363,7 +363,7 @@ impl Queue {
         let ["kuvo", "work-queue", rest @ ..] = segments.as_slice() else { return None };
         self.at = now;
         Some(match (method, rest) {
-            ("GET", []) if self.down => (503, json!({ "message": "The box isn’t answering." })),
+            ("GET", []) if self.down => (503, json!({ "message": "Kuvo on this computer isn’t answering." })),
             ("GET", []) => {
                 let words = super::query(path, "q").map(super::decoded).map(|q| q.replace('+', " ")).filter(|q| !q.trim().is_empty());
                 // Its filters, each a list separated by commas (an empty name is this box, among

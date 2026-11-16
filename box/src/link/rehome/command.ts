@@ -73,7 +73,7 @@ export async function rehomeCommand(root: string | undefined, args: string[]): P
     const asked = process.env.KUVO_HOME ? path.resolve(process.env.KUVO_HOME) : null;
     if (located(home) === located(path.join(accountHome(), ".kuvo-code")) && asked && located(asked) !== located(home)
       && path.basename(path.dirname(asked)) !== "run.kuvo.code") {
-      const why = "Only Kuvo Code itself moves the box in ~/.kuvo-code.";
+      const why = "Only Kuvo Code itself moves its data in ~/.kuvo-code.";
       say(args.includes("--ready") ? { ready: false, how: null, why, status: rehomeStatus(home) } : { result: "refused", message: why, status: rehomeStatus(home) });
       return args.includes("--ready") ? 0 : EXIT.refused;
     }

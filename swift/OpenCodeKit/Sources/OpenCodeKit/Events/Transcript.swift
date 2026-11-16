@@ -623,12 +623,12 @@ public struct Transcript: Sendable, Equatable {
                 messages[index] = .shell(message)
             }
         case "session.compaction.started":
-            struct Started: Decodable { var reason: String?; var inputID: String? }
+            struct Started: Decodable { var reason: String?; var inputID: String?; var title: String; var workingTitle: String? }
             let started = try event.payload(as: Started.self)
             // Named as the engine names it: after the input that asked for it, if one did.
-            append(.compaction(Message.Compaction(id: started.inputID ?? messageID, time: Message.Time(created: now), status: "running", reason: started.reason, summary: nil)))
+            append(.compaction(Message.Compaction(title: started.title, workingTitle: started.workingTitle, id: started.inputID ?? messageID, time: Message.Time(created: now), status: "running", reason: started.reason, summary: nil)))
         case "session.compaction.ended", "session.compaction.failed":
-            struct Ended: Decodable { var text: String? }
+            struct Ended: Decodable { var text: String?; var title: String }
             let ended = try event.payload(as: Ended.self)
             let failed = event.type.hasSuffix("failed")
             // The summary under way. One whose start was missed isn't an earlier summary's (that
@@ -636,6 +636,8 @@ public struct Transcript: Sendable, Equatable {
             // unless a read since has it whole already.
             if let index = messages.lastIndex(where: { if case .compaction(let summary) = $0 { summary.status == "running" } else { false } }),
                case .compaction(var message) = messages[index] {
+                message.title = ended.title
+                message.workingTitle = nil
                 message.status = failed ? "failed" : "completed"
                 message.summary = ended.text
                 messages[index] = .compaction(message)

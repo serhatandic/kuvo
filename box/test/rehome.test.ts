@@ -534,20 +534,20 @@ test.if(mac)("a Mac whose app's box ran in its folder, or a box already in ~/.ku
     const w = newMac(ran)
     const refused = rehome(w, ["--new", "--release", w.release])
     expect(refused.status).toBe(1)
-    expect(refused.said).toMatchObject({ result: "refused", message: "Kuvo Code's own box is in its folder: it moves into its home instead." })
+    expect(refused.said).toMatchObject({ result: "refused", message: "Kuvo Code's data is in its folder: it moves into its home instead." })
     // (Asking made no home.)
     expect(existsSync(w.K)).toBe(false)
   }
   const there = newMac(w => put(join(w.K, "run", "setup-card.json"), JSON.stringify({ self: { key: "k", name: "Mini", kind: "machine" } })))
   put(join(there.K, "bin", "kuvo-start"), "#!/bin/sh\n")
-  expect(rehome(there, ["--new", "--release", there.release]).said).toMatchObject({ result: "refused", message: "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are." })
+  expect(rehome(there, ["--new", "--release", there.release]).said).toMatchObject({ result: "refused", message: "Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are." })
   expect(existsSync(join(there.K, "box", "kind"))).toBe(false)
   const noEngine = newMac(w => rmSync(join(w.S, "engine"), { recursive: true }))
   expect(rehome(noEngine, ["--new", "--release", noEngine.release]).said).toMatchObject({ result: "refused" })
   expect(existsSync(noEngine.K)).toBe(false)
   // A release without the helper that would start it there: never made.
   const noHelper = newMac(w => rmSync(join(w.release, "bin", "Kuvo Helper.app"), { recursive: true }))
-  expect(rehome(noHelper, ["--new", "--release", noHelper.release]).said).toMatchObject({ result: "refused", message: "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home." })
+  expect(rehome(noHelper, ["--new", "--release", noHelper.release]).said).toMatchObject({ result: "refused", message: "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home." })
   expect(existsSync(noHelper.K)).toBe(false)
 }, 60_000)
 
@@ -559,7 +559,7 @@ test.if(mac)("asked whether a new Mac's box is made: never while a move is under
   const moving = world()
   expect(move(moving, { KUVO_TEST_REHOME_STOP: "after-place" }).signal).toBe("SIGKILL")
   expect(readFileSync(join(moving.K, "box", "kind"), "utf8")).toBe("mac\n")
-  expect(rehome(moving, ["--new", "--check"]).said).toEqual({ ready: false, made: false, why: "A move of this Mac's box is under way: it's finished first." })
+  expect(rehome(moving, ["--new", "--check"]).said).toEqual({ ready: false, made: false, why: "Kuvo on this Mac is moving: that finishes first." })
   expect(rehome(moving, ["--new", "--release", moving.release]).said).toMatchObject({ result: "refused" })
   // Moved: made.
   rehome(moving, ["--resume"])
@@ -638,7 +638,7 @@ test.if(mac)("a mark a cut-short new box left never sets aside a box someone mad
   for (const [what, made] of theirs) {
     const w = newMac(w => { put(join(w.K, "updates", "rehome", "new"), "1\n"); made(w) })
     const before = snapshot(w.K)
-    expect(rehome(w, ["--new", "--check"]).said, what).toMatchObject({ ready: false, made: false, why: "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are." })
+    expect(rehome(w, ["--new", "--check"]).said, what).toMatchObject({ ready: false, made: false, why: "Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are." })
     expect(rehome(w, ["--new", "--release", w.release]).said, what).toMatchObject({ result: "refused" })
     expect(snapshot(w.K), what).toEqual(before)
   }
@@ -790,7 +790,7 @@ test.if(mac)("it refuses while something runs in the box, before the box started
     const refused = move(runs)
     expect(refused.status).toBe(1)
     expect(refused.said).toMatchObject({ result: "refused", status: { state: "failed", tries: 1 } })
-    expect(refused.said!.message).toContain("Something is running in this Mac's box")
+    expect(refused.said!.message).toContain("Something is running in Kuvo on this Mac")
     expect(snapshot(runs.S)).toEqual(before)
     expect(readdirSync(join(runs.K, "updates", "rehome"))).toEqual(["state.json"])
   } finally {
@@ -799,20 +799,20 @@ test.if(mac)("it refuses while something runs in the box, before the box started
   }
 
   const updated = world(w => put(join(w.S, "box", "run", "served.json"), JSON.stringify({ app: "9.9.8", bridge: BRIDGE_VERSION, at: 1 })))
-  expect(move(updated).said!.message).toBe("This Mac's box hasn't started since Kuvo Code updated: it moves once it has.")
+  expect(move(updated).said!.message).toBe("Kuvo on this Mac hasn't started since Kuvo Code updated: it moves once it has.")
   const never = world(w => rmSync(join(w.S, "box", "run", "served.json")))
-  expect(move(never).said!.message).toBe("This Mac's box hasn't started since Kuvo Code updated: it moves once it has.")
+  expect(move(never).said!.message).toBe("Kuvo on this Mac hasn't started since Kuvo Code updated: it moves once it has.")
 
   const full = world()
   const refused = move(full, { KUVO_TEST_REHOME_FREE: "1000" })
-  expect(refused.said!.message).toContain("There isn't room to move this Mac's box")
+  expect(refused.said!.message).toContain("There isn't room to move Kuvo on this Mac")
   expect(readdirSync(full.S)).toContain("box")
 
   const live = world(w => {
     put(join(w.K, "run", "setup-card.json"), JSON.stringify({ self: { key: "m", name: "Mini", kind: "machine" } }))
     put(join(w.K, "bin", "kuvo-start"), "")
   })
-  expect(move(live).said!.message).toBe("There's a box in this Mac's ~/.kuvo-code already: both keep running as they are.")
+  expect(move(live).said!.message).toBe("Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are.")
   expect(existsSync(join(live.K, "bin", "kuvo-start"))).toBe(true)
 }, 60_000)
 
@@ -858,9 +858,9 @@ test.if(!mac)("a machine's box is in its home already: rehome refuses, saying so
   for (const args of [[], ["--back"], ["--new", "--release", home]]) {
     const refused = run(args)
     expect(refused.status).toBe(1)
-    expect(JSON.parse(refused.stdout.trim())).toMatchObject({ result: "refused", message: "This machine's box is in its own home already: there's nothing to move." })
+    expect(JSON.parse(refused.stdout.trim())).toMatchObject({ result: "refused", message: "Kuvo on this machine is in its own home already: there's nothing to move." })
   }
-  expect(JSON.parse(run(["--ready"]).stdout.trim())).toMatchObject({ ready: false, why: "This machine's box is in its own home already: there's nothing to move." })
+  expect(JSON.parse(run(["--ready"]).stdout.trim())).toMatchObject({ ready: false, why: "Kuvo on this machine is in its own home already: there's nothing to move." })
   expect(readdirSync(join(home, ".kuvo-code"))).toEqual([])
 }, 60_000)
 
@@ -959,8 +959,8 @@ test.if(mac)("Move Back refused for good is answered once: the keeper isn't sent
   // The app made a box of its own in its folder again.
   put(join(w.S, "box", "run", "link.json"), "{}")
   const ready = await rehomeReady(w.K, null)
-  expect(ready).toMatchObject({ ready: false, why: "Kuvo Code has a box of its own in its folder again: this one can't move back beside it.", status: { asked: null, state: "done" } })
-  expect(await rehomeReady(w.K, null)).toMatchObject({ ready: false, why: "This Mac's box has moved." })
+  expect(ready).toMatchObject({ ready: false, why: "Kuvo Code has data in its own folder again: this one can't move back beside it.", status: { asked: null, state: "done" } })
+  expect(await rehomeReady(w.K, null)).toMatchObject({ ready: false, why: "Kuvo on this Mac has moved." })
 }, 60_000)
 
 test.if(mac)("a copy of the app that isn't the real one never reads or asks the real ~/.kuvo-code's move", () => {
@@ -1003,7 +1003,7 @@ test.if(mac)("what's written where it moves from as it moves, or a box that star
   try {
     const moved = move(started, { KUVO_TEST_REHOME_WRITE_AT: "after-fix", KUVO_TEST_REHOME_WRITE_FILE: join(started.S, "box", "run", "engine.json"), KUVO_TEST_REHOME_WRITE_TEXT: JSON.stringify({ pid: engine.pid, port: 1 }) })
     expect(moved.said).toMatchObject({ result: "failed", status: { state: "failed", failed: { step: "fix" } } })
-    expect(moved.said!.message).toContain("Something started in the box as it moved (its engine)")
+    expect(moved.said!.message).toContain("Something started in Kuvo as it moved (its engine)")
     expect(readdirSync(started.S)).toContain("box")
     expect(readdirSync(started.K)).toEqual(["updates"])
   } finally {

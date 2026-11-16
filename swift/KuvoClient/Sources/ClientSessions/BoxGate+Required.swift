@@ -9,6 +9,7 @@ extension BoxGate {
     /// each add a name merge without a conflict, two added side by side in either order
     /// (CONTRIBUTING.md, "What branches don't edit by hand").
     public static let required: [String] = [
+        "account-action-sheet-title", // #734
         "agent-tools.own",
         "auto.lists",
         "bots.deletes", // the desktop client's Bots area draws what the box says of a delete
@@ -22,6 +23,7 @@ extension BoxGate {
         "computers.facts", // #735: what each computer answers, which of its sessions are at work
         "computers.manage", // #735: renaming, removing and reaching one again from any box, as its `actions` say
         "computers.reach", // #742: where each of your computers is reached, for a client that connects to each directly
+        "computers.reach-words",
         "computers.words",
         "devices.allow", // #742: a computer whose app was removed adds none until you allow it again
         "devices.pair", // #742: the desktop app pairs through the box on its own computer
@@ -72,7 +74,6 @@ extension BoxGate {
         "setup.welcomed", // #733
         "sign-in.accounts.kinds", // #711
         "sign-in.accounts.plan", // #733 (with a key-only account's Add Key)
-        "account-action-sheet-title", // #734
         "sign-in.accounts.state", // #668: no client decides when Disconnect, Sign In Again or Install show
         "sign-in.codes", // #711
         "typed",

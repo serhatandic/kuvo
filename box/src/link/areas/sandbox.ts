@@ -17,7 +17,7 @@ import { listAskReviews, listSettledReviews, onAskReviewsChanged } from "../work
 import { askHolder, heldHere, holdsVault } from "../vault/holder";
 import { callerOf, isCalling } from "../vault/who";
 
-const NOT_OPEN = "This computer's box isn't running its own process: try again in a moment.";
+const NOT_OPEN = "Kuvo on this computer isn't running its own process: try again in a moment.";
 const NOT_CALLING = "Only a conversation's own tool call can ask, and this one isn't running in it.";
 const NOT_ON = "Commands aren't in the sandbox on this computer now, so there's nothing to ask: run the command with your shell tool.";
 

@@ -170,7 +170,7 @@ impl StandIn {
         state.sessions.get_mut("ses_recipes").unwrap()["running"] = json!(true);
         state.messages.get_mut("ses_recipes").unwrap().push(json!({
             "type": "compaction", "id": "msg_cmp_running", "status": "running",
-            "time": {"created": 1_794_650_000_000.0}, "title": "Compacting conversation…",
+            "time": {"created": 1_794_650_000_000.0}, "title": "Summarizing the conversation…",
             "workingTitle": "Summarizing the conversation…"
         }));
     }
@@ -1302,7 +1302,7 @@ impl StandIn {
             // Whether a first run has anything to ask, as a box decides it (`kuvo/setup/ready`).
             if !state.older && (method, route) == ("GET", "kuvo/setup/ready") {
                 if state.first_run.ready_fails {
-                    return answer(503, json!({ "message": "The box isn’t answering." }));
+                    return answer(503, json!({ "message": "Kuvo on this computer isn’t answering." }));
                 }
                 let runs = !state.first_run.only_free && !state.nothing_runs;
                 let needing = state.settings.needs_you();
@@ -1795,7 +1795,7 @@ impl StandIn {
                 state.emit("session.compaction.started", json!({ "sessionID": session, "reason": "manual" }));
                 state.messages.entry((*session).to_owned()).or_default().push(json!({
                     "type": "compaction", "id": id, "time": { "created": now, "completed": now },
-                    "status": "completed", "title": "Conversation compacted", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
+                    "status": "completed", "title": "Conversation summarized", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
                 }));
                 state.emit("session.compaction.ended", json!({ "sessionID": session }));
                 if let Some(facts) = state.sessions.get_mut(*session) {
@@ -1903,7 +1903,7 @@ impl StandIn {
                 state.emit("session.compaction.started", json!({ "sessionID": session, "reason": "manual" }));
                 state.messages.entry(session.clone()).or_default().push(json!({
                     "type": "compaction", "id": compact_id, "time": { "created": now, "completed": now },
-                    "status": "completed", "title": "Conversation compacted", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
+                    "status": "completed", "title": "Conversation summarized", "reason": "manual", "summary": "Kept the decisions and current work for the next turn."
                 }));
                 state.emit("session.compaction.ended", json!({ "sessionID": session }));
                 let compact_idle = state.id("msg");

@@ -2070,7 +2070,7 @@ impl Workspace {
         let Some(confirm) = confirm else {
             self.session_menu.active_popover = None;
             self.session_menu.action_error = Some(
-                kuvo_box::Error::BadAnswer("The box didn’t say what deleting comes to.".into()).to_string(),
+                kuvo_box::Error::BadAnswer("Kuvo on this computer didn’t say what deleting comes to.".into()).to_string(),
             );
             cx.notify();
             return;

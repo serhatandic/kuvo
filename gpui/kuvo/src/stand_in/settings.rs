@@ -58,8 +58,8 @@ pub struct Settings {
 /// A section with a row of every kind a box may describe (PROTOCOL.md, "A box's settings"), for
 /// the kinds its own pages don't have yet: its line in `kuvo/settings`, and its page.
 pub fn every_kind() -> (Value, Value) {
-    let section = json!({ "id": "samples", "title": "Every Kind", "group": "System", "icon": "sliders", "line": "A row of each kind a box may describe.", "keywords": ["proxy"] });
-    let page = json!({ "id": "samples", "title": "Every Kind", "line": "A row of each kind a box may describe, drawn from its description alone.", "groups": [
+    let section = json!({ "id": "samples", "title": "Every Kind", "group": "System", "icon": "sliders", "line": "A row of each kind Kuvo may describe.", "keywords": ["proxy"] });
+    let page = json!({ "id": "samples", "title": "Every Kind", "line": "A row of each kind Kuvo may describe, drawn from its description alone.", "groups": [
         { "id": "fields", "title": "Fields", "note": "Typed, then saved with Return or Save.", "rows": [
             { "id": "proxy", "title": "Proxy", "line": "For what agents fetch.", "kind": "text", "value": "", "placeholder": "http://proxy.example:8080", "can": true },
             { "id": "keep", "title": "Keep sessions for", "line": "Days, before they’re archived.", "kind": "number", "value": 30, "min": 1, "max": 365, "can": true },
@@ -73,7 +73,7 @@ pub fn every_kind() -> (Value, Value) {
             { "id": "docs", "title": "How it works", "kind": "open", "address": "https://www.kuvo.run/code/docs/settings/" },
             { "id": "pair", "title": "Pair a phone", "line": "Scan a code with Kuvo Code for iPhone.", "kind": "steps", "start": { "id": "start", "title": "Pair…" } },
             { "id": "background", "title": "Keep working with the app closed", "kind": "custom", "name": "background-work", "can": { "why": "Turn it on in Kuvo Code on that computer." } },
-            { "id": "later", "title": "Something newer", "line": "From a newer box.", "kind": "hologram" },
+            { "id": "later", "title": "Something newer", "line": "From a newer version of Kuvo.", "kind": "hologram" },
             { "id": "cache", "title": "Cache", "line": "1.2 GB of builds.", "kind": "actions", "actions": [{ "id": "clear", "title": "Clear…", "style": "destructive", "confirm": { "title": "Clear the cache?", "body": "The next build takes longer.", "button": "Clear" } }, { "id": "show", "title": "Show", "can": { "why": "Only on that computer itself." } }] },
         ] },
         { "id": "hosts", "title": "Hosts", "rows": [

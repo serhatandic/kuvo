@@ -251,7 +251,7 @@ export async function* macLinkRoute(route: string, request: LinkRequest, signal:
           });
         }
       } catch {
-        return yield* json(500, { message: "This Mac's box couldn't keep them." });
+        return yield* json(500, { message: "Kuvo on this Mac couldn't keep them." });
       }
       macSendOutbox();
       return yield* json(200, {});

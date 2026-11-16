@@ -247,8 +247,7 @@ impl Transport for Via {
     }
 }
 
-/// What the nearest box says when it's from before `devices.pair`.
-const OLDER_NEAREST: &str = "Kuvo Code on this computer needs an update before this app can reach your other computers.";
+/// Why this app cannot pair when its key could not be kept.
 const NO_KEYCHAIN: &str = "This app couldn’t keep its key, so it can’t reach your other computers.";
 
 impl Boxes {
@@ -504,8 +503,7 @@ impl Boxes {
                             Pairing::Removed(refusal.message)
                         } else if response.status == 503 {
                             Pairing::Waiting(refusal.message)
-                        } else if refusal.older_box {
-                            Pairing::Refused(OLDER_NEAREST.into())
+
                         } else {
                             Pairing::Refused(refusal.message)
                         }

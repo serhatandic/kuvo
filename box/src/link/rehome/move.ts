@@ -57,17 +57,17 @@ const RELEASE_HELPER = path.join("bin", "Kuvo Helper.app", "Contents", "MacOS", 
 /** Why a release folder can't be a box's files in its home, or null. */
 export function releaseRefusal(release: string | null): string | null {
   const fileAt = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
-  if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js"))) return "The box's own files to put in its new home weren't given.";
-  if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start this Mac's box in its own home.";
+  if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js"))) return "Kuvo's own files to put in its new home weren't given.";
+  if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home.";
   return null;
 }
 
 /** What a move back says with nothing moved. */
-const NOT_MOVED = "This Mac's box hasn't moved: there's nothing to move back.";
+const NOT_MOVED = "Kuvo on this Mac hasn't moved: there's nothing to move back.";
 /** What a move the box ran itself says to Move Back: the earlier Kuvo Code's own folder was never changed. */
 const NOT_BACK = "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back.";
 /** What a box that's in its own home says to a move: a machine's, on Linux. */
-export const NOTHING_TO_MOVE = "This machine's box is in its own home already: there's nothing to move.";
+export const NOTHING_TO_MOVE = "Kuvo on this machine is in its own home already: there's nothing to move.";
 
 const exists = (file: string): boolean => {
   try { fs.lstatSync(file); return true; } catch { return false; }
@@ -225,20 +225,20 @@ export function moveRefusal({ appFolder, home }: Folders, { appVersion, release,
   if (process.platform !== "darwin") return NOTHING_TO_MOVE;
   const box = path.join(appFolder, "box");
   const state = readRecord(home);
-  if (state.state === "done" && state.way !== "back") return "This Mac's box has moved already.";
+  if (state.state === "done" && state.way !== "back") return "Kuvo on this Mac has moved already.";
   // The old box started once since the app updated: the upgrades a newer app runs as its box starts
   // have run (its bots' jobs taken, say).
   let served: unknown = null;
   try { served = JSON.parse(fs.readFileSync(path.join(box, "run", SERVED_FILE), "utf8")); } catch {}
   if (!isObject(served) || served.bridge !== bridgeVersion || (appVersion !== null && served.app !== appVersion)) {
-    return "This Mac's box hasn't started since Kuvo Code updated: it moves once it has.";
+    return "Kuvo on this Mac hasn't started since Kuvo Code updated: it moves once it has.";
   }
   // (Asked whether it's ready, the box runs: the keeper stops it before it moves.)
   const running = checkRunning ? runningIn(path.join(box, "run"), { keeper: false }) : [];
-  if (running.length) return `Something is running in this Mac's box (${running.join(", ")}): it moves once that's stopped.`;
+  if (running.length) return `Something is running in Kuvo on this Mac (${running.join(", ")}): it moves once that's stopped.`;
   // (Asked whether it's ready, the files may not be said yet.)
   // (A copy of the app, a demo's or a test's, never moves into the real one's home.)
-  if (located(home) === located(path.join(accountHome(), ".kuvo-code")) && path.basename(appFolder) !== "run.kuvo.code") return "Only Kuvo Code itself moves its box into ~/.kuvo-code: a copy moves into a home of its own.";
+  if (located(home) === located(path.join(accountHome(), ".kuvo-code")) && path.basename(appFolder) !== "run.kuvo.code") return "Only Kuvo Code itself moves its data into ~/.kuvo-code: a copy moves into a home of its own.";
   if (release !== undefined) {
     const refusal = releaseRefusal(release);
     if (refusal) return refusal;
@@ -246,16 +246,16 @@ export function moveRefusal({ appFolder, home }: Folders, { appVersion, release,
   // A box already in its home (#333 §3.7): no move, both keep running as they are. One its Mac
   // removed is set aside first.
   const there = runsAt(home);
-  if (there !== "gone" && (there === "running" || foundAt(home, false) !== null)) return "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are.";
+  if (there !== "gone" && (there === "running" || foundAt(home, false) !== null)) return "Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are.";
   if (runningIn(path.join(home, "run")).length) return "Something is running in this Mac's ~/.kuvo-code: it moves once that's stopped.";
   // One disk, cloned: never copied.
   const target = nearest(home);
-  if (fs.statSync(appFolder).dev !== fs.statSync(target).dev || diskKind(appFolder) !== "apfs") return "Kuvo Code can't move its box on this disk.";
+  if (fs.statSync(appFolder).dev !== fs.statSync(target).dev || diskKind(appFolder) !== "apfs") return "Kuvo Code can't move its data on this disk.";
   // Room for what's rewritten: the engine's database and its journal, and some to spare.
   const database = path.join(appFolder, "opencode", "data", "opencode");
   const needed = (sizeOf(path.join(database, "opencode.db")) + sizeOf(path.join(database, "opencode.db-wal"))) * 1.1 + 200_000_000;
   const free = freeBytes(target);
-  if (free !== null && free < needed) return `There isn't room to move this Mac's box: it needs ${Math.ceil(needed / 1_000_000)} MB free.`;
+  if (free !== null && free < needed) return `There isn't room to move Kuvo on this Mac: it needs ${Math.ceil(needed / 1_000_000)} MB free.`;
   const plan = planMove({ appFolder, home }, release ?? path.join(home, "bin"));
   return rewriter.refuses({ way: "move", home, appFolder, placements: plan.placements, map: mapOf("move", { appFolder, home }, plan.placements), work: path.join(staging(home), "work") });
 }
@@ -269,10 +269,10 @@ export function backRefusal({ appFolder, home }: Folders, { running: checkRunnin
   if (state.app) return NOT_BACK;
   // (Its keeper, which runs the move back, aside.)
   const running = checkRunning ? runningIn(path.join(home, "run"), { keeper: false }) : [];
-  if (running.length) return `Something is running in this Mac's box (${running.join(", ")}): it moves back once that's stopped.`;
+  if (running.length) return `Something is running in Kuvo on this Mac (${running.join(", ")}): it moves back once that's stopped.`;
   const old = path.join(appFolder, "box", "run");
-  if (["setup-card.json", "link.json"].some(file => exists(path.join(old, file))) || runningIn(old).length) return "Kuvo Code has a box of its own in its folder again: this one can't move back beside it.";
-  if (!exists(appFolder) || fs.statSync(appFolder).dev !== fs.statSync(home).dev) return "Kuvo Code can't move its box back on this disk.";
+  if (["setup-card.json", "link.json"].some(file => exists(path.join(old, file))) || runningIn(old).length) return "Kuvo Code has data in its own folder again: this one can't move back beside it.";
+  if (!exists(appFolder) || fs.statSync(appFolder).dev !== fs.statSync(home).dev) return "Kuvo Code can't move its data back on this disk.";
   // (Its engine's database as it is now: of a schema the rewrite knows, as a move's is.)
   const plan = planBack({ appFolder, home }, readRecord(home).merged);
   return rewriter.refuses({ way: "back", home, appFolder, placements: plan.placements, map: mapOf("back", { appFolder, home }, plan.placements), work: path.join(staging(home), "work") });
@@ -408,7 +408,7 @@ function cloneAll(journal: Journal): void {
   }
 }
 
-/** The box's own files, after what was cloned: never its kind (written last, on a move; taken out of
+/** Kuvo's own files, after what was cloned: never its kind (written last, on a move; taken out of
  * what goes back), nor on a move back the files its keys were written to from your Keychain, which
  * the app writes for itself in its folder (`KUVO_KEYS`). */
 function settleBoxFiles(journal: Journal): void {
@@ -544,7 +544,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
     for (const placement of journal.placements) {
       if (exists(placement.from) && !exists(placement.staged)) throw new Error(`${placement.from} wasn't staged.`);
     }
-    if (journal.way === "move" && !exists(path.join(journal.placements.find(each => each.installed && path.basename(each.to) === "bin")!.staged, "kuvo-start"))) throw new Error("The box's own files weren't staged.");
+    if (journal.way === "move" && !exists(path.join(journal.placements.find(each => each.installed && path.basename(each.to) === "bin")!.staged, "kuvo-start"))) throw new Error("Kuvo's own files weren't staged.");
     const leftovers = await rewriter.check(move);
     noteRecord(home, { leftovers });
     // (A move the box runs itself: nothing it counted before its upgrades is fewer now.)
@@ -585,7 +585,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
     if (stepIndex(journal.step) < stepIndex("clear")) {
       const run = journal.way === "move" ? path.join(journal.from, "box", "run") : path.join(home, "run");
       const running = runningIn(run, { keeper: false });
-      if (running.length) throw new Error(`Something started in the box as it moved (${running.join(", ")}), so it went back.`);
+      if (running.length) throw new Error(`Something started in Kuvo as it moved (${running.join(", ")}), so it went back.`);
       // Nor anything written meanwhile where it moves from (a file the app kept as you sent it):
       // only its copy would move.
       // (All it clears but the engine's own folders, which its engine alone writes; new entries too.)
@@ -759,7 +759,7 @@ export async function resumed(home: string, rewriter: Rewriter): Promise<RehomeO
   return carried(journal, rewriter);
 }
 
-/** `rehome`: this Mac's box moved into `home`, from the app's folder around `appBox`. */
+/** `rehome`: Kuvo on this Mac moved into `home`, from the app's folder around `appBox`. */
 export async function rehome(folders: Folders, options: MoveOptions = {}): Promise<RehomeOutcome> {
   const { home } = folders;
   const rewriter = options.rewriter ?? PATH_REWRITER;
@@ -791,15 +791,15 @@ function newRefusal({ appFolder, home }: Folders, { release, engineData, engine 
     const refusal = releaseRefusal(release);
     if (refusal) return refusal;
   }
-  if (appBoxRan(path.join(appFolder, "box"), engineData ?? path.join(appFolder, "opencode", "data", "opencode"))) return "Kuvo Code's own box is in its folder: it moves into its home instead.";
-  if (located(home) === located(path.join(accountHome(), ".kuvo-code")) && path.basename(appFolder) !== "run.kuvo.code") return "Only Kuvo Code itself makes its box in ~/.kuvo-code: a copy makes it in a home of its own.";
+  if (appBoxRan(path.join(appFolder, "box"), engineData ?? path.join(appFolder, "opencode", "data", "opencode"))) return "Kuvo Code's data is in its folder: it moves into its home instead.";
+  if (located(home) === located(path.join(accountHome(), ".kuvo-code")) && path.basename(appFolder) !== "run.kuvo.code") return "Only Kuvo Code itself sets up Kuvo in ~/.kuvo-code: a copy makes it in a home of its own.";
   // (What a making cut short left isn't a box there: it's made again.)
   const there = makingCutShort(home) ? "gone" : runsAt(home);
   // (Someone's box, card or not yet: a machine's, or one with keys of its own.)
   const someones = foundAt(home, false) !== null || recordedKind(path.join(home, "box", "kind")) === "machine" || exists(path.join(home, "box", "keys"));
-  if (there !== "gone" && (there === "running" || someones)) return "There's a box in this Mac's ~/.kuvo-code already: both keep running as they are.";
+  if (there !== "gone" && (there === "running" || someones)) return "Kuvo is set up in this Mac's ~/.kuvo-code already: both keep running as they are.";
   if (runningIn(path.join(home, "run")).length) return "Something is running in this Mac's ~/.kuvo-code: it's made there once that's stopped.";
-  if (!listOf(engine).length) return "The engine isn't downloaded yet: this Mac's box is made once it is.";
+  if (!listOf(engine).length) return "The engine isn't downloaded yet: Kuvo is set up on this Mac once it is.";
   return null;
 }
 
@@ -824,7 +824,7 @@ export function makingCutShort(home: string): boolean {
  * nothing. */
 export function newReadiness(folders: Folders, { engineData }: { engineData?: string } = {}): { ready: boolean; made: boolean; why?: string } {
   if (process.platform !== "darwin") return { ready: false, made: false, why: NOTHING_TO_MOVE };
-  if (moveUnderWay(folders.home)) return { ready: false, made: false, why: "A move of this Mac's box is under way: it's finished first." };
+  if (moveUnderWay(folders.home)) return { ready: false, made: false, why: "Kuvo on this Mac is moving: that finishes first." };
   if (recordedKind(path.join(folders.home, "box", "kind")) === "mac" && !makingCutShort(folders.home)) return { ready: false, made: true };
   const why = newRefusal(folders, { release: undefined, engineData });
   return why ? { ready: false, made: false, why } : { ready: true, made: false };
@@ -843,7 +843,7 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
   const release = options.release ? path.resolve(options.release) : null;
   // (Asked first without its lock, which makes its home: a Mac whose box moves instead gets none from asking.)
   const why = (): RehomeOutcome | null => {
-    if (moveUnderWay(home)) return { result: "refused", message: "A move of this Mac's box is under way: it's finished first.", status: rehomeStatus(home) };
+    if (moveUnderWay(home)) return { result: "refused", message: "Kuvo on this Mac is moving: that finishes first.", status: rehomeStatus(home) };
     if (recordedKind(path.join(home, "box", "kind")) === "mac" && !makingCutShort(home)) return { result: "nothing", status: rehomeStatus(home) };
     const refusal = newRefusal(folders, { release, engineData: options.engineData, engine: engineFrom });
     return refusal ? { result: "refused", message: refusal, status: rehomeStatus(home) } : null;
@@ -985,9 +985,9 @@ export async function rehomeReady(home: string, appFolder: string | null, { appV
     noteRecord(home, { failed: { at: now, step: "plan", message: refusal }, asked: null });
     return say(false, null, refusal);
   }
-  if (moved) return say(false, null, "This Mac's box has moved.");
+  if (moved) return say(false, null, "Kuvo on this Mac has moved.");
   if (record.movedBack && record.asked !== "now") return say(false, null, "It was moved back: it moves again only on Move Now.");
-  if (!appFolder) return say(false, null, "Only the app's own box, in its folder, moves.");
+  if (!appFolder) return say(false, null, "Only Kuvo's data in the app's folder moves.");
   const refusal = moveRefusal({ appFolder, home }, { appVersion, release, running: false });
   if (refusal) return say(false, null, refusal);
   if (record.asked === "now") return say(true, "move");
@@ -1027,7 +1027,7 @@ export function askRehome(home: string, ask: "now" | "back"): string | null {
   const moved = record.state === "done" && record.way === "move";
   if (ask === "back" && !moved) return NOT_MOVED;
   if (ask === "back" && record.app) return NOT_BACK;
-  if (ask === "now" && moved) return "This Mac's box has moved already.";
+  if (ask === "now" && moved) return "Kuvo on this Mac has moved already.";
   noteRecord(home, { asked: ask });
   return null;
 }
