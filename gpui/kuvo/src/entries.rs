@@ -944,7 +944,7 @@ pub enum Kind {
 }
 
 /// A message the user didn't write, as its card shows it: what it is, who it's from (a wake-up:
-/// "Wake-up"), what happened ("finished", "asks"), what it said, the line it shows folded where it
+/// "Woke up", as the phone says it), what happened ("finished", "asks"), what it said, the line it shows folded where it
 /// isn't its first (a wake-up's summary), and the conversation it's from (none where it can't be
 /// opened).
 #[derive(Clone, Debug, PartialEq)]
@@ -1005,7 +1005,7 @@ pub fn letters(user: &kuvo_box::messages::UserMessage) -> Vec<Letter> {
     }
     // A wake-up of its own: its summary, opening to its note.
     if let Some(wake) = user.wake() {
-        return vec![Letter { kind: Kind::Wake, from: "Wake-up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None }];
+        return vec![Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None }];
     }
     let news: Vec<News> = user.news();
     if !news.is_empty() {
@@ -1052,7 +1052,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
                 .child("Open")
         });
         // One line: "From" and its name (cut short where it's long) for a message; a session's name
-        // and what happened ("Sign-in finished"); "Wake-up".
+        // and what happened ("Sign-in finished"); "Woke up".
         let from = div()
             .flex()
             .items_center()
@@ -1668,7 +1668,7 @@ mod tests {
         let Message::User(user) = &**message else { panic!() };
         assert!(user.is_letter());
         let wake = letters(user);
-        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Wake-up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None }]);
+        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Woke up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None }]);
         assert_eq!(wake[0].folded_line(), "Pacing check");
         assert!(wake[0].folds(), "it opens to the whole note");
         assert!(units(&rows[0], &HashSet::new()).is_empty(), "folded, only its summary shows");

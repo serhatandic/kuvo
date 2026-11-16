@@ -11,10 +11,11 @@ import { WORK_FOLDER } from "./changes";
 
 export const WORK_SENT = path.join(WORK_FOLDER, "sent.json");
 const LOCK = path.join(WORK_FOLDER, ".sent.lock");
-// How much of each is kept, how many of each session's, of how many sessions, and for how long:
-// a turn's, which is minutes or hours.
+// How much of each is kept, how many of each session's to each it wrote to, of how many sessions,
+// and for how long: a turn's, which is minutes or hours.
 const KEPT_TEXT = 8000;
 const EACH = 4;
+const MOST_KEPT = 16;
 const SESSIONS = 100;
 const KEPT_FOR = 86_400_000;
 /** How long what a reply says must be to count as said already when what was sent holds it (in
@@ -48,7 +49,9 @@ export function noteSent(session: string, to: string, text: string, now = Date.n
     fs.mkdirSync(path.dirname(file), { recursive: true });
     locked(LOCK, () => {
       const all = readSent(file);
-      const its = [...(all[session] ?? []).filter(each => now - each.at < KEPT_FOR), { to, text: words, at: now }].slice(-EACH);
+      const kept = [...(all[session] ?? []).filter(each => now - each.at < KEPT_FOR), { to, text: words, at: now }];
+      // (Its latest few to each: writing to others doesn't push out what it sent its starter.)
+      const its = kept.filter((each, index) => kept.slice(index + 1).filter(later => later.to === each.to).length < EACH).slice(-MOST_KEPT);
       // Last, as the latest: the oldest are let go first.
       delete all[session];
       all[session] = its;
@@ -60,9 +63,13 @@ export function noteSent(session: string, to: string, text: string, now = Date.n
 }
 
 /** Whether `session` has already written `to` what `reply` says, since `since` (ms): the same words,
- * or a long enough reply that's part of what it sent. */
+ * a long enough reply that's part of what it sent, or one that holds a long enough message it sent
+ * with little else ("I sent Pixel this: …"). */
 export function saidAlready(session: string, to: string, reply: string, since: number, file = WORK_SENT): boolean {
   const words = plain(reply);
   if (!words) return false;
-  return (readSent(file)[session] ?? []).some(each => each.to === to && each.at >= since && (each.text === words.slice(0, KEPT_TEXT) || (words.length >= SAID_ALREADY && each.text.includes(words.slice(0, KEPT_TEXT)))));
+  const cut = words.slice(0, KEPT_TEXT);
+  return (readSent(file)[session] ?? []).some(each => each.to === to && each.at >= since && (each.text === cut
+    || (words.length >= SAID_ALREADY && each.text.includes(cut))
+    || (each.text.length >= SAID_ALREADY && each.text.length < KEPT_TEXT && words.includes(each.text) && words.length - each.text.length < SAID_ALREADY)));
 }

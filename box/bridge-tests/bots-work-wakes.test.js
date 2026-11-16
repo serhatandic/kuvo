@@ -142,7 +142,7 @@ const letter = (id, words) => ({ id, type: "user", time: { created: 100 }, text:
 const answer = (id, words) => ({ id, type: "assistant", time: { created: 200 }, content: [{ type: "text", text: words }] });
 // Where a turn ended, as the engine marks it.
 const ended = id => ({ id, type: "idle", time: { created: 250 } });
-const report = "Merged kuvo/update-1116 into the branch; the tip is e5bc1f1. Ready to build: the queue, Steer and Send Now work as 0.7's did, and the reviewers' two findings are fixed, with a test for each of them.";
+const report = "Merged kuvo/update-1116 into the branch; the tip is e5bc1f1. Ready to build: the queue, Steer and Send Now work as 0.7's did, and the reviewers' two findings are fixed, with a test for each of them. Nothing is pushed.";
 
 test("a session that sent its bot its report with send_message, then finished saying it, doesn't tell the bot again; its bot still sees it finish", async () => {
   conversations.ses_signin = [ended("msg_2i"), answer("msg_2", report), letter("msg_1", "Merge the update branch, then report.")];
@@ -164,6 +164,20 @@ test("a session that sent its bot its report with send_message, then finished sa
     await runAll();
     assert.equal(prompts.length, 2);
     assert.match(prompts[1].text, /^\[Session finished\] "Sign-in"[\s\S]*Built 0\.8\.0-beta\.24/);
+  } finally {
+    delete conversations.ses_signin;
+  }
+});
+
+test("a session that ends by saying it sent its report, with the report again, doesn't tell the bot again either", async () => {
+  conversations.ses_signin = [ended("msg_2i"), answer("msg_2", `I sent Pixel my report:\n\n${report}`), letter("msg_1", "Merge the update branch, then report.")];
+  try {
+    await link.agentTool("send_message", { to: "ses_pixel", text: report }, "ses_signin", { readEngine: () => source, bridge: () => null });
+    const { schedule, runAll } = clock();
+    const watch = link.workWatcher(source, () => [source], { schedule });
+    await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_signin" } });
+    await runAll();
+    assert.equal(prompts.length, 1, "only its message");
   } finally {
     delete conversations.ses_signin;
   }

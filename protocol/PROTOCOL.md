@@ -5106,7 +5106,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   client (`messages.wake-cards`), with or without a summary given: `metadata.kuvo.wake` is
   `{summary, note}`, `summary` as above (the one given, else the note's first sentence) and `note`
   the whole note without `[Wake-up] `; a client draws it as a card of its own (an alarm clock,
-  "Wake-up", the summary, opening to the note), reading no text. An older box's page has no `note`:
+  "Woke up", the summary, opening to the note), reading no text. An older box's page has no `note`:
   draw the message as it was. `GET kuvo/wakes` lists every session with a wake-up or a
   watch at once, for the marks beside them in a list: `{"sessions": [{session, next, watching,
   wakes, watches, paused}]}` (`next`, the soonest, in seconds since 1970, left out when it has

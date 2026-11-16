@@ -157,6 +157,10 @@ export async function wakeLine(event: WorkEvent, session: Partial<EngineSession>
   return null;
 }
 
+/** What a lead is told of one of its sessions whose finish waited on what it left running, once
+ * that's over, when the user has written to it since: that it's done, not the user's answer. */
+export const doneSinceLine = (session: Partial<EngineSession> & { id: string }) => `[Session finished] ${namedOf(session)}:\nWhat it left running is done. The user has written to it since, so its last reply answers them: read its report with read_conversation.`;
+
 /** What a lead is told of one of its sessions that the user stopped: only that, so it doesn't wait
  * on a session that won't finish now. */
 export const stoppedLine = (session: Partial<EngineSession> & { id: string }) => `${STOPPED_OPENING} ${namedOf(session)} was stopped by the user. Nothing more comes from it unless it's written to again: don't start it or its work again unless the user asks.`;
@@ -375,8 +379,8 @@ async function lastReply(target: Target, session: string): Promise<LastReply> {
   return { id: reply?.id ?? null, at: at(reply), turn: ended?.id ?? null, turnAt: at(ended), text, began: beganBy(turn), underWay: from === 0 && turn.some(ofTurn), whole };
 }
 
-// Whether a finished turn is news to whoever started the session. The first it hears of it always is.
-// One the user started by writing to it directly never is: its answer is theirs, not a report (#768).
+// Whether a finished turn is news to whoever started the session. One the user started by writing to
+// it directly never is: its answer is theirs, not a report (#768). The first it hears of it always is.
 // What it says of what it left running is, once told before that was over (a timer of its own isn't
 // that). After that a turn someone asked for is, and one that began on its own is only with
 // something to say: not nothing, not the same again, not a line or two. Told last while its reply
@@ -384,8 +388,8 @@ async function lastReply(target: Target, session: string): Promise<LastReply> {
 function isNews(was: Told["sessions"][string], last: LastReply): boolean {
   if (last.id && last.id === was.reply) return false;
   if (was.unread && was.upto !== undefined && last.at !== null && last.at <= was.upto) return false;
-  if (!was.at && !was.reply) return true;
   if (last.began.kind === "you") return false;
+  if (!was.at && !was.reply) return true;
   if (was.early && last.began.kind !== "timer") return true;
   if (last.began.kind === "asked" || last.began.kind === "word") return true;
   return last.text.length >= SUBSTANCE && hashed(last.text) !== was.said;
@@ -654,20 +658,26 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
     }
     const folder = session.location?.directory ?? session.directory;
     const still = await background.of(session.id, folder).catch(() => null);
-    const waitedSince = readTold(toldFile)?.waiting?.[session.id]?.at;
+    const waited = readTold(toldFile)?.waiting?.[session.id];
+    const waitedSince = waited?.at;
+    // A turn the user had with it is theirs (#768): nothing to tell, unless a turn its starter asked for
+    // waits on what it left running. That waits on as it did (what came since doesn't count), and
+    // then its starter hears it's done, though not the user's answer as its report.
+    const yours = last?.began.kind === "you";
+    if (yours && !waited) return noteTold(session.id, { reply: last!.id ?? undefined });
     // (Someone's question isn't held up by what was running before they asked: a dev server.)
-    const askedAt = last?.began.kind === "asked" || last?.began.kind === "you" ? last.began.at : null;
+    const askedAt = yours ? waited?.asked ?? null : last?.began.kind === "asked" ? last.began.at : null;
     if (holds(still, { asked: askedAt ?? undefined })) return waitFor(session.id, waitedSince ?? at, askedAt);
     const was = readTold(toldFile)?.sessions[session.id] ?? {};
     letGoOf(session.id);
-    if (last && !isNews(was, last)) return noteTold(session.id, { reply: last.id ?? undefined });
-    const line = await wakeLine({ type: "session.execution.succeeded", data: { sessionID: session.id } }, session, source, servicesWords(still));
+    if (last && !yours && !isNews(was, last)) return noteTold(session.id, { reply: last.id ?? undefined });
+    const line = yours ? doneSinceLine(session) : await wakeLine({ type: "session.execution.succeeded", data: { sessionID: session.id } }, session, source, servicesWords(still));
     if (!line) return;
     const seen = Math.max(upto ?? -Infinity, last?.at ?? -Infinity);
     // What its reply says came to its starter already, in a message it sent it in this turn (its
     // report, by send_message): not told again (#768). (What it left running isn't said either: it
     // was over, or it'd be held.)
-    const quiet = Boolean(last?.text) && !servicesWords(still).length && saidAlready(session.id, starter, last!.text, last!.began.at ?? was.at ?? 0, sentFile);
+    const quiet = !yours && Boolean(last?.text) && !servicesWords(still).length && saidAlready(session.id, starter, last!.text, last!.began.at ?? was.at ?? 0, sentFile);
     tellUnlessAnswered(session.id, starter, last?.id ?? undefined, line, at, { said: last ? (last.text ? hashed(last.text) : "") : undefined, early: Boolean(still) || waitedSince !== undefined, bot: worksFor(session)?.bot, upto: Number.isFinite(seen) ? seen : undefined, quiet });
   };
   // One whose finish waits, looked at now: gone, at work again (its end comes back here), or as above.
@@ -921,11 +931,13 @@ export function workWatcher(source: Target, targets: () => Target[], { gather = 
       const at = now();
       const last = await lastReply(source, session.id).catch(() => null);
       const reply = last?.id ?? undefined;
-      // (One the user started, writing to it: theirs to see, as its answer would be.)
-      if (isArchived(session) || staysStopped(session.id, last) || last?.began.kind === "you") {
+      if (isArchived(session) || staysStopped(session.id, last)) {
         letGoOf(session.id);
         return noteTold(session.id, { reply, turn: last?.turn });
       }
+      // (One the user started, writing to it: theirs to see, as its answer would be. A finish of its
+      // starter's that waits on what it left running waits on.)
+      if (last?.began.kind === "you") return noteTold(session.id, { reply, turn: last.turn });
       // The same failure again, in a turn no one asked for (a timer's, at a limit): told once.
       const failure = errorOf((event.data as { error?: unknown }).error)?.message ?? "";
       if (failure && last && last.began.kind !== "asked" && readTold(toldFile)?.sessions[session.id]?.failure === failure) return noteTold(session.id, { reply, turn: last.turn });
