@@ -95,7 +95,7 @@ for (const [bundle, files] of Object.entries(box.bundles ?? {})) {
     if (sha256(path.join(pack, bundle, name)) !== sum) fail(`its release's ${bundle}/${name} isn't what box.json says.`);
   }
 }
-for (const name of ["bin/kuvo-link.js", "bin/kuvo-start", "box-version"]) if (!Object.hasOwn(box.files, name)) fail(`its release's box.json names no ${name}.`);
+for (const name of ["bin/kuvo-link.js", "bin/kuvo-start", "bin/box-version"]) if (!Object.hasOwn(box.files, name)) fail(`its release's box.json names no ${name}.`);
 if (!box.bundles?.["bin/Kuvo Helper.app"]) fail("its release's box.json names no Kuvo Helper.");
 if (!manifest.darwin?.aarch64?.url) fail("its release names no engine for a Mac.");
 const trusted = JSON.parse(pinned).map(each => Buffer.from(each, "base64").toString("base64url")).includes(boxes.key);
