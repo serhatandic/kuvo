@@ -67,6 +67,8 @@ var onMacBox = onMachine && !!machineHome && (() => {
   }
 })();
 var yourHomes = !onMachine || onMacBox;
+var groupsMemoryKey = process.env.KUVO_GROUPS_MEMORY_KEY || (onMacBox ? "kuvo.groups" : undefined);
+var formerGroupsMemoryKey = onMacBox ? "kuvo.groups.machine" : undefined;
 var ownFolders = {};
 function takeOwnFolders() {
   for (const key of Object.keys(process.env)) {
@@ -10780,9 +10782,13 @@ class Limits {
   }
   forced = new Set;
   readAgain(provider) {
-    const entry = this.entries.get(provider);
-    if (!entry)
-      return Promise.resolve();
+    let entry = this.entries.get(provider);
+    if (!entry) {
+      if (!this.account(provider))
+        return Promise.resolve();
+      entry = { windows: [], next: 0 };
+      this.entries.set(provider, entry);
+    }
     entry.next = 0;
     entry.elsewhere = undefined;
     this.forced.add(provider);
@@ -21335,6 +21341,40 @@ class Roster {
   }
 }
 
+// box/src/agents/signin-watch.ts
+function watchSignIn(attempt, expires, completed, every = 250) {
+  let stopped = false;
+  let timer;
+  const check = () => {
+    if (stopped)
+      return;
+    if (Date.now() >= expires) {
+      stopped = true;
+      attempt.cancel();
+      return;
+    }
+    const status = attempt.status().status;
+    if (status === "complete") {
+      stopped = true;
+      completed();
+      return;
+    }
+    if (status !== "pending") {
+      stopped = true;
+      return;
+    }
+    timer = setTimeout(check, every);
+    timer.unref();
+  };
+  check();
+  return () => {
+    if (!stopped && Date.now() < expires && attempt.status().status === "complete")
+      completed();
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
 // box/src/agents/branch.ts
 var origins = ["branchedFrom", "handoffFrom", "handoffTo", "startedBy", "beside", "carriedFrom"];
 var listed2 = ["kuvo.pinned", "kuvo.archived"];
@@ -31573,6 +31613,7 @@ class GroupRunner {
   get peers() {
     return this.context.peers;
   }
+  formerKeyGone = new Set;
   get memoryKey() {
     return this.context.memoryKey ?? memoryKey;
   }
@@ -32693,6 +32734,11 @@ class GroupRunner {
     const api = this.ownAPI(bot);
     if (!api)
       return;
+    const former = this.context.formerMemoryKey;
+    if (former && former !== this.memoryKey && !this.formerKeyGone.has(bot.sessionID)) {
+      this.formerKeyGone.add(bot.sessionID);
+      await api.removeInstruction(bot.sessionID, former).catch(() => {});
+    }
     const folder = bot.folder + "/groups";
     if (options.forgetting)
       this.context.store.removeFile(`${folder}/${options.forgetting}.md`);
@@ -34894,8 +34940,10 @@ class LinkDirectory {
 // box/src/agents/server.ts
 var attempts = new Map;
 function cancelSignIns() {
-  for (const pending of attempts.values())
+  for (const pending of attempts.values()) {
+    pending.stop();
     pending.attempt.cancel();
+  }
   attempts.clear();
 }
 function signInsWaiting() {
@@ -34906,6 +34954,7 @@ setInterval(() => {
   for (const [id, pending] of attempts) {
     if (Date.now() < pending.expires + 60000)
       continue;
+    pending.stop();
     pending.attempt.cancel();
     attempts.delete(id);
   }
@@ -34955,6 +35004,7 @@ async function integration(agent, fresh = false, auto) {
     metadata: {
       source: "agent",
       agent: agent.id,
+      addedAccounts: kinds.includes(agent.id),
       accountID: agent.instance.id,
       accountLabel: agent.instance.label,
       installed: account.installed,
@@ -35046,7 +35096,8 @@ function handler(context) {
             const id = newID("att");
             const created = Date.now();
             const expires = created + 30 * 60000;
-            attempts.set(id, { agent, attempt, created, expires });
+            const stop = watchSignIn(attempt, expires, () => void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {}));
+            attempts.set(id, { agent, attempt, created, expires, stop });
             return located({ attemptID: id, url: attempt.url, instructions: attempt.instructions, mode: attempt.mode, acceptsCode: attempt.acceptsCode || undefined, userCode: attempt.userCode, time: { created, expires } });
           }
           const pending = d ? attempts.get(d) : undefined;
@@ -35055,8 +35106,10 @@ function handler(context) {
           if (method === "GET" && !e) {
             const expired = Date.now() > pending.expires;
             const status = expired ? { status: "expired" } : pending.attempt.status();
-            if (expired)
+            if (expired) {
+              pending.stop();
               pending.attempt.cancel();
+            }
             if (status.status !== "pending")
               attempts.delete(d);
             return located(status);
@@ -35069,6 +35122,7 @@ function handler(context) {
             return json15({});
           }
           if (method === "DELETE") {
+            pending.stop();
             pending.attempt.cancel();
             attempts.delete(d);
             return json15({});
@@ -35079,6 +35133,7 @@ function handler(context) {
           if (!agent.signInWithKey)
             return error2(400, `${agent.name} doesn't take a key here.`);
           await agent.signInWithKey(String(key ?? "").trim());
+          context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {});
           return json15({});
         }
         if (b === "install" && method === "POST") {
@@ -35270,7 +35325,8 @@ function handler(context) {
       }
       if (area === "kuvo" && a === "accounts") {
         if (method === "POST" && !b) {
-          const { agent, label } = await body();
+          const { agent: givenAgent, provider, label } = await body();
+          const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined);
           if (!kinds.includes(agent))
             return error2(400, "That isn't one of the coding agents.");
           const record = roster.accounts.add(agent, label);
@@ -35291,6 +35347,8 @@ function handler(context) {
           return json15({});
         }
         if (method === "DELETE") {
+          if (url.searchParams.get("onlyUnsigned") === "1" && (await target.account(true)).signedIn)
+            return json15({});
           sessions.forgetProvider(target.providerID);
           await target.removeAccount?.().catch(() => {});
           target.shutdown?.();
@@ -36526,7 +36584,7 @@ var self;
 var partGiven;
 var groups;
 var groupFolders = onMachine ? { root: join42(machineHome, "groups"), bots: process.env.KUVO_BOTS ?? join42(machineHome, "bots"), trash: join42(machineHome, "trash") } : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH } : undefined;
-var groupMemoryKey = process.env.KUVO_GROUPS_MEMORY_KEY || undefined;
+var groupMemoryKey = groupsMemoryKey;
 var post = new PeerPost(groupFolders ? join42(groupFolders.root, "peer-outbox.json") : undefined);
 var directory = new LinkDirectory(post);
 var peers = { post, directory };
@@ -36549,6 +36607,7 @@ if (groupFolders) {
       listen: (session, listener) => link4.listen(session, listener),
       place: onMachine ? "this machine" : undefined,
       memoryKey: groupMemoryKey,
+      formerMemoryKey: formerGroupsMemoryKey,
       agentAccount: async (provider) => {
         const agent = roster.find(provider);
         if (!agent)
@@ -36816,4 +36875,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 9296fa4a4bb8b2a69d353e0f3382754524c623a581c0e12afb1425d7d1ec65fd
+// Built from Packages/Box/src/agents 32d56923546b78915b9e57ca347101de46acf594a47b451ce286bd7c0c22bd1d
