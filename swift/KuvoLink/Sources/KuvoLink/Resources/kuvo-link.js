@@ -1923,6 +1923,7 @@ var init_sessions = __esm(() => {
     { route: "POST kuvo/sessions/:id/queue/hold", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/resume", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/:item/now", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
+    { route: "POST kuvo/sessions/:id/queue/:item/steer", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/add", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "DELETE kuvo/sessions/:id/queue/:item", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
   ];
@@ -9099,6 +9100,22 @@ async function sendNow(target, session, item) {
     await interrupt(target, session, true);
   return true;
 }
+async function steerQueued(target, session, item, toAgents) {
+  const entry = (await inboxFor(target, session)).find((each) => each.id === item);
+  if (!entry || !await isRunning(target, session))
+    return sendNow(target, session, item);
+  changeQueue2(session, (state) => ({ ...state, paused: false, held: state.held.filter((id) => id !== item), resumed: Date.now() }));
+  if (entry.delivery === "steer" && !toAgents)
+    return true;
+  try {
+    await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...toAgents ? { into: true } : {} });
+  } catch (error) {
+    if (/ 404\.$/.test(String(error?.message)))
+      return false;
+    throw error;
+  }
+  return true;
+}
 var NOT_YOURS = ["[Message from ", "[Wake-up]", "[Work from ", "[Session ", "[Goal started]", "[Goal changed]", "[Goal's end]", "[Goal resumed]", "[Not now]", "[Limit reset]", "[The user answered]"];
 var writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start));
 var FROM_SOMEONE = ["[Message from ", "[Work from ", "[The user ", "[Decision changed]"];
@@ -9507,6 +9524,7 @@ var FEATURES = [
   "queue.items",
   "queue.once",
   "queue.removed.keyword",
+  "queue.steer",
   "queue.stop.arriving",
   "queue.waits",
   "reviews",
@@ -42034,7 +42052,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e391316f4df9";
+var BRIDGE_VERSION = "2a86c5c451b4";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -58070,6 +58088,9 @@ async function* sending3(context, session) {
       if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" }, typeof given.words === "string" ? given.words : fields?.words)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
+      if (!command && delivery === "queue" && keepWaiting2(session, body, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() })) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+      }
       const post = async () => {
         const response = await fetch(at, { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined });
         return { status: response.status, headers: answerHeaders(response), body: Buffer.from(await response.arrayBuffer()) };
@@ -58114,7 +58135,7 @@ async function* partsRoute(context) {
 }
 
 // box/src/link/areas/queue.ts
-var QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now))?))$/;
+var QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
 var ITEMS_WAIT = 2000;
 async function queueShown(session, targets) {
   const state = queueOf(session);
@@ -58236,7 +58257,8 @@ async function* queueRoute(context, match) {
     forgetArriving(session);
     if (step === "resume")
       return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
-    if (!await sendNow(place.target, session, decodeURIComponent(item)))
+    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : sendNow(place.target, session, decodeURIComponent(item));
+    if (!await go)
       return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
   } catch (error) {
