@@ -67,6 +67,7 @@ import { ownMachinesRoute } from "../mac/own-machines";
 import { linkRoute } from "../mac/routes";
 import { boxUpdateRoute, updateRoute } from "../updates/update";
 import { permissionsRoute } from "../permissions";
+import { AT_WORK_ROUTE, atWorkRoute, stopRoute } from "../at-work";
 import { rehomeRoute } from "../rehome/route";
 import { appOpenRoute, appRoute } from "../mac/app";
 import { proofRoute } from "../mac/app-keys";
@@ -111,6 +112,10 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/box/app", answer: appRoute },
   { when: route => route === "kuvo/box/app/open", answer: appOpenRoute },
   { when: route => route === "kuvo/box/serve", answer: serveRoute },
+  // What's at work here, for what's always on screen (Kuvo Helper's menu bar item), and stopping
+  // Kuvo on this Mac until it next starts (PROTOCOL.md, "In the menu bar").
+  { when: route => route.match(AT_WORK_ROUTE), answer: atWorkRoute },
+  { when: route => route === "kuvo/box/stop", answer: stopRoute },
   // What its app asks of the keys a Mac's box in a home of its own holds (PROTOCOL.md, "Its keys").
   { when: route => route === "kuvo/box/proof", answer: proofRoute },
   // (A machine's: this Mac's agents browse in its app's panel.)

@@ -8244,6 +8244,52 @@ was named Kuvo Code Box, in no release.)
   stderr for what it doesn't know, a box that isn't yours alone, no move of the box running it, or
   a helper that isn't Kuvo Helper in the box.
 
+#### In the menu bar
+
+`box.atWork`, #761. On a Mac whose box lives in a home of its own, quitting the app leaves Kuvo at
+work: its sessions, bots and wake-ups go on under Kuvo Helper. So Kuvo Helper, the part that always
+runs, draws Kuvo in the menu bar for as long as it runs the box (the item goes with it), from the
+box's facts alone:
+
+- `GET kuvo/box/at-work` → `{applies, working, sessions, asking, waiting, background, busy, rings}`,
+  and `GET kuvo/box/at-work/events`, a line now and one as it changes (its sessions starting,
+  stopping and asking, its bots, the work left running), the rings read again every 15 s.
+  - `applies`: whether this box is shown in its computer's menu bar (a Mac's own box in a home of
+    its own; false on Linux, on a Mac's box in its app's folder, and on a machine's).
+  - `working`: how many of its sessions are at work in their turn; `sessions`: the latest twenty
+    of them, `{id, title?, bot?}`, `bot` the name of the bot it works for where that bot lives here.
+    (Conversations only, this box's own copy, not archived: never a subagent's or one kept out of
+    sight.)
+  - `asking`: the latest twenty waiting on you, `{id, title?, asks?}`, `asks` what it asks in the
+    box's words ("asks to run a command"); `waiting`: `kuvo/waiting`'s counts.
+  - `background`: how many sessions not at work in their turn still have work running (a command,
+    a subagent: "Work › Background work"); `busy`: whether anything would stop with Kuvo here
+    (`working` or `background` above none). A client asks before stopping while it's true.
+  - `rings`: each account's rings, in the box's order (the plan limits' `rows`), `{service, title,
+    short?: {used, level}, long?: {used, level}}`, as "Plan limits" says them; none while the
+    coding agents' bridge doesn't run.
+- `POST kuvo/box/stop` → `202 {stopping: true}`: **Stop Kuvo on this Mac**, until it next starts.
+  Only over the box's own server with its password (the helper, or the app on this Mac): a phone
+  or another computer gets `403`, since nothing there could start it again. Only where `applies`
+  (else `409`). It runs the keeper's `kuvo-start pause` in a process of its own and answers at once.
+  `pause` marks the box (`run/paused`), ends the phone link, the keeper with its group and the start
+  it's at, and stops the engine and the coding agents' bridge, as `off` does, but not for good:
+  while the mark is there, `kuvo-start engine` starts nothing, and the next keeper to start takes it
+  away. The helper, seeing its keeper gone with a mark made since it started, stops `serve` and exits
+  0, so launchd doesn't start it again. Kuvo starts again at the next login (launchd's `RunAtLoad`),
+  or as the app opens: the installer's `status` takes a paused box's helper as not in place, so
+  `new` starts it (`helper start`). A machine's box refuses `pause` (exit 3).
+- **Kuvo Helper's item**: Kuvo's mark, the count of sessions at work beside it, and a dot while
+  something waits on you. Its panel: Kuvo on this Mac and whether it's starting, running or
+  stopping; what needs you; what's at work, with the bot each works for; each account's rings;
+  **Open Kuvo** (the desktop app, opened or brought forward); **Stop Kuvo on this Mac…**, which asks
+  first while `busy`. The helper reaches the box's server as a client does (`run/serve.json`'s port,
+  with the password it started `serve` with: a record naming another is never read from).
+- **The desktop app's first Quit**: where the nearest box says `applies`, the first ⌘Q (or closing
+  the window) shows a note that Kuvo keeps working, and where it is, with Cancel and Quit. It shows
+  once on that device either way, remembered in the app's own folder (`desktop/settings.json`,
+  `quitNoteSeen`).
+
 #### The relay, on this Mac's box
 
 Since bridge 0.9.61 this Mac's box holds its relay connection, as a machine's bridge does (`run`),

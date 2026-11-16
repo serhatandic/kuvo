@@ -134,6 +134,9 @@ box)
   ;;
 keep)
   echo $$ >"$R/box.pid"
+  # A keeper starting is Kuvo on this Mac starting again (at login, or as the app opens): a stop
+  # until then (`pause`) is over.
+  rm -f "$R/paused"
   launch_noted
   # A Mac sleeps by itself, and a box works with nobody there: awake while it's on power,
   # for as long as this keeper runs (its display still sleeps). No setting of yours changes.
@@ -285,8 +288,8 @@ keep)
   ;;
 engine)
   # As Kuvo Code last started it, with a new port and passwords: not when it's stopped on
-  # purpose, or off (the machine removed), or running.
-  { [ -f "$R/stopped" ] || [ -f "$R/off" ]; } && exit 0
+  # purpose, or off (the machine removed), or stopped until it next starts (paused), or running.
+  { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
   launch_noted
   [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] || exit 0
   up && exit 0
@@ -299,7 +302,7 @@ engine)
     if [ -f "$K/bin/kuvo-agents.js" ]; then aport=$(number); apassword=$(word); record="$record,\"agentsPort\":$aport,\"agentsPassword\":\"$apassword\""; agents="KUVO_AGENTS_PORT=$aport
 KUVO_AGENTS_PASSWORD=$apassword"; fi
     { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; [ -z "$agents" ] || printf '%s\n' "$agents"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && exit 0
-    { [ -f "$R/stopped" ] || [ -f "$R/off" ]; } && exit 0
+    { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
     sleep 2
   done
   exit 1
@@ -338,6 +341,17 @@ restart)
   sh "$K/bin/kuvo-start" engine
   sh "$K/bin/kuvo-start" box
   up
+  ;;
+pause)
+  # A Mac's own box stopped until it next starts (Stop Kuvo on this Mac, in its helper's menu):
+  # everything it runs, as `off` stops it, but not for good. Marked (`run/paused`) so that no start
+  # under way goes on to start the engine, and its helper, seeing its keeper gone, goes too. The
+  # next keeper to start (the helper's, at your next login or as the app opens) takes the mark away.
+  own_mac || { echo "Only a Mac's own box is stopped until it next starts." >&2; exit 3; }
+  touch "$R/paused"
+  l=$(cat "$R/link.pid" 2>/dev/null); is "$l" kuvo-link && kill "$l" 2>/dev/null
+  b=$(cat "$R/box.pid" 2>/dev/null); if is "$b" kuvo-start; then kill -- "-$b" 2>/dev/null || kill "$b" 2>/dev/null; fi; rm -f "$R/box.pid"
+  if lock 600; then halt; unlock; else halt; fi
   ;;
 off)
   # Everything it runs, for good (the machine removed, a demo copy done): the phone link

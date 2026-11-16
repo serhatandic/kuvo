@@ -5049,6 +5049,9 @@
             "literal": "box.appKeys"
            },
            {
+            "literal": "box.atWork"
+           },
+           {
             "literal": "box.helper"
            },
            {
@@ -5737,6 +5740,9 @@
            },
            {
             "literal": "box.appKeys"
+           },
+           {
+            "literal": "box.atWork"
            },
            {
             "literal": "box.helper"
@@ -7584,6 +7590,159 @@
      "object": {
       "needed": "bool",
       "serving": "bool"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/box/at-work",
+   "answers": {
+    "200": {
+     "object": {
+      "applies": "bool",
+      "working": "number",
+      "sessions": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "bot?": "string"
+        }
+       }
+      },
+      "asking": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "asks?": "string"
+        }
+       }
+      },
+      "waiting": {
+       "object": {
+        "sessions": "number",
+        "bots": "number",
+        "queue": "number"
+       }
+      },
+      "background": "number",
+      "busy": "bool",
+      "rings": {
+       "list": {
+        "object": {
+         "service": "string",
+         "title": "string",
+         "short?": {
+          "object": {
+           "used": "number",
+           "level": "string"
+          }
+         },
+         "long?": {
+          "object": {
+           "used": "number",
+           "level": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/box/at-work/events",
+   "answers": {
+    "200": {
+     "object": {
+      "applies": "bool",
+      "working": "number",
+      "sessions": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "bot?": "string"
+        }
+       }
+      },
+      "asking": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title?": "string",
+         "asks?": "string"
+        }
+       }
+      },
+      "waiting": {
+       "object": {
+        "sessions": "number",
+        "bots": "number",
+        "queue": "number"
+       }
+      },
+      "background": "number",
+      "busy": "bool",
+      "rings": {
+       "list": {
+        "object": {
+         "service": "string",
+         "title": "string",
+         "short?": {
+          "object": {
+           "used": "number",
+           "level": "string"
+          }
+         },
+         "long?": {
+          "object": {
+           "used": "number",
+           "level": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/box/stop",
+   "answers": {
+    "202": {
+     "object": {
+      "stopping": {
+       "literal": true
+      }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "500": {
+     "object": {
+      "message": "string"
      }
     }
    }

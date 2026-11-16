@@ -377,3 +377,33 @@ test("kuvo/box/permissions: a machine's box runs under no such program, and says
   assert.equal((await box.ask("kuvo/box/permissions", "POST", { later: "accessibility" })).status, 409);
   await box.stop();
 });
+
+test("kuvo/box/at-work and kuvo/box/stop: what Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac, which the box's keeper does", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, async () => {
+  const where = home("mac");
+  // Its keeper, a stand-in: notes what it's asked, as `kuvo-start pause` would be.
+  write(path.join(where.K, "bin", "kuvo-start"), `#!/bin/sh\necho "$1 $HOME" >>"${where.home}/keeper-asked"\n`, 0o755);
+  const box = await served(where);
+  const said = await box.ask("kuvo/box/at-work");
+  assert.equal(said.status, 200);
+  // A Mac's own box is in its menu bar; with no engine read, nothing is known to work.
+  assert.deepEqual(said.body, { applies: true, working: 0, sessions: [], asking: [], waiting: { sessions: 0, bots: 0, queue: 0 }, background: 0, busy: false, rings: [] });
+  const stopping = await box.ask("kuvo/box/stop", "POST", {});
+  assert.deepEqual(stopping, { status: 202, body: { stopping: true } });
+  // In a process of its own (it outlasts the server, which goes with the helper), its HOME the
+  // folder around the box.
+  for (let waited = 0; waited < 200 && !exists(path.join(where.home, "keeper-asked")); waited++) await new Promise(done => setTimeout(done, 25));
+  assert.equal(read(path.join(where.home, "keeper-asked")), `pause ${where.home}\n`);
+  await box.stop();
+});
+
+test("kuvo/box/stop: a machine's box isn't stopped so (nothing would start it again at login)", async () => {
+  const where = home("machine");
+  write(path.join(where.K, "bin", "kuvo-start"), `#!/bin/sh\necho "$1" >>"${where.home}/keeper-asked"\n`, 0o755);
+  const box = await served(where).catch(() => null);
+  // (A machine's box's server is kept for clients another way: `serve` as a helper starts it is a Mac's alone.)
+  if (!box) return;
+  assert.equal((await box.ask("kuvo/box/stop", "POST", {})).status, 409);
+  assert.equal((await box.ask("kuvo/box/at-work")).body.applies, false);
+  assert.equal(exists(path.join(where.home, "keeper-asked")), false);
+  await box.stop();
+});
