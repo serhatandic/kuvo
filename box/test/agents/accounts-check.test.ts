@@ -50,6 +50,7 @@ afterAll(() => {
 
 afterEach(() => {
   delete process.env.CURSOR_API_KEY
+  delete process.env.XAI_API_KEY
   setSystemTime()
 })
 
@@ -363,11 +364,11 @@ describe("signing out of an agent's own sign-in", () => {
       return { status: response.status, said: ((await response.json()) as any)?.message as string | undefined }
     }
 
-    // Where it runs in your home: your own Claude Code's, shared with claude in Terminal, so its
-    // Sign Out says it signs out there too.
+    // Without a home of its own (a Mac's, in the describe below, is Kuvo Code's own token): never
+    // your ~/.claude's sign-in.
     claude("in")
     const yours = new ClaudeAgent(context())
-    expect((await bridge([yours]).account(yours)).metadata).toMatchObject({ signsOut: true, signOutShared: true })
+    expect((await bridge([yours]).account(yours)).metadata.signsOut).toBe(false)
 
     // A machine's: in Kuvo Code's folder there.
     const home = mkdtempSync(join(root, "machine-claude-"))
@@ -396,6 +397,11 @@ describe("Sign Out for every agent's own sign-in, Remove for one you added", () 
     const answer = handler({ roster, sessions: { forgetProvider: () => {} }, password: "pw" } as any)
     return answer(new Request(`http://box/api/${route}`, { method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
   }
+  // (Your shell's own homes for them aren't these tests'.)
+  beforeAll(() => {
+    delete process.env.GROK_HOME
+    delete process.env.CODEX_HOME
+  })
   /** A fake program that says it's signed in until its `logout`, which writes what it was run with. */
   function fake(name: string, status: { in: string; out: string }, env: string) {
     const folder = mkdtempSync(join(root, `${name}-`))
@@ -428,6 +434,14 @@ describe("Sign Out for every agent's own sign-in, Remove for one you added", () 
     expect((await bridge([machine]).account(machine)).metadata).toMatchObject({ signsOut: true, signOutShared: false })
     expect((await post([machine], `integration/${machine.providerID}/disconnect`)).status).toBe(200)
     expect(readFileSync(program.ran, "utf8").trim()).toBe(`GROK_HOME=${home}`)
+
+    // Signed in with XAI_API_KEY: what Grok cached goes, and it says the key keeps it signed in.
+    rmSync(program.ran)
+    process.env.XAI_API_KEY = "xai-test"
+    const refused = await post([yours], `integration/${yours.providerID}/disconnect`)
+    expect(refused.status).not.toBe(200)
+    expect(((await refused.json()) as any).message).toContain("XAI_API_KEY")
+    expect(existsSync(program.ran)).toBe(true)
   })
 
   test("Codex: Sign Out runs its own `codex logout`, in your CODEX_HOME on a Mac (shared with Terminal) and Kuvo Code's on a machine", async () => {
@@ -442,9 +456,14 @@ describe("Sign Out for every agent's own sign-in, Remove for one you added", () 
       }
     }
     const yours = new TestCodex(context())
-    expect((await bridge([yours]).account(yours)).metadata).toMatchObject({ signsOut: true, signOutShared: true })
+    // (Its app-servers stop as it signs out, so its confirm says a running turn stops.)
+    expect((await bridge([yours]).account(yours)).metadata).toMatchObject({ signsOut: true, signOutShared: true, signOutStops: true })
+    signIns.record(yours.providerID, { signedIn: true })
+    server.answers = "out"
     expect((await post([yours], `integration/${yours.providerID}/disconnect`)).status).toBe(200)
     expect(readFileSync(program.ran, "utf8").trim()).toBe("CODEX_HOME=")
+    expect(signIns.signedIn(yours.providerID)).toBe(false)
+    server.answers = "in"
 
     const home = mkdtempSync(join(root, "machine-codex-"))
     const machine = new TestCodex(context(), { id: "default", home })

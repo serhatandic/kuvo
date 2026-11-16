@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- In Settings › Accounts, every coding agent you're signed in to now offers **Sign Out**, Cursor and Grok included, and Codex and Grok on a Mac (where it signs them out in Terminal too, and says so first). An account you added is **removed** instead: signed out and forgotten. Each asks first, in words that say which it is.
+- In Settings › Accounts, Codex and Grok on a Mac now offer **Sign Out** (it signs them out in Terminal too, and says so first), and an agent whose sign-in ended can be signed out too. An account you added offers only **Remove Account**: signed out and forgotten. Sign Out and Remove each ask first, in words that say which it is.
 - The usage rings beside the sidebar and in the menu bar now show exactly the accounts signed in on that computer, as Settings › Accounts lists them. Signing out of one removes its ring at once, a signed-in Claude Code always has its ring (empty until Claude's next reply tells its limits on a Mac), and an account signed in only on another of your computers shows under that computer, not here.
 - A machine you set up from more than one of your Macs (or first from Kuvo Code 0.7) is no longer listed under "Shared Machines" as someone else's: it's one of your computers on each of those Macs, under **Computers** with what runs there, and its bots, wake-ups and time zone work with your other computers again. It sorts itself out once the machine updates; there's nothing to do.
 - In the desktop Work Queue, paste or drop images into a new item or its description while editing. Images stay with the item, including on another computer, and open from thumbnails in the image viewer.

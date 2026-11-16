@@ -147,7 +147,7 @@ export class CursorAgent implements Agent {
   }
 
   async account(fresh = false): Promise<Account> {
-    if ((this.instance.home || !process.env.CURSOR_API_KEY) && !existsSync(this.authFile)) {
+    if ((this.instance.home || !process.env.CURSOR_API_KEY?.trim()) && !existsSync(this.authFile)) {
       return { installed: true, signedIn: false, message: "Sign in with your Cursor account. Kuvo Code downloads Cursor's agent the first time." }
     }
     return this.known.read(fresh, async () => {

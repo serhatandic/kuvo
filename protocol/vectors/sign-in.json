@@ -1625,7 +1625,7 @@
    ]
   },
   {
-   "about": "a coding agent whose own sign-in is yours, shared with Terminal (Codex, Grok on a Mac): Sign Out says it signs out there too",
+   "about": "a coding agent whose own sign-in is yours, shared with Terminal (Codex, Grok on a Mac): Sign Out says it signs out there too, and a turn running on it stops where it does (Codex)",
    "agents": true,
    "account": {
     "id": "codex-cli",
@@ -1660,7 +1660,8 @@
      "updates": false,
      "remoteSignIn": true,
      "addedAccounts": true,
-     "signOutShared": true
+     "signOutShared": true,
+     "signOutStops": true
     }
    },
    "computer": "Studio",
@@ -1694,7 +1695,7 @@
      "label": "Sign Out",
      "confirm": {
       "title": "Sign out of Codex?",
-      "message": "Codex is signed out on Studio, in Terminal too, and its models leave the model picker. Your sessions stay; sign in again to use it.",
+      "message": "Codex is signed out on Studio, in Terminal too, and its models leave the model picker. A turn running on it stops; your sessions stay; sign in again to use it.",
       "label": "Sign Out"
      }
     }

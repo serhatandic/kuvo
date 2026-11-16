@@ -257,6 +257,8 @@ export class CodexAgent implements Agent {
    * which Codex in Terminal uses too: `signOutShared`). An added account is removed instead. */
   signOut?: () => Promise<void>
   signOutShared?: boolean
+  /** Its app-servers stop as it signs out: a turn running on it stops. */
+  readonly signOutStops = true
 
   constructor(
     readonly context: AgentContext,

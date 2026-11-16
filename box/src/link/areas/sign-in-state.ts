@@ -174,14 +174,15 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   // Where the agent keeps one sign-in for you and Kuvo Code alike (Codex's and Grok's in your home
   // on a Mac), signing out signs it out in Terminal too, and says so; otherwise only Kuvo Code's own goes.
   const shared = meta.signOutShared === true;
+  const stays = meta.signOutStops === true ? "A turn running on it stops; your sessions stay" : "Your sessions stay";
   const signOut: AccountAction = {
     id: "signOut",
     label: "Sign Out",
     confirm: {
       title: `Sign out of ${name}?`,
       message: shared
-        ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. Your sessions stay; sign in again to use it.`
-        : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
+        ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. ${stays}; sign in again to use it.`
+        : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. ${stays}; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
       label: "Sign Out",
     },
   };

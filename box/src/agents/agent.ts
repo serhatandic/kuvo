@@ -426,6 +426,8 @@ export interface Agent {
   /** Its own sign-in is yours, the one its program uses in Terminal too (Codex's and Grok's in your
    * home, on a Mac): signing out here signs it out there as well, and Accounts says so. */
   signOutShared?: boolean
+  /** Signing out stops a turn running on it (Codex's app-servers stop, to start again signed out). */
+  signOutStops?: boolean
   /** A process of its that runs turns was started outside the box's sandbox, and still runs (one its threads don't own). */
   outside?(): boolean
   /** Stops those (`outside`) that nothing is at work in now, to start again in the sandbox (you said to restart them); whether one is still at work. */

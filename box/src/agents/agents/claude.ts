@@ -197,10 +197,9 @@ export class ClaudeAgent implements Agent {
   /** Counts updates of Claude Code: a session's Claude Code started before the last one starts again. */
   program = 0
 
-  /** Its own sign-in: on a Mac, Kuvo Code's token (yours in Terminal stays); elsewhere Kuvo Code's
-   * on a machine (in its folder there), or yours where it runs in your home (`signOutShared`). */
+  /** Its own sign-in: on a Mac, Kuvo Code's token (yours in Terminal stays); on a machine, Kuvo
+   * Code's in its folder there. */
   signOut?: () => Promise<void>
-  signOutShared?: boolean
 
   constructor(
     readonly context: AgentContext,
@@ -224,8 +223,7 @@ export class ClaudeAgent implements Agent {
           this.modelList = undefined
         }
       }
-    } else if (instance.id === "default") {
-      this.signOutShared = !instance.home
+    } else if (instance.id === "default" && instance.home) {
       this.signOut = async () => {
         await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env())
         // A session's Claude Code holds the sign-in it started with: its next message starts one signed out.

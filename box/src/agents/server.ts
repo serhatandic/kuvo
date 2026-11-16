@@ -180,6 +180,8 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
       signsOut: Boolean(agent.signOut),
       // Signing out signs it out in Terminal too (its own sign-in is yours).
       signOutShared: Boolean(agent.signOut && agent.signOutShared),
+      // Signing out stops a turn running on it.
+      signOutStops: Boolean(agent.signOut && agent.signOutStops),
       // Its program's version, and the newest (an old Claude Code lists old models).
       version: maintained?.installed,
       latestVersion: maintained?.latest,
