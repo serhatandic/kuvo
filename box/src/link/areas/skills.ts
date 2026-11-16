@@ -46,6 +46,7 @@ interface EngineSkill {
 export interface SkillsBody {
   text?: unknown;
   new?: unknown;
+  was?: unknown;
   repository?: unknown;
   path?: unknown;
 }
@@ -60,6 +61,7 @@ interface GitHubTree {
 // in this box's folder on a machine, and the app's engine's on a Mac (KUVO_ENGINE_CONFIG), so a
 // Mac's skills stay where they've always been.
 const SKILLS = path.join(ENGINE_CONFIG || path.join(K, "config"), "opencode", "skills");
+export const SKILLS_FOLDER = SKILLS;
 const SKILL_SOURCE = ".kuvo-source.json";
 // GitHub, or a test's stand-in for it, in a test's folder only (never a machine's own).
 const testGitHub = IN_TEST_FOLDER ? process.env.KUVO_TEST_GITHUB : undefined;
@@ -106,6 +108,7 @@ function skillFolders(): string[] {
 // seconds>`, kept 30 days from then. Its name says when, never its folder's date, which a Finder
 // visit or a backup put back can change.
 const SKILL_TRASH = path.join(K, "trash", "skills");
+export const SKILL_TRASH_FOLDER = SKILL_TRASH;
 const SKILL_TRASH_DAYS = 30;
 const DAY = 86_400_000;
 
@@ -296,7 +299,9 @@ export function skillAbout(markdown: unknown): SkillAbout {
       while (index + 1 < lines.length && lines[index + 1].startsWith(" ")) parts.push(lines[++index].trim());
       value = parts.join(" ");
     }
-    value = value.replace(/^["']+|["']+$/g, "");
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
+    } else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1).replaceAll("''", "'");
     if (key === "name") about.name = value;
     if (key === "description") about.description = value;
   }
@@ -348,6 +353,7 @@ export async function answerSkills(method: string, requestPath: string, body: Sk
         const text = textOf(file);
         return text === null ? { status: 404, value: {} } : { status: 200, value: { text } satisfies SkillText };
       }
+      if ((method === "PUT" || method === "DELETE") && body && "was" in body && (textOf(file) ?? null) !== body.was) return { status: 409, value: message("It changed since you read it.") };
       if (method === "PUT") {
         const text = body?.text;
         if (typeof text !== "string" || !text.trim()) return { status: 400, value: message('Send the skill\'s SKILL.md as {"text": …}.') };

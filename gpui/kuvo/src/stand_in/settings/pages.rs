@@ -86,10 +86,20 @@ impl Settings {
                 }
                 (200, self.page(section, name, here)?)
             }
+            ("POST", [section, id, action, "check"]) => {
+                let page = self.page(section, name, here)?;
+                let at = find(&page, id)?;
+                let offered = at["actions"].as_array().into_iter().flatten().chain(at.get("add"));
+                if !offered.into_iter().any(|each| each["id"] == json!(action) && each.get("form").is_some()) {
+                    return Some(refused(404, "That isn’t offered now."));
+                }
+                // Fixed empty-form response: section validation is tested on the service.
+                (200, json!({"ready": false, "fields": []}))
+            }
             ("POST", [section, id, action]) => {
                 let Some(page) = self.page(section, name, here) else { return Some(refused(404, "This computer has no settings by that name.")) };
                 let Some(at) = find(&page, id) else { return Some(refused(404, "That isn’t on this page now.")) };
-                let Some(offered) = at["actions"].as_array().and_then(|actions| actions.iter().find(|each| each["id"] == json!(action))) else { return Some(refused(404, "That isn’t offered now.")) };
+                let Some(offered) = at["actions"].as_array().into_iter().flatten().chain(at.get("add")).find(|each| each["id"] == json!(action)) else { return Some(refused(404, "That isn’t offered now.")) };
                 if let Some(why) = offered["can"]["why"].as_str() {
                     return Some(refused(403, why));
                 }
@@ -99,7 +109,7 @@ impl Settings {
                 if !body["was"].is_string() {
                     return Some(refused(400, "Say the revision it was read at."));
                 }
-                if at["revision"] != body["was"] {
+                if offered["form"].get("revision").unwrap_or(&at["revision"]) != &body["was"] {
                     return Some((409, json!({ "message": "It changed since you read it.", "page": page })));
                 }
                 self.act(id, action);
@@ -419,6 +429,10 @@ fn stamped(mut page: Value) -> Value {
             for item in each.get_mut("items").and_then(Value::as_array_mut).into_iter().flatten() {
                 *item = row(item.take());
             }
+            for offered in each.get_mut("actions").and_then(Value::as_array_mut).into_iter().flatten() {
+                if let Some(form) = offered.get_mut("form") { *form = row(form.take()); }
+            }
+            if let Some(form) = each.get_mut("add").and_then(|add| add.get_mut("form")) { *form = row(form.take()); }
             *each = row(each.take());
         }
     }

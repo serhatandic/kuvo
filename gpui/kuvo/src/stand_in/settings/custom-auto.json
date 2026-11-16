@@ -1,0 +1,285 @@
+{
+  "id": "custom-auto",
+  "title": "Custom Auto",
+  "groups": [
+    {
+      "id": "auto-lists",
+      "title": "Custom Auto",
+      "note": "A model at its limit is skipped until the limit resets; an account at its limit skips all its models.",
+      "rows": [
+        {
+          "id": "lists",
+          "title": "Lists",
+          "kind": "list",
+          "empty": "None yet.",
+          "add": {
+            "id": "add",
+            "title": "New List",
+            "form": {
+              "title": "New List",
+              "submit": "New List",
+              "fields": [
+                {
+                  "id": "name",
+                  "title": "Name",
+                  "kind": "text",
+                  "value": "",
+                  "line": "Its name, as the model picker shows it"
+                }
+              ],
+              "revision": "dwFAuItzF7MdSL7X"
+            }
+          },
+          "items": [
+            {
+              "id": "list-first",
+              "title": "Features",
+              "kind": "actions",
+              "value": {
+                "revision": "3f8b4c7b76cd75aed2bb1c72d9a9935cd0e157098fd6e3d6282fc2d47f5144af",
+                "index": 0
+              },
+              "actions": [
+                {
+                  "id": "edit",
+                  "title": "Edit\u2026",
+                  "form": {
+                    "title": "Features",
+                    "submit": "Save",
+                    "fields": [
+                      {
+                        "id": "name",
+                        "title": "Name",
+                        "kind": "text",
+                        "value": "Features",
+                        "line": "Its name, as the model picker shows it"
+                      }
+                    ],
+                    "revision": "_fRkQUITv4jj12RI"
+                  }
+                },
+                {
+                  "id": "down",
+                  "title": "Move Down"
+                },
+                {
+                  "id": "remove",
+                  "title": "Delete List",
+                  "style": "destructive",
+                  "confirm": {
+                    "title": "Delete Features?",
+                    "body": "This list will no longer be available in the model picker.",
+                    "button": "Delete List"
+                  }
+                }
+              ],
+              "revision": "f5Kr-7x97YTVuVYl"
+            },
+            {
+              "id": "list-second",
+              "title": "Bugs",
+              "kind": "actions",
+              "value": {
+                "revision": "d3073096156c0e17ca65eba4da7769562f0eea79379881a8e44558ceb7a044dd",
+                "index": 1
+              },
+              "actions": [
+                {
+                  "id": "edit",
+                  "title": "Edit\u2026",
+                  "form": {
+                    "title": "Bugs",
+                    "submit": "Save",
+                    "fields": [
+                      {
+                        "id": "name",
+                        "title": "Name",
+                        "kind": "text",
+                        "value": "Bugs",
+                        "line": "Its name, as the model picker shows it"
+                      }
+                    ],
+                    "revision": "hj8Y4nusrCbA_lMi"
+                  }
+                },
+                {
+                  "id": "up",
+                  "title": "Move Up"
+                },
+                {
+                  "id": "remove",
+                  "title": "Delete List",
+                  "style": "destructive",
+                  "confirm": {
+                    "title": "Delete Bugs?",
+                    "body": "This list will no longer be available in the model picker.",
+                    "button": "Delete List"
+                  }
+                }
+              ],
+              "revision": "fWNhCCb-NQ7mdQ4m"
+            }
+          ],
+          "revision": "90Kcyq7ou0rYR7y_"
+        }
+      ]
+    },
+    {
+      "id": "entries-first",
+      "title": "Features",
+      "rows": [
+        {
+          "id": "models-first",
+          "title": "Features",
+          "kind": "list",
+          "empty": "Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.",
+          "add": {
+            "id": "add-model",
+            "title": "Add Model",
+            "form": {
+              "title": "Add Model",
+              "submit": "Add Model",
+              "fields": [
+                {
+                  "id": "model",
+                  "title": "Model",
+                  "kind": "choice",
+                  "value": "[\"codex-cli\",\"fast\"]",
+                  "choices": [
+                    {
+                      "id": "[\"codex-cli\",\"fast\"]",
+                      "title": "Fast (codex-cli)"
+                    },
+                    {
+                      "id": "[\"codex-cli\",\"other\"]",
+                      "title": "Other (codex-cli)"
+                    }
+                  ]
+                },
+                {
+                  "id": "variant",
+                  "title": "Effort",
+                  "kind": "text",
+                  "value": "",
+                  "line": "Leave empty for the default. Choose a model to see its supported efforts below."
+                }
+              ],
+              "revision": "EGJyM4SIHn99W5EY"
+            }
+          },
+          "items": [
+            {
+              "id": "entry-first-0",
+              "title": "1. Fast",
+              "line": "codex-cli",
+              "kind": "actions",
+              "value": {
+                "entry": {
+                  "providerID": "codex-cli",
+                  "modelID": "fast"
+                },
+                "revision": "3f8b4c7b76cd75aed2bb1c72d9a9935cd0e157098fd6e3d6282fc2d47f5144af"
+              },
+              "actions": [
+                {
+                  "id": "edit-model",
+                  "title": "Change the model or its effort",
+                  "form": {
+                    "title": "Change the model or its effort",
+                    "submit": "Save",
+                    "fields": [
+                      {
+                        "id": "model",
+                        "title": "Model",
+                        "kind": "choice",
+                        "value": "[\"codex-cli\",\"fast\"]",
+                        "choices": [
+                          {
+                            "id": "[\"codex-cli\",\"fast\"]",
+                            "title": "Fast (codex-cli)"
+                          },
+                          {
+                            "id": "[\"codex-cli\",\"other\"]",
+                            "title": "Other (codex-cli)"
+                          }
+                        ]
+                      },
+                      {
+                        "id": "variant",
+                        "title": "Effort",
+                        "kind": "text",
+                        "value": "",
+                        "line": "Supported efforts: high. Leave empty for the default."
+                      }
+                    ],
+                    "revision": "EGJyM4SIHn99W5EY"
+                  }
+                },
+                {
+                  "id": "remove-model",
+                  "title": "Remove",
+                  "style": "destructive",
+                  "confirm": {
+                    "title": "Remove fast?",
+                    "body": "Custom Auto will skip this model.",
+                    "button": "Remove"
+                  }
+                }
+              ],
+              "revision": "BMWZj0V-juz8V2W7"
+            }
+          ],
+          "revision": "xuFPM9hcwatHoCwN"
+        }
+      ]
+    },
+    {
+      "id": "entries-second",
+      "title": "Bugs",
+      "rows": [
+        {
+          "id": "models-second",
+          "title": "Bugs",
+          "kind": "list",
+          "empty": "Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.",
+          "add": {
+            "id": "add-model",
+            "title": "Add Model",
+            "form": {
+              "title": "Add Model",
+              "submit": "Add Model",
+              "fields": [
+                {
+                  "id": "model",
+                  "title": "Model",
+                  "kind": "choice",
+                  "value": "[\"codex-cli\",\"fast\"]",
+                  "choices": [
+                    {
+                      "id": "[\"codex-cli\",\"fast\"]",
+                      "title": "Fast (codex-cli)"
+                    },
+                    {
+                      "id": "[\"codex-cli\",\"other\"]",
+                      "title": "Other (codex-cli)"
+                    }
+                  ]
+                },
+                {
+                  "id": "variant",
+                  "title": "Effort",
+                  "kind": "text",
+                  "value": "",
+                  "line": "Leave empty for the default. Choose a model to see its supported efforts below."
+                }
+              ],
+              "revision": "EGJyM4SIHn99W5EY"
+            }
+          },
+          "items": [],
+          "revision": "7JZI1aBG1fjTFhj2"
+        }
+      ]
+    }
+  ]
+}

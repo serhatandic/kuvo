@@ -58,9 +58,6 @@ pub const OWN: &[Listed] = &[
 /// a page saying so. One the box describes (by the same name) is drawn from the box instead.
 // BOX-NEEDED: move onto kuvo/settings (#741): each of these.
 pub const LATER: &[Listed] = &[
-    listed("custom-auto", "Custom Auto", IconName::Sliders, "Models", ""),
-    listed("commands", "Commands", IconName::Terminal, "Agents & Tools", ""),
-    listed("skills", "Skills", IconName::Pencil, "Agents & Tools", ""),
     listed("integrations", "Integrations", IconName::Link, "Agents & Tools", ""),
     listed("mcp", "MCP Servers", IconName::Sliders, "Agents & Tools", ""),
     listed("git", "Git", IconName::Branch, "Projects", ""),

@@ -4085,10 +4085,14 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     whether its engine lists them or not, which a new skill can't take, and which skills came from
     GitHub (the rest you added).
   - `kuvo/skills/<name>` (its folder's name): `GET` → `{"text"}`, its SKILL.md; `PUT {"text",
-    "new"?}` writes it (`new`: a new one, named as Settings names one, lowercase a to z, digits and
+    "new"?, "was"?}` writes it (`new`: a new one, named as Settings names one, lowercase a to z, digits and
     hyphens, and `409 {"message"}` when the name is taken, by a folder there or a skill the engine
     lists from elsewhere; without it, `404` for none, and `409 {"message"}` for one from GitHub,
     which stays as it came, as in Settings); `DELETE` puts its folder away, in Recently Deleted.
+    Both `PUT` and `DELETE` accept optional `was`: the SKILL.md text last read, or `null` when
+    no file was there. If the current text differs, they return
+    `409 {"message": "It changed since you read it."}` without writing or moving the folder. Omitting `was` preserves the
+    earlier behavior. `DELETE` sends it as `{"was": …}` in its request body.
     `400 {"message"}` for a name that isn't a folder's. A 404 or 405 answers `{}`.
   - Recently Deleted (`skills.trash`): each box keeps a skill it put away for 30 days, in
     `trash/skills` in its folder, as `<folder>-<seconds>`: its name says when it was put away,
@@ -8793,7 +8797,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `vault` and `mcp`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
@@ -9040,6 +9044,42 @@ The sections now:
   covering its settings, copies and live disk usage. An unavailable bridge gives no What Agents
   Made rows and a warning; the rest of the page stays. Log and download deletion have no box
   routes and are not included here.
+
+- **Skills** (`skills`, group `Agents & Tools`): Skills the Agent Can Use is a list of authored,
+  GitHub-installed and engine-discovered skills, each with a use switch. New Skill and Edit use
+  text and multiline fields for its name, when to use it and Markdown instructions; name checks
+  and submissions share their words, and editing preserves unknown front matter. Delete confirms
+  and moves the whole folder to Recently Deleted; Restore uses the existing trash route. Get
+  Skills installs a repository/folder through the reusable skills library route. Repository
+  browsing and file previews are reserved for Marketplace (#750). Other Places edits the folders
+  and catalog addresses the engine reads. File changes use `kuvo/skills` with optional `was` text;
+  settings changes use `kuvo/config` with `was`. Events follow the settings and skill folders.
+  Clients draw ordinary lists and forms; no new kind is needed.
+
+- **Commands** (`commands`, group `Agents & Tools`): Your Commands (`your-commands`),
+  a `commands` list of `command-<name>` action items, with `add` (New Command…),
+  `edit` (Edit…) and `remove` (Delete Command…, confirmed). The forms describe Name,
+  Description, Agent (a choice from the engine), Model (a choice from the engine, preserving
+  the saved model), Run as a subagent and Prompt. Name checking removes a leading slash,
+  replaces spaces with hyphens, and checks existing and engine command names; checking and
+  submitting share the same field words. Extra fields stay when editing. Each write uses
+  `kuvo/config` with the command's entry as `was`. From Claude Code offers each command's
+  existing import through the same route; Also Available lists engine and plugin commands.
+  Unreadable settings give no rows and a warning. Events follow settings, Claude Code's
+  command folder and the engine's list each second. Clients draw ordinary lists and forms.
+
+- **Custom Auto** (`custom-auto`, group `Models`): named lists of models to try in order,
+  described as lists and ordinary forms. New List and Edit ask for a name; Add Model and Change
+  the model or its effort offer the models from `kuvo/models/offered` (excluding Auto itself),
+  with a single effort field (the add form checks typed efforts against the selected model;
+  the edit form initially states that entry’s efforts; checks follow the selected model). Move Up/Down are offered only where a move is
+  possible and apply to lists and entries, Remove deletes an entry,
+  and Delete List confirms first (the last list cannot be deleted). Changes use the coding
+  agents' existing `api/kuvo/auto` routes with their per-list `revision` (order uses `was`);
+  their 409 becomes a stale page. Limits are shown beside each held model; Try All Again
+  clears them through the existing limits route. An unavailable source has a warning and no
+  invented lists. The section follows the agents' state each second. No additional field kind
+  or sign-in flow is needed. Permissions' allow/deny rules remain in Permissions.
 
 - **MCP Servers** (`mcp`, group `Agents & Tools`, the first flow section): Servers (`servers`, a
   `list` of `server-<name>`, your servers in the engine's settings' `mcp.servers`: not Kuvo's own

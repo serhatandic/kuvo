@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 
 pub mod agents;
 pub mod mcp;
+pub mod commands;
+pub mod skills;
+pub mod custom_auto;
 mod pages;
 pub mod vault;
 

@@ -1732,6 +1732,47 @@ fn a_locked_vault_says_so_and_lists_nothing(cx: &mut TestAppContext) {
     assert!(view.read_with(cx, |view, _| view.page_rows()).is_empty());
 }
 
+#[gpui::test]
+fn skills_fixed_page_opens_the_generic_add_form(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(kuvo::stand_in::settings::skills::section(), kuvo::stand_in::settings::skills::page());
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "skills");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Skills"));
+    assert!(shown(cx, "row-skill-release-notes-switch"));
+    click(cx, "row-skills-new-skill");
+    assert!(shown(cx, "settings-form"));
+    assert!(shown(cx, "settings-form-name-field"));
+    assert!(shown(cx, "settings-form-description-field"));
+    assert!(shown(cx, "settings-form-instructions-field"));
+}
+
+#[gpui::test]
+fn custom_auto_descriptions_draw_ordered_lists_and_new_list_form(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(kuvo::stand_in::settings::custom_auto::section(), kuvo::stand_in::settings::custom_auto::page());
+    let (workspace, cx) = open(cx, stand_in);
+    section(&workspace, cx, "custom-auto");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Custom Auto"));
+    click(cx, "row-lists-new-list");
+    assert!(shown(cx, "settings-form"));
+    assert!(shown(cx, "settings-form-name-field"));
+}
+
+#[gpui::test]
+fn commands_list_and_add_are_described_by_the_service(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.add_settings_section(kuvo::stand_in::settings::commands::section(), kuvo::stand_in::settings::commands::page());
+    let (workspace, cx) = open(cx, stand_in);
+    section(&workspace, cx, "commands");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Commands"));
+    click(cx, "row-commands-new-command");
+    assert!(shown(cx, "settings-form"));
+    assert!(shown(cx, "settings-form-name-field"));
+    assert!(shown(cx, "settings-form-description-field"));
+    assert!(shown(cx, "settings-form-template-field"));
+}
+
 /// Git as the box describes it: no Save buttons; a field is saved as it's left (or on Return),
 /// with its row's revision, and leaving one unchanged sends nothing. The instructions are written
 /// full width under their group's heading, not titled again.

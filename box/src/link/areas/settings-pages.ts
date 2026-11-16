@@ -24,6 +24,9 @@ import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
 import { actionsOf, asked, expectedRevision, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Refused, Section } from "./settings-kit";
+import { skillsSection } from "./settings-skills";
+import { customAutoSection } from "./settings-custom-auto";
+import { commandsSection } from "./settings-commands";
 import { mcpSection } from "./settings-mcp";
 import { agentsSection } from "./settings-agents";
 import { ACTIONS, choiceIn, EFFECTS, engineDefault, isRule } from "./permission-rules";
@@ -98,6 +101,9 @@ const SECTIONS: SettingsSection[] = [
   agentsSection.listed,
   vaultSection.listed,
   mcpSection.listed,
+  commandsSection.listed,
+  customAutoSection.listed,
+  skillsSection.listed,
 ];
 
 export { revised };
@@ -816,6 +822,9 @@ const PAGES: Record<string, Section> = {
   agents: agentsSection,
   vault: vaultSection,
   mcp: mcpSection,
+  commands: commandsSection,
+  "custom-auto": customAutoSection,
+  skills: skillsSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
 
