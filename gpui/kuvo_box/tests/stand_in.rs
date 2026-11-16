@@ -36,7 +36,7 @@ fn this_macs_box_is_found_by_its_record_and_lists_its_sessions() {
         // (Held a moment first, as a box holds a request: the interim answer is skipped.)
         "kuvo/info" => Answer::Whole { status: 200, body: mac_info(current_features()), interim: true },
         "kuvo/sessions/list" => Answer::json(200, json!({
-            "at": "7",
+            "archivedGroups": [], "at": "7",
             "full": true,
             "sessions": { "ses_a": session("project", "/home/me/web", 10.0), "ses_b": session("project", "/home/me/api", 20.0), "ses_sub": { "kind": "subagent", "directory": "/home/me/web", "created": 1, "updated": 30, "parent": "ses_a" } },
             "projects": { "/home/me/web": { "name": "Website", "updated": 10 }, "/home/me/api": { "updated": 20 } }
@@ -150,21 +150,21 @@ fn the_session_list_follows_the_box_and_resumes_where_it_was() {
     let follow = client.follow_sessions(at_once());
 
     let projects = json!({ "/home/me/web": { "updated": 20 } });
-    first.send(json!({ "at": "1", "full": true, "sessions": { "ses_a": session("project", "/home/me/web", 10.0), "ses_b": session("project", "/home/me/web", 20.0) }, "projects": projects }).to_string()).unwrap();
+    first.send(json!({ "archivedGroups": [], "at": "1", "full": true, "sessions": { "ses_a": session("project", "/home/me/web", 10.0), "ses_b": session("project", "/home/me/web", 20.0) }, "projects": projects }).to_string()).unwrap();
     let ListUpdate::Listing(listing) = follow.next_blocking().unwrap() else { panic!("the list") };
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_b", "ses_a"]);
 
     // A change: one renamed and moved to the top, one deleted.
     let mut renamed = session("project", "/home/me/web", 30.0);
     renamed["title"] = json!("Renamed");
-    first.send(json!({ "at": "2", "sessions": { "ses_a": renamed }, "gone": ["ses_b"], "projects": projects }).to_string()).unwrap();
+    first.send(json!({ "archivedGroups": [], "at": "2", "sessions": { "ses_a": renamed }, "gone": ["ses_b"], "projects": projects }).to_string()).unwrap();
     let ListUpdate::Listing(listing) = follow.next_blocking().unwrap() else { panic!("the change") };
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_a"]);
     assert_eq!(listing.facts("ses_a").unwrap().title.as_deref(), Some("Renamed"));
 
     // The stream ends: it's opened again from where it was, and goes on.
     drop(first);
-    second.send(json!({ "at": "3", "sessions": { "ses_c": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 1, "updated": 40 } }, "projects": projects }).to_string()).unwrap();
+    second.send(json!({ "archivedGroups": [], "at": "3", "sessions": { "ses_c": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 1, "updated": 40 } }, "projects": projects }).to_string()).unwrap();
     let ListUpdate::Listing(listing) = follow.next_blocking().unwrap() else { panic!("the list again") };
     assert_eq!(listing.sidebar().chats, vec!["ses_c"]);
     assert_eq!(listing.sidebar().projects[0].sessions, vec!["ses_a"]);
@@ -429,7 +429,7 @@ fn a_box_whose_server_started_again_is_found_at_its_new_place_and_read_again() {
     // It starts again (an update, say): a new process, port and password, and it's an older one.
     let again = StandInBox::start(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(json!(["sessions.list"]))),
-        _ => Answer::json(200, json!({ "at": "1", "sessions": {}, "projects": {} })),
+        _ => Answer::json(200, json!({ "archivedGroups": [], "at": "1", "sessions": {}, "projects": {} })),
     });
     let second_serve = ServeProcess::start();
     write_record(&app_box(home.path()), second_serve.pid(), again.port, &again.password);

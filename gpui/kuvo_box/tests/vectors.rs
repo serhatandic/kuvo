@@ -43,7 +43,7 @@ fn needs_you_and_each_projects_sums_are_read_as_the_box_says_them() {
     let (mut asking, mut needing) = (0, 0);
     for case in vectors["cases"].as_array().unwrap() {
         let expect = &case["expect"];
-        let line: Line = serde_json::from_value(serde_json::json!({ "at": "1", "full": true, "sessions": expect["sessions"], "projects": expect["projects"], "needsYou": expect["needsYou"] })).unwrap();
+        let line: Line = serde_json::from_value(serde_json::json!({ "archivedGroups": [], "at": "1", "full": true, "sessions": expect["sessions"], "projects": expect["projects"], "needsYou": expect["needsYou"] })).unwrap();
         let mut listing = Listing::new();
         listing.take(line);
         let said: Vec<(String, String, String)> = expect["needsYou"]
@@ -103,7 +103,7 @@ fn a_list_taken_line_by_line_ends_as_the_box_says() {
     let vectors = vectors("session-lists.json");
     let case = &vectors["cases"][0];
     let (sessions, projects) = facts_and_projects(case);
-    let whole: Line = serde_json::from_value(serde_json::json!({ "at": "1", "full": true, "sessions": case["expect"]["sessions"], "projects": case["expect"]["projects"] })).unwrap();
+    let whole: Line = serde_json::from_value(serde_json::json!({ "archivedGroups": [], "at": "1", "full": true, "sessions": case["expect"]["sessions"], "projects": case["expect"]["projects"] })).unwrap();
     let mut listing = Listing::new();
     assert!(listing.take(whole));
     assert_eq!(listing.sidebar(), sessions::sidebar(&sessions, &projects));
@@ -117,7 +117,7 @@ fn a_list_taken_line_by_line_ends_as_the_box_says() {
     let mut facts = sessions[&changed].clone();
     facts.title = Some("Renamed".into());
     facts.updated += 1.0;
-    let line: Line = serde_json::from_value(serde_json::json!({ "at": "2", "sessions": { changed.clone(): facts }, "gone": [gone.clone()], "projects": case["expect"]["projects"] })).unwrap();
+    let line: Line = serde_json::from_value(serde_json::json!({ "archivedGroups": [], "at": "2", "sessions": { changed.clone(): facts }, "gone": [gone.clone()], "projects": case["expect"]["projects"] })).unwrap();
     assert!(listing.take(line));
     assert_eq!(listing.at(), Some("2"));
     assert_eq!(listing.sessions().len(), sessions.len() - 1);
@@ -127,7 +127,7 @@ fn a_list_taken_line_by_line_ends_as_the_box_says() {
     assert!(!listing.sessions().contains_key(&gone));
 
     // The same again changes nothing.
-    let same: Line = serde_json::from_value(serde_json::json!({ "at": "3", "sessions": {}, "projects": case["expect"]["projects"] })).unwrap();
+    let same: Line = serde_json::from_value(serde_json::json!({ "archivedGroups": [], "at": "3", "sessions": {}, "projects": case["expect"]["projects"] })).unwrap();
     assert!(!listing.take(same));
     assert_eq!(listing.at(), Some("3"));
 }
@@ -397,7 +397,7 @@ fn every_ask_the_box_words_is_read_and_one_amiss_spoils_none_of_the_rest() {
 #[test]
 fn a_needs_you_item_this_cant_read_leaves_the_list() {
     let line: Line = serde_json::from_value(serde_json::json!({
-        "at": "1", "full": true,
+        "archivedGroups": [], "at": "1", "full": true,
         "sessions": { "ses_a": { "kind": "project", "project": "/p", "directory": "/p", "created": 1, "updated": 2, "asked": 3 } },
         "projects": { "/p": { "asking": "one", "working": 1 } },
         "needsYou": [{ "asks": "words" }, { "session": "ses_a", "asks": { "kind": "newer", "summary": "asks for a thing" } }],
@@ -407,4 +407,19 @@ fn a_needs_you_item_this_cant_read_leaves_the_list() {
     assert_eq!((line.needs_you[0].session.as_str(), line.needs_you[0].asks.summary.as_str()), ("ses_a", "asks for a thing"));
     assert_eq!((line.projects["/p"].asking, line.projects["/p"].working), (0, 1));
     assert_eq!(line.sessions.len(), 1);
+}
+
+#[test]
+fn archived_groups_are_required_and_group_only_changes_are_observed() {
+    use kuvo_box::sessions::{Line, Listing};
+    let mut value = serde_json::json!({"at":"1", "full":true, "sessions":{}, "projects":{}});
+    assert!(serde_json::from_value::<Line>(value.clone()).is_err());
+    value["archivedGroups"] = serde_json::json!([]);
+    let mut listing = Listing::default();
+    assert!(listing.take(serde_json::from_value(value.clone()).unwrap()));
+    assert!(!listing.take(serde_json::from_value(value.clone()).unwrap()));
+    value["archivedGroups"] = serde_json::json!([{"directory":"/project", "title":"Project", "kind":"project", "sessions":["ses_a"]}]);
+    assert!(listing.take(serde_json::from_value(value.clone()).unwrap()));
+    assert_eq!(listing.archived_groups()[0].sessions, vec!["ses_a"]);
+    assert!(!listing.take(serde_json::from_value(value).unwrap()));
 }

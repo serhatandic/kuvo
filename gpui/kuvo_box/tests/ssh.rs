@@ -104,7 +104,7 @@ fn machine_info(features: Value) -> Value {
 }
 
 fn list() -> Value {
-    json!({ "at": "4", "full": true, "sessions": { "ses_m": { "kind": "project", "project": "/home/me/site", "directory": "/home/me/site", "created": 1, "updated": 2, "title": "On the machine" } }, "projects": { "/home/me/site": { "updated": 2 } } })
+    json!({ "archivedGroups": [], "at": "4", "full": true, "sessions": { "ses_m": { "kind": "project", "project": "/home/me/site", "directory": "/home/me/site", "created": 1, "updated": 2, "title": "On the machine" } }, "projects": { "/home/me/site": { "updated": 2 } } })
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn a_machines_list_is_followed_by_reading_it_again() {
     assert_eq!(listing.at(), Some("4"));
 
     // A session made there: read again from where it was, the list has it.
-    let made = json!({ "at": "5", "sessions": { "ses_n": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 3, "updated": 4 } }, "projects": { "/home/me/site": { "updated": 2 } } });
+    let made = json!({ "archivedGroups": [], "at": "5", "sessions": { "ses_n": { "kind": "chat", "directory": "/home/me/.kuvo-code/chats", "created": 3, "updated": 4 } }, "projects": { "/home/me/site": { "updated": 2 } } });
     machine.answer("list", 200, &made);
     let listing = loop {
         if let ListUpdate::Listing(listing) = follow.next_blocking().unwrap()
