@@ -80,6 +80,9 @@ pub struct Facts {
     /// `limit`; a word a newer box may add to).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<String>,
+    /// It's retrying what stopped it (a limit, an error), as its engine says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrying: Option<bool>,
     /// It ended a turn you haven't read: when (ms, its `time.idle`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread: Option<f64>,

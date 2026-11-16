@@ -129,6 +129,9 @@ pub struct AreaView {
     /// The bot whose conversation the window shows, and what the box was last told it saw there.
     chat_open: Option<String>,
     seen_told: Option<(String, Option<u64>)>,
+    /// The bots' latest followed line, heard while their list was being read: it's newer than
+    /// that read, so it's taken after it.
+    followed_meanwhile: Option<BotsSaid>,
 }
 
 impl EventEmitter<Picked> for AreaView {}
@@ -262,7 +265,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -299,7 +302,10 @@ impl AreaView {
     /// The bots as the box says them now (followed): drawn in the sidebar and handed to their page,
     /// the group chats staying as they were read. Before the list's first read, its read stands.
     fn take_bots(&mut self, said: BotsSaid, cx: &mut Context<Self>) {
-        let Reading::Ready(before) = &self.bots else { return };
+        let Reading::Ready(before) = &self.bots else {
+            self.followed_meanwhile = Some(said);
+            return;
+        };
         let bots = Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups: before.groups.clone(), groups_failed: None };
         if matches!(&self.bots, Reading::Ready(before) if before.bots == bots.bots && before.elsewhere == bots.elsewhere && before.held == bots.held && before.refused == bots.refused) {
             return;
@@ -338,28 +344,44 @@ impl AreaView {
     pub fn set_chat_open(&mut self, bot: Option<String>, cx: &mut Context<Self>) {
         if self.chat_open != bot {
             self.chat_open = bot;
+            // (Opened again later, it's told again.)
+            self.seen_told = None;
             self.tell_seen(cx);
         }
     }
 
+    /// The box told what you've seen of the bot whose conversation shows: as it opens, and again as
+    /// it finishes or stops while you watch. What that clears is the box's to say. One that
+    /// couldn't be told is told again at the next chance.
     fn tell_seen(&mut self, cx: &mut Context<Self>) {
         let (Some(open), Reading::Ready(bots)) = (&self.chat_open, &self.bots) else { return };
         let Some(bot) = bots.bots.iter().find(|bot| &bot.id == open) else { return };
-        if !matches!(bot.now.state, kuvo_box::areas::BotState::Done | kuvo_box::areas::BotState::Blocked) {
-            return;
-        }
-        // Once for each time it got there (its `since`).
         let told = (bot.id.clone(), bot.now.since.map(|since| since as u64));
-        if self.seen_told.as_ref() == Some(&told) {
-            return;
+        let news = matches!(bot.now.state, kuvo_box::areas::BotState::Done | kuvo_box::areas::BotState::Blocked);
+        match &self.seen_told {
+            Some(before) if *before == told || (before.0 == told.0 && !news) => return,
+            _ => {}
         }
-        self.seen_told = Some(told);
+        self.seen_told = Some(told.clone());
         let (client, id) = (self.client.clone(), bot.id.clone());
         if !self.live {
-            let _ = client.bot_seen(&id);
+            if client.bot_seen(&id).is_err() {
+                self.seen_told = None;
+            }
             return;
         }
-        cx.background_executor().spawn(async move { client.bot_seen(&id) }).detach();
+        cx.spawn(async move |this, cx| {
+            let answer = cx.background_executor().spawn(async move { client.bot_seen(&id) }).await;
+            if answer.is_err() {
+                this.update(cx, |this, _| {
+                    if this.seen_told.as_ref() == Some(&told) {
+                        this.seen_told = None;
+                    }
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Whether Bots' main view is on screen (Bots shown, no bot's conversation over it): a group
@@ -480,6 +502,8 @@ impl AreaView {
     /// Reads the area's list from the box, what's on screen staying meanwhile.
     fn read_list(&mut self, cx: &mut Context<Self>) {
         let (area, client) = (self.area, self.client.clone());
+        // (A line heard before this read is older than what it reads.)
+        self.followed_meanwhile = None;
         if !self.live {
             let read = read(area, &client);
             self.take(read, cx);
@@ -512,6 +536,11 @@ impl AreaView {
                     bots
                 });
                 self.bots = reading(bots, &self.bots);
+                // A line followed while this was read is newer than it.
+                if let (Some(said), Reading::Ready(bots)) = (self.followed_meanwhile.take(), &mut self.bots) {
+                    let said = said.keeping(Some(&BotsSaid { bots: Vec::new(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: false }));
+                    (bots.bots, bots.elsewhere, bots.held, bots.refused) = (said.bots, said.elsewhere, said.held, said.refused);
+                }
                 self.tell_faces(cx);
                 // The same reading, handed to the page.
                 let said = match &self.bots {
@@ -1059,7 +1088,7 @@ pub fn computer_line(computer: &Computer) -> String {
 /// error"); with none of them, "Finished 3h ago" from when its newest session last changed; none
 /// where the box says none of them (its row shows its job).
 pub(crate) fn doing(now: &BotNow, at: f64) -> Option<String> {
-    if now.blocked > 0 && now.asking == 0 {
+    if now.state == kuvo_box::areas::BotState::Blocked {
         return Some(if now.blocked_by.as_deref() == Some("limit") { "Hit a usage limit" } else { "Stopped on an error" }.to_owned());
     }
     let at_work = (now.working > 0).then(|| format!("{} at work", now.working));

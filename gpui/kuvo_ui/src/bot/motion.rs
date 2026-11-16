@@ -530,6 +530,25 @@ impl Motion {
         }
     }
 
+    /// Goes to `state` settled in it, as a copy first drawn in it would: no entry gesture. For a
+    /// change no one saw happen (a bot back from offline after a reconnect, a change held while no
+    /// copy was drawn), which must never replay.
+    pub fn settle(&mut self, state: State) {
+        self.gestures.clear();
+        self.state = state;
+        self.retarget();
+        self.settle_entry();
+        self.springs.all().into_iter().for_each(|s| s.snap());
+        self.glyph = self.state_glyph();
+        self.plan_state_timers();
+    }
+
+    /// Moves with the temperament of `face` from now on (the bot's saved face, changed).
+    pub fn set_face(&mut self, face: &str) {
+        self.temper = Temperament::of(face);
+        self.retarget();
+    }
+
     /// Changes state, as seen live: the acknowledging gesture, then the new posture.
     pub fn set_state(&mut self, state: State) {
         if state == self.state {

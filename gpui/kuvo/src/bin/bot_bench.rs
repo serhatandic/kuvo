@@ -1,5 +1,5 @@
 //! Measures what live bots cost in the app: the real window, its Bots sidebar full (ten bots at
-//! 28 pt) beside a bot's conversation (its 22 pt header) or its page (64 pt), on the stand-in box,
+//! 28 pt) beside a bot's conversation of 500 messages (its 22 pt header) or its page (64 pt), on the stand-in box,
 //! drawn offscreen with the Mac's own text system. A minute of the test clock at 60 Hz (and one at
 //! 120 Hz), a frame delivered each tick: the window is drawn only on a tick where a bot asked for a
 //! frame or a bot's timer woke. Prints a table: frames drawn, the longest still gap, and the CPU
@@ -13,11 +13,33 @@ use gpui::{AnyWindowHandle, AppContext as _, HeadlessAppContext, px, size};
 use kuvo::Workspace;
 use kuvo::area::Area;
 use kuvo::stand_in::{Replies, StandIn};
-use kuvo_box::BoxClient;
+use kuvo_box::messages::Message;
+use kuvo_box::{BoxClient, Conversation, ConversationUpdate, Where};
 use kuvo_ui::{Appearance, Assets, Theme};
 use serde_json::json;
 
 const NOW: f64 = 1_794_650_000_000.0;
+
+const REPLY: &str = "I found it. The form clears every field when the server says the email is taken, because the error path calls `reset()` before showing the message.\n\n- Moved the reset into the success path only, so a taken email keeps what was typed.\n- The error now shows **under the email field**, see [the docs](https://kuvo.run).\n\n```ts\nexport async function save(form: Form) {\n  const response = await api.post('/accounts', form);\n  if (response.ok) reset();\n  return response;\n}\n```\n\nBoth test suites pass.";
+
+/// The bot's conversation, long: `count` messages, yours and its replies with lists and code.
+fn conversation(count: usize) -> Conversation {
+    let messages: Vec<serde_json::Value> = (0..count)
+        .map(|n| {
+            let time = 1_000.0 + n as f64 * 1_000.0;
+            if n % 2 == 0 {
+                json!({ "type": "user", "id": format!("m{n:04}"), "time": { "created": time }, "text": format!("Message {n}: can you check the release notes?") })
+            } else {
+                json!({ "type": "assistant", "id": format!("m{n:04}"), "time": { "created": time }, "content": [{ "type": "text", "text": REPLY }] })
+            }
+        })
+        .collect();
+    let mut newest_first: Vec<Message> = serde_json::from_value(json!(messages)).expect("messages");
+    newest_first.reverse();
+    let mut conversation = Conversation::new("ses_release", Where::Engine);
+    conversation.catch_up(newest_first, None, &[], Some(false));
+    conversation
+}
 
 const MORE: [(&str, &str, &str, &str); 6] = [
     ("bot_ada", "Ada", "mint", "loaf"),
@@ -76,6 +98,10 @@ fn main() -> anyhow::Result<()> {
                 workspace.show_area(Area::Bots, window, cx);
                 if let Shows::Chat = shows {
                     workspace.open_bot_chat("bot_release", "ses_release", None, window, cx);
+                    // Its conversation long, as a bot's gets: what a frame of the window redraws.
+                    if let Some((_, view)) = workspace.bot_chat() {
+                        view.clone().update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation(500)), cx));
+                    }
                 }
             });
         })?;

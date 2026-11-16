@@ -50,6 +50,8 @@ pub fn state_of(now: &BotNow) -> State {
 /// celebration to finish.
 struct Creature {
     motion: Motion,
+    /// The saved face it moves with (its temperament).
+    face: String,
     last: Option<Instant>,
     pending: Option<State>,
     /// The views that drew it lately, told when its state changes.
@@ -58,7 +60,7 @@ struct Creature {
 
 impl Creature {
     fn new(id: &str, face: &str, state: State) -> Self {
-        Creature { motion: Motion::settled_in(seed_of(id), face, state), last: None, pending: None, viewers: HashSet::new() }
+        Creature { motion: Motion::settled_in(seed_of(id), face, state), face: face.to_owned(), last: None, pending: None, viewers: HashSet::new() }
     }
 
     /// Stepped to `now`, by all the time that passed (a long sleep settles it).
@@ -69,11 +71,20 @@ impl Creature {
         self.motion.step(dt);
         if self.pending.is_some() && (reduced || self.motion.since() >= DONE_DWELL) {
             let state = self.pending.take().unwrap_or(State::Idle);
-            self.motion.set_state(state);
+            // Drawn as the celebration ended: the change plays. Not drawn then (no copy was on
+            // screen), it's settled into, so nothing replays when one next is.
+            if self.motion.since() - DONE_DWELL < 0.25 { self.motion.set_state(state) } else { self.motion.settle(state) }
         }
     }
 
     fn apply(&mut self, state: State) {
+        // Back from offline (a reconnect, a computer reached again): settled in its state, never a
+        // replay of what it did meanwhile.
+        if self.motion.state == State::Offline && state != State::Offline {
+            self.pending = None;
+            self.motion.settle(state);
+            return;
+        }
         if self.motion.state == State::Done && state != State::Done && !self.motion.reduced && self.motion.since() < DONE_DWELL {
             self.pending = Some(state);
             return;
@@ -202,6 +213,10 @@ pub fn bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
                         let mut creature = creature.borrow_mut();
                         if creature.last != Some(now) {
                             creature.catch_up(now, reduced);
+                        }
+                        if creature.face != look.face {
+                            creature.face = look.face.clone();
+                            creature.motion.set_face(&look.face);
                         }
                         creature.viewers.insert(view);
                         (creature.motion.pose(side), creature.wait(side))

@@ -2168,7 +2168,7 @@ impl Workspace {
                 let words = bot.job.clone();
                 div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)
             }));
-        div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone())).into_any_element()
+        div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
     }
 
     /// The main view's title and what's beside it, as the title bar shows them: a conversation's

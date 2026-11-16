@@ -1,7 +1,8 @@
 //! The bots drawn live, as someone sees them, against the stand-in box (nothing real is reached):
 //! each in the state its box says, a change played while it's on screen, nothing scheduled
 //! between an idle bot's one-shots or with Reduce Motion on, Done until its conversation is seen
-//! (the box told, for every client), and the copies of one bot moving as one. Clicks go through
+//! (the box told, for every client), nothing replayed on a later copy or a reconnect, and the
+//! box followed live. Clicks go through
 //! the window as AppKit hands them on; time is the test clock's, frames are delivered by hand.
 
 use std::time::Duration;
@@ -67,7 +68,7 @@ fn frames(cx: &mut VisualTestContext) -> u64 {
 /// longest run of ticks that drew none.
 fn run_for(cx: &mut VisualTestContext, seconds: f32) -> (usize, usize) {
     let (mut drew, mut gap, mut longest) = (0, 0, 0);
-    for _ in 0..(seconds * 60.) as usize {
+    for _ in 0..(seconds * 60.).round() as usize {
         let before = frames(cx);
         cx.executor().advance_clock(Duration::from_micros(16_667));
         cx.run_until_parked();
@@ -156,10 +157,12 @@ fn done_lasts_until_its_conversation_is_seen(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-bots");
-    // Opening a bot that isn't done or blocked tells the box nothing.
+    // Opening a bot's conversation tells its box, once; what that clears is the box's to say (one
+    // that waits on you still does).
     click(cx, "bot-bot_mira");
     click(cx, "bot-chat");
-    assert!(stand_in.seen_at("POST", "kuvo/bots/bot_mira/seen").is_empty());
+    assert_eq!(stand_in.seen_at("POST", "kuvo/bots/bot_mira/seen").len(), 1);
+    assert_eq!(drawn(cx, "bot_mira"), Some(State::NeedsYou));
 
     assert_eq!(drawn(cx, "bot_docs"), Some(State::Done));
     click(cx, "bot-bot_docs");
@@ -180,22 +183,88 @@ fn done_lasts_until_its_conversation_is_seen(cx: &mut TestAppContext) {
     assert_eq!(drawn(cx, "bot_release"), Some(State::Idle), "then idle, as the box says");
 }
 
-/// The copies of one bot are one creature: its conversation's header, opened later, moves with
-/// its sidebar row.
+/// Nothing replays: a copy drawn after a change (its conversation's header, opened later) shows
+/// the state settled, and bots coming back from offline (the box reached again after a sleep)
+/// don't play what they did meanwhile, Done's celebration least of all.
 #[gpui::test]
-fn copies_of_one_bot_move_as_one(cx: &mut TestAppContext) {
+fn nothing_replays_on_a_later_copy_or_a_reconnect(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-bots");
     click(cx, "bot-bot_release");
-    box_says(&stand_in, &workspace, cx, "bot_release", json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
-    run_for(cx, 0.1);
+    box_says(&stand_in, &workspace, cx, "bot_release", json!({ "working": 0, "asking": 0, "finished": NOW, "state": "done", "since": NOW }));
+    let celebrating = |cx: &mut VisualTestContext, size: f32| cx.update(|_, cx| kuvo::bot_face::pose_of("bot_release", size, cx).map(|pose| pose.burst > 0. || pose.spin.abs() > 0.01).unwrap_or(false));
+    run_for(cx, 0.5);
+    assert!(celebrating(cx, 28.), "seen finishing in the sidebar: it celebrates");
+    run_for(cx, 2.);
     click(cx, "bot-chat");
-    assert!(bounds(cx, "bot-chat-strip").is_some() && bounds(cx, "bot-bot_release").is_some(), "the header's copy and the row's, both on screen");
-    run_for(cx, 0.05);
-    let (row, header) = cx.update(|_, cx| (kuvo::bot_face::pose_of("bot_release", 28., cx).unwrap(), kuvo::bot_face::pose_of("bot_release", 22., cx).unwrap()));
-    assert_eq!((row.open, row.gx, row.gy, row.turn), (header.open, header.gx, header.gy, header.turn), "the same blink, the same glance");
-    // Another bot moves on its own.
-    let other = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_inbox", 28., cx).unwrap());
-    assert_ne!((other.gx, other.gy), (row.gx, row.gy));
+    assert!(bounds(cx, "bot-chat-strip").is_some());
+    for _ in 0..30 {
+        run_for(cx, 1. / 60.);
+        assert!(!celebrating(cx, 22.), "the header's copy, drawn later, doesn't celebrate again");
+    }
+
+    // The box can't be reached, then is again: every bot is offline, then back as it is, still.
+    let view = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).cloned()).unwrap();
+    assert!(bounds(cx, "bot-bot_docs").is_some(), "Docs Keeper's row on screen");
+    view.update(cx, |view, cx| view.set_reached(false, cx));
+    cx.run_until_parked();
+    assert_eq!(drawn(cx, "bot_docs"), Some(State::Offline));
+    run_for(cx, 2.);
+    view.update(cx, |view, cx| view.set_reached(true, cx));
+    cx.run_until_parked();
+    assert_eq!(drawn(cx, "bot_docs"), Some(State::Done));
+    for _ in 0..90 {
+        run_for(cx, 1. / 60.);
+        let docs = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_docs", 28., cx).unwrap());
+        assert!(docs.burst == 0. && docs.spin.abs() < 0.01 && docs.y.abs() < 0.05, "back from offline: no celebration replayed");
+    }
+}
+
+/// The app follows the box: a bot's state, as its box says it on `kuvo/bots/events`, is drawn as
+/// it comes, with nothing read again by hand.
+#[gpui::test]
+fn the_faces_follow_the_box_live(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let client = BoxClient::new(stand_in.clone());
+    let window = cx.add_window(move |window, cx| Workspace::new(client, true, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.simulate_resize(size(px(1280.), px(900.)));
+    workspace.update_in(cx, |workspace, window, cx| workspace.show_area(Area::Bots, window, cx));
+    let view = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).cloned()).unwrap();
+    until(cx, &view, |cx| drawn(cx, "bot_release") == Some(State::Idle));
+    stand_in.set_bot_now("bot_release", json!({ "working": 1, "asking": 0, "thinking": 1, "state": "thinking", "since": NOW }));
+    until(cx, &view, |cx| drawn(cx, "bot_release") == Some(State::Thinking));
+    stand_in.set_bot_now("bot_release", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "error", "state": "blocked", "since": NOW }));
+    until(cx, &view, |cx| drawn(cx, "bot_release") == Some(State::Blocked));
+    assert!(bounds(cx, "bot-bot_release").is_some());
+}
+
+/// Waits, as the live follows hand on what they read, until `done`.
+fn until(cx: &mut VisualTestContext, view: &Entity<kuvo::areas::AreaView>, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
+    use futures::StreamExt as _;
+    cx.executor().allow_parking();
+    let mut told = cx.notifications(view);
+    // A guard, not a clock the test leans on: a follow that never hands anything on would leave it
+    // waiting for good, so the run ends, saying so, rather than hanging unseen.
+    let (finished, guard) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if guard.recv_timeout(std::time::Duration::from_secs(60)) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            eprintln!("the live follow handed nothing on for a minute: the test stops here");
+            std::process::exit(101);
+        }
+    });
+    let _finished = finished;
+    loop {
+        cx.run_until_parked();
+        if done(cx) {
+            return;
+        }
+        cx.foreground_executor().block_test(told.next());
+    }
 }
