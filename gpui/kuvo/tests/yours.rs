@@ -11,7 +11,7 @@ use std::rc::Rc;
 use gpui::{AppContext as _, Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::Home;
 use kuvo::area::Area;
-use kuvo::notifications::{Effects, Notifier};
+use kuvo::notifications::{Effects, Notifier, Post};
 use kuvo::settings::{SettingsView, Side};
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
@@ -230,21 +230,27 @@ impl gpui::Render for Blank {
     }
 }
 
-/// What the system was asked: the Dock's counts in turn, and sounds made.
+/// What the system was asked: the notifications posted, and the Dock's counts in turn.
 #[derive(Default)]
 struct Desk {
+    posts: Vec<Post>,
     badges: Vec<usize>,
-    sounds: usize,
+}
+
+impl Desk {
+    fn sounds(&self) -> usize {
+        self.posts.iter().filter(|post| post.sound).count()
+    }
 }
 
 fn notifier(cx: &mut TestAppContext) -> (Entity<Notifier>, Rc<RefCell<Desk>>) {
     let desk = Rc::new(RefCell::new(Desk::default()));
-    let (badges, sounds) = (desk.clone(), desk.clone());
+    let (badges, posts) = (desk.clone(), desk.clone());
     cx.update(|cx| {
         yours::init(None, cx);
         cx.set_app_identity("run.kuvo.code", "Kuvo");
     });
-    let effects = Effects { badge: Box::new(move |count| badges.borrow_mut().badges.push(count)), sound: Box::new(move || sounds.borrow_mut().sounds += 1), ..Effects::none() };
+    let effects = Effects { badge: Box::new(move |count| badges.borrow_mut().badges.push(count)), post: Box::new(move |post, _| posts.borrow_mut().posts.push(post)), ..Effects::none() };
     let notifier = cx.new(|cx| Notifier::new(effects, cx));
     (notifier, desk)
 }
@@ -267,22 +273,22 @@ fn told(telling: bool, notices: &[(&str, &str, Option<&str>)]) -> Told {
 fn what_a_computer_tells_shows_once_and_none_from_before_the_app(cx: &mut TestAppContext) {
     let (notifier, desk) = notifier(cx);
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_old", "finished", None)]), cx));
-    assert!(cx.shown_system_notifications().is_empty(), "told before the app was there");
+    assert!(desk.borrow().posts.is_empty(), "told before the app was there");
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_old", "finished", None), ("ntc_1", "finished", None)]), cx));
-    let shown = cx.shown_system_notifications();
+    let shown = desk.borrow().posts.clone();
     assert_eq!(shown.len(), 1);
-    assert_eq!((shown[0].title.as_ref(), shown[0].body.as_ref()), ("Fixer · kuvo-ai", "Done: the tests pass."));
-    assert_eq!(desk.borrow().sounds, 1);
+    assert_eq!((shown[0].title.as_str(), shown[0].body.as_str()), ("Fixer · kuvo-ai", "Done: the tests pass."));
+    assert_eq!(desk.borrow().sounds(), 1);
     // Told again as it changes: nothing new, nothing more.
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_1", "finished", None)]), cx));
-    assert_eq!(cx.shown_system_notifications().len(), 1);
+    assert_eq!(desk.borrow().posts.len(), 1);
     // What a goal needs of you, quietly: no sound.
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_1", "finished", None), ("ntc_2", "blocked", Some("1"))]), cx));
-    assert_eq!((cx.shown_system_notifications().len(), desk.borrow().sounds), (2, 1));
+    assert_eq!((desk.borrow().posts.len(), desk.borrow().sounds()), (2, 1));
     // A computer whose news isn't told now (its bridge isn't running) shows none.
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_devbox", told(true, &[]), cx));
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_devbox", told(false, &[("ntc_3", "question", None)]), cx));
-    assert_eq!(cx.shown_system_notifications().len(), 2);
+    assert_eq!(desk.borrow().posts.len(), 2);
 }
 
 #[gpui::test]
@@ -292,28 +298,40 @@ fn your_notification_settings_decide_what_this_device_shows(cx: &mut TestAppCont
     // Without a sound.
     cx.update(|cx| yours::change(yours::Change::Sound(false), cx));
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_1", "permission", None)]), cx));
-    assert_eq!((cx.shown_system_notifications().len(), desk.borrow().sounds), (1, 0));
+    assert_eq!((desk.borrow().posts.len(), desk.borrow().sounds()), (1, 0));
     // Sessions off: none of theirs; your limits' notices (set on each computer's Usage) still.
     cx.update(|cx| yours::change(yours::Change::Sessions(false), cx));
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_1", "permission", None), ("ntc_2", "finished", None), ("ntc_3", "usage", None)]), cx));
-    let shown = cx.shown_system_notifications();
+    let shown = desk.borrow().posts.clone();
     assert_eq!(shown.len(), 2);
-    assert_eq!(shown[1].tag.as_ref(), "ntc_3");
+    assert!(shown[1].tag.starts_with("ntc_3|"));
 }
 
 #[gpui::test]
 fn nothing_shows_while_kuvo_is_in_front(cx: &mut TestAppContext) {
-    let (notifier, _desk) = notifier(cx);
+    let (notifier, desk) = notifier(cx);
     let window = cx.add_window(|_, _| Blank);
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[]), cx));
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_1", "finished", None)]), cx));
-    assert!(cx.shown_system_notifications().is_empty(), "the window shows it already");
+    assert!(desk.borrow().posts.is_empty(), "the window shows it already");
     cx.deactivate_window();
     notifier.update(cx, |notifier, cx| notifier.take_notices("key_mac", told(true, &[("ntc_1", "finished", None), ("ntc_2", "finished", None)]), cx));
-    assert_eq!(cx.shown_system_notifications().len(), 1);
+    assert_eq!(desk.borrow().posts.len(), 1);
+}
+
+#[gpui::test]
+fn a_computer_back_after_a_drop_shows_what_it_told_meanwhile(cx: &mut TestAppContext) {
+    let (notifier, desk) = notifier(cx);
+    notifier.update(cx, |notifier, cx| notifier.take_notices("key_devbox", told(true, &[("ntc_old", "finished", None)]), cx));
+    // It drops off (not reached for a while), and comes back with news told meanwhile.
+    notifier.update(cx, |notifier, cx| notifier.follow(Vec::new(), cx));
+    notifier.update(cx, |notifier, cx| notifier.take_notices("key_devbox", told(true, &[("ntc_old", "finished", None), ("ntc_1", "question", None)]), cx));
+    let posts = desk.borrow().posts.clone();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].tag.starts_with("ntc_1|key_devbox|"));
 }
 
 #[gpui::test]
@@ -361,7 +379,10 @@ fn clicking_a_notification_opens_its_computer_at_its_session(cx: &mut TestAppCon
     news = serde_json::from_value(json!({ "telling": true, "notices": [{ "id": "ntc_1", "at": 1, "notice": { "title": "Signup form", "body": "Done.", "category": "finished", "data": { "session": "ses_signup" } } }] })).unwrap();
     notifier.update(cx, |notifier, cx| notifier.take_notices("", news, cx));
     assert_eq!(cx.shown_system_notifications().len(), 1);
-    notifier.update(cx, |notifier, cx| notifier.clicked("ntc_1", cx));
+    // (Where it opens is in its tag: a click after a restart finds it too.)
+    let tag = cx.shown_system_notifications()[0].tag.to_string();
+    assert_eq!(tag, "ntc_1||ses_signup");
+    notifier.update(cx, |notifier, cx| notifier.clicked(&tag, cx));
     cx.run_until_parked();
     let workspace = home.read_with(cx, |home, _| home.workspace().clone());
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_signup"));

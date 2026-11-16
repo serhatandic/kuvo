@@ -28,7 +28,7 @@ and its entry in the repo's `THIRD_PARTY_LICENSES.txt` (`scripts/third-party-lic
 | libc | MIT OR Apache-2.0 | Reading a process's command line on macOS (is it the box's server?) | kuvo_box |
 | percent-encoding | MIT OR Apache-2.0 | Writing a route's path and query | kuvo_box |
 | serde, serde_json | MIT OR Apache-2.0 | Reading and writing a box's JSON | kuvo_box, kuvo (its stand-in box) |
-| objc2-foundation, objc2-app-kit (0.3, a few features, already in GPUI's build) | Zlib OR Apache-2.0 OR MIT | Your settings on a Mac: the Dock's count, the alert sound, which editors are installed | kuvo |
+| objc2-foundation, objc2-app-kit, objc2-user-notifications (0.3, a few features), block2 (0.6), all already in GPUI's build | Zlib OR Apache-2.0 OR MIT (block2: MIT) | Your settings on a Mac: notifications with macOS's sound, the Dock's count, which editors are installed | kuvo |
 | x25519-dalek (with curve25519-dalek) | BSD-3-Clause | The link's keys and its Noise handshake (X25519), to your other computers | kuvo_box |
 | aes-gcm, sha2, hmac | MIT OR Apache-2.0 | The link's encryption (AES-256-GCM, SHA-256, HMAC), held to `protocol/vectors/noise.json` | kuvo_box |
 | tungstenite | MIT OR Apache-2.0 | The WebSocket to the relay | kuvo_box |

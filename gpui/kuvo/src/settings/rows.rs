@@ -391,7 +391,7 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
     let mut blocks = match section {
         "general" => {
             let picked = facts.yours.general.editor.as_deref().and_then(|id| facts.editors.iter().find(|editor| editor.id == id));
-            let default = "Each file’s default app";
+            let default = "Default text editor";
             let mut choices = vec![(default.to_owned(), None, Some(Act::Yours(Change::Editor(None))), picked.is_none())];
             choices.extend(facts.editors.iter().map(|editor| (editor.name.clone(), None, Some(Act::Yours(Change::Editor(Some(editor.id.clone())))), picked == Some(editor))));
             let editor = Row::new("row-editor", "Open code and text in", "From Files, for a file on this Mac.", Control::Menu { shown: Some(picked.map_or(default, |editor| &editor.name).to_owned()), choices });
@@ -410,7 +410,7 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
         "notifications" => {
             let now = &facts.yours.notifications;
             let rows = vec![
-                Row::new("row-notify-sessions", "Sessions", "When one finishes or asks you something, while Kuvo isn’t in front.", yours_switch(now.sessions, Change::Sessions)),
+                Row::new("row-notify-sessions", "Sessions", "When one finishes or asks you something, and bots’ and group chats’ news. Only while Kuvo isn’t in front.", yours_switch(now.sessions, Change::Sessions)),
                 Row::new("row-notify-sound", "Play a sound", "", yours_switch(now.sound, Change::Sound)),
                 Row::new("row-notify-dock", "Count on the Dock icon", "What waits for you, on all your computers.", yours_switch(now.dock, Change::Dock)),
                 Row::new("row-notify-system", "System notification settings", "How they look, or to allow them again.", Control::Buttons(vec![Push::new("Open", Act::Open(facts.notification_settings.to_owned()))])),

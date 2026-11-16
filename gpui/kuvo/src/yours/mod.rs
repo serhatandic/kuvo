@@ -47,8 +47,8 @@ pub struct Appearance {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
-    /// The app code and text open in from Files, by its bundle identifier (none: each file's
-    /// own default app).
+    /// The app code and text open in from Files, by its bundle identifier (none: the Mac's
+    /// default text editor).
     pub editor: Option<String>,
 }
 
@@ -209,8 +209,8 @@ pub fn appearance(system: kuvo_ui::Appearance, cx: &App) -> kuvo_ui::Appearance 
     }
 }
 
-/// What only this device's system does for your settings: the Dock's count, a sound, and this
-/// app's identifier for System Settings. Nothing where the system has none.
+/// What only this device's system does for your settings: notifications, the Dock's count, and
+/// this app's identifier for System Settings. Nothing where the system has none.
 pub mod desk {
     /// The count on the Dock icon (none at 0).
     pub fn set_dock_count(count: usize) {
@@ -220,10 +220,20 @@ pub mod desk {
         let _ = count;
     }
 
-    /// The sound a notification makes: the alert sound picked in System Settings › Sound.
-    pub fn play_sound() {
+    /// Posts a notification (`sound`: the system's notification sound with it), off the UI's
+    /// thread; where the system has none of its own, through GPUI.
+    pub fn post(tag: String, title: String, body: String, sound: bool, cx: &mut gpui::App) {
         #[cfg(target_os = "macos")]
-        super::mac::play_alert();
+        {
+            use gpui::AppContext as _;
+            let _ = cx;
+            cx.background_spawn(async move { super::mac::post(&tag, &title, &body, sound) }).detach();
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = sound;
+            cx.show_system_notification(gpui::SystemNotification { tag: tag.into(), title: title.into(), body: body.into(), actions: Vec::new() });
+        }
     }
 
     /// Whether Kuvo is the app in front (everywhere else: whether a window is, as the window says).
@@ -275,7 +285,7 @@ mod tests {
         assert_eq!(again.now().appearance.theme, Some(Theme::Dark));
         assert_eq!(again.now().general.editor.as_deref(), Some("dev.zed.Zed"));
         assert!(!again.now().notifications.sound && again.now().notifications.sessions);
-        // Back to each file's own app: kept as none.
+        // Back to the default text editor: kept as none.
         let mut again = again;
         again.change(Change::Editor(None));
         assert_eq!(Store::read(Some(path)).now().general.editor, None);

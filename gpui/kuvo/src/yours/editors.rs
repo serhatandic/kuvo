@@ -1,5 +1,5 @@
 //! General's "Open code and text in": the editors people use for code that are on this Mac, and
-//! opening a file of this computer in the one picked (else in the file's own default app). Only a
+//! opening a file of this computer in the one picked (else in the Mac's default text editor). Only a
 //! file on this computer opens: Files leaves the button out for another computer's.
 
 use std::path::Path;
@@ -55,20 +55,27 @@ pub fn picked(cx: &App) -> Option<Editor> {
     find(&super::now(cx).general.editor?)
 }
 
-/// Opens a file of this computer: in `editor` (by its bundle identifier) where there's one, else
-/// in its own default app.
+/// Opens a file of this computer to read and edit: in `editor` (by its bundle identifier) where
+/// there's one, else in the Mac's default text editor. Never in the app a file's type names, which
+/// for a file an agent wrote could run it (a `.command` runs in Terminal).
 pub fn open(path: &Path, editor: Option<&str>, cx: &mut App) {
-    match editor {
-        #[cfg(target_os = "macos")]
-        Some(id) => {
-            let (id, path) = (id.to_owned(), path.to_owned());
-            // (`open` hands it to Launch Services and returns: waited for off the UI’s thread. The path
-            // is absolute, so never read as an option.)
-            cx.background_spawn(async move {
-                let _ = std::process::Command::new("/usr/bin/open").arg("-b").arg(id).arg(path).status();
-            })
-            .detach();
-        }
-        _ => cx.open_with_system(path),
+    #[cfg(target_os = "macos")]
+    {
+        let (editor, path) = (editor.map(str::to_owned), path.to_owned());
+        // (`open` hands it to Launch Services and returns: waited for off the UI’s thread. The path
+        // is absolute, so never read as an option.)
+        cx.background_spawn(async move {
+            let mut open = std::process::Command::new("/usr/bin/open");
+            match editor {
+                Some(id) => open.arg("-b").arg(id),
+                None => open.arg("-t"),
+            };
+            let _ = open.arg(path).status();
+        })
+        .detach();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (path, editor, cx);
     }
 }

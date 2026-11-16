@@ -1,5 +1,5 @@
 //! This device's notifications: what each of your computers tells (`kuvo/notices`, worded and
-//! picked by its box) shown as macOS notifications while Kuvo isn't in front, with a sound, and
+//! picked by its box) shown as macOS notifications while Kuvo isn't in front, with its sound, and
 //! what waits for you on every computer (`kuvo/waiting`) counted on the Dock icon. Your settings ›
 //! Notifications says whether, on this device; the box decides what's news and how it's said.
 //! Clicking one opens its computer, and its session where it's one's.
@@ -7,6 +7,16 @@
 use std::collections::{HashMap, HashSet};
 
 use gpui::{App, Context, EventEmitter, Subscription, SystemNotification, Task};
+
+/// A notification to post: its tag (where a click opens: [`Open::tag`]), its words, and whether
+/// it comes with the system's notification sound.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Post {
+    pub tag: String,
+    pub title: String,
+    pub body: String,
+    pub sound: bool,
+}
 use kuvo_box::BoxClient;
 use kuvo_box::areas::Waiting;
 use kuvo_box::follow::{Followed, Timing};
@@ -14,23 +24,32 @@ use kuvo_box::notices::{Told, ToldNotice};
 
 use crate::yours;
 
-/// What only the system does or knows: the Dock's count, a sound, and whether Kuvo is in front
-/// (tests keep what they'd do, and say whether a window of theirs is).
+/// What only the system does or knows: posting a notification, the Dock's count, and whether
+/// Kuvo is in front (tests keep what they'd do, and say whether a window of theirs is).
 pub struct Effects {
+    pub post: Box<dyn Fn(Post, &mut App)>,
     pub badge: Box<dyn Fn(usize)>,
-    pub sound: Box<dyn Fn()>,
     pub in_front: Box<dyn Fn(&App) -> bool>,
 }
 
 impl Effects {
-    /// This Mac's Dock and alert sound; in front while Kuvo is the active app with its window.
+    /// This Mac's notifications and Dock; in front while Kuvo is the active app with its window.
     pub fn system() -> Effects {
-        Effects { badge: Box::new(yours::desk::set_dock_count), sound: Box::new(yours::desk::play_sound), in_front: Box::new(|cx| yours::desk::app_active() && cx.active_window().is_some()) }
+        Effects {
+            post: Box::new(|post, cx| yours::desk::post(post.tag, post.title, post.body, post.sound, cx)),
+            badge: Box::new(yours::desk::set_dock_count),
+            in_front: Box::new(|cx| yours::desk::app_active() && cx.active_window().is_some()),
+        }
     }
 
-    /// None of the system's: in front while a window is (tests and shots).
+    /// None of the system's: posted through GPUI (its test platform keeps them), in front while a
+    /// window is (tests and shots).
     pub fn none() -> Effects {
-        Effects { badge: Box::new(|_| {}), sound: Box::new(|| {}), in_front: Box::new(|cx| cx.active_window().is_some()) }
+        Effects {
+            post: Box::new(|post, cx| cx.show_system_notification(SystemNotification { tag: post.tag.into(), title: post.title.into(), body: post.body.into(), actions: Vec::new() })),
+            badge: Box::new(|_| {}),
+            in_front: Box::new(|cx| cx.active_window().is_some()),
+        }
     }
 }
 
@@ -42,12 +61,24 @@ pub struct Open {
     pub session: Option<String>,
 }
 
+impl Open {
+    /// A notification's tag: the notice's id, then where it opens, so a click finds it after a
+    /// restart too (the box's ids have no `|`).
+    pub fn tag(&self, id: &str) -> String {
+        format!("{id}|{}|{}", self.computer, self.session.as_deref().unwrap_or_default())
+    }
+
+    /// Where a tag opens; none for one that isn't this app's.
+    pub fn of_tag(tag: &str) -> Option<Open> {
+        let mut parts = tag.splitn(3, '|');
+        let (_, computer, session) = (parts.next()?, parts.next()?, parts.next()?);
+        Some(Open { computer: computer.to_owned(), session: (!session.is_empty()).then(|| session.to_owned()) })
+    }
+}
+
 /// One computer followed.
 #[derive(Default)]
 struct Computer {
-    /// The notices already there, by id (none until its first read, whose notices are from
-    /// before this app was there, and aren't shown).
-    seen: Option<HashSet<String>>,
     waiting: usize,
     /// Which client it's followed with ([`kuvo_box::boxes::Boxes::client_made`]): another one
     /// (paired anew, found elsewhere) is followed afresh.
@@ -59,8 +90,10 @@ struct Computer {
 pub struct Notifier {
     effects: Effects,
     computers: HashMap<String, Computer>,
-    /// Where each notification shown opens, by its tag (the notice's id).
-    opens: HashMap<String, Open>,
+    /// The notices each computer has told already, by id (none until its first read, whose
+    /// notices are from before this app was there). Kept while a computer's follow comes and
+    /// goes (a drop, a new address), so what it told meanwhile still shows when it's back.
+    seen: HashMap<String, HashSet<String>>,
     /// The Dock's count as last set.
     badge: Option<usize>,
     _yours: Subscription,
@@ -72,7 +105,7 @@ impl Notifier {
     pub fn new(effects: Effects, cx: &mut Context<Self>) -> Notifier {
         // The Dock's switch turned: its count goes, or comes back.
         let yours = cx.observe_global::<yours::Store>(|this: &mut Notifier, cx| this.update_badge(cx));
-        Notifier { effects, computers: HashMap::new(), opens: HashMap::new(), badge: None, _yours: yours }
+        Notifier { effects, computers: HashMap::new(), seen: HashMap::new(), badge: None, _yours: yours }
     }
 
     /// Follows the computers in `clients` (by key, with which client each is: see `made`) and lets
@@ -108,7 +141,7 @@ impl Notifier {
                 }
             });
             let follows: Vec<Box<dyn std::any::Any>> = vec![Box::new(notices), Box::new(waiting)];
-            self.computers.insert(key, Computer { seen: None, waiting: 0, made, _follows: follows, _tasks: vec![told_task, waits_task] });
+            self.computers.insert(key, Computer { waiting: 0, made, _follows: follows, _tasks: vec![told_task, waits_task] });
         }
         self.update_badge(cx);
     }
@@ -116,12 +149,11 @@ impl Notifier {
     /// What a computer told lately: each notice new since its last read is shown, by your
     /// settings. None of its first read is (it was told before this app was there).
     pub fn take_notices(&mut self, computer: &str, told: Told, cx: &mut Context<Self>) {
-        let followed = self.computers.entry(computer.to_owned()).or_default();
-        let fresh: Vec<ToldNotice> = match &followed.seen {
+        let fresh: Vec<ToldNotice> = match self.seen.get(computer) {
             None => Vec::new(),
             Some(seen) => told.notices.iter().filter(|notice| !seen.contains(&notice.id)).cloned().collect(),
         };
-        followed.seen = Some(told.notices.iter().map(|notice| notice.id.clone()).collect());
+        self.seen.insert(computer.to_owned(), told.notices.iter().map(|notice| notice.id.clone()).collect());
         // (A box that isn't telling its news now has none to show.)
         if !told.telling {
             return;
@@ -153,20 +185,14 @@ impl Notifier {
             Some(subtitle) => format!("{title} · {subtitle}"),
             None => title,
         };
-        cx.show_system_notification(SystemNotification { tag: told.id.clone().into(), title: title.into(), body: notice.body.clone().unwrap_or_default().into(), actions: Vec::new() });
-        if settings.sound && !notice.quiet() {
-            (self.effects.sound)();
-        }
-        // (Those of long ago go: a click on one opens the app as it is.)
-        if self.opens.len() > 500 {
-            self.opens.clear();
-        }
-        self.opens.insert(told.id, Open { computer: computer.to_owned(), session: notice.session().map(str::to_owned) });
+        let tag = Open { computer: computer.to_owned(), session: notice.session().map(str::to_owned) }.tag(&told.id);
+        let post = Post { tag, title, body: notice.body.clone().unwrap_or_default(), sound: settings.sound && !notice.quiet() };
+        (self.effects.post)(post, cx);
     }
 
     /// A notification clicked: where it opens, said to the window.
     pub fn clicked(&mut self, tag: &str, cx: &mut Context<Self>) {
-        if let Some(open) = self.opens.get(tag).cloned() {
+        if let Some(open) = Open::of_tag(tag) {
             cx.emit(open);
         }
     }

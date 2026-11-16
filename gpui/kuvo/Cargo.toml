@@ -26,10 +26,14 @@ core-graphics = "0.24"
 libc = "0.2"
 objc2 = "0.6"
 raw-window-handle = "0.6"
-# Your settings' Notifications and General: the Dock's count, the alert sound, and which editors
+# Your settings' Notifications and General: the Dock's count, and which editors
 # are on this Mac (notifications.rs, yours/mac.rs).
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace"] }
+# Posting notifications with macOS's own sound (Focus and System Settings silence it), clicks
+# going to GPUI's delegate by the same identifier.
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+block2 = "0.6"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

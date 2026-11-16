@@ -367,7 +367,7 @@ impl FilesView {
         }
         let (label, tooltip) = match &self.editor {
             Some(editor) => (format!("Open in {}", editor.name), None),
-            None => ("Open".to_owned(), Some("In its default app. Pick an editor in Settings › General.")),
+            None => ("Open".to_owned(), Some("In your default text editor. Pick another in Settings › General.")),
         };
         let (path, editor) = (path.to_owned(), self.editor.as_ref().map(|editor| editor.id.clone()));
         let button = Button::new("file-open-in", label).ghost().size(ButtonSize::Small).icon_after(IconName::External).on_click(move |_, _, cx| crate::yours::editors::open(std::path::Path::new(&path), editor.as_deref(), cx));
