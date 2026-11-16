@@ -193,16 +193,15 @@ pub fn own_update_confirm() -> Confirm {
 }
 
 /// What Update Now asks first where this Mac's list names what's at work here: those
-/// conversations, by their titles, and whether they carry on (the release this app carries
-/// resumes them after the restart) or stop.
-pub fn here_at_work_confirm(at_work: &[kuvo_box::areas::AtWork], carries_on: bool) -> Confirm {
+/// conversations, by their titles, and that what they're doing stops as Kuvo restarts.
+pub fn here_at_work_confirm(at_work: &[kuvo_box::areas::AtWork]) -> Confirm {
     let titles: Vec<String> = at_work.iter().map(|work| work.title.clone().filter(|title| !title.is_empty()).map(|title| format!("“{title}”")).unwrap_or_else(|| "A conversation".into())).collect();
     let named = match titles.len() {
         1 => format!("{} is at work on this Mac.", titles[0]),
         2 | 3 => format!("{} and {} are at work on this Mac.", titles[..titles.len() - 1].join(", "), titles[titles.len() - 1]),
         more => format!("{}, {} and {} more are at work on this Mac.", titles[0], titles[1], more - 2),
     };
-    let then = if carries_on { "Kuvo restarts in a moment, and they carry on where they were." } else { "What they’re doing stops as Kuvo restarts. It’s back in a moment." };
+    let then = "What they’re doing stops as Kuvo restarts. It’s back in a moment.";
     Confirm { title: "Update Kuvo on this Mac now?".into(), message: format!("{named} {then}"), label: "Update Now".into() }
 }
 
@@ -1052,7 +1051,7 @@ impl Workspace {
             // (Not known what's at work: asked first, as before.)
             None => Some(own_update_confirm()),
             Some(row) if row.computer.at_work.is_empty() => None,
-            Some(row) => Some(here_at_work_confirm(&row.computer.at_work, self.carries_release)),
+            Some(row) => Some(here_at_work_confirm(&row.computer.at_work)),
         };
         let does = if self.carries_release { UpdateDoes::OwnBox { now: true } } else { UpdateDoes::HereNow };
         HeldUpdate {
