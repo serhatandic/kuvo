@@ -502,6 +502,15 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
   // Older (as a beta from before boxes took releases from a client), with two sessions at work.
   fs.writeFileSync(versionFile, "0.9.0\n");
   fs.rmSync(link.KEEP_UP_FILE, { force: true });
+  // Not reached over SSH (your keys refused, say): no failed update, and tried again next round.
+  fs.writeFileSync(path.join(fake, "refuse"), "");
+  try {
+    await link.keepUpRound();
+  } finally {
+    fs.rmSync(path.join(fake, "refuse"), { force: true });
+  }
+  assert.deepEqual((await listed()).update, { state: "waiting", title: "Kuvo on studio updates once Studio can reach it.", detail: "" });
+  assert.equal(read(link.KEEP_UP_FILE)[peer.key].failed, undefined);
   const busy = path.join(there, "busy");
   fs.writeFileSync(busy, "");
   try {
@@ -509,27 +518,29 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
     assert.equal(link.allTries().some(each => each.kind === "update"), false, "nothing begun while something is at work there");
     assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "0.9.0");
     let it = await listed();
-    assert.deepEqual(it.update, { state: "waiting", title: "Kuvo on studio updates once nothing’s at work there", detail: "2 sessions are at work there now. Studio brings it up to date as soon as they’re done." });
+    assert.deepEqual(it.update, { state: "waiting", title: "Kuvo on studio updates once nothing’s at work there.", detail: "" });
     const updateNow = it.actions.find(each => each.id === "update");
-    assert.deepEqual(updateNow, { id: "update", label: "Update Now", confirm: { title: "Update Kuvo on studio now?", message: "2 sessions are at work on studio. They keep going while it updates, but may pause for a moment as Kuvo there restarts.", label: "Update Now" } });
+    assert.deepEqual(updateNow, { id: "update", label: "Update Now", confirm: { title: "Update Kuvo on studio now?", message: "2 sessions are at work on studio. They keep going, but studio may be out of reach for a moment as Kuvo there restarts.", label: "Update Now" } });
     // Still at work a day on: it says so, and Update Now is what's left to you.
     const kept = read(link.KEEP_UP_FILE);
     kept[peer.key].since -= 25 * 3600_000;
+    kept[peer.key].checked -= 25 * 3600_000;
     fs.writeFileSync(link.KEEP_UP_FILE, JSON.stringify(kept));
     await link.keepUpRound();
     it = await listed();
-    assert.deepEqual(it.update, { state: "waiting", long: true, title: "Kuvo on studio is waiting to update", detail: "Something has been at work on studio for over a day. Update it now, or it updates by itself once nothing is." });
+    assert.deepEqual(it.update, { state: "waiting", long: true, title: "Kuvo on studio hasn’t been free for a day.", detail: "" });
     assert.ok(it.actions.some(each => each.id === "update" && each.confirm));
     assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "0.9.0", "never while something is at work there");
   } finally {
     fs.rmSync(busy, { force: true });
   }
-  // Nothing at work: brought up to date by itself, its running engine left alone.
-  await link.keepUpRound();
+  // Nothing at work: brought up to date by itself (once its last look's wait is over), its running
+  // engine left alone.
+  await link.keepUpRound(() => Date.now() + 3 * 3600_000);
   const begun = link.allTries().find(each => each.kind === "update" && each.state === "working");
   assert.ok(begun, "begun once nothing is at work there");
   assert.equal(begun.title, "Updating Kuvo on studio…");
-  assert.deepEqual((await listed()).update, { state: "updating", title: "Updating Kuvo on studio…", detail: "Studio is bringing it up to date. What’s at work there keeps going." });
+  assert.deepEqual((await listed()).update, { state: "updating", title: "Updating Kuvo on studio…", detail: "" });
   const done = await over(begun.id);
   assert.equal(done.state, "done", JSON.stringify(done.failure));
   assert.equal(done.title, "studio is up to date");
@@ -542,7 +553,7 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
   const again = await ask("POST", `kuvo/computers/${peer.key}/update`);
   assert.equal(again.status, 202);
   const current = await over(again.body.try.id);
-  assert.deepEqual(current.steps.map(step => [step.id, step.state, step.detail]).slice(1), ["files", "engine", "starting", "seeding", "joining"].map(id => [id, "done", "It’s up to date already"]));
+  assert.deepEqual(current.steps.map(step => [step.id, step.state, step.detail]).slice(1), ["files", "engine", "starting", "joining"].map(id => [id, "done", "It’s up to date already"]));
 });
 
 test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this box's own add, waited for; what it must ask you is asked on the Mac", async () => {

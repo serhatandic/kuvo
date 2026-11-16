@@ -62,12 +62,14 @@ fn update_said(updating: &Updating, name: &str) -> (Value, Option<Value>) {
         1 => Some("1 session is".to_owned()),
         count => Some(format!("{count} sessions are")),
     };
-    let (title, detail) = match (updating.state, updating.long) {
-        ("updating", _) => (format!("Updating Kuvo on {name}…"), format!("{} brings it up to date. Its sessions keep going.", super::NAME)),
-        ("failed", _) => (format!("Kuvo on {name} couldn’t be updated"), "It tries again in an hour. Or update it now.".to_owned()),
-        (_, true) => (format!("Kuvo on {name} is waiting to update"), format!("Something has been at work on {name} for over a day, so it hasn’t updated yet. Update it now, or it updates by itself once nothing’s at work there.")),
-        _ => (format!("Kuvo on {name} updates soon"), format!("It updates by itself once nothing’s at work on {name}.")),
+    // (One line, as the box says it: `detail` empty.)
+    let title = match (updating.state, updating.long) {
+        ("updating", _) => format!("Updating Kuvo on {name}…"),
+        ("failed", _) => format!("Kuvo on {name} couldn’t be updated. It tries again later."),
+        (_, true) => format!("Kuvo on {name} hasn’t been free for a day."),
+        _ => format!("Kuvo on {name} updates once nothing’s at work there."),
     };
+    let detail = "";
     let mut update = json!({ "state": updating.state, "title": title, "detail": detail });
     if updating.long {
         update["long"] = json!(true);
@@ -75,7 +77,7 @@ fn update_said(updating: &Updating, name: &str) -> (Value, Option<Value>) {
     let action = (updating.state != "updating").then(|| {
         let mut action = json!({ "id": "update", "label": "Update Now" });
         if let Some(at_work) = at_work {
-            action["confirm"] = json!({ "title": format!("Update Kuvo on {name} now?"), "message": format!("{at_work} at work on {name}. They keep going, but may pause for a moment while Kuvo there restarts."), "label": "Update Now" });
+            action["confirm"] = json!({ "title": format!("Update Kuvo on {name} now?"), "message": format!("{at_work} at work on {name}. They keep going, but {name} may be out of reach for a moment as Kuvo there restarts."), "label": "Update Now" });
         }
         action
     });

@@ -800,7 +800,8 @@ impl ComputersView {
                                     .flex_col()
                                     .gap(space::S0_5)
                                     .child(div().debug_selector(move || title_selector).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
-                                    .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)),
+                                    // (A notice in one line, as the box's update words are, has no second.)
+                                    .children((!words.is_empty()).then(|| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words))),
                             ),
                     )
                     .into_any_element()

@@ -1885,23 +1885,33 @@ machines; a client that wants every computer's facts asks the box that has it as
   connected before boxes ("The update gate", A Mac, its machines). A machine from before
   `kuvo/box/update` takes no release from a client over the relay, and a beta isn't GitHub's latest
   release, so this is how such a one is brought up. Every 15 minutes (`run/keep-up.json` keeps what
-  it found of each, by key), for each machine it set up (`kind: "machine"`, not `apart`) whose
-  version, as it said it with its agents, is older than this box's (or that says none: then
-  `bin/box-version` there tells), it looks over SSH, changing nothing, at what's at work there
-  (its engine's and its coding agents' bridge's `api/session/active`, as a box asks its own before
-  updating itself); a machine that says it has sessions at work isn't reached. While anything is
-  at work there, or that can't be told, it waits for the next round. Once nothing is, it runs Set
-  Up Again's steps as a try of kind `update` ("Updating Kuvo on <name>…"), which leave its running
-  engine alone and its coding agents' bridge to make way at a quiet moment ("A new version while it
-  works"). Begun by the box itself, a try that would ask you something (a host key, another
-  setup's box) fails instead. One that fails, or a machine that can't be reached, rests an hour,
-  then a day after each next failure; what went wrong goes to the box's log, and `update` says it
-  failed in plain words. Found as new as this box, a machine isn't reached again for it for a day.
+  it found of each, by key), for each machine it set up (`kind: "machine"`, not `apart`, not
+  `away`) whose version, as it said it with its agents, is older than this box's (or that says
+  none: then `bin/box-version` there tells), it waits while the machine says it has sessions at
+  work; otherwise it looks over SSH, changing nothing, at what's at work there (its engine's and
+  its coding agents' bridge's `api/session/active`, each whose record names a process of that
+  program, as a box asks its own before updating itself). Found at work, or where that can't be
+  told, it waits, and looks again a round later, then twice as long each time, two hours apart at
+  most (your SSH agent may ask you at each look). Once nothing is, it runs Set Up Again's steps
+  (all but copying keys and sign-ins) as a try of kind `update` ("Updating Kuvo on <name>…"), which
+  leave its running engine alone and its coding agents' bridge to make way at a quiet moment ("A
+  new version while it works"). Begun by the box itself, a try that would ask you something (a
+  host key, another setup's box) fails instead. One that fails rests an hour, then a day after each
+  next failure, and one you stopped isn't begun again by itself for a day; a machine that can't be
+  reached over SSH is no failure, and is looked at again next round. What went wrong goes to the
+  box's log. Found as new as this box, a machine isn't reached again for it for a day.
+  - `update`'s words are one line (`title`; `detail` is empty): "Kuvo on <name> updates once
+    nothing’s at work there.", "… updates in a moment.", "… hasn’t been free for a day." (`long`),
+    "… updates once <this box> can reach it.", "… couldn’t be updated. It tries again later."
+    (`failed`), "Updating Kuvo on <name>…" (`updating`). Update Now's `confirm` names how many
+    sessions are at work there (the more of what the machine said and what the last look found), or
+    that something may be: they keep going, and the machine may be out of reach for a moment as its
+    link restarts.
   - `POST kuvo/computers/<key>/update` → `202 {try}`: Update Now, the same try begun now (one that
     rested is tried at once), with nobody's work waited for: a client asks first where the action
-    has a `confirm` (sessions at work there keep going, and may pause for a moment as its link
-    restarts). One as new already ends with each step "It’s up to date already". `404` for a
-    computer this box didn't set up over SSH, `409` as `…/setup` answers.
+    has a `confirm`. One as new already ends with each step "It’s up to date already". `404` for a
+    computer this box didn't set up over SSH; `409` while something else is done with it (Set Up
+    Again, Uninstall), and as `…/setup` answers otherwise.
 - A box says what it knows, never more: SSH is only how a computer was set up, so
   no box says a machine is reached "through SSH", and a computer no peer of this box names isn't
   listed.
@@ -3036,7 +3046,7 @@ Kuvo Code.
   ("Updates"), so its link answers as this version at once. Since boxes add machines (#636), the box
   that set a machine up does this itself, once nothing is at work there ("Computers", Keeping them
   up to date), and a client draws its `update` for that machine while the gate holds it (the
-  desktop app beside its title bar's computer menu), with Update Now where it's offered. The connection's last step reads
+  desktop app in a chip at its title bar's right, as Zed shows its own update), with Update Now where it's offered. The connection's last step reads
   `kuvo/info`; a machine still older isn't used, and its connection fails, saying why ("Kuvo Code
   on X couldn't be updated…"), not tried again by itself. Try Again connects again, which brings it
   up to date. A machine found older later (its list said so) is held the same way.

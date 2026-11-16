@@ -315,6 +315,13 @@ export type Found = Infer<typeof FOUND>;
 export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall", "update"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
+/** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):
+ * it waits for nothing to be at work there (`long`: over a day now), is updating it, or couldn't
+ * (and tries again later); in the box's words, one line (`title`; `detail` empty), which a client
+ * shows as they are. */
+export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true) });
+export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
+
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
  * a machine's name on its Mac; whether it's a machine Macs of different setups share; `apart`, it
@@ -328,12 +335,6 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
  * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
  * was removed, in words a client shows as they are. */
-/** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):
- * it waits for nothing to be at work there (`long`: over a day now), is updating it, or couldn't
- * (and tries again later); in the box's words, which a client shows as they are. */
-export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true) });
-export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
-
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,

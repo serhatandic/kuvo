@@ -388,7 +388,7 @@ fn an_older_computer_being_brought_up_to_date_says_how_and_updates_now_on_your_w
     stand_in.bring_up_to_date("key_old", "waiting", true, 3);
     let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computer-key_old");
-    assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Kuvo on old-mini is waiting to update"));
+    assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Kuvo on old-mini hasn’t been free for a day."));
     assert!(!shown(cx, "notice-older"), "one notice, the box's");
     click(cx, "action-update-button");
     assert_eq!(page.read_with(cx, |page, _| page.confirm_words()).map(|(title, _, _)| title).as_deref(), Some("Update Kuvo on old-mini now?"));

@@ -183,7 +183,7 @@ function stopFrom(tell: Telling): void {
 
 const SETUP_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Starting Kuvo Code there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Adding it to your computers"]] as const;
 const AGAIN_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo Code there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Adding it to your computers"]] as const;
-const UPDATE_STEPS = [["checking", "Checking it"], ["files", "Copying the update"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Reconnecting it"]] as const;
+const UPDATE_STEPS = [["checking", "Checking it"], ["files", "Copying the update"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo there"], ["joining", "Reconnecting it"]] as const;
 const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and removing Kuvo Code"], ["forgetting", "Taking it off your computers"]] as const;
 
 /** The key this box is known by on the computers it starts (its engine launches' notes there):

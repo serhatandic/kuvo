@@ -237,14 +237,23 @@ mkdir -p "$K/tmp" || { echo "working unknown"; exit 0; }
 S="$K/tmp/.kuvo-at-work.$$.js"
 trap 'rm -f "$S"' EXIT
 cat >"$S" <<'KUVO_AT_WORK'
-const fs = require("fs"), path = require("path");
+const fs = require("fs"), path = require("path"), { execFileSync } = require("child_process");
+// (A record whose process went, or whose number another program has now, isn't one that runs.)
+const runs = (pid, program) => {
+  try { process.kill(pid, 0); } catch { return false; }
+  let command = "";
+  try { command = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8"); } catch {
+    try { command = execFileSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }); } catch { return true; }
+  }
+  return command.includes(program);
+};
 (async () => {
   let count = 0, unknown = false;
-  for (const name of ["engine.json", "bridge.json"]) {
+  for (const [name, program] of [["engine.json", "opencode"], ["bridge.json", "kuvo-agents"]]) {
     let target = null;
     try { target = JSON.parse(fs.readFileSync(path.join(process.env.KUVO_HOME, "run", name), "utf8")); } catch {}
     if (!target || !target.port || !target.password) continue;
-    if (target.pid) { try { process.kill(target.pid, 0); } catch { continue; } }
+    if (target.pid && !runs(target.pid, program)) continue;
     try {
       const answer = await fetch("http://127.0.0.1:" + target.port + "/api/session/active", { headers: { authorization: "Basic " + Buffer.from("opencode:" + target.password).toString("base64") }, signal: AbortSignal.timeout(10000) });
       const data = answer.ok ? (await answer.json())?.data : undefined;
