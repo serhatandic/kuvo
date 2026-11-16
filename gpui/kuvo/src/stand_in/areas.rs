@@ -39,6 +39,47 @@ pub struct Areas {
     pub old_app: bool,
     /// It isn't a Mac's own box, which Kuvo Helper runs and draws in the menu bar (`kuvo/box/at-work`'s `applies`).
     pub no_menu_bar: bool,
+    /// The machines whose Kuvo it brings up to date (`computers.update`), by key: how that stands
+    /// (`waiting`, `updating`, `failed`), whether it has waited long, and how many sessions are at
+    /// work there (Update Now asks first while any are).
+    pub updates: Vec<Updating>,
+}
+
+/// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
+#[derive(Clone, Debug)]
+pub struct Updating {
+    pub key: String,
+    pub state: &'static str,
+    pub long: bool,
+    pub working: usize,
+}
+
+/// What the stand-in says of bringing `name`'s Kuvo up to date, and Update Now where it offers it,
+/// in the words a box that does it says.
+fn update_said(updating: &Updating, name: &str) -> (Value, Option<Value>) {
+    let at_work = match updating.working {
+        0 => None,
+        1 => Some("1 session is".to_owned()),
+        count => Some(format!("{count} sessions are")),
+    };
+    let (title, detail) = match (updating.state, updating.long) {
+        ("updating", _) => (format!("Updating Kuvo on {name}…"), format!("{} brings it up to date. Its sessions keep going.", super::NAME)),
+        ("failed", _) => (format!("Kuvo on {name} couldn’t be updated"), "It tries again in an hour. Or update it now.".to_owned()),
+        (_, true) => (format!("Kuvo on {name} is waiting to update"), format!("Something has been at work on {name} for over a day, so it hasn’t updated yet. Update it now, or it updates by itself once nothing’s at work there.")),
+        _ => (format!("Kuvo on {name} updates soon"), format!("It updates by itself once nothing’s at work on {name}.")),
+    };
+    let mut update = json!({ "state": updating.state, "title": title, "detail": detail });
+    if updating.long {
+        update["long"] = json!(true);
+    }
+    let action = (updating.state != "updating").then(|| {
+        let mut action = json!({ "id": "update", "label": "Update Now" });
+        if let Some(at_work) = at_work {
+            action["confirm"] = json!({ "title": format!("Update Kuvo on {name} now?"), "message": format!("{at_work} at work on {name}. They keep going, but may pause for a moment while Kuvo there restarts."), "label": "Update Now" });
+        }
+        action
+    });
+    (update, action)
 }
 
 /// Its answer to `method route`, if it's one of the areas' routes. `needing`: how many of its
@@ -148,6 +189,17 @@ pub fn adding(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opt
         said
     };
     let rest = route.strip_prefix("kuvo/computers/")?;
+    if let Some(key) = rest.strip_suffix("/update") {
+        let Some(updating) = areas.updates.iter_mut().find(|updating| updating.key == key) else {
+            return Some(((404, json!({ "message": "That isn’t a computer this one set up over SSH." })), false));
+        };
+        updating.state = "updating";
+        updating.long = false;
+        areas.tried += 1;
+        let tried = json!({ "id": format!("add_{}", areas.tried), "kind": "update", "destination": key, "name": key, "state": "working", "title": "Updating Kuvo…", "steps": add_steps(1, None) });
+        areas.tries.insert(0, tried.clone());
+        return Some(((202, json!({ "try": tried })), true));
+    }
     if let Some(key) = rest.strip_suffix("/setup").or_else(|| rest.strip_suffix("/uninstall")) {
         let uninstall = rest.ends_with("/uninstall");
         let Some(name) = key.strip_prefix("key_added_").filter(|name| areas.added.iter().any(|added| added == name)).map(str::to_owned) else {
@@ -307,6 +359,14 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 computer["vouching"] = json!({ "blocked": true, "words": format!("Kuvo on {name} was removed from your devices. {name} can’t add Kuvo Code’s app again until you allow it.") });
                 if let Some(actions) = computer["actions"].as_array_mut() {
                     actions.push(json!({ "id": "allow-devices", "label": "Allow Its App Again", "confirm": { "title": format!("Allow Kuvo Code’s app on {name} again?"), "message": format!("Kuvo Code on {name} can add itself to your devices again, and reach every one of your computers."), "label": "Allow" } }));
+                }
+            }
+            if let Some(updating) = areas.updates.iter().find(|updating| computer["key"] == json!(updating.key)) {
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                let (update, action) = update_said(updating, &name);
+                computer["update"] = update;
+                if let (Some(action), Some(actions)) = (action, computer["actions"].as_array_mut()) {
+                    actions.insert(0, action);
                 }
             }
             if areas.reaching.iter().any(|key| computer["key"] == json!(key)) {

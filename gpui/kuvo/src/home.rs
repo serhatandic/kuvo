@@ -239,6 +239,13 @@ impl Home {
                 this.switch_to(key, window, cx);
             }
             Switch::PairAgain => this.pair_again(cx),
+            // (Followed live, the list says it by itself.)
+            Switch::ReadList => {
+                if !this.live {
+                    let _ = this.boxes.read_list();
+                    this.rows_changed(cx);
+                }
+            }
         });
         self.workspaces.insert(slot.to_owned(), (workspace, subscription));
     }
@@ -305,10 +312,14 @@ impl Home {
         }
         let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
         let nearest = self.boxes.nearest_key();
+        let lister = self.boxes.lister();
         for (slot, (workspace, _)) in &self.workspaces {
             let shown = if slot == NEAREST { nearest.clone() } else { Some(slot.clone()) };
             let switching = Switching { rows: rows.clone(), shown, pairing: pairing.clone() };
-            workspace.update(cx, |workspace, cx| workspace.set_switching(Some(switching), cx));
+            workspace.update(cx, |workspace, cx| {
+                workspace.set_lister(lister.clone());
+                workspace.set_switching(Some(switching), cx);
+            });
         }
         cx.notify();
     }

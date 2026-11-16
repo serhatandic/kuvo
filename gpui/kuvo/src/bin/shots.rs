@@ -1617,16 +1617,23 @@ impl gpui::Render for BesideSettings {
 }
 
 /// The window over your boxes: the switcher open on your computers, a session open on another
-/// of them (`switcher`, `elsewhere`), and the first Quit's note (`quit-note`).
+/// of them (`switcher`, `elsewhere`), the first Quit's note (`quit-note`), and another computer
+/// whose Kuvo is older than this app, its update chip's card open: waiting a long while, with
+/// Update Now (`update-waiting`), and being updated (`update-running`).
 fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
-    for slug in ["switcher", "elsewhere", "quit-note"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
-            let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));
+            let stand_in = StandIn::at(Replies::Never, NOW);
+            if slug.starts_with("update-") {
+                stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
+                stand_in.bring_up_to_date("key_devbox", if slug == "update-running" { "updating" } else { "waiting" }, slug == "update-waiting", 2);
+            }
+            let boxes = kuvo::home::stand_in_boxes(stand_in);
             let first = boxes.nearest().expect("the stand-in is the nearest box");
             let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| kuvo::Home::new(boxes, first, false, window, cx)))?;
             let any = window.into();
@@ -1638,6 +1645,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                     if slug == "elsewhere" {
                         assert!(home.switch_to("key_devbox", window, cx));
                         home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
+                    }
+                    if slug.starts_with("update-") {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_update_card(cx));
                     }
                     if slug == "quit-note" {
                         home.quit(window, cx);

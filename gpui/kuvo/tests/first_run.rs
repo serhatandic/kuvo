@@ -387,7 +387,7 @@ fn a_box_held_for_its_update_at_the_start_says_so_in_the_app(cx: &mut TestAppCon
     let (workspace, cx) = starting(cx, StandIn::held_older(Replies::Never));
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(shown(cx, "held-box-notice") && !shown(cx, "window-waiting") && !shown(cx, "first-run"));
+    assert!(shown(cx, "update-chip") && !shown(cx, "window-waiting") && !shown(cx, "first-run"));
 }
 
 #[gpui::test]

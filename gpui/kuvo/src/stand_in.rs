@@ -436,6 +436,15 @@ impl StandIn {
         }
     }
 
+    /// It brings the Kuvo of the computer `key` up to date (`computers.update`): how that stands
+    /// (`waiting`, `updating`, `failed`), whether it has waited long, and how many sessions are
+    /// at work there.
+    pub fn bring_up_to_date(&self, key: &str, state: &'static str, long: bool, working: usize) {
+        let mut state_now = self.state();
+        state_now.areas.updates.retain(|updating| updating.key != key);
+        state_now.areas.updates.push(areas::Updating { key: key.to_owned(), state, long, working });
+    }
+
     /// Its list of computers has this computer alone.
     pub fn computers_alone(&self) {
         self.state().areas.computers_alone = true;

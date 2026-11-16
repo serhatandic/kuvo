@@ -40,7 +40,7 @@ pub enum Reach {
     Connecting,
     Connected,
     /// Its box is older than this client needs (PROTOCOL.md, "The update gate"): it waits for its
-    /// update, which this app can't bring to another computer.
+    /// update, which the box that set it up brings (its row's `update`, `computers.update`).
     Held { missing: Vec<String> },
     /// It doesn't answer: asleep, off, or offline. Why, in words.
     Away(String),
@@ -464,6 +464,12 @@ impl Boxes {
         let computers = client.computers()?;
         self.take(&computers, from_nearest);
         Ok(())
+    }
+
+    /// The box the list is read from, which does what its rows offer (`actions`): the nearest,
+    /// else the first of your computers that answers.
+    pub fn lister(&self) -> Option<BoxClient> {
+        self.source().map(|(client, _)| client)
     }
 
     /// The box the list is read from: the nearest, else the first of your computers that answers.

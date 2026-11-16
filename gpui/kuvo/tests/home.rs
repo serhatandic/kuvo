@@ -150,3 +150,62 @@ fn when_this_apps_computer_was_blocked_the_boxs_words_show_whole_on_computers(cx
     assert_eq!(page.read_with(cx, |page, _| page.said("notice-pairing")), Some(("This app doesn’t reach your other computers yet".to_owned(), words.to_owned())));
     assert!(shown(cx, "notice-pairing"));
 }
+
+/// devbox's box older than this app, which the box that lists your computers brings up to date:
+/// the window opened on devbox.
+fn on_an_older_devbox<'a>(cx: &'a mut TestAppContext, state: &'static str, working: usize) -> (StandIn, Entity<Home>, &'a mut VisualTestContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
+    stand_in.bring_up_to_date("key_devbox", state, false, working);
+    let (home, cx) = open(cx, stand_in.clone());
+    let sidebar_here = bounds(cx, "area-sidebar").expect("the sidebar");
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    assert_eq!(name(&home, cx), "devbox");
+    // The rail and the sidebar stay where they were: what it says is in the title bar.
+    assert_eq!(bounds(cx, "area-sidebar").map(|at| at.origin.y), Some(sidebar_here.origin.y));
+    (stand_in, home, cx)
+}
+
+#[gpui::test]
+fn an_older_computer_being_updated_says_so_in_the_title_bar_in_the_boxs_words(cx: &mut TestAppContext) {
+    let (_, home, cx) = on_an_older_devbox(cx, "updating", 0);
+    assert!(shown(cx, "update-chip"));
+    assert!(!shown(cx, "held-box-notice"), "no strip across the window");
+    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.held_notice()).map(|(title, _)| title).as_deref(), Some("Updating Kuvo on devbox…"));
+    click(cx, "update-chip");
+    assert!(shown(cx, "update-card") && shown(cx, "update-card-title"));
+    // While it runs there's nothing to press.
+    assert!(!shown(cx, "update-now"));
+}
+
+#[gpui::test]
+fn update_now_with_work_running_there_asks_first_then_asks_the_box_that_lists_it(cx: &mut TestAppContext) {
+    let (stand_in, home, cx) = on_an_older_devbox(cx, "waiting", 2);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    click(cx, "update-chip");
+    click(cx, "update-now");
+    // Two sessions are at work there: it asks first, and nothing is asked of a box yet.
+    let ws = workspace(&home, cx);
+    assert!(ws.read_with(cx, |workspace, _| workspace.update_card_confirming()));
+    assert!(shown(cx, "update-confirm"));
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").is_empty());
+    click(cx, "update-confirm");
+    // Asked of the box that lists your computers, never of devbox's own (held) box.
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").len(), 1);
+    assert!(devbox.seen().iter().all(|seen| !seen.path.contains("/update")));
+    // The list says it's under way, and the chip with it.
+    assert!(!shown(cx, "update-card"));
+    assert_eq!(ws.read_with(cx, |workspace, _| workspace.held_update()).map(|held| held.updating), Some(true));
+}
+
+#[gpui::test]
+fn cancel_leaves_an_older_computer_as_it_was(cx: &mut TestAppContext) {
+    let (stand_in, home, cx) = on_an_older_devbox(cx, "waiting", 1);
+    click(cx, "update-chip");
+    click(cx, "update-now");
+    click(cx, "update-cancel");
+    assert!(!shown(cx, "update-card"));
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").is_empty());
+    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.held_update()).map(|held| held.updating), Some(false));
+}

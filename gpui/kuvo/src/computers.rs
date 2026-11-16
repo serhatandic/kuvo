@@ -124,6 +124,7 @@ enum What {
     AllowDevices,
     SetUp,
     Uninstall,
+    Update,
 }
 
 impl What {
@@ -135,6 +136,7 @@ impl What {
             What::AllowDevices => "action-allow-devices",
             What::SetUp => "action-setup",
             What::Uninstall => "action-uninstall",
+            What::Update => "action-update",
         }
     }
 }
@@ -364,6 +366,7 @@ impl ComputersView {
             Box::new(move |client| match (kind.as_str(), key) {
                 ("setup", Some(key)) => client.setup_computer(&key).map(|_| ()),
                 ("uninstall", Some(key)) => client.uninstall_computer(&key).map(|_| ()),
+                ("update", Some(key)) => client.update_computer(&key).map(|_| ()),
                 ("add", _) => client.add_computer(&destination).map(|_| ()),
                 // (A computer that's gone from the list since: nothing to ask again.)
                 _ => Ok(()),
@@ -635,6 +638,7 @@ impl ComputersView {
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
                     "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
+                    "update" => (What::Update.row(), "Kuvo there".to_owned(), label, act(What::Update), why),
                     "setup" => (What::SetUp.row(), "Kuvo Code there".to_owned(), label, act(What::SetUp), why),
                     "uninstall" => (What::Uninstall.row(), "Uninstall".to_owned(), label, act(What::Uninstall), why),
                     _ => return None,
@@ -677,8 +681,9 @@ impl ComputersView {
             What::AllowDevices => ("Allowing…", Box::new(move |client| client.allow_devices(&act.key))),
             What::SetUp => ("Starting…", Box::new(move |client| client.setup_computer(&act.key).map(|_| ()))),
             What::Uninstall => ("Starting…", Box::new(move |client| client.uninstall_computer(&act.key).map(|_| ()))),
+            What::Update => ("Updating…", Box::new(move |client| client.update_computer(&act.key).map(|_| ()))),
         };
-        let tries = matches!(act.what, What::SetUp | What::Uninstall);
+        let tries = matches!(act.what, What::SetUp | What::Uninstall | What::Update);
         self.problem = None;
         let on = self.shown.clone();
         let done_with = busy.clone();
@@ -714,6 +719,11 @@ impl ComputersView {
     /// Why a computer stands as it does, where that's more than "connected".
     fn notice(&self, computer: &Computer) -> Option<Item> {
         let name = &computer.name;
+        // Its Kuvo being brought up to date, in the words of the box that does it (`computers.update`).
+        if let Some(update) = &computer.update {
+            let tone = if update.state == "failed" || update.long { Tone::Attention } else { Tone::Waiting };
+            return Some(Item::Notice { key: "notice-update".into(), tone, title: update.title.clone(), words: update.detail.clone() });
+        }
         if computer.is_older() {
             let (title, words) = held_words(Some(name), computer.here && self.this_mac);
             return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words });

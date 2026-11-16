@@ -184,6 +184,33 @@ pub struct Computer {
     /// main computer says: blocked after its app was removed, until you allow it again.
     #[serde(default)]
     pub vouching: Option<Vouching>,
+    /// Bringing its Kuvo up to this box's (`computers.update`), where the box that set it up over
+    /// SSH says: how that stands, in its words. None: it's up to date, or no box here updates it.
+    #[serde(default, deserialize_with = "readable_one")]
+    pub update: Option<ComputerUpdate>,
+}
+
+/// How bringing a computer's Kuvo up to date stands, as the box that does it says (every word the
+/// box's, drawn as it is).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct ComputerUpdate {
+    /// `waiting` (it updates by itself once nothing's at work there), `updating` (under way now)
+    /// or `failed` (it couldn't, and tries again later).
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
+    /// It has waited a long while (over a day) for nothing to be at work there.
+    #[serde(default)]
+    pub long: bool,
+}
+
+impl ComputerUpdate {
+    pub fn is_updating(&self) -> bool {
+        self.state == "updating"
+    }
 }
 
 /// Whether a computer's box may add the app beside it to your devices, in the box's words.
@@ -198,7 +225,8 @@ pub struct Vouching {
 /** What can be done with a computer from the box that lists it, in the box's words. */
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ComputerAction {
-    /// `rename`, `connect`, `remove`, `allow-devices`, `setup` or `uninstall`.
+    /// `rename`, `connect`, `remove`, `allow-devices`, `setup`, `uninstall` or `update` (brings
+    /// its Kuvo up to this box's now: `POST kuvo/computers/<key>/update`).
     pub id: String,
     pub label: String,
     /// Where it asks first, the box's question.
@@ -229,7 +257,7 @@ pub struct Adding {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct AddTry {
     pub id: String,
-    /// `add`, `setup` or `uninstall`.
+    /// `add`, `setup`, `uninstall` or `update`.
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -476,6 +504,12 @@ pub(crate) fn readable<'de, D: serde::Deserializer<'de>, T: serde::de::Deseriali
     Ok(values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect())
 }
 
+/// One value, or none where it isn't one this client reads (a newer box's shape).
+pub(crate) fn readable_one<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(deserializer: D) -> std::result::Result<Option<T>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
+}
+
 impl Account {
     /// The rings to draw, outside first, each as its share and level: the box's short ring, then
     /// its long one (one where it says one, none where none). One whose window started over is
@@ -579,6 +613,12 @@ impl BoxClient {
     /// Sets a machine this box added over SSH up again, at the address it was added under.
     pub fn setup_computer(&self, key: &str) -> Result<AddTry> {
         Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/{}/setup", segment(key)), serde_json::json!({})))?.tried)
+    }
+
+    /// Brings the Kuvo of a machine this box set up over SSH up to its own now (`computers.update`),
+    /// whatever is at work there: asked of the box that lists it, never of that machine's own.
+    pub fn update_computer(&self, key: &str) -> Result<AddTry> {
+        Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/{}/update", segment(key)), serde_json::json!({})))?.tried)
     }
 
     /// Uninstalls Kuvo Code from a machine this box added over SSH, and removes it.

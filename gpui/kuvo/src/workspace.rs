@@ -98,12 +98,38 @@ pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
     let subject = name.filter(|name| !name.is_empty()).unwrap_or("This computer");
     let title = format!("{subject}’s Kuvo is older than this app");
     let next = if here {
-        "It updates with Kuvo 0.8.".to_owned()
+        "It finishes updating once the work running on it now ends.".to_owned()
     } else {
         let computer = if subject == "This computer" { "this computer" } else { subject };
-        format!("Update Kuvo on {computer} to use it here.")
+        format!("Kuvo on {computer} needs an update before it can be used here.")
     };
     (title, next)
+}
+
+/// What the title bar's update chip says of the computer the window shows while its box waits for
+/// an update: the box's words where the box that lists your computers brings it up to date (its
+/// row's `update`, `computers.update`), else the gate's own (`held_words`); whether it's under way;
+/// and Update Now, where that box offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldUpdate {
+    /// The computer's key, as your computers' list names it (none: not listed there).
+    pub key: Option<String>,
+    pub title: String,
+    pub detail: String,
+    pub updating: bool,
+    /// It couldn't be updated, or has waited a long while: drawn with a warning.
+    pub attention: bool,
+    pub action: Option<kuvo_box::areas::ComputerAction>,
+}
+
+/// The update chip's card: open, asking first (the box's confirm), sending, or why it couldn't.
+#[derive(Default)]
+struct UpdateCard {
+    open: bool,
+    confirming: bool,
+    sending: bool,
+    error: Option<String>,
+    _task: Option<Task<()>>,
 }
 
 /// Whether the box says you've had the first run with it (`welcomed` in `kuvo/setup`).
@@ -128,6 +154,9 @@ pub enum Switch {
     To(String),
     /// This app was removed from your devices: pair it again.
     PairAgain,
+    /// Something was asked of the box that lists your computers (Update Now): read the list again
+    /// where it isn't followed.
+    ReadList,
 }
 
 impl gpui::EventEmitter<Switch> for Workspace {}
@@ -137,6 +166,10 @@ pub struct Workspace {
     /// Your computers as this app reaches them, where the window can show another's (none: a
     /// workspace by itself, which shows its one box).
     switching: Option<crate::home::Switching>,
+    /// The box that lists your computers (the nearest), which does what their rows offer.
+    lister: Option<BoxClient>,
+    /// The title bar's update chip's card.
+    update_card: UpdateCard,
     /// Whether it follows the box (the app), or shows what it's handed (tests and shots).
     live: bool,
     info: Option<BoxInfo>,
@@ -287,6 +320,8 @@ impl Workspace {
         let mut workspace = Workspace {
             client: client.clone(),
             switching: None,
+            lister: None,
+            update_card: UpdateCard::default(),
             live,
             info: None,
             box_state: BoxState::Connecting,
@@ -734,11 +769,119 @@ impl Workspace {
 
     /// The gate supplies the held fact; this window supplies the computer and update path.
     pub fn held_notice(&self) -> Option<(String, String)> {
+        self.held_update().map(|held| (held.title, held.detail))
+    }
+
+    /// What the update chip says while the box this window shows waits for its update: none while
+    /// it doesn't.
+    pub fn held_update(&self) -> Option<HeldUpdate> {
         if !self.client.gate().is_held() {
             return None;
         }
+        let row = self.switching.as_ref().and_then(|switching| switching.shown.as_deref().and_then(|shown| switching.rows.iter().find(|row| row.key() == shown)));
+        if let Some(row) = row
+            && let Some(update) = &row.computer.update
+        {
+            let updating = update.is_updating();
+            return Some(HeldUpdate {
+                key: Some(row.key().to_owned()),
+                title: update.title.clone(),
+                detail: update.detail.clone(),
+                updating,
+                attention: update.state == "failed" || update.long,
+                action: (!updating).then(|| row.computer.action("update").cloned()).flatten(),
+            });
+        }
         let name = self.info.as_ref().map(|_| self.box_name().to_string());
-        Some(held_words(name.as_deref(), self.client.here()))
+        let (title, detail) = held_words(name.as_deref(), self.client.here());
+        // (This Mac's own box finishes its update by itself, once the work running on it ends.)
+        Some(HeldUpdate { key: row.map(|row| row.key().to_owned()), title, detail, updating: self.client.here(), attention: false, action: None })
+    }
+
+    /// The box that lists your computers, which Update Now asks.
+    pub fn set_lister(&mut self, lister: Option<BoxClient>) {
+        self.lister = lister;
+    }
+
+    pub fn update_card_open(&self) -> bool {
+        self.update_card.open
+    }
+
+    pub fn update_card_confirming(&self) -> bool {
+        self.update_card.confirming
+    }
+
+    pub fn update_card_sending(&self) -> bool {
+        self.update_card.sending
+    }
+
+    pub fn update_card_error(&self) -> Option<&str> {
+        self.update_card.error.as_deref()
+    }
+
+    /// Opens the update chip's card, or closes it.
+    pub fn toggle_update_card(&mut self, cx: &mut Context<Self>) {
+        if self.update_card.open {
+            return self.close_update_card(cx);
+        }
+        self.update_card = UpdateCard { open: true, ..UpdateCard::default() };
+        cx.notify();
+    }
+
+    /// Closes the update chip's card (not while what it asked is on its way).
+    pub fn close_update_card(&mut self, cx: &mut Context<Self>) {
+        if self.update_card.sending {
+            return;
+        }
+        self.update_card = UpdateCard::default();
+        cx.notify();
+    }
+
+    /// Update Now: asked first where the box says to (`confirmed`: it was), then asked of the box
+    /// that lists your computers. Its list says how it goes from then on.
+    pub fn update_now(&mut self, confirmed: bool, cx: &mut Context<Self>) {
+        if self.update_card.sending {
+            return;
+        }
+        let Some(held) = self.held_update() else { return self.close_update_card(cx) };
+        let (Some(key), Some(action)) = (held.key, held.action) else { return };
+        if action.why.is_some() {
+            return;
+        }
+        if action.confirm.is_some() && !confirmed {
+            self.update_card.confirming = true;
+            self.update_card.error = None;
+            return cx.notify();
+        }
+        let Some(lister) = self.lister.clone() else {
+            self.update_card.error = Some("Your computers’ list isn’t reachable right now. Try again in a moment.".into());
+            return cx.notify();
+        };
+        let done = |this: &mut Workspace, result: kuvo_box::Result<()>, cx: &mut Context<Workspace>| {
+            this.update_card.sending = false;
+            match result {
+                Ok(()) => {
+                    this.update_card = UpdateCard::default();
+                    cx.emit(Switch::ReadList);
+                }
+                Err(error) => {
+                    this.update_card.confirming = false;
+                    this.update_card.error = Some(kuvo_box::accounts::said(&error));
+                }
+            }
+            cx.notify();
+        };
+        self.update_card.sending = true;
+        self.update_card.error = None;
+        if !self.live {
+            let result = lister.update_computer(&key).map(|_| ());
+            return done(self, result, cx);
+        }
+        cx.notify();
+        self.update_card._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { lister.update_computer(&key).map(|_| ()) }).await;
+            this.update(cx, |this, cx| done(this, result, cx)).ok();
+        }));
     }
 
     pub fn now(&self) -> f64 {
@@ -2478,12 +2621,6 @@ impl Render for Workspace {
             .text_ui(TypeSize::Small)
             .text_color(c.text)
             .child(title_bar::render(self, cx))
-            .children(self.held_notice().map(|(title, next)| {
-                div().debug_selector(|| "held-box-notice".into()).flex_none().px(space::S4).py(space::S3)
-                    .bg(c.surface).border_b_1().border_color(c.border).flex().flex_col().gap(space::S1)
-                    .child(div().medium().text_color(c.text).child(title))
-                    .child(div().text_color(c.text_muted).child(next))
-            }))
             .child(
                 div().flex_1().min_h_0().flex().child(rail::render(self, cx)).child(
                     // The area's sidebar and its main view share one raised panel, its corner

@@ -379,3 +379,22 @@ fn a_computer_whose_app_was_removed_says_so_and_is_allowed_again_from_its_page(c
     // A computer that isn't blocked never shows either.
     assert!(shown(cx, "action-remove"));
 }
+
+/// An older computer whose Kuvo this box brings up to date: its page says how that stands in the
+/// box's words, and Update Now asks first while sessions are at work there.
+#[gpui::test]
+fn an_older_computer_being_brought_up_to_date_says_how_and_updates_now_on_your_word(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.bring_up_to_date("key_old", "waiting", true, 3);
+    let (_workspace, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-key_old");
+    assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Kuvo on old-mini is waiting to update"));
+    assert!(!shown(cx, "notice-older"), "one notice, the box's");
+    click(cx, "action-update-button");
+    assert_eq!(page.read_with(cx, |page, _| page.confirm_words()).map(|(title, _, _)| title).as_deref(), Some("Update Kuvo on old-mini now?"));
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_old/update").is_empty());
+    click(cx, "computers-confirm-go");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_old/update").len(), 1);
+    assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Updating Kuvo on old-mini…"));
+    assert!(!shown(cx, "action-update"), "nothing to press while it runs");
+}
