@@ -5740,6 +5740,12 @@
             "literal": "messages.send"
            },
            {
+            "literal": "messages.session-news"
+           },
+           {
+            "literal": "messages.tool-titles"
+           },
+           {
             "literal": "models.offered"
            },
            {
@@ -6443,6 +6449,12 @@
            },
            {
             "literal": "messages.send"
+           },
+           {
+            "literal": "messages.session-news"
+           },
+           {
+            "literal": "messages.tool-titles"
            },
            {
             "literal": "models.offered"
