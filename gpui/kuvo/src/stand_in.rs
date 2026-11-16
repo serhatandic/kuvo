@@ -1288,7 +1288,7 @@ fn decide(text: &str) -> Value {
             "plan" if words.is_empty() => return json!({ "keyword": "plan", "agent": "plan" }),
             "plan" => return json!({ "keyword": "plan", "agent": "plan", "send": { "text": words, "typed": "/plan" } }),
             "autopilot" if words.is_empty() => return json!({ "keyword": "autopilot", "toggleAutopilot": true }),
-            "compact" => return json!({ "keyword": "compact", "compact": true }),
+            "compact" => return json!({ "keyword": "compact", "compact": true, "said": "Asked to summarize the conversation." }),
             "loop" if !words.starts_with("every") => {
                 return json!({ "keyword": "loop", "restore": { "text": text, "beside": "" }, "error": "Can’t tell how often from that. Start with one like “every 30 min” or “weekdays at 9”, or pick one from the list after /loop." })
             }

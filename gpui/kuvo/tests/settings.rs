@@ -179,6 +179,12 @@ fn a_computer_thats_away_or_not_reached_says_so_and_is_asked_nothing(cx: &mut Te
     click(cx, "menu-item-studio-mini");
     assert!(shown(cx, "settings-away") && !shown(cx, "row-search-engine"));
     assert_eq!(title(&workspace, cx).as_deref(), Some("studio-mini"));
+    // In the box's words about its settings, not the Computers area's about what it runs.
+    let view = settings(&workspace, cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.away_words()),
+        Some(("studio-mini can’t be reached".to_owned(), "Its settings are kept on studio-mini, so they can’t be read or changed until Studio hears from it again. They show here by themselves once it’s back.".to_owned()))
+    );
     assert!(!shown(cx, "setting-browser") && !shown(cx, "settings-search"), "none of its sections are listed");
     // One on an older Kuvo says what brings it up to date.
     click(cx, "settings-computer");

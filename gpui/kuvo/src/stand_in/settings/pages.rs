@@ -105,7 +105,7 @@ impl Settings {
 
     fn sections(&self) -> Value {
         let mut sections = vec![
-            json!({ "id": "clock", "title": "Clock", "group": "General", "icon": "settings", "line": "Your time zone, which bots’ wake-ups and times of day go by on all your computers.", "keywords": ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"] }),
+            json!({ "id": "clock", "title": "Clock", "group": "General", "icon": "clock", "line": "Your time zone, which bots’ wake-ups and times of day go by on all your computers.", "keywords": ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"] }),
             json!({ "id": "permissions", "title": "Permissions", "group": "Agents & Tools", "icon": "shield", "line": "What agents may do without asking, and the sandbox their commands run in.", "keywords": ["approval", "full access", "auto", "ask first", "allow", "don't allow", "sandbox", "also allowed", "other computers", "rules"] }),
             json!({ "id": "browser", "title": "Browser", "group": "System", "icon": "globe", "line": "The browser’s search engine, and offering to save sign-ins.", "keywords": ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"] }),
         ];

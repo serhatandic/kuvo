@@ -961,7 +961,8 @@ fn computer_key(computer: &Computer) -> String {
 /// that isn't reached says that, one the box only knows of through another says through which; else its system, or Kuvo Code's version there, as it said them.
 pub fn computer_line(computer: &Computer) -> String {
     if computer.here {
-        // BOX-NEEDED: only this window knows which computer it currently shows.
+        // (Window state, not the box's: which computer this window shows is this window's own
+        // choice, and another window on the same box shows another. So the words are drawn here.)
         return "Shown in this window".into();
     }
     if computer.is_older() {
@@ -1110,9 +1111,10 @@ mod tests {
         let computer = |json: &str| serde_json::from_str::<kuvo_box::areas::Computer>(json).unwrap();
         let line = |json: &str| computer_line(&computer(json));
         assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connected","system":"Ubuntu 24.04.1 LTS","via":"relay","working":0,"limits":[]}"#), "Ubuntu 24.04.1 LTS");
-        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connecting","title":"Connecting…","via":"relay","working":0,"limits":[]}"#), "Connecting…");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connecting","title":"Connecting","via":"relay","working":0,"limits":[]}"#), "Connecting");
         assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"away","title":"Can’t be reached","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
         assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","title":"Known through devbox","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
+        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","title":"Not reached directly","via":"peer","working":0,"limits":[]}"#), "Not reached directly");
     }
 
     #[test]

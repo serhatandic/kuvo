@@ -116,6 +116,9 @@ pub struct Computer {
     pub detail: Option<String>,
     #[serde(default)]
     pub notice: Option<ComputerNotice>,
+    /// The same standing in words about its settings, for where they would show.
+    #[serde(default, rename = "settingsNotice")]
+    pub settings_notice: Option<ComputerNotice>,
     #[serde(default, rename = "workingTitle")]
     pub working_title: Option<String>,
     /// Its box's public key (`""` for the box itself while it has none).

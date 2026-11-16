@@ -239,7 +239,8 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
 /// How this app stands with one of your computers, in the switcher's words.
 pub fn reach_line(row: &Row) -> String {
     match &row.reach {
-        // BOX-NEEDED: this identifies the app’s nearest computer, a local view selection.
+        // (This app's own fact, not a box's: which computer the app itself runs on. No box can
+        // say it for the app, so the words are drawn here.)
         Reach::Nearest => "This computer".into(),
         Reach::Connected => {
             let mut computer = row.computer.clone();

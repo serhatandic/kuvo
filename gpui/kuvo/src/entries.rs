@@ -90,6 +90,8 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
         }
     }
     if conversation.running {
+        // BOX-NEEDED: the working row's words for a run that isn't a summary ("Working…"); only a
+        // summary's come from the box so far (`workingTitle`, `GET api/session/<id>/message`).
         rows.push(Entry::Working { title: summarizing.unwrap_or_else(|| "Working…".to_owned()) });
         revisions.push(0);
     }

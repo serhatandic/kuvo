@@ -1274,7 +1274,8 @@ fn said(answer: &Answer) -> Option<Note> {
         return None;
     }
     if answer.compact == Some(true) {
-        return note("Compaction requested.", false);
+        // (The box's words; a box that sends none shows none: the summary's own row says it.)
+        return answer.said.as_deref().and_then(|said| note(said, false));
     }
     if answer.toggle_autopilot == Some(true) {
         return note("Turning Autopilot on or off isn’t in this app yet.", true);
@@ -1406,6 +1407,15 @@ impl Render for Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A summary asked for says so in the box's words, and nothing where the box sent none.
+    #[test]
+    fn a_summary_asked_for_is_said_in_the_boxs_words() {
+        let answer: Answer = serde_json::from_value(serde_json::json!({"keyword": "compact", "compact": true, "said": "Asked to summarize the conversation."})).unwrap();
+        assert_eq!(said(&answer).map(|note| (note.text.to_string(), note.warning)), Some(("Asked to summarize the conversation.".to_owned(), false)));
+        let silent: Answer = serde_json::from_value(serde_json::json!({"keyword": "compact", "compact": true})).unwrap();
+        assert!(said(&silent).is_none());
+    }
 
     #[test]
     fn executed_composer_actions_are_not_restored_as_unsupported() {

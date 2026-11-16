@@ -437,7 +437,11 @@ impl SettingsView {
             return not(title, words);
         }
         match computer.reach.as_str() {
-            "away" | "connecting" | "unknown" => not(computer.notice.as_ref().map(|notice| notice.title.clone()).unwrap_or_else(|| computer.title.clone()), computer.detail.clone().unwrap_or_default()),
+            // The box's words about its settings; an older box's notice for Computers otherwise.
+            "away" | "connecting" | "unknown" => match computer.settings_notice.as_ref().or(computer.notice.as_ref()) {
+                Some(notice) => not(notice.title.clone(), notice.detail.clone()),
+                None => not(computer.title.clone(), computer.detail.clone().unwrap_or_default()),
+            },
             _ => match self.home.computer(computer) {
                 Some(client) => (Some(client), Standing::Reached),
                 // The desktop app reaches the window's box alone for now (as the title bar's
@@ -695,6 +699,14 @@ impl SettingsView {
     pub fn row_why(&self, key: &str) -> Option<String> {
         self.items.iter().find_map(|item| match item {
             Item::Row { row, .. } if row.key == key => row.why.clone(),
+            _ => None,
+        })
+    }
+
+    /// What shows in place of a computer's settings while it isn't reached: its title and words.
+    pub fn away_words(&self) -> Option<(String, String)> {
+        self.items.iter().find_map(|item| match item {
+            Item::Aside { key, title, words, .. } if *key == "settings-away" => Some((title.clone(), words.clone())),
             _ => None,
         })
     }
