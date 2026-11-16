@@ -2952,6 +2952,25 @@ function keptHosts() {
     return error.code === "ENOENT" ? undefined : null;
   }
 }
+function changeKeptHosts(change) {
+  fs102.mkdirSync(path106.dirname(PHONE_LINK_FILE), { recursive: true });
+  return locked(PHONE_LINK_FILE + ".lock", () => {
+    let whole = {};
+    try {
+      const read = JSON.parse(fs102.readFileSync(PHONE_LINK_FILE, "utf8"));
+      if (!isObject(read))
+        return false;
+      whole = read;
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        return false;
+    }
+    const next = change(isObject(whole.machines) ? whole.machines : {});
+    if (next)
+      writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
+    return true;
+  });
+}
 function savedMachines(kept = keptHosts()) {
   let text;
   try {
@@ -3078,6 +3097,7 @@ var LIST_FILE, PHONE_LINK_FILE, HEARD_LATELY, TIMING, macName2 = () => macLink.c
   signal?.addEventListener("abort", finish, { once: true });
 }), OWN_ANSWERS, isMachinesRoute = (route) => /^kuvo\/(machines|hosts)(\/|$)/.test(route);
 var init_machines = __esm(() => {
+  init_files2();
   init_home();
   init_directory();
   init_known();
@@ -6968,7 +6988,7 @@ async function takeSeed(input, engine = readEngineFile) {
 init_text();
 import { spawn as spawn19 } from "node:child_process";
 import crypto67 from "node:crypto";
-import fs193 from "node:fs";
+import fs194 from "node:fs";
 import os26 from "node:os";
 import path202 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
@@ -17324,6 +17344,8 @@ var signInReturn = (url) => {
 
 // box/src/link/areas/engine.ts
 init_home();
+init_text();
+init_state();
 
 // box/src/link/compat/leave-running.ts
 init_home();
@@ -17383,13 +17405,14 @@ var engineDown = () => {
 var ENGINE_UP_WHILE = ["checking", "downloading", "downloading the engine", "checking it"];
 async function engineControl(command) {
   const start = path54.join(K, "bin", "kuvo-start");
+  const name = plainName(IS_MAC ? macLink.config?.name : readLink()?.name);
   if (!fs51.existsSync(start))
-    return { status: 409, message: "Kuvo Code hasn't set this machine up yet." };
+    return { status: 409, message: `Kuvo Code hasn't set ${name || HERE} up yet.` };
   if (!IS_MAC && ![path54.join(K, "bin", "kuvo-launch"), path54.join(RUN, "launch.env")].every((file) => fs51.existsSync(file))) {
     return { status: 409, message: "Start it once from Kuvo Code on your Mac." };
   }
   if (isUpdating() && !ENGINE_UP_WHILE.includes(updateState().running)) {
-    return { status: 409, message: "This machine is updating. Its engine starts again once that's done." };
+    return { status: 409, message: `${name || (IS_MAC ? "This Mac" : "This machine")} is updating. Its engine starts again once that's done.` };
   }
   const environment = { ...process.env };
   delete environment.BUN_BE_BUN;
@@ -17528,6 +17551,8 @@ async function* engineControlRoute(context, control) {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
+  if (IS_MAC && control[1] === "start")
+    return yield* json(404, {});
   const { status, message } = await engineControl(control[1]);
   return yield* json(status, message ? { message } : {});
 }
@@ -43260,20 +43285,8 @@ async function forgetTries() {
 // box/src/link/add/flow.ts
 var takenAddresses = () => (savedMachines() ?? []).flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]);
 function keepHost(id, host) {
-  let kept = {};
-  try {
-    const read = JSON.parse(fs130.readFileSync(PHONE_LINK_FILE, "utf8"));
-    if (!isObject(read))
-      throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
-    kept = read;
-  } catch (error) {
-    if (error instanceof Failed)
-      throw error;
-    if (error.code !== "ENOENT")
-      throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
-  }
-  const machines = isObject(kept.machines) ? kept.machines : {};
-  writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...kept, machines: { ...machines, [id]: { ...host, anotherMac: false, peers: true } } }, null, 2));
+  if (!changeKeptHosts((machines) => ({ ...machines, [id]: { ...host, anotherMac: false, peers: true } })))
+    throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
 }
 function canAdd() {
   const link = readLink();
@@ -43764,6 +43777,13 @@ function computerWords(computer, here) {
     unreached: "Can’t be reached from this app"
   }, ...notice ? { detail: notice.detail, notice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
 }
+function peerReach(key, told = readPeerAgents(), reach = readReach(), tries = readTries(), now = Date.now()) {
+  const said = told[key];
+  const away = awaySince(key, reach) !== null || said?.heard !== undefined && now - said.heard > HEARD_LATELY2;
+  const trying = tryingSince(key, now, tries);
+  const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
+  return { away, reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected" };
+}
 async function listComputers(name, bridge, signal, now = Date.now()) {
   let link = null;
   try {
@@ -43807,9 +43827,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const apart = new Set(peers.filter((peer) => isApart(peer.key, link, told)).map((peer) => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
-    const away = awaySince(peer.key, reach) !== null || said?.heard !== undefined && now - said.heard > HEARD_LATELY2;
-    const trying = tryingSince(peer.key, now, tries);
-    const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
+    const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
     const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
     const blocked = vouchBlockOf(link, peer.key);
@@ -43820,7 +43838,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       ...peer.id ? { id: peer.id } : {},
       shared: said?.shared === true,
       ...apart.has(peer.key) ? { apart: true } : {},
-      reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected",
+      reach: standing,
       via: "relay",
       ...apart.has(peer.key) ? {} : reachOf(link, peer.address),
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {} } : {},
@@ -51324,7 +51342,7 @@ init_files2();
 
 // box/src/link/helper.ts
 init_home();
-import { spawnSync as spawnSync11 } from "node:child_process";
+import { execFile as execFile13, spawnSync as spawnSync11 } from "node:child_process";
 import fs152 from "node:fs";
 import path160 from "node:path";
 
@@ -51602,6 +51620,23 @@ function helperStatus() {
   return { helper: fs152.existsSync(helperProgram()), agent, loaded };
 }
 function helperAtLogin() {
+  const asking = loginItemsAsk();
+  if (!asking)
+    return null;
+  const asked = spawnSync11(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  if (asked.error || asked.status !== 0)
+    return null;
+  return !SWITCHED_OFF.test(asked.stdout ?? "");
+}
+function helperAtLoginLater() {
+  const asking = loginItemsAsk();
+  if (!asking)
+    return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile13(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
+  });
+}
+function loginItemsAsk() {
   const tools = launchTools();
   if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac")
     return null;
@@ -51609,12 +51644,7 @@ function helperAtLogin() {
   try {
     agent = fs152.readFileSync(path160.join(tools.agents, `${LAUNCH_AGENT}.plist`), "utf8").includes(`<string>${xml(helperProgram())}</string>`);
   } catch {}
-  if (!agent)
-    return null;
-  const asked = spawnSync11(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-  if (asked.error || asked.status !== 0)
-    return null;
-  return !SWITCHED_OFF.test(asked.stdout ?? "");
+  return agent ? { launchctl: tools.launchctl, args: ["print-disabled", `gui/${process.getuid?.() ?? 0}`] } : null;
 }
 var SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`);
 function installHelperAgent({ load, app }) {
@@ -51724,7 +51754,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f9de29cf18af";
+var BRIDGE_VERSION = "8ef781b39943";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62408,7 +62438,7 @@ init_state();
 init_home();
 import fs190 from "node:fs";
 import path198 from "node:path";
-var boxAnswers = (route) => route === "kuvo/engine/restart" && keeperRuns2();
+var boxAnswers = (route) => route === "kuvo/engine/restart" && (OWN_HOME_MAC || keeperRuns2());
 function keeperRuns2() {
   let pid = 0;
   try {
@@ -63401,9 +63431,288 @@ async function* movePlacesRoute(context) {
 
 // box/src/link/server/router.ts
 init_machines();
+// box/src/link/mac/own-mac.ts
+var backgroundWork = (atLogin) => atLogin === true ? "on" : atLogin === false ? "needsApproval" : "off";
+var STANDS_FOR = 30000;
+var lastSaid = null;
+var saidAt2 = -Infinity;
+var asking2 = null;
+function atLoginNow(now = Date.now()) {
+  if (now - saidAt2 < STANDS_FOR)
+    return Promise.resolve(lastSaid);
+  asking2 ??= helperAtLoginLater().then((said) => {
+    if (said !== null)
+      lastSaid = said;
+    saidAt2 = Date.now();
+    asking2 = null;
+    return lastSaid;
+  });
+  return asking2;
+}
+function forgetLoginItems() {
+  saidAt2 = -Infinity;
+}
+async function* ownMacRoute(context) {
+  const { request, json } = context;
+  const method = request.method.toUpperCase();
+  if (method !== "GET" && method !== "PATCH")
+    return yield* json(405, {});
+  const state = backgroundWork(await atLoginNow());
+  if (method === "PATCH") {
+    const given = parsed(request.body);
+    const body = isObject(given) ? given : {};
+    const wanted = typeof body.backgroundWork === "boolean" ? body.backgroundWork : typeof body.openAtLogin === "boolean" ? body.openAtLogin : undefined;
+    if ("keepsAwake" in body && typeof body.keepsAwake !== "boolean")
+      return yield* json(400, { message: KEEPS_AWAKE_REFUSED });
+    if (wanted === false && state !== "off")
+      return yield* json(400, { message: "Background work is turned off in Login Items & Extensions, on the Mac." });
+    if (wanted === true && state === "off")
+      return yield* json(409, { message: `${HELPER_NAME} isn’t set up to start Kuvo Code when you log in to ${ownName()}. Open Kuvo Code there.` });
+    if (typeof body.keepsAwake === "boolean")
+      setKeepsAwake(body.keepsAwake);
+  }
+  return yield* json(200, { backgroundWork: state, openAtLogin: state === "on", keepsAwake: keepsAwakeSetting(), awakeNow: awakeForWork() });
+}
+
+// box/src/link/mac/own-machines.ts
+import fs192 from "node:fs";
+init_files2();
+init_home();
+init_directory();
+init_known();
+init_main_only();
+init_state();
+init_machines();
+var mtime3 = (file) => {
+  try {
+    return fs192.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+};
+function ownMachines2(now = Date.now()) {
+  const saved = savedMachines();
+  if (!saved)
+    return null;
+  const peers = peersOf(readLink());
+  const told = readPeerAgents();
+  const reach = readReach();
+  const tries = readTries();
+  const machines = saved.map(({ destination, otherAddresses }) => {
+    const peer = peers.find((each) => each.id === destination);
+    const busy = underWay2(destination);
+    const stands = peer ? peerReach(peer.key, told, reach, tries, now).reach : null;
+    const [connection, status] = busy ? ["installing", busy.seen.title] : stands === "connected" ? ["connected", "Connected"] : stands === "connecting" ? ["connecting", "Connecting…"] : stands === "away" ? ["notConnected", "Not heard from lately"] : ["notConnected", "Not connected"];
+    return { id: destination, name: peer?.name || destination, otherAddresses: Array.isArray(otherAddresses) ? otherAddresses : [], connection, status };
+  });
+  const listed = new Set(saved.flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]));
+  for (const seen of allTries().reverse()) {
+    if (seen.kind !== "add" || seen.state === "done" || seen.state === "failed" || listed.has(seen.destination))
+      continue;
+    listed.add(seen.destination);
+    machines.push({ id: seen.destination, name: seen.name, otherAddresses: [], connection: "installing", status: seen.title });
+  }
+  return { machines, hosts: canAdd().can ? suggestedHosts(takenAddresses()) : [] };
+}
+function settled3(it) {
+  return new Promise((resolve) => {
+    const done = () => {
+      tryFollowers.delete(look);
+      resolve();
+    };
+    const look = () => {
+      if (it.seen.state === "asking")
+        done();
+    };
+    tryFollowers.add(look);
+    it.over.then(done);
+    look();
+  });
+}
+var failureOf = (it, otherwise) => it.seen.failure?.message || otherwise;
+async function removed(context, key) {
+  const path = `kuvo/computers/${key}`;
+  const pieces = [];
+  for await (const piece of computersRoute({ ...context, route: path, request: { ...context.request, method: "DELETE", path } }, path.match(COMPUTERS_ROUTE)))
+    pieces.push(piece);
+  return pieces;
+}
+var statusOf = (pieces) => pieces.find((piece) => piece.head)?.head?.status ?? 500;
+async function* ownMachinesRoute(context) {
+  const { request, route, signal, json } = context;
+  const method = request.method.toUpperCase();
+  const read = method === "GET" || method === "HEAD";
+  const main = read ? null : mainElsewhere(readLink());
+  if (main)
+    return yield* json(409, addElsewhere(main));
+  const parts = route.split("/").map((part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  });
+  const here = ownName();
+  if (parts[1] === "hosts") {
+    if (parts.length === 2) {
+      if (!read)
+        return yield* json(405, {});
+      const hosts = hostsWithoutApp();
+      return yield* json(hosts ? 200 : 503, hosts ?? { message: UNREADABLE });
+    }
+    if (parts.length !== 3 || method !== "DELETE")
+      return yield* json(404, {});
+    return yield* forgetHost(context, parts[2], here);
+  }
+  if (route === "kuvo/machines/events") {
+    if (method !== "GET")
+      return yield* json(405, {});
+    const first = ownMachines2();
+    if (!first)
+      return yield* json(503, { message: UNREADABLE });
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followedLive(async () => ownMachines2() ?? undefined, (told) => {
+      tryFollowers.add(told);
+      return () => {
+        tryFollowers.delete(told);
+      };
+    }, signal, { look: () => `${mtime3(LIST_FILE)} ${mtime3(PEER_AGENTS_FILE)} ${mtime3(PEER_REACH)} ${mtime3(LINK_FILE)}` });
+  }
+  if (parts.length === 2) {
+    if (read) {
+      const own = ownMachines2();
+      return yield* json(own ? 200 : 503, own ?? { message: UNREADABLE });
+    }
+    if (method !== "POST")
+      return yield* json(405, {});
+    return yield* add3(context, here);
+  }
+  const saved = savedMachines();
+  if (!saved)
+    return yield* json(503, { message: UNREADABLE });
+  const machine = saved.find((each) => each.destination === parts[2]);
+  if (!machine)
+    return yield* json(404, {});
+  const peer = peersOf(readLink()).find((each) => each.id === machine.destination);
+  const name = peer?.name || machine.destination;
+  const entry = () => ownMachines2()?.machines.find((each) => each.id === machine.destination);
+  const action = parts[3];
+  const waits = oldAppAttached() ? oldAppWords(here, name) : null;
+  if (method === "DELETE" && parts.length === 3) {
+    if (peer)
+      return yield* await removed(context, peer.key);
+    if (waits)
+      return yield* json(409, { message: waits });
+    forgetSaved(machine.destination);
+    return yield* json(200, {});
+  }
+  if (method === "POST" && action === "uninstall" && parts.length === 4) {
+    if (request.fromMac)
+      return yield* json(409, { message: ONCE });
+    if (!peer)
+      return yield* json(409, { message: `${here} never finished setting ${name} up, so there’s nothing of its own to uninstall there. Remove it instead.` });
+    const can = canAdd();
+    if (!can.can)
+      return yield* json(can.status, { message: can.message });
+    const begun = beginUninstall(peer.key);
+    if (!begun)
+      return yield* json(409, { message: `${here} didn’t set ${name} up over SSH, so it can’t uninstall Kuvo Code there. Remove it instead.` });
+    await begun.over;
+    if (begun.seen.state === "done")
+      return yield* json(200, {});
+    return yield* json(502, { message: failureOf(begun, `Kuvo Code couldn’t be uninstalled from ${name}.`) });
+  }
+  if (method === "DELETE" && action === "addresses" && parts.length === 5) {
+    if (!machine.otherAddresses?.includes(parts[4]))
+      return yield* json(404, {});
+    if (waits)
+      return yield* json(409, { message: waits });
+    writePrivate(LIST_FILE, JSON.stringify(saved.map((each) => each === machine ? { ...each, otherAddresses: machine.otherAddresses.filter((address) => address !== parts[4]) } : each), null, 2));
+    return yield* json(200, { machine: entry() });
+  }
+  if (method === "POST" && parts.length === 4) {
+    if (action === "connect" || action === "disconnect" || action === "start") {
+      return yield* json(409, { message: `Kuvo Code on ${name} runs by itself now, and your devices reach it directly: ${here} keeps no connection to it to ${action === "disconnect" ? "close" : "open"}.` });
+    }
+    if (action === "home")
+      return yield* json(409, { message: `Kuvo Code on ${name} runs by itself now, with its own accounts and settings, so no Mac is its home.` });
+    if (action === "same-as")
+      return yield* json(409, { message: "Kuvo Code tells by itself when an address you add is a computer it already has. To make these two one, remove one of them, then add its address again." });
+  }
+  return yield* json(404, {});
+}
+async function* add3(context, here) {
+  const { request, json } = context;
+  const destination = cleanAddress(parsed(request.body)?.destination);
+  if (!destination)
+    return yield* json(400, { message: "Give the machine’s SSH host: a Host from ~/.ssh/config, or user@host." });
+  const problem = addressProblem(destination);
+  if (problem)
+    return yield* json(400, { message: problem });
+  if (request.fromMac)
+    return yield* json(409, { message: ONCE });
+  const can = canAdd();
+  if (!can.can)
+    return yield* json(can.status, { message: can.message, ...can.primary ? { primary: can.primary } : {} });
+  const before = underWay2(destination);
+  const had = savedMachines()?.find((each) => each.destination === destination || each.otherAddresses?.includes(destination));
+  if (had && !before) {
+    const machine = ownMachines2()?.machines.find((each) => each.id === had.destination);
+    if (machine)
+      return yield* json(200, { machine, known: true });
+  }
+  const begun = beginAdd(destination);
+  if ("busy" in begun)
+    return yield* json(409, { message: begun.busy });
+  await settled3(begun);
+  if (begun.seen.state === "asking") {
+    const asked = begun.seen.question?.title ?? "It needs an answer from you";
+    if (begun !== before) {
+      stopTry(begun);
+      await begun.over;
+    }
+    return yield* json(409, { message: `${asked}${/[.?!…]$/.test(asked) ? "" : "."} Add it from Kuvo Code on ${here}, which shows you what to check first.` });
+  }
+  if (begun.seen.state !== "done") {
+    return yield* json(begun.seen.state === "failed" ? 502 : 409, { message: begun.seen.state === "failed" ? failureOf(begun, `${destination} couldn’t be added.`) : `Adding ${destination} was stopped.` });
+  }
+  const key = begun.seen.computer?.key;
+  const id = (key ? peersOf(readLink()).find((each) => each.key === key)?.id : undefined) ?? savedMachines()?.find((each) => each.otherAddresses?.includes(destination))?.destination ?? destination;
+  const machine = ownMachines2()?.machines.find((each) => each.id === id);
+  if (!machine)
+    return yield* json(502, { message: `${destination} was set up, but ${here} couldn’t read its list of machines afterwards.` });
+  return yield* json(200, { machine, known: Boolean(had) || begun.seen.known === true });
+}
+async function* forgetHost(context, id, here) {
+  const { json } = context;
+  const kept = keptHosts();
+  const saved = savedMachines(kept);
+  if (kept === null || !saved)
+    return yield* json(503, { message: UNREADABLE });
+  const host = kept && Object.hasOwn(kept, id) ? kept[id] : undefined;
+  if (!host)
+    return yield* json(404, {});
+  if (saved.some((each) => each.destination === id))
+    return yield* json(409, { message: `It’s one of ${here}’s machines: remove it first.` });
+  if (oldAppAttached())
+    return yield* json(409, { message: oldAppWords(here, typeof host.name === "string" ? host.name : id) });
+  const stillNamed = typeof host.key === "string" && !Object.entries(kept ?? {}).some(([other, each]) => other !== id && each.key === host.key) && peersOf(readLink()).some((peer) => peer.key === host.key);
+  if (stillNamed) {
+    const gone = await removed(context, host.key);
+    if (statusOf(gone) !== 200 && statusOf(gone) !== 404)
+      return yield* gone;
+  }
+  const done = changeKeptHosts((machines) => {
+    if (!Object.hasOwn(machines, id))
+      return null;
+    const { [id]: _gone, ...rest } = machines;
+    return rest;
+  });
+  return yield* done ? json(200, {}) : json(503, { message: UNREADABLE });
+}
 
 // box/src/link/mac/app.ts
-import fs192 from "node:fs";
+import fs193 from "node:fs";
 import path200 from "node:path";
 init_files();
 init_home();
@@ -63423,7 +63732,7 @@ var NEEDS_APP = "This tool needs Kuvo Code open on this Mac, and it isn't open n
 var NO_OPENER = "nothing that opens it is running on this Mac";
 function readJSON3(file) {
   try {
-    return JSON.parse(fs192.readFileSync(file, "utf8"));
+    return JSON.parse(fs193.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
@@ -63481,7 +63790,7 @@ function readOpening() {
 }
 function updating2(now = Date.now()) {
   try {
-    return Math.abs(now - fs192.statSync(UPDATING_FILE()).mtimeMs) < UPDATING_FOR;
+    return Math.abs(now - fs193.statSync(UPDATING_FILE()).mtimeMs) < UPDATING_FOR;
   } catch {
     return false;
   }
@@ -63492,8 +63801,8 @@ function registerApp(given, now = Date.now()) {
   const record = { bundle: given.bundle ?? before?.bundle ?? null, tools: given.tools, host, at: now };
   writePrivate(APP_FILE(), JSON.stringify(record));
   if (record.tools) {
-    fs192.rmSync(FAILED_FILE(), { force: true });
-    fs192.rmSync(UPDATING_FILE(), { force: true });
+    fs193.rmSync(FAILED_FILE(), { force: true });
+    fs193.rmSync(UPDATING_FILE(), { force: true });
   }
   return record;
 }
@@ -63510,7 +63819,7 @@ function noteUpdating(now = Date.now()) {
   writePrivate(UPDATING_FILE(), String(now));
   const at = new Date(now);
   try {
-    fs192.utimesSync(UPDATING_FILE(), at, at);
+    fs193.utimesSync(UPDATING_FILE(), at, at);
   } catch {}
 }
 function appStatus(now = Date.now()) {
@@ -63536,7 +63845,7 @@ async function openApp(signal, ways = OPEN_WAYS) {
     let opening = readOpening();
     if (opening && stale(opening, now)) {
       if (JSON.stringify(readOpening()) === JSON.stringify(opening))
-        fs192.rmSync(OPENING_FILE(), { force: true });
+        fs193.rmSync(OPENING_FILE(), { force: true });
       opening = null;
     }
     if (!opening) {
@@ -63545,8 +63854,8 @@ async function openApp(signal, ways = OPEN_WAYS) {
         return failed.message;
       const mine = { at: now, by: process.pid };
       try {
-        fs192.mkdirSync(RUN, { recursive: true, mode: 448 });
-        fs192.writeFileSync(OPENING_FILE(), JSON.stringify(mine), { flag: "wx", mode: 384 });
+        fs193.mkdirSync(RUN, { recursive: true, mode: 448 });
+        fs193.writeFileSync(OPENING_FILE(), JSON.stringify(mine), { flag: "wx", mode: 384 });
       } catch (error) {
         if (error?.code === "EEXIST")
           continue;
@@ -63586,7 +63895,7 @@ async function openAndWait(mine, ways) {
     return said;
   } finally {
     if (JSON.stringify(readOpening()) === JSON.stringify(mine))
-      fs192.rmSync(OPENING_FILE(), { force: true });
+      fs193.rmSync(OPENING_FILE(), { force: true });
   }
 }
 async function hostOpens(bundle) {
@@ -63638,7 +63947,7 @@ function waitUntil(ready, deadline, signal) {
     const every = setInterval(look, 1000);
     const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
     try {
-      watcher = fs192.watch(RUN, look);
+      watcher = fs193.watch(RUN, look);
       watcher.on("error", () => {});
     } catch {}
     signal?.addEventListener("abort", done, { once: true });
@@ -63778,6 +64087,8 @@ var ROUTES = [
   { when: (route) => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
   { when: (route) => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
   { when: (route) => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
+  { when: (route) => OWN_HOME_MAC && isMachinesRoute(route), answer: ownMachinesRoute },
+  { when: (route) => OWN_HOME_MAC && route === "kuvo/mac", answer: ownMacRoute },
   { when: (route) => route === "kuvo/phones", answer: phonesRoute },
   { when: (route) => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { when: (route) => route === "kuvo/phones/pair", answer: pairingRoute },
@@ -63898,14 +64209,15 @@ async function* toApp(request, phone, signal) {
   yield { head: { status: 503, headers: { "content-type": "application/json" } } };
   yield { body: Buffer.from(JSON.stringify({ message: OWN_HOME_MAC && !openAppHost() ? APP_CLOSED : APP_NOT_ANSWERING })) };
 }
+var answersAlone = () => OWN_HOME_MAC && !openAppHost();
 function macFront(handle = engineHandler(readEngineFile, { name: os24.hostname() }), timing) {
   return async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
+    if (!macAppAnswers(route) || boxAnswers(route) || answersAlone())
+      return yield* handle(request, phone, signal);
     if (isMachinesRoute(route))
       return yield* machinesRoute(request, phone, signal, route, timing);
-    if (macAppAnswers(route) && !boxAnswers(route))
-      return yield* toApp(request, phone, signal);
-    yield* handle(request, phone, signal);
+    yield* toApp(request, phone, signal);
   };
 }
 async function runMacLink() {
@@ -64385,9 +64697,9 @@ onLinkWritten((link) => {
   if (liveHost)
     setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map((phone) => phone.key))), 200).unref?.();
   if (needed(link))
-    fs193.writeFileSync(NEEDED_FILE, "", { mode: 384 });
+    fs194.writeFileSync(NEEDED_FILE, "", { mode: 384 });
   else
-    fs193.rmSync(NEEDED_FILE, { force: true });
+    fs194.rmSync(NEEDED_FILE, { force: true });
 });
 var liveHost = null;
 function machineWelcomed(host) {
@@ -64418,19 +64730,19 @@ function updateIsWell() {
 async function run7() {
   let old = null;
   try {
-    old = Number(fs193.readFileSync(PID_FILE, "utf8"));
+    old = Number(fs194.readFileSync(PID_FILE, "utf8"));
     if (isBridge2(old))
       process.kill(old, "SIGTERM");
   } catch {}
-  fs193.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
-  fs193.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
-  fs193.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
+  fs194.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
+  fs194.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
     process.env.PATH = joinPath(path202.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs193.rmSync(path202.join(RUN, folder), { recursive: true, force: true });
+    fs194.rmSync(path202.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -64446,8 +64758,8 @@ async function run7() {
   });
   const cleanUp = () => {
     try {
-      if (fs193.readFileSync(PID_FILE, "utf8") === String(process.pid))
-        fs193.unlinkSync(PID_FILE);
+      if (fs194.readFileSync(PID_FILE, "utf8") === String(process.pid))
+        fs194.unlinkSync(PID_FILE);
     } catch {}
     process.exit(0);
   };
@@ -64458,7 +64770,7 @@ async function run7() {
   setInterval(() => {
     let owner = null;
     try {
-      owner = Number(fs193.readFileSync(PID_FILE, "utf8"));
+      owner = Number(fs194.readFileSync(PID_FILE, "utf8"));
     } catch {}
     const link = readLink();
     if (!needed(link)) {
@@ -64475,7 +64787,7 @@ async function run7() {
     await sleep(50);
   let held = [];
   try {
-    held = JSON.parse(fs193.readFileSync(HELD_FILE, "utf8"));
+    held = JSON.parse(fs194.readFileSync(HELD_FILE, "utf8"));
   } catch {}
   const hold = new NoticeHold({
     send: tellPhones,
@@ -64485,7 +64797,7 @@ async function run7() {
         if (entries.length)
           writePrivate(HELD_FILE, JSON.stringify(entries));
         else
-          fs193.rmSync(HELD_FILE, { force: true });
+          fs194.rmSync(HELD_FILE, { force: true });
       } catch {}
     }
   });
@@ -64557,7 +64869,7 @@ async function run7() {
     }, 50);
   };
   try {
-    fs193.mkdirSync(SENDING, { recursive: true, mode: 448 });
+    fs194.mkdirSync(SENDING, { recursive: true, mode: 448 });
   } catch {}
   let outboxWatch = watchFolders([SENDING], leftNow, { recursive: false });
   const forwardNow = () => {
@@ -64567,7 +64879,7 @@ async function run7() {
   };
   forwardsSoon.send = forwardNow;
   try {
-    fs193.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
+    fs194.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
   } catch {}
   let forwardsWatch = watchFolders([FORWARDS], forwardNow, { recursive: false });
   const heldNow = () => {
@@ -64808,11 +65120,11 @@ async function keptServe() {
     console.error(`The box's server already runs (${other.pid}).`);
     return;
   }
-  if (!fs193.existsSync(SERVE_NEEDED())) {
+  if (!fs194.existsSync(SERVE_NEEDED())) {
     console.error("No client wants the box's server here (run/serve.needed).");
     return;
   }
-  fs193.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
   const password = crypto67.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
@@ -64825,7 +65137,7 @@ async function keptServe() {
   } catch {}
   const mine = () => {
     try {
-      return JSON.parse(fs193.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
+      return JSON.parse(fs194.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
     } catch {
       return false;
     }
@@ -64833,7 +65145,7 @@ async function keptServe() {
   const leave = () => {
     try {
       if (mine())
-        fs193.rmSync(SERVE_FILE(), { force: true });
+        fs194.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -64843,7 +65155,7 @@ async function keptServe() {
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
   setInterval(() => {
-    if (!fs193.existsSync(SERVE_NEEDED()) || !mine())
+    if (!fs194.existsSync(SERVE_NEEDED()) || !mine())
       leave();
   }, every);
 }
@@ -64862,7 +65174,7 @@ async function serve() {
     console.error('serve answers only with a password: on its stdin, {"password"}, or in OPENCODE_PASSWORD.');
     process.exit(2);
   }
-  fs193.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
   if (IS_MAC)
     addMacDefaults();
@@ -64949,8 +65261,8 @@ async function serve() {
     if ((macLink.host?.unsent?.() ?? 0) > 0)
       console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
     try {
-      if (OWN_HOME_MAC && JSON.parse(fs193.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
-        fs193.rmSync(SERVE_FILE(), { force: true });
+      if (OWN_HOME_MAC && JSON.parse(fs194.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
+        fs194.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -65030,7 +65342,7 @@ async function setup() {
   await tellIfSharingChanged(old, link);
   let runningVersion = null;
   try {
-    runningVersion = fs193.readFileSync(VERSION_FILE, "utf8").trim();
+    runningVersion = fs194.readFileSync(VERSION_FILE, "utf8").trim();
   } catch {}
   const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   if (!isUpdating()) {
@@ -65119,7 +65431,7 @@ function selftest() {
   const ok = said.toString() === "hello" && payload.toString() === "welcome" && echoed.toString() === "ping" && mail.toString() === "mail" && responder.rs.equals(publicOf(phone)) && typeof WebSocket === "function" && typeof fetch === "function";
   return ok;
 }
-var main = process.argv[1] && fs193.realpathSync(process.argv[1]) === fs193.realpathSync(fileURLToPath4(import.meta.url));
+var main = process.argv[1] && fs194.realpathSync(process.argv[1]) === fs194.realpathSync(fileURLToPath4(import.meta.url));
 if (main) {
   const [mode, argument] = process.argv.slice(2);
   if (mode === "run")
@@ -65373,6 +65685,7 @@ export {
   forgetAsksOn,
   forgetEverythingSent,
   forgetHeldSends,
+  forgetLoginItems,
   forgetModelLists,
   forgetModelNames,
   forgetMovesInMemory,
@@ -65448,6 +65761,7 @@ export {
   macDocsChanged,
   macFeatures,
   macFront,
+  macKeys,
   macLink,
   macNoticeHold,
   macPeersBody,

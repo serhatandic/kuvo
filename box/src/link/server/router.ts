@@ -62,6 +62,8 @@ import { APP_ICON_ROUTE, appIconRoute, newProjectRoute, GOALS_ROUTE, goalsRoute,
 import { phoneHere } from "../compat/leave-running";
 import { readBridgeFile, readEngineFile } from "../engine/client";
 import { isMachinesRoute } from "../mac/machines";
+import { ownMacRoute } from "../mac/own-mac";
+import { ownMachinesRoute } from "../mac/own-machines";
 import { linkRoute } from "../mac/routes";
 import { boxUpdateRoute, updateRoute } from "../updates/update";
 import { permissionsRoute } from "../permissions";
@@ -71,7 +73,7 @@ import { proofRoute } from "../mac/app-keys";
 import { serveRoute } from "../serve-kept";
 import { browserRoute } from "../browser/install";
 import { browserViewRoute, BROWSER_DATA_ROUTE, browserDataRoute } from "../browser/routes";
-import { IS_MAC } from "../home";
+import { IS_MAC, OWN_HOME_MAC } from "../home";
 import { vaultRoute } from "../areas/vault";
 import { AGENTS, agentsRoute, engineRoute } from "./forward";
 import type { BridgeRecord, EngineRecord } from "../../shared/records";
@@ -130,8 +132,12 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // The box's settings as it describes them, for any client to draw (PROTOCOL.md, "A box's settings").
   { when: route => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
   { when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
-  // (A Mac's box answers these with its app, before this: `macFront`.)
+  // (A Mac's box with an app to ask answers these with it, before this: `macFront`.)
   { when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
+  // A Mac's box in a home of its own answers its machines and While Agents Work itself, for a phone
+  // as its app did (PROTOCOL.md, "Machines", In a home of its own).
+  { when: route => OWN_HOME_MAC && isMachinesRoute(route), answer: ownMachinesRoute },
+  { when: route => OWN_HOME_MAC && route === "kuvo/mac", answer: ownMacRoute },
   { when: route => route === "kuvo/phones", answer: phonesRoute },
   { when: route => route === "kuvo/phones/remove", answer: phonesRemoveRoute },
   { when: route => route === "kuvo/phones/pair", answer: pairingRoute },

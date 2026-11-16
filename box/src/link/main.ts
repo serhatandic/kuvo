@@ -250,7 +250,7 @@ export { peerMail, receiveMail } from "./peers/mail";
 export { pairingLink } from "./phones";
 export { ownRefreshed } from "./server/naming";
 export { FROM_PHONE, fromPhone } from "./server/forward";
-export { DEFAULT_RELAY, MAC_LINK_FILE, ownMacConfig, savedMacConfig, stopMacLink } from "./mac/link";
+export { DEFAULT_RELAY, MAC_LINK_FILE, macKeys, ownMacConfig, savedMacConfig, stopMacLink } from "./mac/link";
 export { macNoticeHold, macTell } from "./mac/notices";
 export { LETTER_WAIT, macSendOutbox, runMacPeers, stopMacPeers } from "./mac/peers";
 export { setMacPeers } from "./mac/routes";
@@ -263,6 +263,7 @@ export { RELEASE_FILES } from "./add/files";
 export { engineHandler } from "./server/router";
 export { connectOnce, fromRelay, nextTry } from "./relay/connection";
 export { MAC_APP_ROUTES, macAppAnswers, macFront, runMacLink } from "./mac/relay";
+export { forgetLoginItems } from "./mac/own-mac";
 export { keepKeeper } from "./keeper";
 export { serveBox } from "./server/serve";
 

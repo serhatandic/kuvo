@@ -6,8 +6,9 @@
 // whether it's wanted (`kuvo/link/config`: the phone link on, machines to meet), which it keeps for
 // when it starts again before the app opens. Your other computers' mail is taken here, as a machine
 // takes it: documents, agents, letters, group chats'. What a phone asks it answers itself, but the
-// Mac's own routes (`MAC_APP_ROUTES`), which go to the app through the host (`link/route`); of
-// those it answers what it can of its machines while the app isn't there (`machines`).
+// Mac's own routes (`MAC_APP_ROUTES`) where there's an app to ask, which go to it through the host
+// (`link/route`); of those it answers what it can of its machines while the app isn't there
+// (`machines`). With only Kuvo Code's desktop app there's none, and it answers those too (`answersAlone`).
 
 import os from "node:os";
 import { engineConnect } from "../areas/engine";
@@ -31,12 +32,14 @@ import type { EngineRecord } from "../../shared/records";
 import type { AnswerPiece, Asker, LinkHandler, LinkRequest } from "../server/context";
 import type { LinkState } from "../state";
 
-// What only this Mac's app answers a phone, by area: its machines (which this box answers in part
-// with the app closed: machines.ts), the machines your phones reach directly, what its panel's
-// browser asks you, its macOS services (`kuvo/mac`), and its engine's
-// restart while the app runs this box itself (`boxAnswers`). The one list of them: the app keeps
-// none, and hands its own requests for anything else to this box. Everything else a phone asks
-// this box answers itself, as a machine's does, with the app open or closed.
+// What this Mac's app answers a phone, by area, where there's an app to ask (the retired Mac app,
+// which ran this box in its own folder or registered its host with it): its machines (which this
+// box answers in part with the app closed: machines.ts), the machines your phones reach directly,
+// what its panel's browser asks you, its macOS services (`kuvo/mac`), and its engine's restart
+// while the app runs this box itself (`boxAnswers`). The one list of them: the app keeps none, and
+// hands its own requests for anything else to this box. Everything else a phone asks this box
+// answers itself, as a machine's does, with the app open or closed; and with only Kuvo Code's
+// desktop app, these too (`answersAlone`).
 export const MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
 export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`));
 
@@ -55,15 +58,23 @@ async function* toApp(request: LinkRequest, phone: Asker | undefined, signal?: A
   yield { body: Buffer.from(JSON.stringify({ message: OWN_HOME_MAC && !openAppHost() ? APP_CLOSED : APP_NOT_ANSWERING })) };
 }
 
+/** Whether this box answers the Mac's own routes itself: in a home of its own with no app's host
+ * registered, which is every Mac that has only Kuvo Code's desktop app (a client: it answers
+ * nothing for its box). Its machines and what your phones reach (`own-machines.ts`), While Agents
+ * Work (`own-mac.ts`), what its browser asks you and its engine's restart, as a machine's box
+ * answers them. The retired app, where it registered a host, is still asked while it's open. */
+export const answersAlone = (): boolean => OWN_HOME_MAC && !openAppHost();
+
 // A phone's request on this Mac: the app's own areas from the app (its machines answered here too
 // while it isn't there), everything else here (from #191 step 2; before, the box answered only the
-// areas that had moved onto it, and the app the rest).
+// areas that had moved onto it, and the app the rest). In a home of its own with no app to ask,
+// all of it here (`answersAlone`).
 export function macFront(handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() }), timing?: AppTiming): LinkHandler {
   return async function* (request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): AsyncGenerator<AnswerPiece> {
     const route = String(request.path ?? "").split("?")[0];
+    if (!macAppAnswers(route) || boxAnswers(route) || answersAlone()) return yield* handle(request, phone, signal);
     if (isMachinesRoute(route)) return yield* machinesRoute(request, phone, signal, route, timing);
-    if (macAppAnswers(route) && !boxAnswers(route)) return yield* toApp(request, phone, signal);
-    yield* handle(request, phone, signal);
+    yield* toApp(request, phone, signal);
   };
 }
 

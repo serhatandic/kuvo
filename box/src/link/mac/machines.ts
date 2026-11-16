@@ -1,4 +1,5 @@
-// A Mac's machines for a phone (PROTOCOL.md, "Machines"), with its app open or closed.
+// A Mac's machines for a phone (PROTOCOL.md, "Machines"), where there's an app of the Mac's to
+// ask (the retired Mac app), open or closed.
 //
 // The app connects to them over SSH, so how a connection stands and what's done with one are the
 // app's to say. The list isn't: it's in `machines.json` in this box's folder, so there's one list,
@@ -6,10 +7,13 @@
 // and removes computers itself (`add/flow.ts`, `peers/manage.ts`); the Mac app before 1.0 wrote it
 // too, while it was attached. It's read in one place, `savedMachines`, so what can't be read is
 // never taken for none by one reader and not another. It says what it can tell of each by itself
-// (its box was heard from lately), and what needs the app says so.
+// (its box was heard from lately), and what needs the app says so. A box in a home of its own,
+// with no app to ask, answers all of it itself: `own-machines.ts`.
 
 import fs from "node:fs";
 import path from "node:path";
+import { isObject } from "../../shared/json";
+import { locked, writePrivate } from "../files";
 import { APP_FOLDER, K } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
@@ -38,7 +42,7 @@ const TIMING: AppTiming = { wait: 5000, look: 10_000 };
 
 const macName = () => macLink.config?.name || "this Mac";
 const notOpen = () => `Kuvo Code isn’t open on ${macName()}`;
-const UNREADABLE = "This Mac’s list of machines can’t be read right now.";
+export const UNREADABLE = "This Mac’s list of machines can’t be read right now.";
 
 interface KeptHost {
   name?: unknown;
@@ -48,12 +52,33 @@ interface KeptHost {
 }
 
 // What the app keeps of your machines' bridges: undefined without the file, null when it won't read.
-function keptHosts(): Record<string, KeptHost> | null | undefined {
+export function keptHosts(): Record<string, KeptHost> | null | undefined {
   try {
     return JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8")).machines ?? {};
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
   }
+}
+
+/** Changes what's kept of your machines' bridges (`phone-link.json`'s `machines`), the one way it's
+ * written here: read and written under its lock, so an add's and a Forget's changes (this
+ * process's, or a command's beside it) never lose each other's. `change` gives the machines to
+ * keep, or null to leave it. False when the record is there and won't read: never written over. */
+export function changeKeptHosts(change: (machines: Record<string, unknown>) => Record<string, unknown> | null): boolean {
+  fs.mkdirSync(path.dirname(PHONE_LINK_FILE), { recursive: true });
+  return locked(PHONE_LINK_FILE + ".lock", () => {
+    let whole: Record<string, unknown> = {};
+    try {
+      const read: unknown = JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8"));
+      if (!isObject(read)) return false;
+      whole = read;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    const next = change(isObject(whole.machines) ? whole.machines : {});
+    if (next) writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
+    return true;
+  });
 }
 
 /** A computer on this Mac's list (`machines.json`): the address it was added under (its id among
@@ -115,7 +140,7 @@ export function machinesWithoutApp(now = Date.now()): MacMachines | null {
 /** `kuvo/hosts` as this box says it without the app, from what the app keeps: null when that can't
  * be told or there's no relay yet to name, since a phone takes this list for all your machines and
  * forgets the rest. */
-function hostsWithoutApp(): Hosts | null {
+export function hostsWithoutApp(): Hosts | null {
   const kept = keptHosts();
   const saved = savedMachines(kept);
   const relay = macLink.config?.relay;

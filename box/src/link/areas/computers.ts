@@ -155,6 +155,18 @@ export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | 
   }, ...(notice ? { detail: notice.detail, notice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
 }
 
+/** How the peer `key` stands from here: `away` when it was found away or not heard from lately;
+ * `reach` says it as `kuvo/computers` does: being reached (Connect asked a moment ago and not heard
+ * from since, or never heard from since this box knew of it), away, or connected. */
+export function peerReach(key: string, told = readPeerAgents(), reach = readReach(), tries = readTries(), now = Date.now()): { away: boolean; reach: "connected" | "connecting" | "away" } {
+  const said = told[key];
+  const away = awaySince(key, reach) !== null || (said?.heard !== undefined && now - said.heard > HEARD_LATELY);
+  // (Connect asked a moment ago, and not heard from since: being reached.)
+  const trying = tryingSince(key, now, tries);
+  const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
+  return { away, reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected" };
+}
+
 /** Your computers: this box first, then its peers by name, then the boxes they vouch for, each
  * with what can be done with it from here. */
 export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now()): Promise<ListedComputer[]> {
@@ -201,10 +213,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const apart = new Set(peers.filter(peer => isApart(peer.key, link, told)).map(peer => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
-    const away = awaySince(peer.key, reach) !== null || (said?.heard !== undefined && now - said.heard > HEARD_LATELY);
-    // (Connect asked a moment ago, and not heard from since: being reached.)
-    const trying = tryingSince(peer.key, now, tries);
-    const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
+    const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
@@ -218,7 +227,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       shared: said?.shared === true,
       ...(apart.has(peer.key) ? { apart: true as const } : {}),
       // (Not heard from since this box knew of it, and not found away: still being reached.)
-      reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected",
+      reach: standing,
       via: "relay",
       // (Where a client of your own reaches it itself: never one that isn't yours.)
       ...(apart.has(peer.key) ? {} : reachOf(link, peer.address)),

@@ -202,7 +202,7 @@ export function removeHere(key: string): Acted {
 
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
 // it off: what `kuvo/machines` and whether the link meets machines go by. One that won't read stays.
-function forgetSaved(id: string): void {
+export function forgetSaved(id: string): void {
   const saved = savedMachines();
   if (!saved?.some(each => each.destination === id)) return;
   try { writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2)); } catch {}

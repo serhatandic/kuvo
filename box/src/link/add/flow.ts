@@ -18,7 +18,7 @@ import { writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
 import { macLinkCheck } from "../mac/link";
-import { LIST_FILE, PHONE_LINK_FILE, savedMachines } from "../mac/machines";
+import { changeKeptHosts, LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { vouchedWords, vouchMoved } from "../phones";
@@ -39,17 +39,7 @@ export const takenAddresses = (): string[] => (savedMachines() ?? []).flatMap(ea
 
 // What this box keeps of its machines' links for your phones (`kuvo/hosts`), as the Mac app kept it.
 function keepHost(id: string, host: { name: string; address: string; key: string; sign: string }): void {
-  let kept: Record<string, unknown> = {};
-  try {
-    const read: unknown = JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8"));
-    if (!isObject(read)) throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
-    kept = read;
-  } catch (error) {
-    if (error instanceof Failed) throw error;
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
-  }
-  const machines = isObject(kept.machines) ? kept.machines : {};
-  writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...kept, machines: { ...machines, [id]: { ...host, anotherMac: false, peers: true } } }, null, 2));
+  if (!changeKeptHosts(machines => ({ ...machines, [id]: { ...host, anotherMac: false, peers: true } }))) throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
 }
 
 /** Whether this box adds computers now, and why not, in words a client shows as they are. */
