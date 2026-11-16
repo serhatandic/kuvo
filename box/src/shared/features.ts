@@ -161,6 +161,7 @@ export const FEATURES = [
   "search",
   "sessions.actions",
   "sessions.agents",
+  "sessions.archived-groups",
   "sessions.asks",
   "sessions.asks.box",
   "sessions.chat",

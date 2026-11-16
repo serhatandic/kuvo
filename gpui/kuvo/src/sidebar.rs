@@ -6,8 +6,6 @@
 //! archived); right-click opens the full box-driven menu, and Rename / Delete confirm anchor as
 //! popovers beneath the row.
 
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
 
 use gpui::{
     AnyElement, App, Context, InteractiveElement, IntoElement, KeyBinding, MouseButton,
@@ -16,7 +14,7 @@ use gpui::{
 };
 use kuvo_box::search::SEARCHED_FROM;
 use kuvo_box::session_actions::{Action, Actions};
-use kuvo_box::sessions::{Facts, Listing, finder_order};
+use kuvo_box::sessions::{Facts, Listing};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     menu::ContextMenuArea,
@@ -69,7 +67,7 @@ pub enum Line {
     Empty(String),
     Project(String),
     /// A project header in the archived filter list (folder + name, non-collapsible).
-    ArchivedProject(String),
+    ArchivedProject { directory: String, title: String },
     /// A session; `section` tells apart the section where it shows (`project`, `chat`, `found`,
     /// `archived-project`, `archived-chat`), `nested`: under its project.
     Session { id: String, section: &'static str, nested: bool },
@@ -93,7 +91,7 @@ impl Line {
     pub fn key(&self) -> String {
         match self {
             Line::Project(directory) => format!("project:{directory}"),
-            Line::ArchivedProject(directory) => format!("archived-project:{directory}"),
+            Line::ArchivedProject { directory, .. } => format!("archived-project:{directory}"),
             Line::Session { id, section, .. } => format!("session-{section}:{id}"),
             Line::More(directory) => format!("more:{directory}"),
             Line::Found { id, .. } => format!("found:{id}"),
@@ -160,46 +158,18 @@ pub fn lines(workspace: &Workspace, cx: &App) -> Vec<Line> {
 
 /// Archived sessions grouped by project (folder header + nested rows) and Chats, newest first.
 fn archived_lines(workspace: &Workspace) -> Vec<Line> {
-    let listing = workspace.listing();
-    let mut by_project: BTreeMap<String, Vec<(&String, &Facts)>> = BTreeMap::new();
-    let mut chats: Vec<(&String, &Facts)> = Vec::new();
-    for (id, facts) in listing.sessions() {
-        if !facts.is_archived() {
-            continue;
-        }
-        if facts.kind.is_project() {
-            let directory = facts.project.clone().unwrap_or_else(|| facts.directory.clone());
-            by_project.entry(directory).or_default().push((id, facts));
-        } else if facts.kind.is_chat() {
-            chats.push((id, facts));
-        }
-    }
-    let sort_newest = |rows: &mut Vec<(&String, &Facts)>| {
-        rows.sort_by(|a, b| b.1.updated.partial_cmp(&a.1.updated).unwrap_or(Ordering::Equal).then_with(|| a.0.cmp(b.0)));
-    };
-    let mut groups: Vec<(f64, String, String, Vec<String>)> = by_project
-        .into_iter()
-        .map(|(directory, mut rows)| {
-            sort_newest(&mut rows);
-            let top = rows.first().map_or(0.0, |(_, facts)| facts.updated);
-            let name = workspace.project_name(&directory);
-            let ids = rows.into_iter().map(|(id, _)| id.clone()).collect();
-            (top, name, directory, ids)
-        })
-        .collect();
-    groups.sort_by(|(left, a_name, a_dir, _), (right, b_name, b_dir, _)| {
-        right.partial_cmp(left).unwrap_or(Ordering::Equal).then_with(|| finder_order(a_name, b_name)).then_with(|| a_dir.cmp(b_dir))
-    });
-    sort_newest(&mut chats);
-
     let mut lines = Vec::new();
-    for (_, _, directory, ids) in groups {
-        lines.push(Line::ArchivedProject(directory));
-        lines.extend(ids.into_iter().map(|id| Line::Session { id, section: "archived-project", nested: true }));
-    }
-    if !chats.is_empty() {
-        lines.push(Line::Header("Chats"));
-        lines.extend(chats.into_iter().map(|(id, _)| Line::Session { id: id.clone(), section: "archived-chat", nested: false }));
+    for group in workspace.listing().archived_groups() {
+        if group.kind == "chat" {
+            lines.push(Line::Header("Chats"));
+        } else {
+            lines.push(Line::ArchivedProject { directory: group.directory.clone(), title: group.title.clone() });
+        }
+        lines.extend(group.sessions.iter().map(|id| Line::Session {
+            id: id.clone(),
+            section: if group.kind == "chat" { "archived-chat" } else { "archived-project" },
+            nested: group.kind != "chat",
+        }));
     }
     lines
 }
@@ -445,8 +415,8 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
             .text_color(c.text_faint)
             .child("No sessions yet")
             .into_any_element(),
-        Line::ArchivedProject(directory) => {
-            let name = workspace.project_name(directory);
+        Line::ArchivedProject { title, .. } => {
+            let name = title.clone();
             let selector = format!("archived-project-{name}");
             div()
                 .debug_selector(move || selector)

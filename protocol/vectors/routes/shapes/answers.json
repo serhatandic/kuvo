@@ -5397,6 +5397,9 @@
             "literal": "sessions.agents"
            },
            {
+            "literal": "sessions.archived-groups"
+           },
+           {
             "literal": "sessions.asks"
            },
            {
@@ -6079,6 +6082,9 @@
            },
            {
             "literal": "sessions.agents"
+           },
+           {
+            "literal": "sessions.archived-groups"
            },
            {
             "literal": "sessions.asks"
@@ -13150,6 +13156,30 @@
         }
        }
       },
+      "archivedGroups": {
+       "list": {
+        "object": {
+         "directory": "string",
+         "title": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "project"
+           },
+           {
+            "literal": "chat"
+           },
+           {
+            "literal": "bot"
+           }
+          ]
+         },
+         "sessions": {
+          "list": "string"
+         }
+        }
+       }
+      },
       "needsYou": {
        "list": {
         "object": {
@@ -13255,6 +13285,30 @@
          "updated?": "number",
          "asking": "number",
          "working": "number"
+        }
+       }
+      },
+      "archivedGroups": {
+       "list": {
+        "object": {
+         "directory": "string",
+         "title": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "project"
+           },
+           {
+            "literal": "chat"
+           },
+           {
+            "literal": "bot"
+           }
+          ]
+         },
+         "sessions": {
+          "list": "string"
+         }
         }
        }
       },

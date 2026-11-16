@@ -925,7 +925,20 @@ impl State {
             project["asking"] = json!(its.iter().filter(|facts| facts["asked"].is_number()).count());
             project["working"] = json!(its.iter().filter(|facts| facts["running"] == json!(true) && !facts["asked"].is_number()).count());
         }
-        json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": projects, "needsYou": self.needs_you() })
+        // The stand-in acts as the server; these are its archived-list answer rows.
+        let mut archived: Vec<(&String, &Value)> = self.sessions.iter().filter(|(_, facts)| facts["archived"] == json!(true)).collect();
+        archived.sort_by(|a, b| b.1["updated"].as_f64().unwrap_or(0.).partial_cmp(&a.1["updated"].as_f64().unwrap_or(0.)).unwrap_or(std::cmp::Ordering::Equal));
+        let mut groups: Vec<Value> = Vec::new();
+        for (id, facts) in archived {
+            let directory = facts["project"].as_str().unwrap_or_else(|| facts["directory"].as_str().unwrap_or(""));
+            let kind = facts["kind"].as_str().unwrap_or("project");
+            if let Some(group) = groups.iter_mut().find(|group| group["directory"] == directory && group["kind"] == kind) {
+                group["sessions"].as_array_mut().unwrap().push(json!(id));
+            } else {
+                groups.push(json!({"directory": directory, "title": if kind == "chat" { "Chats" } else { projects.get(directory).and_then(|p| p["name"].as_str()).unwrap_or(directory) }, "kind": kind, "sessions": [id]}));
+            }
+        }
+        json!({ "at": self.at.to_string(), "full": full, "sessions": self.sessions, "projects": projects, "needsYou": self.needs_you(), "archivedGroups": groups })
     }
 
     /// The computer's name, as its `kuvo/info` says it.
