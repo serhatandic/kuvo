@@ -6945,6 +6945,23 @@ the box sends keeps its parts, which clients draw it by. No client writes or rea
   its row to show in front of its words.
 - A group chat's message still carries the widget it answers as its own block (`WidgetAnswer`).
 
+- **Quotes and picture names in `words`**, written the same by every client (KuvoClient's
+  `Quoting` and `ImageReferences`; the desktop app's `kuvo_box::quoting` and
+  `kuvo_box::image_names`), so a reply written on one shows the same on another. A quote is
+  Markdown ahead of the words: each quoted line as `> line` (`>` alone for a blank line), a blank
+  line, then the answer to it; several quotes one after another, each with its answer, and words
+  after an answered last quote follow a line of `---`. A client draws the `> ` lines that start
+  the words, or follow a blank line, as the quote (not inside a code block). A picture attached is
+  named where you're writing as `[Image N]`, N counting the message's pictures in the order they're
+  attached from 1; taking one off takes its name out and moves the later ones down a number. The
+  box passes both on as written.
+- **Files a client attaches**: to its own computer's box, by `file://` path; to another
+  computer's, with their bytes (`data:`, as a phone sends them), which its box keeps, since no path
+  on the client's computer means anything there. A picture the client keeps only a while (one
+  pasted) goes with its bytes to its own box too, so the message never points at a file that goes.
+  One the client can't read, or too large to send (over 50 MB, or 100 MB in all), isn't left out:
+  the send doesn't go, and the client says which file and why.
+
 ### Features
 
 `kuvo/info`'s `features` names the routes the box has, so a client checks a name, never a version

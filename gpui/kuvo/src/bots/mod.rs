@@ -192,6 +192,7 @@ pub struct BotsView {
     this_box: String,
     now: Option<f64>,
     items: Vec<Item>,
+    loading_control: Option<String>,
     list: ListState,
     focus: FocusHandle,
     tasks: HashMap<String, Task<()>>,
@@ -250,6 +251,7 @@ impl BotsView {
             this_box: "This Mac".into(),
             now: None,
             items: Vec::new(),
+            loading_control: None,
             list: ListState::new(0, ListAlignment::Top, px(400.)),
             focus: cx.focus_handle(),
             tasks: HashMap::new(),
@@ -478,6 +480,14 @@ impl BotsView {
             Shown::Bot(id) => self.bot_items(&id),
             Shown::Elsewhere(id) => self.elsewhere_items(&id),
             Shown::New => self.new_items(),
+        };
+        self.loading_control = if items.iter().any(|item| matches!(item, Item::Note { busy: true, .. })) {
+            None
+        } else {
+            items.iter().find_map(|item| match item {
+                Item::Row { row, .. } if matches!(&row.control, Control::Busy(words) if words.starts_with("Loading")) => Some(row.key.clone()),
+                _ => None,
+            })
         };
         // Only the items that changed are laid out again; the rest keep their places and the
         // page keeps its scroll.

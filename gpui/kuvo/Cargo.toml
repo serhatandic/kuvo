@@ -16,9 +16,9 @@ anyhow = "1"
 async-channel = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# A picture pasted as TIFF or BMP (Safari, Preview) kept as a PNG the engine takes (pasted.rs);
-# the same crate GPUI already builds.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
+# A picture pasted as TIFF or BMP (Safari, Preview) kept as a PNG the engine takes (pasted.rs),
+# and a conversation's pictures measured to fit (pictures.rs); the same crate GPUI already builds.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "gif", "webp"] }
 
 # The app's device key, in the Mac's keychain; and where System Settings' window is, with the
 # drag tile's own window moved beside it (permissions/mac.rs).
@@ -47,6 +47,8 @@ kuvo = { path = ".", features = ["stand-in"] }
 futures = "0.3"
 # A stand-in app bundle, in a folder that goes with its test.
 tempfile = "3"
+# A picture a message carries, written as the engine keeps it.
+base64 = "0.22"
 
 [features]
 # The made-up box (`--stand-in`), and reading it at once for shots and tests; not in the app shipped.

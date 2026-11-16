@@ -56,7 +56,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
         let count = match area {
             Area::Sessions => waiting.sessions,
             Area::Bots => waiting.bots,
-            Area::Queue => waiting.queue,
+            Area::Queue => workspace.queue_badge(cx),
             _ => 0,
         };
         area_button(area, area == open, count, cx)

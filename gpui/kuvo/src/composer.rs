@@ -19,6 +19,8 @@ use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartI
 use kuvo_box::typed::{self, Answer, ModelRef, Offers};
 use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
+use kuvo_box::image_names;
+use kuvo_box::quoting::{self, Quote};
 use kuvo_box::parts::File;
 use kuvo_box::{BoxClient, Draft, Sent, Where};
 use kuvo_ui::{
@@ -92,6 +94,8 @@ pub struct Outgoing {
     pub failed: Option<String>,
     /// Its box took it: it's the agent's to read, at its next step.
     pub taken: bool,
+    /// The conversation has its copy, which came without its files: they show under it.
+    pub arrived: bool,
     /// What goes again on Retry, under the same id (the box takes one id once).
     draft: Draft,
 }
@@ -166,6 +170,8 @@ pub struct Composer {
     noted: String,
     /// Files and pictures that go with what's written, in the order they were added.
     attached: Vec<PathBuf>,
+    /// What you're replying to (a message, or a part of one), ahead of your words as it's sent.
+    quotes: Vec<Quote>,
     /// What "@" or "&" suggests for the mention being typed (the box's: `sessions.mentions`, or in a
     /// group chat `groups.mentions`), and which mention that was; which read of them is the latest.
     mentions: Vec<Mention>,
@@ -271,6 +277,7 @@ impl Composer {
             note: None,
             noted: String::new(),
             attached: Vec::new(),
+            quotes: Vec::new(),
             mentions: Vec::new(),
             mentions_for: None,
             mention_reads: 0,
@@ -410,9 +417,8 @@ impl Composer {
         match sent {
             // Shown in it at once, until its read has it.
             Ok(Sent::Message { id }) => {
-                let mut draft = Draft::new(id.clone(), written.to_owned());
-                draft.files = files.iter().map(|path| File::at(path)).collect();
-                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, draft });
+                let draft = Draft::new(id.clone(), written.to_owned());
+                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, draft });
                 cx.emit(ComposerEvent::Outgoing);
             }
             Ok(sent) => self.sent(sent, written, files, cx),
@@ -839,12 +845,12 @@ impl Composer {
         if self.client.gate().is_held() { return; }
         let text = self.text(cx);
         let group = matches!(self.target, Target::Group { .. });
-        if (text.trim().is_empty() && (group || self.attached.is_empty())) || self.sending {
+        if (text.trim().is_empty() && (group || (self.attached.is_empty() && self.quotes.is_empty()))) || self.sending {
             return;
         }
         let mut draft = Draft::new(BoxClient::new_id(), text.clone());
+        // (Its files go with it as its box takes them, read as it goes: `go`.)
         let files = std::mem::take(&mut self.attached);
-        draft.files = files.iter().map(|path| File::at(path)).collect();
         // The agents picked from "&"'s list that are still named in it.
         draft.named = self.named.iter().filter(|(text, _)| mentioned(&draft.text, text)).map(|(_, session)| session.clone()).collect();
         draft.named.dedup();
@@ -885,25 +891,33 @@ impl Composer {
             }
             Target::Session { id, place } => {
                 draft.place = self.place_known.then_some(place);
+                // What it replies to goes ahead of its words: a plain message's now (so it shows so
+                // at once), a typed one's as its box says it sends (`send_draft`'s `quote`).
+                let quotes = std::mem::take(&mut self.quotes);
                 // A plain message shows in the conversation at once, as you wrote it ("/" and "!"
                 // texts are the box's to say what they are; one kept for a model that can't run
                 // goes back to the composer, saying why).
                 let shows = !typed::asks_box(&text) && typed::plain_answer(&text, draft.side, draft.refusal.as_deref()).is_none();
+                let (text, quotes) = if shows && !quotes.is_empty() { (quoting::message(&quotes, &text), Vec::new()) } else { (text, quotes) };
+                draft.text = text.clone();
                 if shows {
-                    self.outgoing.push(Outgoing { id: draft.id.clone(), words: text.clone(), files: files.clone(), failed: None, taken: false, draft: draft.clone() });
+                    self.outgoing.push(Outgoing { id: draft.id.clone(), words: text.clone(), files: files.clone(), failed: None, taken: false, arrived: false, draft: draft.clone() });
                     cx.emit(ComposerEvent::Outgoing);
                 }
-                self.go(id, draft, text, files, shows, cx);
+                self.go(id, draft, text, files, quotes, shows, cx);
             }
             Target::New(place) => {
                 let model = self.picked.clone();
                 let how = StartHow { worktree: self.starts_in_worktree(), approval: self.picked_approval.clone() };
+                let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
                 self.spawn(
                     cx,
                     move || {
-                        let started = client.start_session(&place, model.as_ref(), &how)?;
+                        // (Its files read first: one that can't go starts nothing.)
+                        draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
+                        let started = client.start_session(&place, model.as_ref(), &how).map_err(|error| error.to_string())?;
                         let sent = client.send_draft(&started.session, &draft, None).map_err(|error| error.to_string());
-                        Ok::<_, kuvo_box::Error>((started, sent))
+                        Ok::<_, String>((started, sent))
                     },
                     move |this, result, cx| {
                         this.sending = false;
@@ -925,7 +939,7 @@ impl Composer {
                             }
                             Err(error) => {
                                 this.attach(files, cx);
-                                this.put_back(&text, Some(error.to_string()), cx)
+                                this.put_back(&text, Some(error), cx)
                             }
                         }
                         cx.notify();
@@ -938,14 +952,25 @@ impl Composer {
     /// Sends `draft` to conversation `session` (`send` or Retry): one at a time, Stop taking it as
     /// it goes. `shows`: it's drawn in the conversation (`outgoing`), which says what became of it;
     /// else what was written goes back to the composer if it couldn't go.
-    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, shows: bool, cx: &mut Context<Self>) {
+    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, shows: bool, cx: &mut Context<Self>) {
         // (One at a time: `send` and Retry refuse another while this one's on its way.)
         debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
         self.sending = true;
         let client = self.client.clone();
         let id = draft.id.clone();
         self.on_its_way = Some(id.clone());
-        self.spawn(cx, move || client.send_draft(&session, &draft, None), move |this, result, cx| {
+        // Its files as its box takes them: where they are, for this computer's; with their bytes,
+        // for another's, which keeps them there (`parts::carried`). One that can't go: not sent.
+        let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
+        let kept_quotes = quotes.clone();
+        let work = move || {
+            let mut draft = draft;
+            draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
+            let quote = |words: &str| quoting::message(&quotes, words);
+            let quote: Option<&dyn Fn(&str) -> String> = if quotes.is_empty() { None } else { Some(&quote) };
+            client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())
+        };
+        self.spawn(cx, work, move |this, result, cx| {
             this.sending = false;
             this.on_its_way = None;
             match result {
@@ -954,13 +979,14 @@ impl Composer {
                     this.forget(&id, cx);
                     this.sent(sent, &text, files, cx);
                 }
-                Err(error) if shows => {
-                    let why = error.to_string();
-                    this.mark(&id, |outgoing| outgoing.failed = Some(why), cx);
-                }
-                Err(error) => {
+                Err(why) if shows => this.mark(&id, |outgoing| outgoing.failed = Some(why), cx),
+                Err(why) => {
                     this.attach(files, cx);
-                    this.put_back(&text, Some(error.to_string()), cx)
+                    // (What it replied to goes back with it.)
+                    let mut quotes = kept_quotes;
+                    quotes.append(&mut this.quotes);
+                    this.quotes = quotes;
+                    this.put_back(&text, Some(why), cx)
                 }
             }
             cx.notify();
@@ -977,12 +1003,22 @@ impl Composer {
         &self.outgoing
     }
 
-    /// Those the conversation (or its queue) now has (`has`, by id), let go: its copy takes their
-    /// place. (One said not to have gone that the box has did go: its answer was lost on the way.)
-    pub fn arrived(&mut self, has: impl Fn(&str) -> bool, cx: &mut Context<Self>) {
-        let before = self.outgoing.len();
-        self.outgoing.retain(|outgoing| !has(&outgoing.id));
-        if self.outgoing.len() != before {
+    /// Those the conversation (or its queue) now has (`has`, by id: whether its copy carries
+    /// files), let go: its copy takes their place. (One said not to have gone that the box has did
+    /// go: its answer was lost on the way.) One whose copy came without the files sent with it
+    /// keeps them, shown under its copy (`arrived`), until a copy with its own comes.
+    pub fn arrived(&mut self, has: impl Fn(&str) -> Option<bool>, cx: &mut Context<Self>) {
+        let before = self.outgoing.clone();
+        self.outgoing.retain_mut(|outgoing| match has(&outgoing.id) {
+            None => true,
+            Some(false) if !outgoing.files.is_empty() => {
+                outgoing.arrived = true;
+                outgoing.failed = None;
+                true
+            }
+            Some(_) => false,
+        });
+        if self.outgoing != before {
             cx.emit(ComposerEvent::Outgoing);
         }
     }
@@ -997,7 +1033,7 @@ impl Composer {
         outgoing.failed = None;
         let (draft, text, files) = (outgoing.draft.clone(), outgoing.words.clone(), outgoing.files.clone());
         cx.emit(ComposerEvent::Outgoing);
-        self.go(session, draft, text, files, true, cx);
+        self.go(session, draft, text, files, Vec::new(), true, cx);
         cx.notify();
     }
 
@@ -1016,6 +1052,11 @@ impl Composer {
             change(outgoing);
             cx.emit(ComposerEvent::Outgoing);
         }
+    }
+
+    /// One taken back from its box (Edit or Remove while it waited): it isn't on its way any more.
+    pub fn let_go(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.forget(id, cx);
     }
 
     fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -1105,8 +1146,9 @@ impl Composer {
         &self.attached
     }
 
-    /// Files and pictures to go with what's written (picked, or dropped on it). Folders aren't
-    /// files to send; one already here isn't added twice.
+    /// Files and pictures to go with what's written (put back, restored). Folders aren't files to
+    /// send; one already here isn't added twice. The pictures' names among them are in the words
+    /// already.
     pub fn attach(&mut self, paths: impl IntoIterator<Item = PathBuf>, cx: &mut Context<Self>) {
         for path in paths {
             if !path.is_dir() && !self.attached.contains(&path) {
@@ -1116,17 +1158,54 @@ impl Composer {
         cx.notify();
     }
 
+    /// Files and pictures you just attached (picked, dropped, pasted): each picture's name ("[Image
+    /// 2]") written where you're writing, as 0.7 did, so you and the agent can say which you mean.
+    /// One from another app's data (a picture dragged from Notes) is copied into this app's own
+    /// folder at once, while you hand it over: read later, by the box, macOS would say Kuvo is
+    /// accessing another app's data.
+    pub fn attach_named(&mut self, paths: impl IntoIterator<Item = PathBuf>, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
+        if !paths.iter().any(|path| crate::pasted::is_another_apps(path)) {
+            return self.name_attached(paths, cx);
+        }
+        // (Copied off the UI thread; in the order they came.)
+        let folder = crate::pasted::folder(cx);
+        let copy = move || {
+            paths.into_iter().map(|path| if crate::pasted::is_another_apps(&path) { crate::pasted::keep_copy(&path, &folder, std::time::SystemTime::now()).unwrap_or(path) } else { path }).collect::<Vec<_>>()
+        };
+        self.spawn(cx, copy, |this, paths, cx| this.name_attached(paths, cx));
+    }
+
+    fn name_attached(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let mut names = Vec::new();
+        for path in paths {
+            if path.is_dir() || self.attached.contains(&path) {
+                continue;
+            }
+            self.attached.push(path.clone());
+            if is_picture(&path) {
+                names.push(image_names::name(self.attached.iter().filter(|each| is_picture(each)).count()));
+            }
+        }
+        // (Not into a "!" command, which is the shell's.)
+        if !names.is_empty() && !self.text(cx).starts_with('!') {
+            let words = names.join(" ");
+            self.field.update(cx, |field, cx| field.write(&words, cx));
+        }
+        cx.notify();
+    }
+
     /// What ⌘V brought that isn't text: files copied in the Finder, attached; a picture (a copied
     /// screenshot, an image copied from a browser), kept as a file to attach (`pasted`). One that
     /// can't be says so under the composer.
     pub fn paste(&mut self, pasted: Pasted, cx: &mut Context<Self>) {
         match pasted {
-            Pasted::Files(paths) => self.attach(paths, cx),
+            Pasted::Files(paths) => self.attach_named(paths, cx),
             Pasted::Picture(image) => {
                 let folder = crate::pasted::folder(cx);
                 self.spawn(cx, move || crate::pasted::save(&image, &folder, std::time::SystemTime::now()), |this, saved, cx| {
                     match saved {
-                        Ok(path) => this.attach([path], cx),
+                        Ok(path) => this.attach_named([path], cx),
                         Err(error) => {
                             this.set_note(Note { text: error.into(), warning: true }, cx);
                             cx.notify();
@@ -1137,9 +1216,63 @@ impl Composer {
         }
     }
 
+    /// Replies to `text` (a message, or what's selected in one): it goes above what you write, and
+    /// ahead of it as it's sent. The same quoted twice is there once.
+    pub fn quote(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.trim();
+        if text.is_empty() || matches!(self.target, Target::Group { .. }) || self.quotes.iter().any(|quote| quote.text == text) {
+            return;
+        }
+        self.quotes.push(Quote::new(text));
+        cx.notify();
+    }
+
+    /// What you're replying to, in order.
+    pub fn quotes(&self) -> &[Quote] {
+        &self.quotes
+    }
+
+    pub fn unquote(&mut self, at: usize, cx: &mut Context<Self>) {
+        if at < self.quotes.len() {
+            self.quotes.remove(at);
+            cx.notify();
+        }
+    }
+
+    /// What you're replying to, above the field: each quote's first lines, with × to take it off.
+    fn quote_cards(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.quotes.is_empty() {
+            return None;
+        }
+        let c = cx.theme().colors.clone();
+        let cards = self.quotes.iter().enumerate().map(|(at, quote)| {
+            let selector = format!("quote-{at}");
+            div()
+                .debug_selector(move || selector)
+                .flex()
+                .items_start()
+                .gap(space::S2)
+                .pl(space::S2)
+                .border_l_2()
+                .border_color(c.accent)
+                .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text_muted).line_clamp(3).child(quote.text.clone()))
+                .child(Button::icon_only(("unquote", at), IconName::Close, "Remove Quote").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unquote(at, cx))))
+        });
+        Some(div().debug_selector(|| "quotes".into()).flex().flex_col().gap(space::S1_5).children(cards).into_any_element())
+    }
+
+    /// Takes a file off the message, and a picture's name with it (the later ones a number down).
     pub fn detach(&mut self, at: usize, cx: &mut Context<Self>) {
         if at < self.attached.len() {
+            let number = is_picture(&self.attached[at]).then(|| self.attached[..=at].iter().filter(|each| is_picture(each)).count());
             self.attached.remove(at);
+            if let Some(number) = number {
+                let (now, words) = (self.text(cx), image_names::removing(number, &self.text(cx)));
+                // (Only where a name changes: the words, their undo and the caret stay otherwise.)
+                if words != now {
+                    self.field.update(cx, |field, cx| field.set_text(words, cx));
+                }
+            }
             cx.notify();
         }
     }
@@ -1149,7 +1282,7 @@ impl Composer {
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) });
         self.tasks.push(cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await {
-                this.update(cx, |this, cx| this.attach(paths, cx)).ok();
+                this.update(cx, |this, cx| this.attach_named(paths, cx)).ok();
             }
         }));
     }
@@ -1848,6 +1981,7 @@ impl Render for Composer {
             .shadow(theme.card_shadow())
             .when(!offers.is_empty(), |d| d.child(self.slash_list(&offers, cx)))
             .children(self.full_access_question(cx))
+            .children(self.quote_cards(cx))
             .children(self.attachments(cx))
             .children(keyword.map(|chip| div().flex().child(chip)))
             .child(div().pt(space::S1).pr(space::S1).child(self.field.clone()))
@@ -1876,7 +2010,7 @@ impl Render for Composer {
                 this.slash_dismissed = Some(this.text(cx));
                 cx.notify();
             }))
-            .when(!group, |d| d.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach(paths.paths().to_vec(), cx))))
+            .when(!group, |d| d.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_named(paths.paths().to_vec(), cx))))
             .w_full()
             .flex()
             .flex_col()

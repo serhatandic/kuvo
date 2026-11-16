@@ -291,6 +291,9 @@ pub struct Workspace {
     /// How many things wait on you in each area, as the box counts them (`kuvo/waiting`): followed
     /// where its box streams, else read again as its session list changes.
     waiting: Waiting,
+    queue_badge_open_pending: bool,
+    queue_badge_items: Vec<kuvo_box::work_queue::Item>,
+    queue_badge_task: Option<Task<()>>,
     waiting_task: Option<Task<()>>,
     /// The list changed while a read of what waits was on its way: read once more after it.
     waiting_again: bool,
@@ -343,6 +346,10 @@ impl Workspace {
         let permissions = cx.new(|cx| crate::permissions::HeadsUp::new(client.clone(), live, window, cx));
         let areas = areas::views(&client, live, cx);
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
+        if let Some(view) = areas.iter().find(|(area, _)| *area == Area::Queue).map(|(_, view)| view) {
+            area_subscriptions.push(cx.observe(view, |_, _, cx| cx.notify()));
+        }
+
         area_subscriptions.extend(areas.iter().map(|(_, view)| {
             cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
@@ -422,6 +429,9 @@ impl Workspace {
             in_bot_chat: false,
             groups_on_screen: false,
             waiting: Waiting::default(),
+            queue_badge_open_pending: false,
+            queue_badge_items: Vec::new(),
+            queue_badge_task: None,
             waiting_task: None,
             waiting_again: false,
             computers: Reading::NotYet,
@@ -1774,7 +1784,36 @@ impl Workspace {
 
     /// Opens `area`, its sidebar shown; Sessions comes back to the conversation (or landing view)
     /// it showed.
+    fn queue_computer(&self) -> String {
+        if self.client.here() { return "nearest".into(); }
+        self.switching.as_ref().and_then(|switching| switching.shown.clone()).unwrap_or_else(|| "nearest".into())
+    }
+
+    fn queue_opened(&mut self, cx: &mut Context<Self>) {
+        let at = crate::yours::queue_watermark(&self.queue_badge_items);
+        crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+        self.queue_badge_open_pending = true;
+        self.read_queue_badge(cx);
+    }
+
+    fn take_queue_badge(&mut self, said: kuvo_box::work_queue::QueueSaid, cx: &mut Context<Self>) {
+        self.queue_badge_items = said.items;
+        if self.queue_badge_open_pending {
+            self.queue_badge_open_pending = false;
+            let at = crate::yours::queue_watermark(&self.queue_badge_items);
+            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+        }
+        cx.notify();
+    }
+
+    pub fn queue_badge(&self, cx: &App) -> usize {
+        let yours = crate::yours::now(cx);
+        let opened = yours.queue_last_opened.get(&self.queue_computer()).copied();
+        crate::yours::queue_badge(&self.queue_badge_items, opened)
+    }
+
     pub fn show_area(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
+        if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
         self.bring_out_sidebar(window);
         match area {
@@ -1831,6 +1870,7 @@ impl Workspace {
             self.show_area(area, window, cx);
             return;
         }
+        if area == Area::Queue { self.queue_opened(cx); }
         self.toggle_sidebar(window, cx);
     }
 
@@ -1910,7 +1950,28 @@ impl Workspace {
         }));
     }
 
+    fn read_queue_badge(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        if !self.live {
+            match client.work_queue_view() {
+                Ok(said) => self.take_queue_badge(said, cx),
+                Err(_) => self.queue_badge_open_pending = false,
+            }
+        } else {
+            self.queue_badge_task = Some(cx.spawn(async move |this, cx| {
+                let read = cx.background_executor().spawn(async move { client.work_queue_view() }).await;
+                this.update(cx, |this, cx| {
+                    match read {
+                        Ok(said) => this.take_queue_badge(said, cx),
+                        Err(_) => this.queue_badge_open_pending = false,
+                    }
+                }).ok();
+            }));
+        }
+    }
+
     fn take_waiting(&mut self, read: kuvo_box::Result<Waiting>, cx: &mut Context<Self>) {
+        if read.is_ok() { self.read_queue_badge(cx); }
         // Couldn't be read now: what was said stands until it can.
         if let Ok(waiting) = read
             && self.waiting != waiting
@@ -2081,7 +2142,6 @@ impl Workspace {
             Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).cloned(),
             _ => None,
         });
-        let now = self.now();
         let strip = div()
             .debug_selector(|| "bot-chat-strip".into())
             .flex()
@@ -2096,7 +2156,7 @@ impl Workspace {
             .children(listed.as_ref().map(|bot| areas::bot_face(&bot.look, px(22.))))
             .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
             .children(listed.as_ref().map(|bot| {
-                let words = areas::doing(&bot.now, now).unwrap_or_else(|| bot.job.clone());
+                let words = bot.job.clone();
                 div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)
             }));
         div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone())).into_any_element()
@@ -2708,7 +2768,7 @@ impl Render for Workspace {
             };
             let words: AnyElement = match why {
                 Some(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
-                _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(kuvo_ui::small::spinner("window-waiting-spinner", kuvo_ui::IconSize::Nav, c.text_muted)).child("Starting…").into_any_element(),
+                _ => kuvo_ui::small::LoadingLabel::new("window-starting", "Starting…").into_any_element(),
             };
             return div()
                 .debug_selector(|| "window-waiting".into())
@@ -2720,6 +2780,8 @@ impl Render for Workspace {
                 .child(div().id("window-waiting-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
                     if event.click_count == 1 {
                         window.start_window_move();
+                    } else if event.click_count == 2 {
+                        window.titlebar_double_click();
                     }
                 }))
                 .child(div().flex_1().flex().items_center().justify_center().pb(px(96.)).child(words));

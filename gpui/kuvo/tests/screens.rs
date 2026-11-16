@@ -1240,6 +1240,220 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn sent_while_the_agent_works_it_waits_for_its_next_step_and_can_be_taken_back(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    // The agent at work: what's said of the conversation before the box hands it what's sent.
+    let mut working = read_now(&client, "ses_recipes").unwrap();
+    working.running = true;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+
+    cx.simulate_input("Also check the oven");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
+    // Its box holds it for the agent's next step: the conversation says so (not "Sending…"), and
+    // the queue over the composer doesn't list it twice.
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [{ "id": id, "words": "Also check the oven", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }] })).unwrap(), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "at-next-step").is_some());
+    assert!(bounds(cx, "sending").is_none());
+    assert!(bounds(cx, "queue").is_none(), "shown once, in the conversation");
+    // The rows before it stay as they were, and it sits before the run under way.
+    let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
+    assert_eq!(keys[keys.len() - 2..], [id.clone(), "working".to_owned()]);
+
+    // Remove asks its box to take it back, as the queue's Remove does.
+    let remove = bounds(cx, &format!("remove-waiting-{id}")).expect("Remove");
+    cx.simulate_click(remove.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.seen_at("DELETE", &format!("kuvo/sessions/ses_recipes/queue/{id}")).len(), 1);
+}
+
+#[gpui::test]
+fn files_sent_to_a_conversation_on_another_computer_go_with_their_bytes_and_pictures_are_named(cx: &mut TestAppContext) {
+    let png = |width: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, 4).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // The conversation runs on another computer: no path on this Mac means anything there.
+    stand_in.set_elsewhere(true);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let (first, notes, second) = (folder.path().join("fridge.png"), folder.path().join("list.txt"), folder.path().join("shelf.png"));
+    std::fs::write(&first, png(3)).unwrap();
+    std::fs::write(&notes, "rice").unwrap();
+    std::fs::write(&second, png(5)).unwrap();
+
+    // Attached as you pick or drop them: each picture named where you're writing.
+    cx.simulate_input("Compare");
+    composer.update(cx, |composer, cx| composer.attach_named([first.clone(), notes.clone(), second.clone()], cx));
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx).0, "Compare [Image 1] [Image 2] ");
+    // Taking a picture off takes its name, and the later one moves down.
+    composer.update(cx, |composer, cx| composer.detach(0, cx));
+    assert_eq!(typed(&composer, cx).0, "Compare [Image 1] ");
+    composer.update(cx, |composer, cx| composer.attach_named([first.clone()], cx));
+    cx.simulate_input("please");
+    assert_eq!(typed(&composer, cx).0, "Compare [Image 1] [Image 2] please");
+
+    // Sent: each file with its bytes, as a phone sends them; the words keep the names.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let body = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).expect("sent");
+    assert_eq!(body["words"], "Compare [Image 1] [Image 2] please");
+    let files = body["files"].as_array().unwrap();
+    assert_eq!(files.iter().map(|file| file["name"].as_str().unwrap()).collect::<Vec<_>>(), ["list.txt", "shelf.png", "fridge.png"]);
+    assert!(files[1]["uri"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    assert!(files[0]["uri"].as_str().unwrap().starts_with("data:text/plain;base64,"));
+    assert!(!body.to_string().contains(&folder.path().to_string_lossy().into_owned()), "no path on this Mac goes");
+
+    // Its box's copy carries them: it takes the row's place, its pictures shown under it.
+    let id = body["id"].as_str().unwrap().to_owned();
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    assert!(composer.read_with(cx, |composer, _| composer.outgoing().is_empty()));
+    assert!(bounds(cx, &format!("picture-{id}#1")).is_some(), "its picture, from its copy");
+
+    // A file that can't be read as it goes: not sent, saying which, with Retry.
+    let gone = folder.path().join("gone.png");
+    std::fs::write(&gone, png(2)).unwrap();
+    composer.update(cx, |composer, cx| composer.attach_named([gone.clone()], cx));
+    std::fs::remove_file(&gone).unwrap();
+    let field = composer.read_with(cx, |composer, _| composer.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Outgoing { failed: Some(why), .. }) if why == "“gone.png” couldn’t be read."));
+    assert!(bounds(cx, "not-sent").is_some());
+}
+
+#[gpui::test]
+fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.drop_files();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let note = folder.path().join("list.txt");
+    std::fs::write(&note, "rice").unwrap();
+    composer.update(cx, |composer, cx| composer.attach_named([note.clone()], cx));
+    cx.simulate_input("Here");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    // Its copy in its place, once, and the file sent with it still shown under it.
+    assert_eq!(view.read_with(cx, |view, _| view.entries().iter().filter(|entry| entry.key() == id).count()), 1);
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    assert!(bounds(cx, &format!("kept-files-{id}")).is_some(), "the files sent stay in sight");
+}
+
+#[gpui::test]
+fn a_message_of_only_pictures_from_the_phone_shows_them_and_one_that_fails_says_so_with_try_again(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let png = |width: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, 10).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // As the box keeps a phone's photos: one the model reads, carried in the message; one kept on
+    // its disk, named in the message's parts. No words.
+    let kept = "/home/sam/.kuvo-code/attachments/ses_recipes/b10bd6c5/Photo 2.jpeg";
+    stand_in.add_message("ses_recipes", json!({ "type": "user", "id": "msg_ph", "time": { "created": NOW - 60_000.0 }, "text": "",
+        "files": [{ "mime": "image/png", "name": "Photo 1.png", "data": base64::engine::general_purpose::STANDARD.encode(png(30)) }],
+        "metadata": { "kuvo": { "parts": { "words": "", "phone": true, "paths": [kept] } } } }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    cx.run_until_parked();
+    assert!(bounds(cx, "picture-msg_ph#0").is_some(), "the photo it carried");
+    // The one kept on its computer couldn't be read: said plainly, with Try Again.
+    let failed = bounds(cx, &format!("picture-msg_ph@{kept}")).expect("a tile in its place");
+    assert!(failed.size.width > px(0.));
+    let again = bounds(cx, &format!("picture-again-msg_ph@{kept}")).expect("Try Again");
+    stand_in.put_file(kept, png(40));
+    cx.simulate_click(again.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, &format!("picture-again-msg_ph@{kept}")).is_none());
+    let shown = bounds(cx, &format!("picture-msg_ph@{kept}")).unwrap();
+    assert_eq!((shown.size.width, shown.size.height), (px(40.), px(10.)), "shown once read");
+}
+
+#[gpui::test]
+fn pictures_in_a_conversation_show_in_it_and_open_larger(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // Yours, with a picture it carried; and the agent's reply, showing you a file on its computer.
+    let yours = base64::engine::general_purpose::STANDARD.encode(png(40, 30));
+    stand_in.add_message("ses_recipes", json!({ "type": "user", "id": "msg_p1", "time": { "created": NOW - 60_000.0 }, "text": "What's this?", "files": [{ "mime": "image/png", "name": "fridge.png", "data": yours }] }));
+    stand_in.add_message("ses_recipes", json!({ "type": "assistant", "id": "msg_p2", "time": { "created": NOW - 50_000.0, "completed": NOW - 40_000.0 }, "agent": "build", "finish": "stop", "content": [
+        { "type": "tool", "id": "prt_p", "name": "kuvo-browser_show_file", "state": { "status": "completed", "input": { "path": "/home/sam/plan one.png", "caption": "This week's plan" }, "content": [] } },
+        { "type": "tool", "id": "prt_s", "name": "kuvo-browser_browser_screenshot", "state": { "status": "completed", "input": {}, "content": [{ "type": "file", "uri": format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png(20, 10))), "mime": "image/png" }] } },
+        { "type": "text", "text": "Here's the plan, and last week's:\n\n![](/home/sam/last-week.png)\n\n![The site](https://example.com/shot.png)" },
+    ] }));
+    stand_in.put_file("/home/sam/plan one.png", png(1200, 600));
+    stand_in.put_file("/home/sam/last-week.png", png(100, 900));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    // (Tall enough to show the whole conversation.)
+    cx.simulate_resize(size(px(1200.), px(2400.)));
+    open_session(&workspace, "ses_recipes", cx);
+    cx.run_until_parked();
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let all: Vec<String> = view.read_with(cx, |view, _| view.all_pictures().into_iter().map(|picture| picture.id).collect());
+    assert_eq!(all, ["msg_p1#0", "msg_p2:0-shown", "msg_p2:2~0"], "a step's own screenshot isn't among them while it's folded");
+
+    // Yours, under your words, at its own size; the one shown, fitted to 560 × 420, from its computer.
+    let mine = bounds(cx, "picture-msg_p1#0").expect("your picture is drawn");
+    assert_eq!((mine.size.width, mine.size.height), (px(40.), px(30.)));
+    let shown = bounds(cx, "picture-msg_p2:0-shown").expect("the picture shown is drawn");
+    assert_eq!((shown.size.width, shown.size.height), (px(560.), px(280.)));
+    // One written in its words, from its computer too; a web address isn't fetched.
+    let written = bounds(cx, "picture-msg_p2:2~0").expect("the picture in its words is drawn");
+    assert_eq!(written.size.height, px(420.));
+    assert!((f32::from(written.size.width) - 100. * 420. / 900.).abs() < 0.5, "fitted, as it is: {:?}", written.size);
+    let asked = stand_in.seen_at("GET", "kuvo/file");
+    assert_eq!(asked.len(), 2, "each read once, from the conversation's computer");
+
+    // The screenshot the agent took for itself: inside its step, once that's opened.
+    assert!(bounds(cx, "picture-msg_p2:1-0").is_none());
+    view.update(cx, |view, cx| view.open_step("msg_p2", 1, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "picture-msg_p2:1-0").is_some(), "shown once the step is opened");
+
+    // A click opens it over the conversation; → and ← go among its pictures; Escape closes.
+    cx.simulate_click(shown.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_p2:0-shown".into()));
+    assert!(bounds(cx, "picture-viewer").is_some());
+    cx.simulate_keystrokes("left");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_p1#0".into()));
+    cx.simulate_keystrokes("right");
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some("msg_p2:0-shown".into()));
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |view, _| view.viewing().is_none()));
+    assert!(bounds(cx, "picture-viewer").is_none());
+}
+
+#[gpui::test]
 fn what_you_send_shows_at_once_and_the_boxs_copy_takes_its_place(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
@@ -1324,7 +1538,7 @@ fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: 
         out.into_inner()
     };
 
-    // A copied screenshot (a picture, no text): ⌘V attaches it, kept as a file, nothing typed.
+    // A copied screenshot (a picture, no text): ⌘V attaches it, kept as a file, and names it.
     cx.write_to_clipboard(ClipboardItem::from(Image::from_bytes(ImageFormat::Png, screenshot.clone())));
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
@@ -1332,7 +1546,7 @@ fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: 
     assert_eq!(attached.len(), 1);
     assert_eq!(std::fs::read(&attached[0]).unwrap(), screenshot);
     assert!(attached[0].file_name().unwrap().to_string_lossy().starts_with("Pasted Image "));
-    assert_eq!(typed(&composer, cx).0, "");
+    assert_eq!(typed(&composer, cx).0, "[Image 1] ", "named where you're writing, as 0.7 did");
     assert!(bounds(cx, "attachments").is_some());
 
     // Files copied in the Finder (their names come as text too): attached, the names not typed.
@@ -1346,13 +1560,13 @@ fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: 
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().to_vec()), [attached[0].clone(), note.clone(), photo.clone()]);
-    assert_eq!(typed(&composer, cx).0, "");
+    assert_eq!(typed(&composer, cx).0, "[Image 1] [Image 2] ", "the copied picture named; the names of the files not pasted as text");
 
     // Text pastes as text, as ever.
     cx.write_to_clipboard(ClipboardItem::new_string("What's in the fridge?".into()));
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
-    assert_eq!(typed(&composer, cx).0, "What's in the fridge?");
+    assert_eq!(typed(&composer, cx).0, "[Image 1] [Image 2] What's in the fridge?");
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().len()), 3);
 
     // Send takes the pasted picture with the rest, as a file on this Mac's box.

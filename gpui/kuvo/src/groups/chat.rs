@@ -550,7 +550,7 @@ impl GroupChatView {
         let body: AnyElement = match row {
             Row::Talking => self.talking(cx),
             Row::Message { said, drawn } => match (&said.author, said.kind.as_str()) {
-                (None, "message") => entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, cx),
+                (None, "message") => entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, &crate::pictures::Looks::none(), cx),
                 (None, "meeting") => div()
                     .flex()
                     .justify_center()
@@ -627,7 +627,7 @@ impl GroupChatView {
             let view = view.clone();
             head = head.cursor_pointer().on_click(move |_, _, cx| view.update(cx, |_, cx| cx.emit(ChatEvent::BotChat { bot: id.clone(), session: session.clone() })));
         }
-        let body = entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, cx);
+        let body = entries::message_body(ix, &said.id, drawn, &self.open, toggle, &self.selection, &crate::pictures::Looks::none(), cx);
         div()
             .flex()
             .flex_col()

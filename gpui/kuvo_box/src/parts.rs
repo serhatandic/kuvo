@@ -138,6 +138,61 @@ impl File {
     }
 }
 
+/// The most a file sent to another computer with a message weighs, and all of a message's files
+/// (as 0.7's `Attachments.maxMachineBytes` and `maxMessageBytes`): the box there keeps them.
+pub const CARRIED_FILE_MOST: u64 = 50 * 1024 * 1024;
+pub const CARRIED_MESSAGE_MOST: u64 = 100 * 1024 * 1024;
+
+/// The files attached to a message, as its box takes them. `here`: the box is on this computer,
+/// which opens them where they are (`File::at`), but for those the client keeps only a while
+/// (`passing`: a pasted picture), which go as another computer's do. Another computer can't open
+/// them, so each goes with its bytes (`data:`, as a phone sends them), and its box keeps it there
+/// and notes where. One that can't be read, or is too large to send, is said, by name, in plain
+/// words: the message doesn't go without it.
+pub fn carried(paths: &[std::path::PathBuf], here: bool, passing: &dyn Fn(&std::path::Path) -> bool) -> Result<Vec<File>, String> {
+    use base64::Engine as _;
+    let mut total = 0u64;
+    let mut files = Vec::new();
+    for path in paths {
+        if here && !passing(path) {
+            files.push(File::at(path));
+            continue;
+        }
+        let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".into());
+        let size = std::fs::metadata(path).map_err(|_| format!("“{name}” couldn’t be read."))?.len();
+        if size > CARRIED_FILE_MOST {
+            return Err(format!("“{name}” is over 50 MB, more than can go to another computer with a message."));
+        }
+        total += size;
+        if total > CARRIED_MESSAGE_MOST {
+            return Err("These files together are over 100 MB, more than can go to another computer with one message.".into());
+        }
+        let bytes = std::fs::read(path).map_err(|_| format!("“{name}” couldn’t be read."))?;
+        let mime = mime_of(path);
+        files.push(File { uri: format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)), name: Some(name) });
+    }
+    Ok(files)
+}
+
+/// A file's type, by its extension, as a message carries it (words as `text/plain`, which the
+/// engine reads as words; anything not known as bytes, which its box keeps for the agent to open).
+pub fn mime_of(path: &std::path::Path) -> &'static str {
+    let extension = path.extension().map(|extension| extension.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "tif" | "tiff" => "image/tiff",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" | "md" | "markdown" | "csv" | "tsv" | "log" | "json" | "yaml" | "yml" | "toml" | "xml" | "html" | "htm" | "css" | "js" | "mjs" | "ts" | "tsx" | "jsx" | "rs" | "py" | "rb" | "go" | "swift" | "kt" | "java" | "c" | "h" | "cpp" | "hpp" | "m" | "sh" | "zsh" | "sql" | "ini" | "conf" | "env" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Where the files a message sent are, for its note: with their contents (`included`), as paths for
 /// the agent to open, and those left behind (they couldn't be read or sent).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -195,5 +250,27 @@ pub struct Sending {
 impl Sending {
     pub fn words(words: impl Into<String>) -> Sending {
         Sending { words: words.into(), ..Sending::default() }
+    }
+}
+
+#[cfg(test)]
+mod carried_tests {
+    use super::*;
+
+    #[test]
+    fn files_go_where_they_are_to_this_computers_box_and_with_their_bytes_to_another() {
+        let folder = std::env::temp_dir().join(format!("kuvo-carried-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let picture = folder.join("a b.png");
+        std::fs::write(&picture, [1u8, 2, 3]).unwrap();
+        let here = carried(std::slice::from_ref(&picture), true, &|_| false).unwrap();
+        assert!(here[0].uri.starts_with("file://") && here[0].uri.ends_with("a%20b.png"));
+        let there = carried(std::slice::from_ref(&picture), false, &|_| false).unwrap();
+        assert_eq!(there, [File { uri: "data:image/png;base64,AQID".into(), name: Some("a b.png".into()) }]);
+        // One kept here only a while (a pasted picture) goes with its bytes to this computer's too.
+        assert_eq!(carried(std::slice::from_ref(&picture), true, &|_| true).unwrap(), there);
+        let gone = carried(&[folder.join("gone.png")], false, &|_| false).unwrap_err();
+        assert_eq!(gone, "“gone.png” couldn’t be read.");
+        std::fs::remove_dir_all(&folder).ok();
     }
 }

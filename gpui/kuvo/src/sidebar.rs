@@ -395,17 +395,7 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
             .text_color(c.text_muted)
             .child(words.clone())
             .into_any_element(),
-        Line::Searching => div()
-            .flex()
-            .items_center()
-            .gap(space::S2)
-            .px(space::S2)
-            .py(space::S1_5)
-            .text_ui(TypeSize::Small)
-            .text_color(c.text_muted)
-            .child(spinner("searching", IconSize::Nav, c.text_muted))
-            .child("Searching conversations…")
-            .into_any_element(),
+        Line::Searching => kuvo_ui::small::LoadingLabel::new("session-search", "Searching conversations…").compact().into_any_element(),
         Line::Empty(_) => div()
             .h(px(26.))
             .flex()
@@ -799,6 +789,7 @@ fn found_row(workspace: &mut Workspace, id: &str, snippet: &str, cursor: bool, c
 
 /// Quiet words in the sidebar's place: loading, nothing yet, or what's wrong.
 fn quiet(words: Option<&str>, busy: bool, cx: &App) -> AnyElement {
+    if busy { return div().px(space::S2).text_center().child(kuvo_ui::small::LoadingLabel::new("sessions-loading", words.unwrap_or("Loading sessions…").to_owned()).compact()).into_any_element(); }
     let c = &cx.theme().colors;
     div()
         .w_full()

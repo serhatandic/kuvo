@@ -681,6 +681,13 @@ impl QueueView {
         .unwrap_or_else(|| "Work Queue".into())
     }
 
+    /// Keep the unresolved state visible in offscreen loading-state captures.
+    #[cfg(feature = "shots")]
+    pub fn show_loading_for_shot(&mut self, cx: &mut Context<Self>) {
+        self.said = Reading::NotYet;
+        self.rebuild(cx);
+    }
+
     /// Folded unless opened: what's closed (as the box says a status is) and what's deleted.
     fn is_folded(&self, key: &str) -> bool {
         self.folds.get(key).copied().unwrap_or(key == DELETED || self.is_closed(key))

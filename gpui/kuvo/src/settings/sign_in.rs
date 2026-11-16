@@ -20,7 +20,7 @@ use kuvo_box::accounts::{Attempt, FormField, Method, Side, Status, Ways, said};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TypeSize,
     button::{Button, ButtonSize},
-    small::{Switch, spinner},
+    small::Switch,
     theme::{radius, space},
 };
 use serde_json::{Map, Value};
@@ -796,17 +796,8 @@ fn quiet(text: &str, cx: &Context<SignIn>) -> AnyElement {
     div().text_ui(TypeSize::Small).text_color(cx.theme().colors.text_muted).child(text.to_owned()).into_any_element()
 }
 
-fn working(text: &str, cx: &Context<SignIn>) -> AnyElement {
-    let c = &cx.theme().colors;
-    div()
-        .flex()
-        .items_center()
-        .gap(space::S2)
-        .text_ui(TypeSize::Small)
-        .text_color(c.text_muted)
-        .child(spinner("sign-in-spin", IconSize::Nav, c.text_muted))
-        .child(text.to_owned())
-        .into_any_element()
+fn working(text: &str, _cx: &Context<SignIn>) -> AnyElement {
+    kuvo_ui::small::LoadingLabel::new("sign-in-loading", text.to_owned()).compact().into_any_element()
 }
 
 fn footer(buttons: Vec<AnyElement>) -> AnyElement {

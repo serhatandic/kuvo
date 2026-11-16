@@ -372,6 +372,12 @@ interface BoxFiles {
   bundles?: Record<string, Record<string, string>>;
 }
 
+// Whether the last `update` failed as a download broke off (the release, its files or its engine):
+// what's passing, which the installer's update tries once more by itself (`main.ts`), unlike a
+// check that would fail again (what it got isn't what it says, no room, a self-test).
+let brokeOff = false;
+export const failedDownloading = (): boolean => brokeOff;
+
 // Updates the box to the newest release, when it's newer: `now` (Update Now) takes it whatever its
 // age. What happened: `{result: "updated" | "current" | "waiting" | "busy" | "off" | "blocked" |
 // "failed", version?, message?}`; once "updated", the bridge goes for the keeper to start the new
@@ -386,12 +392,20 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
+  let fetching = false;
+  brokeOff = false;
+  const download = async <T>(get: () => Promise<T>): Promise<T> => {
+    fetching = true;
+    const got = await get();
+    fetching = false;
+    return got;
+  };
   try {
     step("checking");
     let released: Buffer;
     if (from) released = readRelease(path.join(from, "boxes.json"), 1_000_000);
     else try {
-      released = await fetchedPatiently(url, 1_000_000, 30_000);
+      released = await download(() => fetchedPatiently(url, 1_000_000, 30_000));
     } catch (error) {
       // COMPAT(0.7 no-boxes-json): a newest release without `boxes.json` (0.7.2) is "current". Goes once a release with one is the newest.
       // The newest release has none for machines (one from before them): nothing newer for it.
@@ -411,7 +425,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     stage = path.join(UPDATES, manifest.version);
     fs.rmSync(stage, { recursive: true, force: true });
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
-    const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await fetchedPatiently(manifest.pack.url, 100_000_000, 300_000);
+    const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await download(() => fetchedPatiently(manifest.pack.url, 100_000_000, 300_000));
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
@@ -464,7 +478,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
       if (!build?.url || !/^sha512-/.test(build.integrity ?? "")) throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await fetchedPatiently(build.url, 400_000_000, 900_000);
+      const tarball = await download(() => fetchedPatiently(build.url, 400_000_000, 900_000));
       if (crypto.createHash("sha512").update(tarball).digest("base64") !== build.integrity!.slice(7)) throw new Error("The engine isn't what the release says.");
       fs.writeFileSync(path.join(stage, "engine.tgz"), tarball, { mode: 0o600 });
       fs.mkdirSync(path.join(stage, "engine"), { mode: 0o700 });
@@ -526,6 +540,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
+    brokeOff = fetching;
     const message = String((error as Error | undefined)?.message ?? error).slice(0, 300);
     // Room first: what was downloaded goes before anything's put back.
     if (stage) fs.rmSync(stage, { recursive: true, force: true });

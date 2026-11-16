@@ -210,6 +210,14 @@ impl SettingsView {
                 .when(!words.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)))
                 .into_any_element(),
             Item::Row { row, first, last } => self.row(*row, first, last, cx),
+            Item::Note { key, words, busy: true, .. } => {
+                let first = self.items.iter().find_map(|item| match item { Item::Note { key, busy: true, .. } => Some(key), _ => None });
+                if first == Some(&key) {
+                    kuvo_ui::small::LoadingLabel::new(gpui::SharedString::from(key), words).into_any_element()
+                } else {
+                    div().into_any_element()
+                }
+            },
             Item::Note { key, words, busy, warning } => div()
                 .debug_selector(move || key)
                 .pt(space::S4)
@@ -834,7 +842,12 @@ impl Render for SettingsView {
             self.rebuild(cx);
         }
         self.hear_blurs(window, cx);
-        let page = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full();
+        let loading = self.items.iter().all(|item| matches!(item, Item::Title(_) | Item::End | Item::Note { busy: true, .. } | Item::Whose(_)))
+            .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
+        let page = match loading {
+            Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("page-loading", words)).into_any_element(),
+            None => list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full().into_any_element(),
+        };
         let problem = self.problem.clone().map(|problem| {
             // Over the page, which starts under it: never over its title.
             div()
@@ -938,16 +951,7 @@ impl Render for SettingsView {
                         .into_any_element()
                 }
             } else {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S2)
-                    .py(space::S2)
-                    .text_ui(TypeSize::Small)
-                    .text_color(c.text_muted)
-                    .child(spinner("settings-folder-reading", IconSize::Nav, c.text_muted))
-                    .child("Reading this folder\u{2026}")
-                    .into_any_element()
+                kuvo_ui::small::LoadingLabel::new("settings-folder-reading", "Reading this folder…").compact().into_any_element()
             };
             let ready = picker.folder.is_some();
             let at = picker.at;
