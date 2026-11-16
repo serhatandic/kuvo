@@ -21,6 +21,7 @@ import { macLinkCheck } from "../mac/link";
 import { changeKeptHosts, LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
+import { readPeerAgents } from "../peers/directory";
 import { vouchedWords, vouchMoved } from "../phones";
 import { machineBoxIn } from "../install/verdict";
 import { oldAppAttached, removeHere } from "../peers/manage";
@@ -32,7 +33,7 @@ import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
 import { gatherSeed } from "./seed";
-import { type HostKey, type Ran, type Way, hangUp, lastLine, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
+import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 
 /** Every address of the computers this box set up. */
@@ -104,12 +105,74 @@ function machineBoxProbed(probe: Probed): boolean {
 
 const megabytes = (bytes: number): string => `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
 
+/** Why a computer couldn't be reached, in words: what ssh said goes to this box's log alone. */
+const unreached = (name: string, said?: string): Failed => {
+  if (said) console.error(`Kuvo couldn't reach ${name} over SSH: ${said}`);
+  return new Failed(`Couldn’t reach ${name}. Make sure it’s on and connected, then Try Again.`);
+};
+
+/** Another address of a computer this box set up: `own`, one you added it under (reached as itself,
+ * its host key trusted then); else one it tells its Macs (reached as the first, `reachedAs`). */
+export interface OtherAddress {
+  address: string;
+  own: boolean;
+}
+
+/** Where else the computer added under `destination` may be reached, in the order they're tried:
+ * the other addresses you added it under, then those it tells its Macs (its tailnet's first). */
+export function otherAddressesOf(destination: string): OtherAddress[] {
+  const record = (savedMachines() ?? []).find(each => each.destination === destination);
+  const peer = peersOf(readLink()).find(each => each.id === destination);
+  const told = peer ? readPeerAgents()[peer.key]?.computer?.addresses ?? [] : [];
+  const host = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+  const seen = new Set([host(destination)]);
+  const others: OtherAddress[] = [];
+  for (const address of Array.isArray(record?.otherAddresses) ? record.otherAddresses : []) {
+    if (typeof address !== "string" || addressProblem(address) || seen.has(host(address))) continue;
+    seen.add(host(address));
+    others.push({ address, own: true });
+  }
+  for (const address of told) {
+    if (seen.has(host(address)) || addressProblem(address)) continue;
+    seen.add(host(address));
+    others.push({ address, own: false });
+  }
+  return others.slice(0, 8);
+}
+
 /** A connection for one try: every script over it, signed in with your keys, or the vault's once
- * yours were refused; a host key not known asked about, and kept on your word. */
+ * yours were refused; a host key not known asked about, and kept on your word. A computer this box
+ * set up has more addresses than the one it was added under (`others`: another it was added at, and
+ * those it tells its Macs, as its tailnet's): where that one can't be reached (a home network's
+ * address while you're away), each is tried in turn before the try fails, reached as the first is
+ * and checked against its host key, never asked about. */
 class Reach {
   private way: Way | undefined;
   private closeAgent: (() => void) | null = null;
-  constructor(private readonly destination: string, private readonly name: string, private readonly tell: Telling) {}
+  /** Where it's reached now, with the options that reach it there as at `destination`. */
+  private target: string;
+  private options: string[] = [];
+  /** It's been reached: no other address is tried from then on. */
+  private reached = false;
+  /** What ssh said at the address it was added under, where that didn't answer. */
+  private firstSaid: string | null = null;
+  private readonly others: OtherAddress[];
+  constructor(private readonly destination: string, private readonly name: string, private readonly tell: Telling, others: OtherAddress[] = []) {
+    this.target = destination;
+    this.others = [...others];
+  }
+
+  /** Moves on to the next of its other addresses, where there's one left and none was reached yet. */
+  private async next(said: string): Promise<boolean> {
+    if (this.reached || !this.others.length) return false;
+    this.firstSaid ??= said;
+    const other = this.others.shift()!;
+    console.error(`Kuvo couldn't reach ${this.name} at ${this.target} over SSH (${said || "no answer"}); trying ${other.address}.`);
+    await hangUp(this.target, this.way, this.options).catch(() => {});
+    this.target = other.address;
+    this.options = other.own ? [] : await reachedAs(this.destination).catch(() => []);
+    return true;
+  }
 
   /** Runs `script` there; its answer when it ran (whatever its status), or a `Failed` for a
    * connection that didn't come about. `cut`: ended with the try when it's stopped (only what's
@@ -117,12 +180,24 @@ class Reach {
   async run(script: string, options: { input?: Buffer | { file: string }; sent?: (bytes: number, total: number) => void; cut?: boolean; most?: number; anyway?: boolean } = {}): Promise<Ran> {
     for (let tries = 0; ; tries++) {
       if (!options.anyway) this.tell.check();
-      const ran = await remote(this.destination, script, { input: options.input, sent: options.sent, most: options.most, way: this.way, ...(options.cut ? { signal: this.tell.signal } : {}) });
+      const elsewhere = this.target !== this.destination;
+      const ran = await remote(this.target, script, { input: options.input, sent: options.sent, most: options.most, way: this.way, options: this.options, ...(options.cut ? { signal: this.tell.signal } : {}) });
       const trouble = troubleOf(ran);
-      if (!trouble) return ran;
-      if (options.anyway) throw new Failed(`Couldn’t reach ${this.name}.`);
+      if (!trouble) {
+        this.reached = true;
+        return ran;
+      }
+      if (options.anyway) throw unreached(this.name, lastLine(ran.stderr));
       this.tell.check();
-      if (tries >= 3) throw new Failed(`Couldn’t reach ${this.name}.`);
+      // (Not there, or not the key known for it at another address: the next address, as a try of its own.)
+      if ((trouble.kind === "unreachable" || (elsewhere && trouble.kind !== "refused")) && await this.next(lastLine(ran.stderr))) {
+        tries--;
+        continue;
+      }
+      // (None of its other addresses answered: it couldn't be reached, as at the first. What one of
+      // them said, someone else's computer at a home network's address say, isn't what's true of it.)
+      if (elsewhere && trouble.kind !== "refused") throw unreached(this.name, `${this.firstSaid ?? ""} (and at its other addresses: ${lastLine(ran.stderr)})`);
+      if (tries >= 3) throw unreached(this.name, lastLine(ran.stderr));
       if (trouble.kind === "unknownHost") {
         await this.askKey("hostKey", `Is this ${this.name}?`,
           `${ownName()} hasn’t connected to ${this.name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it.`, "Trust");
@@ -140,7 +215,7 @@ class Reach {
         this.way = vault.way;
         this.closeAgent = vault.close;
       } else {
-        throw new Failed(trouble.said ? `Couldn’t reach ${this.name}. ${trouble.said}${/[.!?…]$/.test(trouble.said) ? "" : "."}` : `Couldn’t reach ${this.name}.`);
+        throw unreached(this.name, trouble.kind === "unreachable" ? trouble.said : lastLine(ran.stderr));
       }
     }
   }
@@ -151,7 +226,7 @@ class Reach {
     this.tell.check();
     if (!read.keys.length) {
       const said = lastLine(read.said);
-      throw new Failed(said && !/permission denied/i.test(said) ? `Couldn’t reach ${this.name}. ${said}${/[.!?…]$/.test(said) ? "" : "."}` : `Couldn’t read ${this.name}’s host key.`);
+      throw said && !/permission denied/i.test(said) ? unreached(this.name, said) : new Failed(`Couldn’t read ${this.name}’s host key.`);
     }
     // (The one ssh checks first, as it orders them: one to compare, not three.)
     const shown: HostKey = read.keys.find(key => key.kind === "ssh-ed25519") ?? read.keys[0]!;
@@ -170,7 +245,7 @@ class Reach {
   }
 
   async close(): Promise<void> {
-    await hangUp(this.destination, this.way).catch(() => {});
+    await hangUp(this.target, this.way, this.options).catch(() => {});
     this.closeAgent?.();
   }
 }
@@ -192,7 +267,7 @@ const launcherID = (key: string): string => crypto.createHash("sha256").update(`
 
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
 async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update"): Promise<void> {
-  const reach = new Reach(destination, name, tell);
+  const reach = new Reach(destination, name, tell, kind === "add" ? [] : otherAddressesOf(destination));
   try {
     tell.step("checking", `Connecting to ${name}`);
     const mine = boxVersion();
@@ -433,7 +508,7 @@ export async function lookAtWork(key: string): Promise<{ version: string | null;
     step() {}, sent() {}, skip() {}, came() {}, rename() {},
     ask: async () => { throw new Failed(`${at.name}’s host key isn’t one ${ownName()} knows.`); },
   };
-  const reach = new Reach(at.destination, at.name, quiet);
+  const reach = new Reach(at.destination, at.name, quiet, otherAddressesOf(at.destination));
   try {
     const answer = await reach.run(scripts.atWork(ENGINE_VERSION), { most: 60_000 });
     if (answer.status !== 0) throw new Failed(`${at.name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
@@ -472,7 +547,7 @@ export function beginUninstall(key: string): Running | null {
   if (now?.seen.kind === "uninstall") return now;
   if (now) stopTry(now);
   return begin("uninstall", at.destination, at.name, UNINSTALL_STEPS, async tell => {
-    const reach = new Reach(at.destination, at.name, tell);
+    const reach = new Reach(at.destination, at.name, tell, otherAddressesOf(at.destination));
     try {
       tell.step("checking", `Connecting to ${at.name}`);
       const answer = await reach.run(scripts.probe(ENGINE_VERSION), { cut: true, most: 120_000 });

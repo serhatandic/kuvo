@@ -1782,7 +1782,10 @@ impl gpui::Render for BesideSettings {
 /// (`update-own-running`).
 fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
     use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running"] {
+    // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
+    // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
+    // older or out of reach, as the window shows it.)
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -1792,6 +1795,15 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             let own = slug.starts_with("update-own-");
             if own {
                 stand_in.own_update_waits(if slug == "update-own-running" { "updating" } else { "waiting" }, 2);
+            } else if let Some(state) = slug.strip_prefix("page-update-") {
+                stand_in.bring_up_to_date("key_devbox", if state == "running" { "updating" } else { state }, false, 2);
+            } else if slug == "page-older-offer" {
+                // (Shown from devbox's window, whose box can't bring old-mini up: the list's can.)
+                stand_in.peer_box("key_devbox").expect("devbox").cant_bring_up("key_old", "Add computers from a Mac for now: on Linux, Kuvo Code can’t yet keep the list of your computers.");
+                stand_in.bring_up_to_date("key_old", "waiting", false, 0);
+            } else if slug == "blocked-held" {
+                stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
+                stand_in.bring_up_to_date("key_devbox", "waiting", false, 0);
             } else if slug.starts_with("update-") {
                 stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
                 if slug == "update-setup" {
@@ -1800,6 +1812,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                     stand_in.bring_up_to_date("key_devbox", if slug == "update-running" { "updating" } else { "waiting" }, slug == "update-waiting", 2);
                 }
             }
+            let devbox = stand_in.peer_box("key_devbox").expect("devbox");
             let boxes = kuvo::home::stand_in_boxes(stand_in);
             let first = boxes.nearest().expect("the stand-in is the nearest box");
             let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| kuvo::Home::new(boxes, first, false, window, cx)))?;
@@ -1812,6 +1825,19 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                     if slug == "elsewhere" {
                         assert!(home.switch_to("key_devbox", window, cx));
                         home.workspace().clone().update(cx, |workspace, cx| workspace.open_read_at_once("ses_releases", window, cx));
+                    }
+                    if slug == "page-older-offer" {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_old", None, window, cx));
+                    } else if slug.starts_with("page-") {
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_devbox", None, window, cx));
+                    }
+                    if slug.starts_with("blocked-") {
+                        assert!(home.switch_to("key_devbox", window, cx));
+                    }
+                    if slug == "blocked-unreached" {
+                        devbox.set_down(true);
+                        home.workspace().clone().update(cx, |workspace, cx| workspace.reach_again(window, cx));
                     }
                     if slug.starts_with("update-") {
                         if !own {

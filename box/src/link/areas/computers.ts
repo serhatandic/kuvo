@@ -105,7 +105,21 @@ export function ownComputer(): ToldComputer {
     working: atWork.length,
     atWork: atWork.slice(0, MOST_AT_WORK),
     ...(oldAppAttached() ? { oldApp: true as const } : {}),
+    ...(IS_MAC ? {} : { addresses: ownAddresses() }),
   };
+}
+
+/** Where this machine's Macs may reach it over SSH besides the address they set it up at, as it
+ * knows itself (`ToldComputer.addresses`): its tailnet's addresses (100.64.0.0/10) first, its name,
+ * then its other networks' IPv4 addresses. Never a loopback or link-local one, nor a container's
+ * or VM's bridge. */
+export function ownAddresses(interfaces = os.networkInterfaces(), name = os.hostname()): string[] {
+  // (Containers' and VMs' own bridges reach nothing from another computer: left out.)
+  const virtual = /^(docker|br-|cni|veth|virbr|vmnet|vboxnet|flannel|lxc|lxd|podman|kube|cali|weave|tun|utun|bridge)/;
+  const found = Object.entries(interfaces).filter(([name]) => !virtual.test(name)).flatMap(([, each]) => each ?? []).filter(each => each.family === "IPv4" && !each.internal && !each.address.startsWith("169.254.")).map(each => each.address);
+  const tailnet = (address: string) => { const [a, b] = address.split(".").map(Number); return a === 100 && b! >= 64 && b! < 128; };
+  const named = /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(name) && name !== "localhost" ? [name] : [];
+  return [...new Set([...found.filter(tailnet), ...named, ...found.filter(address => !tailnet(address))])].slice(0, 8);
 }
 
 /** What this box answers, as its `kuvo/info` says. */

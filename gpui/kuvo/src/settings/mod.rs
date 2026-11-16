@@ -840,7 +840,7 @@ impl SettingsView {
     /// Works the page's items out again, from what it's drawn from now.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.dark = cx.theme().appearance.is_dark();
-        self.yours_now = cx.try_global::<crate::yours::Store>().map(|store| (store.now().clone(), store.problem().map(str::to_owned))).unwrap_or_default();
+        self.yours_now = cx.try_global::<crate::yours::Store>().map(|store| (store.now().clone(), store.problem())).unwrap_or_default();
         let name = self.computer_name();
         let placeholder = if self.side == Side::Yours { "Search your settings…".to_owned() } else { format!("Search {name}’s settings…") };
         self.search.update(cx, |field, _| field.set_placeholder(placeholder));

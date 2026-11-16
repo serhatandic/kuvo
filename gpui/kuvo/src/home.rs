@@ -11,7 +11,8 @@ use std::collections::HashMap;
 
 use std::time::Duration;
 
-use gpui::{App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Task, Window, div};
+use gpui::{App, AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Task, Window, div};
+use kuvo_ui::ActiveTheme as _;
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::{Boxes, Pairing, Row};
 
@@ -67,7 +68,17 @@ pub struct Home {
     own_now: Option<Task<()>>,
     /// What the waiting run last said while it waits (its words, and Update Now's question).
     own_waited: Option<OwnUpdate>,
+    /// The computer the window showed last time (`yours::Place`), shown again once your
+    /// computers' list says whether it's reached; nothing's drawn meanwhile (not another
+    /// computer's window first).
+    restoring: Option<String>,
+    window_handle: gpui::AnyWindowHandle,
+    _restoring: Option<Task<()>>,
 }
+
+/// How long the window waits for your computers' list before it opens on the nearest instead
+/// of the computer it showed last time.
+const RESTORE_WAITS_AT_MOST: Duration = Duration::from_secs(3);
 
 /// How often this computer's box is asked again whether it's in the menu bar, while it hasn't said.
 const MENU_BAR_ASKED_EVERY: Duration = Duration::from_secs(30);
@@ -99,8 +110,20 @@ impl Home {
                 let _ = home.update(cx, |home, cx| home.notifier.update(cx, |notifier, cx| notifier.clicked(&response.tag, cx)));
             });
         }
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None };
         home.make(&shown, first, window, cx);
+        // The computer shown last time, where it isn't this one: once the list says it's reached.
+        home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown);
+        if live && home.restoring.is_some() {
+            home._restoring = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(RESTORE_WAITS_AT_MOST).await;
+                this.update(cx, |this, cx| {
+                    this.restoring = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
         home.ask_menu_bar(cx);
         // Closing the window quits the app (it has only the one): the first time, the note first.
         let this = cx.entity().downgrade();
@@ -201,6 +224,8 @@ impl Home {
 
     /// A notification clicked: the window comes forward on its computer, at its session.
     fn open_notice(&mut self, open: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        // (It wins over where the window was last time.)
+        self.restoring = None;
         cx.activate(true);
         window.activate_window();
         let shown = if open.computer == NEAREST {
@@ -209,6 +234,9 @@ impl Home {
         } else {
             self.switch_to(&open.computer, window, cx)
         };
+        if shown {
+            self.keep_shown(cx);
+        }
         if let (true, Some(session)) = (shown, &open.session) {
             let workspace = self.workspace().clone();
             workspace.update(cx, |workspace, cx| workspace.open_session_now(session, window, cx));
@@ -257,6 +285,9 @@ impl Home {
     fn make(&mut self, slot: &str, client: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live;
         let workspace = cx.new(|cx| Workspace::new(client, live, window, cx));
+        // Each computer's window opens where it was last time on this device.
+        let key = if slot == NEAREST { crate::yours::NEAREST.to_owned() } else { slot.to_owned() };
+        workspace.update(cx, |workspace, cx| workspace.restore(key, window, cx));
         let own = self.own_update.clone();
         workspace.update(cx, |workspace, cx| workspace.set_own_update(own, cx));
         if let Some(now) = self.now {
@@ -264,7 +295,10 @@ impl Home {
         }
         let subscription = cx.subscribe_in(&workspace, window, |this: &mut Home, _, event: &Switch, window, cx| match event {
             Switch::To(key) => {
-                this.switch_to(key, window, cx);
+                this.restoring = None;
+                if this.switch_to(key, window, cx) {
+                    this.keep_shown(cx);
+                }
             }
             Switch::PairAgain => this.pair_again(cx),
             // (Followed live, the list says it by itself.)
@@ -307,6 +341,28 @@ impl Home {
         true
     }
 
+    /// The computer shown last time, where this app reaches it now (connected, or held for its
+    /// update, which it says itself); else the window stays on the one it opened with, quietly.
+    fn restore_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.restoring.take() else { return };
+        self._restoring = None;
+        if self.slot(&key) != self.shown && self.boxes.rows().iter().any(|row| row.key() == key && row.usable()) {
+            self.switch_to(&key, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Keeps the computer shown now, for the next time the window opens.
+    fn keep_shown(&self, cx: &App) {
+        let computer = if self.shown == NEAREST { None } else { Some(self.shown.clone()) };
+        crate::yours::keep(crate::yours::Moved::Computer(computer), cx);
+    }
+
+    /// Whether the window still waits for your computers' list to show the one it showed last time.
+    pub fn is_restoring(&self) -> bool {
+        self.restoring.is_some()
+    }
+
     /// After this app was removed from your devices, on your word: paired anew, off the UI's thread.
     fn pair_again(&mut self, cx: &mut Context<Self>) {
         let boxes = self.boxes.clone();
@@ -324,9 +380,11 @@ impl Home {
     /// Shows a computer in Computers, on the box that lists your computers (this Mac's, where it
     /// has one): Add a Machine with `add_at` typed in, else its page.
     fn show_computer(&mut self, key: &str, add_at: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        self.restoring = None;
         if self.boxes.nearest().is_some() && self.shown != NEAREST {
             self.shown = NEAREST.to_owned();
             self.rows_changed(cx);
+            self.keep_shown(cx);
         }
         let workspace = self.workspace().clone();
         workspace.update(cx, |workspace, cx| workspace.show_computer(key, add_at, window, cx));
@@ -498,6 +556,26 @@ impl Home {
             let clients = self.notified();
             self.notifier.update(cx, |notifier, cx| notifier.follow(clients, cx));
         }
+        // Your computers are known (the nearest box listed them, or there's none here and the
+        // kept list is all there is): the computer shown last time, if it's reached.
+        // One still being reached is waited for (at most `RESTORE_WAITS_AT_MOST`, then this
+        // computer's window): one that isn't answering yet isn't opened on.
+        if let Some(key) = self.restoring.clone()
+            && (self.boxes.nearest().is_none() || self.boxes.nearest_key().is_some())
+        {
+            let row = self.boxes.rows().into_iter().find(|row| row.key() == key);
+            if self.live && row.as_ref().is_some_and(|row| row.reach == kuvo_box::boxes::Reach::Connecting) {
+                // (Asked again as it's reached, or isn't.)
+            } else if row.is_some_and(|row| row.usable()) {
+                let (this, handle) = (cx.entity().downgrade(), self.window_handle);
+                App::defer(cx, move |cx| {
+                    handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.restore_shown(window, cx))).ok();
+                });
+            } else {
+                self.restoring = None;
+                self._restoring = None;
+            }
+        }
         let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
         let nearest = self.boxes.nearest_key();
         let lister = self.boxes.lister();
@@ -534,7 +612,12 @@ impl Render for Home {
                 cx,
             )
         });
-        div().relative().size_full().child(self.workspace().clone()).children(note)
+        if self.restoring.is_some() {
+            // (Nothing yet, not another computer's window first: only the window's colour.)
+            // (Quit meanwhile: its note, over it.)
+            return div().debug_selector(|| "window-restoring".into()).relative().size_full().bg(cx.theme().colors.background).children(note).into_any_element();
+        }
+        div().relative().size_full().child(self.workspace().clone()).children(note).into_any_element()
     }
 }
 

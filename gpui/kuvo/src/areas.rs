@@ -83,6 +83,12 @@ pub enum Go {
     AddMachine,
     /// A row in Settings opened this address (it's open already).
     Opened(String),
+    /// The box that lists your computers did something: its list read again.
+    ReadList,
+    /// Update Now for this Mac's own Kuvo (`now`, else once its work ends).
+    UpdateOwnBox { now: bool },
+    /// Add a Machine on the box that lists your computers, at this address.
+    AddAt(Option<String>),
 }
 
 /// One area's sidebar.
@@ -234,6 +240,9 @@ impl AreaView {
                     }
                     ComputersEvent::Sessions => cx.emit(Go::Sessions),
                     ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
+                    ComputersEvent::ListerChanged => cx.emit(Go::ReadList),
+                    ComputersEvent::UpdateOwnBox { now } => cx.emit(Go::UpdateOwnBox { now: *now }),
+                    ComputersEvent::AddAt(address) => cx.emit(Go::AddAt(address.clone())),
                 })]
             })
             .unwrap_or_default();
@@ -578,6 +587,39 @@ impl AreaView {
 
     pub fn selected(&self) -> Option<&str> {
         self.selected.as_deref()
+    }
+
+    /// Whether the row `key` names is still in the area's list, as the box last said it (none:
+    /// not read yet). One the list can't say of (a filter, this computer, a list that couldn't
+    /// be read) counts as there.
+    pub fn still_there(&self, key: &str) -> Option<bool> {
+        let (kind, id) = key.split_once(':').unwrap_or((key, ""));
+        match (self.area, kind) {
+            (Area::Bots, "bot" | "elsewhere" | "group") => match &self.bots {
+                Reading::NotYet => None,
+                Reading::Failed(_) => Some(true),
+                Reading::Ready(bots) => Some(match kind {
+                    "bot" => bots.bots.iter().any(|bot| bot.id == id),
+                    "elsewhere" => bots.elsewhere.iter().any(|bot| bot.id == id),
+                    _ => bots.groups.iter().any(|group| group.id == id),
+                }),
+            },
+            (Area::Queue, "item" | "status" | "label") => match &self.queue {
+                Reading::NotYet => None,
+                Reading::Failed(_) => Some(true),
+                Reading::Ready(said) => Some(match kind {
+                    "item" => said.items.iter().chain(&said.removed).any(|item| item.id == id),
+                    "status" => said.statuses.iter().any(|status| status.id == id),
+                    _ => said.labels.iter().any(|label| label.id == id),
+                }),
+            },
+            (Area::Computers, "computer") => match &self.computers {
+                Reading::NotYet => None,
+                Reading::Failed(_) => Some(true),
+                Reading::Ready(computers) => Some(computers.iter().any(|computer| computer.key == id)),
+            },
+            _ => Some(true),
+        }
     }
 
     /// Picks a row (or none: the area's own page), as going back or forward does.

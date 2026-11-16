@@ -28,7 +28,7 @@ use kuvo_ui::{
 
 use crate::areas::{Reading, reading};
 use crate::settings::page::{ConfirmIds, confirm_card, sheet};
-use crate::workspace::held_words;
+use crate::workspace::{HeldUpdate, UpdateDoes, held_words};
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 720.;
@@ -66,6 +66,14 @@ pub enum ComputersEvent {
     Sessions,
     /// The box did something to your computers: the list is read again where it isn't followed.
     ReadAgain,
+    /// The box that lists your computers was asked to do something (Update Now on another's
+    /// behalf): its list is read again where it isn't followed.
+    ListerChanged,
+    /// Update Now for this Mac's own Kuvo first (`now`, else once its work ends), by the installer
+    /// this app carries.
+    UpdateOwnBox { now: bool },
+    /// Add a Machine on the box that lists your computers, at this address.
+    AddAt(Option<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,6 +84,8 @@ enum Tone {
     Attention,
     /// Just so.
     Info,
+    /// Under way now (a spinner).
+    Busy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +94,8 @@ enum Item {
     Group(String),
     Row { computer: Box<Computer>, first: bool, last: bool },
     Head(Box<Computer>),
-    Notice { key: String, tone: Tone, title: String, words: String },
+    /// What's true now, in words, and the one action that moves it on (where there's one).
+    Notice { key: String, tone: Tone, title: String, words: String, action: Option<NoticeAction> },
     Fact { key: String, title: String, value: String, first: bool, last: bool },
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { title: String, open: bool },
@@ -102,6 +113,18 @@ enum Item {
     End,
 }
 
+/// A notice's button: its words, what it does (none: it can't be done now), why not, and its
+/// words while it's under way.
+#[derive(Clone, Debug, PartialEq)]
+struct NoticeAction {
+    /// The Manage row it stands for (not drawn there too).
+    row: &'static str,
+    label: String,
+    act: Option<Manage>,
+    why: Option<String>,
+    busy: Option<String>,
+}
+
 /// One of Manage's rows as the box offers it: its key, title, button, what it does, and why it waits.
 type Offered = (&'static str, String, String, Option<Manage>, Option<String>);
 
@@ -115,6 +138,8 @@ struct Manage {
     what: What,
     key: String,
     confirm: Option<Confirm>,
+    /// What an offer from the box that lists your computers does (`What::Offer`).
+    does: Option<UpdateDoes>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,6 +155,9 @@ enum What {
     /// Add a Machine, its address typed in: an older machine this box didn't set up over SSH
     /// (`add`), to set it up from here.
     AddMachine,
+    /// What the box that lists your computers offers for one whose Kuvo is older, where the box
+    /// this window shows can't bring it up itself (`Workspace::update_offer`).
+    Offer,
 }
 
 impl What {
@@ -144,6 +172,7 @@ impl What {
             What::Update => "action-update",
             What::UpdateHere => "action-update-here",
             What::AddMachine => "action-add",
+            What::Offer => "action-offer",
         }
     }
 }
@@ -160,6 +189,10 @@ pub struct ComputersView {
     busy: HashMap<(String, &'static str), (String, Task<()>)>,
     /// What the box last refused, in its words, over the page it was asked on.
     problem: Option<(Shown, String)>,
+    /// What brings each of your other computers up to date from here, by its key, where the box
+    /// that lists your computers offers it (`Workspace::update_offer`), and that box, which does it.
+    offers: HashMap<String, HeldUpdate>,
+    lister: Option<BoxClient>,
     /// The confirm open: its words, and what going ahead does.
     confirm: Option<(Confirm, Manage)>,
     confirm_focus: FocusHandle,
@@ -203,6 +236,8 @@ impl ComputersView {
             pairing: None,
             busy: HashMap::new(),
             problem: None,
+            offers: HashMap::new(),
+            lister: None,
             confirm: None,
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
@@ -425,7 +460,7 @@ impl ComputersView {
                 return items;
             }
             Reading::Failed(why) => {
-                items.push(Item::Notice { key: "add-failed".into(), tone: Tone::Attention, title: format!("{this} couldn’t be asked about adding machines"), words: why.clone() });
+                items.push(Item::Notice { key: "add-failed".into(), tone: Tone::Attention, title: format!("{this} couldn’t be asked about adding machines"), words: why.clone() , action: None });
                 items.push(Item::End);
                 return items;
             }
@@ -439,7 +474,7 @@ impl ComputersView {
             items.extend(tries.iter().filter(|tried| !tried.under_way()).map(|tried| Item::Try(Box::new((*tried).clone()))));
             items.push(Item::AddForm { can: adding.can });
             if let Some(why) = adding.why.as_ref().filter(|_| !adding.can) {
-                items.push(Item::Notice { key: "add-cannot".into(), tone: Tone::Info, title: format!("Machines aren’t added from {this}"), words: why.clone() });
+                items.push(Item::Notice { key: "add-cannot".into(), tone: Tone::Info, title: format!("Machines aren’t added from {this}"), words: why.clone() , action: None });
             } else {
                 let typed = self.host.read(cx).text().trim().to_lowercase();
                 let hosts: Vec<String> = adding.hosts.iter().filter(|host| host.to_lowercase() != typed && host.to_lowercase().contains(&typed)).take(6).cloned().collect();
@@ -448,11 +483,11 @@ impl ComputersView {
                 }
             }
             if let Some(problem) = &self.add_problem {
-                items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That can’t be added".into(), words: problem.clone() });
+                items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That can’t be added".into(), words: problem.clone() , action: None });
             }
             items.push(Item::AddFoot { ready: adding.can && !self.host.read(cx).text().trim().is_empty(), busy: self.add_busy.is_some() });
         } else if let Some(problem) = &self.add_problem {
-            items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
+            items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() , action: None });
         }
         items.push(Item::End);
         items
@@ -478,6 +513,15 @@ impl ComputersView {
     pub fn set_pairing(&mut self, pairing: Option<(String, String)>, cx: &mut Context<Self>) {
         if self.pairing != pairing {
             self.pairing = pairing;
+            self.rebuild(cx);
+        }
+    }
+
+    /// What brings your other computers up to date from here (by key), and the box that does it.
+    pub fn set_offers(&mut self, offers: HashMap<String, HeldUpdate>, lister: Option<BoxClient>, cx: &mut Context<Self>) {
+        self.lister = lister;
+        if self.offers != offers {
+            self.offers = offers;
             self.rebuild(cx);
         }
     }
@@ -528,7 +572,7 @@ impl ComputersView {
             Shown::Add => self.add_items(cx),
         };
         if let (Some((title, words)), Shown::All | Shown::This) = (&self.pairing, &self.shown) {
-            items.insert(1.min(items.len()), Item::Notice { key: "notice-pairing".into(), tone: Tone::Attention, title: title.clone(), words: words.clone() });
+            items.insert(1.min(items.len()), Item::Notice { key: "notice-pairing".into(), tone: Tone::Attention, title: title.clone(), words: words.clone() , action: None });
         }
         // Only the items that changed are laid out again; the rest keep their places and the page
         // keeps its scroll.
@@ -590,16 +634,30 @@ impl ComputersView {
     fn page_items(&self, computer: Computer) -> Vec<Item> {
         let name = computer.name.clone();
         let mut items = vec![Item::Head(Box::new(computer.clone()))];
-        if let Some(notice) = self.notice(&computer) {
-            items.push(notice);
+        // One card for how it stands: what's true now, in words, and the one thing that moves it on.
+        // What this box is doing with it over SSH now (set up again, updated, uninstalled) comes
+        // first, with how far it's got; then its update, with Update Now or Try Again; then how the
+        // last thing done with it ended; then why it can't be reached, or what it is.
+        let tries = self.tries_of(&computer);
+        let notice = self.notice(&computer);
+        let updating = matches!(&notice, Some(Item::Notice { key, .. }) if key == "notice-update");
+        // (The Manage row the card's button stands for, where the card is the notice.)
+        let mut card_row = None;
+        if let Some(under) = tries.iter().find(|tried| tried.under_way()) {
+            items.push(Item::Try(Box::new(under.clone())));
+        } else if updating || tries.is_empty() {
+            if let Some(Item::Notice { action: Some(action), .. }) = &notice {
+                card_row = Some(action.row);
+            }
+            items.extend(notice);
+        } else if let Some(last) = tries.into_iter().next() {
+            items.push(Item::Try(Box::new(last)));
         }
         if let Some((on, problem)) = &self.problem
             && *on == self.shown
         {
-            items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone() });
+            items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone(), action: None });
         }
-        // What this box is doing with it over SSH now (set up again, uninstalled), or that failed.
-        items.extend(self.tries_of(&computer).into_iter().map(|tried| Item::Try(Box::new(tried))));
         // What's at work there, as its box counts it, where it said (`working`); none is claimed of
         // one that never said. One that's away has no At Work (a drawing choice: its notice says
         // why, and the box's 0 there means "nothing seen", not "nothing at work"). This window's
@@ -619,32 +677,40 @@ impl ComputersView {
             }
         }
         items.push(Item::Group("About".into()));
-        let said = |value: &Option<String>| value.clone().unwrap_or_else(|| "Not said yet".into());
-        let mut version = said(&computer.version);
-        if computer.is_older() {
-            version = format!("{version}, older than this app");
-        }
+        // (What it hasn't said isn't drawn: a computer whose Kuvo is older, or that hasn't been
+        // reached, says little, and a row of "Not said yet" tells you nothing.)
+        let version = match (&computer.version, computer.is_older()) {
+            (Some(version), true) => Some(format!("{version}, older than this app")),
+            (Some(version), false) => Some(version.clone()),
+            (None, true) => Some("Older than this app".to_owned()),
+            (None, false) => None,
+        };
         let limits = if computer.limits.is_empty() {
             "None".to_owned()
         } else {
             computer.limit_services.iter().map(|service| service.title.clone()).collect::<Vec<_>>().join(", ")
         };
-        let facts = [
-            ("fact-kind", "Kind", if computer.is_mac() { "Mac".to_owned() } else if computer.kind.is_empty() { "Not said yet".to_owned() } else { "Machine".to_owned() }),
-            ("fact-system", "System", said(&computer.system)),
-            ("fact-version", "Kuvo Code", version),
-            ("fact-engine", "Engine", said(&computer.engine)),
+        let kind = if computer.is_mac() { Some("Mac".to_owned()) } else if computer.kind.is_empty() { None } else { Some("Machine".to_owned()) };
+        let facts: Vec<(&str, &str, String)> = [
+            ("fact-kind", "Kind", kind),
+            ("fact-system", "System", computer.system.clone()),
+            ("fact-version", "Kuvo", version),
+            ("fact-engine", "Engine", computer.engine.clone()),
             ("fact-reached", "Reached", reached(&computer)),
-            ("fact-limits", "Plan limits it reads", limits),
-        ];
+            ("fact-limits", "Plan limits it reads", Some(limits)),
+        ]
+        .into_iter()
+        .filter_map(|(key, title, value)| value.map(|value| (key, title, value)))
+        .collect();
         let count = facts.len();
         items.extend(facts.into_iter().enumerate().map(|(ix, (key, title, value))| Item::Fact { key: key.into(), title: title.into(), value, first: ix == 0, last: ix + 1 == count }));
         // Its app was removed from your devices, and its box may add none until you allow it: said
         // in the main computer's words, above what can be done about it.
         if let Some(vouching) = computer.vouching.as_ref().filter(|vouching| vouching.blocked) {
-            items.push(Item::Notice { key: "notice-vouching".into(), tone: Tone::Attention, title: format!("Kuvo Code’s app on {name} isn’t one of your devices"), words: vouching.words.clone() });
+            items.push(Item::Notice { key: "notice-vouching".into(), tone: Tone::Attention, title: format!("Kuvo Code’s app on {name} isn’t one of your devices"), words: vouching.words.clone(), action: None });
         }
         // What can be done with it, as its box offers it here (`actions`), in its order and words.
+        // (Bringing its Kuvo up to date is the card's button above, not a row here too.)
         let actions: Vec<Offered> = computer
             .actions
             .iter()
@@ -652,7 +718,7 @@ impl ComputersView {
                 // (Marked as the platform marks a button that asks first.)
                 let label = if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() };
                 // (One the box says can't be done now isn't done here: its words say why.)
-                let act = |what| action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone() });
+                let act = |what| action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone(), does: None });
                 let why = action.why.clone();
                 Some(match action.id.as_str() {
                     // (Renaming waits on its design: drawn, not done; it opens an editor, hence "…".)
@@ -663,11 +729,12 @@ impl ComputersView {
                     "update" => (What::Update.row(), "Kuvo there".to_owned(), label, act(What::Update), why),
                     "update-here" => (What::UpdateHere.row(), "Kuvo here".to_owned(), label, act(What::UpdateHere), why),
                     "add" => (What::AddMachine.row(), "Kuvo there".to_owned(), label, act(What::AddMachine), why),
-                    "setup" => (What::SetUp.row(), "Kuvo Code there".to_owned(), label, act(What::SetUp), why),
+                    "setup" => (What::SetUp.row(), "Kuvo there".to_owned(), label, act(What::SetUp), why),
                     "uninstall" => (What::Uninstall.row(), "Uninstall".to_owned(), label, act(What::Uninstall), why),
                     _ => return None,
                 })
             })
+            .filter(|(row, ..)| Some(*row) != card_row)
             .collect();
         if !actions.is_empty() {
             items.push(Item::Group("Manage".into()));
@@ -689,6 +756,15 @@ impl ComputersView {
     /// Does what a Manage button offers: asked first where the box says to, then done by the box;
     /// the list is read again (followed, it comes by itself). A refusal is shown in the box's words.
     fn manage(&mut self, act: Manage, cx: &mut Context<Self>) {
+        // (What only this app does for an offer: this Mac's own Kuvo updated by its installer, or
+        // Add a Machine on the box that lists your computers.)
+        if act.what == What::Offer && act.confirm.is_none() {
+            match &act.does {
+                Some(UpdateDoes::OwnBox { now }) => return cx.emit(ComputersEvent::UpdateOwnBox { now: *now }),
+                Some(UpdateDoes::AddMachine { address }) => return cx.emit(ComputersEvent::AddAt(address.clone())),
+                _ => {}
+            }
+        }
         // (Nothing asked of the box: Add a Machine, at the address it was added under.)
         if act.what == What::AddMachine {
             let address = match &self.computers {
@@ -717,15 +793,32 @@ impl ComputersView {
             What::Update => ("Updating…", Box::new(move |client| client.update_computer(&act.key).map(|_| ()))),
             What::UpdateHere => ("Updating…", Box::new(|client| client.update_here())),
             What::AddMachine => return,
+            // Asked of the box that lists your computers, which brings that one up.
+            What::Offer => {
+                let Some(lister) = self.lister.clone() else {
+                    self.problem = Some((self.shown.clone(), "Your computers’ list isn’t reachable right now. Try again in a moment.".into()));
+                    return self.rebuild(cx);
+                };
+                match act.does.clone() {
+                    Some(UpdateDoes::Update(key)) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_computer(&key).map(|_| ()))),
+                    Some(UpdateDoes::SetUp(key)) => ("Starting…", Box::new(move |_: &BoxClient| lister.setup_computer(&key).map(|_| ()))),
+                    Some(UpdateDoes::Here) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
+                    // (Asked first, then what only this app does.)
+                    Some(UpdateDoes::OwnBox { now }) => return cx.emit(ComputersEvent::UpdateOwnBox { now }),
+                    Some(UpdateDoes::AddMachine { address }) => return cx.emit(ComputersEvent::AddAt(address)),
+                    None => return,
+                }
+            }
         };
         let tries = matches!(act.what, What::SetUp | What::Uninstall | What::Update);
+        let offered = act.what == What::Offer;
         self.problem = None;
         let on = self.shown.clone();
         let done_with = busy.clone();
         let then = move |this: &mut ComputersView, done: kuvo_box::Result<()>, cx: &mut Context<ComputersView>| {
             this.busy.remove(&done_with);
             match done {
-                Ok(()) => cx.emit(ComputersEvent::ReadAgain),
+                Ok(()) => cx.emit(if offered { ComputersEvent::ListerChanged } else { ComputersEvent::ReadAgain }),
                 Err(error) => this.problem = Some((on, said(&error))),
             }
             // (What it began is one of the box's tries: read where they aren't followed.)
@@ -751,17 +844,61 @@ impl ComputersView {
         self.rebuild(cx);
     }
 
-    /// Why a computer stands as it does, where that's more than "connected".
+    /// Why a computer stands as it does, where that's more than "connected", with the one action
+    /// that moves it on. Its Kuvo's update first (`notice-update`): in the words of the box this
+    /// window shows where that box brings it up (`computers.update`), else as the box that lists
+    /// your computers offers it (`Workspace::update_offer`: this Mac's Kuvo updated first, or set up
+    /// again over SSH from there), so an older computer's card always has a way on where one exists.
     fn notice(&self, computer: &Computer) -> Option<Item> {
         let name = &computer.name;
-        // Its Kuvo being brought up to date, in the words of the box that does it (`computers.update`).
-        if let Some(update) = &computer.update {
-            let tone = if update.state == "failed" || update.long { Tone::Attention } else { Tone::Waiting };
-            return Some(Item::Notice { key: "notice-update".into(), tone, title: update.title.clone(), words: update.detail.clone() });
+        let busy = |row: &'static str| self.busy.get(&(computer.key.clone(), row)).map(|(words, _)| words.clone());
+        // (The window's box's words, unless it offers nothing to press and the box that lists your
+        // computers does: that one brings it up.)
+        let offered = (!computer.here).then(|| self.offers.get(&computer.key)).flatten().filter(|offer| offer.action.is_some() || offer.updating);
+        let actionable = computer.actions.iter().any(|action| matches!(action.id.as_str(), "update" | "update-here" | "add") && action.why.is_none());
+        if let Some(update) = computer.update.as_ref().filter(|update| actionable || update.is_updating() || offered.is_none()) {
+            let tone = if update.is_updating() { Tone::Busy } else if update.state == "failed" || update.long { Tone::Attention } else { Tone::Waiting };
+            let action = (!update.is_updating())
+                .then(|| computer.actions.iter().find(|action| matches!(action.id.as_str(), "update" | "update-here" | "add")))
+                .flatten()
+                .map(|action| {
+                    let what = match action.id.as_str() {
+                        "update-here" => What::UpdateHere,
+                        "add" => What::AddMachine,
+                        _ => What::Update,
+                    };
+                    NoticeAction {
+                        row: what.row(),
+                        label: if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() },
+                        act: action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone(), does: None }),
+                        why: action.why.clone(),
+                        busy: busy(what.row()),
+                    }
+                });
+            return Some(Item::Notice { key: "notice-update".into(), tone, title: update.title.clone(), words: update.detail.clone(), action });
+        }
+        if let Some(offer) = offered {
+            let tone = if offer.updating { Tone::Busy } else if offer.attention { Tone::Attention } else { Tone::Waiting };
+            // (It stands for the row of Manage's that does the same: not drawn there too.)
+            let row = match &offer.does {
+                Some(UpdateDoes::SetUp(_)) => What::SetUp.row(),
+                Some(UpdateDoes::AddMachine { .. }) => What::AddMachine.row(),
+                Some(UpdateDoes::Update(_)) => What::Update.row(),
+                Some(UpdateDoes::Here) => What::UpdateHere.row(),
+                _ => What::Offer.row(),
+            };
+            let action = offer.action.as_ref().filter(|_| !offer.updating).map(|action| NoticeAction {
+                row,
+                label: if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() },
+                act: action.why.is_none().then(|| Manage { what: What::Offer, key: computer.key.clone(), confirm: action.confirm.clone(), does: offer.does.clone() }),
+                why: action.why.clone(),
+                busy: busy(What::Offer.row()),
+            });
+            return Some(Item::Notice { key: "notice-update".into(), tone, title: offer.title.clone(), words: offer.detail.clone(), action });
         }
         if computer.is_older() {
             let (title, words) = held_words(Some(name), computer.here && self.this_mac);
-            return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words });
+            return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words, action: None });
         }
         if computer.apart {
             return Some(Item::Notice {
@@ -769,13 +906,23 @@ impl ComputersView {
                 tone: Tone::Info,
                 title: format!("{name} isn’t one of your own computers"),
                 words: "Someone else’s setup shares this machine, so what runs there isn’t shown.".into(),
+                action: None,
             });
         }
+        // (Not reached: Try Again, where the box offers to reach it again.)
+        let connect = computer.action("connect").map(|action| NoticeAction {
+            row: What::Connect.row(),
+            label: action.label.clone(),
+            act: action.why.is_none().then(|| Manage { what: What::Connect, key: computer.key.clone(), confirm: action.confirm.clone(), does: None }),
+            why: action.why.clone(),
+            busy: busy(What::Connect.row()),
+        });
         computer.notice.as_ref().map(|notice| Item::Notice {
             key: format!("notice-{}", computer.reach),
-            tone: if computer.reach == "unknown" { Tone::Info } else { Tone::Waiting },
+            tone: if computer.reach == "unknown" { Tone::Info } else if computer.reach == "connecting" { Tone::Busy } else { Tone::Waiting },
             title: notice.title.clone(),
             words: notice.detail.clone(),
+            action: connect.filter(|_| computer.reach == "away"),
         })
     }
 
@@ -806,12 +953,30 @@ impl ComputersView {
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
             Item::Row { computer, first, last } => self.row(&computer, first, last, cx),
             Item::Head(computer) => head(&computer, cx),
-            Item::Notice { key, tone, title, words } => {
+            Item::Notice { key, tone, title, words, action } => {
                 let (icon, color) = match tone {
-                    Tone::Waiting => (IconName::Clock, c.icon),
+                    Tone::Waiting | Tone::Busy => (IconName::Clock, c.icon),
                     Tone::Attention => (IconName::Warning, c.warning),
                     Tone::Info => (IconName::Info, c.icon),
                 };
+                let mark: AnyElement = if tone == Tone::Busy {
+                    div().flex().items_center().justify_center().size(px(16.)).child(spinner(SharedString::from(format!("{key}-spin")), IconSize::Nav, c.text_muted)).into_any_element()
+                } else {
+                    Icon::new(icon).color(color).into_any_element()
+                };
+                // Its one button, beside what it says: what moves it on.
+                let button = action.map(|action| {
+                    let id = SharedString::from(format!("{key}-button"));
+                    let busy = action.busy.is_some();
+                    let button = Button::new(id, action.busy.clone().unwrap_or(action.label)).size(ButtonSize::Small).primary();
+                    let button = match action.act {
+                        Some(act) if !busy => button.on_click(cx.listener(move |this, _, _, cx| this.manage(act.clone(), cx))),
+                        Some(_) => button.disabled(true).loading(true),
+                        None => button.disabled(true).tooltip(action.why.map(SharedString::from).unwrap_or(NOT_YET.into())),
+                    };
+                    let selector = format!("{key}-action");
+                    div().debug_selector(move || selector).flex_none().child(button)
+                });
                 let title_selector = format!("{key}-title");
                 div()
                     .pt(space::S4)
@@ -826,7 +991,7 @@ impl ComputersView {
                             .rounded(radius::POPOVER)
                             .bg(c.card)
                             .shadow(cx.theme().card_shadow())
-                            .child(div().pt(px(2.)).child(Icon::new(icon).color(color)))
+                            .child(div().pt(px(2.)).child(mark))
                             .child(
                                 div()
                                     .flex_1()
@@ -837,7 +1002,8 @@ impl ComputersView {
                                     .child(div().debug_selector(move || title_selector).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
                                     // (A notice in one line, as the box's update words are, has no second.)
                                     .children((!words.is_empty()).then(|| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words))),
-                            ),
+                            )
+                            .children(button),
                     )
                     .into_any_element()
             }
@@ -1130,14 +1296,14 @@ fn yours_alone(computers: &[Computer]) -> bool {
 }
 
 /// How the box this window shows knows a computer.
-fn reached(computer: &Computer) -> String {
+fn reached(computer: &Computer) -> Option<String> {
     if computer.here {
-        return "Shown in this window".into();
+        return Some("Shown in this window".into());
     }
     match computer.via.as_str() {
-        "relay" => "Through the relay, end to end encrypted".into(),
-        "peer" => format!("Only by {}’s word", computer.through.as_deref().unwrap_or("another computer")),
-        _ => "Not said yet".into(),
+        "relay" => Some("Through the relay, end to end encrypted".into()),
+        "peer" => Some(format!("Only by {}’s word", computer.through.as_deref().unwrap_or("another computer"))),
+        _ => None,
     }
 }
 
@@ -1313,8 +1479,8 @@ mod tests {
     /// How a computer is reached is said as the box says it: by the relay, or by another's word.
     #[test]
     fn how_a_computer_is_reached_is_the_boxs_word() {
-        assert_eq!(reached(&computer(r#"{"name":"devbox","via":"relay"}"#)), "Through the relay, end to end encrypted");
-        assert_eq!(reached(&computer(r#"{"name":"mini","via":"peer","through":"devbox"}"#)), "Only by devbox’s word");
-        assert_eq!(reached(&computer(r#"{"name":"Studio","here":true,"via":"here"}"#)), "Shown in this window");
+        assert_eq!(reached(&computer(r#"{"name":"devbox","via":"relay"}"#)).as_deref(), Some("Through the relay, end to end encrypted"));
+        assert_eq!(reached(&computer(r#"{"name":"mini","via":"peer","through":"devbox"}"#)).as_deref(), Some("Only by devbox’s word"));
+        assert_eq!(reached(&computer(r#"{"name":"Studio","here":true,"via":"here"}"#)).as_deref(), Some("Shown in this window"));
     }
 }

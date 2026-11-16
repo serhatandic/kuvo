@@ -465,9 +465,12 @@ connection.
   `shared: true` (it's a machine set up by Macs that aren't all in one setup), by which the receiver counts it as one of
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
   limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
-  working, atWork?, oldApp?}`: Kuvo Code's version there, its engine's, its system as people know
+  working, atWork?, oldApp?, addresses?}`: Kuvo Code's version there, its engine's, its system as people know
   it, how many of its sessions are at work and which, and, on a Mac's box, that the old app is
-  attached to it, for `kuvo/computers`, "Computers"; only to a peer that's one of
+  attached to it, for `kuvo/computers`, "Computers"; and, on a machine, where else its Macs may
+  reach it over SSH (`addresses`: its tailnet's IPv4 addresses first, its host name, its other
+  networks' IPv4 addresses, never a loopback or link-local one, nor a container's or VM's bridge; eight at most, each a host name or
+  IPv4 address, others dropped as the mail is taken: Keeping them up to date, below); only to a peer that's one of
   your own computers, #701, once that peer has said what it is (never in the first mail to one),
   and never by a shared machine; one from a peer that isn't yours is dropped as its mail is taken; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). Beside `agents`, the same mail
@@ -1813,6 +1816,12 @@ machines; a client that wants every computer's facts asks the box that has it as
     goes on: the old app keeps a name it didn't change. The box counts the app attached while it
     follows `kuvo/link/status/events` (which only that app does), and for a minute after it says
     its link's config (`kuvo/link/config`, the first thing it does as it attaches, again too).
+    Once a Mac's box has moved out of the old app's folder (its move's record says it's done,
+    "Moving this Mac's box"), the old app opened again is out of date and in charge of nothing:
+    every `kuvo/link/…` route it asks is answered `410 {"message": "Kuvo Code 1.0 has replaced this
+    app on <Mac>. Quit it and move it to the Trash: everything it did is in Kuvo Code now."}`, it
+    never counts as attached, and nothing this box does itself (adding machines, keeping them up
+    to date, Update Now, removals) waits on it.
   - The writer checks what's handed to it as the asking box does: a machine shared with another
     setup is renamed and removed only from that Mac itself (`409`).
   - Your phones are given a machine by the name you gave it (`kuvo/hosts`, from the box while the
@@ -1959,11 +1968,30 @@ machines; a client that wants every computer's facts asks the box that has it as
   host key, another setup's box) fails instead. One that fails rests an hour, then a day after each
   next failure, and one you stopped isn't begun again by itself for a day; a machine that can't be
   reached over SSH is no failure, and is looked at again next round. What went wrong goes to the
-  box's log. Found as new as this box, a machine isn't reached again for it for a day.
-  - `update`'s words are one line (`title`; `detail` is empty): "Kuvo on <name> updates once
-    nothing’s at work there.", "… updates in a moment.", "… hasn’t been free for a day." (`long`),
-    "… updates once <this box> can reach it.", "… couldn’t be updated. It tries again later."
-    (`failed`), "Updating Kuvo on <name>…" (`updating`). Update Now's `confirm` names how many
+  box's log, in ssh's own words; a client gets plain ones. Found as new as this box, a machine
+  isn't reached again for it for a day. Where a round can't run at all (`canAdd` refuses: no link
+  yet, files missing, the old app attached before a move; or its own version can't be read), the
+  box logs why once each time that changes, and says it on each older machine (below).
+  - Reaching it: at the address it was added under first; where that doesn't answer (a home
+    network's address while you're away), each other address in turn: those you added it under
+    (`otherAddresses`, reached as themselves), then those it tells its Macs (`computer.addresses`,
+    "Peers"), reached as the first is (its user, port and keys, as `ssh -G` reads your config) and
+    checked against the host key known for the first (`HostKeyAlias`: your config's own, else its
+    host, as `[host]:port` off port 22), never asked about. Not reached at any: "Couldn’t reach
+    <name>. Make sure it’s on and connected, then Try Again.", whatever another address said (what
+    each said goes to the log).
+  - `update` says what's true now (`title`) and, where there's one, the next step (`detail`):
+    "Kuvo on <name> updates once nothing’s at work there" ("Or now with Update Now: what’s at work
+    there keeps going."), "… updates in a moment", "… hasn’t been free for a day" (`long`; "It
+    updates once nothing’s at work there, or now with Update Now."), "Couldn’t reach <name>" and
+    "Couldn’t update Kuvo on <name>" (`failed`: why in words, then "Kuvo also tries again by itself
+    later."), "Couldn’t check <name>" (reached, but what's at work there couldn't be told),
+    "Updating Kuvo on <name>…" (`updating`), and, where this box can't bring it up, "Kuvo on <name>
+    needs an update" with why: what keeps a Mac's box that isn't another's member from it now
+    (`canAdd`'s words, nothing to press), or set it up over SSH from here once (`add`). A Linux box
+    and a member of another Mac's setup say nothing (they never bring machines up): a client draws
+    what the box that lists your computers says instead, as it does wherever the box it shows offers
+    nothing to press and that one does. Its action is "Update Now", or "Try Again" after a failure or a miss. Update Now's `confirm` names how many
     sessions are at work there (the more of what the machine said and what the last look found), or
     that something may be: they keep going, and the machine may be out of reach for a moment as its
     link restarts.
@@ -8660,6 +8688,9 @@ own host interface failing or starting again leaves it, and the app tells the ke
 answers now.
 
 For the app only (anyone else gets `403`):
+
+(Once this Mac's box has moved out of the old app's folder, each of these is `410` with words for
+the old app: "Computers".)
 
 - `PUT kuvo/link/config {"phones", "machines", "relay", "name", "app"}`: whether the
   phone link is on (`phones`: the one switch people see as "Let my devices connect", which lets

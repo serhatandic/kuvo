@@ -468,32 +468,28 @@ fn back_passes_over_a_session_gone_since(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_held_older_box_has_one_notice_without_claiming_its_content_is_empty(cx: &mut TestAppContext) {
+fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_settings(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::held_older(Replies::Never));
     assert!(bounds(cx, "update-chip").is_some());
-    assert!(bounds(cx, "held-sessions").is_some());
+    // Sessions: why it can't be used, in the gate's words, never an empty list or a composer
+    // that takes nothing.
+    assert!(bounds(cx, "blocked-held").is_some());
     assert!(bounds(cx, "no-accounts").is_none());
-    workspace.update_in(cx, |workspace, window, cx| {
-        window.focus(&gpui::Focusable::focus_handle(workspace.landing().read(cx), cx), cx);
-    });
-    cx.simulate_input("cannot be sent");
-    workspace.read_with(cx, |workspace, cx| {
-        assert!(workspace.landing().read(cx).field().read(cx).text().is_empty());
-    });
     workspace.read_with(cx, |workspace, _| {
         assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It finishes updating once the work running on it now ends.".into())));
         assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
+        let blocked = workspace.blocked().expect("the view");
+        assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("This Mac’s Kuvo is older than this app", "It finishes updating once the work running on it now ends."));
     });
-    click(cx, "rail-bots");
-    assert!(bounds(cx, "update-chip").is_some());
-    assert!(bounds(cx, "held-area").is_some());
-    assert!(bounds(cx, "held-area-sidebar").is_some());
-    assert!(bounds(cx, "bots-empty").is_none());
-    assert!(bounds(cx, "new-bot").is_none());
-    click(cx, "rail-queue");
-    assert!(bounds(cx, "held-area").is_some());
-    assert!(bounds(cx, "queue-empty").is_none());
+    for (rail, empty) in [("rail-bots", "bots-empty"), ("rail-queue", "queue-empty"), ("rail-computers", "computers-page")] {
+        click(cx, rail);
+        assert!(bounds(cx, "update-chip").is_some());
+        assert!(bounds(cx, "blocked-held").is_some(), "{rail}: the same view");
+        assert!(bounds(cx, empty).is_none(), "{rail}: never opened empty");
+        assert!(bounds(cx, "held-area-sidebar").is_none(), "{rail}: no empty sidebar beside it");
+    }
     click(cx, "rail-settings");
+    assert!(bounds(cx, "blocked-held").is_none());
     assert!(bounds(cx, "row-editor").is_some(), "your own settings remain available");
     // Its own settings are its box's: they wait with it.
     click(cx, "settings-foot");

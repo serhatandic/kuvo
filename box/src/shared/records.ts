@@ -102,6 +102,10 @@ export interface ToldComputer {
   atWork?: AtWorkSession[];
   /** A Mac's box with the old Kuvo Code app (before 1.0) attached: it takes no removals now. */
   oldApp?: true;
+  /** Where else its Macs may reach it over SSH, as it knows itself: its tailnet's addresses first,
+   * its name, its other networks' (IPv4). What a Mac tries where the address it set it up at
+   * doesn't answer. */
+  addresses?: string[];
 }
 
 /** A session at work on a computer: its id there, and its title (none for one that has none yet). */

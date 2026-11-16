@@ -10,6 +10,7 @@ pub mod app_menu;
 pub mod area;
 pub mod areas;
 pub mod ask_card;
+pub mod blocked;
 pub mod bot_face;
 pub mod bots;
 pub mod composer;

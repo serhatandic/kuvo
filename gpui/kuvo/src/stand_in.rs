@@ -76,6 +76,8 @@ struct State {
     /// The boxes of your other computers it reaches, by key.
     peers: HashMap<String, StandIn>,
     older: bool,
+    /// It doesn't answer (asleep, off, offline): every request fails.
+    down: bool,
     /// It's from before it took the release its app carries the moment its work ended, saying how
     /// that stands itself (no `computers.update.here`): the app brings it up with its installer.
     before_update_here: bool,
@@ -376,6 +378,11 @@ impl StandIn {
         self.state().older = older;
     }
 
+    /// It stops answering (asleep, off, offline), or answers again.
+    pub fn set_down(&self, down: bool) {
+        self.state().down = down;
+    }
+
     /// Whether its Work Queue can be read (else 503).
     pub fn queue_readable(&self, readable: bool) {
         self.state().queue.down = !readable;
@@ -486,6 +493,15 @@ impl StandIn {
     /// from here (its row's `update`, and `add`).
     pub fn needs_set_up_over_ssh(&self, key: &str) {
         self.state().areas.to_set_up.push(key.to_owned());
+    }
+
+    /// It says the older computer `key` needs an update it can't bring itself, in `why`'s words,
+    /// with nothing to press (a Linux box, or one a Mac's setup has as a member).
+    pub fn cant_bring_up(&self, key: &str, why: &str) {
+        let mut state = self.state();
+        state.areas.cant_bring_up.push((key.to_owned(), why.to_owned()));
+        // (It lists your computers then, as every box does.)
+        state.areas.lists_yours = true;
     }
 
     /// It lists the computer `key` as a Mac.
@@ -2345,6 +2361,9 @@ fn title_from(words: &str) -> String {
 
 impl Transport for StandIn {
     fn send(&self, request: &Request) -> Result<Response> {
+        if self.state().down {
+            return Err(kuvo_box::Error::Unreachable("ssh: connect to host 192.168.1.101 port 22: No route to host".into()));
+        }
         self.route(request)
     }
 

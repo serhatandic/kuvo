@@ -218,7 +218,8 @@ fn a_computer_away_and_one_older_say_why_on_their_pages(cx: &mut TestAppContext)
     click(cx, "computer-key_studio");
     assert_eq!(said(&page, cx, "notice-away").map(|(title, _)| title).as_deref(), Some("studio-mini can’t be reached"));
     assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none"));
-    assert!(shown(cx, "action-reconnect"));
+    // Connect is the card's own button, beside why.
+    assert!(shown(cx, "notice-away-action") && !shown(cx, "action-reconnect"));
     // Older: the window's own held words for it.
     click(cx, "computer-key_old");
     let (held_title, held_next) = held_words(Some("old-mini"), false);
@@ -257,7 +258,8 @@ fn a_list_that_cant_be_read_keeps_this_computer(cx: &mut TestAppContext) {
     assert!(shown(cx, "computers-failed") && shown(cx, "computer-this"));
     click(cx, "computer-this");
     assert!(shown(cx, "computer-head"));
-    assert_eq!(said(&page, cx, "fact-version").map(|(_, value)| value).as_deref(), Some("Not said yet"));
+    // (What it hasn't said isn't drawn as "Not said yet".)
+    assert_eq!(said(&page, cx, "fact-version"), None);
 }
 
 /// A long list: every computer is in the sidebar's list, and the page scrolls through them all.
@@ -310,8 +312,8 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
 
     // Connect, for a Mac that's away: the box reaches it, and it's being connected to.
     click(cx, "computer-key_studio");
-    assert!(shown(cx, "action-reconnect") && !shown(cx, "action-remove") && !shown(cx, "action-rename"), "a Mac is neither renamed nor removed from here");
-    click(cx, "action-reconnect-button");
+    assert!(shown(cx, "notice-away-action") && !shown(cx, "action-remove") && !shown(cx, "action-rename"), "a Mac is neither renamed nor removed from here");
+    click(cx, "notice-away-action");
     assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_studio/connect").len(), 1);
     assert!(shown(cx, "notice-connecting") && !shown(cx, "action-reconnect"));
 
@@ -388,15 +390,17 @@ fn an_older_computer_being_brought_up_to_date_says_how_and_updates_now_on_your_w
     stand_in.bring_up_to_date("key_old", "waiting", true, 3);
     let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computer-key_old");
-    assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Kuvo on old-mini hasn’t been free for a day."));
-    assert!(!shown(cx, "notice-older"), "one notice, the box's");
-    click(cx, "action-update-button");
+    assert_eq!(said(&page, cx, "notice-update"), Some(("Kuvo on old-mini hasn’t been free for a day".to_owned(), "It updates once nothing’s at work there, or now with Update Now.".to_owned())));
+    assert!(!shown(cx, "notice-older"), "one card, the box's");
+    // Update Now is the card's own button, not a row of Manage's too.
+    assert!(!shown(cx, "action-update"));
+    click(cx, "notice-update-action");
     assert_eq!(page.read_with(cx, |page, _| page.confirm_words()).map(|(title, _, _)| title).as_deref(), Some("Update Kuvo on old-mini now?"));
     assert!(stand_in.seen_at("POST", "kuvo/computers/key_old/update").is_empty());
     click(cx, "computers-confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_old/update").len(), 1);
     assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Updating Kuvo on old-mini…"));
-    assert!(!shown(cx, "action-update"), "nothing to press while it runs");
+    assert!(!shown(cx, "notice-update-action") && !shown(cx, "action-update"), "nothing to press while it runs: how it goes is in the same card");
 }
 
 /// This computer's Kuvo waiting for the release its app carries (`computers.update.here`): its
@@ -410,13 +414,13 @@ fn this_computers_kuvo_waiting_for_its_release_updates_now_on_your_word(cx: &mut
     click(cx, "computer-this");
     let title = said(&page, cx, "notice-update").map(|(title, _)| title).unwrap_or_default();
     assert!(title.ends_with("updates once your sessions there finish."), "{title}");
-    click(cx, "action-update-here-button");
+    click(cx, "notice-update-action");
     assert!(page.read_with(cx, |page, _| page.confirm_words()).is_some_and(|(title, _, _)| title.starts_with("Update Kuvo on")));
     assert!(stand_in.seen_at("POST", "kuvo/update").is_empty());
     click(cx, "computers-confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/update").len(), 1);
     assert!(said(&page, cx, "notice-update").is_some_and(|(title, _)| title.starts_with("Updating Kuvo on")));
-    assert!(!shown(cx, "action-update-here"), "nothing to press while it runs");
+    assert!(!shown(cx, "notice-update-action") && !shown(cx, "action-update-here"), "nothing to press while it runs");
 }
 
 /// An older machine this box didn't set up over SSH: its page says so in the box's words, and its
@@ -427,8 +431,8 @@ fn an_older_machine_to_set_up_over_ssh_opens_add_a_machine_at_its_address(cx: &m
     stand_in.needs_set_up_over_ssh("key_devbox");
     let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computer-key_devbox");
-    assert!(said(&page, cx, "notice-update").is_some_and(|(title, _)| title.starts_with("Kuvo on devbox needs an update.")));
-    click(cx, "action-add-button");
+    assert_eq!(said(&page, cx, "notice-update").map(|(title, _)| title).as_deref(), Some("Kuvo on devbox needs an update"));
+    click(cx, "notice-update-action");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
     assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
     assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty());
