@@ -19,7 +19,9 @@ pub enum IconSize {
     Nav,
     /// 16 px: icon buttons in the title bar and in toolbars and headers above a view.
     Medium,
-    /// 18 px: the left rail's areas and its bottom buttons.
+    /// 18 px: the title bar's icon buttons.
+    Large,
+    /// 22 px: the left rail's areas and its bottom buttons.
     Rail,
     /// 20 px: cards and empty states.
     Card,
@@ -37,7 +39,8 @@ impl IconSize {
             Self::XSmall => px(12.),
             Self::Nav => px(14.),
             Self::Medium => px(16.),
-            Self::Rail => px(18.),
+            Self::Large => px(18.),
+            Self::Rail => px(22.),
             Self::Card => px(20.),
         }
     }
