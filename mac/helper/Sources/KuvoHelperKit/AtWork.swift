@@ -79,8 +79,11 @@ public struct MenuBarLook: Equatable, Sendable {
         return working
     }
 
-    /// Whether the mark has its dot: something waits on you.
-    public var needsYou: Bool { (atWork?.waiting.sessions ?? 0) > 0 }
+    /// Whether the mark has its dot: something waits on you, in any area the box counts.
+    public var needsYou: Bool {
+        guard let waiting = atWork?.waiting else { return false }
+        return waiting.sessions + waiting.bots + waiting.queue > 0
+    }
 
     /// What VoiceOver says of the item.
     public var spoken: String {
@@ -105,19 +108,23 @@ public struct MenuBarLook: Equatable, Sendable {
         }
     }
 
-    /// Whether Stop asks first: while the box says something would stop, or while that isn't known.
-    public var stopAsks: Bool { atWork?.busy ?? true }
+    /// Whether Stop asks first: while the box says something would stop, or while that isn't known,
+    /// or while the desktop app is open (`appOpen`: its window closes too).
+    public func stopAsks(appOpen: Bool) -> Bool { appOpen || (atWork?.busy ?? true) }
 
     /// The question Stop asks first, in words.
-    public var stopQuestion: (title: String, detail: String) {
+    public func stopQuestion(appOpen: Bool) -> (title: String, detail: String) {
         let working = atWork?.working ?? 0
-        let what: String
+        var said: [String] = []
         switch working {
-        case 0: what = atWork == nil ? "Kuvo may be at work." : "Work is still running."
-        case 1: what = "A session is at work."
-        default: what = "\(working) sessions are at work."
+        case 0 where atWork == nil: said.append("Kuvo may be at work.")
+        case 0 where atWork?.busy == true: said.append("Work is still running.")
+        case 0: break
+        case 1: said.append("A session is at work.")
+        default: said.append("\(working) sessions are at work.")
         }
-        return ("Stop Kuvo on this Mac?", "\(what) It stops now, and starts again when you open Kuvo or next log in.")
+        said.append(appOpen ? "Kuvo stops now, and its window closes. It starts again when you open Kuvo." : "Kuvo stops now, and starts again when you open it.")
+        return ("Stop Kuvo on this Mac?", said.joined(separator: " "))
     }
 
     /// Whether Stop can be asked for now.

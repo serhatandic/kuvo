@@ -677,6 +677,21 @@ private final class InTheTests {}
         #expect(!text(run.appending(path: "box.pid")).isEmpty, "its keeper runs again")
     }
 
+    /// As its own build runs (AppKit's run loop, for its menu bar item): SIGTERM still stops what it
+    /// started before it goes, never an exit that leaves the box running.
+    @Test func underAppKitsRunLoopItStillStopsWhatItStartedAsItGoes() throws {
+        try standIns()
+        let helper = try keeping(["--test-app-loop"])
+        defer { cleanUp([helper]) }
+        until { !text(home.appending(path: "serve.stdin")).isEmpty && !text(run.appending(path: "box.pid")).isEmpty }
+        // (As launchd does: to the helper alone, not its group, which `serve` is in.)
+        kill(helper.process.processIdentifier, SIGTERM)
+        until { !helper.isRunning }
+        #expect(helper.ended.value == 0)
+        #expect(text(home.appending(path: "serve.log")) == "closed\n")
+        #expect(text(home.appending(path: "keep.log")).contains("term"))
+    }
+
     @Test func aSecondHelperForTheSameBoxGoesAtOnce() throws {
         try standIns()
         let first = try keeping()

@@ -2,14 +2,24 @@
 import AppKit
 import SwiftUI
 
-/// Kuvo's mark in the menu bar: the one place it's named, so the mark the user picks goes in here
-/// alone. BRAND-NEEDED: a stand-in symbol until then (.claude/notes/761-drafts/logo-template.png).
+/// Kuvo's mark in the menu bar: the app icon's artwork made one colour, with thin gaps where its
+/// shapes meet (the user's pick, 11-16), as a template, so macOS draws it as it draws its own icons
+/// (light or dark menu bar, selected or not). Its bytes are mac/helper/Assets/kuvo-mark.png's
+/// (made by .claude/notes/761-drafts/logo.swift; a test holds them to the file), carried in the
+/// program as the helper's bundle has no resources of its own.
 public enum MenuBarMark {
+    /// The PNG, 54 px square: 18 points at 3x.
+    static let png = Data(base64Encoded: "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")!
+
+    /// The size it's drawn at, as the menu bar's own icons are.
+    static let points = NSSize(width: 18, height: 18)
+
     public static func image() -> NSImage {
-        let image = NSImage(systemSymbolName: "circle.hexagonpath", accessibilityDescription: "Kuvo") ?? NSImage()
-        let sized = image.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)) ?? image
-        sized.isTemplate = true
-        return sized
+        let image = NSImage(data: png) ?? NSImage()
+        image.size = points
+        image.isTemplate = true
+        image.accessibilityDescription = "Kuvo"
+        return image
     }
 }
 

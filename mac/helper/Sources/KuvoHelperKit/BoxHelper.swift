@@ -84,8 +84,9 @@ public final class BoxHelper {
         }
         let given = option("--home")
         #if DEBUG
-        let menuBar = words.contains("--test-menu-bar")
-        words.removeAll { $0 == "--test-menu-bar" }
+        // Tests alone: AppKit's run loop, as its own build runs, with no item in your menu bar.
+        let appLoop = words.contains("--test-app-loop")
+        words.removeAll { $0 == "--test-app-loop" }
         #endif
         let appBundle = option("--app")
         var keychain = HostKeychain()
@@ -146,19 +147,23 @@ public final class BoxHelper {
         }
         switch command {
         case "keep" where words.count <= 1:
-            // In the menu bar (`MenuBarItem`), while it keeps the box: its own build always, the
-            // tests' only where one asks (`--test-menu-bar`), never in your menu bar from a test run.
+            // In the menu bar (`MenuBarItem`), while it keeps the box: its own build always; the
+            // tests' never in your menu bar (`--test-app-loop`: AppKit's run loop, without the item).
             #if DEBUG
-            let drawn = menuBar
+            let (loop, drawn) = (appLoop, false)
             #else
-            let drawn = true
+            let (loop, drawn) = (true, true)
             #endif
             let helper = MainActor.assumeIsolated { keep(home: home, keychain: keychain, prefix: prefix, app: app, allowed: allowed) }
-            guard drawn else { dispatchMain() }
+            guard loop else { dispatchMain() }
             MainActor.assumeIsolated {
                 let application = NSApplication.shared
                 application.setActivationPolicy(.accessory)
-                MenuBarItem.shared = MenuBarItem(helper: helper, app: app)
+                // Quit as AppKit has it (Activity Monitor, logging out): everything it started is
+                // told to stop first, as SIGTERM does, never an exit that leaves the box running.
+                HelperApp.shared = HelperApp(helper: helper)
+                application.delegate = HelperApp.shared
+                if drawn { MenuBarItem.shared = MenuBarItem(helper: helper, app: app) }
                 application.run()
             }
             exit(0)
@@ -546,6 +551,23 @@ public final class BoxHelper {
     nonisolated static var systemPromptOpen: Bool {
         let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
         return windows.contains { $0[kCGWindowOwnerName as String] as? String == "UserNotificationCenter" }
+    }
+}
+
+/// The helper as an app to AppKit: Quit (an Apple Event, as Activity Monitor and logging out send)
+/// goes as SIGTERM does (`finish`), which exits once what it started has stopped.
+@MainActor
+final class HelperApp: NSObject, NSApplicationDelegate {
+    static var shared: HelperApp?
+    let helper: BoxHelper
+
+    init(helper: BoxHelper) {
+        self.helper = helper
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        helper.finish(0)
+        return .terminateLater
     }
 }
 

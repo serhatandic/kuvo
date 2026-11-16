@@ -34,15 +34,26 @@ import Testing
         #expect(MenuBarLook(.starting).spoken == "Kuvo, starting")
     }
 
-    @Test func stopAsksFirstWhileTheBoxSaysSomethingWouldStopOrDoesntSayYet() {
-        #expect(MenuBarLook(.running(Self.said)).stopAsks)
-        #expect(MenuBarLook(.running(Self.said)).stopQuestion.detail.hasPrefix("3 sessions are at work."))
-        #expect(!MenuBarLook(.running(Self.quiet)).stopAsks, "nothing at work: it just stops")
+    @Test func stopAsksFirstWhileTheBoxSaysSomethingWouldStopOrDoesntSayYetOrTheAppIsOpen() {
+        #expect(MenuBarLook(.running(Self.said)).stopAsks(appOpen: false))
+        #expect(MenuBarLook(.running(Self.said)).stopQuestion(appOpen: false).detail == "3 sessions are at work. Kuvo stops now, and starts again when you open it.")
+        #expect(!MenuBarLook(.running(Self.quiet)).stopAsks(appOpen: false), "nothing at work: it just stops")
         var background = Self.quiet
         background.busy = true
-        #expect(MenuBarLook(.running(background)).stopAsks, "the box's word, not a count of this item's")
-        #expect(MenuBarLook(.starting).stopAsks, "not known yet: asked")
+        #expect(MenuBarLook(.running(background)).stopAsks(appOpen: false), "the box's word, not a count of this item's")
+        #expect(MenuBarLook(.starting).stopAsks(appOpen: false), "not known yet: asked")
+        // The desktop app open: its window closes too, so it's asked, and said.
+        #expect(MenuBarLook(.running(Self.quiet)).stopAsks(appOpen: true))
+        #expect(MenuBarLook(.running(Self.quiet)).stopQuestion(appOpen: true).detail == "Kuvo stops now, and its window closes. It starts again when you open Kuvo.")
         #expect(!MenuBarLook(.stopping).canStop)
+    }
+
+    @Test func theDotIsForAnythingWaitingOnYouInAnyArea() {
+        for waiting in [AtWork.Waiting(sessions: 0, bots: 1, queue: 0), AtWork.Waiting(sessions: 0, bots: 0, queue: 2)] {
+            var said = Self.quiet
+            said.waiting = waiting
+            #expect(MenuBarLook(.running(said)).needsYou)
+        }
     }
 
     @Test func anAnswerThisCantReadIsLeftOut() {
@@ -65,6 +76,48 @@ import Testing
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Basic " + Data("opencode:ours".utf8).base64EncodedString())
         #expect(BoxServer.recorded(in: run, password: "another") == nil)
         #expect(BoxServer.recorded(in: run, password: nil) == nil, "before it started one")
+    }
+
+    /// The mark is the committed asset, drawn as a template at the menu bar's size, so macOS tints
+    /// it for a light or dark menu bar and when it's selected, as its own icons.
+    @Test func theMarkIsTheAssetAsATemplate() throws {
+        let file = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../../Assets/kuvo-mark.png").standardizedFileURL
+        #expect(try Data(contentsOf: file) == MenuBarMark.png, "mac/helper/Assets/kuvo-mark.png and the bytes the program carries")
+        let image = MenuBarMark.image()
+        #expect(image.isTemplate)
+        #expect(image.size == NSSize(width: 18, height: 18))
+        #expect(image.representations.first?.pixelsWide == 54)
+    }
+
+    /// The item as a menu bar draws it (the mark tinted as a template is, the count, the dot), on a
+    /// light and a dark menu bar; written out where `HELPER_SHOTS` names a folder.
+    @Test func theItemDrawsOnLightAndDarkMenuBars() throws {
+        guard let folder = ProcessInfo.processInfo.environment["HELPER_SHOTS"].map({ URL(filePath: $0) }) else { return }
+        let looks = [MenuBarLook(.running(Self.said)), MenuBarLook(.running(Self.quiet))]
+        let strip = HStack(spacing: 12) {
+            ForEach([false, true], id: \.self) { dark in
+                VStack(alignment: .trailing, spacing: 6) {
+                    ForEach(looks.indices, id: \.self) { index in
+                        let look = looks[index]
+                        HStack(spacing: 3) {
+                            Image(nsImage: MenuBarMark.image()).renderingMode(.template)
+                            if let count = look.count { Text(" \(count)").font(.system(size: 12, weight: .medium).monospacedDigit()) }
+                            if look.needsYou { Text("●").font(.system(size: 7)).foregroundStyle(.orange).baselineOffset(3) }
+                        }
+                        .foregroundStyle(dark ? Color.white : Color.black)
+                        .padding(.horizontal, 6).frame(height: 22)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(index == 0 ? (dark ? Color.white : Color.black).opacity(0.14) : .clear))
+                    }
+                }
+                .padding(10).frame(width: 140, alignment: .trailing)
+                .background(dark ? Color(white: 0.11) : Color(white: 0.965))
+            }
+        }
+        let renderer = ImageRenderer(content: strip)
+        renderer.scale = 3
+        let image = try #require(renderer.nsImage)
+        let png = try #require(image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) })
+        try png.write(to: folder.appending(path: "item-light-dark.png"))
     }
 
     /// The panel drawn in each state, light and dark, at its width; written out where

@@ -12,7 +12,7 @@ nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "menu
 /// while the box says something would stop), which the box does (`kuvo/box/stop`): the helper goes
 /// once its keeper has, the item with it.
 @MainActor
-public final class MenuBarItem: NSObject, NSPopoverDelegate {
+public final class MenuBarItem: NSObject {
     /// The one this helper draws (kept for as long as it runs).
     public static var shared: MenuBarItem?
 
@@ -36,7 +36,6 @@ public final class MenuBarItem: NSObject, NSPopoverDelegate {
         }
         popover.behavior = .transient
         popover.animates = true
-        popover.delegate = self
         item.button?.target = self
         item.button?.action = #selector(toggle)
         item.button?.imagePosition = .imageLeading
@@ -94,19 +93,27 @@ public final class MenuBarItem: NSObject, NSPopoverDelegate {
             guard let error else { return }
             log.error("Kuvo didn't open: \(error.localizedDescription, privacy: .public)")
             let why = error.localizedDescription
-            Task { @MainActor in MenuBarItem.shared?.say("Kuvo didn’t open", why) }
+            Task { @MainActor [weak self] in self?.say("Kuvo didn’t open", why) }
         }
     }
 
+    /// The desktop app, where it's open.
+    private var openApps: [NSRunningApplication] { NSRunningApplication.runningApplications(withBundleIdentifier: app) }
+
+    /// How long a stop that was taken has to end the helper before the item says it didn't.
+    static let stopsWithin: Duration = .seconds(30)
+
     /// Stop Kuvo on this Mac: asked first while the box says something would stop (or doesn't
-    /// say yet), then asked of the box.
+    /// say yet), or while the desktop app is open, whose window closes too (with nothing to reach,
+    /// as 0.7's Stop Background Work quit it); then asked of the box.
     func stopKuvo() {
         popover.performClose(nil)
         guard look.canStop else { return }
-        if look.stopAsks {
+        let appOpen = !openApps.isEmpty
+        if look.stopAsks(appOpen: appOpen) {
             NSApp.activate()
             let alert = NSAlert()
-            let question = look.stopQuestion
+            let question = look.stopQuestion(appOpen: appOpen)
             alert.messageText = question.title
             alert.informativeText = question.detail
             let stop = alert.addButton(withTitle: "Stop")
@@ -117,9 +124,17 @@ public final class MenuBarItem: NSObject, NSPopoverDelegate {
         let before = look
         look = MenuBarLook(.stopping)
         Task {
-            guard let why = await feed.askToStop() else { return }
-            look = before
-            say("Kuvo on this Mac didn’t stop", why)
+            if let why = await feed.askToStop() {
+                look = before
+                return say("Kuvo on this Mac didn’t stop", why)
+            }
+            // (Its window would only say Kuvo isn't answering.)
+            for open in openApps { open.terminate() }
+            // This helper goes once its keeper has; still here a while on, the stop didn't take.
+            try? await Task.sleep(for: Self.stopsWithin)
+            guard look.stage == .stopping else { return }
+            look = MenuBarLook(.starting)
+            say("Kuvo on this Mac didn’t stop", "It went on running. Try again.")
         }
     }
 
@@ -131,6 +146,5 @@ public final class MenuBarItem: NSObject, NSPopoverDelegate {
         alert.runModal()
     }
 
-    public nonisolated func popoverDidClose(_ notification: Notification) {}
 }
 #endif
