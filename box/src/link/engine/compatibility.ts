@@ -160,12 +160,40 @@ export async function learnCompatibility(engine: Target, file = COMPATIBILITY_FI
  * box changes it: what commands can do here while they run in the sandbox, nothing while they
  * don't. (What providers need isn't in it any more: the engine reads that from its settings folder,
  * where it can change while it runs, and content would hold an old one over it until a restart.) */
-export function engineConfigContent(content: string | undefined): string {
+export function engineConfigContent(content: string | undefined, tools?: { runtime: string; home?: string }): string {
   let given: unknown = {};
   if (content?.trim()) {
     try { given = JSON.parse(content); } catch { return content; }
   }
   if (!isObject(given)) return JSON.stringify(given);
   const instructions = Array.isArray(given.instructions) ? given.instructions : [];
-  return JSON.stringify({ ...given, instructions: [...new Set([...instructions, SANDBOX_NOTE])] });
+  const config: Record<string, unknown> = { ...given, instructions: [...new Set([...instructions, SANDBOX_NOTE])] };
+  return JSON.stringify(tools ? withOwnTools(config, tools.runtime, tools.home ?? K) : config);
+}
+
+/** The name Kuvo Code's own tools go by in the engine (so they're `kuvo-browser_start_session`…),
+ * which the agents' bridge looks for in the same settings. */
+export const OWN_TOOLS_SERVER = "kuvo-browser";
+/** How long one of its tools may take: one that asks you (to sign in, for a code) waits for you. */
+const OWN_TOOLS_TIMEOUT = 960_000;
+
+/** `config` with Kuvo Code's own tools (agents writing to each other, sessions and projects, wake-ups,
+ * a bot's job, the browser) as a server the engine starts: this box's `bin/kuvo-browser.js`, run with
+ * `runtime` (the engine's own, which runs this). For a box started by its own start scripts, the
+ * Mac's included: no app gives its engine these any more (#333; 0.7's Mac app did, for its engine and
+ * its machines'), and without them its agents and bots have none. One already named (an older Mac's
+ * app still starting a machine's engine with its own) stays as it is. */
+export function withOwnTools(config: Record<string, unknown>, runtime: string, home: string): Record<string, unknown> {
+  const mcp = isObject(config.mcp) ? config.mcp : {};
+  const servers = isObject(mcp.servers) ? mcp.servers : {};
+  if (servers[OWN_TOOLS_SERVER] !== undefined) return config;
+  const server = {
+    type: "local",
+    command: [runtime, "--config=/dev/null", "--no-env-file", path.join(home, "bin", "kuvo-browser.js"), "mcp"],
+    environment: { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: home },
+    // Plain tools, so every model calls them directly.
+    codemode: false,
+    timeout: { execution: OWN_TOOLS_TIMEOUT },
+  };
+  return { ...config, mcp: { ...mcp, servers: { ...servers, [OWN_TOOLS_SERVER]: server } } };
 }
