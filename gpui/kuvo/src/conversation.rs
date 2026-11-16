@@ -297,7 +297,7 @@ impl ConversationView {
         self.queue = queue;
         self.queue_failed = None;
         if !held.is_empty() {
-            self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id), cx));
+            self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id).then_some(true), cx));
         }
         cx.notify();
     }
@@ -313,7 +313,7 @@ impl ConversationView {
     /// run under way, which stays last).
     fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
         let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
-        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().map(Entry::outgoing).unzip();
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().filter(|outgoing| !outgoing.arrived).map(Entry::outgoing).unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);
         (rows, revisions)
@@ -422,9 +422,20 @@ impl ConversationView {
                 self.models_changed = Some(models_changed);
                 self.earlier = conversation.earlier.clone();
                 self.read = true;
-                // Yours on their way that it has now: its copy takes their place.
-                let has: HashSet<&str> = conversation.messages.iter().map(|message| message.id()).collect();
-                self.composer.update(cx, |composer, cx| composer.arrived(|id| has.contains(id), cx));
+                // Yours on their way that it has now: its copy takes their place (keeping the files
+                // sent with it shown, where its copy came without them).
+                let has: HashMap<&str, bool> = conversation
+                    .messages
+                    .iter()
+                    .map(|message| {
+                        let carries = match message {
+                            Message::User(user) => !user.files.is_empty() || !user.parts().paths.is_empty(),
+                            _ => true,
+                        };
+                        (message.id(), carries)
+                    })
+                    .collect();
+                self.composer.update(cx, |composer, cx| composer.arrived(|id| has.get(id).copied(), cx));
                 let (rows, revisions) = entries::entries(conversation);
                 let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
                 self.show(rows, revisions);
@@ -689,6 +700,27 @@ impl ConversationView {
     }
 
     /// The top row, while there are earlier messages: they're read as it comes into view.
+    /// Under your message whose box's copy came without the files you sent with it: their names,
+    /// until a copy with its own comes (never dropped from sight in between).
+    fn files_kept(&self, id: &str, cx: &App) -> AnyElement {
+        let composer = self.composer.read(cx);
+        let Some(kept) = composer.outgoing().iter().find(|outgoing| outgoing.arrived && outgoing.id == id) else { return div().into_any_element() };
+        let c = &cx.theme().colors;
+        let selector = format!("kept-files-{id}");
+        div()
+            .debug_selector(move || selector)
+            .pt(space::S1_5)
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .gap(space::S1)
+            .children(kept.files.iter().map(|path| {
+                let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                div().flex().items_center().gap(space::S1).px(space::S2).py(space::S0_5).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint)).child(name)
+            }))
+            .into_any_element()
+    }
+
     /// Under one of yours that couldn't go: Retry sends it again, Edit puts it back in the composer.
     fn unsent_actions(&self, id: &str, cx: &App) -> AnyElement {
         let sending = self.composer.read(cx).is_sending();
@@ -868,6 +900,7 @@ impl Render for ConversationView {
                 let own = match entry {
                     Entry::Earlier => this.earlier_row(&list_view, cx),
                     Entry::Outgoing { id, failed: Some(_), .. } => this.unsent_actions(id, cx),
+                    Entry::Message(message) => this.files_kept(message.id(), cx),
                     _ => div().into_any_element(),
                 };
                 let toggle_view = list_view.clone();

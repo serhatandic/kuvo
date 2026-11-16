@@ -1175,6 +1175,93 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn files_sent_to_a_conversation_on_another_computer_go_with_their_bytes_and_pictures_are_named(cx: &mut TestAppContext) {
+    let png = |width: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, 4).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // The conversation runs on another computer: no path on this Mac means anything there.
+    stand_in.set_elsewhere(true);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let (first, notes, second) = (folder.path().join("fridge.png"), folder.path().join("list.txt"), folder.path().join("shelf.png"));
+    std::fs::write(&first, png(3)).unwrap();
+    std::fs::write(&notes, "rice").unwrap();
+    std::fs::write(&second, png(5)).unwrap();
+
+    // Attached as you pick or drop them: each picture named where you're writing.
+    cx.simulate_input("Compare");
+    composer.update(cx, |composer, cx| composer.attach_named([first.clone(), notes.clone(), second.clone()], cx));
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx).0, "Compare [Image 1] [Image 2] ");
+    // Taking a picture off takes its name, and the later one moves down.
+    composer.update(cx, |composer, cx| composer.detach(0, cx));
+    assert_eq!(typed(&composer, cx).0, "Compare [Image 1] ");
+    composer.update(cx, |composer, cx| composer.attach_named([first.clone()], cx));
+    cx.simulate_input("please");
+    assert_eq!(typed(&composer, cx).0, "Compare [Image 1] [Image 2] please");
+
+    // Sent: each file with its bytes, as a phone sends them; the words keep the names.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let body = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).expect("sent");
+    assert_eq!(body["words"], "Compare [Image 1] [Image 2] please");
+    let files = body["files"].as_array().unwrap();
+    assert_eq!(files.iter().map(|file| file["name"].as_str().unwrap()).collect::<Vec<_>>(), ["list.txt", "shelf.png", "fridge.png"]);
+    assert!(files[1]["uri"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    assert!(files[0]["uri"].as_str().unwrap().starts_with("data:text/plain;base64,"));
+    assert!(!body.to_string().contains(&folder.path().to_string_lossy().into_owned()), "no path on this Mac goes");
+
+    // Its box's copy carries them: it takes the row's place, its pictures shown under it.
+    let id = body["id"].as_str().unwrap().to_owned();
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    assert!(composer.read_with(cx, |composer, _| composer.outgoing().is_empty()));
+    assert!(bounds(cx, &format!("picture-{id}#1")).is_some(), "its picture, from its copy");
+
+    // A file that can't be read as it goes: not sent, saying which, with Retry.
+    let gone = folder.path().join("gone.png");
+    std::fs::write(&gone, png(2)).unwrap();
+    composer.update(cx, |composer, cx| composer.attach_named([gone.clone()], cx));
+    std::fs::remove_file(&gone).unwrap();
+    let field = composer.read_with(cx, |composer, _| composer.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Outgoing { failed: Some(why), .. }) if why == "“gone.png” couldn’t be read."));
+    assert!(bounds(cx, "not-sent").is_some());
+}
+
+#[gpui::test]
+fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.drop_files();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let note = folder.path().join("list.txt");
+    std::fs::write(&note, "rice").unwrap();
+    composer.update(cx, |composer, cx| composer.attach_named([note.clone()], cx));
+    cx.simulate_input("Here");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    // Its copy in its place, once, and the file sent with it still shown under it.
+    assert_eq!(view.read_with(cx, |view, _| view.entries().iter().filter(|entry| entry.key() == id).count()), 1);
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    assert!(bounds(cx, &format!("kept-files-{id}")).is_some(), "the files sent stay in sight");
+}
+
+#[gpui::test]
 fn pictures_in_a_conversation_show_in_it_and_open_larger(cx: &mut TestAppContext) {
     use base64::Engine as _;
     let png = |width: u32, height: u32| {
@@ -1319,7 +1406,7 @@ fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: 
         out.into_inner()
     };
 
-    // A copied screenshot (a picture, no text): ⌘V attaches it, kept as a file, nothing typed.
+    // A copied screenshot (a picture, no text): ⌘V attaches it, kept as a file, and names it.
     cx.write_to_clipboard(ClipboardItem::from(Image::from_bytes(ImageFormat::Png, screenshot.clone())));
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
@@ -1327,7 +1414,7 @@ fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: 
     assert_eq!(attached.len(), 1);
     assert_eq!(std::fs::read(&attached[0]).unwrap(), screenshot);
     assert!(attached[0].file_name().unwrap().to_string_lossy().starts_with("Pasted Image "));
-    assert_eq!(typed(&composer, cx).0, "");
+    assert_eq!(typed(&composer, cx).0, "[Image 1] ", "named where you're writing, as 0.7 did");
     assert!(bounds(cx, "attachments").is_some());
 
     // Files copied in the Finder (their names come as text too): attached, the names not typed.
@@ -1341,13 +1428,13 @@ fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: 
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().to_vec()), [attached[0].clone(), note.clone(), photo.clone()]);
-    assert_eq!(typed(&composer, cx).0, "");
+    assert_eq!(typed(&composer, cx).0, "[Image 1] [Image 2] ", "the copied picture named; the names of the files not pasted as text");
 
     // Text pastes as text, as ever.
     cx.write_to_clipboard(ClipboardItem::new_string("What's in the fridge?".into()));
     cx.simulate_keystrokes("cmd-v");
     cx.run_until_parked();
-    assert_eq!(typed(&composer, cx).0, "What's in the fridge?");
+    assert_eq!(typed(&composer, cx).0, "[Image 1] [Image 2] What's in the fridge?");
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().len()), 3);
 
     // Send takes the pasted picture with the rest, as a file on this Mac's box.

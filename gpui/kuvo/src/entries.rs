@@ -167,7 +167,8 @@ pub fn render(
             let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
             outgoing(ix, words, files, failed.as_deref(), sel, own, cx)
         }
-        Entry::Message(message) => message_body(ix, entry.key(), message, open, toggle, selection, looks, cx),
+        // (What its view draws under it: the files sent with yours, while its copy has none.)
+        Entry::Message(message) => div().child(message_body(ix, entry.key(), message, open, toggle, selection, looks, cx)).child(own).into_any_element(),
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
     };

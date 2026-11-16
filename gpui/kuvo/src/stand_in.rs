@@ -101,6 +101,8 @@ struct State {
     sends_fail: bool,
     /// Files on its computer that `kuvo/file` serves, by path.
     files: HashMap<String, Vec<u8>>,
+    /// Its copy of a message sent leaves out the files that came with it (a box that lost them).
+    drops_files: bool,
     /// No model runs here: a new session starts on none.
     nothing_runs: bool,
     /// What it says of a session's model, where a test has said otherwise.
@@ -677,6 +679,11 @@ impl StandIn {
     /// From now on, a message sent is answered as by an engine that isn't answering.
     pub fn fail_sends(&self) {
         self.state().sends_fail = true;
+    }
+
+    /// From now on, its copy of a message sent comes without the files sent with it.
+    pub fn drop_files(&self) {
+        self.state().drops_files = true;
     }
 
     /// A file on its computer, at `path`, for `kuvo/file`.
@@ -1952,9 +1959,18 @@ impl StandIn {
                         let keyword = body["keyword"].as_str();
                         let mut message = user(&id, now, &words, keyword);
                         // The files it brought, as the box keeps them with its parts.
-                        let paths: Vec<String> = body["files"].as_array().into_iter().flatten().filter_map(|file| file["uri"].as_str()).map(|uri| decoded(uri.trim_start_matches("file://"))).collect();
-                        if !paths.is_empty() {
+                        let paths: Vec<String> = body["files"].as_array().into_iter().flatten().filter_map(|file| file["uri"].as_str()).filter(|uri| uri.starts_with("file://")).map(|uri| decoded(uri.trim_start_matches("file://"))).collect();
+                        // Those that came with their bytes, kept with it (the box keeps them on its disk).
+                        let carried: Vec<Value> = body["files"].as_array().into_iter().flatten().filter_map(|file| {
+                            let uri = file["uri"].as_str().filter(|uri| uri.starts_with("data:"))?;
+                            let mime = uri.trim_start_matches("data:").split([';', ',']).next().unwrap_or("");
+                            Some(json!({ "mime": mime, "name": file["name"], "source": { "type": "uri", "uri": uri } }))
+                        }).collect();
+                        if !paths.is_empty() && !state.drops_files {
                             message["metadata"]["kuvo"]["parts"]["paths"] = json!(paths);
+                        }
+                        if !carried.is_empty() && !state.drops_files {
+                            message["files"] = json!(carried);
                         }
                         message
                     }
