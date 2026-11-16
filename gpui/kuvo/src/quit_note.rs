@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{AnyElement, App, Global, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled, Window, div, px};
-use kuvo_ui::{ActiveTheme, Button, Icon, IconName, IconSize, StyledType, TypeSize, theme::{radius, space}};
+use kuvo_ui::{ActiveTheme, Button, StyledType, TypeSize, theme::{radius, space}};
 
 /// Quit (⌘Q, its menu): through the window's [`crate::Home`] where it's open (which notes the
 /// first Quit first, where it's owed), else at once. Run after the key's dispatch (`cx.defer`):
@@ -106,7 +106,7 @@ pub fn card(focus: &gpui::FocusHandle, cancel: impl Fn(&mut Window, &mut App) + 
                 .py(px(2.))
                 .rounded(px(4.))
                 .bg(c.selected)
-                .child(Icon::new(IconName::KuvoMark).size(IconSize::Nav).color(c.text)),
+                .child(gpui::img(kuvo_ui::icon::kuvo_mark(cx.theme().appearance.is_dark())).size(px(16.)).flex_none()),
         )
         .child(div().w(px(46.)).h(px(6.)).rounded(radius::PILL).bg(c.border_strong))
         .child(div().w(px(30.)).h(px(6.)).rounded(radius::PILL).bg(c.border_strong));

@@ -4,7 +4,7 @@
 //! this device; where the box says it isn't in the menu bar, nothing is noted. Keys go through the
 //! window as AppKit hands them on.
 
-use gpui::{Entity, TestAppContext, VisualTestContext, px, size};
+use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext, px, size};
 use kuvo::Home;
 use kuvo::quit_note::QuitNoteFile;
 use kuvo::stand_in::{Replies, StandIn};
@@ -43,6 +43,13 @@ fn the_first_quit_says_kuvo_keeps_working_and_cancel_stays(cx: &mut TestAppConte
     let folder = folder();
     let (home, cx) = open(cx, StandIn::new(Replies::Never), folder.path());
     assert!(!shown(cx, "quit-note"));
+    // Focus where you are, as the app opens (its landing's field).
+    home.update_in(cx, |home, window, cx| {
+        let landing = home.workspace().read(cx).landing().focus_handle(cx);
+        window.focus(&landing, cx);
+    });
+    let before = cx.update(|window, cx| window.focused(cx));
+    assert!(before.is_some());
     cx.simulate_keystrokes("cmd-q");
     assert!(shown(cx, "quit-note"), "the first ⌘Q shows the note instead of quitting");
     assert!(shown(cx, "quit-note-item"), "with where Kuvo is: its item in the menu bar");
@@ -51,6 +58,7 @@ fn the_first_quit_says_kuvo_keeps_working_and_cancel_stays(cx: &mut TestAppConte
     assert!(home.read_with(cx, |home, _| home.quit_note_shown()));
     cx.simulate_keystrokes("escape");
     assert!(!shown(cx, "quit-note"), "Escape stays");
+    assert_eq!(cx.update(|window, cx| window.focused(cx)), before, "back where you were");
     let kept = std::fs::read_to_string(folder.path().join("settings.json")).expect("remembered in the app's own folder");
     assert!(kept.contains("\"quitNoteSeen\": true"), "{kept}");
     // Seen: the next ⌘Q quits without it.

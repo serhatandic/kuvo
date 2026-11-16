@@ -42,8 +42,9 @@ pub struct Home {
     /// (its box not reached yet): no note.
     in_menu_bar: Option<bool>,
     _menu_bar: Option<Task<()>>,
-    /// The first Quit's note, while it's shown (`quit_note`).
+    /// The first Quit's note, while it's shown (`quit_note`), and what had focus before it.
     quit_note: Option<FocusHandle>,
+    focused_before: Option<FocusHandle>,
 }
 
 /// How often this computer's box is asked again whether it's in the menu bar, while it hasn't said.
@@ -58,7 +59,7 @@ impl Home {
     /// what it's handed (tests and shots).
     pub fn new(boxes: Boxes, first: BoxClient, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Home {
         let shown = if boxes.nearest().is_some() { NEAREST.to_owned() } else { boxes.rows().iter().find(|row| row.usable()).map(|row| row.key().to_owned()).unwrap_or_default() };
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, _watch: None, in_menu_bar: None, _menu_bar: None, quit_note: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, _watch: None, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None };
         home.make(&shown, first, window, cx);
         home.ask_menu_bar(cx);
         // Closing the window quits the app (it has only the one): the first time, the note first.
@@ -119,6 +120,7 @@ impl Home {
         if self.in_menu_bar != Some(true) || crate::quit_note::seen(cx) {
             return false;
         }
+        self.focused_before = window.focused(cx);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         self.quit_note = Some(focus);
@@ -138,12 +140,18 @@ impl Home {
         if quits {
             return cx.quit();
         }
-        let workspace = self.workspace().clone();
-        workspace.update(cx, |workspace, cx| {
-            if workspace.is_landing() {
-                window.focus(&workspace.landing().focus_handle(cx), cx);
+        // Back where you were (the composer you were typing in, a list).
+        match self.focused_before.take() {
+            Some(before) => window.focus(&before, cx),
+            None => {
+                let workspace = self.workspace().clone();
+                workspace.update(cx, |workspace, cx| {
+                    if workspace.is_landing() {
+                        window.focus(&workspace.landing().focus_handle(cx), cx);
+                    }
+                });
             }
-        });
+        }
         cx.notify();
     }
 
