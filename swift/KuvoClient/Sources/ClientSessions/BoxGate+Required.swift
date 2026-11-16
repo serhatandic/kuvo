@@ -17,6 +17,7 @@ extension BoxGate {
         "bots.elsewhere", // the Bots area: the bots on your other computers
         "bots.held", // #668 item 8: an edit to a bot whose computer is away is held by the box asked; no client keeps an outbox
         "bots.now", // #711, the desktop client's sidebar and Settings draw what the box says
+        "bots.state", // a bot's one state (thinking, blocked, done, asleep…) and Seen are the box's; no client works one out
         "clients.kind", // #742: a client says what it is, so a desktop app isn't taken for a phone
         "computers", // #711
         "computers.add", // #636: a box adds a computer over SSH itself, and says its steps and questions

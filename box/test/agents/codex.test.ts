@@ -11,6 +11,7 @@ import { createHash } from "node:crypto"
 import { createServer } from "node:net"
 import { CodexAgent, codexTiming } from "../../src/agents/agents/codex"
 import { Auto } from "../../src/agents/auto"
+import { subscribe } from "../../src/agents/events"
 import { watchFolder } from "../../src/shared/watch"
 import { canFence, realFence } from "./support/fence"
 import { callServer, computerServers, KEYS } from "./support/servers"
@@ -593,6 +594,29 @@ describe("Codex, nothing dropped", () => {
     const [shot, search] = tools(id)
     expect(shot).toMatchObject({ name: "kuvo-browser_browser_screenshot", state: { content: [{ type: "text", text: "Page: https://example.com" }, { type: "file", uri: "data:image/png;base64,BBBB" }] } })
     expect(search.state.content[0].text).toContain("Opened https://kuvo.run")
+  })
+})
+
+// Its thinking is what makes a bot's face think (PROTOCOL.md, "What a bot is doing now"): the box's
+// list hears it start and end as the engine's, and never reads the session for it.
+describe("Codex thinking", () => {
+  test("its reasoning as it streams starts a reasoning block, and the command after it ends it", async () => {
+    const told: { type: string; data: any }[] = []
+    const unsubscribe = subscribe((event) => {
+      if (/^session\.(reasoning\.(started|ended)|tool\.input\.started)$/.test(event.type)) told.push({ type: event.type, data: event.data })
+    })
+    try {
+      const id = await run([
+        ["item/started", { item: { type: "reasoning", id: "r1", summary: [], content: [] } }],
+        ["item/reasoning/summaryTextDelta", { itemId: "r1", delta: "Checking the tests first." }],
+        ["item/completed", { item: { type: "reasoning", id: "r1", summary: ["Checking the tests first."], content: [] } }],
+        ["item/started", { item: command("c1", "npm test") }],
+        ["item/completed", { item: command("c1", "npm test", { status: "completed", exitCode: 0, aggregatedOutput: "ok\n" }) }],
+      ])
+      expect(told.filter((event) => event.data?.sessionID === id).map((event) => event.type)).toEqual(["session.reasoning.started", "session.reasoning.ended", "session.tool.input.started"])
+    } finally {
+      unsubscribe()
+    }
   })
 })
 

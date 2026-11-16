@@ -120,9 +120,13 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
   write(path.join(scout, "via"), "bridge");
 
   const handle = link.engineHandler(() => { throw new Error("not needed"); }, { name: "my-server" });
+  const asked = Date.now();
   const answer = await ask(handle, "GET", "kuvo/bots");
   assert.equal(answer.status, 200);
   assert.deepEqual(answer.json.bots.map(each => each.name), ["First", "Scout"], "described ones, in the order they were made");
+  // (Since it was first said here: as it was asked.)
+  const since = answer.json.bots[1].now.since;
+  assert.ok(since >= asked && since <= Date.now(), "since when it's in its state");
   assert.deepEqual(answer.json.bots[1], {
     id: "bot_scout00001", session: "ses_bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" }, machine: "my-server",
     job: "Watches the build", jobDetails: "", paused: true, wakes: 1792000100, watching: 1, agents: true, model: { id: "big-pickle", providerID: "opencode" },
@@ -136,8 +140,9 @@ test("kuvo/bots lists the machine's described bots, each as its folder is now", 
       { what: "groups", words: "It leaves the group chats on my-server." },
       { what: "sessions", words: "The sessions it started stay.", kept: true },
     ],
-    // (What it's doing now: none of its sessions at work or waiting on you, and none listed.)
-    now: { working: 0, asking: 0 },
+    // (What it's doing now: none of its sessions at work or waiting on you, and none listed; its
+    // wake-ups paused, asleep.)
+    now: { working: 0, asking: 0, state: "asleep", since },
   });
   // One with no wake-ups or watches says nothing of them.
   assert.deepEqual(answer.json.bots[0].deletes.map(each => each.what), ["conversation", "folder", "groups", "sessions"]);

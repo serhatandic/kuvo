@@ -23,7 +23,9 @@ import { filedProjects, projectFollowers, readProjects } from "../areas/projects
 import { botFollowers, botHere } from "../bots/here";
 import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
-import { factsOf, listedProjects, needsYou, type ListPlace } from "./rule";
+import { factsOf, listedProjects, needsYou, type ListPlace, type Stopped } from "./rule";
+import { isJudged, judgingFollowers } from "../work/tree";
+import { Moments } from "./moments";
 import type { EngineSession } from "../engine/sessions";
 import type { ListedProject, NeedsYou, SessionFacts, SessionList } from "../../shared/routes/sessions";
 import type { Target } from "../../shared/records";
@@ -91,6 +93,8 @@ let latest: Kept | null = null;
 const places = new Map<string, Place>();
 /** Told as the list changes (each `…/events` stream). */
 export const listFollowers = new Set<() => void>();
+/** What each session's events say from moment to moment (thinking, blocked), taken in as they come. */
+const moments = new Moments(() => scheduleWorkOut());
 
 /** A cursor: the epoch it's of and the change it's at. */
 const cursorOf = (list: Pick<Kept, "epoch" | "seq">) => `${list.epoch}.${list.seq}`;
@@ -129,7 +133,7 @@ export function readBoxKnows(): BoxKnows {
  * (`running`): a session whose own turn runs, and one whose turn is over while something it left
  * goes on, a command or a subagent (Background work, `work/background.ts`), so a session's row, its
  * project's count and its bot's `now.working` say what every client's At work says. */
-export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSession>, known: BoxKnows = readBoxKnows(), background: Iterable<string> = Object.keys(readBackground())): ListPlace {
+export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSession>, known: BoxKnows = readBoxKnows(), background: Iterable<string> = Object.keys(readBackground()), stopped: ReadonlyMap<string, Stopped> = moments.stopped): ListPlace {
   const running = new Set([...turns, ...background]);
   const parents = new Map<string, string>();
   for (const session of sessions) if (session.parentID) parents.set(session.id, session.parentID);
@@ -145,21 +149,37 @@ export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSe
     if (ask.asks) asks.set(root, ask.asks);
     else asks.delete(root);
   }
-  return { isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, botOf: known.botOf, filed: known.filed, projects: known.projects, running, asked, asks, away: known.away };
+  return {
+    isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, botOf: known.botOf, filed: known.filed, projects: known.projects, running, asked, asks, away: known.away,
+    thinking: moments.thinking, stopped, retrying: moments.retrying, judging: isJudged,
+  };
 }
 
 // Each session's facts as last worked out, while what they come from is the same (the session as
-// read, what the box knew then, whether it runs, asks or is away): not worked out again each time.
-const factsMade = new WeakMap<EngineSession, { known: BoxKnows; running: boolean; asked?: number; away: boolean; facts: SessionFacts }>();
+// read, what the box knew then, whether it runs, asks or is away, and its moments): not worked out
+// again each time.
+interface Made { known: BoxKnows; running: boolean; asked?: number; away: boolean; thinking: boolean; stopped?: Stopped; retrying?: string; judged: boolean; facts: SessionFacts }
+const factsMade = new WeakMap<EngineSession, Made>();
 
 function factsNow(session: EngineSession, place: ListPlace, known?: BoxKnows): SessionFacts {
   if (!known) return factsOf(session, place);
-  const running = place.running.has(session.id), asked = place.asked.get(session.id), away = place.away.has(session.id);
+  const id = session.id;
+  const now: Omit<Made, "facts"> = {
+    known, running: place.running.has(id), asked: place.asked.get(id), away: place.away.has(id),
+    thinking: place.thinking?.has(id) ?? false, stopped: place.stopped?.get(id), retrying: place.retrying?.get(id), judged: place.judging?.(id) ?? false,
+  };
   const made = factsMade.get(session);
-  if (made && made.known === known && made.running === running && made.asked === asked && made.away === away) return made.facts;
+  if (made && (Object.keys(now) as (keyof typeof now)[]).every(key => made[key] === now[key])) return made.facts;
   const facts = factsOf(session, place);
-  factsMade.set(session, { known, running, asked, away, facts });
+  factsMade.set(session, { ...now, facts });
   return facts;
+}
+
+/** `read` as it's taken in over `before` (the same session as it was): seen as far as either says
+ * (a look told meanwhile isn't undone by a read begun before it). */
+function withViewed(read: EngineSession, before: EngineSession | undefined): EngineSession {
+  const viewed = Number(before?.time?.viewed) || 0;
+  return viewed > (Number(read.time?.viewed) || 0) ? { ...read, time: { ...read.time, viewed } } : read;
 }
 
 /** Every session in `sessions` (the engine's or the bridge's, each once) with its facts, and the
@@ -353,11 +373,17 @@ export function keepList(): () => void {
   places.clear();
   known = null;
   lastWrite = -Infinity;
+  // (Those stopped on an error or a limit, as the list was written: blocked still, till they run
+  // again or you've seen them.)
+  moments.clear();
+  moments.seed(wasStopped(readList()));
   // (What the box knows read again, once, at the next working out.)
   const again = () => { known = null; scheduleWorkOut(); };
   // (And as what a session left running starts and ends: it's at work meanwhile.)
   const followers = [projectFollowers, botFollowers, moveFollowers, askFollowers, backgroundFollowers];
   for (const each of followers) each.add(again);
+  // (And as the box has judged an agent's work, read for you or not: whether its turn is unread.)
+  judgingFollowers.add(scheduleWorkOut);
   // (Only what a list goes by: the box's other files, and what a bot keeps in its folder as it
   // works, change often and say nothing of it.)
   const box = watchFolders([BOX], (...told: unknown[]) => { if (typeof told[1] !== "string" || LIST_FILES.has(told[1])) again(); }, { recursive: false, missed: again });
@@ -387,6 +413,7 @@ export function keepList(): () => void {
     for (const watch of [box, moves, bots, ...botWatches.values()]) watch.close();
     botWatches.clear();
     for (const each of followers) each.delete(again);
+    judgingFollowers.delete(scheduleWorkOut);
     clearInterval(whole);
     clearTimeout(workOutTimer);
     workOutTimer = undefined;
@@ -398,6 +425,7 @@ export function keepList(): () => void {
     watchesWhole = () => true;
     asked.clear();
     deleted.clear();
+    moments.clear();
     places.clear();
     placeTargets.clear();
     reading.clear();
@@ -459,7 +487,7 @@ async function readOnce(name: string, target: Target): Promise<void> {
   const place = places.get(name) ?? { sessions: new Map(), running: new Set() };
   // (Not one deleted as it was read: a read begun before says it's there.)
   const gone = deleted.get(name);
-  place.sessions = new Map(sessions.filter(each => !gone?.has(each.id)).map(each => [each.id, each]));
+  place.sessions = new Map(sessions.filter(each => !gone?.has(each.id)).map(each => [each.id, withViewed(each, place.sessions.get(each.id))]));
   deleted.delete(name);
   // (Its events' count starts again: a read under way for an earlier one answers for nothing now.)
   for (const key of asked.keys()) if (key.startsWith(name + " ")) asked.delete(key);
@@ -491,20 +519,31 @@ async function readOne(name: string, target: Target, id: string): Promise<void> 
   const current = () => asked.get(key) === at && !deleted.get(name)?.has(id);
   try {
     const session = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, AbortSignal.timeout(10_000));
-    if (current() && isObject(session) && session.id === id) places.get(name)?.sessions.set(id, session as unknown as EngineSession);
+    const place = places.get(name);
+    if (current() && place && isObject(session) && session.id === id) place.sessions.set(id, withViewed(session as unknown as EngineSession, place.sessions.get(id)));
   } catch (error) {
     if (current() && (error as { status?: number }).status === 404) places.get(name)?.sessions.delete(id);
   }
 }
 
 /** Takes in an event from `name` (the engine, or the bridge, at `target`): a session read again as
- * it's made or changes, its run starting or ending; dropped as it's deleted. A place not read whole
- * yet takes nothing (its whole read reads it again). Settled once what it read is in (a test waits
- * on it); worked out a moment after, so a few events at once are one. */
-export async function noteListEvent(name: string, target: Target, event: { type?: string; data?: { sessionID?: unknown; info?: { id?: unknown } } }): Promise<void> {
+ * it's made or changes, its run starting or ending; dropped as it's deleted. What it says from
+ * moment to moment (thinking, blocked, `moments.ts`) and a look at it on any client
+ * (`session.viewed`) are taken in as they are, with no read. A place not read whole yet takes
+ * nothing (its whole read reads it again). Settled once what it read is in (a test waits on it);
+ * worked out a moment after, so a few events at once are one. */
+export async function noteListEvent(name: string, target: Target, event: { type?: string; data?: { sessionID?: unknown; info?: { id?: unknown }; error?: unknown; idle?: unknown } }): Promise<void> {
   if (!keeping || typeof event?.type !== "string") return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
   if (typeof id !== "string" || !id.startsWith("ses")) return;
+  if (event.type === "session.viewed") {
+    // (Read whole now: it's read again once that's in, so the look isn't lost.)
+    reading.get(name)?.add(id);
+    return noteViewed(name, id, Number(event.data?.idle));
+  }
+  // (What it streams: worked out again only where a fact changed, as `moments` tells it.)
+  const moment = moments.hear(event.type, id, event.data);
+  if (moment && event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type)) return;
   // Only those that change what's listed of it count (not what it streams meanwhile: a read for a
   // pin or a move still out isn't undone by the next word it says).
   if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type) && !RELOADS.has(event.type)) return;
@@ -530,6 +569,22 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   scheduleWorkOut();
 }
 
+/** `id` on `name` looked at up to `idle` (ms) on some client (`session.viewed`, or the box's own
+ * look): kept as its `time.viewed` where that's later, with no read (a hard stop it ended on, seen,
+ * no longer blocks it: `factsOf`). */
+export function noteViewed(name: string, id: string, idle: number): void {
+  const session = places.get(name)?.sessions.get(id);
+  if (!keeping || !session || !Number.isFinite(idle) || idle <= (Number(session.time?.viewed) || 0)) return;
+  places.get(name)!.sessions.set(id, { ...session, time: { ...session.time, viewed: idle } });
+  scheduleWorkOut();
+}
+
+/** Those `list` has stopped on an error or a limit (blocked, and not at work: one at work is
+ * retrying), each with what stopped it and the turn it stopped (one run again since, unheard, isn't
+ * blocked by it). */
+const wasStopped = (list: Kept | null): [string, Stopped][] =>
+  Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => (facts.blocked && !facts.running ? [[id, { by: facts.blocked, ...(facts.unread !== undefined ? { idle: facts.unread } : {}) }] as [string, Stopped]] : []));
+
 let workOutTimer: ReturnType<typeof setTimeout> | undefined;
 /** Worked out again in a moment: a few changes at once are one. */
 function scheduleWorkOut(): void {
@@ -544,8 +599,8 @@ const pendingPlaces = (): string[] => (places.has("bridge") || bridgeTarget() ==
 
 /** `sessions` (each with its place) as listed, with the sessions of `pending` places carried over as
  * `before` had them. */
-function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows): Listed {
-  const box = placeNow(running, sessions, knows);
+function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows, stopped?: ReadonlyMap<string, Stopped>): Listed {
+  const box = placeNow(running, sessions, knows, undefined, stopped);
   const listed = listOfSessions(sessions, box, knows).sessions;
   if (pending.length && before) {
     for (const [id, entry] of Object.entries(before.sessions)) {
@@ -674,7 +729,8 @@ export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge
   const wasRunning = (name: string) => Object.entries(file?.sessions ?? {}).filter(([, entry]) => entry.place === name && entry.facts.running).map(([id]) => id);
   const running = new Set([...(engineRunning ?? wasRunning("engine")), ...(bridgeRunning ?? (bridge ? wasRunning("bridge") : []))]);
   const pending = bridge && !bridgeSessions ? ["bridge"] : [];
-  return commit(withPending(sessions, placeOf, running, pending, file));
+  // (Those stopped on an error or a limit, as last listed: this process hears no events.)
+  return commit(withPending(sessions, placeOf, running, pending, file, undefined, new Map(wasStopped(file))));
 }
 
 export async function* listRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

@@ -34313,7 +34313,7 @@ function member(bot) {
 var plainLook = { color: "graphite", shape: "round", face: "calm" };
 var looks3 = {
   color: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
-  shape: ["round", "squircle", "pebble", "gem", "bloom"],
+  shape: ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"],
   face: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
 };
 function knownLook(look) {
@@ -37723,4 +37723,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents f5caba2899df45ac1a2c4e6b88dffd1fedab15c704c91688b81eb9172fbf5f5f
+// Built from Packages/Box/src/agents 8715936257e59f5a615c24f2e9887af4822572202a73c28415dfcc7290b09369

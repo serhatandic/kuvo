@@ -14,7 +14,7 @@ import { memberComputersRoute, setupRoute } from "../areas/setup";
 import { changesRoute } from "../areas/changes";
 import { askAnswerRoute, asksRoute } from "../areas/asks";
 import { appNoticeRoute, attentionRoute } from "../areas/attention";
-import { arrivedRoute, botEventsRoute, botRoute, botsRoute, botTemplatesRoute, newBotRoute, retellRoute } from "../areas/bots";
+import { arrivedRoute, botEventsRoute, botRoute, botSeenRoute, botsRoute, botTemplatesRoute, newBotRoute, retellRoute } from "../areas/bots";
 import { CARRY_ROUTE, carryRoute } from "../areas/carry";
 import { claudeCodeRoute } from "../areas/claude-code";
 import { engineControlRoute, signInReturnRoute } from "../areas/engine";
@@ -225,6 +225,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => GROUP_ROUTE.test(route), answer: groupsRoute },
   { when: route => ARTIFACT_ROUTE.test(route), answer: artifactsRoute },
   { when: route => route.match(/^kuvo\/bots\/([^/]+)\/arrived$/), answer: arrivedRoute },
+  { when: route => route.match(/^kuvo\/bots\/([^/]+)\/seen$/), answer: botSeenRoute },
   { when: route => route === "kuvo/bots/retell", answer: retellRoute },
   { when: route => route === "kuvo/bots/events", answer: botEventsRoute },
   { when: route => route === "kuvo/bots", answer: botsRoute },

@@ -146,7 +146,7 @@
   "looks": {
     "colors": ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
     "faces": ["calm", "happy", "sleepy", "wink", "curious", "bright"],
-    "shapes": ["round", "squircle", "pebble", "gem", "bloom"]
+    "shapes": ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"]
   },
   "instructions": [
     "You are ⟦name⟧, one of the user's bots in Kuvo Code⟦jobLine⟧. A bot is a teammate with one job, who keeps working on it over time in this one conversation. You run on ⟦place⟧.",

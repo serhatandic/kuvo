@@ -232,6 +232,31 @@ export async function keepReadThroughSummary(target: Target, session: string, si
  * it asks still waits on you, with its notification). `session`: its id, or as it's listed.
  */
 export async function keepWorkRead(target: Target, session: string | Listed["data"], signal?: AbortSignal): Promise<void> {
+  // (Judged meanwhile: its turn isn't one you haven't read until the box has said whether it's news
+  // to you, so its bot doesn't look done for work the box then reads for you.)
+  const id = typeof session === "string" ? session : session?.id;
+  if (typeof id !== "string") return;
+  judging.set(id, (judging.get(id) ?? 0) + 1);
+  try {
+    // (Half a minute at most: an engine that never answers doesn't hide its turn for good.)
+    const timed = signal ? AbortSignal.any([signal, AbortSignal.timeout(JUDGED_FOR)]) : AbortSignal.timeout(JUDGED_FOR);
+    return await judgeWork(target, session, timed);
+  } finally {
+    const left = (judging.get(id) ?? 1) - 1;
+    if (left > 0) judging.set(id, left);
+    else judging.delete(id);
+    for (const tell of [...judgingFollowers]) try { tell(); } catch {}
+  }
+}
+
+/** The sessions whose work the box is judging now (`keepWorkRead`), each by how many judgings of it
+ * are under way; told as one ends. */
+const judging = new Map<string, number>();
+const JUDGED_FOR = 30_000;
+export const judgingFollowers = new Set<() => void>();
+export const isJudged = (session: string): boolean => judging.has(session);
+
+async function judgeWork(target: Target, session: string | Listed["data"], signal?: AbortSignal): Promise<void> {
   const data = typeof session === "string"
     ? await call(target, "GET", `/api/session/${encodeURIComponent(session)}`, undefined, signal).catch(() => null) as Listed["data"] | null
     : session;

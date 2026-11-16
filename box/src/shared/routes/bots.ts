@@ -9,7 +9,7 @@ import { BOT_NOW } from "./sessions";
 /** The colors, shapes and faces a bot can have: those the apps draw (bot-words.json's `looks`). */
 export const LOOKS = {
   colors: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
-  shapes: ["round", "squircle", "pebble", "gem", "bloom"],
+  shapes: ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"],
   faces: ["calm", "happy", "sleepy", "wink", "curious", "bright"],
 } as const;
 export const LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOKS.shapes), face: words(...LOOKS.faces) });
@@ -130,4 +130,5 @@ export const BOT_ROUTES: RouteShape[] = [
   { route: "PATCH kuvo/bots/:id", answers: { 200: CHANGED, 202: HELD } },
   { route: "DELETE kuvo/bots/:id", answers: { 200: NOTHING, 202: HELD } },
   { route: "POST kuvo/bots/:id/arrived", answers: { 200: CHANGED } },
+  { route: "POST kuvo/bots/:id/seen", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 502: object({ message: string }), 503: object({ message: string }) } },
 ];

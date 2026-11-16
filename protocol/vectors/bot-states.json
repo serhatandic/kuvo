@@ -1,0 +1,447 @@
+{
+ "about": [
+  "Which state a bot is in (PROTOCOL.md, \"What a bot is doing now\", `bots.state`): the box's rule, `botState` and `botNow` in box/src/link/lists/rule.ts,",
+  "which box/test/bot-states.test.ts holds to these. `counts` is what its sessions come to (`expect.bots` in session-lists.json: at work, waiting",
+  "on you, thinking, blocked, and `unseen`, when the newest turn you haven't read ended), `rest` its `paused` and next wake-up (`wakes`, seconds), `at`",
+  "now (ms) and `before` what the box last said of it. `expect.now` is its `now` in `kuvo/bots`: the first state that holds of needsYou, blocked,",
+  "thinking (every one at work thinks), working, done, asleep (paused, or its next wake-up more than 12 hours away) and idle, and since when (`at`",
+  "for a state new since `before`, `before`'s for the same, and for done when the turn ended). `expect.turns`: when its state changes with nothing",
+  "else changing (its next wake-up comes within 12 hours, ms), else null. A client adds `offline` itself; it works none of this out."
+ ],
+ "cases": [
+  {
+   "name": "nothing at work, waiting, blocked or unread, no wake-up: idle",
+   "counts": {
+    "working": 0,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "state": "idle",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "one waiting on you comes first, whatever else its sessions do",
+   "counts": {
+    "working": 2,
+    "asking": 1,
+    "thinking": 2,
+    "blocked": 1,
+    "blockedBy": "limit",
+    "unseen": 950
+   },
+   "rest": {
+    "paused": true
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 2,
+     "asking": 1,
+     "thinking": 2,
+     "blocked": 1,
+     "blockedBy": "limit",
+     "state": "needsYou",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "blocked comes before thinking and working",
+   "counts": {
+    "working": 2,
+    "asking": 0,
+    "thinking": 2,
+    "blocked": 1,
+    "blockedBy": "error"
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 2,
+     "asking": 0,
+     "thinking": 2,
+     "blocked": 1,
+     "blockedBy": "error",
+     "state": "blocked",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "blocked by a limit, with nothing at work",
+   "counts": {
+    "working": 0,
+    "asking": 0,
+    "finished": 900,
+    "blocked": 1,
+    "blockedBy": "limit"
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 900,
+     "blocked": 1,
+     "blockedBy": "limit",
+     "state": "blocked",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "every one at work thinking: thinking",
+   "counts": {
+    "working": 2,
+    "asking": 0,
+    "thinking": 2
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 2,
+     "asking": 0,
+     "thinking": 2,
+     "state": "thinking",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "one of two at work thinking: working",
+   "counts": {
+    "working": 2,
+    "asking": 0,
+    "thinking": 1
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 2,
+     "asking": 0,
+     "thinking": 1,
+     "state": "working",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "at work comes before a turn you haven't read",
+   "counts": {
+    "working": 1,
+    "asking": 0,
+    "unseen": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "state": "working",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a turn you haven't read: done, since it ended",
+   "counts": {
+    "working": 0,
+    "asking": 0,
+    "finished": 1000,
+    "unseen": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "state": "done",
+     "since": 950
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "done comes before asleep",
+   "counts": {
+    "working": 0,
+    "asking": 0,
+    "finished": 1000,
+    "unseen": 950
+   },
+   "rest": {
+    "paused": true
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "state": "done",
+     "since": 950
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "done says when the newest turn you haven't read ended, whatever was said before",
+   "counts": {
+    "working": 0,
+    "asking": 0,
+    "finished": 1000,
+    "unseen": 990
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "before": {
+    "state": "done",
+    "since": 950
+   },
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "state": "done",
+     "since": 990
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "paused: asleep",
+   "counts": {
+    "working": 0,
+    "asking": 0,
+    "finished": 1000
+   },
+   "rest": {
+    "paused": true
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "state": "asleep",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "paused, with a wake-up soon: asleep",
+   "counts": {
+    "working": 0,
+    "asking": 0
+   },
+   "rest": {
+    "paused": true,
+    "wakes": 1800003600
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "state": "asleep",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "next wake-up 13 hours away: asleep, until it's 12 hours away",
+   "counts": {
+    "working": 0,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false,
+    "wakes": 1800046800
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "state": "asleep",
+     "since": 1800000000000
+    },
+    "turns": 1800003600000
+   }
+  },
+  {
+   "name": "next wake-up 11 hours away: idle",
+   "counts": {
+    "working": 0,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false,
+    "wakes": 1800039600
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "state": "idle",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "next wake-up exactly 12 hours away: idle",
+   "counts": {
+    "working": 0,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false,
+    "wakes": 1800043200
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "state": "idle",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "at work with its next wake-up far off: working",
+   "counts": {
+    "working": 1,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false,
+    "wakes": 1800072000
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "state": "working",
+     "since": 1800000000000
+    },
+    "turns": 1800028800000
+   }
+  },
+  {
+   "name": "thinking while paused: thinking",
+   "counts": {
+    "working": 1,
+    "asking": 0,
+    "thinking": 1
+   },
+   "rest": {
+    "paused": true
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "thinking": 1,
+     "state": "thinking",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "the same state as before: since then",
+   "counts": {
+    "working": 1,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "before": {
+    "state": "working",
+    "since": 1799999940000
+   },
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "state": "working",
+     "since": 1799999940000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "another state than before: since now",
+   "counts": {
+    "working": 1,
+    "asking": 0
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "before": {
+    "state": "idle",
+    "since": 1799999940000
+   },
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "state": "working",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  }
+ ]
+}

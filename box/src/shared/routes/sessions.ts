@@ -251,7 +251,10 @@ export const SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subag
 /** One session's facts: its kind, the project it's filed under (a project's session's), its
  * folder, title and times (`updated`, its order), the session it works for (a subagent's), whether
  * it's pinned, archived, running, since when it's waited on you (ms), and whether this copy isn't
- * its own (it moved, or is on its way here). Each flag left out where it isn't. */
+ * its own (it moved, or is on its way here). `thinking`: its model has been reasoning a while
+ * (debounced, `bots.state`); `blocked`: it stopped on an error or a limit you haven't seen, or has
+ * been retrying one a while; `unread`: when its turn you haven't read ended (ms, its `time.idle`
+ * while that's later than `time.viewed`). Each flag left out where it isn't. */
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
   "project?": string,
@@ -266,6 +269,9 @@ export const SESSION_FACTS = object({
   "asked?": number,
   "away?": bool,
   "bot?": string,
+  "thinking?": literal(true),
+  "blocked?": words("error", "limit"),
+  "unread?": number,
 });
 
 /** A project the lists show: its name where it isn't its folder's, and when its newest session
@@ -278,9 +284,20 @@ export const LISTED_PROJECT = object({ "name?": string, "updated?": number, aski
 export const ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
 /** A session waiting on you, as "Needs you" lists it. */
 export const NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
+/** The one state a bot is in, as the box states it (`bots.state`; PROTOCOL.md, "What a bot is
+ * doing now"), first that holds: one of its sessions waits on you, one is blocked, every one at work
+ * is thinking, one is at work, one has a turn you haven't seen, it's paused or its next wake-up is
+ * more than 12 hours away, else idle. A client adds `offline` itself. */
+export const BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked", "done", "asleep"] as const;
 /** What a bot is doing now: how many of its sessions are at work, how many wait on you, and, with
- * neither, when the newest of them last changed (ms). */
-export const BOT_NOW = object({ working: number, asking: number, "finished?": number });
+ * neither, when the newest of them last changed (ms); its state (`bots.state`) and since when it's
+ * been in it as this box saw it (ms; for `done`, when the newest turn you haven't seen ended), how
+ * many of those at work are thinking and how many are blocked (each left out when none), and what
+ * blocked the newest one. */
+export const BOT_NOW = object({
+  working: number, asking: number, "finished?": number,
+  state: words(...BOT_STATES), since: number, "thinking?": number, "blocked?": number, "blockedBy?": words("error", "limit"),
+});
 /** What waits on you in each area, across the box (`kuvo/waiting`): the sessions "Needs you" lists,
  * the bots with a session waiting, and the Work Queue's items a session linked to them waits for. */
 export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
@@ -304,6 +321,7 @@ export type SessionFacts = Infer<typeof SESSION_FACTS>;
 export type ListedProject = Infer<typeof LISTED_PROJECT>;
 export type NeedsYou = Infer<typeof NEEDS_YOU>;
 export type BotNow = Infer<typeof BOT_NOW>;
+export type BotState = (typeof BOT_STATES)[number];
 export type WaitingOnYou = Infer<typeof WAITING_ON_YOU>;
 export type SessionList = Infer<typeof SESSION_LIST>;
 

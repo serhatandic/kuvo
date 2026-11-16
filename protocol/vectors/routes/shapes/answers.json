@@ -2471,6 +2471,15 @@
              },
              {
               "literal": "bloom"
+             },
+             {
+              "literal": "loaf"
+             },
+             {
+              "literal": "capsule"
+             },
+             {
+              "literal": "dome"
              }
             ]
            },
@@ -2540,7 +2549,45 @@
           "object": {
            "working": "number",
            "asking": "number",
-           "finished?": "number"
+           "finished?": "number",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "idle"
+             },
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "thinking"
+             },
+             {
+              "literal": "needsYou"
+             },
+             {
+              "literal": "blocked"
+             },
+             {
+              "literal": "done"
+             },
+             {
+              "literal": "asleep"
+             }
+            ]
+           },
+           "since": "number",
+           "thinking?": "number",
+           "blocked?": "number",
+           "blockedBy?": {
+            "oneOf": [
+             {
+              "literal": "error"
+             },
+             {
+              "literal": "limit"
+             }
+            ]
+           }
           }
          },
          "deletes": {
@@ -2616,6 +2663,15 @@
              },
              {
               "literal": "bloom"
+             },
+             {
+              "literal": "loaf"
+             },
+             {
+              "literal": "capsule"
+             },
+             {
+              "literal": "dome"
              }
             ]
            },
@@ -2713,6 +2769,15 @@
              },
              {
               "literal": "bloom"
+             },
+             {
+              "literal": "loaf"
+             },
+             {
+              "literal": "capsule"
+             },
+             {
+              "literal": "dome"
              }
             ]
            },
@@ -2803,6 +2868,15 @@
              },
              {
               "literal": "bloom"
+             },
+             {
+              "literal": "loaf"
+             },
+             {
+              "literal": "capsule"
+             },
+             {
+              "literal": "dome"
              }
             ]
            },
@@ -2932,6 +3006,15 @@
             },
             {
              "literal": "bloom"
+            },
+            {
+             "literal": "loaf"
+            },
+            {
+             "literal": "capsule"
+            },
+            {
+             "literal": "dome"
             }
            ]
           },
@@ -3001,7 +3084,45 @@
          "object": {
           "working": "number",
           "asking": "number",
-          "finished?": "number"
+          "finished?": "number",
+          "state": {
+           "oneOf": [
+            {
+             "literal": "idle"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "thinking"
+            },
+            {
+             "literal": "needsYou"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "asleep"
+            }
+           ]
+          },
+          "since": "number",
+          "thinking?": "number",
+          "blocked?": "number",
+          "blockedBy?": {
+           "oneOf": [
+            {
+             "literal": "error"
+            },
+            {
+             "literal": "limit"
+            }
+           ]
+          }
          }
         },
         "deletes": {
@@ -3091,6 +3212,15 @@
              },
              {
               "literal": "bloom"
+             },
+             {
+              "literal": "loaf"
+             },
+             {
+              "literal": "capsule"
+             },
+             {
+              "literal": "dome"
              }
             ]
            },
@@ -3245,6 +3375,15 @@
               },
               {
                "literal": "bloom"
+              },
+              {
+               "literal": "loaf"
+              },
+              {
+               "literal": "capsule"
+              },
+              {
+               "literal": "dome"
               }
              ]
             },
@@ -3314,7 +3453,45 @@
            "object": {
             "working": "number",
             "asking": "number",
-            "finished?": "number"
+            "finished?": "number",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "idle"
+              },
+              {
+               "literal": "working"
+              },
+              {
+               "literal": "thinking"
+              },
+              {
+               "literal": "needsYou"
+              },
+              {
+               "literal": "blocked"
+              },
+              {
+               "literal": "done"
+              },
+              {
+               "literal": "asleep"
+              }
+             ]
+            },
+            "since": "number",
+            "thinking?": "number",
+            "blocked?": "number",
+            "blockedBy?": {
+             "oneOf": [
+              {
+               "literal": "error"
+              },
+              {
+               "literal": "limit"
+              }
+             ]
+            }
            }
           },
           "deletes": {
@@ -3395,6 +3572,15 @@
             },
             {
              "literal": "bloom"
+            },
+            {
+             "literal": "loaf"
+            },
+            {
+             "literal": "capsule"
+            },
+            {
+             "literal": "dome"
             }
            ]
           },
@@ -3502,6 +3688,15 @@
             },
             {
              "literal": "bloom"
+            },
+            {
+             "literal": "loaf"
+            },
+            {
+             "literal": "capsule"
+            },
+            {
+             "literal": "dome"
             }
            ]
           },
@@ -3607,6 +3802,15 @@
               },
               {
                "literal": "bloom"
+              },
+              {
+               "literal": "loaf"
+              },
+              {
+               "literal": "capsule"
+              },
+              {
+               "literal": "dome"
               }
              ]
             },
@@ -3676,7 +3880,45 @@
            "object": {
             "working": "number",
             "asking": "number",
-            "finished?": "number"
+            "finished?": "number",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "idle"
+              },
+              {
+               "literal": "working"
+              },
+              {
+               "literal": "thinking"
+              },
+              {
+               "literal": "needsYou"
+              },
+              {
+               "literal": "blocked"
+              },
+              {
+               "literal": "done"
+              },
+              {
+               "literal": "asleep"
+              }
+             ]
+            },
+            "since": "number",
+            "thinking?": "number",
+            "blocked?": "number",
+            "blockedBy?": {
+             "oneOf": [
+              {
+               "literal": "error"
+              },
+              {
+               "literal": "limit"
+              }
+             ]
+            }
            }
           },
           "deletes": {
@@ -3695,6 +3937,32 @@
         "null"
        ]
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/bots/:id/seen",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {}
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -5497,6 +5765,9 @@
             "literal": "bots.now"
            },
            {
+            "literal": "bots.state"
+           },
+           {
             "literal": "box.app"
            },
            {
@@ -6209,6 +6480,9 @@
            },
            {
             "literal": "bots.now"
+           },
+           {
+            "literal": "bots.state"
            },
            {
             "literal": "box.app"
@@ -10701,6 +10975,15 @@
                 },
                 {
                  "literal": "bloom"
+                },
+                {
+                 "literal": "loaf"
+                },
+                {
+                 "literal": "capsule"
+                },
+                {
+                 "literal": "dome"
                 }
                ]
               },
@@ -10887,6 +11170,15 @@
                  },
                  {
                   "literal": "bloom"
+                 },
+                 {
+                  "literal": "loaf"
+                 },
+                 {
+                  "literal": "capsule"
+                 },
+                 {
+                  "literal": "dome"
                  }
                 ]
                },
@@ -11068,6 +11360,15 @@
              },
              {
               "literal": "bloom"
+             },
+             {
+              "literal": "loaf"
+             },
+             {
+              "literal": "capsule"
+             },
+             {
+              "literal": "dome"
              }
             ]
            },
@@ -11292,6 +11593,15 @@
                  },
                  {
                   "literal": "bloom"
+                 },
+                 {
+                  "literal": "loaf"
+                 },
+                 {
+                  "literal": "capsule"
+                 },
+                 {
+                  "literal": "dome"
                  }
                 ]
                },
@@ -13805,7 +14115,21 @@
          "running?": "bool",
          "asked?": "number",
          "away?": "bool",
-         "bot?": "string"
+         "bot?": "string",
+         "thinking?": {
+          "literal": true
+         },
+         "blocked?": {
+          "oneOf": [
+           {
+            "literal": "error"
+           },
+           {
+            "literal": "limit"
+           }
+          ]
+         },
+         "unread?": "number"
         }
        }
       },
@@ -13937,7 +14261,21 @@
          "running?": "bool",
          "asked?": "number",
          "away?": "bool",
-         "bot?": "string"
+         "bot?": "string",
+         "thinking?": {
+          "literal": true
+         },
+         "blocked?": {
+          "oneOf": [
+           {
+            "literal": "error"
+           },
+           {
+            "literal": "limit"
+           }
+          ]
+         },
+         "unread?": "number"
         }
        }
       },

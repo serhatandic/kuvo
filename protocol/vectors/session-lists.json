@@ -10,7 +10,12 @@
   "the box said it (Workspace.makeProjects, 2026-11-13); change both together.",
   "`box.asks` is what each one waiting asks, in the box's words, and `box.botOf` the bot each bot's conversation is; `expect.needsYou` is the",
   "list's \"Needs you\" (the one that asked last first), `expect.projects[].asking`/`working` each project's sums (one asking isn't counted at work),",
-  "and `expect.bots` what each bot is doing now (`now` in `kuvo/bots`), all from the facts (#711)."
+  "and `expect.bots` what each bot is doing now (`now` in `kuvo/bots`), all from the facts (#711).",
+  "Since `bots.state`: `box.thinking` those whose model has been reasoning a while, `box.stopped` each one that stopped on an error or a limit and",
+  "hasn't run since (`by`, and `idle`, the turn it stopped, where the box knows it), `box.retrying` what each one retrying a while retries; thinking",
+  "and retrying count only while it's at work. A session's `unread` is its `time.idle` while that's later than `time.viewed`; a stop blocks it only",
+  "while that turn is unread. `expect.bots` adds how many of those at work think, how many are blocked and by what (the newest), and `unseen`, the",
+  "newest turn not read of those neither at work, asking nor blocked, which its state comes from."
  ],
  "cases": [
   {
@@ -1088,6 +1093,335 @@
       ]
      }
     ]
+   }
+  },
+  {
+   "name": "what a bot is doing: its sessions thinking and blocked, and the turns you haven't read (`bots.state`)",
+   "box": {
+    "chats": "/home/me/.kuvo-code/chats",
+    "bots": "/home/me/.kuvo-code/bots",
+    "botSessions": [
+     "ses_think",
+     "ses_stop",
+     "ses_retry",
+     "ses_done"
+    ],
+    "botOf": {
+     "ses_think": "bot_think",
+     "ses_stop": "bot_stop",
+     "ses_retry": "bot_retry",
+     "ses_done": "bot_done"
+    },
+    "filed": {},
+    "projects": [
+     {
+      "directory": "/home/me/web",
+      "name": "Website"
+     }
+    ],
+    "running": [
+     "ses_think",
+     "ses_think_w",
+     "ses_think_sub",
+     "ses_retry"
+    ],
+    "asked": {},
+    "asks": {},
+    "away": [],
+    "thinking": [
+     "ses_think",
+     "ses_think_sub",
+     "ses_stop_seen"
+    ],
+    "stopped": {
+     "ses_stop": {
+      "by": "limit"
+     },
+     "ses_stop_seen": {
+      "by": "error"
+     },
+     "ses_done_w": {
+      "by": "error",
+      "idle": 500
+     }
+    },
+    "retrying": {
+     "ses_retry": "error",
+     "ses_stop_seen": "limit"
+    }
+   },
+   "sessions": [
+    {
+     "id": "ses_think",
+     "location": {
+      "directory": "/home/me/.kuvo-code/bots/bot_think/workspace"
+     },
+     "time": {
+      "created": 990,
+      "updated": 1000
+     }
+    },
+    {
+     "id": "ses_think_w",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 940,
+      "updated": 950
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_x",
+       "by": {
+        "bot": "bot_think",
+        "name": "Bot"
+       },
+       "depth": 1
+      }
+     }
+    },
+    {
+     "id": "ses_think_sub",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 890,
+      "updated": 900
+     },
+     "parentID": "ses_think_w"
+    },
+    {
+     "id": "ses_stop",
+     "location": {
+      "directory": "/home/me/.kuvo-code/bots/bot_stop/workspace"
+     },
+     "time": {
+      "created": 790,
+      "updated": 800,
+      "idle": 700,
+      "viewed": 600
+     }
+    },
+    {
+     "id": "ses_stop_seen",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 740,
+      "updated": 750,
+      "idle": 650,
+      "viewed": 650
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_x",
+       "by": {
+        "bot": "bot_stop",
+        "name": "Bot"
+       },
+       "depth": 1
+      }
+     }
+    },
+    {
+     "id": "ses_retry",
+     "location": {
+      "directory": "/home/me/.kuvo-code/bots/bot_retry/workspace"
+     },
+     "time": {
+      "created": 690,
+      "updated": 700,
+      "idle": 500,
+      "viewed": 500
+     }
+    },
+    {
+     "id": "ses_done",
+     "location": {
+      "directory": "/home/me/.kuvo-code/bots/bot_done/workspace"
+     },
+     "time": {
+      "created": 590,
+      "updated": 600,
+      "idle": 590,
+      "viewed": 400
+     }
+    },
+    {
+     "id": "ses_done_w",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 540,
+      "updated": 550,
+      "idle": 545
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_x",
+       "by": {
+        "bot": "bot_done",
+        "name": "Bot"
+       },
+       "depth": 1
+      }
+     }
+    },
+    {
+     "id": "ses_done_old",
+     "location": {
+      "directory": "/home/me/web"
+     },
+     "time": {
+      "created": 490,
+      "updated": 500,
+      "idle": 499
+     },
+     "metadata": {
+      "kuvo": {
+       "startedBy": "ses_x",
+       "by": {
+        "bot": "bot_done",
+        "name": "Bot"
+       },
+       "depth": 1
+      },
+      "kuvo.archived": true
+     }
+    }
+   ],
+   "expect": {
+    "sessions": {
+     "ses_think": {
+      "kind": "bot",
+      "directory": "/home/me/.kuvo-code/bots/bot_think/workspace",
+      "created": 990,
+      "updated": 1000,
+      "running": true,
+      "bot": "bot_think",
+      "thinking": true
+     },
+     "ses_think_w": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 940,
+      "updated": 950,
+      "running": true,
+      "bot": "bot_think"
+     },
+     "ses_think_sub": {
+      "kind": "subagent",
+      "directory": "/home/me/web",
+      "created": 890,
+      "updated": 900,
+      "parent": "ses_think_w",
+      "running": true,
+      "thinking": true
+     },
+     "ses_stop": {
+      "kind": "bot",
+      "directory": "/home/me/.kuvo-code/bots/bot_stop/workspace",
+      "created": 790,
+      "updated": 800,
+      "bot": "bot_stop",
+      "unread": 700,
+      "blocked": "limit"
+     },
+     "ses_stop_seen": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 740,
+      "updated": 750,
+      "bot": "bot_stop"
+     },
+     "ses_retry": {
+      "kind": "bot",
+      "directory": "/home/me/.kuvo-code/bots/bot_retry/workspace",
+      "created": 690,
+      "updated": 700,
+      "running": true,
+      "bot": "bot_retry",
+      "blocked": "error"
+     },
+     "ses_done": {
+      "kind": "bot",
+      "directory": "/home/me/.kuvo-code/bots/bot_done/workspace",
+      "created": 590,
+      "updated": 600,
+      "bot": "bot_done",
+      "unread": 590
+     },
+     "ses_done_w": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 540,
+      "updated": 550,
+      "bot": "bot_done",
+      "unread": 545
+     },
+     "ses_done_old": {
+      "kind": "project",
+      "project": "/home/me/web",
+      "directory": "/home/me/web",
+      "created": 490,
+      "updated": 500,
+      "archived": true,
+      "bot": "bot_done",
+      "unread": 499
+     }
+    },
+    "projects": {
+     "/home/me/web": {
+      "name": "Website",
+      "updated": 950,
+      "asking": 0,
+      "working": 1
+     }
+    },
+    "needsYou": [],
+    "archivedGroups": [
+     {
+      "directory": "/home/me/web",
+      "kind": "project",
+      "title": "Website",
+      "sessions": [
+       "ses_done_old"
+      ]
+     }
+    ],
+    "bots": {
+     "bot_think": {
+      "working": 2,
+      "asking": 0,
+      "thinking": 1
+     },
+     "bot_stop": {
+      "working": 0,
+      "asking": 0,
+      "finished": 800,
+      "blocked": 1,
+      "blockedBy": "limit"
+     },
+     "bot_retry": {
+      "working": 1,
+      "asking": 0,
+      "blocked": 1,
+      "blockedBy": "error"
+     },
+     "bot_done": {
+      "working": 0,
+      "asking": 0,
+      "finished": 600,
+      "unseen": 590
+     }
+    }
    }
   }
  ]

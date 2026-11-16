@@ -1,5 +1,5 @@
 import "./safety"
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, expect, jest, test } from "bun:test"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
@@ -25,6 +25,10 @@ const placeOf = (box: any) => ({
   away: new Set<string>(box.away),
   asks: new Map<string, any>(Object.entries(box.asks ?? {})),
   botOf: new Map<string, string>(Object.entries(box.botOf ?? {})),
+  thinking: new Set<string>(box.thinking ?? []),
+  stopped: new Map<string, any>(Object.entries(box.stopped ?? {})),
+  judging: () => false,
+  retrying: new Map<string, any>(Object.entries(box.retrying ?? {})),
 })
 
 test.each(vectors.cases.map((each: any) => [each.name, each]))("%s", (_, each: any) => {
@@ -69,6 +73,9 @@ const sessions = new Map<string, any>()
 const active = new Set<string>()
 const add = (id: string, directory: string, updated: number, extra: Record<string, unknown> = {}) => sessions.set(id, { id, location: { directory }, time: { created: updated, updated }, ...extra })
 let listReads = 0
+// Each session read (`POST …/view`) and up to where; and how many times one was read alone.
+const views: [string, number][] = []
+let oneReads = 0
 // Held: the list's next page waits until the test lets it go, as a slow engine's.
 let held: Promise<void> | null = null
 let heldAsked: () => void = () => {}
@@ -98,7 +105,17 @@ const engine = Bun.serve({
       return Response.json({ data: page, cursor: { next: from + page.length < all.length ? String(from + page.length) : null } })
     }
     if (url.pathname === "/api/session/active") return Response.json({ data: Object.fromEntries([...active].map(id => [id, { type: "busy" }])) })
+    // Read up to where it ended (`time.viewed`), as the engine keeps the later.
+    const viewed = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/)
+    if (viewed && request.method === "POST" && sessions.has(viewed[1]!)) {
+      const { idle } = await request.json() as { idle: number }
+      const time = sessions.get(viewed[1]!).time
+      views.push([viewed[1]!, idle])
+      time.viewed = Math.max(time.viewed ?? 0, idle)
+      return Response.json({})
+    }
     const one = url.pathname.match(/^\/api\/session\/([^/]+)$/)
+    if (one) oneReads += 1
     // (As it was when asked: a held read answers late with what was there then.)
     const answer = one && sessions.has(one[1]!) ? Response.json({ data: structuredClone(sessions.get(one[1]!)) }) : null
     const hold = one ? holdOne.get(one[1]!) : undefined
@@ -603,7 +620,7 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
     expect(before.projects[mine]).toMatchObject({ asking: 0, working: 2 })
     expect(before.sessions.ses_works.bot).toBe("bot_waits")
     expect((await ask("kuvo/waiting")).lines[0]).toEqual({ sessions: 0, bots: 0, queue: 0 })
-    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0 })
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0, state: "working", since: expect.any(Number) })
 
     // A client following what waits, and the bots: each says a line more as it changes.
     const follow = (path: string) => {
@@ -658,14 +675,14 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
     expect(keptList()!.needsYou![0]!.asks.summary.length).toBeLessThan(80)
     noteAskEvent({ type: "permission.replied", data: { requestID: "per_3", sessionID: "ses_far" } }, "engine")
     await listed(() => keptList()?.needsYou?.length === 2)
-    expect((await ask("kuvo/bots/events")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 1 })
+    expect((await ask("kuvo/bots/events")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 1, state: "needsYou", since: expect.any(Number) })
 
     // Answered: nothing waits, and the bot's session is at work again.
     noteAskEvent({ type: "permission.replied", data: { requestID: "per_1", sessionID: "ses_asks" } }, "engine")
     noteAskEvent({ type: "permission.replied", data: { requestID: "per_2", sessionID: "ses_works_sub" } }, "engine")
     await listed(() => keptList()?.needsYou?.length === 0)
     expect((await ask("kuvo/waiting")).lines[0]).toEqual({ sessions: 0, bots: 0, queue: 0 })
-    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0 })
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0, state: "working", since: expect.any(Number) })
     await waits.until(line => line.sessions === 0 && line.queue === 0)
     await waits.end()
     await botsFollowed.end()
@@ -675,7 +692,7 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
     active.delete("ses_works")
     await noteListEvent("engine", target, { type: "session.execution.succeeded", data: { sessionID: "ses_works" } })
     await listed(() => !keptList()?.sessions.ses_works?.facts.running)
-    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 0, finished: 620 })
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 0, asking: 0, finished: 620, state: "idle", since: expect.any(Number) })
 
     // Its turn over, but a command it started still runs (Background work): it's at work still, in
     // the list, its project's count and its bot's, as every client's At work says; until it ends.
@@ -689,7 +706,7 @@ test("a session that asks is in Needs you, its project's sums, its bot's now and
       leftRunning([{ id: "job_1", command: "npm test", started: Date.now() }])
       await listed(() => keptList()?.sessions.ses_works?.facts.running === true)
       expect(active.has("ses_works")).toBe(false)
-      expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0 })
+      expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_waits").now).toEqual({ working: 1, asking: 0, state: "working", since: expect.any(Number) })
       expect((await ask("kuvo/sessions/list")).lines[0].sessions.ses_works.running).toBe(true)
       // One running past six hours no longer counts, though it may still run.
       leftRunning([{ id: "job_1", command: "npm run dev", started: Date.now() - 7 * 3_600_000 }])
@@ -824,7 +841,7 @@ test("what waits counts a bot's own conversation, a browser's ask, a bot's work 
     lookAtOthers()
     await listed(() => asked("ses_bot_plans"))
     expect(await waiting()).toEqual({ sessions: 4, bots: 2, queue: 0 })
-    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_plans").now).toEqual({ working: 0, asking: 1 })
+    expect((await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === "bot_plans").now).toEqual({ working: 0, asking: 1, state: "needsYou", since: expect.any(Number) })
 
     // The same session asking twice is one session: its permission too.
     noteAskEvent({ type: "permission.asked", data: { id: "per_plans", sessionID: "ses_bot_plans", action: "bash" } }, "engine", 2000)
@@ -880,3 +897,313 @@ test("archived groups retain the saved name of a removed project with only archi
     { directory: "/old", title: "Saved Name", kind: "project", sessions: ["archived"] },
   ]);
 });
+
+// MARK: A bot's one state (`bots.state`)
+
+const clock = jest as unknown as { advanceTimersByTime(ms: number): void }
+
+/** A bot here, `id`, whose conversation is `session` (in its folder), with these files besides. */
+async function aBot(id: string, session: string, files: Record<string, string> = {}): Promise<string> {
+  const { BOTS } = await import("../src/link/home")
+  const folder = join(BOTS, id)
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id, name: "Ada" }))
+  writeFileSync(join(folder, "session"), session)
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(folder, name)), { recursive: true })
+    writeFileSync(join(folder, name), text)
+  }
+  return folder
+}
+
+const nowOfBot = async (id: string) => (await ask("kuvo/bots")).lines[0].bots.find((bot: any) => bot.id === id).now
+const hearing = (session: string) => (type: string, data: Record<string, unknown> = {}) => noteListEvent("engine", target, { type, data: { sessionID: session, ...data } })
+
+/** `path`'s stream followed: `until` reads on to the first line that says what's wanted of `pick`'s. */
+function following(path: string, pick: (line: any) => any) {
+  const stop = new AbortController()
+  const stream = handler({ method: "GET", path, headers: {}, fromApp: true }, undefined, stop.signal)
+  let text = ""
+  const until = async (wanted: (picked: any) => boolean) => {
+    for (;;) {
+      const lines = text.split("\n")
+      text = lines.pop()!
+      for (const [index, line] of lines.entries()) {
+        if (!line || !wanted(pick(JSON.parse(line)))) continue
+        text = [...lines.slice(index + 1), text].join("\n")
+        return pick(JSON.parse(line))
+      }
+      const { value, done } = await stream.next()
+      if (done) throw new Error(`${path} ended`)
+      if ("body" in value) text += Buffer.from(value.body).toString()
+    }
+  }
+  return { until, end: async () => { stop.abort(); await stream.return(undefined) } }
+}
+
+async function post(path: string): Promise<{ status: number; body: any }> {
+  let status = 0
+  let text = ""
+  for await (const piece of handler({ method: "POST", path, headers: {}, body: Buffer.from("{}"), fromApp: true } as any, undefined)) {
+    if ("head" in piece) status = piece.head.status
+    if ("body" in piece) text += Buffer.from(piece.body).toString()
+  }
+  return { status, body: text ? JSON.parse(text) : null }
+}
+
+test("a bot's model reasoning shows as thinking only after two seconds of it, and goes off a moment after it calls a tool", async () => {
+  const folder = await aBot("bot_thinks", "ses_thinks")
+  add("ses_thinks", folder, 700)
+  active.add("ses_thinks")
+  const stop = keepList()
+  const facts = () => keptList()!.sessions.ses_thinks!.facts
+  const hear = hearing("ses_thinks")
+  try {
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot("bot_thinks")).toEqual({ working: 1, asking: 0, state: "working", since: expect.any(Number) })
+    // What it streams reads nothing again, and changes nothing listed by itself.
+    const [reads, at] = [oneReads, keptList()!.seq]
+    for (const type of ["session.step.started", "session.text.started", "session.tool.input.started", "session.tool.called"]) await hear(type)
+    workOut()
+    expect([oneReads, keptList()!.seq]).toEqual([reads, at])
+    jest.useFakeTimers()
+    // A short stretch of reasoning, then a tool: never thinking.
+    await hear("session.reasoning.started")
+    clock.advanceTimersByTime(1900)
+    workOut()
+    await hear("session.tool.input.started")
+    clock.advanceTimersByTime(5000)
+    workOut()
+    expect(facts().thinking).toBeUndefined()
+    expect((await nowOfBot("bot_thinks")).state).toBe("working")
+
+    // A long one: thinking once it's gone on two seconds.
+    await hear("session.reasoning.started")
+    clock.advanceTimersByTime(1900)
+    workOut()
+    expect(facts().thinking).toBeUndefined()
+    clock.advanceTimersByTime(200)
+    workOut()
+    expect(facts().thinking).toBe(true)
+    expect(await nowOfBot("bot_thinks")).toEqual({ working: 1, asking: 0, thinking: 1, state: "thinking", since: expect.any(Number) })
+
+    // Words between two thoughts: thinking still.
+    await hear("session.text.started")
+    clock.advanceTimersByTime(1000)
+    await hear("session.reasoning.started")
+    clock.advanceTimersByTime(3000)
+    workOut()
+    expect(facts().thinking).toBe(true)
+
+    // A tool called: off a moment and a half after.
+    await hear("session.tool.called")
+    clock.advanceTimersByTime(1400)
+    workOut()
+    expect(facts().thinking).toBe(true)
+    clock.advanceTimersByTime(200)
+    workOut()
+    expect(facts().thinking).toBeUndefined()
+    expect(await nowOfBot("bot_thinks")).toMatchObject({ working: 1, state: "working" })
+    expect((await nowOfBot("bot_thinks")).thinking).toBeUndefined()
+  } finally {
+    jest.useRealTimers()
+    stop()
+    sessions.delete("ses_thinks")
+    active.delete("ses_thinks")
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a run that fails blocks its bot until it runs again or you've seen it (a limit said as one), and seen on any client a bot that's done is idle", async () => {
+  const folder = await aBot("bot_fails", "ses_fails")
+  add("ses_fails", folder, 700, { time: { created: 700, updated: 700, idle: 600, viewed: 600 } })
+  // Work it did for the bot, finished: a turn you haven't read.
+  add("ses_fails_w", work, 710, { time: { created: 705, updated: 710, idle: 710 }, metadata: { kuvo: { startedBy: "ses_fails", by: { bot: "bot_fails", name: "Ada" }, depth: 1 } } })
+  active.add("ses_fails")
+  const stop = keepList()
+  const hear = hearing("ses_fails")
+  const ends = async (type: string, idle: number, error?: unknown) => {
+    Object.assign(sessions.get("ses_fails").time, { updated: idle, idle })
+    active.delete("ses_fails")
+    await hear(type, error ? { error } : {})
+    workOut()
+  }
+  const followed = following("kuvo/bots/events", line => line.bots.find((bot: any) => bot.id === "bot_fails")?.now)
+  try {
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot("bot_fails")).toMatchObject({ working: 1, state: "working" })
+    await followed.until(now => now?.state === "working")
+
+    // Stopped on a usage limit: blocked, by a limit; a client following the bots hears it.
+    await ends("session.execution.failed", 800, { type: "provider.quota", message: "You've reached your limit." })
+    expect(keptList()!.sessions.ses_fails!.facts).toMatchObject({ blocked: "limit", unread: 800 })
+    expect(await nowOfBot("bot_fails")).toEqual({ working: 0, asking: 0, finished: 800, blocked: 1, blockedBy: "limit", state: "blocked", since: expect.any(Number) })
+    expect(await followed.until(now => now?.state === "blocked")).toMatchObject({ blockedBy: "limit" })
+
+    // Run again: no longer blocked.
+    active.add("ses_fails")
+    await hear("session.execution.started")
+    workOut()
+    expect(keptList()!.sessions.ses_fails!.facts.blocked).toBeUndefined()
+    expect(await nowOfBot("bot_fails")).toMatchObject({ working: 1, state: "working" })
+
+    // A coding agent's limit, as the bridge says one: a limit too.
+    active.add("ses_fails")
+    await hear("session.execution.started")
+    await ends("session.execution.failed", 850, { type: "limit", message: "You've reached your Codex usage limit for now." })
+    expect(await nowOfBot("bot_fails")).toMatchObject({ blocked: 1, blockedBy: "limit", state: "blocked" })
+    active.add("ses_fails")
+    await hear("session.execution.started")
+
+    // Stopped on an error; a box started again since still knows it.
+    await ends("session.execution.failed", 900, { type: "provider.overloaded", message: "Overloaded." })
+    expect(await nowOfBot("bot_fails")).toMatchObject({ blocked: 1, blockedBy: "error", state: "blocked" })
+    stop()
+    const again = keepList()
+    try {
+      await listPlaceHeard("engine", target)
+      expect(await nowOfBot("bot_fails")).toMatchObject({ blocked: 1, blockedBy: "error", state: "blocked" })
+
+      // Seen, on any client: each of its turns you haven't read read up to where it ended, so it's
+      // neither blocked nor done.
+      views.length = 0
+      expect(await post("kuvo/bots/bot_fails/seen")).toEqual({ status: 200, body: {} })
+      expect(views.sort()).toEqual([["ses_fails", 900], ["ses_fails_w", 710]])
+      workOut()
+      expect(keptList()!.sessions.ses_fails!.facts).not.toHaveProperty("blocked")
+      expect(keptList()!.sessions.ses_fails!.facts).not.toHaveProperty("unread")
+      expect(await nowOfBot("bot_fails")).toEqual({ working: 0, asking: 0, finished: 900, state: "idle", since: expect.any(Number) })
+      await followed.until(now => now?.state === "idle")
+
+      // Its run over, unread: done, since it ended; read on another client (`session.viewed`): idle.
+      active.add("ses_fails")
+      await hear("session.execution.started")
+      await ends("session.execution.succeeded", 1000)
+      expect(await nowOfBot("bot_fails")).toEqual({ working: 0, asking: 0, finished: 1000, state: "done", since: 1000 })
+      await hear("session.viewed", { idle: 1000 })
+      workOut()
+      expect(await nowOfBot("bot_fails")).toMatchObject({ state: "idle" })
+
+      // Nothing for a bot that isn't here; only POST.
+      expect((await post("kuvo/bots/bot_nowhere/seen")).status).toBe(404)
+      expect((await ask("kuvo/bots/bot_fails/seen")).status).toBe(405)
+    } finally {
+      again()
+    }
+  } finally {
+    await followed.end()
+    stop()
+    for (const id of ["ses_fails", "ses_fails_w"]) { sessions.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a retry blocks its bot only once it's gone on ten seconds, and a step begun again ends it", async () => {
+  const folder = await aBot("bot_retries", "ses_retries")
+  add("ses_retries", folder, 700)
+  active.add("ses_retries")
+  const stop = keepList()
+  const hear = hearing("ses_retries")
+  const blocked = () => keptList()!.sessions.ses_retries!.facts.blocked
+  try {
+    await listPlaceHeard("engine", target)
+    jest.useFakeTimers()
+    // A short retry: never blocked.
+    await hear("session.retry.scheduled", { error: { type: "provider.rate-limit" } })
+    clock.advanceTimersByTime(9000)
+    await hear("session.step.started")
+    clock.advanceTimersByTime(5000)
+    workOut()
+    expect(blocked()).toBeUndefined()
+
+    // A long one: blocked, by a limit, after ten seconds; retried again meanwhile.
+    await hear("session.retry.scheduled", { error: { type: "provider.rate-limit" } })
+    clock.advanceTimersByTime(6000)
+    await hear("session.retry.scheduled", { error: { type: "provider.rate-limit" } })
+    clock.advanceTimersByTime(3900)
+    workOut()
+    expect(blocked()).toBeUndefined()
+    clock.advanceTimersByTime(200)
+    workOut()
+    expect(blocked()).toBe("limit")
+    expect(await nowOfBot("bot_retries")).toEqual({ working: 1, asking: 0, blocked: 1, blockedBy: "limit", state: "blocked", since: expect.any(Number) })
+
+    // Its step begun again: at work.
+    await hear("session.step.started")
+    workOut()
+    expect(blocked()).toBeUndefined()
+    expect(await nowOfBot("bot_retries")).toMatchObject({ state: "working" })
+  } finally {
+    jest.useRealTimers()
+    stop()
+    sessions.delete("ses_retries")
+    active.delete("ses_retries")
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("the bots' events say a bot asleep is idle as its next wake-up comes within 12 hours, with nothing else changing", async () => {
+  jest.useFakeTimers()
+  const due = Math.floor(Date.now() / 1000) + 12 * 3600 + 60
+  const folder = await aBot("bot_sleeps", "ses_sleeps", { [`wakes/${due}-abc`]: "check the build" })
+  const stop = new AbortController()
+  const stream = handler({ method: "GET", path: "kuvo/bots/events", headers: {}, fromApp: true }, undefined, stop.signal)
+  let text = ""
+  const nextLine = async () => {
+    for (;;) {
+      const lines = text.split("\n")
+      if (lines.length > 1) { text = lines.slice(1).join("\n"); return JSON.parse(lines[0]!) }
+      const { value, done } = await stream.next()
+      if (done) throw new Error("ended")
+      if ("body" in value) text += Buffer.from(value.body).toString()
+    }
+  }
+  const sleeps = (line: any) => line.bots.find((bot: any) => bot.id === "bot_sleeps").now
+  try {
+    const asleep = sleeps(await nextLine())
+    expect(asleep).toEqual({ working: 0, asking: 0, state: "asleep", since: expect.any(Number) })
+    // A minute on, 12 hours to go: idle, since then (not before).
+    clock.advanceTimersByTime(61_000)
+    const idle = sleeps(await nextLine())
+    expect(idle).toEqual({ working: 0, asking: 0, state: "idle", since: expect.any(Number) })
+    expect(idle.since).toBeGreaterThan(due * 1000 - 12 * 3_600_000)
+  } finally {
+    stop.abort()
+    await stream.return(undefined)
+    jest.useRealTimers()
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("work the box reads for you doesn't make its bot done while the box judges whether it's news to you", async () => {
+  const { keepWorkRead } = await import("../src/link/work/tree")
+  const folder = await aBot("bot_leads", "ses_leads")
+  add("ses_leads", folder, 700, { time: { created: 700, updated: 700, idle: 690, viewed: 690 } })
+  add("ses_led", work, 710, { time: { created: 705, updated: 710, idle: 600, viewed: 600 }, metadata: { kuvo: { startedBy: "ses_leads", by: { bot: "bot_leads", name: "Ada" }, depth: 1 } } })
+  active.add("ses_led")
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot("bot_leads")).toMatchObject({ state: "working" })
+    // Its turn ends; the box looks at whether what it did is news to you.
+    Object.assign(sessions.get("ses_led").time, { updated: 800, idle: 800 })
+    active.delete("ses_led")
+    const held = holdRead("ses_led")
+    const judged = keepWorkRead(target, "ses_led")
+    await held.asked
+    await noteListEvent("engine", target, { type: "session.execution.succeeded", data: { sessionID: "ses_led" } })
+    workOut()
+    expect(keptList()!.sessions.ses_led!.facts.unread).toBeUndefined()
+    expect(await nowOfBot("bot_leads")).toMatchObject({ state: "idle" })
+    // Judged (here it couldn't read what it did: left for you), it's a turn you haven't read.
+    held.letGo()
+    await judged
+    workOut()
+    expect(keptList()!.sessions.ses_led!.facts.unread).toBe(800)
+    expect(await nowOfBot("bot_leads")).toEqual({ working: 0, asking: 0, finished: 800, state: "done", since: 800 })
+  } finally {
+    stop()
+    for (const id of ["ses_leads", "ses_led"]) { sessions.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})

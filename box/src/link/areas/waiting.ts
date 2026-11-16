@@ -3,14 +3,14 @@
 // need you (`needsYouIn`). Counted from the box's session list (`lists/sessions.ts`), so
 // every client's badges say the same, and none counts.
 
-import { botsNow, waitingSessions } from "../lists/rule";
+import { botsNow, waitingSessions, type BotCounts } from "../lists/rule";
 import { keepsList, keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import path from "node:path";
 import { botFollowers, botHere } from "../bots/here";
 import { followed, followersOf } from "../follow";
 import { allItems, queueFollowers, WORK_QUEUE, type Item } from "../work-queue/store";
 import { isClosed, NEEDS_YOU } from "../work-queue/statuses";
-import type { BotNow, SessionFacts, WaitingOnYou } from "../../shared/routes/sessions";
+import type { SessionFacts, WaitingOnYou } from "../../shared/routes/sessions";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const WAITING_ROUTE = /^kuvo\/waiting(\/events)?$/;
@@ -18,8 +18,8 @@ export const WAITING_ROUTE = /^kuvo\/waiting(\/events)?$/;
 const factsOf = (list: Kept | null): Record<string, SessionFacts> => Object.fromEntries(Object.entries(list?.sessions ?? {}).map(([id, entry]) => [id, entry.facts]));
 
 /** What each bot here is doing now, by its id, as the session list has it (one with no session of
- * its own listed: nothing). */
-export function botsNowHere(list: Kept | null = keptList()): Record<string, BotNow> {
+ * its own listed: nothing): what its sessions come to, which its state is worked out from. */
+export function botsNowHere(list: Kept | null = keptList()): Record<string, BotCounts> {
   return botsNow(factsOf(list));
 }
 
@@ -48,7 +48,8 @@ export const needsYouIn = (items: readonly Item[], asking: ReadonlySet<string>):
 const countedFrom = (list: Kept | null): string => {
   const facts = factsOf(list);
   // (And who asks at all, for the queue's count: a seat's ask is in neither of the others.)
-  return JSON.stringify([waitingSessions(facts), botsNow(facts), Object.keys(facts).filter(id => facts[id]!.asked !== undefined).sort()]);
+  // (Of the bots, only who asks: what else they're doing changes often and counts for nothing here.)
+  return JSON.stringify([waitingSessions(facts), Object.entries(botsNow(facts)).map(([id, now]) => [id, now.asking]), Object.keys(facts).filter(id => facts[id]!.asked !== undefined).sort()]);
 };
 
 export async function* waitingRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

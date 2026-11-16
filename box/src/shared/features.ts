@@ -42,6 +42,7 @@ export const FEATURES = [
   "bots.job",
   "bots.make",
   "bots.now",
+  "bots.state",
   "box.app",
   "box.app.host",
   "box.appKeys",

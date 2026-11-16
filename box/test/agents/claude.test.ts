@@ -230,6 +230,42 @@ async function until(condition: () => boolean, ms = 3_000) {
 const idles = (id: string) => sessions.messages(id).filter((message) => message.type === "idle") as Extract<Message, { type: "idle" }>[]
 const texts = (id: string) => sessions.messages(id).flatMap((message) => (message.type === "assistant" ? message.content.flatMap((content) => (content.type === "text" ? [content.text] : [])) : []))
 
+// Its thinking is what makes a bot's face think (PROTOCOL.md, "What a bot is doing now"): the box's
+// list hears it start and end as the engine's, and never reads the session for it.
+describe("Claude Code thinking", () => {
+  test("its thinking as it streams starts a reasoning block, and the words after it end it", async () => {
+    let id = ""
+    const told: string[] = []
+    const unsubscribe = subscribe((event) => {
+      if (event.data?.sessionID === id && /^session\.(reasoning|text)\.(started|ended)$/.test(event.type)) told.push(event.type)
+    })
+    try {
+      id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+      sessions.prompt(id, { id: "msg_claude_think01", text: "hello", files: [], delivery: "steer" })
+      await until(() => fake.sent.length === 1)
+      const uuid = fake.sent[0].uuid
+      const event = (event: any) => fake.out.push({ type: "stream_event", event, parent_tool_use_id: null })
+      event({ type: "message_start", message: { id: "msg_think", usage: { input_tokens: 10, output_tokens: 1 } } })
+      event({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } })
+      event({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "The tests first." } })
+      event({ type: "content_block_stop", index: 0 })
+      fake.out.push({ type: "assistant", message: { id: "msg_think", content: [{ type: "thinking", thinking: "The tests first." }] }, parent_tool_use_id: null, user_message_uuids: [uuid] })
+      event({ type: "content_block_start", index: 1, content_block: { type: "text", text: "" } })
+      event({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "They pass." } })
+      event({ type: "content_block_stop", index: 1 })
+      fake.out.push({ type: "assistant", message: { id: "msg_think", content: [{ type: "text", text: "They pass." }] }, parent_tool_use_id: null, user_message_uuids: [uuid] })
+      event({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } })
+      event({ type: "message_stop" })
+      fake.result([uuid])
+      await until(() => idles(id).length === 1)
+      expect(told).toEqual(["session.reasoning.started", "session.reasoning.ended", "session.text.started", "session.text.ended"])
+      expect(texts(id)).toEqual(["They pass."])
+    } finally {
+      unsubscribe()
+    }
+  })
+})
+
 describe("Claude Code that stops", () => {
   test("as it starts, before it takes your message: the turn fails with why it stopped", async () => {
     fake.onServers = async () => {

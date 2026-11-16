@@ -7,7 +7,7 @@
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { EngineSession } from "../engine/sessions";
-import type { BotNow, ListedProject, NeedsYou, SessionFacts, SessionKind } from "../../shared/routes/sessions";
+import type { BotNow, BotState, ListedProject, NeedsYou, SessionFacts, SessionKind } from "../../shared/routes/sessions";
 import type { AskWords } from "../glance/asked";
 
 /** What the rule reads of the box beside a session. */
@@ -33,7 +33,25 @@ export interface ListPlace {
   asks?: ReadonlyMap<string, AskWords>;
   /** The bot each of its bots' conversations is, by its id. */
   botOf?: ReadonlyMap<string, string>;
+  /** Those whose model has been reasoning a while (`thinking`, debounced as the box hears it): while
+   * they're at work. */
+  thinking?: ReadonlySet<string>;
+  /** Each one that stopped on an error or a limit and hasn't run since (a hard stop: blocked while
+   * you haven't read the turn it ended): what stopped it, and that turn's end (`idle`, where the box
+   * knows it: one kept from before it started again). */
+  stopped?: ReadonlyMap<string, Stopped>;
+  /** What each one that has been retrying a while (since its last step began) retries: while it's at
+   * work. */
+  retrying?: ReadonlyMap<string, Blocked>;
+  /** Those the box reads for you as each turn ends unless it's news to you (an agent's work) and is
+   * judging now: no turn of theirs is unread until it's said (`work/tree.ts`, READ_RULE). */
+  judging?: (session: string) => boolean;
 }
+
+/** What blocks a session: an error, or a usage or rate limit. */
+export type Blocked = "error" | "limit";
+/** A hard stop: what stopped it, and where known, the end of the turn it stopped. */
+export interface Stopped { by: Blocked; idle?: number }
 
 /** A session's folder, as the engine names it. */
 export const folderOf = (session: Partial<EngineSession>): string => session.location?.directory ?? session.directory ?? "";
@@ -97,6 +115,17 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
   if (place.away.has(session.id)) facts.away = true;
   const bot = botOf(session, kind, place);
   if (bot) facts.bot = bot;
+  // (What it streams counts while it's at work: a run's end that went unheard leaves nothing behind.)
+  const running = place.running.has(session.id);
+  if (running && place.thinking?.has(session.id)) facts.thinking = true;
+  // (Read on any client up to where its last turn ended: `time.viewed`, PROTOCOL.md "What's been read".)
+  const idle = Number(session.time?.idle) || 0;
+  const unread = idle > (Number(session.time?.viewed) || 0) && !place.judging?.(session.id);
+  if (unread) facts.unread = idle;
+  // (A hard stop blocks it until it runs again or you've read the turn it ended.)
+  const stop = place.stopped?.get(session.id);
+  const blocked = (running ? place.retrying?.get(session.id) : undefined) ?? (unread && stop && (stop.idle === undefined || stop.idle === idle) ? stop.by : undefined);
+  if (blocked) facts.blocked = blocked;
   return facts;
 }
 
@@ -131,20 +160,71 @@ export function waitingSessions(sessions: Readonly<Record<string, SessionFacts>>
   return Object.values(sessions).filter(facts => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away).length;
 }
 
+/** What a bot's sessions come to, which its state is worked out from (`botNow`): `now` but its state.
+ * `unseen`: when the newest turn you haven't read of those neither at work, waiting on you nor
+ * blocked ended (ms). */
+export type BotCounts = Omit<BotNow, "state" | "since"> & { unseen?: number };
+
 /** What each bot is doing now, by its id: how many of its sessions (its conversation, and those
  * working for it) are at work and waiting on you, and, with neither, when the newest of them last
- * changed (`finished`). Archived sessions and copies that aren't this box's own aren't counted. */
-export function botsNow(sessions: Readonly<Record<string, SessionFacts>>): Record<string, BotNow> {
-  const bots: Record<string, { working: number; asking: number; finished?: number }> = {};
+ * changed (`finished`); how many of those at work are thinking and how many are blocked (each left
+ * out when none), what blocked the newest blocked one, and when the newest turn you haven't read
+ * ended (`unseen`). Archived sessions and copies that aren't this box's own aren't counted. */
+export function botsNow(sessions: Readonly<Record<string, SessionFacts>>): Record<string, BotCounts> {
+  const bots: Record<string, { -readonly [K in keyof BotCounts]: BotCounts[K] }> = {};
+  const newestBlocked = new Map<string, number>();
   for (const facts of Object.values(sessions)) {
     if (!facts.bot || facts.archived || facts.away) continue;
     const now = (bots[facts.bot] ??= { working: 0, asking: 0 });
     const stands = standing(facts);
     if (stands) now[stands] += 1;
     else if (facts.updated) now.finished = Math.max(now.finished ?? 0, facts.updated);
+    if (stands === "working" && facts.thinking) now.thinking = (now.thinking ?? 0) + 1;
+    if (facts.blocked) {
+      now.blocked = (now.blocked ?? 0) + 1;
+      if (facts.updated >= (newestBlocked.get(facts.bot) ?? -Infinity)) { newestBlocked.set(facts.bot, facts.updated); now.blockedBy = facts.blocked; }
+    } else if (!stands && facts.unread !== undefined) now.unseen = Math.max(now.unseen ?? 0, facts.unread);
   }
   for (const now of Object.values(bots)) if (now.working || now.asking) delete now.finished;
   return bots;
+}
+
+/** What the box knows of a bot beside its sessions, for its state: whether its wake-ups are paused,
+ * and its next one (seconds since 1970, `wakes` in `kuvo/bots`). */
+export interface BotRest { paused: boolean; wakes?: number }
+
+/** How far off a bot's next wake-up is for it to be asleep (ms). */
+export const ASLEEP_AFTER = 12 * 3600_000;
+
+/** The one state a bot is in (PROTOCOL.md, "What a bot is doing now"), at `at` (ms), the first that
+ * holds: one of its sessions waits on you; one is blocked; every one at work is thinking; one is at
+ * work; one has a turn you haven't seen; it's paused, or its next wake-up is more than 12 hours
+ * away; else idle. */
+export function botState(counts: BotCounts, rest: BotRest, at: number): BotState {
+  if (counts.asking > 0) return "needsYou";
+  if ((counts.blocked ?? 0) > 0) return "blocked";
+  if (counts.working > 0) return (counts.thinking ?? 0) >= counts.working ? "thinking" : "working";
+  if (counts.unseen !== undefined) return "done";
+  if (rest.paused || (rest.wakes !== undefined && rest.wakes * 1000 - at > ASLEEP_AFTER)) return "asleep";
+  return "idle";
+}
+
+/** A bot's `now`, at `at`: what its sessions come to, its state, and since when it's in it: for
+ * `done`, when the newest turn you haven't seen ended; else as `before` (what the box last said of it)
+ * where that was the same state, else `at`. */
+export function botNow(counts: BotCounts, rest: BotRest, at: number, before?: { state: BotState; since: number }): BotNow {
+  const state = botState(counts, rest, at);
+  const since = state === "done" ? counts.unseen! : before?.state === state ? before.since : at;
+  const { unseen: _, ...now } = counts;
+  return { ...now, state, since };
+}
+
+/** When a bot's state may change with nothing else changing, after `at`: as its next wake-up comes
+ * within 12 hours (it was asleep). None for a paused bot or one with none. */
+export function botStateTurns(rest: BotRest, at: number): number | undefined {
+  if (rest.paused || rest.wakes === undefined) return undefined;
+  const turns = rest.wakes * 1000 - ASLEEP_AFTER;
+  return turns > at ? turns : undefined;
 }
 
 /** The projects the lists show: its list's (not removed), and each one a session listed in a project

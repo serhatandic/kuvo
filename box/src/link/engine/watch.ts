@@ -29,6 +29,7 @@ import { adoptConversation } from "../areas/approval";
 import { giveFolders } from "../areas/projects";
 import { followAsks, forgetAsksOn, noteAskEvent } from "../glance/asked";
 import { keepList, listPlaceHeard, noteListEvent } from "../lists/sessions";
+import { followBotStates } from "../bots/now";
 import { forgetModelLists, noteModelsEvent } from "../work/model-rule";
 import { pullCatcher } from "../glance/pulls";
 import type { Target } from "../../shared/records";
@@ -266,6 +267,9 @@ export function watchBox({ tell = () => true, hold = null, bots = false, notices
   // Every client's session lists, kept as the events come (lists/sessions.ts).
   const stopList = keepList();
   signal?.addEventListener("abort", stopList, { once: true });
+  // And each bot's state noted as it changes, for its `since` (bots/now.ts).
+  const stopStates = followBotStates();
+  signal?.addEventListener("abort", stopStates, { once: true });
   watchEvents(readEngineFile, tell, signal, answered, { bots, notices, signIns: true, hold, signedIn, steers: true, learns: true, learned, queues: true, work: "engine", attachmentsLooked });
   watchEvents(readBridgeFile, tell, signal, answered, { bots, notices, hold, queues: true, work: "bridge", goals: true, attachmentsLooked });
 }

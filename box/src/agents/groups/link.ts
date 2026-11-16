@@ -68,7 +68,7 @@ const plainLook = { color: "graphite", shape: "round", face: "calm" }
 /** The colors, shapes and faces a bot can have, as the apps draw them (BotLook): another is one a client can't read. */
 const looks = {
   color: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
-  shape: ["round", "squircle", "pebble", "gem", "bloom"],
+  shape: ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"],
   face: ["calm", "happy", "sleepy", "wink", "curious", "bright"],
 }
 
