@@ -6451,6 +6451,37 @@ function engineRole(root) {
   const folder = path6.join(path6.resolve(root), "engine").replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\/+/g, "/+");
   return new RegExp(`${folder}/+`);
 }
+function engineRuns(pid, root, proc = "/proc") {
+  if (!processRuns(pid, "/engine/", proc))
+    return false;
+  const line = commandLineOf(pid, proc);
+  return line === undefined || engineRole(root).test(line);
+}
+function engineHome(pid, root, proc = "/proc") {
+  if (!runsAs(pid, engineRole(root), proc))
+    return;
+  const line = commandLineOf(pid, proc) ?? "";
+  const name = path6.basename(path6.resolve(root)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const found = new RegExp(`/${name}/+engine/`).exec(line);
+  if (!found)
+    return;
+  let around;
+  try {
+    around = fs6.realpathSync(path6.dirname(path6.resolve(root)));
+  } catch {
+    return;
+  }
+  for (let start = found.index - 1;start >= 0; start--) {
+    if (line[start] !== "/" || start > 0 && line[start - 1] !== " ")
+      continue;
+    const home = line.slice(start, found.index);
+    try {
+      if (fs6.realpathSync(home) === around)
+        return home;
+    } catch {}
+  }
+  return;
+}
 function promptedFolders(platform = process.platform) {
   return platform === "darwin" ? new Set(["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures"]) : new Set;
 }
@@ -14276,9 +14307,10 @@ async function stopEngine(pid) {
   } catch {}
   if (await gone(1e4))
     return;
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {}
+  if (runsAs(pid, engineRole(K)))
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
   await gone(5000);
 }
 async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
@@ -14294,6 +14326,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   if (!takeUpdateLock())
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
+  let keeperEnv = {};
   let fetching = false;
   brokeOff = stopFailed = false;
   const download = async (get) => {
@@ -14414,6 +14447,9 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     try {
       previous = readEngineFile();
     } catch {}
+    const home = previous?.pid ? engineHome(previous.pid, K) : undefined;
+    if (home)
+      keeperEnv = { HOME: home };
     const withAgents = Boolean(previous?.agentsPort) && fs37.existsSync(path40.join(stage, "files", "bin", "kuvo-agents.js"));
     const otherEngine = previous?.version !== manifest.engine;
     if (otherEngine && !roomForData())
@@ -14423,12 +14459,12 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     fs37.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
     trial = true;
     stopped = true;
-    const stop = ran("sh", [path40.join(K, "bin", "kuvo-start"), "stop"], {}, 300000);
+    const stop = ran("sh", [path40.join(K, "bin", "kuvo-start"), "stop"], keeperEnv, 300000);
     if (stop.status === 0 && previous?.pid)
       await stopEngine(previous.pid);
     if (stop.status !== 0 || previous?.pid && alive(previous.pid)) {
       stopFailed = true;
-      throw new Error("Its engine couldn't be stopped to update it, so nothing changed and it runs as before. Try again in a few minutes.");
+      throw new Error(`Kuvo's engine on ${HERE2} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
     }
     if (otherEngine)
       keepData();
@@ -14449,7 +14485,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       fs37.chmodSync(`${to}.new`, fs37.statSync(from).mode & 511);
       fs37.renameSync(`${to}.new`, to);
     }
-    ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"]);
+    ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
     if (!await cameUp(manifest.engine, withAgents, upWithin))
       throw new Error("The new version didn't come up.");
@@ -14462,14 +14498,14 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (stage)
       fs37.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
-      ran("sh", [path40.join(ROLLBACK, "restore.sh")], { KUVO_UPDATER: String(process.pid) }, 600000);
+      ran("sh", [path40.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600000);
     } else {
       if (trial) {
         fs37.rmSync(UPDATE_TRIAL, { force: true });
         fs37.rmSync(ROLLBACK, { recursive: true, force: true });
       }
       if (stopped)
-        ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"]);
+        ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     }
     if (trial)
       noteUpdate({ trial: null });
@@ -14687,9 +14723,12 @@ function offerWaits() {
   const offered = offeredVersion(), version = boxVersion();
   return !!offered && !!version && newerVersion(offered, version);
 }
+function offerFailedAgain(version, failed = updateState().offerFailed) {
+  return !!failed && failed.version === version && (failed.takenBack || (failed.tries ?? 1) > 1);
+}
 function offerRests(version, now) {
   const { offerFailed: failed, trial } = updateState();
-  if (failed?.version === version && now - failed.at < (failed.takenBack || (failed.tries ?? 1) > 1 ? OFFER_REST : OFFER_RETRY))
+  if (failed?.version === version && now - failed.at < (offerFailedAgain(version, failed) ? OFFER_REST : OFFER_RETRY))
     return true;
   return trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
 }
@@ -42081,7 +42120,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b99cd33903e2";
+var BRIDGE_VERSION = "08054839010b";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -45583,8 +45622,7 @@ function keepingSelfUp(name, working, blocked) {
   const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
   const actions = [{ id: "update-here", label: "Update Now", confirm }];
   if (status.offerFailed && status.offerFailed.version === status.offered) {
-    const failed = updateState().offerFailed;
-    if (status.offerFailed.takenBack || failed?.version === status.offered && (failed.tries ?? 1) > 1)
+    if (offerFailedAgain(status.offered))
       return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
     return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions };
   }
@@ -57797,7 +57835,7 @@ function movingNow() {
   return { state: status.state, step: status.step, overdue: status.overdue, ...status.failed?.message ? { why: status.failed.message } : {} };
 }
 function machineInfo(engine, started, chats, agents, info) {
-  const running = Boolean(engine.pid && processRuns(engine.pid, `${K}/engine/`));
+  const running = Boolean(engine.pid && engineRuns(engine.pid, K));
   const stopped = fs179.existsSync(path190.join(RUN, "stopped"));
   const notes = engine.notes ?? {};
   const home = typeof notes.mac === "string" ? { mac: notes.mac, ...typeof notes.macName === "string" ? { name: notes.macName } : {} } : undefined;
