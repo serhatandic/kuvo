@@ -111,7 +111,7 @@ test("an app that couldn't be opened, or isn't where it was installed: the agent
   expect(await openApp(undefined, gone.ways)).toBe(GONE)
 })
 
-test("an app that never registered with this box: nothing to open, and the agent's told to ask for it", async () => {
+test("an app that never registered with this box (the desktop app, with no browser for agents yet): nothing to open, and the agent's told so", async () => {
   const world = stage()
   expect(await openApp(undefined, world.ways)).toBe(NEEDS_APP)
   expect(world.asked).toEqual([])

@@ -6,7 +6,7 @@ use kuvo_box::areas::Level;
 use kuvo_box::settings_pages::{Action, Can, Kind, Page, Row as Described, Tone as Said};
 use serde_json::{Value, json};
 
-use super::rows::{Act, At, Block, Control, FlowDrawn, Meter, Push, Row, Tone};
+use super::rows::{Act, At, Block, Control, FlowDrawn, Layout, Meter, Part, Push, Row, Tone};
 
 /// What draws a row whose kind this app has nothing for yet.
 const NEWER: &str = "A newer Kuvo changes this";
@@ -24,6 +24,8 @@ pub struct Drawing<'a> {
     /// Whether the box is on the computer this app runs on.
     pub here: bool,
     pub filters: &'a std::collections::HashMap<String, String>,
+    /// The rows whose breakdown is open, by key.
+    pub expanded: &'a [String],
 }
 
 pub fn key(id: &str) -> String {
@@ -37,6 +39,27 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
         let mut label = group.title.clone().unwrap_or_default();
         let mut words = group.note.clone().unwrap_or_default();
         let mut rows = Vec::new();
+        // A group's one row drawn on the page itself: several lines of text, written full width
+        // under the group's title and words (the row's own, where the group has none), never
+        // titled twice; or a whole by its parts.
+        if let [described] = group.rows.as_slice()
+            && let Some(layout) = bare(described)
+        {
+            let mut drawn = row(described, drawing);
+            if layout == Bare::Area {
+                if label.is_empty() {
+                    label = described.title.clone();
+                }
+                if words.is_empty() {
+                    words = described.line.clone().unwrap_or_default();
+                }
+                drawn.title = String::new();
+                drawn.detail = String::new();
+            }
+            drawn.layout = Layout::Bare;
+            blocks.push(Block::Group(label, words, vec![drawn]));
+            continue;
+        }
         for described in &group.rows {
             if described.kind != Kind::List {
                 rows.push(row(described, drawing));
@@ -61,7 +84,7 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
             }
             let query = drawing.filters.get(&key(&described.id)).cloned().unwrap_or_default();
             if let Some(search) = &described.search {
-                rows.push(Row::new(key(&described.id), String::new(), String::new(), Control::Field { unit: None, lines: None, masked: false, value: query.clone(), placeholder: search.placeholder.clone(), revision: String::new(), save: Act::Filter, more: Vec::new() }));
+                rows.push(Row::new(key(&described.id), String::new(), String::new(), Control::Field { unit: None, lines: None, masked: false, value: query.clone(), placeholder: search.placeholder.clone(), revision: String::new(), save: Act::Filter, more: Vec::new(), browse: None, picks: Vec::new(), busy: None }));
             }
             let query_lower = query.to_lowercase();
             let list_matches = described.title.to_lowercase().contains(&query_lower);
@@ -82,6 +105,26 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
     blocks
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bare {
+    Area,
+    Parts,
+}
+
+/// Whether a row alone in its group is drawn on the page itself, and how.
+fn bare(described: &Described) -> Option<Bare> {
+    match described.kind {
+        Kind::Text if described.lines.is_some() && described.can == Some(Can::Yes) => Some(Bare::Area),
+        Kind::Meter if described.windows.is_empty() => Some(Bare::Parts),
+        _ => None,
+    }
+}
+
+/// A choice short enough to show side by side: two or three, each a word or two.
+fn segmented(described: &Described) -> bool {
+    (2..=3).contains(&described.choices.len()) && described.choices.iter().all(|choice| choice.line.is_none() && choice.title.chars().count() <= 14)
+}
+
 fn row(described: &Described, drawing: &Drawing) -> Row {
     let key = key(&described.id);
     let why = described.why_not().filter(|why| !why.is_empty()).map(str::to_owned);
@@ -90,7 +133,11 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
     let at = At::of(drawing.section, described);
     let change = |value: Value| Act::Change { at: at.clone(), value, asked: false };
     let mut why = why;
-    let control = if let Some(words) = described.busy.clone().or_else(|| drawing.busy.iter().find(|(busy, _)| *busy == key).map(|(_, words)| words.clone())) {
+    let busy = described.busy.clone().or_else(|| drawing.busy.iter().find(|(busy, _)| *busy == key).map(|(_, words)| words.clone()));
+    // (A field keeps what's typed while its change goes, and a whole by its parts its bar: each
+    // says it's busy in itself.)
+    let keeps = matches!(described.kind, Kind::Text | Kind::Number | Kind::Folder | Kind::Secret | Kind::Meter) && (described.can == Some(Can::Yes) || described.kind == Kind::Meter);
+    let control = if let Some(words) = busy.clone().filter(|_| !keeps) {
         Control::Busy(words)
     } else {
         match described.kind {
@@ -107,7 +154,9 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Switch => Control::Switch { on: described.is_on(), act: can.then(|| change(json!(!described.is_on()))) },
             Kind::Choice => {
                 let shown = described.chosen().map(|choice| choice.title.clone()).or_else(|| described.words().map(str::to_owned)).unwrap_or_default();
-                if can {
+                if can && segmented(described) {
+                    Control::Segments(described.choices.iter().map(|choice| (choice.title.clone(), Some(change(json!(choice.id))), Some(choice.id.as_str()) == described.words())).collect())
+                } else if can {
                     Control::Menu { shown: Some(shown), choices: described.choices.iter().map(|choice| (choice.title.clone(), choice.line.clone(), Some(change(json!(choice.id))), Some(choice.id.as_str()) == described.words())).collect() }
                 } else {
                     Control::Text(shown)
@@ -121,7 +170,19 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                 let value = shown_value(described);
                 if can {
                     let save = Act::Save { at: at.clone(), number: described.kind == Kind::Number };
-                    Control::Field { unit: described.unit.as_ref().map(|unit| unit.name.clone()), lines: described.lines.as_ref().map(|lines| (lines.min, lines.max)), masked: false, value, placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more: { let mut picks = vec![Push::new("Save", save)]; picks.extend(described.suggestions.iter().map(|pick| Push::new(pick.title.clone(), change(json!(pick.value))))); if let Some(folder) = &described.folder { picks.push(Push::new(folder.choose.clone(), Act::Folder { at: at.clone(), words: folder.clone() })); picks.push(Push::new(folder.clear.clone(), change(json!("")))); } picks } }
+                    Control::Field {
+                        unit: described.unit.as_ref().map(|unit| unit.name.clone()),
+                        lines: described.lines.as_ref().map(|lines| (lines.min, lines.max)),
+                        masked: false,
+                        value,
+                        placeholder: described.placeholder.clone().unwrap_or_default(),
+                        revision: described.revision.clone(),
+                        save,
+                        more: Vec::new(),
+                        browse: described.folder.as_ref().map(|folder| Act::Folder { at: at.clone(), words: folder.clone() }),
+                        picks: described.suggestions.iter().map(|pick| Push::new(pick.title.clone(), change(json!(pick.value)))).collect(),
+                        busy: busy.clone(),
+                    }
                 } else {
                     Control::Text(match (&described.unit, described.value.as_ref().and_then(Value::as_f64)) {
                         (Some(unit), Some(value)) => unit.display(value),
@@ -132,11 +193,11 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Secret => {
                 let replacing = drawing.replacing.contains(&described.id);
                 let save = Act::Save { at: at.clone(), number: false };
-                let field = |more: Vec<Push>| Control::Field { unit: None, lines: None, masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more };
+                let field = |more: Vec<Push>| Control::Field { unit: None, lines: None, masked: true, value: String::new(), placeholder: described.placeholder.clone().unwrap_or_default(), revision: described.revision.clone(), save: save.clone(), more, browse: None, picks: Vec::new(), busy: busy.clone() };
                 match (can, described.set, replacing) {
                     (false, set, _) => Control::Text(if set { "Set".into() } else { "Not set".into() }),
-                    (true, false, _) => field(vec![Push::new("Save", save.clone())]),
-                    (true, true, true) => field(vec![Push::new("Save", save.clone()), Push::new("Cancel", Act::Replacing { row: described.id.clone(), on: false })]),
+                    (true, false, _) => field(Vec::new()),
+                    (true, true, true) => field(vec![Push::new("Cancel", Act::Replacing { row: described.id.clone(), on: false })]),
                     (true, true, false) => Control::Buttons(vec![Push::new("Replace", Act::Replacing { row: described.id.clone(), on: true }), Push::new("Remove", change(Value::Null))]),
                 }
             }
@@ -157,13 +218,28 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
                     _ => Control::Menu { shown: None, choices: pushes.into_iter().map(|push| (push.label, None, push.act, false)).collect() },
                 }
             }
-            Kind::Meter => Control::Windows(
+            Kind::Meter if !described.windows.is_empty() => Control::Windows(
                 described
                     .windows
                     .iter()
                     .map(|window| Meter { title: window.title.clone(), said: format!("{}% used", (window.used * 100.).round() as u32), share: window.used.clamp(0., 1.) as f32, level: Level::Calm, resets_at: window.resets })
                     .collect(),
             ),
+            // A whole by its parts (none yet while it's first measured).
+            Kind::Meter => {
+                let whole: f64 = described.parts.iter().map(|part| part.value.max(0.)).sum();
+                Control::Parts {
+                    parts: described
+                        .parts
+                        .iter()
+                        .map(|part| Part { title: part.title.clone(), words: part.words.clone(), share: if whole > 0. { (part.value.max(0.) / whole) as f32 } else { 0. }, parts: part.parts.iter().map(|each| (each.title.clone(), each.words.clone())).collect() })
+                        .collect(),
+                    actions: described.actions.iter().map(|action| push(described, action, drawing)).collect(),
+                    busy: busy.clone(),
+                    open: drawing.expanded.contains(&key),
+                    expand: Act::Expand(key.clone()),
+                }
+            }
             Kind::Open => match (&described.section, &described.address) {
                 (Some(section), _) => Control::Opens(Act::Section(section.clone())),
                 (None, Some(address)) if opens(address, drawing.here) => Control::Opens(Act::Open(address.clone())),
@@ -183,6 +259,12 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
         why = Some(VERIFIED_ELSEWHERE.into());
     }
     let mut drawn = Row::new(key, described.title.clone(), described.line.clone().unwrap_or_default(), control).warning(described.tone == Said::Warning).why(why);
+    // An action's row with a size: the size before its buttons.
+    if described.kind == Kind::Actions
+        && let (Some(unit), Some(value)) = (&described.unit, described.value.as_ref().and_then(Value::as_f64))
+    {
+        drawn.aside = Some(unit.display(value));
+    }
     drawn.badge = described.badge.as_ref().map(|badge| (badge.words.clone(), badge.tone));
     drawn.notice = described.notice.as_ref().map(|notice| (notice.words.clone(), if notice.tone == Said::Warning { Tone::Warning } else { Tone::Quiet }));
     drawn.flow = described.flow.as_ref().map(|flow| {

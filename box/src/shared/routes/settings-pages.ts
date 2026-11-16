@@ -90,6 +90,11 @@ export const SETTING_FLOW = object({
  * (ms since 1970). */
 export const SETTING_WINDOW = object({ title: string, used: number, "resets?": number });
 
+/** One part of a `meter` row's whole (what Kuvo keeps on a computer, by what it holds): its name, how
+ * much (`value`, in the row's measure: bytes), its words ("1.2 GB"), and what it's made of. A client
+ * draws the parts as one bar, in its own colours, with each part's name and words beside it. */
+export const SETTING_PART = object({ id: string, title: string, value: number, words: string, "parts?": list(object({ title: string, value: number, words: string })) });
+
 const ROW_FIELDS = {
   id: string, title: string, "line?": string, "tone?": words("quiet", "warning"),
   kind: words(...SETTING_KINDS),
@@ -119,6 +124,8 @@ const ROW_FIELDS = {
   "set?": bool,
   "actions?": list(SETTING_ACTION),
   "windows?": list(SETTING_WINDOW),
+  /** A `meter` row's parts of a whole (instead of `windows`); never part of its revision. */
+  "parts?": list(SETTING_PART),
   /** An `open` row's: a section of this box's, or an address. */
   "section?": string, "address?": string,
   /** A `steps` row's: what starts its flow. */
