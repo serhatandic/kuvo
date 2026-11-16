@@ -60,11 +60,15 @@ export function helperStatus() {
   let agent = false;
   try { agent = plist !== null && fs.readFileSync(plist, "utf8").includes(`<string>${xml(helperProgram())}</string>`); } catch {}
   let loaded: boolean | null = null;
+  // Whether launchd has it running now: a job that's loaded but whose helper ended cleanly (the box
+  // turned off, or told to go) isn't started again by launchd (KeepAlive: SuccessfulExit false).
+  let running: boolean | null = null;
   if (tools && process.platform === "darwin") {
-    const asked = spawnSync(tools.launchctl, ["print", `gui/${process.getuid?.() ?? 0}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "ignore"] });
+    const asked = spawnSync(tools.launchctl, ["print", `gui/${process.getuid?.() ?? 0}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] });
     loaded = asked.error ? null : asked.status === 0;
+    running = loaded === false ? false : loaded ? /^\s*state = running\b/m.test(asked.stdout ?? "") : null;
   }
-  return { helper: fs.existsSync(helperProgram()), agent, loaded };
+  return { helper: fs.existsSync(helperProgram()), agent, loaded, running };
 }
 
 /** Whether Kuvo Helper is switched on in System Settings › General › Login Items (`launchctl
