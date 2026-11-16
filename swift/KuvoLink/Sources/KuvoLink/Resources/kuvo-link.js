@@ -2381,7 +2381,7 @@ function authorizePhone(key, hello, address) {
 function noteRemoved(link, key, pairing) {
   link.removed ??= [];
   if (!removedAlready(link, key, pairing))
-    link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT2);
+    link.removed = [...link.removed, { key, pairing }].slice(-MOST_KEPT3);
 }
 function blockVoucher(link, phone, now) {
   if (!phone.by)
@@ -2444,7 +2444,7 @@ function pairDevice(link, device, now = Date.now()) {
 }
 function removeAsMac(link, entries) {
   const macs = macsOf(link);
-  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT2 || !entries.every((entry) => fits2(entry, macs)))
+  if (!Array.isArray(entries) || !entries.length || entries.length > MOST_KEPT3 || !entries.every((entry) => fits2(entry, macs)))
     return false;
   for (const entry of entries)
     takeOff(link, entry.key, entry.pairing);
@@ -2464,7 +2464,7 @@ function removePhones(link, by, entries) {
 function foldPhones(link, now = Date.now()) {
   const macs = macsOf(link);
   for (const doc of phoneDocs(link)) {
-    for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT2) : []) {
+    for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT3) : []) {
       if (fits2(entry, macs) && typeof entry.pairing === "string")
         noteRemoved(link, entry.key, entry.pairing);
     }
@@ -2538,7 +2538,7 @@ function pairingLink(link) {
   });
   return `kuvo-link://pair?${query}`;
 }
-var PAIRING, MOST_AT_ONCE = 16, MOST_KEPT2 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchedWords = (link, key, name) => key && (link?.phones ?? []).some((each) => each.by === key) ? ` Kuvo Code’s app on ${name} is taken off your devices.` : "", vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto25.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, ownPhones = (link) => ({
+var PAIRING, MOST_AT_ONCE = 16, MOST_KEPT3 = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchedWords = (link, key, name) => key && (link?.phones ?? []).some((each) => each.by === key) ? ` Kuvo Code’s app on ${name} is taken off your devices.` : "", vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto25.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, ownPhones = (link) => ({
   phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {} })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing }))
 }), PAIRING_MINUTES = 10, newPairingToken = () => ({ token: crypto25.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000 }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
@@ -19483,6 +19483,7 @@ var WORK_SENT = path65.join(WORK_FOLDER, "sent.json");
 var LOCK6 = path65.join(WORK_FOLDER, ".sent.lock");
 var KEPT_TEXT = 8000;
 var EACH = 4;
+var MOST_KEPT2 = 16;
 var SESSIONS = 100;
 var KEPT_FOR3 = 86400000;
 var SAID_ALREADY = 200;
@@ -19505,7 +19506,8 @@ function noteSent(session, to, text, now = Date.now(), file = WORK_SENT) {
     fs61.mkdirSync(path65.dirname(file), { recursive: true });
     locked(LOCK6, () => {
       const all = readSent(file);
-      const its = [...(all[session] ?? []).filter((each) => now - each.at < KEPT_FOR3), { to, text: words, at: now }].slice(-EACH);
+      const kept = [...(all[session] ?? []).filter((each) => now - each.at < KEPT_FOR3), { to, text: words, at: now }];
+      const its = kept.filter((each, index) => kept.slice(index + 1).filter((later) => later.to === each.to).length < EACH).slice(-MOST_KEPT2);
       delete all[session];
       all[session] = its;
       const ids = Object.keys(all);
@@ -19519,7 +19521,8 @@ function saidAlready(session, to, reply, since, file = WORK_SENT) {
   const words = plain2(reply);
   if (!words)
     return false;
-  return (readSent(file)[session] ?? []).some((each) => each.to === to && each.at >= since && (each.text === words.slice(0, KEPT_TEXT) || words.length >= SAID_ALREADY && each.text.includes(words.slice(0, KEPT_TEXT))));
+  const cut = words.slice(0, KEPT_TEXT);
+  return (readSent(file)[session] ?? []).some((each) => each.to === to && each.at >= since && (each.text === cut || words.length >= SAID_ALREADY && each.text.includes(cut) || each.text.length >= SAID_ALREADY && each.text.length < KEPT_TEXT && words.includes(each.text) && words.length - each.text.length < SAID_ALREADY));
 }
 
 // box/src/link/work/wakes.ts
@@ -19597,6 +19600,8 @@ ${reply ? cut(reply, 1200) : "(It ended without a reply.)"}${services}`;
   }
   return null;
 }
+var doneSinceLine = (session) => `[Session finished] ${namedOf(session)}:
+What it left running is done. The user has written to it since, so its last reply answers them: read its report with read_conversation.`;
 var stoppedLine = (session) => `${STOPPED_OPENING} ${namedOf(session)} was stopped by the user. Nothing more comes from it unless it's written to again: don't start it or its work again unless the user asks.`;
 var STOPPED_OPENING = "[Session stopped]";
 var wakeText = (lines) => lines.join(`
@@ -19748,10 +19753,10 @@ function isNews(was, last) {
     return false;
   if (was.unread && was.upto !== undefined && last.at !== null && last.at <= was.upto)
     return false;
-  if (!was.at && !was.reply)
-    return true;
   if (last.began.kind === "you")
     return false;
+  if (!was.at && !was.reply)
+    return true;
   if (was.early && last.began.kind !== "timer")
     return true;
   if (last.began.kind === "asked" || last.began.kind === "word")
@@ -19995,19 +20000,23 @@ ${starter}`;
     }
     const folder = session.location?.directory ?? session.directory;
     const still = await background.of(session.id, folder).catch(() => null);
-    const waitedSince = readTold2(toldFile)?.waiting?.[session.id]?.at;
-    const askedAt = last?.began.kind === "asked" || last?.began.kind === "you" ? last.began.at : null;
+    const waited = readTold2(toldFile)?.waiting?.[session.id];
+    const waitedSince = waited?.at;
+    const yours = last?.began.kind === "you";
+    if (yours && !waited)
+      return noteTold(session.id, { reply: last.id ?? undefined });
+    const askedAt = yours ? waited?.asked ?? null : last?.began.kind === "asked" ? last.began.at : null;
     if (holds2(still, { asked: askedAt ?? undefined }))
       return waitFor(session.id, waitedSince ?? at, askedAt);
     const was = readTold2(toldFile)?.sessions[session.id] ?? {};
     letGoOf(session.id);
-    if (last && !isNews(was, last))
+    if (last && !yours && !isNews(was, last))
       return noteTold(session.id, { reply: last.id ?? undefined });
-    const line = await wakeLine({ type: "session.execution.succeeded", data: { sessionID: session.id } }, session, source, servicesWords(still));
+    const line = yours ? doneSinceLine(session) : await wakeLine({ type: "session.execution.succeeded", data: { sessionID: session.id } }, session, source, servicesWords(still));
     if (!line)
       return;
     const seen = Math.max(upto ?? -Infinity, last?.at ?? -Infinity);
-    const quiet = Boolean(last?.text) && !servicesWords(still).length && saidAlready(session.id, starter, last.text, last.began.at ?? was.at ?? 0, sentFile);
+    const quiet = !yours && Boolean(last?.text) && !servicesWords(still).length && saidAlready(session.id, starter, last.text, last.began.at ?? was.at ?? 0, sentFile);
     tellUnlessAnswered(session.id, starter, last?.id ?? undefined, line, at, { said: last ? last.text ? hashed(last.text) : "" : undefined, early: Boolean(still) || waitedSince !== undefined, bot: worksFor(session)?.bot, upto: Number.isFinite(seen) ? seen : undefined, quiet });
   };
   const settle = async (id) => {
@@ -20273,10 +20282,12 @@ ${starter}`;
       const at = now();
       const last = await lastReply(source, session.id).catch(() => null);
       const reply = last?.id ?? undefined;
-      if (isArchived(session) || staysStopped(session.id, last) || last?.began.kind === "you") {
+      if (isArchived(session) || staysStopped(session.id, last)) {
         letGoOf(session.id);
         return noteTold(session.id, { reply, turn: last?.turn });
       }
+      if (last?.began.kind === "you")
+        return noteTold(session.id, { reply, turn: last.turn });
       const failure = errorOf(event.data.error)?.message ?? "";
       if (failure && last && last.began.kind !== "asked" && readTold2(toldFile)?.sessions[session.id]?.failure === failure)
         return noteTold(session.id, { reply, turn: last.turn });
@@ -42333,7 +42344,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "54968825f492";
+var BRIDGE_VERSION = "49413e21c037";
 
 // box/src/link/rehome/move.ts
 init_outside();
