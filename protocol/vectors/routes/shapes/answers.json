@@ -5535,6 +5535,9 @@
             "literal": "work-queue.forward"
            },
            {
+            "literal": "work.background.items"
+           },
+           {
             "literal": "work.elsewhere"
            },
            {
@@ -6223,6 +6226,9 @@
            },
            {
             "literal": "work-queue.forward"
+           },
+           {
+            "literal": "work.background.items"
            },
            {
             "literal": "work.elsewhere"
@@ -25915,6 +25921,39 @@
          "subagents": "number",
          "tasks": "number",
          "since": "number"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work/background/:session",
+   "answers": {
+    "200": {
+     "object": {
+      "commands": {
+       "list": {
+        "object": {
+         "id": "string",
+         "command": "string",
+         "started": "number",
+         "folder?": "string",
+         "ports?": {
+          "list": "number"
+         },
+         "agents?": "bool"
+        }
+       }
+      },
+      "subagents": {
+       "list": {
+        "object": {
+         "session": "string",
+         "since": "number",
+         "title?": "string",
+         "asking?": "bool"
         }
        }
       }

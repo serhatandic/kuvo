@@ -83,4 +83,5 @@ pub const REQUIRED: &[&str] = &[
     "work-queue.anywhere",
     "work-queue.counts",
     "work-queue.edit",
+    "work.background.items",
 ];

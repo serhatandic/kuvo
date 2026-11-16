@@ -127,6 +127,16 @@ export const WORK_CHANGED = object({ changed: map(number) });
  * never ends stops counting a while after it started. Clients take this as it is. */
 export const BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
 
+/** What runs for one session besides its own turn (`kuvo/work/background/<session>`), each one, for
+ * the bars over a client's composer: the commands it left running (when each started, ms; the
+ * folder the engine knows it in; the ports a service listens on; `agents`, a coding agent's, read
+ * and stopped through their bridge), and each subagent at work under it (since when, its title,
+ * and whether it waits on you), the oldest first. A session with nothing has both empty. */
+export const SESSION_BACKGROUND = object({
+  commands: list(object({ id: string, command: string, started: number, "folder?": string, "ports?": list(number), "agents?": bool })),
+  subagents: list(object({ session: string, since: number, "title?": string, "asking?": bool })),
+});
+
 /** An app on the box's computer something is done in, as the bot named it (`name`): with its `id`
  * once the box found it installed there, whose icon is `kuvo/work/apps/icon?app=<id>`; none for one
  * that isn't there. */
@@ -285,6 +295,7 @@ export const WORK_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work/events", answers: { 200: WORK_CHANGED } },
   { route: "GET kuvo/work/background", answers: { 200: BACKGROUND_LIST } },
   { route: "GET kuvo/work/background/events", answers: { 200: BACKGROUND_LIST } },
+  { route: "GET kuvo/work/background/:session", answers: { 200: SESSION_BACKGROUND } },
   { route: "POST kuvo/bots/:id/stop-all", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/work/oversight", answers: { 200: OVERSIGHT } },
   { route: "GET kuvo/work/oversight/events", answers: { 200: OVERSIGHT } },

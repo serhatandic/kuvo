@@ -1544,7 +1544,7 @@ var init_projects = __esm(() => {
 });
 
 // box/src/shared/routes/work.ts
-var LIMITS, WORKS_FOR, ANSWER, WORK_ACCOUNT, WORK_SESSION, WORK_ASK, WORK_ASKS, WORK_ASK_ANSWERED, WORK_SETTINGS, UNANSWERING, UNANSWERING_LIST, WORK, OVERSIGHT_MARK, OVERSIGHT, WORK_CHANGED, BACKGROUND_LIST, GOAL_APP, GOAL_STEP, GOAL_CHECK, GOAL_WAITING, GOAL_DECIDED, GOAL_SPEND, GOAL_FOLDER, GOAL_PLAN, GOAL_PLANS, REFUSED, WORK_ROUTES;
+var LIMITS, WORKS_FOR, ANSWER, WORK_ACCOUNT, WORK_SESSION, WORK_ASK, WORK_ASKS, WORK_ASK_ANSWERED, WORK_SETTINGS, UNANSWERING, UNANSWERING_LIST, WORK, OVERSIGHT_MARK, OVERSIGHT, WORK_CHANGED, BACKGROUND_LIST, SESSION_BACKGROUND, GOAL_APP, GOAL_STEP, GOAL_CHECK, GOAL_WAITING, GOAL_DECIDED, GOAL_SPEND, GOAL_FOLDER, GOAL_PLAN, GOAL_PLANS, REFUSED, WORK_ROUTES;
 var init_work = __esm(() => {
   init_shape();
   init_projects();
@@ -1611,6 +1611,10 @@ var init_work = __esm(() => {
   OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
   WORK_CHANGED = object({ changed: map(number) });
   BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
+  SESSION_BACKGROUND = object({
+    commands: list(object({ id: string, command: string, started: number, "folder?": string, "ports?": list(number), "agents?": bool })),
+    subagents: list(object({ session: string, since: number, "title?": string, "asking?": bool }))
+  });
   GOAL_APP = object({ name: string, "id?": string });
   GOAL_STEP = object({
     id: string,
@@ -1701,6 +1705,7 @@ var init_work = __esm(() => {
     { route: "GET kuvo/work/events", answers: { 200: WORK_CHANGED } },
     { route: "GET kuvo/work/background", answers: { 200: BACKGROUND_LIST } },
     { route: "GET kuvo/work/background/events", answers: { 200: BACKGROUND_LIST } },
+    { route: "GET kuvo/work/background/:session", answers: { 200: SESSION_BACKGROUND } },
     { route: "POST kuvo/bots/:id/stop-all", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
     { route: "GET kuvo/work/oversight", answers: { 200: OVERSIGHT } },
     { route: "GET kuvo/work/oversight/events", answers: { 200: OVERSIGHT } },
@@ -9419,6 +9424,7 @@ var FEATURES = [
   "work-queue.edit",
   "work-queue.elsewhere",
   "work-queue.forward",
+  "work.background.items",
   "work.elsewhere",
   "work.elsewhere.start",
   "work.goals",
@@ -18705,6 +18711,19 @@ function readBackground(file = WORK_BACKGROUND, now = Date.now()) {
     }
   }
   return sessions;
+}
+function readSessionBackground(session, file = WORK_BACKGROUND) {
+  const commands = [];
+  const subagents = [];
+  for (const [place, kept] of Object.entries(readKept5(file))) {
+    const work = kept.sessions?.[session];
+    if (!work)
+      continue;
+    for (const command of work.commands ?? [])
+      commands.push({ ...command, ...place === "bridge" ? { agents: true } : {} });
+    subagents.push(...work.subagents ?? []);
+  }
+  return { commands: commands.sort((a, b) => a.started - b.started), subagents: subagents.sort((a, b) => a.since - b.since) };
 }
 async function atWorkNow(targets, signal, file = WORK_BACKGROUND) {
   const working = await workingNow(targets, signal);
@@ -41746,7 +41765,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "334571f78fa0";
+var BRIDGE_VERSION = "0e477b646397";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62188,7 +62207,7 @@ init_home();
 // box/src/link/areas/work.ts
 import fs189 from "node:fs";
 init_home();
-var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events)?)?|bots\/([^/]+)\/stop-all)$/;
+var WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+))?)?|bots\/([^/]+)\/stop-all)$/;
 var WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
 var GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
 var APP_ICON_ROUTE = "kuvo/work/apps/icon";
@@ -62245,6 +62264,19 @@ async function* workRoute(context, match) {
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
     return yield* followed(() => ({ sessions: readBackground() }), backgroundFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
   }
+  if (match[1] !== undefined) {
+    if (method !== "GET")
+      return yield* json(405, {});
+    const { commands, subagents } = readSessionBackground(decodeURIComponent(match[1]));
+    const listed = keptList()?.sessions ?? {};
+    return yield* json(200, {
+      commands,
+      subagents: subagents.map((each) => {
+        const facts = listed[each.id]?.facts;
+        return { session: each.id, since: each.since, ...facts?.title ? { title: facts.title } : {}, ...facts?.asked !== undefined ? { asking: true } : {} };
+      })
+    });
+  }
   if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
     if (method !== "GET")
       return yield* json(405, {});
@@ -62270,7 +62302,7 @@ async function* workRoute(context, match) {
   }
   if (method !== "POST")
     return yield* json(405, {});
-  const bot = decodeURIComponent(match[1] ?? "");
+  const bot = decodeURIComponent(match[2] ?? "");
   if (!botHere(bot))
     return yield* json(404, { message: "There's no such bot here." });
   const targets = targetsOf({ readEngine, bridge });
