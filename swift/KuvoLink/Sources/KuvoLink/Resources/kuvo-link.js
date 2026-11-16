@@ -41746,7 +41746,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f6396377bfd2";
+var BRIDGE_VERSION = "6ba167d8d6f2";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63332,6 +63332,7 @@ import fs192 from "node:fs";
 import path199 from "node:path";
 var SIZES_FILE = path199.join(RUN, "storage-sizes.json");
 var STALE_AFTER = 60 * 60 * 1000;
+var TAKES_AT_MOST = 10 * 60 * 1000;
 var NAMED2 = {
   agents: "Coding agents",
   engine: "The engine",
@@ -63359,6 +63360,7 @@ var NAMED2 = {
 };
 var measuring = null;
 var lastError = null;
+var failedAt = 0;
 function readSizes(file = SIZES_FILE) {
   try {
     const kept = JSON.parse(fs192.readFileSync(file, "utf8"));
@@ -63369,16 +63371,19 @@ function readSizes(file = SIZES_FILE) {
 }
 var isMeasuring = () => measuring !== null;
 var measureProblem = () => lastError;
-function measureSizes(now = false, worktreeFolders = [], home = K) {
+function measureSizes(now = false, home = K, trees = () => readWorktrees().map((each) => each.root)) {
   if (measuring)
     return measuring;
   const last = readSizes();
-  if (!now && last && Date.now() - last.at < STALE_AFTER)
+  const fresh = (at) => Date.now() - at < STALE_AFTER;
+  if (!now && (last && fresh(last.at) || fresh(failedAt)))
     return Promise.resolve();
-  measuring = measured(home, worktreeFolders).then((sizes) => {
+  measuring = Promise.resolve().then(() => measured(home, trees())).then((sizes) => {
     lastError = null;
+    failedAt = 0;
     writePrivate(SIZES_FILE, JSON.stringify(sizes));
   }).catch((error) => {
+    failedAt = Date.now();
     lastError = error instanceof Error ? error.message : String(error);
   }).finally(() => {
     measuring = null;
@@ -63392,12 +63397,23 @@ function du(folders, depth) {
   return new Promise((resolve, reject) => {
     const child = spawn19("du", ["-k", "-d", String(depth), "--", ...there], { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
+    let late = false;
+    const limit = setTimeout(() => {
+      late = true;
+      child.kill("SIGKILL");
+    }, TAKES_AT_MOST);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       out += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(limit);
+      reject(error);
+    });
     child.on("close", () => {
+      clearTimeout(limit);
+      if (late)
+        return reject(new Error("measuring took too long (a folder on a slow or stalled disk?)."));
       const sizes = new Map;
       for (const line of out.split(`
 `)) {
@@ -63410,20 +63426,35 @@ function du(folders, depth) {
   });
 }
 var inside6 = (folder, root) => folder === root || folder.startsWith(root + path199.sep);
-async function measured(home = K, worktreeFolders = []) {
-  const root = path199.resolve(home);
+var real4 = (folder) => {
+  try {
+    return fs192.realpathSync(folder);
+  } catch {
+    return path199.resolve(folder);
+  }
+};
+async function measured(home = K, treeRoots = []) {
+  const root = real4(home);
   const sizes = await du([root], 3);
-  const of = (folder) => sizes.get(path199.resolve(folder)) ?? 0;
+  const of = (folder) => sizes.get(folder) ?? 0;
   const homeBytes = of(root);
-  const trees = [...new Set([path199.join(ENGINE_DATA, "worktree"), ...worktreeFolders].map((each) => path199.resolve(each)))];
-  const outsideTrees = trees.filter((each) => !inside6(each, root));
-  const outsideSizes = await du(outsideTrees, 0);
-  const treesOutside = outsideTrees.map((each) => ({ path: each, bytes: outsideSizes.get(each) ?? 0 })).filter((each) => fs192.existsSync(each.path));
-  const sum = (folders) => folders.reduce((total, each) => total + of(each), 0);
-  const sessionFolders = [path199.resolve(ENGINE_DATA), path199.resolve(CHATS), ...attachmentRoots().map((each) => path199.resolve(each))].filter((each) => inside6(each, root));
-  const treesInside = trees.filter((each) => inside6(each, root));
-  const treesInSessions = treesInside.filter((each) => sessionFolders.some((folder) => inside6(each, folder)));
-  const sessions = Math.max(0, sum(sessionFolders) - sum(treesInSessions));
+  const fallback = real4(path199.join(ENGINE_DATA, "worktree"));
+  const roots = [...new Set(treeRoots.filter((each) => path199.isAbsolute(each)).map(real4))].filter((each) => !inside6(each, fallback) && fs192.existsSync(each));
+  const rootSizes = await du(roots, 0);
+  const sized = (each) => inside6(each, root) && sizes.has(each) ? of(each) : rootSizes.get(each) ?? 0;
+  const treesInside = [...fs192.existsSync(fallback) && inside6(fallback, root) ? [fallback] : [], ...roots.filter((each) => inside6(each, root))];
+  const outsideRoots = roots.filter((each) => !inside6(each, root));
+  const byFolder = new Map;
+  for (const each of outsideRoots) {
+    const folder = path199.dirname(each);
+    const kept = byFolder.get(folder) ?? { bytes: 0, trees: 0 };
+    byFolder.set(folder, { bytes: kept.bytes + sized(each), trees: kept.trees + 1 });
+  }
+  const outside = [...byFolder].map(([folder, kept]) => ({ path: folder, ...kept }));
+  const sum = (folders) => folders.reduce((total, each) => total + sized(each), 0);
+  const outsideBytes = outside.reduce((total, each) => total + each.bytes, 0);
+  const sessionFolders = [real4(ENGINE_DATA), real4(CHATS), ...attachmentRoots().map(real4)].filter((each) => inside6(each, root));
+  const sessions = Math.max(0, sessionFolders.reduce((total, each) => total + of(each), 0) - sum(treesInside.filter((each) => sessionFolders.some((folder) => inside6(each, folder)))));
   const made = of(path199.join(root, "artifacts"));
   const browser = of(path199.join(root, "browser"));
   const other = Math.max(0, homeBytes - sessions - made - browser - sum(treesInside));
@@ -63438,14 +63469,17 @@ async function measured(home = K, worktreeFolders = []) {
       folders.push({ title: NAMED2[name] ?? name, bytes });
   }
   folders.sort((a, b) => b.bytes - a.bytes);
+  const rest = other - folders.reduce((total, each) => total + each.bytes, 0);
+  if (rest > 0)
+    folders.push({ title: "Other files", bytes: rest });
   const parts = [
     { id: "sessions", title: "Sessions", bytes: sessions },
-    { id: "worktrees", title: "Worktrees", bytes: sum(treesInside) + treesOutside.reduce((sum, each) => sum + each.bytes, 0) },
+    { id: "worktrees", title: "Worktrees", bytes: sum(treesInside) + outsideBytes },
     { id: "made", title: "What agents made", bytes: made },
     { id: "browser", title: "Browser", bytes: browser },
     { id: "other", title: "Other", bytes: other, folders }
   ];
-  return { at: Date.now(), total: homeBytes + treesOutside.reduce((sum, each) => sum + each.bytes, 0), home: homeBytes, parts, outside: treesOutside };
+  return { at: Date.now(), total: homeBytes + outsideBytes, home: homeBytes, parts, outside };
 }
 function safeList(folder) {
   try {
@@ -64031,9 +64065,7 @@ async function worktreesAct(context, at, action) {
 async function storagePage(context) {
   const here = context.request.fromApp === true && IS_MAC;
   const where = computerHere2(context);
-  const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
-  const chosen = config.status === 200 && typeof config.value.worktree?.directory === "string" ? [config.value.worktree.directory] : [];
-  measureSizes(false, chosen);
+  measureSizes();
   const sizes = readSizes();
   const measuring = isMeasuring();
   const problem = measureProblem();
@@ -64065,7 +64097,7 @@ async function storagePage(context) {
     })] },
     { id: "folders", title: "Storage by Folder", rows: [
       folderRow("home-folder", "Kuvo’s folder", K, sizes?.home),
-      ...(sizes?.outside ?? []).map((each, ix) => folderRow(`worktree-folder-${ix}`, "Worktree folder", each.path, each.bytes))
+      ...(sizes?.outside ?? []).map((each, ix) => folderRow(`worktree-folder-${ix}`, `${each.trees} ${each.trees === 1 ? "worktree" : "worktrees"} in`, each.path, each.bytes))
     ] }
   ];
   const notes = [];
@@ -64114,9 +64146,7 @@ async function storageChange(context, at, value, confirmed) {
 }
 async function storageAct(context, at, action) {
   if (at.id === "used" && action.id === "refresh") {
-    const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
-    const chosen = config.status === 200 && typeof config.value.worktree?.directory === "string" ? [config.value.worktree.directory] : [];
-    measureSizes(true, chosen);
+    measureSizes(true);
     return null;
   }
   if (at.id !== "older-copies" || action.id !== "clear")
