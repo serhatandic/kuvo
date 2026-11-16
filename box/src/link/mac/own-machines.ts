@@ -4,10 +4,8 @@
 // what a phone asks of `kuvo/machines…` and `kuvo/hosts…`, as it asked the Mac's app, is answered
 // here with no app: the same routes and shapes, said from this box's own facts. It holds no
 // connection to a machine (each runs by itself, and is met through the relay), so what stood for one
-// (Connect, Disconnect, Make This Mac Its Home, Same Computer As) is refused in words. The box
-// offers no button for them (`action`), but a phone's Machines page still shows the last two by
-// itself. All of this file is for that page as the old Mac app answered it: it goes once the phone
-// draws `kuvo/computers` and `kuvo/computers/add` instead.
+// (Connect, Disconnect) is refused in words. All of this file is for the phone’s old
+// Machines page; it goes once the phone draws `kuvo/computers` and `kuvo/computers/add`.
 
 import fs from "node:fs";
 import { parsed, type Body } from "../../shared/json";
@@ -176,8 +174,6 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
     if (action === "connect" || action === "disconnect" || action === "start") {
       return yield* json(409, { message: `Kuvo Code on ${name} runs by itself now, and your devices reach it directly: ${here} keeps no connection to it to ${action === "disconnect" ? "close" : "open"}.` });
     }
-    if (action === "home") return yield* json(409, { message: `Kuvo Code on ${name} runs by itself now, with its own accounts and settings, so no Mac is its home.` });
-    if (action === "same-as") return yield* json(409, { message: "Kuvo Code tells by itself when an address you add is a computer it already has. To make these two one, remove one of them, then add its address again." });
   }
   return yield* json(404, {});
 }

@@ -222,6 +222,26 @@ public struct HostKeychain: Sendable {
         }
     }
 
+    /// Remove only the earlier app's named sign-in, after its vault copy was verified.
+    public func deleteInternetPassword(server: String, account: String, creator: OSType, verified: Data) -> OSStatus {
+        if isLocked { return errSecInteractionNotAllowed }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword, kSecAttrCreator as String: creator,
+            kSecAttrServer as String: server, kSecAttrAccount as String: account,
+            kSecReturnData as String: true, kSecReturnPersistentRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        guard let query = scoped(query) else { return errSecNoSuchKeychain }
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return status }
+        guard let item = result as? [String: Any], let data = item[kSecValueData as String] as? Data,
+              data == verified, let reference = item[kSecValuePersistentRef as String] as? Data else { return errSecVerifyFailed }
+        // Delete exactly the item read, never other paths/protocols at the same site/account.
+        guard let deletion = scoped([kSecValuePersistentRef as String: reference]) else { return errSecNoSuchKeychain }
+        return SecItemDelete(deletion as CFDictionary)
+    }
+
     /// For a process with no one to answer macOS (the helper, a test): anything that would ask you
     /// fails at once instead.
     public static func neverAsk() {

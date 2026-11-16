@@ -210,9 +210,10 @@ async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">):
     const sites = Array.isArray(prefs["passwords.agentSignIn"]) ? prefs["passwords.agentSignIn"].filter((each): each is string => typeof each === "string") : [];
     const accounts = isObject(prefs["passwords.agentSignInAccounts"]) ? Object.fromEntries(Object.entries(prefs["passwords.agentSignInAccounts"]).filter((each): each is [string, string] => typeof each[1] === "string")) : {};
     // (Where nothing starts the box, a copy's home, its server never answers: not waited for.)
-    const handed = exists(keys) ? await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...(launchTools() ? {} : { wait: 0 }) }) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code", added: 0, short: 0 };
+    const handed = exists(keys) ? await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...(launchTools() ? {} : { wait: 0 }) }) : { done: false, why: "kuvo-keys isn't in this copy of Kuvo Code", added: 0, short: 0, kept: 0 };
     if (handed.done) {
       if (handed.short) noteRecord(home, { dropped: [...(readRecord(home).dropped ?? []), `${handed.short === 1 ? "A saved password" : `${handed.short} saved passwords`} shorter than four characters ${handed.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`] });
+      if (handed.kept) noteRecord(home, { dropped: [...(readRecord(home).dropped ?? []), `${handed.kept === 1 ? "A saved password stays" : `${handed.kept} saved passwords stay`} in your Keychain: Kuvo couldn't be sure the vault would keep ${handed.kept === 1 ? "it" : "them"} exactly. Add any you use to the vault yourself.`] });
       settled(home, "passwords");
     } else {
       // (Why goes to the move's own log, for support: it may name a site or an account.)

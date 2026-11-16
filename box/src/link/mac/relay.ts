@@ -26,7 +26,7 @@ import { openAppHost } from "../host-interface";
 import { macLink, readLink } from "../state";
 import { appAnswer, passedOn } from "./app-route";
 import { macKeys, macLinkCheck, macLinkWait, macNeeded, ownMacConfig, savedMacConfig, setLinkStatus, tellUntold } from "./link";
-import { isMachinesRoute, machinesRoute } from "./machines";
+import { isMachinesRoute, isRetiredMachineRoute, machinesRoute } from "./machines";
 import type { AppTiming } from "./machines";
 import type { EngineRecord } from "../../shared/records";
 import type { AnswerPiece, Asker, LinkHandler, LinkRequest } from "../server/context";
@@ -41,7 +41,7 @@ import type { LinkState } from "../state";
 // answers itself, as a machine's does, with the app open or closed; and with only Kuvo Code's
 // desktop app, these too (`answersAlone`).
 export const MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
-export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`));
+export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`)) && !isRetiredMachineRoute(route);
 
 export { boxAnswers, keeperRuns } from "./keeper-runs";
 

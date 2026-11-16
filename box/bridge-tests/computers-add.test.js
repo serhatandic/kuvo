@@ -619,6 +619,44 @@ const nothingOfOurs = folder => {
   }
 };
 
+test("a Mac with earlier Kuvo Code data must update before being added; nothing there is changed", async () => {
+  for (const [destination, file] of [["old07", "opencode/opencode.db"], ["oldkeeper", "box/run/keeper.json"]]) {
+    const folder = path.join(base, destination);
+    fs.mkdirSync(folder, { recursive: true });
+    write(path.join(fake, `home-${destination}`), folder);
+    const oldFile = path.join(folder, "Library", "Application Support", "run.kuvo.code", file);
+    write(oldFile, "kept exactly");
+    const before = fs.readdirSync(folder, { recursive: true }).sort();
+    const done = await added(destination);
+    assert.equal(done.state, "failed");
+    assert.equal(done.failure.message, `${destination} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`);
+    assert.deepEqual(fs.readdirSync(folder, { recursive: true }).sort(), before);
+    assert.equal(fs.readFileSync(oldFile, "utf8"), "kept exactly");
+    assert.equal(fs.existsSync(path.join(folder, ".kuvo-code")), false);
+  }
+});
+
+test("a Mac that's a machine's box already, with earlier Kuvo Code data beside it, is added and set up again as before; that data is left as it is", async () => {
+  // The installer there leaves both (`two`): only a Mac whose earlier data it would move must update first.
+  const folder = path.join(base, "machine07");
+  fs.mkdirSync(folder, { recursive: true });
+  write(path.join(fake, "home-machine07"), folder);
+  for (const tool of ["pkill", "caffeinate"]) write(path.join(folder, ".kuvo-code", "bin", tool), `#!/bin/sh\nexit 0\n`, 0o755);
+  write(path.join(folder, ".kuvo-code", "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n", 0o755);
+  write(path.join(folder, ".kuvo-code", "box", "kind"), "machine\n");
+  const oldFile = path.join(folder, "Library", "Application Support", "run.kuvo.code", "opencode", "opencode.db");
+  write(oldFile, "kept exactly");
+  const done = await added("machine07");
+  assert.equal(done.state, "done", JSON.stringify(done.failure));
+  const again = await over((await ask("POST", `kuvo/computers/${done.computer.key}/setup`)).body.try.id);
+  assert.equal(again.state, "done", JSON.stringify(again.failure));
+  assert.equal(fs.readFileSync(oldFile, "utf8"), "kept exactly");
+  // Taken off again, and forgotten, for the tests after.
+  const uninstall = await ask("POST", `kuvo/computers/${done.computer.key}/uninstall`);
+  assert.equal((await over(uninstall.body.try.id)).state, "done");
+  assert.equal((await ask("DELETE", "kuvo/hosts/machine07")).status, 200);
+});
+
 test("a Mac that has Kuvo Code's app is someone's already: it's added, and none of this box's keys or sign-ins are copied there", async () => {
   // Only the app's folder, no box of a machine's: judged free, and added with no question.
   fs.mkdirSync(path.join(homes.macbook, "Library", "Application Support", "run.kuvo.code"), { recursive: true });
