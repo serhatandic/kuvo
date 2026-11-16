@@ -1013,11 +1013,23 @@ fn signup(now: f64) -> Vec<Value> {
             { "type": "text", "text": "Found it. When the server answers **409** (the email is taken), the error path calls `reset()` before it shows the message, so every field is cleared:\n\n```tsx\n} catch (error) {\n  reset();\n  setError(error.message);\n}\n```\n\nMoving `reset()` into the success path keeps what was typed. Want me to do that, and put the error under the email field?" }
         ] }),
         json!({ "type": "idle", "id": "msg_s3", "time": { "created": t + 25_000.0 }, "outcome": "succeeded" }),
+        // Another agent's message, and the box's note of a session's news, as their box keeps them.
+        json!({ "type": "user", "id": "msg_s3a", "time": { "created": t + 60_000.0 }, "text": "[From &Check the other forms] The profile form has the same bug.", "metadata": { "kuvo": { "parts": {
+            "words": "The profile form has the same bug: `Profile.tsx` calls `reset(profile)` on any error, so a taken username clears it too.\n\nI left it alone; it's yours if you want it in the same fix.",
+            "mail": { "name": "Check the other forms", "session": "ses_sub" } } } } }),
+        json!({ "type": "user", "id": "msg_s3b", "time": { "created": t + 90_000.0 }, "text": "[Session finished] \"Write a test for a taken email\" in website (address ses_sub3), after 2 min:\nAdded signup.taken.test.ts; it fails on main and passes with the fix.", "metadata": { "kuvo": {
+            "note": { "from": "Its sessions", "line": "“Write a test for a taken email” finished" },
+            "news": [{ "session": "ses_sub3", "title": "Write a test for a taken email", "status": "finished", "said": "Added signup.taken.test.ts; it fails on main and passes with the fix." }] } } }),
         user("msg_s4", t + 120_000.0, "Keep what they typed, and say which field is wrong", Some("/plan")),
         json!({ "type": "assistant", "id": "msg_s5", "time": { "created": t + 121_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "content": [
+            // Kuvo Code's own tool, by the title its box gives it.
+            json!({ "type": "tool", "id": "call_k1", "name": "kuvo-browser_read_conversation", "title": "Read Check the other forms’s conversation", "doing": "Reading Check the other forms’s conversation", "state": { "status": "completed", "input": { "of": "Check the other forms" } } }),
+            tool("call_r2", "read", "completed", json!({ "filePath": "web/src/signup/Form.tsx" })),
             tool_with("call_3", "edit", "completed", json!({ "filePath": "web/src/signup/Form.tsx" }), json!({ "metadata": { "files": [{ "file": "web/src/signup/Form.tsx", "additions": 4, "deletions": 2, "status": "modified", "patch": SIGNUP_PATCH }] } })),
+            tool_with("call_t1", "shell", "failed", json!({ "command": "npx tsc --noEmit" }), json!({ "error": "error TS2304: Cannot find name 'setFieldError'.\nFound 1 error." })),
             tool_with("call_4", "shell", "completed", json!({ "command": "npm test -- signup" }), json!({ "content": [{ "type": "text", "text": test_output() }], "metadata": { "exit": 0 } })),
             { "type": "text", "text": "Moved the reset into the success path, and the 409 now sets the error on the email field. The sign-up tests pass; checking the lint" },
+            tool("call_r3", "read", "completed", json!({ "filePath": "web/.eslintrc.json" })),
             tool("call_5", "shell", "running", json!({ "command": "npm run lint" }))
         ] }),
     ]

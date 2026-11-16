@@ -2,15 +2,18 @@
 // and its input schema. The browser's own (`browser_…`), and Kuvo Code's own, which the box carries
 // out (`letters/own-tools.ts`: writing to other agents, sessions, wake-ups, goals…). The vault's,
 // the sandbox's and the Work Queue's come from the box itself as they're listed.
-// This Mac's panel still lists a copy of its own (BrowserTools.definitions, in the app's
-// BrowserToolServer.swift) until its agents browse in its box's browser (#693): change both, as
-// swift/KuvoCodeTests/BrowserToolsOnBoxTests.swift holds them to each other.
+// Each has its words (WORDS, below): its MCP `title`, sent with it, and what a step of it says
+// done and while it runs, which the box adds to the messages clients read (shared/message-words.ts).
+
+import type { ToolWords } from "../shared/message-words";
 
 /** A JSON value, as a tool's input schema holds them. */
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
 export interface Tool {
   name: string;
+  /** Its short name as people see it (MCP's `title`). */
+  title?: string;
   description: string;
   inputSchema: { type: "object"; properties: { [name: string]: Json }; required?: string[] };
 }
@@ -20,7 +23,7 @@ function tool(name: string, description: string, properties: { [name: string]: J
   return { name, description, inputSchema: { type: "object", properties, ...(required.length ? { required } : {}) } };
 }
 
-export const TOOLS: Tool[] = [
+const DEFINED: Tool[] = [
   tool("browser_navigate", "Open an address, or search for words, in the browser panel the user sees. Returns the page as numbered elements.",
     { url: { type: "string", description: "An address like example.com, or words to search for." } }, ["url"]),
   tool("browser_snapshot", "Read the current page: title, address, scroll position, and its interactive elements numbered like [3], with visible text."),
@@ -463,3 +466,61 @@ export const TOOLS: Tool[] = [
       },
     }, ["text"]),
 ];
+
+/** Each tool's words, by its name: its title, and what a step of it says done and while it runs. */
+export const WORDS: Record<string, ToolWords> = {
+  browser_navigate: { title: "Open a page", done: "Opened a page", doing: "Opening a page" },
+  browser_snapshot: { title: "Read the page", done: "Read the page", doing: "Reading the page" },
+  browser_click: { title: "Click", done: "Clicked on the page", doing: "Clicking on the page" },
+  browser_type: { title: "Type", done: "Typed on the page", doing: "Typing on the page" },
+  browser_select: { title: "Choose an option", done: "Chose an option", doing: "Choosing an option" },
+  browser_scroll: { title: "Scroll", done: "Scrolled the page", doing: "Scrolling the page" },
+  browser_press: { title: "Press a key", done: "Pressed a key", doing: "Pressing a key" },
+  browser_back: { title: "Go back", done: "Went back a page", doing: "Going back a page" },
+  browser_forward: { title: "Go forward", done: "Went forward a page", doing: "Going forward a page" },
+  browser_text: { title: "Read the page's text", done: "Read the page's text", doing: "Reading the page's text" },
+  browser_screenshot: { title: "Take a screenshot", done: "Took a screenshot", doing: "Taking a screenshot" },
+  browser_save_pdf: { title: "Save as PDF", done: "Saved the page as a PDF", doing: "Saving the page as a PDF" },
+  browser_wait: { title: "Wait for the page", done: "Waited for the page", doing: "Waiting for the page" },
+  browser_hover: { title: "Hover", done: "Hovered over the page", doing: "Hovering over the page" },
+  browser_new_tab: { title: "Open a tab", done: "Opened a tab", doing: "Opening a tab" },
+  browser_upload: { title: "Attach files", done: "Attached files", doing: "Attaching files" },
+  browser_tabs: { title: "Manage tabs", done: "Managed the tabs", doing: "Managing the tabs" },
+  browser_sign_in: { title: "Sign in", done: "Signed in", doing: "Signing in" },
+  browser_fill: { title: "Fill from the vault", done: "Filled a field from the vault", doing: "Filling a field from the vault" },
+  browser_ask_code: { title: "Ask for a code", done: "Asked for a code", doing: "Asking for a code" },
+  browser_ask_user: { title: "Ask for help on the page", done: "Asked for help on the page", doing: "Asking for help on the page" },
+  show_in_panel: { title: "Show in the panel", done: "Showed it in the panel", doing: "Showing it in the panel" },
+  show_file: { title: "Show a file", done: "Showed a file", doing: "Showing a file" },
+  mark_final: { title: "Mark as final", done: "Marked a file final", doing: "Marking a file final" },
+  show_widget: { title: "Show a widget", done: "Showed a widget", doing: "Showing a widget" },
+  list_agents: { title: "List agents", done: "Listed the agents", doing: "Listing the agents" },
+  read_conversation: { title: "Read a conversation", done: "Read a conversation", doing: "Reading a conversation",
+    target: { field: "of", done: "Read {}’s conversation", doing: "Reading {}’s conversation" } },
+  send_message: { title: "Send a message", done: "Sent a message", doing: "Sending a message",
+    target: { field: "to", done: "Sent a message to {}", doing: "Sending a message to {}" } },
+  schedule_wake_up: { title: "Schedule a wake-up", done: "Scheduled a wake-up", doing: "Scheduling a wake-up" },
+  watch_for_change: { title: "Watch for a change", done: "Set up a watch", doing: "Setting up a watch" },
+  list_wake_ups: { title: "List wake-ups", done: "Listed the wake-ups", doing: "Listing the wake-ups" },
+  cancel_wake_up: { title: "Cancel a wake-up", done: "Canceled a wake-up", doing: "Canceling a wake-up" },
+  set_job: { title: "Set the job", done: "Updated its job", doing: "Updating its job" },
+  start_session: { title: "Start a session", done: "Started a session", doing: "Starting a session" },
+  list_sessions: { title: "List sessions", done: "Listed its sessions", doing: "Listing its sessions" },
+  stop_session: { title: "Stop a session", done: "Stopped a session", doing: "Stopping a session" },
+  compact_session: { title: "Summarize a session", done: "Summarized a session", doing: "Summarizing a session" },
+  answer_ask: { title: "Answer a session", done: "Answered a session", doing: "Answering a session" },
+  list_models: { title: "List models", done: "Listed the models", doing: "Listing the models" },
+  make_project: { title: "Make a project", done: "Made a project", doing: "Making a project",
+    target: { field: "name", done: "Made the project {}", doing: "Making the project {}" } },
+  list_projects: { title: "List projects", done: "Listed the projects", doing: "Listing the projects" },
+  plan_limits: { title: "Check plan limits", done: "Checked the plan's limits", doing: "Checking the plan's limits" },
+  use_limit_reset: { title: "Use a limit reset", done: "Used a limit reset", doing: "Using a limit reset" },
+  propose_goal: { title: "Propose a goal", done: "Proposed a goal", doing: "Proposing a goal" },
+  goal_progress: { title: "Update the goal", done: "Updated the goal's progress", doing: "Updating the goal's progress" },
+  may_spend: { title: "Check a purchase", done: "Checked a purchase", doing: "Checking a purchase" },
+  finish_goal: { title: "Finish the goal", done: "Finished the goal", doing: "Finishing the goal" },
+  notify_user: { title: "Send a notification", done: "Sent you a notification", doing: "Sending you a notification" },
+};
+
+/** The tools, each with its title, as models and people see them. */
+export const TOOLS: Tool[] = DEFINED.map(({ name, ...rest }) => ({ name, ...(WORDS[name] ? { title: WORDS[name].title } : {}), ...rest }));

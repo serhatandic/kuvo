@@ -91,9 +91,15 @@ pub struct ConversationView {
     running: bool,
     /// Its pictures as read, by their ids (each read once).
     pictures: HashMap<String, Read>,
+    /// Where each picture was read from: one whose place changes (yours on its way, read from this
+    /// Mac, then its box's copy) is read again from there.
+    read_from: HashMap<String, kuvo_box::pictures::Source>,
     /// Each row's pictures, found as it changed (its revision, and which of its steps were open),
     /// not at each drawing: finding them copies what a message carries.
-    row_pictures: HashMap<String, (u64, Vec<usize>, Vec<Picture>)>,
+    row_pictures: HashMap<String, (u64, Vec<(String, usize)>, Vec<Picture>)>,
+    /// The pictures of yours sent from here whose copy came without them, by message: drawn from
+    /// here until it has them.
+    sent_pictures: HashMap<String, Vec<Picture>>,
     /// The picture opened over it, by its id, and the keyboard for it (← →, Escape).
     viewing: Option<String>,
     viewer_focus: FocusHandle,
@@ -149,7 +155,9 @@ impl ConversationView {
             _outgoing: outgoing,
             running: false,
             pictures: HashMap::new(),
+            read_from: HashMap::new(),
             row_pictures: HashMap::new(),
+            sent_pictures: HashMap::new(),
             viewing: None,
             viewer_focus: cx.focus_handle(),
         };
@@ -369,7 +377,16 @@ impl ConversationView {
         let (rows, revisions): (Vec<Entry>, Vec<u64>) = self.entries.iter().zip(&self.revisions).filter(|(entry, _)| !matches!(entry, Entry::Outgoing { .. })).map(|(entry, revision)| (entry.clone(), *revision)).unzip();
         let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
         self.show(rows, revisions);
+        // (Yours on their way show the pictures they carry.)
+        self.note_sent(cx);
+        self.find_pictures();
+        self.read_pictures(cx);
         cx.notify();
+    }
+
+    /// The pictures of yours sent from here whose copy came without them.
+    fn note_sent(&mut self, cx: &App) {
+        self.sent_pictures = self.composer.read(cx).outgoing().iter().filter(|outgoing| outgoing.arrived).map(|outgoing| (outgoing.id.clone(), kuvo_box::pictures::of_sending(&outgoing.id, &outgoing.files))).filter(|(_, pictures)| !pictures.is_empty()).collect();
     }
 
     pub fn queued(&self) -> &[Item] {
@@ -487,6 +504,10 @@ impl ConversationView {
         self.asks_failed = None;
         self.asks.update(cx, |card, cx| card.take(asks, cx));
         self.bars.update(cx, |bars, cx| bars.asks_changed(cx));
+        // The step it waits on shows outside its group while it does: the newest group drawn again.
+        if let Some(ix) = self.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) {
+            self.list.changed(ix);
+        }
         cx.notify();
     }
 
@@ -525,6 +546,7 @@ impl ConversationView {
                 let (rows, revisions) = entries::entries(conversation);
                 let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
                 self.show(rows, revisions);
+                self.note_sent(cx);
                 self.find_pictures();
                 self.read_pictures(cx);
                 self.composer.update(cx, |composer, cx| {
@@ -573,6 +595,15 @@ impl ConversationView {
             entries.iter().zip(revisions).filter(|(entry, _)| !matches!(entry, Entry::Earlier)).map(|(entry, revision)| (entry.key(), *revision)).collect()
         }
         let (old_messages, new_messages) = (messages(&old[..old.len() - old_tail], &old_revisions), messages(&new[..new.len() - new_tail], &self.revisions));
+        // The first rows shown may have gone into one an earlier page put ahead of them: what the
+        // agent did at the top of what was shown goes on a group the page started. They go, and
+        // that group comes with the page.
+        let gone = old_messages.iter().take_while(|(key, _)| !new_messages.iter().any(|(now, _)| now == key)).count();
+        if gone > 0 && gone == old_messages.len() {
+            self.list.reset(new.len());
+            return;
+        }
+        let old_messages = &old_messages[gone..];
         // Where what was shown sits among what's shown now.
         let ahead = match old_messages.first() {
             None => 0,
@@ -601,6 +632,11 @@ impl ConversationView {
             state.splice(0..1, 0);
             had_earlier = false;
             count -= 1;
+        }
+        if gone > 0 {
+            let offset = usize::from(had_earlier);
+            state.splice(offset..offset + gone, 0);
+            count -= gone;
         }
         if had_tail && (!same_tail || added > 0) {
             state.splice(count - old_tail..count, 0);
@@ -636,10 +672,16 @@ impl ConversationView {
 
     /// The pictures a row shows: a message of yours carried, a step brought to show you or wrote
     /// in its words, and those a step opened (`open`) brought back for itself.
-    fn pictures_of(entry: &Entry, open: &HashSet<Fold>) -> Vec<Picture> {
+    fn pictures_of(entry: &Entry, open: &HashSet<Fold>, kept: &HashMap<String, Vec<Picture>>) -> Vec<Picture> {
         match entry {
+            // Yours on its way: what you sent, from here.
+            Entry::Outgoing { pictures, .. } => pictures.clone(),
             Entry::Message(message) => match &**message {
-                Message::User(user) => kuvo_box::pictures::of_user(user),
+                // (Its copy came without its files: what you sent from here, meanwhile.)
+                Message::User(user) => {
+                    let carried = kuvo_box::pictures::of_user(user);
+                    if carried.is_empty() { kept.get(&user.id).cloned().unwrap_or_default() } else { carried }
+                }
                 Message::Assistant(step) => step
                     .content
                     .iter()
@@ -659,6 +701,27 @@ impl ConversationView {
                     .collect(),
                 _ => Vec::new(),
             },
+            Entry::Words { step, parts, .. } => parts
+                .iter()
+                .flat_map(|n| match &step.content[*n] {
+                    Content::Text(text) => pictures::in_words(&step.id, *n, text),
+                    _ => Vec::new(),
+                })
+                .collect(),
+            Entry::Steps { items, .. } => items
+                .iter()
+                .flat_map(|(step, n)| match &step.content[*n] {
+                    Content::Tool { name, state, .. } => {
+                        let at = format!("{}:{n}", step.id);
+                        let mut all = kuvo_box::pictures::of_step(&at, name, state);
+                        if open.contains(&Fold::Step(step.id.clone(), *n)) {
+                            all.extend(kuvo_box::pictures::of_step_own(&at, name, state));
+                        }
+                        all
+                    }
+                    _ => Vec::new(),
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -672,16 +735,17 @@ impl ConversationView {
     fn find_pictures(&mut self) {
         let mut found = HashMap::new();
         for (entry, revision) in self.entries.iter().zip(&self.revisions) {
-            if !matches!(entry, Entry::Message(_)) {
+            if !matches!(entry, Entry::Message(_) | Entry::Words { .. } | Entry::Steps { .. } | Entry::Outgoing { .. }) {
                 continue;
             }
             let key = entry.key().to_owned();
-            let opened: Vec<usize> = self.open.iter().filter_map(|fold| match fold {
-                Fold::Step(step, n) if *step == key => Some(*n),
+            // (Which of its steps are opened, as a step opened shows what it brought back.)
+            let opened: Vec<(String, usize)> = self.open.iter().filter_map(|fold| match fold {
+                Fold::Step(step, n) if entry.holds(fold) => Some((step.clone(), *n)),
                 _ => None,
             }).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
             let kept = self.row_pictures.remove(&key).filter(|(was, folds, _)| was == revision && *folds == opened);
-            let row = kept.unwrap_or_else(|| (*revision, opened, Self::pictures_of(entry, &self.open)));
+            let row = kept.unwrap_or_else(|| (*revision, opened, Self::pictures_of(entry, &self.open, &self.sent_pictures)));
             found.insert(key, row);
         }
         self.row_pictures = found;
@@ -701,19 +765,29 @@ impl ConversationView {
     fn read_pictures(&mut self, cx: &mut Context<Self>) {
         for picture in self.all_pictures() {
             let key = picture.id.clone();
-            if self.pictures.contains_key(&key) {
+            let moved = self.read_from.get(&key).is_some_and(|was| !pictures::same_place(was, &picture.source));
+            if self.pictures.contains_key(&key) && !moved {
                 continue;
             }
-            self.pictures.insert(key.clone(), Read::Reading);
+            // (One read from elsewhere before stays shown until it's read from where it is now.)
+            if !moved {
+                self.pictures.insert(key.clone(), Read::Reading);
+            }
+            self.read_from.insert(key.clone(), picture.source.clone());
             let (client, source) = (self.client.clone(), picture.source.clone());
-            let task = cx.background_executor().spawn(async move { pictures::read(&client, &source) });
+            let read_source = source.clone();
+            let task = cx.background_executor().spawn(async move { pictures::read(&client, &read_source) });
             self.tasks.retain(|task| !task.is_ready());
             self.tasks.push(cx.spawn(async move |this, cx| {
                 let read = task.await;
                 this.update(cx, |this, cx| {
-                    this.pictures.insert(key.clone(), read);
-                    this.picture_changed(&key);
-                    cx.notify();
+                    // (Unless it has moved again since; and one shown stays, if where it is now can't give it.)
+                    let keeps = matches!(read, Read::Failed { .. }) && matches!(this.pictures.get(&key), Some(Read::Shown { .. }));
+                    if !keeps && this.read_from.get(&key).is_some_and(|now| pictures::same_place(now, &source)) {
+                        this.pictures.insert(key.clone(), read);
+                        this.picture_changed(&key);
+                        cx.notify();
+                    }
                 })
                 .ok();
             }));
@@ -796,14 +870,28 @@ impl ConversationView {
 
     /// Opens or closes a thinking block or a tool step, or folds an output again.
     pub fn toggle(&mut self, fold: Fold, cx: &mut Context<Self>) {
-        let step = fold.step().to_owned();
         if !self.open.remove(&fold) {
-            self.open.insert(fold);
+            self.open.insert(fold.clone());
         }
-        if let Some(ix) = self.entries.iter().position(|entry| entry.key() == step) {
+        if let Some(ix) = self.entries.iter().position(|entry| entry.holds(&fold)) {
             self.list.changed(ix);
         }
         // (A step opened shows what it brought back for itself.)
+        self.find_pictures();
+        self.read_pictures(cx);
+        cx.notify();
+    }
+
+    /// Opens step `n` of `step` (a tool step, to what it printed or changed), and the group it's in.
+    pub fn open_step(&mut self, step: &str, n: usize, cx: &mut Context<Self>) {
+        let fold = Fold::Step(step.to_owned(), n);
+        if let Some(ix) = self.entries.iter().position(|entry| entry.holds(&fold)) {
+            if let Entry::Steps { key, .. } = &self.entries[ix] {
+                self.open.insert(Fold::Group(key.clone()));
+            }
+            self.list.changed(ix);
+        }
+        self.open.insert(fold);
         self.find_pictures();
         self.read_pictures(cx);
         cx.notify();
@@ -835,7 +923,8 @@ impl ConversationView {
             .flex_wrap()
             .justify_end()
             .gap(space::S1)
-            .children(kept.files.iter().map(|path| {
+            // (Its pictures show as pictures, from here.)
+            .children(kept.files.iter().filter(|path| !kuvo_box::pictures::is_picture_path(&path.to_string_lossy())).map(|path| {
                 let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 div().flex().items_center().gap(space::S1).px(space::S2).py(space::S0_5).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint)).child(name)
             }))
@@ -1119,9 +1208,11 @@ impl Render for ConversationView {
                 };
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
+                let bars = this.bars.clone();
+                let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix) };
                 let shown = this.row_pictures.get(entry.key()).map(|(_, _, pictures)| pictures.as_slice()).unwrap_or(&[]);
                 let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone() };
-                entries::render(ix, entry, &this.open, toggle, own, &this.selection, &looks, cx)
+                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.

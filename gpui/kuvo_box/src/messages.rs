@@ -104,6 +104,40 @@ impl UserMessage {
     pub fn is_box_note(&self) -> bool {
         self.metadata.as_ref().and_then(|metadata| metadata.get("kuvo")?.get("note")).is_some()
     }
+
+    /// What its sessions told a lead, for one of the box's notes that tells it (`kuvo.news`, as its
+    /// box reads the note): each a message from that session.
+    pub fn news(&self) -> Vec<News> {
+        let Some(news) = self.metadata.as_ref().and_then(|metadata| metadata.get("kuvo")?.get("news")?.as_array().cloned()) else { return Vec::new() };
+        news.into_iter().filter_map(|each| serde_json::from_value(each).ok()).collect()
+    }
+
+    /// The text of a note of its sessions' news its box couldn't read into `kuvo.news` (worded as a
+    /// newer box words it): shown whole, rather than lost.
+    pub fn unread_news(&self) -> Option<String> {
+        let kuvo = self.metadata.as_ref()?.get("kuvo")?;
+        let from = kuvo.get("note")?.get("from")?.as_str()?;
+        (from == "Its sessions" && kuvo.get("news").is_none() && !self.text.trim().is_empty()).then(|| self.text.trim().to_owned())
+    }
+
+    /// Whether it's drawn as a message from other agents: another agent wrote it, or it's the box's
+    /// note of a lead's sessions' news.
+    pub fn is_letter(&self) -> bool {
+        !self.news().is_empty() || self.unread_news().is_some() || self.parts().mail.is_some()
+    }
+}
+
+/// One of a lead's sessions telling it what it did: which session (its address, "" where it isn't
+/// known), what happened in a word or two ("finished", "asks"), and what it said.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct News {
+    #[serde(default)]
+    pub session: String,
+    pub title: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub said: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -162,8 +196,10 @@ pub enum Content {
     /// Thinking, with whether it's done.
     Reasoning { text: String, done: bool },
     /// A tool call: its name and state as the engine says (`state.status`: `streaming`, `running`,
-    /// `completed`, `failed`).
-    Tool { id: String, name: String, state: Value },
+    /// `completed`, `failed`). `title` and `doing`: what it did and does, in plain words, as its box
+    /// says them for a tool that isn't the engine's own (PROTOCOL.md, "Tool steps"); none from a box
+    /// before it did.
+    Tool { id: String, name: String, state: Value, title: Option<String>, doing: Option<String> },
     Other { kind: String, raw: Value },
 }
 
@@ -192,6 +228,8 @@ impl<'de> Deserialize<'de> for Content {
                     name => name.to_owned(),
                 },
                 state: raw.get("state").cloned().unwrap_or(Value::Null),
+                title: raw.get("title").and_then(Value::as_str).filter(|title| !title.trim().is_empty()).map(str::to_owned),
+                doing: raw.get("doing").and_then(Value::as_str).filter(|doing| !doing.trim().is_empty()).map(str::to_owned),
             },
             _ => Content::Other { kind, raw },
         })

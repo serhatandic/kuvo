@@ -77,6 +77,15 @@ const SCREENS: &[Screen] = &[
     // Replying to two parts of a conversation, each with its answer (0.7's `QuoteList`).
     Screen { slug: "quotes-answers", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Then run the sign-up tests again"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(quotes_answered) },
     Screen { slug: "send-while-working-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(send_menu_open) },
+    // What the agent did between its words, grouped: folded to a line (one that failed shows
+    // anyway; the one under way on its line), then opened; and messages from other agents as cards.
+    Screen { slug: "tool-groups", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "tool-groups-open", width: 1280., height: 1100., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(tool_groups_open) },
+    // Pictures in a conversation: yours as thumbnails on your messages (one, three, a tall one, a wide
+    // one), the agent's larger; and one opened in the viewer.
+    Screen { slug: "pictures-yours", width: 1280., height: 1500., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "pictures-viewer", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_a_picture) },
+    Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
     Screen { slug: "select-paragraph", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_paragraph) },
@@ -94,7 +103,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "question", width: 1280., height: 820., session: Some("ses_cms"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "slash", width: 1280., height: 820., session: Some("ses_recipes"), typed: Some("/"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "narrow", width: 860., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "steps", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[("msg_s2", 2), ("msg_s5", 0), ("msg_s5", 1)], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "steps", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[("msg_s2", 2), ("msg_s5", 2), ("msg_s5", 4)], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "search", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: Some("redis"), walks: 1, attach: &[], panel: None },
     Screen { slug: "walking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 3, attach: &[], panel: None },
     Screen { slug: "attached", width: 1280., height: 820., session: Some("ses_dark"), typed: Some("This is how the settings look in dark mode now: the cards blend into the page."), empty: false, opens: &[], search: None, walks: 0, attach: &["shots/theme-dark.png", "kuvo_ui/src/theme.rs"], panel: None },
@@ -994,6 +1003,70 @@ fn select(workspace: &mut Workspace, from: &str, to: &str, window: &mut Window, 
     assert!(found, "{from:?} … {to:?} isn't in the conversation");
 }
 
+/// A picture as a PNG: a soft wash from one colour to another, so its shape reads in a shot.
+fn wash(width: u32, height: u32, from: [u8; 3], to: [u8; 3]) -> Vec<u8> {
+    let picture = image::RgbImage::from_fn(width, height, |x, y| {
+        let t = (x as f32 / width as f32 + y as f32 / height as f32) / 2.;
+        image::Rgb(std::array::from_fn(|n| (from[n] as f32 + (to[n] as f32 - from[n] as f32) * t) as u8))
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    picture.write_to(&mut out, image::ImageFormat::Png).expect("a PNG");
+    out.into_inner()
+}
+
+/// Messages of yours with pictures (one, three, a tall one, a wide one), and the agent's reply
+/// showing one, at the end of the recipes chat; each a file on its computer.
+fn stage_pictures(stand_in: &StandIn) {
+    let file = |name: &str, bytes: Vec<u8>| {
+        let path = format!("/Users/sam/Pictures/{name}");
+        stand_in.put_file(&path, bytes);
+        serde_json::json!({ "mime": "image/png", "name": name, "url": format!("file://{path}") })
+    };
+    let yours = |id: &str, ago: f64, text: &str, files: Vec<serde_json::Value>| serde_json::json!({ "type": "user", "id": id, "time": { "created": NOW - ago }, "text": text, "files": files });
+    stand_in.add_message("ses_recipes", yours("msg_pic1", 400_000.0, "What's on this shelf?", vec![file("shelf.png", wash(1600, 1000, [214, 180, 140], [120, 84, 60]))]));
+    let three = vec![
+        file("fridge.png", wash(1200, 900, [180, 214, 230], [70, 110, 150])),
+        file("pantry.png", wash(900, 1200, [230, 200, 160], [150, 100, 60])),
+        file("spices.png", wash(1000, 1000, [200, 120, 90], [110, 50, 40])),
+    ];
+    stand_in.add_message("ses_recipes", yours("msg_pic2", 300_000.0, "And these three?", three));
+    stand_in.add_message("ses_recipes", yours("msg_pic3", 200_000.0, "The whole recipe card", vec![file("card.png", wash(600, 2400, [240, 236, 220], [190, 180, 150]))]));
+    stand_in.add_message("ses_recipes", yours("msg_pic4", 100_000.0, "And the counter, end to end", vec![file("counter.png", wash(3000, 600, [160, 170, 150], [80, 90, 70]))]));
+    stand_in.put_file("/Users/sam/Pictures/stew.png", wash(1400, 900, [250, 210, 150], [200, 120, 70]));
+    stand_in.add_message("ses_recipes", serde_json::json!({ "type": "assistant", "id": "msg_pic5", "time": { "created": NOW - 90_000.0, "completed": NOW - 80_000.0 }, "agent": "build", "finish": "stop", "content": [
+        { "type": "text", "text": "Here's what you could make tonight:" },
+        { "type": "tool", "id": "prt_pic", "name": "kuvo-browser_show_file", "title": "Showed a file", "doing": "Showing a file", "state": { "status": "completed", "input": { "path": "/Users/sam/Pictures/stew.png", "caption": "A lentil stew, with what's on the shelf" }, "content": [] } },
+    ] }));
+}
+
+/// The pictures staged, with one opened in the viewer.
+fn open_a_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| view.open_picture("msg_pic2#1", window, cx));
+    }
+}
+
+fn tool_groups_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| {
+            for group in ["msg_s5", "msg_s5#6"] {
+                view.toggle(kuvo::entries::Fold::Group(group.to_owned()), cx);
+            }
+        });
+    }
+}
+
+/// The messages from other agents in view, the longer one opened.
+fn agent_letters(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| {
+            view.toggle(kuvo::entries::Fold::Card("msg_s3a".to_owned(), 0), cx);
+            let at = view.entries().iter().position(|entry| entry.key() == "msg_s3a").unwrap_or(0);
+            view.list().list_state().scroll_to(gpui::ListOffset { item_ix: at.saturating_sub(2), offset_in_item: gpui::px(0.) });
+        });
+    }
+}
+
 fn select_paragraph(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     select(workspace, "into the success path", "under the email field?", window, cx);
 }
@@ -1359,6 +1432,9 @@ fn main() -> anyhow::Result<()> {
                 let subagents = if many { vec![subagent("ses_sub", "Check the other forms", false), subagent("ses_sub2", "Find where the email check runs", true), subagent("ses_sub3", "Write a test for a taken email", false)] } else { vec![subagent("ses_sub", "Check the other forms", false)] };
                 stand_in.set_background("ses_signup", serde_json::json!({ "commands": commands, "subagents": subagents }), &[("sh_dev", "> website@2.4.0 dev\n> vite\n\n  VITE v6.0.3  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose")]);
             }
+            if screen.slug.starts_with("pictures-") {
+                stage_pictures(&stand_in);
+            }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
             }
@@ -1375,7 +1451,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     if let Some(view) = workspace.conversation() {
                         for (step, n) in screen.opens {
-                            view.update(cx, |view, cx| view.toggle(kuvo::entries::Fold::Step((*step).to_owned(), *n), cx));
+                            view.update(cx, |view, cx| view.open_step(step, *n, cx));
                         }
                     }
                     let composer = match workspace.conversation() {

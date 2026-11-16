@@ -90,8 +90,8 @@ fn dragging_across_a_reply_and_pressing_cmd_c_copies_what_was_dragged_over(cx: &
     let (view, cx) = open(cx, "ses_signup");
     // From the reply's first word into its code block: the bold and inline code as plain text,
     // the code as it is.
-    let from = at(&view, "msg_s2", &[3, 0], "Found", false, cx);
-    let to = at(&view, "msg_s2", &[3, 1], "reset();", true, cx);
+    let from = at(&view, "msg_s2#3", &[3, 0], "Found", false, cx);
+    let to = at(&view, "msg_s2#3", &[3, 1], "reset();", true, cx);
     drag(from, to, cx);
     assert_eq!(
         copied(cx),
@@ -103,7 +103,7 @@ fn dragging_across_a_reply_and_pressing_cmd_c_copies_what_was_dragged_over(cx: &
 fn a_selection_runs_across_messages_and_copies_them_a_blank_line_apart(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");
     let from = at(&view, "msg_s1", &[0], "completely", false, cx);
-    let to = at(&view, "msg_s2", &[3, 0], "Found it", true, cx);
+    let to = at(&view, "msg_s2#3", &[3, 0], "Found it", true, cx);
     drag(from, to, cx);
     // The steps between (thinking, reading, searching) are rows without text: they're skipped.
     assert_eq!(copied(cx), "completely wiped if the email is already taken. Can you look?\n\nFound it");
@@ -112,17 +112,17 @@ fn a_selection_runs_across_messages_and_copies_them_a_blank_line_apart(cx: &mut 
 #[gpui::test]
 fn a_double_click_takes_a_word_a_triple_click_a_line_and_shift_click_extends(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");
-    let word = at(&view, "msg_s2", &[3, 2], "success", false, cx);
+    let word = at(&view, "msg_s2#3", &[3, 2], "success", false, cx);
     clicks(word, 2, cx);
     assert_eq!(copied(cx), "success");
     // In code, a triple click is the line of code.
-    let line = at(&view, "msg_s2", &[3, 1], "setError", false, cx);
+    let line = at(&view, "msg_s2#3", &[3, 1], "setError", false, cx);
     clicks(line, 3, cx);
     assert_eq!(copied(cx), "  setError(error.message);");
     // A shift-click keeps where it began and goes to where it's clicked.
-    let start = at(&view, "msg_s2", &[3, 2], "Moving", false, cx);
+    let start = at(&view, "msg_s2#3", &[3, 2], "Moving", false, cx);
     clicks(start, 1, cx);
-    let end = at(&view, "msg_s2", &[3, 2], "keeps", false, cx);
+    let end = at(&view, "msg_s2#3", &[3, 2], "keeps", false, cx);
     cx.simulate_event(MouseDownEvent { position: end, modifiers: Modifiers::shift(), button: MouseButton::Left, click_count: 1, first_mouse: false });
     cx.simulate_event(MouseUpEvent { position: end, modifiers: Modifiers::shift(), button: MouseButton::Left, click_count: 1 });
     assert_eq!(copied(cx), "Moving reset() into the success path ");
@@ -219,14 +219,14 @@ fn a_selection_stays_put_while_the_reply_streams_on(cx: &mut TestAppContext) {
 fn opened_tool_output_selects_and_copies_like_any_text(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");
     // The test run's output, opened.
-    view.update(cx, |view, cx| view.toggle(kuvo::entries::Fold::Step("msg_s5".to_owned(), 1), cx));
+    view.update(cx, |view, cx| view.open_step("msg_s5", 4, cx));
     cx.run_until_parked();
     let units = view.read_with(cx, |view, _| view.units());
     let (_, step) = units.iter().find(|(key, _)| key.as_ref() == "msg_s5").expect("the step");
-    let body = step.iter().find(|unit| unit.path.as_slice() == [1, 1]).expect("what it printed");
+    let body = step.iter().find(|unit| unit.path.as_slice() == [4, 1]).expect("what it printed");
     let first_line = body.text.lines().next().unwrap().to_owned();
-    let from = at(&view, "msg_s5", &[1, 0], "$ npm", false, cx);
-    let to = at(&view, "msg_s5", &[1, 1], &first_line, true, cx);
+    let from = at(&view, "msg_s5", &[4, 0], "$ npm", false, cx);
+    let to = at(&view, "msg_s5", &[4, 1], &first_line, true, cx);
     drag(from, to, cx);
     assert_eq!(copied(cx), format!("$ npm test -- signup\n{first_line}"));
 }
@@ -234,7 +234,7 @@ fn opened_tool_output_selects_and_copies_like_any_text(cx: &mut TestAppContext) 
 #[gpui::test]
 fn a_click_in_the_transcript_that_selects_nothing_leaves_nothing_to_copy(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");
-    let word = at(&view, "msg_s2", &[3, 2], "success", false, cx);
+    let word = at(&view, "msg_s2#3", &[3, 2], "success", false, cx);
     clicks(word, 2, cx);
     clicks(word, 1, cx);
     assert!(view.read_with(cx, |view, _| view.selection().is_empty()));
@@ -245,7 +245,7 @@ fn dragging_past_the_top_scrolls_back_and_keeps_selecting(cx: &mut TestAppContex
     let (view, cx) = open_at(cx, "ses_signup", 700.);
     let list = view.read_with(cx, |view, _| view.list().list_state().clone());
     let bounds = list.viewport_bounds();
-    let start = at(&view, "msg_s5", &[2, 0], "Moved", false, cx);
+    let start = at(&view, "msg_s5#5", &[5, 0], "Moved", false, cx);
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     let before = list.logical_scroll_top();
     // Held above the list: each frame scrolls back a little and the selection follows.
@@ -279,13 +279,13 @@ fn double_clicking_a_steps_row_leaves_the_selection_and_the_composers_keyboard_a
     let (view, cx) = open(cx, "ses_signup");
     let composer = view.read_with(cx, |view, cx| view.composer().read(cx).field().clone());
     cx.update(|window, cx| window.focus(&gpui::Focusable::focus_handle(composer.read(cx), cx), cx));
-    let row = cx.debug_bounds("tool-msg_s5:1").expect("the test run's row");
+    let row = cx.debug_bounds("tool-msg_s5:3").expect("the failed check's row");
     clicks(row.center(), 2, cx);
     assert!(view.read_with(cx, |view, _| view.selection().is_empty()), "nothing selected");
     let typing = cx.update(|window, cx| gpui::Focusable::focus_handle(composer.read(cx), cx).is_focused(window));
     assert!(typing, "the composer still has the keyboard");
     // A drag that starts there still selects.
-    let to = at(&view, "msg_s5", &[2, 0], "Moved the reset", true, cx);
+    let to = at(&view, "msg_s5#5", &[5, 0], "Moved the reset", true, cx);
     drag(row.center(), to, cx);
     assert_eq!(copied(cx), "Moved the reset");
 }
@@ -322,8 +322,8 @@ fn choose(item: &str, cx: &mut VisualTestContext) {
 fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_answer(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");
     // Part of the reply selected, then its menu’s Add to Chat: the composer has it, the keyboard there.
-    let from = at(&view, "msg_s2", &[3, 0], "When the server", false, cx);
-    let to = at(&view, "msg_s2", &[3, 0], "(the email is taken)", true, cx);
+    let from = at(&view, "msg_s2#3", &[3, 0], "When the server", false, cx);
+    let to = at(&view, "msg_s2#3", &[3, 0], "(the email is taken)", true, cx);
     drag(from, to, cx);
     right_click_at(to, cx);
     choose("Add to Chat", cx);

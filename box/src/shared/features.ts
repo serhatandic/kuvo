@@ -123,6 +123,8 @@ export const FEATURES = [
   "messages.commands",
   "messages.compaction-words",
   "messages.send",
+  "messages.session-news",
+  "messages.tool-titles",
   "models.offered",
   "models.offered.folder",
   "models.offered.free",

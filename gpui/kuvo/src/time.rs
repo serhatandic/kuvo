@@ -184,3 +184,27 @@ mod tests {
         assert_eq!((day_after("2026-12-30", 7), day_after("today", 1)), (Some("2027-01-06".into()), None));
     }
 }
+
+/// The time of day `ms` (since 1970) was on this computer's clock: "14:05".
+pub fn clock(ms: f64) -> String {
+    let seconds = (ms / 1000.) as i64;
+    let of_day = (seconds + crate::pasted::utc_offset(seconds)).rem_euclid(86_400);
+    format!("{:02}:{:02}", of_day / 3600, of_day % 3600 / 60)
+}
+
+/// When `ms` was, as a message's card says it at `now`: the time of day on the same day, with its
+/// day before ("14 Nov, 12:24"), and its year in another year.
+pub fn when(ms: f64, now: f64) -> String {
+    let local = |ms: f64| {
+        let seconds = (ms / 1000.) as i64;
+        seconds + crate::pasted::utc_offset(seconds)
+    };
+    let (then, today) = (local(ms).div_euclid(86_400), local(now).div_euclid(86_400));
+    if then == today {
+        return clock(ms);
+    }
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let ((year, month, day), (this_year, _, _)) = (civil(then), civil(today));
+    let month = MONTHS[(month as usize).clamp(1, 12) - 1];
+    if year == this_year { format!("{day} {month}, {}", clock(ms)) } else { format!("{day} {month} {year}, {}", clock(ms)) }
+}

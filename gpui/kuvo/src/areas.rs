@@ -620,7 +620,7 @@ impl AreaView {
             .pr(space::S1)
             .mb(space::S1)
             .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child("Bots"))
-            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).selected(self.is_selected("new")).tooltip("New Bot").disabled(self.client.gate().is_held()).on_click(self.row_click("new".into(), cx)))
+            .child(Button::icon_only("new-bot", kuvo_ui::IconName::Plus, "New Bot").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).selected(self.is_selected("new")).tooltip("New Bot").disabled(self.client.gate().is_held()).on_click(self.row_click("new".into(), cx)))
             .into_any_element();
         let bots = match &self.bots {
             Reading::NotYet => return vec![header, quiet("Loading bots…", true, cx)],
@@ -730,7 +730,7 @@ impl AreaView {
             }
         }
         // Group chats: those that live on this box, and New Group beside their header.
-        let new_group = Button::icon_only("new-group", kuvo_ui::IconName::Plus, "New Group").ghost().size(ButtonSize::Small).tooltip("New Group").selected(self.is_selected("new-group")).disabled(self.client.gate().is_held()).on_click(self.row_click("new-group".into(), cx));
+        let new_group = Button::icon_only("new-group", kuvo_ui::IconName::Plus, "New Group").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).tooltip("New Group").selected(self.is_selected("new-group")).disabled(self.client.gate().is_held()).on_click(self.row_click("new-group".into(), cx));
         rows.push(SectionHeader::new("groups", "Group Chats").action(div().debug_selector(|| "new-group".into()).child(new_group)).into_any_element());
         if let (true, Some(why)) = (bots.groups.is_empty(), &bots.groups_failed) {
             rows.push(div().debug_selector(|| "groups-failed".into()).child(quiet(&format!("Group chats couldn’t be read: {why}"), false, cx)).into_any_element());
@@ -791,7 +791,7 @@ impl AreaView {
         // Labels are the box's, and all yours: made from here, and each changed or removed from
         // its own menu (a right-click), through the box's route.
         let page = self.queue_page.clone();
-        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).tooltip("New Label").disabled(self.client.gate().is_held()).on_click(move |_, _, cx| {
+        let new_label = Button::icon_only("new-label", kuvo_ui::IconName::Plus, "New Label").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).tooltip("New Label").disabled(self.client.gate().is_held()).on_click(move |_, _, cx| {
             if let Some(page) = &page {
                 page.update(cx, |page, cx| page.act(QueueAct::NewLabel, cx));
             }

@@ -745,7 +745,8 @@ impl GroupChatView {
                 Activity::Tool(call) => {
                     let name = call.get("name").and_then(|name| name.as_str()).unwrap_or("");
                     let state = call.get("state").cloned().unwrap_or_default();
-                    let (_, label, target) = entries::tool_label(name, &state, true);
+                    let said = |field: &str| call.get(field).and_then(|said| said.as_str());
+                    let (_, label, target) = entries::call_label(name, said("title"), said("doing"), &state, true);
                     Some(match target {
                         Some(target) => format!("{label} {target}"),
                         None => label.to_string(),

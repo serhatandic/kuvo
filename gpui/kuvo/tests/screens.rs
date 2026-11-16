@@ -272,6 +272,40 @@ fn earlier_messages_go_above_without_moving_what_youre_reading(cx: &mut TestAppC
     assert!(matches!(entries[0], Entry::Earlier));
 }
 
+/// An earlier page that ends in the middle of what the agent did: the steps at the top of what was
+/// shown go into the group the page started, and the reader stays where they were reading.
+#[gpui::test]
+fn an_earlier_page_that_starts_a_group_keeps_the_readers_place(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    open_session(&workspace, "ses_signup", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let step = |id: &str, at: f64, content: serde_json::Value| json!({ "type": "assistant", "id": id, "time": { "created": at, "completed": at + 1.0 }, "content": content });
+    let read = |id: &str, file: &str| json!({ "type": "tool", "id": id, "name": "read", "state": { "status": "completed", "input": { "filePath": file } } });
+    let words: String = (0..40).map(|n| format!("Line {n} of what it found.\n\n")).collect();
+    let messages = |list: serde_json::Value| -> Vec<Message> {
+        let mut newest_first: Vec<Message> = serde_json::from_value(list).unwrap();
+        newest_first.reverse();
+        newest_first
+    };
+    let mut conversation = kuvo_box::Conversation::new("ses_signup", Where::Engine);
+    conversation.catch_up(messages(json!([step("b", 20.0, json!([read("c2", "/p/b.ts"), read("c3", "/p/c.ts")])), step("c", 30.0, json!([{ "type": "text", "text": words }]))])), Some("cursor".into()), &[], Some(false));
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation.clone()), cx));
+    cx.run_until_parked();
+    // Reading up, at the top.
+    view.read_with(cx, |view, _| view.list().list_state().scroll_to(gpui::ListOffset { item_ix: 1, offset_in_item: px(0.) }));
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |view, _| view.list().is_following()));
+    // The page before: its step's tool goes on with the ones shown, as one group.
+    conversation.take_earlier(messages(json!([step("a", 10.0, json!([{ "type": "text", "text": "Looking." }, read("c1", "/p/a.ts")]))])), None);
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation), cx));
+    cx.run_until_parked();
+    let (keys, items) = view.read_with(cx, |view, _| (view.entries().iter().map(|entry| entry.key().to_owned()).collect::<Vec<_>>(), view.list().item_count()));
+    assert_eq!(keys, ["a", "a#1", "c"]);
+    assert_eq!(items, 3);
+    assert!(!view.read_with(cx, |view, _| view.list().is_following()), "not thrown to the end");
+}
+
 #[gpui::test]
 fn a_run_streams_into_the_conversation_and_its_end_shows(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
@@ -287,19 +321,16 @@ fn a_run_streams_into_the_conversation_and_its_end_shows(cx: &mut TestAppContext
     cx.run_until_parked();
     let streamed = view.read_with(cx, |view, _| {
         view.entries().iter().find_map(|entry| match entry {
-            Entry::Message(message) => match message.as_ref() {
-                Message::Assistant(step) if step.id == "msg_s5" => step.content.iter().find_map(|content| match content {
-                    Content::Text(text) => Some(text.clone()),
-                    _ => None,
-                }),
+            Entry::Words { step, parts, .. } if step.id == "msg_s5" => parts.iter().find_map(|n| match &step.content[*n] {
+                Content::Text(text) => Some(text.clone()),
                 _ => None,
-            },
+            }),
             _ => None,
         })
     });
     assert!(streamed.unwrap().ends_with("checking the lint now. All 14 pass."));
     assert!(view.read_with(cx, |view, _| view.list().is_following()));
-    let step = bounds(cx, "entry-msg_s5").unwrap();
+    let step = bounds(cx, "entry-msg_s5#5").unwrap();
     let working = bounds(cx, "entry-working").unwrap();
     assert!(step.bottom() <= working.top());
 
@@ -1034,33 +1065,67 @@ fn a_tool_step_opens_to_what_it_printed_and_long_output_unfolds(cx: &mut TestApp
     let (workspace, cx) = open(cx, stand_in);
     open_session(&workspace, "ses_signup", cx);
 
+    // What it did between its words is one line until it's opened; a step that failed shows anyway.
+    assert!(bounds(cx, "tool-msg_s5:4").is_none(), "folded in its group");
+    assert!(bounds(cx, "tool-msg_s5:3").is_some(), "the failed check shows outside the fold");
+    let group = bounds(cx, "group-msg_s5").expect("the group's line");
+    cx.simulate_click(group.center(), Modifiers::default());
+    cx.run_until_parked();
+
     // Closed, a step is one line; a click opens it to the command and what it printed, folded.
-    assert!(bounds(cx, "output-msg_s5:1").is_none());
-    let row = bounds(cx, "tool-msg_s5:1").expect("the test run's row");
+    assert!(bounds(cx, "output-msg_s5:4").is_none());
+    let row = bounds(cx, "tool-msg_s5:4").expect("the test run's row");
     cx.simulate_click(row.center(), Modifiers::default());
     cx.run_until_parked();
-    let folded = bounds(cx, "output-msg_s5:1").expect("its output, under it");
+    let folded = bounds(cx, "output-msg_s5:4").expect("its output, under it");
 
     // Show all: the rest of it, then folded again.
-    let fold = bounds(cx, "output-msg_s5:1-fold").expect("the fold's button");
+    let fold = bounds(cx, "output-msg_s5:4-fold").expect("the fold's button");
     cx.simulate_click(fold.center(), Modifiers::default());
     cx.run_until_parked();
-    let whole = bounds(cx, "output-msg_s5:1").expect("its output, whole");
+    let whole = bounds(cx, "output-msg_s5:4").expect("its output, whole");
     assert!(whole.size.height > folded.size.height + px(100.), "{whole:?} vs {folded:?}");
-    let fold = bounds(cx, "output-msg_s5:1-fold").expect("Show less");
+    let fold = bounds(cx, "output-msg_s5:4-fold").expect("Show less");
     cx.simulate_click(fold.center(), Modifiers::default());
     cx.run_until_parked();
-    assert_eq!(bounds(cx, "output-msg_s5:1").map(|b| b.size.height), Some(folded.size.height));
+    assert_eq!(bounds(cx, "output-msg_s5:4").map(|b| b.size.height), Some(folded.size.height));
 
     // An edit opens to its changes; a step still running has nothing to open.
-    let edit = bounds(cx, "tool-msg_s5:0").expect("the edit's row");
+    let edit = bounds(cx, "tool-msg_s5:2").expect("the edit's row");
     cx.simulate_click(edit.center(), Modifiers::default());
     cx.run_until_parked();
-    assert!(bounds(cx, "diff-msg_s5:0-0").is_some());
-    let running = bounds(cx, "tool-msg_s5:3").expect("the lint running");
+    assert!(bounds(cx, "diff-msg_s5:2-0").is_some());
+    let lint = bounds(cx, "group-msg_s5#6").expect("the group under way");
+    cx.simulate_click(lint.center(), Modifiers::default());
+    cx.run_until_parked();
+    let running = bounds(cx, "tool-msg_s5:7").expect("the lint running");
     cx.simulate_click(running.center(), Modifiers::default());
     cx.run_until_parked();
-    assert!(bounds(cx, "output-msg_s5:3").is_none());
+    assert!(bounds(cx, "output-msg_s5:7").is_none());
+}
+
+#[gpui::test]
+fn another_agents_message_is_a_card_from_it_that_opens_whole_and_to_its_conversation(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    open_session(&workspace, "ses_signup", cx);
+    // (Brought into view: the conversation opens at its newest.)
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let at = view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == "msg_s3a").unwrap());
+    view.read_with(cx, |view, _| view.list().list_state().scroll_to(gpui::ListOffset { item_ix: at - 2, offset_in_item: px(0.) }));
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    // A card from it, not a bubble of yours, with its first line; and a session's news, short, whole.
+    let folded = bounds(cx, "letter-msg_s3a-0").expect("the card from “Check the other forms”");
+    assert!(bounds(cx, "letter-msg_s3b-0").is_some(), "the news of a session it started");
+    cx.simulate_click(folded.center(), Modifiers::default());
+    cx.run_until_parked();
+    let whole = bounds(cx, "letter-msg_s3a-0").unwrap();
+    assert!(whole.size.height > folded.size.height + px(20.), "{folded:?} → {whole:?}");
+    // Open: its conversation.
+    let open_it = bounds(cx, "open-msg_s3a-0").expect("Open");
+    cx.simulate_click(open_it.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_sub".to_owned()));
 }
 
 fn type_in(field: &Entity<kuvo_ui::TextField>, text: &str, cx: &mut VisualTestContext) {
@@ -1273,6 +1338,119 @@ fn files_sent_to_a_conversation_on_another_computer_go_with_their_bytes_and_pict
     assert!(bounds(cx, "not-sent").is_some());
 }
 
+/// A picture you send is a small thumbnail on your message in every state it's in (sending,
+/// waiting for the agent's next step, not sent, its copy come without it, its copy with it), never a
+/// file's name; a file that isn't a picture keeps its name. Each is among the conversation's pictures.
+#[gpui::test]
+fn a_picture_you_send_is_a_thumbnail_on_your_message_in_every_state(cx: &mut TestAppContext) {
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let (note, shot, tall) = (folder.path().join("list.txt"), folder.path().join("Pasted Image.png"), folder.path().join("tall.png"));
+    std::fs::write(&note, "rice").unwrap();
+    std::fs::write(&shot, png(2880, 1800)).unwrap();
+    std::fs::write(&tall, png(300, 1200)).unwrap();
+    let send = |files: Vec<std::path::PathBuf>, words: &str, cx: &mut VisualTestContext| {
+        composer.update(cx, |composer, cx| composer.attach_named(files, cx));
+        let field = composer.read_with(cx, |composer, _| composer.field().clone());
+        cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+        cx.simulate_input(words);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned()
+    };
+    let size_of = |id: &str, cx: &mut VisualTestContext| bounds(cx, &format!("picture-{id}")).map(|b| (f32::from(b.size.width).round(), f32::from(b.size.height).round()));
+
+    // (Its box's copies come without the files sent, as a box before files were kept.)
+    stand_in.drop_files();
+    // Sending: one picture, at most 240 on its longest side, its shape kept; the note by its name.
+    let id = send(vec![note.clone(), shot.clone()], "Which shelf?", cx);
+    assert!(bounds(cx, "sending").is_some());
+    assert_eq!(size_of(&format!("{id}#1"), cx), Some((240., 150.)));
+    let names = view.read_with(cx, |view, _| view.entries().iter().find_map(|entry| match entry {
+        Entry::Outgoing { files, .. } => Some(files.clone()),
+        _ => None,
+    }));
+    assert_eq!(names, Some(vec!["list.txt".to_owned()]), "only what isn't a picture is a name");
+    // Its copy came without them: still shown, from here.
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    assert_eq!(size_of(&format!("{id}#1"), cx), Some((240., 150.)), "its copy shows it as it went");
+
+    // Waiting for the agent's next step: several, smaller, a tall one as tall as it may be.
+    let mut working = read_now(&client, "ses_recipes").unwrap();
+    working.running = true;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+    let waiting = send(vec![shot.clone(), tall.clone()], "And these?", cx);
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "at-next-step").is_some());
+    assert_eq!(size_of(&format!("{waiting}#0"), cx), Some((160., 100.)));
+    assert_eq!(size_of(&format!("{waiting}#1"), cx), Some((40., 160.)));
+
+    // Not sent: still there, as it was.
+    stand_in.fail_sends();
+    let failed = send(vec![shot.clone()], "Once more", cx);
+    assert!(bounds(cx, "not-sent").is_some());
+    assert_eq!(size_of(&format!("{failed}#0"), cx), Some((240., 150.)));
+
+    // Every one of them is among the conversation's pictures, for the viewer to go through.
+    let all: Vec<String> = view.read_with(cx, |view, _| view.all_pictures().into_iter().map(|picture| picture.id).collect());
+    for id in [format!("{id}#1"), format!("{waiting}#0"), format!("{waiting}#1"), format!("{failed}#0")] {
+        assert!(all.contains(&id), "{id} in {all:?}");
+    }
+    let shown = bounds(cx, &format!("picture-{failed}#0")).unwrap();
+    cx.simulate_click(shown.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some(format!("{failed}#0")));
+}
+
+/// Its box's copy takes over from what was read here: this Mac's box names a picture sent from here
+/// by its path, and it's read from the box, as small as it went.
+#[gpui::test]
+fn a_picture_you_sent_shows_from_its_box_copy_once_it_comes(cx: &mut TestAppContext) {
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let (note, shot) = (folder.path().join("list.txt"), folder.path().join("shelf.png"));
+    std::fs::write(&note, "rice").unwrap();
+    std::fs::write(&shot, png(480, 300)).unwrap();
+    composer.update(cx, |composer, cx| composer.attach_named([note.clone(), shot.clone()], cx));
+    cx.simulate_input("Which shelf?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let body = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap();
+    let id = body["id"].as_str().unwrap().to_owned();
+    let size = |cx: &mut VisualTestContext| bounds(cx, &format!("picture-{id}#1")).map(|b| (f32::from(b.size.width).round(), f32::from(b.size.height).round()));
+    assert_eq!(size(cx), Some((240., 150.)), "read here while it goes");
+    // Its copy has it, by its path on the box's computer (this Mac): read from there.
+    stand_in.put_file(&shot.to_string_lossy(), png(480, 300));
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    let copy = bounds(cx, &format!("picture-{id}@{}", shot.to_string_lossy())).expect("its copy's picture");
+    assert_eq!((f32::from(copy.size.width).round(), f32::from(copy.size.height).round()), (240., 150.));
+    assert!(!stand_in.seen_at("GET", "kuvo/file").is_empty(), "asked of its box");
+}
+
 #[gpui::test]
 fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -1370,7 +1548,7 @@ fn pictures_in_a_conversation_show_in_it_and_open_larger(cx: &mut TestAppContext
 
     // The screenshot the agent took for itself: inside its step, once that's opened.
     assert!(bounds(cx, "picture-msg_p2:1-0").is_none());
-    view.update(cx, |view, cx| view.toggle(kuvo::entries::Fold::Step("msg_p2".into(), 1), cx));
+    view.update(cx, |view, cx| view.open_step("msg_p2", 1, cx));
     cx.run_until_parked();
     assert!(bounds(cx, "picture-msg_p2:1-0").is_some(), "shown once the step is opened");
 
