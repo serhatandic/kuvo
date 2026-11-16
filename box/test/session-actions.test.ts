@@ -441,7 +441,7 @@ test("Archived group titles retain Chats and removed project names", async () =>
   writeFileSync(PROJECTS_FILE, JSON.stringify({ projects: [{ directory: root, name: "Named Project", folders: [], removed: true }] }))
   try {
     const page = await archivedPage()
-    expect(page.groups.find((g: any) => g.id === `project-${chats}`).title).toBe("Chats")
-    expect(page.groups.find((g: any) => g.id === `project-${root}`).title).toBe("Named Project")
+    expect(page.groups.find((g: any) => g.id === `project-chat:${chats}`).title).toBe("Chats")
+    expect(page.groups.find((g: any) => g.id === `project-project:${root}`).title).toBe("Named Project")
   } finally { if (before) writeFileSync(PROJECTS_FILE, before); else rmSync(PROJECTS_FILE, { force: true }) }
 })

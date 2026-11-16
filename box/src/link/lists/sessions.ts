@@ -305,6 +305,22 @@ function takeIn(list: Kept, listed: Listed, now: number, owner?: number): { chan
 
 /** The list from `list`: what changed after `since` (in its epoch, not before the oldest change it
  * can still say), else all of it. */
+/** The archived list, whole in every answer; clients draw these groups in this order. */
+export function archivedGroups(sessions: Record<string, SessionFacts>, projects: Record<string, ListedProject>, savedProjects: readonly { directory: string; name?: string }[] = []): SessionList["archivedGroups"] {
+  const groups = new Map<string, Omit<SessionList["archivedGroups"][number], "sessions"> & { sessions: string[] }>();
+  const rows = Object.entries(sessions).filter(([, facts]) => facts.archived && !facts.away && ["project", "chat", "bot"].includes(facts.kind))
+    .sort((a, b) => b[1].updated - a[1].updated || a[0].localeCompare(b[0]));
+  for (const [id, facts] of rows) {
+    const directory = facts.project ?? facts.directory;
+    const key = `${facts.kind}:${directory}`;
+    const kind = facts.kind as "project" | "chat" | "bot";
+    const group = groups.get(key) ?? { directory, kind, title: kind === "chat" ? "Chats" : projects[directory]?.name ?? savedProjects.find(project => project.directory === directory)?.name ?? path.basename(directory), sessions: [] };
+    group.sessions.push(id);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 export function answerFrom(list: Kept, since: string | null): SessionList {
   const from = parseCursor(since);
   const whole = !from || from.epoch !== list.epoch || from.seq < list.floor || from.seq > list.seq;
@@ -315,9 +331,10 @@ export function answerFrom(list: Kept, since: string | null): SessionList {
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   // (And its projects' sums as none, where that file had none.)
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
-  if (whole) return { at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
+  const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
+  if (whole) return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from!.seq).map(([id]) => id).sort();
-  return { at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects, needsYou: needs, ...pending };
+  return { archivedGroups: archived, at: cursorOf(list), sessions, ...(gone.length ? { gone } : {}), projects, needsYou: needs, ...pending };
 }
 
 // MARK: The long-running process's list

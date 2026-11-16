@@ -632,7 +632,19 @@
       }
      }
     ],
-    "bots": {}
+    "bots": {},
+    "archivedGroups": [
+     {
+      "directory": "/home/me/api",
+      "title": "api",
+      "kind": "project",
+      "sessions": [
+       "ses_api1",
+       "ses_api2",
+       "ses_api3"
+      ]
+     }
+    ]
    }
   },
   {
@@ -680,7 +692,8 @@
      }
     },
     "needsYou": [],
-    "bots": {}
+    "bots": {},
+    "archivedGroups": []
    }
   },
   {
@@ -1064,7 +1077,17 @@
       "asking": 0,
       "finished": 450
      }
-    }
+    },
+    "archivedGroups": [
+     {
+      "directory": "/home/me/api",
+      "title": "api",
+      "kind": "project",
+      "sessions": [
+       "ses_archived"
+      ]
+     }
+    ]
    }
   }
  ]

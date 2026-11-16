@@ -9,7 +9,7 @@ import { dirname, join } from "node:path"
 // as the engine's events come, and resumed from where a client was after its stream dropped.
 
 const { botsNow, factsOf, listedProjects, needsYou } = await import("../src/link/lists/rule")
-const { commit, keepList, keptList, listFollowers, listPlaceHeard, listRoute, noteListEvent, readList, workOut, LIST_FILE } = await import("../src/link/lists/sessions")
+const { archivedGroups, commit, keepList, keptList, listFollowers, listPlaceHeard, listRoute, noteListEvent, readList, workOut, LIST_FILE } = await import("../src/link/lists/sessions")
 const { engineHandler } = await import("../src/link/server/router")
 
 const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/session-lists.json", import.meta.url), "utf8"))
@@ -30,6 +30,7 @@ const placeOf = (box: any) => ({
 test.each(vectors.cases.map((each: any) => [each.name, each]))("%s", (_, each: any) => {
   const place = placeOf(each.box)
   const sessions = Object.fromEntries(each.sessions.map((session: any) => [session.id, factsOf(session, place)]))
+  expect(archivedGroups(sessions, each.expect.projects)).toEqual(each.expect.archivedGroups)
   expect(sessions).toEqual(each.expect.sessions)
   expect(listedProjects(sessions, place)).toEqual(each.expect.projects)
   expect(needsYou(sessions, place.asks)).toEqual(each.expect.needsYou)
@@ -141,7 +142,7 @@ test("a route answered in a process of its own reads the engine itself, and resu
   expect(lines[0].needsYou).toEqual([])
   // Kept for the next read, whichever process makes it: nothing changed since.
   const again = (await ask(`kuvo/sessions/list?since=${lines[0].at}`)).lines[0]
-  expect(again).toEqual({ at: lines[0].at, sessions: {}, projects: lines[0].projects, needsYou: [] })
+  expect(again).toEqual({ at: lines[0].at, sessions: {}, projects: lines[0].projects, needsYou: [], archivedGroups: lines[0].archivedGroups })
   for (const n of [1, 2, 3]) sessions.delete(`ses_page${n}`)
 })
 
@@ -272,7 +273,7 @@ test("kept as events come: a client resumes from where it was, and one from befo
     expect(after.projects[work].updated).toBe(100)
     // Nothing changed since: nothing but where it's at.
     const same = (await ask(`kuvo/sessions/list?since=${after.at}`)).lines[0]
-    expect(same).toEqual({ at: after.at, sessions: {}, projects: after.projects, needsYou: [] })
+    expect(same).toEqual({ at: after.at, sessions: {}, projects: after.projects, needsYou: [], archivedGroups: after.archivedGroups })
 
     // A cursor of another list's (its file went), or from ahead of it: all of it, said so.
     for (const since of ["zz-1.3", `${after.at.split(".")[0]}.999`, "nonsense"]) {
@@ -864,3 +865,18 @@ test("what waits on you is read with GET only", async () => {
   for await (const piece of handler({ method: "POST", path: "kuvo/waiting", headers: {}, fromApp: true }, undefined)) pieces.push(piece)
   expect(pieces[0].head.status).toBe(405)
 })
+
+ test("archived groups include bots, omit away copies, and resolve ties by id", () => {
+  const facts = (kind: string, updated: number, more = {}) => ({ kind, directory: "/p", updated, archived: true, ...more }) as any;
+  expect(archivedGroups({ z: facts("project", 2), a: facts("project", 2), bot: facts("bot", 3), away: facts("chat", 4, { away: true }), hidden: facts("hidden", 5) }, { "/p": { name: "Project", asking: 0, working: 0 } })).toEqual([
+    { directory: "/p", title: "Project", kind: "bot", sessions: ["bot"] },
+    { directory: "/p", title: "Project", kind: "project", sessions: ["a", "z"] },
+  ]);
+});
+
+test("archived groups retain the saved name of a removed project with only archived sessions", () => {
+  const session = { kind: "project", directory: "/old", project: "/old", updated: 1, archived: true } as any;
+  expect(archivedGroups({ archived: session }, {}, [{ directory: "/old", name: "Saved Name" }])).toEqual([
+    { directory: "/old", title: "Saved Name", kind: "project", sessions: ["archived"] },
+  ]);
+});

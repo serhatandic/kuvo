@@ -1881,6 +1881,7 @@ var init_sessions = __esm(() => {
     sessions: map(SESSION_FACTS),
     "gone?": list(string),
     projects: map(LISTED_PROJECT),
+    archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
     needsYou: list(NEEDS_YOU),
     "pending?": list(string)
   });
@@ -9374,6 +9375,7 @@ var FEATURES = [
   "search",
   "sessions.actions",
   "sessions.agents",
+  "sessions.archived-groups",
   "sessions.asks",
   "sessions.asks.box",
   "sessions.chat",
@@ -41289,6 +41291,19 @@ function takeIn(list, listed, now, owner) {
   }
   return { changed, noted, telling };
 }
+function archivedGroups(sessions, projects, savedProjects = []) {
+  const groups = new Map;
+  const rows = Object.entries(sessions).filter(([, facts]) => facts.archived && !facts.away && ["project", "chat", "bot"].includes(facts.kind)).sort((a, b) => b[1].updated - a[1].updated || a[0].localeCompare(b[0]));
+  for (const [id, facts] of rows) {
+    const directory = facts.project ?? facts.directory;
+    const key = `${facts.kind}:${directory}`;
+    const kind = facts.kind;
+    const group = groups.get(key) ?? { directory, kind, title: kind === "chat" ? "Chats" : projects[directory]?.name ?? savedProjects.find((project) => project.directory === directory)?.name ?? path130.basename(directory), sessions: [] };
+    group.sessions.push(id);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
 function answerFrom(list, since) {
   const from = parseCursor(since);
   const whole = !from || from.epoch !== list.epoch || from.seq < list.floor || from.seq > list.seq;
@@ -41299,10 +41314,11 @@ function answerFrom(list, since) {
   const pending = list.pending?.length ? { pending: list.pending } : {};
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
+  const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
   if (whole)
-    return { at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
+    return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, projects, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from.seq).map(([id]) => id).sort();
-  return { at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, projects, needsYou: needs, ...pending };
+  return { archivedGroups: archived, at: cursorOf(list), sessions, ...gone.length ? { gone } : {}, projects, needsYou: needs, ...pending };
 }
 var LIST_FILES = new Set(["projects.json", "worktrees.json"]);
 var BOT_FILES = new Set(["bot.json", "session"]);
@@ -51755,7 +51771,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "153dc40d8a22";
+var BRIDGE_VERSION = "f3635e8051c6";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63022,37 +63038,34 @@ async function archivedPage(context) {
     return unreadPage("archived", "Archived Sessions", read);
   if (read.value.pending?.length)
     return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
-  const archived = Object.entries(read.value.sessions).filter(([, facts]) => facts.archived && ["project", "chat", "bot"].includes(facts.kind) && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
   const groups = new Map;
-  const chats = new Set;
   let held;
   const states = [];
-  for (const [id, facts] of archived) {
-    const menu = await asked8(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
-    if (menu.status !== 200)
-      return unreadPage("archived", "Archived Sessions", menu);
-    held ??= menu.value.held;
-    const was = { updated: facts.updated, archived: true, confirm: menu.value.actions.find((each) => each.id === "delete")?.confirm };
-    states.push({ id, was });
-    const actions = menu.value.actions.map((each) => ({
-      id: each.id,
-      title: each.label,
-      ...each.destructive ? { style: "destructive" } : {},
-      ...each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {},
-      ...menu.value.held ? { can: { why: menu.value.held } } : {}
-    }));
-    const project = facts.project ?? facts.directory;
-    if (facts.kind === "chat")
-      chats.add(project);
-    const rows = groups.get(project) ?? [];
-    rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
-    groups.set(project, rows);
-  }
+  for (const group of read.value.archivedGroups)
+    for (const id of group.sessions) {
+      const facts = read.value.sessions[id];
+      const menu = await asked8(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
+      if (menu.status !== 200)
+        return unreadPage("archived", "Archived Sessions", menu);
+      held ??= menu.value.held;
+      const was = { updated: facts.updated, archived: true, confirm: menu.value.actions.find((each) => each.id === "delete")?.confirm };
+      states.push({ id, was });
+      const actions = menu.value.actions.map((each) => ({
+        id: each.id,
+        title: each.label,
+        ...each.destructive ? { style: "destructive" } : {},
+        ...each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {},
+        ...menu.value.held ? { can: { why: menu.value.held } } : {}
+      }));
+      const project = `${group.kind}:${group.directory}`;
+      const rows = groups.get(project) ?? [];
+      rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
+      groups.set(project, rows);
+    }
   const all = states.length ? await asked8(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map((each) => each.id) }) : null;
   if (all && all.status !== 200)
     return unreadPage("archived", "Archived Sessions", all);
-  const projects = readProjects();
-  const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path199.basename(project);
+  const projectTitle = (project) => read.value.archivedGroups.find((group) => `${group.kind}:${group.directory}` === project).title;
   return { id: "archived", title: "Archived Sessions", groups: [
     { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Archive a session from its menu to put it away." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))

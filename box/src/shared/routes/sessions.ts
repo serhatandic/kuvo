@@ -294,6 +294,7 @@ export const SESSION_LIST = object({
   sessions: map(SESSION_FACTS),
   "gone?": list(string),
   projects: map(LISTED_PROJECT),
+  archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
   needsYou: list(NEEDS_YOU),
   "pending?": list(string),
 });

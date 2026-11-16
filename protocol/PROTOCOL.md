@@ -1504,12 +1504,18 @@ sessions").
 
 - `GET kuvo/sessions/list[?since=<at>]` → `{at, full?, sessions: {<id>: facts}, gone?: [<id>],
   projects: {<folder>: {name?, updated?, asking, working}}, needsYou: [{session, asks}],
-  pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
+  archivedGroups: [{directory, title, kind, sessions: [id]}], pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
   `503 {"message"}` while the engine can't be read; `405` for anything but `GET`. `pending`: the
   coding agents' bridge runs but couldn't be read yet, so its sessions are as last read (none are
   said gone for it).
+- `archivedGroups` (`sessions.archived-groups`) is whole on every line, including deltas.
+  Both Settings › Archived Sessions and the desktop archived sidebar draw these groups and
+  session ids in the supplied order. The box includes archived project, chat and bot sessions,
+  excluding away copies; sessions are newest first (ties by id), grouped by kind and filed project
+  or directory, groups in first occurrence order. `title` is Chats for chat groups, otherwise the
+  project's name or directory basename. Clients never reconstruct this list from facts.
 - The box keeps the list in `run/lists/sessions.json`: its long-running process works it out as its
   engine's and bridge's events come, from each read whole as it's heard (and every five minutes),
   and only once the engine's has been, and again a moment after the box's projects, worktrees,
@@ -7004,6 +7010,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.asks.box` | The box's own asks in `sessions.asks`, `sandbox` and `vault`, answered there (also through `box route`), and each choice's `help` and `spoken` ("A conversation's asks") |
 | `sessions.chat` | A chat made, moved or with its metadata written since carries `kuvo.chat` in its metadata, naming the chats folder it's in; older ones go by their folder ("Chats") |
 | `sessions.glance` | `kuvo/sessions/glance`, `…/events`, and `session` in `POST kuvo/git/pull-request` ("A session at a glance") |
+| `sessions.archived-groups` | Required `archivedGroups` in every session-list answer, the archived list shared by Settings and the desktop sidebar |
 | `sessions.list` | `kuvo/sessions/list` and `…/events`: what each session is, the project it's filed under, and the projects the lists show ("Session lists") |
 | `sessions.mentions` | `GET kuvo/sessions/<id>/mentions` ("Mentions") |
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |

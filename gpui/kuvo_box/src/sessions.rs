@@ -128,10 +128,21 @@ pub struct NeedsYou {
     pub asks: Asks,
 }
 
+/// Archived rows in the box's grouping and order.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ArchivedGroup {
+    pub directory: String,
+    pub title: String,
+    pub kind: String,
+    pub sessions: Vec<String>,
+}
+
 /// A line from the box: whole (`full`), or what changed since the line before.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Line {
     pub at: String,
+    #[serde(rename = "archivedGroups")]
+    pub archived_groups: Vec<ArchivedGroup>,
     #[serde(default)]
     pub full: Option<bool>,
     #[serde(default)]
@@ -156,6 +167,7 @@ pub struct Listing {
     sessions: HashMap<String, Facts>,
     projects: HashMap<String, Project>,
     needs_you: Vec<NeedsYou>,
+    archived_groups: Vec<ArchivedGroup>,
     /// What it said of sessions it has let go since (deleted there, or moved away), for a row a
     /// client still holds as it goes.
     former: HashMap<String, Facts>,
@@ -186,6 +198,10 @@ impl Listing {
     }
 
     /// "Needs you": the sessions waiting on you, in the box's order, each with what it asks.
+    pub fn archived_groups(&self) -> &[ArchivedGroup] {
+        &self.archived_groups
+    }
+
     pub fn needs_you(&self) -> &[NeedsYou] {
         &self.needs_you
     }
@@ -204,6 +220,8 @@ impl Listing {
     pub fn take(&mut self, line: Line) -> bool {
         let was_read = self.at.is_some();
         let before = (self.sessions.clone(), self.projects.clone(), std::mem::take(&mut self.pending), std::mem::take(&mut self.needs_you));
+        let archived_changed = self.archived_groups != line.archived_groups;
+        self.archived_groups = line.archived_groups;
         self.at = Some(line.at);
         if line.full == Some(true) {
             for (id, facts) in self.sessions.drain() {
@@ -231,7 +249,7 @@ impl Listing {
         self.projects = line.projects;
         self.needs_you = line.needs_you;
         self.pending = line.pending.unwrap_or_default();
-        !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
+        archived_changed || !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
     }
 
     /// The sidebar a client draws from it ([`sidebar`]).

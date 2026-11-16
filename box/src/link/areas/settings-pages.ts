@@ -550,12 +550,11 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
   const read = await asked(context, sessionsAnswer, "GET", "kuvo/sessions/list");
   if (read.status !== 200) return unreadPage("archived", "Archived Sessions", read);
   if (read.value.pending?.length) return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
-  const archived = Object.entries(read.value.sessions as Record<string, any>).filter(([, facts]) => facts.archived && ["project", "chat", "bot"].includes(facts.kind) && !facts.away).sort((a, b) => b[1].updated - a[1].updated);
   const groups = new Map<string, SettingItem[]>();
-  const chats = new Set<string>();
   let held: string | undefined;
   const states: { id: string; was: { updated: number; archived: boolean; confirm: unknown } }[] = [];
-  for (const [id, facts] of archived) {
+  for (const group of read.value.archivedGroups) for (const id of group.sessions) {
+    const facts = read.value.sessions[id]!;
     const menu = await asked(context, sessionAnswer, "GET", `kuvo/sessions/${encodeURIComponent(id)}/actions`);
     if (menu.status !== 200) return unreadPage("archived", "Archived Sessions", menu);
     held ??= menu.value.held;
@@ -566,16 +565,14 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
       ...(each.confirm ? { confirm: { title: each.confirm.title, body: each.confirm.message, button: each.confirm.label } } : {}),
       ...(menu.value.held ? { can: { why: menu.value.held } } : {}),
     }));
-    const project = facts.project ?? facts.directory;
-    if (facts.kind === "chat") chats.add(project);
+    const project = `${group.kind}:${group.directory}`;
     const rows = groups.get(project) ?? [];
     rows.push(item({ id: `session-${id}`, title: facts.title || "New Session", line: new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zoneHere(readZoneSetting()).zone }).format(new Date(facts.updated)), kind: "actions", value: was, actions }));
     groups.set(project, rows);
   }
   const all = states.length ? await asked(context, deletesRoute, "POST", "kuvo/sessions/deletes", { sessions: states.map(each => each.id) }) : null;
   if (all && all.status !== 200) return unreadPage("archived", "Archived Sessions", all);
-  const projects = readProjects();
-  const projectTitle = (project: string) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find(each => each.directory === project)?.name ?? path.basename(project);
+  const projectTitle = (project: string) => read.value.archivedGroups.find((group: { kind: string; directory: string; title: string }) => `${group.kind}:${group.directory}` === project)!.title;
   return { id: "archived", title: "Archived Sessions", groups: [
     { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Archive a session from its menu to put it away." }, ...(all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {}) }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] })),
