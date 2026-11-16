@@ -613,7 +613,7 @@ impl GroupChatView {
                     .items_center()
                     .gap(space::S1)
                     .px(space::S1_5)
-                    .h(px(18.))
+                    .h(kuvo_ui::theme::scaled(px(18.)))
                     .rounded(radius::PILL)
                     .bg(c.sunken)
                     .text_ui(TypeSize::Caption)

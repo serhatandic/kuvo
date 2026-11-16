@@ -256,7 +256,8 @@ impl BotsView {
             _subscriptions: subscriptions,
         };
         view.rebuild(cx);
-        kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
+        let sized = kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
+        view._subscriptions.push(sized);
         view
     }
 

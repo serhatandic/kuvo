@@ -73,7 +73,7 @@ pub struct Appearance {
 }
 
 /// A field read on its own: one this app can't read (a newer app's choice) is its default, and
-/// the page's other fields stay.
+/// the page's other fields are still read. (A change on the page then writes that default.)
 fn or_default<'de, D: serde::Deserializer<'de>, T: DeserializeOwned + Default>(deserializer: D) -> Result<T, D::Error> {
     Ok(serde_json::from_value(Value::deserialize(deserializer)?).unwrap_or_default())
 }

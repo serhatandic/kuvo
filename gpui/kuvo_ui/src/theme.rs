@@ -13,8 +13,8 @@
 use std::cell::Cell;
 
 use gpui::{
-    App, BoxShadow, Context, FontWeight, Global, Hsla, ListState, Pixels, Styled, Window,
-    WindowAppearance, hsla, point, px, rgb, rgba,
+    App, BoxShadow, Context, FontWeight, Global, Hsla, ListState, Pixels, Styled, Subscription,
+    Window, WindowAppearance, hsla, point, px, rgb, rgba,
 };
 
 /// Light or dark.
@@ -96,13 +96,17 @@ pub enum TextSize {
     /// The brief's sizes: body 14, captions 12.
     #[default]
     Default,
-    /// Body 16, captions 14.
+    /// Body 15, captions 13.
     Large,
-    /// Body 18, captions 16.
+    /// Body 17, captions 14.
     Larger,
 }
 
-impl Global for TextSize {}
+/// The text size as a global, set only by [`TextSize::set`], which keeps it and the scale
+/// ([`SCALE`]) together.
+struct TextSizeNow(TextSize);
+
+impl Global for TextSizeNow {}
 
 thread_local! {
     /// The scale of the text size now. Text is laid out on the UI's thread only, so each app
@@ -117,8 +121,9 @@ impl TextSize {
         match self {
             Self::Small => 0.92,
             Self::Default => 1.,
-            Self::Large => 1.15,
-            Self::Larger => 1.3,
+            // (0.7's conversation text was 13, 14, 15.5 and 17.)
+            Self::Large => 1.08,
+            Self::Larger => 1.2,
         }
     }
 
@@ -133,14 +138,14 @@ impl TextSize {
 
     /// The text size now.
     pub fn of(cx: &App) -> TextSize {
-        cx.try_global::<TextSize>().copied().unwrap_or_default()
+        cx.try_global::<TextSizeNow>().map(|now| now.0).unwrap_or_default()
     }
 
     /// Sets the text size for every window, redrawn at once (lists that keep their items'
     /// heights measure them again: [`remeasure_on_text_size`]).
     pub fn set(size: TextSize, cx: &mut App) {
         SCALE.with(|scale| scale.set(size.scale()));
-        cx.set_global(size);
+        cx.set_global(TextSizeNow(size));
         cx.refresh_windows();
     }
 }
@@ -151,10 +156,11 @@ pub fn scaled(size: Pixels) -> Pixels {
     if scale == 1. { size } else { px((f32::from(size) * scale).round()) }
 }
 
-/// Measures `list`'s items again whenever the text size changes, while `cx`'s view lives.
-pub fn remeasure_on_text_size<V: 'static>(list: &ListState, cx: &mut Context<V>) {
+/// Measures `list`'s items again whenever the text size changes, while the subscription is kept
+/// (keep it with the view, so a closed view's list goes with it).
+pub fn remeasure_on_text_size<V: 'static>(list: &ListState, cx: &mut Context<V>) -> Subscription {
     let list = list.clone();
-    cx.observe_global::<TextSize>(move |_, _| list.remeasure()).detach();
+    cx.observe_global::<TextSizeNow>(move |_, _| list.remeasure())
 }
 
 /// The two weights type comes in.

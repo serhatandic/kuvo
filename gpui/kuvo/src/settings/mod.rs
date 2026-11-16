@@ -322,7 +322,8 @@ impl SettingsView {
             _subscriptions: vec![subscription, cx.observe_global::<crate::yours::Store>(|this: &mut SettingsView, cx| this.rebuild(cx))],
         };
         view.rebuild(cx);
-        kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
+        let sized = kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
+        view._subscriptions.push(sized);
         view
     }
 

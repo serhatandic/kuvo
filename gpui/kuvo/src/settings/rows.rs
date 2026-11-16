@@ -447,7 +447,7 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
             let size = Row::new(
                 "row-text-size",
                 "Text size",
-                "Conversations, the sidebar and the rest of Kuvo.",
+                "",
                 Control::Menu {
                     shown: Some(now.text_size.ui().label().to_owned()),
                     choices: TextSize::ALL.iter().map(|size| (size.ui().label().to_owned(), None, Some(Act::Yours(Change::TextSize(*size))), *size == now.text_size)).collect(),

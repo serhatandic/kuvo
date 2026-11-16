@@ -214,6 +214,8 @@ fn dark(cx: &mut VisualTestContext) -> bool {
 fn system_follows_the_macs_light_and_dark_as_it_changes_and_a_pick_stops_it(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
     let (workspace, cx) = open(cx, &path);
+    // (GPUI's test windows can't be told the Mac changed from outside GPUI, so this goes from
+    // what `follow_system`, called as each window opens in `main.rs`, calls: `system_changed`.)
     cx.update(|window, _| yours::follow_system(window));
     click(cx, "rail-settings");
     click(cx, "setting-appearance");
@@ -254,14 +256,11 @@ fn the_text_size_picked_resizes_the_text_at_once_and_the_next_run_opens_in_it(cx
     assert_eq!(view.read_with(cx, |view, _| view.row_shown("row-text-size")).as_deref(), Some("Default"));
     let row = |cx: &mut VisualTestContext| bounds(cx, "row-theme").expect("the Theme row").size.height;
     let at_default = row(cx);
-    let sidebar = |cx: &mut VisualTestContext| bounds(cx, "setting-general").expect("General in the sidebar").size.height;
-    let sidebar_default = sidebar(cx);
     click(cx, "row-text-size-menu");
     click(cx, "menu-item-Larger");
-    assert_eq!(kuvo_ui::TypeSize::Body.size(), px(18.));
-    assert_eq!(kuvo_ui::TypeSize::Small.size(), px(17.));
+    assert_eq!(kuvo_ui::TypeSize::Body.size(), px(17.));
+    assert_eq!(kuvo_ui::TypeSize::Small.size(), px(16.));
     assert!(row(cx) > at_default, "the row grows with its text");
-    assert!(sidebar(cx) >= sidebar_default);
     assert_eq!(view.read_with(cx, |view, _| view.row_shown("row-text-size")).as_deref(), Some("Larger"));
     assert_eq!(next_run(&path).appearance.text_size, yours::TextSize::Larger);
     click(cx, "row-text-size-menu");
@@ -278,7 +277,7 @@ fn the_text_size_picked_resizes_the_text_at_once_and_the_next_run_opens_in_it(cx
 }
 
 #[gpui::test]
-fn a_conversation_is_measured_again_at_the_new_text_size(cx: &mut TestAppContext) {
+fn a_conversation_grows_at_a_larger_text_size(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
     let (workspace, cx) = open(cx, &path);
     // (Short enough that the conversation scrolls.)
