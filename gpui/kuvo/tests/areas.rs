@@ -367,6 +367,62 @@ fn an_account_has_the_two_rings_the_box_says_or_the_one(cx: &mut TestAppContext)
     assert!(bounds(cx, "ring-copilot-arc-0").is_some() && bounds(cx, "ring-copilot-arc-1").is_none(), "one window, one ring");
 }
 
+/// A plan that ended (the box's `ended`: Cursor said there's no active subscription) has no ring:
+/// the next account takes its place.
+#[gpui::test]
+fn a_plan_that_ended_has_no_ring(cx: &mut TestAppContext) {
+    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let second = bounds(cx, "ring-1").expect("a second ring");
+    let personal = bounds(cx, "ring-claude-Personal-arc-0").expect("Claude · Personal's ring, next after Claude · Work");
+    assert!(second.contains(&personal.center()), "Cursor's ended plan isn't drawn in its place");
+}
+
+/// Resting on a ring opens its card to the ring's right, centred on it, leaving the rings below
+/// in view; the card takes the clicks on it, so what's under it isn't reached; moving onto it
+/// keeps it open, and off both closes it.
+#[gpui::test]
+fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    // Settings, in a window short enough that its first sections are beside the rings.
+    click(cx, "rail-settings");
+    cx.simulate_resize(size(px(1000.), px(560.)));
+    cx.run_until_parked();
+    let ring = bounds(cx, "ring-0").unwrap();
+    let below = bounds(cx, "ring-1").unwrap();
+    cx.simulate_mouse_move(ring.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, "ring-card").is_none(), "not before the pointer rests");
+    cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
+    cx.run_until_parked();
+    let card = bounds(cx, "ring-card").expect("its card");
+    assert!(card.left() >= ring.right() - px(0.5), "to the ring's right: {card:?} beside {ring:?}");
+    assert!((card.center().y - ring.center().y).abs() < px(1.), "centred on the ring: {card:?} beside {ring:?}");
+    assert!(card.left() >= below.right() - px(0.5), "the ring below stays in view");
+
+    // Onto the card: it stays open. A click on it reaches nothing under it (a section of Settings).
+    let sections = ["general", "appearance", "notifications", "updates"];
+    let (section, inside) = sections
+        .iter()
+        .find_map(|section| {
+            let row = bounds(cx, &format!("setting-{section}"))?;
+            let at = gpui::point(row.center().x.max(card.left() + px(24.)), row.center().y);
+            (card.contains(&at) && row.contains(&at)).then_some((*section, at))
+        })
+        .expect("a section of Settings under the card");
+    cx.simulate_mouse_move(inside, None, Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, "ring-card").is_some(), "moving onto the card keeps it open");
+    let before = title(&workspace, cx);
+    cx.simulate_click(inside, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(title(&workspace, cx), before, "the click on the card didn't open {section} under it");
+
+    // Off both: it closes.
+    cx.simulate_mouse_move(gpui::point(px(900.), px(300.)), None, Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, "ring-card").is_none());
+}
+
 #[gpui::test]
 fn with_no_account_an_empty_ring_goes_to_sign_in(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::empty(Replies::Never));

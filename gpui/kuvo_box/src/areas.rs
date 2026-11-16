@@ -8,7 +8,7 @@
 use serde::Deserialize;
 
 use crate::client::BoxClient;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::paths::segment;
 use crate::transport::Request;
 use crate::follow::{Follow, Followed, Timing, follow_lines};
@@ -497,6 +497,10 @@ pub struct Account {
     /// The circles to draw for it, as the box picks them.
     #[serde(default)]
     pub rings: Rings,
+    /// Its plan isn't active now, as the box says (`ended`): no ring is drawn for it, and where
+    /// accounts are listed it says its plan ended.
+    #[serde(default)]
+    pub ended: bool,
 }
 
 /// A list's items this can read: one it can't is left out, not all of them (KuvoClient's `Readable`).
@@ -642,15 +646,17 @@ impl BoxClient {
     pub fn accounts(&self) -> Result<Vec<Account>> {
         #[derive(Deserialize)]
         struct Data {
-            #[serde(default)]
-            rows: Vec<serde_json::Value>,
+            rows: Option<Vec<serde_json::Value>>,
         }
         #[derive(Deserialize)]
         struct Answer {
             data: Data,
         }
         let answer: Answer = self.get("kuvo/agents/api/kuvo/limits")?;
-        Ok(answer.data.rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
+        // A coding agents' bridge from before `rows` (one still running after its box updated, until
+        // it restarts) lists none across your computers: not "no accounts", but none it says.
+        let rows = answer.data.rows.ok_or_else(|| Error::BadAnswer("This computer's Kuvo is from before it listed your accounts' limits: they show once it restarts.".into()))?;
+        Ok(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
     }
 
     /// What's at work in Kuvo on this box's computer, as it says it for its menu bar.

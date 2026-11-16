@@ -620,20 +620,25 @@ impl Render for HoverCard {
     }
 }
 
-/// The card a hover card's content sits in.
+/// The card a hover card's content sits in, a little below the pointer; it takes the pointer's
+/// clicks itself, so what's under it isn't reached.
 pub fn hover_card_frame(content: impl IntoElement, cx: &App) -> impl IntoElement {
+    div().occlude().pt(space::S1_5).child(card_frame(content, cx))
+}
+
+/// A card over the window (a hover card, a ring's card), raised. What holds it takes the pointer's
+/// clicks (`occlude`), so what's under it isn't reached.
+pub fn card_frame(content: impl IntoElement, cx: &App) -> gpui::Div {
     let theme = cx.theme();
-    div().pt(space::S1_5).child(
-        div()
-            .w(px(280.))
-            .p(space::S4)
-            .rounded(radius::CARD)
-            .bg(theme.colors.elevated)
-            .border_1()
-            .border_color(theme.colors.border)
-            .shadow(theme.elevated_shadow())
-            .child(content),
-    )
+    div()
+        .w(px(280.))
+        .p(space::S4)
+        .rounded(radius::CARD)
+        .bg(theme.colors.elevated)
+        .border_1()
+        .border_color(theme.colors.border)
+        .shadow(theme.elevated_shadow())
+        .child(content)
 }
 
 /// A tooltip: a short label (and an optional shortcut) in a small capsule, shown after the

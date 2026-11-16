@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The desktop app's usage rings now fill with what's **left** of each limit (a full ring means all of it is left), and their card and Settings › Usage say "62% left" and when each resets. The card opens to the right of the ring you rest on, so the rings below stay in view, and clicking on it no longer clicks what's under it.
+- A plan that has ended (a Cursor or SuperGrok subscription that isn't active) no longer shows as a ring; Settings › Usage lists it as "Plan ended".
+
 - **Kuvo is in the menu bar** on a Mac, for as long as it runs there, with the desktop app open or not: its mark shows how many sessions are at work and a dot when something needs you. Click it to see what needs you, what's at work and your plan limits' rings, to **Open Kuvo**, or to **Stop Kuvo on this Mac** (asked first while something's at work or the app is open, whose window closes too; it starts again when you open Kuvo or next log in). The first time you quit the desktop app, a note says Kuvo keeps working and where to find it.
 - Moving from an earlier Kuvo Code no longer says your Keychain is locked when it isn't. When macOS needs your OK for Kuvo to take this Mac's keys along, it asks: enter your Mac's password and click Always Allow. If the keys still can't be taken along, Kuvo says so in plain words.
 - Moving from an earlier Kuvo Code now stops whatever of it is still running in the background first, and if something changes your sessions while they're copied, Kuvo copies them again by itself instead of stopping. It no longer stops because another program only looked at your sessions. If another app keeps using the earlier Kuvo Code's files, Kuvo names that app so you can quit it.

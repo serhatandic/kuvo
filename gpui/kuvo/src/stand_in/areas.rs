@@ -554,6 +554,13 @@ fn accounts(now: f64) -> Vec<Value> {
     };
     vec![
         row("claude", "Claude · Work", Some("claude"), "Work", "Max 20x", vec![window("five_hour", "Session", 0.46, 3.7 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.38, 4.0 * DAY, Some(10080), None, None), window("seven_day_sonnet", "Sonnet", 0.12, 4.0 * DAY, Some(10080), Some("Sonnet"), None)]),
+        // A plan that ended (Cursor said no active subscription): no windows, no rings, `ended`.
+        {
+            let mut ended = row("cursor", "Cursor", Some("cursor"), "", "Pro", Vec::new());
+            ended["ended"] = json!(true);
+            ended["problem"] = json!({ "kind": "ended", "message": "Its Cursor plan isn't active now." });
+            ended
+        },
         row("claude", "Claude · Personal", Some("claude"), "Personal", "Pro", vec![window("five_hour", "Session", 0.18, 4.1 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.22, 2.0 * DAY, Some(10080), None, None)]),
         row("codex", "Codex", Some("codex"), "", "Pro", vec![window("primary", "Session", 0.74, 52.0 * MINUTE, Some(300), None, None), window("secondary", "Weekly", 0.41, 5.0 * DAY, Some(10080), None, None)]),
         row("copilot", "Copilot", None, "", "Pro+", vec![window("premium", "Premium requests", 0.35, 17.0 * DAY, None, None, Some("Premium requests"))]),

@@ -617,16 +617,16 @@ fn accounts(facts: &Facts) -> Vec<Block> {
 
 // MARK: Usage
 
-/// An account's windows as meters: its share, its colour by the box's level, and when it starts
-/// over; one that started over and wasn't read since says so (PROTOCOL.md).
+/// An account's windows as meters: what's left of each (as its ring has it), its colour by the
+/// box's level, and when it resets; one that reset and wasn't read since says so (PROTOCOL.md).
 fn meters(account: &Account) -> Vec<Meter> {
     account
         .windows
         .iter()
         .map(|window| Meter {
             title: window.title.clone(),
-            said: if window.expired { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) },
-            share: if window.expired { 0. } else { window.used.clamp(0., 1.) },
+            said: if window.expired { "Not read since it reset".to_owned() } else { format!("{}% left", ((1. - window.used.clamp(0., 1.)) * 100.).round() as u32) },
+            share: 1. - window.used.clamp(0., 1.),
             level: window.level,
             resets_at: window.resets_at.filter(|_| !window.expired),
         })
@@ -642,8 +642,10 @@ fn usage(facts: &Facts) -> Vec<Block> {
                 .iter()
                 .enumerate()
                 .map(|(ix, account)| {
-                    let detail = account.plan.clone().map(|plan| format!("{plan} plan")).unwrap_or_default();
-                    Row::new(format!("usage-{ix}"), account.title.clone(), detail, Control::Windows(meters(account))).leading(Leading::Mark(account.service.clone()))
+                    // A plan that ended, as the box says (`ended`): said so, with no meters.
+                    let detail = if account.ended { "Plan ended".to_owned() } else { account.plan.clone().map(|plan| format!("{plan} plan")).unwrap_or_default() };
+                    let meters = if account.ended { Vec::new() } else { meters(account) };
+                    Row::new(format!("usage-{ix}"), account.title.clone(), detail, Control::Windows(meters)).leading(Leading::Mark(account.service.clone()))
                 })
                 .collect();
             blocks.push(Block::Group("Limits".into(), String::new(), rows));
