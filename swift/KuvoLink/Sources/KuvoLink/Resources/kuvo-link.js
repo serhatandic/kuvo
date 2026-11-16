@@ -14327,6 +14327,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
   let keeperEnv = {};
+  let checkedEngine = null;
   let fetching = false;
   brokeOff = stopFailed = false;
   const download = async (get) => {
@@ -14435,6 +14436,8 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const engine = staged ?? path40.join(engineFolder, "opencode");
     if (ran(engine, ["--version"]).status !== 0)
       throw new Error("The new engine doesn't run here.");
+    if (staged)
+      checkedEngine = { from: staged, to: path40.join(engineFolder, "opencode") };
     const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path40.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
     if (tried.status !== 0 || !tried.output.includes("ok"))
       throw new Error("The new link doesn't work with it here.");
@@ -14495,6 +14498,12 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   } catch (error) {
     brokeOff = fetching;
     const message = String(error?.message ?? error).slice(0, 300);
+    if (!swapped && checkedEngine && fs37.existsSync(checkedEngine.from) && !fs37.existsSync(checkedEngine.to)) {
+      try {
+        fs37.mkdirSync(path40.dirname(checkedEngine.to), { recursive: true, mode: 448 });
+        fs37.renameSync(checkedEngine.from, checkedEngine.to);
+      } catch {}
+    }
     if (stage)
       fs37.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
@@ -42120,7 +42129,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "08054839010b";
+var BRIDGE_VERSION = "b43ec2095fce";
 
 // box/src/link/rehome/move.ts
 init_outside();
