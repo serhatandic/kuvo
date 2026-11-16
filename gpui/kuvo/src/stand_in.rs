@@ -253,6 +253,16 @@ impl StandIn {
         self.state().settings.mcp.on = true;
     }
 
+    /// Its Vault is listed (`kuvo/settings/vault`), as the real box answered it for a machine.
+    pub fn show_vault(&self) {
+        self.state().settings.vault.on = true;
+    }
+
+    /// Its Vault's state, to change or read (locked, what its forms sent, what Show read).
+    pub fn with_vault<T>(&self, work: impl FnOnce(&mut crate::stand_in::settings::vault::Vault) -> T) -> T {
+        work(&mut self.state().settings.vault)
+    }
+
     /// Its MCP servers' state, to change or read (a sign-in going through, what its forms sent).
     pub fn with_mcp<T>(&self, work: impl FnOnce(&mut crate::stand_in::settings::Settings) -> T) -> T {
         work(&mut self.state().settings)

@@ -1396,3 +1396,132 @@ fn a_form_whose_thing_changed_meanwhile_stays_open_with_what_was_typed(cx: &mut 
     let typed = view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["command"].clone());
     assert_eq!(typed, json!("npx -y files-server --readonly"));
 }
+
+// MARK: Vault (`settings.vault`): a computer's vault, drawn from the box's description alone. No
+// value is ever on the page: one is shown only when Show is pressed, read through the vault's own
+// route, and gone with the sheet; a check is sent each value masked.
+
+/// The stand-in's vault item named `title`, by its row's id.
+fn vault_item(title: &str) -> String {
+    let page = kuvo::stand_in::settings::vault::Vault::default().page();
+    let items = page["groups"].as_array().unwrap().iter().flat_map(|group| group["rows"].as_array().unwrap().iter()).find(|row| row["id"] == json!("items")).unwrap()["items"].clone();
+    items.as_array().unwrap().iter().find(|item| item["title"] == json!(title)).unwrap()["id"].as_str().unwrap().to_owned()
+}
+
+/// The text in a form's field, as it's drawn there now.
+fn form_text(view: &Entity<SettingsView>, cx: &mut VisualTestContext, field: &str) -> Option<String> {
+    view.read_with(cx, |view, cx| view.form().map(|form| form.read(cx).values(cx)).and_then(|values| values.get(field).and_then(|value| value.as_str()).map(str::to_owned)))
+}
+
+#[gpui::test]
+fn a_computers_vault_lists_what_waits_its_items_and_activity_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_vault();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "vault");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Vault"));
+    // What an agent waits for, its answers as buttons: Always Allow lets it use the item from now
+    // on, which this app can't make sure is you for yet, so it's there and can't be pressed.
+    let asks = view.read_with(cx, |view, _| view.page_rows().into_iter().filter(|key| key.starts_with("row-ask-")).collect::<Vec<_>>());
+    assert_eq!(asks.len(), 2);
+    assert!(shown(cx, &format!("{}-don-t-allow", asks[0])) || shown(cx, &format!("{}-don’t-allow", asks[0])));
+    assert!(shown(cx, &format!("{}-allow-once", asks[0])) && shown(cx, &format!("{}-always-allow", asks[0])));
+    click(cx, &format!("{}-always-allow", asks[0]));
+    assert!(stand_in.with_vault(|vault| vault.sent.is_empty()), "Always Allow sends nothing from here");
+    click(cx, &format!("{}-allow-once", asks[0]));
+    assert_eq!(stand_in.with_vault(|vault| vault.sent.iter().map(|(_, action, _)| action.clone()).collect::<Vec<_>>()), vec!["once".to_owned()]);
+    assert!(!shown(cx, &asks[0]), "answered: gone from the page");
+    // The items, each with how it's used beside its name.
+    let github = vault_item("GitHub");
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail(&format!("row-{github}"))).as_deref(), Some("Sign-in · octo@example.com · github.com"));
+    assert!(shown(cx, &format!("row-{github}-badge")) && shown(cx, &format!("row-{github}-menu")));
+    assert!(shown(cx, "row-pause-switch") && shown(cx, "row-paused-bot_ranger-let-go-on"));
+}
+
+#[gpui::test]
+fn add_item_checks_what_is_typed_without_the_value_and_sends_it_only_to_add_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_vault();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "vault");
+    click(cx, "row-items-add-add-item");
+    assert!(shown(cx, "settings-form"));
+    assert!(shown(cx, "settings-form-password") && !shown(cx, "settings-form-value") && !shown(cx, "settings-form-file"));
+    click(cx, "settings-form-name-field");
+    cx.simulate_input("GitHub");
+    click(cx, "settings-form-site-field");
+    cx.simulate_input("github.com");
+    click(cx, "settings-form-password-field");
+    cx.simulate_input("abc");
+    assert!(form_words(&view, cx).contains(&("password".into(), "A value needs at least 4 characters, so it can be hidden from agents.".into())));
+    cx.simulate_input("-much-longer");
+    // Every check was sent the password as dots, never the password.
+    let checked = stand_in.with_vault(|vault| vault.checked.clone());
+    assert!(!checked.is_empty());
+    for values in &checked {
+        let sent = values["password"].as_str().unwrap_or_default();
+        assert!(sent.chars().all(|letter| letter == '•'), "a check carried {sent:?}");
+    }
+    assert!(checked.iter().any(|values| values["password"] == json!("•".repeat("abc-much-longer".len()))));
+    click(cx, "settings-form-submit");
+    let sent = stand_in.with_vault(|vault| vault.sent.clone());
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].0.as_str(), sent[0].1.as_str()), ("items", "add"));
+    assert_eq!(sent[0].2["password"], json!("abc-much-longer"));
+    assert!(!shown(cx, "settings-form"), "done: the sheet closes");
+}
+
+#[gpui::test]
+fn a_value_shows_only_when_asked_and_is_gone_with_the_sheet(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_vault();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "vault");
+    let github = vault_item("GitHub");
+    let id = github.trim_start_matches("item-").to_owned();
+    let secret = kuvo::stand_in::settings::vault::made_up(&id, "password");
+    click(cx, &format!("row-{github}-menu"));
+    click(cx, "menu-item-Edit…");
+    assert!(shown(cx, "settings-form"));
+    // Opened empty: nothing read from the vault.
+    assert_eq!(form_text(&view, cx, "password").as_deref(), Some(""));
+    assert!(stand_in.with_vault(|vault| vault.shown.is_empty()));
+    click(cx, "settings-form-password-show");
+    assert_eq!(stand_in.with_vault(|vault| vault.shown.clone()), vec![id.clone()]);
+    assert_eq!(form_text(&view, cx, "password").as_deref(), Some(secret.as_str()));
+    // Nowhere but its field: not on the page under the sheet.
+    assert!(!view.read_with(cx, |view, _| view.page_words()).contains(&secret));
+    click(cx, "settings-form-cancel");
+    assert!(!shown(cx, "settings-form"));
+    click(cx, &format!("row-{github}-menu"));
+    click(cx, "menu-item-Edit…");
+    assert_eq!(form_text(&view, cx, "password").as_deref(), Some(""), "opened again: empty, read only when asked");
+    assert_eq!(stand_in.with_vault(|vault| vault.shown.len()), 1);
+}
+
+#[gpui::test]
+fn who_can_use_it_shows_who_may_and_leaves_changing_it_to_where_its_made_sure_its_you(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_vault();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "vault");
+    let github = vault_item("GitHub");
+    click(cx, &format!("row-{github}-menu"));
+    click(cx, "menu-item-Who Can Use It…");
+    assert!(shown(cx, "settings-form-bot-bot_scout"));
+    // (Scout uses it on its own; picking another choice does nothing here.)
+    click(cx, "settings-form-bot-bot_scout-no");
+    assert_eq!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["bot-bot_scout"].clone()), json!("own"));
+    assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).field_why("bot-bot_scout")).is_some_and(|why| why.contains("iPhone")));
+}
+
+#[gpui::test]
+fn a_locked_vault_says_so_and_lists_nothing(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_vault();
+    stand_in.with_vault(|vault| vault.locked = true);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "vault");
+    assert!(shown(cx, "note-vault-0"));
+    assert!(view.read_with(cx, |view, _| view.page_rows()).is_empty());
+}

@@ -188,6 +188,15 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-mcp-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_add) },
     Screen { slug: "settings-mcp-add-error", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_add_error) },
     Screen { slug: "settings-mcp-signing-in", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_signing_in) },
+    // Settings › Vault (`kuvo/settings/vault`), a machine's, as your other devices read it: what
+    // agents wait for, its items, Pause and activity; an item's Edit and Who Can Use It sheets; Add
+    // Item typed into; and the vault locked after a restart.
+    Screen { slug: "settings-vault", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_list) },
+    Screen { slug: "settings-vault-item", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_item) },
+    Screen { slug: "settings-vault-who", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_who) },
+    Screen { slug: "settings-vault-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_add) },
+    Screen { slug: "settings-vault-locked", width: 1280., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_list) },
+    Screen { slug: "settings-vault-narrow", width: 760., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(vault_list) },
     Screen { slug: "settings-mcp-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
@@ -565,6 +574,34 @@ fn mcp_form(w: &mut Workspace, name: &str, command: &str, window: &mut Window, c
 }
 fn mcp_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { mcp_form(w, "my files", "npx -y @modelcontextprotocol/server-filesystem ~/Projects", window, cx); }
 fn mcp_add_error(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { mcp_form(w, "files", "serve-files --root ~/Projects", window, cx); }
+fn vault_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "vault", window, cx); }
+/// One of the vault's items' sheets, by its action, for the item called `title`.
+fn vault_sheet(w: &mut Workspace, title: &str, action: &str, window: &mut Window, cx: &mut Context<Workspace>) -> Option<gpui::Entity<kuvo::settings::form::FormSheet>> {
+    let view = settings(w, "vault", window, cx);
+    let page = w.client().settings_page("vault").ok()?;
+    let row = page.row("items")?.items.iter().find(|item| item.title == title)?.clone();
+    let form = row.actions.iter().find(|each| each.id == action)?.form.clone()?;
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Form { at: kuvo::settings::At::of("vault", &row), action: action.into(), form: Box::new(form) }, cx));
+    view.read(cx).form().cloned()
+}
+fn vault_item(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { vault_sheet(w, "GitHub", "edit", window, cx); }
+fn vault_who(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { vault_sheet(w, "GitHub", "who", window, cx); }
+/// Add Item, a sign-in typed into, its password too short so far.
+fn vault_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "vault", window, cx);
+    let Some(row) = w.client().settings_page("vault").ok().and_then(|page| page.row("items").cloned()) else { return };
+    let Some(add) = row.add.clone() else { return };
+    let form = add.form.clone().expect("a form");
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Form { at: kuvo::settings::At::of("vault", &row), action: add.id.clone(), form: Box::new(form) }, cx));
+    if let Some(sheet) = view.read(cx).form().cloned() {
+        sheet.update(cx, |sheet, cx| {
+            sheet.set_text("name", "Linear", cx);
+            sheet.set_text("site", "linear.app", cx);
+            sheet.set_text("username", "me@example.com", cx);
+            sheet.set_text("password", "abc", cx);
+        });
+    }
+}
 /// A server's sign-in the box leads, under way.
 fn mcp_signing_in(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "mcp", window, cx);
@@ -996,6 +1033,12 @@ fn main() -> anyhow::Result<()> {
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
             if screen.slug.starts_with("settings-mcp") {
                 stand_in.show_mcp();
+            }
+            if screen.slug.starts_with("settings-vault") {
+                stand_in.show_vault();
+                if screen.slug == "settings-vault-locked" {
+                    stand_in.with_vault(|vault| vault.locked = true);
+                }
             }
             if screen.slug == "compaction-running" { stand_in.running_compaction(); }
             // The rate limits' conversation waits on a permission; another one waits behind it.

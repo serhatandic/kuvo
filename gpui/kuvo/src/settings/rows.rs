@@ -60,7 +60,6 @@ pub const LATER: &[Listed] = &[
     listed("commands", "Commands", IconName::Terminal, "Agents & Tools", ""),
     listed("skills", "Skills", IconName::Pencil, "Agents & Tools", ""),
     listed("integrations", "Integrations", IconName::Link, "Agents & Tools", ""),
-    listed("vault", "Vault", IconName::Shield, "Agents & Tools", "secrets"),
     listed("mcp", "MCP Servers", IconName::Sliders, "Agents & Tools", ""),
     listed("git", "Git", IconName::Branch, "Projects", ""),
     listed("worktrees", "Worktrees", IconName::Folder, "Projects", ""),

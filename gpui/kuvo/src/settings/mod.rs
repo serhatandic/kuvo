@@ -707,6 +707,24 @@ impl SettingsView {
         })
     }
 
+    /// The rows on the page open, by key, in order (a list's items among them).
+    pub fn page_rows(&self) -> Vec<String> {
+        self.items.iter().filter_map(|item| if let Item::Row { row, .. } = item { Some(row.key.clone()) } else { None }).collect()
+    }
+
+    /// Every word on the page open: its rows' titles, lines and whys, and its notes.
+    pub fn page_words(&self) -> String {
+        let mut words = String::new();
+        for item in &self.items {
+            match item {
+                Item::Row { row, .. } => words.extend([row.title.as_str(), "\n", row.detail.as_str(), "\n", row.why.as_deref().unwrap_or_default(), "\n"]),
+                Item::Note { words: note, .. } => words.extend([note.as_str(), "\n"]),
+                _ => {}
+            }
+        }
+        words
+    }
+
     /// Why a row on the page open can't be changed from here, as drawn under it.
     pub fn row_why(&self, key: &str) -> Option<String> {
         self.items.iter().find_map(|item| match item {
