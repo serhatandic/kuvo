@@ -4,15 +4,18 @@
 // what a phone asks of `kuvo/machines…` and `kuvo/hosts…`, as it asked the Mac's app, is answered
 // here with no app: the same routes and shapes, said from this box's own facts. It holds no
 // connection to a machine (each runs by itself, and is met through the relay), so what stood for one
-// (Connect, Disconnect, Make This Mac Its Home) is refused in words, and never offered.
+// (Connect, Disconnect, Make This Mac Its Home, Same Computer As) is refused in words. The box
+// offers no button for them (`action`), but a phone's Machines page still shows the last two by
+// itself. All of this file is for that page as the old Mac app answered it: it goes once the phone
+// draws `kuvo/computers` and `kuvo/computers/add` instead.
 
 import fs from "node:fs";
 import { isObject, parsed, type Body } from "../../shared/json";
 import type { MacMachines } from "../../shared/routes/mac";
 import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginUninstall, canAdd, takenAddresses } from "../add/flow";
-import { type Running, stopTry, tryFollowers, underWay } from "../add/tries";
-import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
+import { allTries, type Running, stopTry, tryFollowers, underWay } from "../add/tries";
+import { COMPUTERS_ROUTE, computersRoute, peerReach } from "../areas/computers";
 import { ONCE } from "../areas/computers-add";
 import { writePrivate } from "../files";
 import { followedLive } from "../follow";
@@ -20,43 +23,46 @@ import { LINK_FILE } from "../home";
 import { ownName } from "../letters/start";
 import { PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
-import { forgetSaved, removeHere } from "../peers/manage";
-import { awaySince, PEER_REACH, readReach } from "../peers/reach";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { forgetSaved, oldAppAttached, oldAppWords } from "../peers/manage";
+import { readTries } from "../peers/reach-again";
+import { PEER_REACH, readReach } from "../peers/reach";
+import type { AnswerPiece, AnyPiece, RouteContext } from "../server/context";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
 import { hostsWithoutApp, keptHosts, LIST_FILE, PHONE_LINK_FILE, savedMachines, UNREADABLE } from "./machines";
-
-/** How long since a machine's box said its agents (every ten minutes, while it's on the relay) it
- * still counts as heard from: as `kuvo/computers` counts it. */
-const HEARD_LATELY = 30 * 60_000;
 
 type Machine = MacMachines["machines"][number];
 
 const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 
 /** `kuvo/machines` as this box says it by itself: each machine on its list by the name your
- * computers know it by, connected while this box hears from it, and being set up or uninstalled
- * while that's under way here; with the hosts in `~/.ssh/config` it could add. Null when the list
- * can't be read, which isn't none. */
+ * computers know it by, standing as `kuvo/computers` says it stands (`peerReach`), and being set up
+ * or uninstalled while that's under way here; then those being added for the first time, which
+ * aren't on the list until they've joined; with the hosts in `~/.ssh/config` it could add. Null
+ * when the list can't be read, which isn't none. */
 export function ownMachines(now = Date.now()): MacMachines | null {
   const saved = savedMachines();
   if (!saved) return null;
   const peers = peersOf(readLink());
   const told = readPeerAgents();
   const reach = readReach();
+  const tries = readTries();
   const machines = saved.map(({ destination, otherAddresses }): Machine => {
     const peer = peers.find(each => each.id === destination);
-    const said = peer ? told[peer.key] : undefined;
     const busy = underWay(destination);
-    const heard = said?.heard ?? said?.at;
-    const away = !peer || awaySince(peer.key, reach) !== null || (heard !== undefined && now - heard > HEARD_LATELY);
+    const stands = peer ? peerReach(peer.key, told, reach, tries, now).reach : null;
     const [connection, status] = busy ? ["installing", busy.seen.title]
-      : !peer ? ["notConnected", "Not connected"]
-      : away ? ["notConnected", "Not heard from lately"]
-      : heard === undefined ? ["connecting", "Connecting…"] : ["connected", "Connected"];
+      : stands === "connected" ? ["connected", "Connected"]
+      : stands === "connecting" ? ["connecting", "Connecting…"]
+      : stands === "away" ? ["notConnected", "Not heard from lately"] : ["notConnected", "Not connected"];
     return { id: destination, name: peer?.name || destination, otherAddresses: Array.isArray(otherAddresses) ? otherAddresses : [], connection: connection!, status: status! };
   });
+  const listed = new Set(saved.flatMap(each => [each.destination, ...(Array.isArray(each.otherAddresses) ? each.otherAddresses : [])]));
+  for (const seen of allTries().reverse()) {
+    if (seen.kind !== "add" || seen.state === "done" || seen.state === "failed" || listed.has(seen.destination)) continue;
+    listed.add(seen.destination);
+    machines.push({ id: seen.destination, name: seen.name, otherAddresses: [], connection: "installing", status: seen.title });
+  }
   return { machines, hosts: canAdd().can ? suggestedHosts(takenAddresses()) : [] };
 }
 
@@ -75,6 +81,16 @@ function settled(it: Running): Promise<void> {
 }
 
 const failureOf = (it: Running, otherwise: string): string => it.seen.failure?.message || otherwise;
+
+// The computer `key` removed as your computers' page removes it (`DELETE kuvo/computers/<key>`):
+// its refusals, its words, and handed to the box that writes its record where that isn't this one.
+async function removed(context: RouteContext, key: string): Promise<AnswerPiece[]> {
+  const path = `kuvo/computers/${key}`;
+  const pieces: AnswerPiece[] = [];
+  for await (const piece of computersRoute({ ...context, route: path, request: { ...context.request, method: "DELETE", path } }, path.match(COMPUTERS_ROUTE)!)) pieces.push(piece);
+  return pieces;
+}
+const statusOf = (pieces: AnswerPiece[]): number => (pieces as AnyPiece[]).find(piece => piece.head)?.head?.status ?? 500;
 
 /** What a phone asks of this Mac's machines and of the machines it reaches directly, answered by
  * this box itself. */
@@ -128,15 +144,14 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
   const entry = () => ownMachines()?.machines.find(each => each.id === machine.destination);
   const action = parts[3];
 
+  // (The old app, attached, keeps a list of its own and would write over what's changed here.)
+  const waits = oldAppAttached() ? oldAppWords(here, name) : null;
   if (method === "DELETE" && parts.length === 3) {
+    if (peer) return yield* await removed(context, peer.key);
     // One this box never signed in to your computers (an address kept from before): only off its list.
-    if (!peer) {
-      forgetSaved(machine.destination);
-      return yield* json(200, {});
-    }
-    // As your computers' page removes it (`DELETE kuvo/computers/<key>`): its refusals, its words.
-    const path = `kuvo/computers/${peer.key}`;
-    return yield* computersRoute({ ...context, route: path, request: { ...request, path } }, path.match(COMPUTERS_ROUTE)!);
+    if (waits) return yield* json(409, { message: waits });
+    forgetSaved(machine.destination);
+    return yield* json(200, {});
   }
   if (method === "POST" && action === "uninstall" && parts.length === 4) {
     // (As `kuvo/computers/<key>/uninstall`: never for `box route`, a single request anything here could run.)
@@ -152,6 +167,7 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
   }
   if (method === "DELETE" && action === "addresses" && parts.length === 5) {
     if (!machine.otherAddresses?.includes(parts[4]!)) return yield* json(404, {});
+    if (waits) return yield* json(409, { message: waits });
     writePrivate(LIST_FILE, JSON.stringify(saved.map(each => (each === machine ? { ...each, otherAddresses: machine.otherAddresses!.filter(address => address !== parts[4]) } : each)), null, 2));
     return yield* json(200, { machine: entry() });
   }
@@ -179,8 +195,13 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
   const can = canAdd();
   if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
   const before = underWay(destination);
-  // (Here already, at that address: set up again where it stands, and said so.)
-  const had = takenAddresses().includes(destination);
+  // Here already, at that address or as another of a machine's, with nothing under way for it:
+  // said so at once, as the Mac's app did. (Set Up Again is `kuvo/computers/<key>/setup`.)
+  const had = savedMachines()?.find(each => each.destination === destination || each.otherAddresses?.includes(destination));
+  if (had && !before) {
+    const machine = ownMachines()?.machines.find(each => each.id === had.destination);
+    if (machine) return yield* json(200, { machine, known: true });
+  }
   const begun = beginAdd(destination);
   if ("busy" in begun) return yield* json(409, { message: begun.busy });
   await settled(begun);
@@ -204,11 +225,12 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
     ?? savedMachines()?.find(each => each.otherAddresses?.includes(destination))?.destination ?? destination;
   const machine = ownMachines()?.machines.find(each => each.id === id);
   if (!machine) return yield* json(502, { message: `${destination} was set up, but ${here} couldn’t read its list of machines afterwards.` });
-  return yield* json(200, { machine, known: had || begun.seen.known === true });
+  return yield* json(200, { machine, known: Boolean(had) || begun.seen.known === true });
 }
 
 // `DELETE kuvo/hosts/<id>`: a machine this Mac removed, forgotten for your phones too. One it
-// still has is removed first. Your other computers stop counting it among theirs, if they still did.
+// still has is removed first. One your computers still count among theirs (its list and their
+// record disagree) is removed as a removal removes it, with its refusals, before it's forgotten.
 async function* forgetHost(context: RouteContext, id: string, here: string): AsyncGenerator<AnswerPiece> {
   const { json } = context;
   const kept = keptHosts();
@@ -217,6 +239,7 @@ async function* forgetHost(context: RouteContext, id: string, here: string): Asy
   const host = kept?.[id];
   if (!host) return yield* json(404, {});
   if (saved.some(each => each.destination === id)) return yield* json(409, { message: `It’s one of ${here}’s machines: remove it first.` });
+  if (oldAppAttached()) return yield* json(409, { message: oldAppWords(here, typeof host.name === "string" ? host.name : id) });
   let whole: Record<string, unknown>;
   try {
     const text: unknown = JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8"));
@@ -226,8 +249,13 @@ async function* forgetHost(context: RouteContext, id: string, here: string): Asy
     return yield* json(503, { message: UNREADABLE });
   }
   const { [id]: _gone, ...rest } = whole.machines as Record<string, unknown>;
+  // (Unless it's still one of this Mac's under another name.)
+  const stillNamed = typeof host.key === "string" && !Object.values(rest).some(each => isObject(each) && each.key === host.key)
+    && peersOf(readLink()).some(peer => peer.key === host.key);
+  if (stillNamed) {
+    const gone = await removed(context, host.key as string);
+    if (statusOf(gone) !== 200 && statusOf(gone) !== 404) return yield* gone;
+  }
   writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: rest }, null, 2));
-  // (Removed, said so, unless it's still one of this Mac's under another name.)
-  if (typeof host.key === "string" && !Object.values(rest).some(each => isObject(each) && each.key === host.key)) removeHere(host.key);
   return yield* json(200, {});
 }

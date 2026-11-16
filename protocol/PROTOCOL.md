@@ -4127,29 +4127,37 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `machines.json` and `phone-link.json`. It answers all of these itself, for a phone as the app
     did and for its own clients alike (`mac/own-machines.ts`), from its own facts:
     - `GET kuvo/machines` and its events: each machine by the name your computers know it by;
-      `connection` is `connected` ("Connected") while the box hears from it, `connecting`
-      ("Connecting…") before it first has, `notConnected` ("Not heard from lately", or "Not
-      connected" for one it never signed in to your computers), and `installing` with the try's
-      title while it's being set up or uninstalled from here. No `action`, `failure`, `step`,
-      `home`, `alsoUsedBy` or `folded`. `hosts` are the box's own suggestions (`kuvo/computers/add`'s).
-    - `POST kuvo/machines {"destination"}` is the box's own add, waited for: `200 {"machine",
-      "known"}` (`known` for one here already, at that address or another of its own); `400` for
-      an address that can't name one; `502 {"message"}` when it failed, in the try's words; `409
-      {"message"}` where this box doesn't add computers, and where the add has something to ask
-      you (a host key it doesn't know, a computer of another setup): the route can't ask, so that
-      try is stopped, nothing is trusted or joined, and the words say to add it from Kuvo Code on
-      the Mac. The try shows on the Mac meanwhile, and goes on if the phone goes.
+      `connection` goes by `kuvo/computers`' `reach` for it: `connected` ("Connected"),
+      `connecting` ("Connecting…"), `notConnected` ("Not heard from lately" for one that's away, or
+      "Not connected" for one it never signed in to your computers), and `installing` with the
+      try's title while it's being set up or uninstalled from here. One being added for the first
+      time is listed too, `installing`, by its address (it's on no list until it has joined). No
+      `action`, `failure`, `step`, `home`, `alsoUsedBy` or `folded`. `hosts` are the box's own
+      suggestions (`kuvo/computers/add`'s).
+    - `POST kuvo/machines {"destination"}`: one here already (at that address, or as another
+      address of a machine), with nothing under way for it, is answered at once, `200 {"machine",
+      "known": true}`, with nothing run there. Anything else is the box's own add, waited for to
+      its end (the Mac's app answered once it had checked the computer): `200 {"machine",
+      "known"}`; `400` for an address that can't name one; `502 {"message"}` when it failed, in
+      the try's words; `409 {"message"}` where this box doesn't add computers, for `box route`,
+      and where the add has something to ask you (a host key it doesn't know, a computer of
+      another setup): the route can't ask, so a try it began is stopped, nothing is trusted or
+      joined, and the words say to add it from Kuvo Code on the Mac (a try begun on the Mac is
+      left asking there). The try shows on the Mac meanwhile, and goes on if the phone goes.
     - `DELETE kuvo/machines/<id>` is `DELETE kuvo/computers/<key>` for that machine, with its
       refusals and words. `POST kuvo/machines/<id>/uninstall` is the box's own uninstall, waited
       for: `200 {}`, or `502 {"message"}` when it couldn't (out of reach: nothing is kept to try
-      later). `DELETE kuvo/machines/<id>/addresses/<address>` as before.
+      later); `409` for `box route`. `DELETE kuvo/machines/<id>/addresses/<address>` as before.
     - `POST kuvo/machines/<id>/connect`, `/disconnect`, `/start`, `/home` and `/same-as` answer
       `409 {"message"}` saying why: the box holds no connection to a machine, which runs by itself
       and is met through the relay; none has a home Mac (your setup's main computer is who adds
       and removes); and the same computer under two addresses is told by its own id as it's added.
     - `GET kuvo/hosts` as above; `DELETE kuvo/hosts/<id>` takes one this Mac removed out of
       `phone-link.json` (`404` for one it doesn't keep, `409 {"message"}` for one still on its
-      list), and your other computers stop counting it among theirs if they still did.
+      list). One your computers still count among theirs is removed first as `DELETE
+      kuvo/computers/<key>` removes it, and a refusal there is the answer.
+    - While the old Mac app is attached (it keeps a list of its own), what would change the box's
+      lists answers `409 {"message"}` to quit it first, as removing a computer does.
     While the retired Mac app has registered its host there (`kuvo/box/app`'s `host`), a phone's
     asks go to it as above.
 - Settings › Worktrees: the git worktrees sessions run in, each box its own, kept and named by its
@@ -8225,7 +8233,8 @@ A box in a home of its own with no app's host registered (`kuvo/box/app`), which
 only Kuvo Code's desktop app, has no app to hand them to, and answers all of them itself, as its
 own routes: its machines and hosts ("Machines", In a home of its own), `kuvo/asks…` as a
 machine's box does (its own browser's), `kuvo/mac`, and `kuvo/engine/restart` (in a home of its
-own it always restarts its engine itself, `kuvo-start restart`). `MAC_APP_ROUTES` is then only
+own it always restarts its engine itself, `kuvo-start restart`; `kuvo/engine/start` is a
+machine's alone, `404` on any Mac). `MAC_APP_ROUTES` is then only
 what the retired Mac app is asked, where there is one.
 The app answers those alone, and hands its box everything else it's asked, its own requests
 too (`BoxClient`), so a route a box gains needs no list. Mail your

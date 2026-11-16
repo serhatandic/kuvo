@@ -1032,7 +1032,7 @@ own folder (`S/box`, the retired app) nothing changes.
 | Route | Swift app did | Now |
 | --- | --- | --- |
 | `GET kuvo/machines`, `/events` | the list, with each SSH connection's state | **In the box already** (from `machines.json`), but worded for a closed app ("Kuvo Code isn't open on …", always `notConnected`). **Moved:** in a home of its own the box says its own facts: `connected` / `notConnected` by whether it hears from that computer, a try under way as `installing` with the try's title, `hosts` from the box's `~/.ssh/config` reader |
-| `POST kuvo/machines {destination}` | checked over SSH, installed, added | **Moved:** the box's own add (#636, `add/flow.ts`), waited for: `200 {machine, known}`, `400` for an address, `502 {message}` when it failed. Where the add must ask something (a host key it doesn't know, a computer of another setup) it's stopped and answered `409` in words: add it from Kuvo Code on the Mac. (The Swift app never asked either: an unknown key failed with "connect once in Terminal".) |
+| `POST kuvo/machines {destination}` | checked over SSH, installed, added | **Moved:** one here already is said at once (`known`), nothing run. Else the box's own add (#636, `add/flow.ts`), waited for: `200 {machine, known}`, `400` for an address, `502 {message}` when it failed. Where the add must ask something (a host key it doesn't know, a computer of another setup) it's stopped and answered `409` in words: add it from Kuvo Code on the Mac. (The Swift app never asked either: an unknown key failed with "connect once in Terminal".) |
 | `DELETE kuvo/machines/<id>` | removed from this Mac, runs on | **Moved:** the box's own removal (`DELETE kuvo/computers/<key>`, #735), by the machine's id |
 | `POST kuvo/machines/<id>/uninstall` | uninstalled, queued 30 days if out of reach | **Moved:** the box's own uninstall, waited for: `200 {}`, `502 {message}` when it couldn't. Not queued (#636's choice) |
 | `DELETE kuvo/machines/<id>/addresses/<address>` | forgot one address | **Moved** (the box writes `machines.json`) |
@@ -1044,7 +1044,7 @@ own folder (`S/box`, the retired app) nothing changes.
 | `GET kuvo/asks`, `/events`, `POST kuvo/asks/<id>` | the panel browser's asks, and its machines' | **In the box already** for its own browser (`areas/asks.ts`). **Moved (routing only):** a Mac's box in a home of its own answers them as a machine's does. What it lists is its own browser's, which a Mac's box doesn't run until #693 (pieces 4 and 5): empty until then, where it was a 503. Each box lists only its own (the phone already follows each computer) |
 | `GET`/`PATCH kuvo/mac` | background work (its `SMAppService` keeper), Keep This Mac Awake (the app's preference), `awakeNow` | **Moved:** `keepsAwake`/`awakeNow` are the box's own already (`kuvo/work/settings`). `backgroundWork` is said from Kuvo Helper's Login Items switch: `on`, `needsApproval` when it's switched off there (the phone then says to allow it on the Mac), `off` where no helper keeps this box (a test's copy). Turning it on from a phone can't be done (only you switch Login Items): answered as the app did when macOS waited for you |
 | `POST kuvo/engine/restart` | restarted the engine while the app ran the box | **In the box already** while a Swift keeper ran it (`boxAnswers`). **Moved:** in a home of its own the box restarts it itself (`kuvo-start restart`, as Settings › This Mac does) |
-| `POST kuvo/engine/start` | 404 | 404 still (`engine.start` is a machine's) |
+| `POST kuvo/engine/start` | 404 | 404 still (`engine.start` is a machine's): the router answered it on a Mac once nothing stood in front, so it's refused there now |
 
 **Also asked: `machines.json` and "repairing machines".**
 
@@ -1066,6 +1066,23 @@ own folder (`S/box`, the retired app) nothing changes.
 Same Computer As, Make This Mac Its Home); it should move to `kuvo/computers` and
 `kuvo/computers/add` (a question's card, the steps), which is phone UI and needs drafts.
 `MAC_APP_ROUTES` and `toApp` stay only for the retired app's two layouts and go with it.
+
+**As built, after the review (2026-11-16).** `box/src/link/mac/own-machines.ts`, `mac/own-mac.ts`,
+`answersAlone` in `mac/relay.ts`; tests `box/bridge-tests/own-home-mac-routes.test.js` (a phone
+over the relay, no app) and two in `computers-add.test.js` (the real add, remove, uninstall).
+The reviewer's pass led to: a first-time add listed as `installing`; an address already here
+answered at once with no SSH; `kuvo/engine/start` a 404 on a Mac; Forget going through a
+removal's refusals when your computers still name the machine; the old app attached refusing
+the three writes; Login Items asked once a request, its last answer standing when launchd is
+slow; one `peerReach` for `kuvo/computers` and `kuvo/machines`. Not done from it: `COMPAT(…)`
+marks (that list is for released Macs, 0.7 and beta.1, held to PROTOCOL's section by a test;
+this code is for the phone's old page, and says in its header when it goes).
+
+**Open:** `POST kuvo/machines` answers at the add's end, not once the check has passed as the
+Mac app did (the row shows `installing` meanwhile); the phone still offers Same Computer As
+and, for a machine an old list marks as another Mac's, Make This Mac Its Home, which answer 409;
+`helperAtLogin` is a `launchctl` run in the box's own process (5 s at most) on each `kuvo/mac`;
+`launchctl print-disabled` and `kuvo-start restart` under Kuvo Helper weren't tried on a real Mac.
 
 ## 9. Questions only the user can answer
 

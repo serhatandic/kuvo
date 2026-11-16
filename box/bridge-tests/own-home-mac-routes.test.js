@@ -136,8 +136,12 @@ async function pairedPhone() {
 
 let phone;
 before(async () => {
+  // (No app tells this box its link's settings, as the old one did: they're its own, with the
+  // relay a test's folder is given.)
+  process.env.KUVO_TEST_RELAY = relay.url;
   link.runMacLink();
-  assert.equal((await ask("PUT", "kuvo/link/config", { phones: true, machines: true, relay: relay.url, name: "Studio Mac", app: "1.0.0" })).status, 200);
+  // (Its keys from its helper first, as the link reads them before anything pairs.)
+  assert.equal(await link.macKeys(), true);
   phone = await pairedPhone();
 });
 atEnd(() => link.stopMacLink());
@@ -198,6 +202,11 @@ test("Restart Engine from a phone: the box asks its own keeper, with no app", as
   assert.deepEqual([restart.status, restart.json], [202, {}]);
   await link.toolRun();
   assert.equal(fs.readFileSync(asked, "utf8"), "restart\n");
+  // (Start is a machine's alone: a Mac never had a Stop to undo.)
+  assert.equal((await phone("POST", "kuvo/engine/start")).status, 404);
+  assert.equal((await phone("POST", "kuvo/engine/stop")).status, 404);
+  await link.toolRun();
+  assert.equal(fs.readFileSync(asked, "utf8"), "restart\n", "nothing more was asked of its keeper");
 });
 
 test("its machines: a phone reads the list in the box's own words, follows it, and changes what the box keeps", async () => {
@@ -248,11 +257,12 @@ test("its machines: a phone reads the list in the box's own words, follows it, a
   // The machines a phone reaches directly: the one it has, and the one it removed, marked so.
   const hosts = await phone("GET", "kuvo/hosts");
   assert.equal(hosts.status, 200, JSON.stringify(hosts.json));
-  assert.deepEqual(hosts.json.hosts.map(each => [each.machine, each.removed, each.relay]), [["attic", true, relay.url], ["studio", false, relay.url]]);
+  const met = link.macLink.config.relay;
+  assert.deepEqual(hosts.json.hosts.map(each => [each.machine, each.removed, each.relay]), [["attic", true, met], ["studio", false, met]]);
   // Forgotten for your phones: only one it removed.
   const still = await phone("DELETE", "kuvo/hosts/studio");
   assert.equal(still.status, 409);
-  assert.match(still.json.message, /one of Studio Mac’s machines/);
+  assert.equal(still.json.message, `It’s one of ${link.macLink.config.name}’s machines: remove it first.`);
   assert.deepEqual([(await phone("DELETE", "kuvo/hosts/attic")).status, (await phone("DELETE", "kuvo/hosts/attic")).status], [200, 404]);
   assert.deepEqual(Object.keys(readJSON(path.join(K, "phone-link.json")).machines), ["studio"]);
   assert.equal(fs.statSync(path.join(K, "phone-link.json")).mode & 0o777, 0o600);
@@ -265,4 +275,18 @@ test("its machines: a phone reads the list in the box's own words, follows it, a
   // The desktop app, over the box's own server, is answered the same.
   assert.equal((await ask("GET", "kuvo/machines")).status, 200);
   assert.deepEqual(helper.asked.filter(call => call !== "/link/identity"), []);
+
+  // A member of a setup: its main computer adds and removes, and the answer names it.
+  const main = link.publicOf(link.newKey()).toString("base64url");
+  const was = link.readLink();
+  link.updateLink(kept => ({ ...kept, setup: { role: "member", primary: main } }));
+  try {
+    for (const [method, route, given] of [["POST", "kuvo/machines", { destination: "gpu" }], ["DELETE", "kuvo/machines/studio"], ["DELETE", "kuvo/hosts/studio"]]) {
+      const refused = await phone(method, route, given);
+      assert.deepEqual([refused.status, refused.json.primary], [409, main], route);
+    }
+    assert.equal((await phone("GET", "kuvo/machines")).status, 200, "reading is everyone's");
+  } finally {
+    link.updateLink(kept => ({ ...kept, setup: was?.setup }));
+  }
 });

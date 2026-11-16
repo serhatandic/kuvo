@@ -499,7 +499,8 @@ test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this b
   assert.doesNotMatch(listed.body.machines[0].status, /isn.t open/);
   assert.deepEqual(listed.body.hosts, ["gpu", "github.com"]);
 
-  // One here already: set up again where it stands, and said to be known, as the app answered.
+  // One here already: said to be known at once, as the app answered, with nothing run there.
+  const reached = sshLog().length;
   const again = await ask("POST", "kuvo/machines", { destination: "studio" });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.deepEqual([again.body.machine.id, again.body.known], ["studio", true]);
@@ -507,6 +508,7 @@ test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this b
   const other = await ask("POST", "kuvo/machines", { destination: "studio.lan" });
   assert.deepEqual([other.status, other.body.machine?.id, other.body.known], [200, "studio", true]);
   assert.equal(read(path.join(home, "machines.json")).length, 1);
+  assert.equal(sshLog().length, reached, "ssh wasn't run for either");
 
   // A host whose key this Mac doesn't know: nothing is trusted from a phone. The add is stopped,
   // and the answer says where to add it.
@@ -519,6 +521,18 @@ test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this b
   assert.equal(fs.readFileSync(link.KNOWN_HOSTS, "utf8"), kept, "its key wasn't kept");
   assert.equal((await ask("GET", "kuvo/computers/add")).body.tries.some(each => each.destination === "gpu" && each.state !== "failed" && each.state !== "done"), false, "and nothing is left asking");
   assert.equal(read(path.join(home, "machines.json")).length, 1);
+
+  // The same add begun on the Mac itself, asking there: a phone's ask doesn't stop it, and says where it's asked.
+  const onMac = await ask("POST", "kuvo/computers/add", { destination: "gpu" });
+  const asking = await until(onMac.body.try.id, found => found?.state === "asking");
+  // (Listed meanwhile, though it's on no list yet.)
+  assert.deepEqual((await ask("GET", "kuvo/machines")).body.machines.map(each => [each.id, each.connection, each.status]).filter(each => each[0] === "gpu"), [["gpu", "installing", "Adding gpu…"]]);
+  assert.equal((await ask("POST", "kuvo/machines", { destination: "gpu" })).status, 409);
+  const stillAsking = (await ask("GET", "kuvo/computers/add")).body.tries.find(each => each.id === onMac.body.try.id);
+  assert.deepEqual([stillAsking.state, stillAsking.question.at], ["asking", asking.question.at], "the Mac's own try is as it was");
+  assert.equal((await ask("DELETE", `kuvo/computers/add/${onMac.body.try.id}`)).status, 200);
+  assert.equal(await until(onMac.body.try.id, found => !found), null);
+  assert.equal((await ask("GET", "kuvo/machines")).body.machines.some(each => each.id === "gpu"), false);
   fs.writeFileSync(link.KNOWN_HOSTS, known);
 
   // One that can't be reached: why, in the box's words.
@@ -691,6 +705,11 @@ test("a phone's Remove, Uninstall and Forget (the old Mac app's `kuvo/machines/<
 
   // Added again, then uninstalled: waited for, so the answer says how it went.
   assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  // (Never by a one-off command, which anything on the Mac could run.)
+  const once = [];
+  for await (const piece of handle({ method: "POST", path: "kuvo/machines/macbook/uninstall", headers: {}, fromMac: true }, undefined)) once.push(piece);
+  assert.equal(once.find(each => each.head).head.status, 409);
+  assert.ok(peer(), "still one of your computers");
   fs.writeFileSync(path.join(fake, "fail"), 'kuvo-link.js" uninstall');
   try {
     const failed = await ask("POST", "kuvo/machines/macbook/uninstall");

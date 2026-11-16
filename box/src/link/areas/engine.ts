@@ -223,6 +223,8 @@ export function engineConnect(readEngine: () => EngineRecord = readEngineFile, u
 export async function* engineControlRoute(context: RouteContext, control: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  // (`start` is a machine's alone, `engine.start`: a Mac never had a Stop to undo.)
+  if (IS_MAC && control[1] === "start") return yield* json(404, {});
   const { status, message } = await engineControl(control[1] as "start" | "restart");
   return yield* json(status, message ? { message } : {});
 }

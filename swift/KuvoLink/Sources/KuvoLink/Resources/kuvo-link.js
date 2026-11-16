@@ -17512,6 +17512,8 @@ async function* engineControlRoute(context, control) {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
+  if (IS_MAC && control[1] === "start")
+    return yield* json(404, {});
   const { status, message } = await engineControl(control[1]);
   return yield* json(status, message ? { message } : {});
 }
@@ -43745,6 +43747,13 @@ function computerWords(computer, here) {
   const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` } : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` } : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
   return { title, ...notice ? { detail: notice.detail, notice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
 }
+function peerReach(key, told = readPeerAgents(), reach = readReach(), tries = readTries(), now = Date.now()) {
+  const said = told[key];
+  const away = awaySince(key, reach) !== null || said?.heard !== undefined && now - said.heard > HEARD_LATELY2;
+  const trying = tryingSince(key, now, tries);
+  const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
+  return { away, reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected" };
+}
 async function listComputers(name, bridge, signal, now = Date.now()) {
   let link = null;
   try {
@@ -43788,9 +43797,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const apart = new Set(peers.filter((peer) => isApart(peer.key, link, told)).map((peer) => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
-    const away = awaySince(peer.key, reach) !== null || said?.heard !== undefined && now - said.heard > HEARD_LATELY2;
-    const trying = tryingSince(peer.key, now, tries);
-    const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
+    const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
     const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
     const blocked = vouchBlockOf(link, peer.key);
@@ -43801,7 +43808,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       ...peer.id ? { id: peer.id } : {},
       shared: said?.shared === true,
       ...apart.has(peer.key) ? { apart: true } : {},
-      reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected",
+      reach: standing,
       via: "relay",
       ...apart.has(peer.key) ? {} : reachOf(link, peer.address),
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {} } : {},
@@ -51705,7 +51712,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1418af3142f0";
+var BRIDGE_VERSION = "987c05f50761";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63383,13 +63390,20 @@ async function* movePlacesRoute(context) {
 // box/src/link/server/router.ts
 init_machines();
 // box/src/link/mac/own-mac.ts
-var backgroundWork = (atLogin = helperAtLogin()) => atLogin === true ? "on" : atLogin === false ? "needsApproval" : "off";
+var backgroundWork = (atLogin) => atLogin === true ? "on" : atLogin === false ? "needsApproval" : "off";
+var lastSaid = null;
+function atLoginNow() {
+  const said = helperAtLogin();
+  if (said !== null)
+    lastSaid = said;
+  return said ?? lastSaid;
+}
 async function* ownMacRoute(context) {
   const { request, json } = context;
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "PATCH")
     return yield* json(405, {});
-  let state = backgroundWork();
+  const state = backgroundWork(atLoginNow());
   if (method === "PATCH") {
     const given = parsed(request.body);
     const body = isObject(given) ? given : {};
@@ -63402,7 +63416,6 @@ async function* ownMacRoute(context) {
       return yield* json(409, { message: `${HELPER_NAME} isn’t set up to start Kuvo Code when you log in to ${ownName()}. Open Kuvo Code there.` });
     if (typeof body.keepsAwake === "boolean")
       setKeepsAwake(body.keepsAwake);
-    state = backgroundWork();
   }
   return yield* json(200, { backgroundWork: state, openAtLogin: state === "on", keepsAwake: keepsAwakeSetting(), awakeNow: awakeForWork() });
 }
@@ -63416,7 +63429,6 @@ init_known();
 init_main_only();
 init_state();
 init_machines();
-var HEARD_LATELY3 = 30 * 60000;
 var mtime3 = (file) => {
   try {
     return fs193.statSync(file).mtimeMs;
@@ -63431,15 +63443,21 @@ function ownMachines2(now = Date.now()) {
   const peers = peersOf(readLink());
   const told = readPeerAgents();
   const reach = readReach();
+  const tries = readTries();
   const machines = saved.map(({ destination, otherAddresses }) => {
     const peer = peers.find((each) => each.id === destination);
-    const said = peer ? told[peer.key] : undefined;
     const busy = underWay2(destination);
-    const heard = said?.heard ?? said?.at;
-    const away = !peer || awaySince(peer.key, reach) !== null || heard !== undefined && now - heard > HEARD_LATELY3;
-    const [connection, status] = busy ? ["installing", busy.seen.title] : !peer ? ["notConnected", "Not connected"] : away ? ["notConnected", "Not heard from lately"] : heard === undefined ? ["connecting", "Connecting…"] : ["connected", "Connected"];
+    const stands = peer ? peerReach(peer.key, told, reach, tries, now).reach : null;
+    const [connection, status] = busy ? ["installing", busy.seen.title] : stands === "connected" ? ["connected", "Connected"] : stands === "connecting" ? ["connecting", "Connecting…"] : stands === "away" ? ["notConnected", "Not heard from lately"] : ["notConnected", "Not connected"];
     return { id: destination, name: peer?.name || destination, otherAddresses: Array.isArray(otherAddresses) ? otherAddresses : [], connection, status };
   });
+  const listed = new Set(saved.flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]));
+  for (const seen of allTries().reverse()) {
+    if (seen.kind !== "add" || seen.state === "done" || seen.state === "failed" || listed.has(seen.destination))
+      continue;
+    listed.add(seen.destination);
+    machines.push({ id: seen.destination, name: seen.name, otherAddresses: [], connection: "installing", status: seen.title });
+  }
   return { machines, hosts: canAdd().can ? suggestedHosts(takenAddresses()) : [] };
 }
 function settled3(it) {
@@ -63458,6 +63476,14 @@ function settled3(it) {
   });
 }
 var failureOf = (it, otherwise) => it.seen.failure?.message || otherwise;
+async function removed(context, key) {
+  const path = `kuvo/computers/${key}`;
+  const pieces = [];
+  for await (const piece of computersRoute({ ...context, route: path, request: { ...context.request, method: "DELETE", path } }, path.match(COMPUTERS_ROUTE)))
+    pieces.push(piece);
+  return pieces;
+}
+var statusOf = (pieces) => pieces.find((piece) => piece.head)?.head?.status ?? 500;
 async function* ownMachinesRoute(context) {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
@@ -63517,13 +63543,14 @@ async function* ownMachinesRoute(context) {
   const name = peer?.name || machine.destination;
   const entry = () => ownMachines2()?.machines.find((each) => each.id === machine.destination);
   const action = parts[3];
+  const waits = oldAppAttached() ? oldAppWords(here, name) : null;
   if (method === "DELETE" && parts.length === 3) {
-    if (!peer) {
-      forgetSaved(machine.destination);
-      return yield* json(200, {});
-    }
-    const path = `kuvo/computers/${peer.key}`;
-    return yield* computersRoute({ ...context, route: path, request: { ...request, path } }, path.match(COMPUTERS_ROUTE));
+    if (peer)
+      return yield* await removed(context, peer.key);
+    if (waits)
+      return yield* json(409, { message: waits });
+    forgetSaved(machine.destination);
+    return yield* json(200, {});
   }
   if (method === "POST" && action === "uninstall" && parts.length === 4) {
     if (request.fromMac)
@@ -63544,6 +63571,8 @@ async function* ownMachinesRoute(context) {
   if (method === "DELETE" && action === "addresses" && parts.length === 5) {
     if (!machine.otherAddresses?.includes(parts[4]))
       return yield* json(404, {});
+    if (waits)
+      return yield* json(409, { message: waits });
     writePrivate(LIST_FILE, JSON.stringify(saved.map((each) => each === machine ? { ...each, otherAddresses: machine.otherAddresses.filter((address) => address !== parts[4]) } : each), null, 2));
     return yield* json(200, { machine: entry() });
   }
@@ -63572,7 +63601,12 @@ async function* add3(context, here) {
   if (!can.can)
     return yield* json(can.status, { message: can.message, ...can.primary ? { primary: can.primary } : {} });
   const before = underWay2(destination);
-  const had = takenAddresses().includes(destination);
+  const had = savedMachines()?.find((each) => each.destination === destination || each.otherAddresses?.includes(destination));
+  if (had && !before) {
+    const machine = ownMachines2()?.machines.find((each) => each.id === had.destination);
+    if (machine)
+      return yield* json(200, { machine, known: true });
+  }
   const begun = beginAdd(destination);
   if ("busy" in begun)
     return yield* json(409, { message: begun.busy });
@@ -63593,7 +63627,7 @@ async function* add3(context, here) {
   const machine = ownMachines2()?.machines.find((each) => each.id === id);
   if (!machine)
     return yield* json(502, { message: `${destination} was set up, but ${here} couldn’t read its list of machines afterwards.` });
-  return yield* json(200, { machine, known: had || begun.seen.known === true });
+  return yield* json(200, { machine, known: Boolean(had) || begun.seen.known === true });
 }
 async function* forgetHost(context, id, here) {
   const { json } = context;
@@ -63606,6 +63640,8 @@ async function* forgetHost(context, id, here) {
     return yield* json(404, {});
   if (saved.some((each) => each.destination === id))
     return yield* json(409, { message: `It’s one of ${here}’s machines: remove it first.` });
+  if (oldAppAttached())
+    return yield* json(409, { message: oldAppWords(here, typeof host.name === "string" ? host.name : id) });
   let whole;
   try {
     const text = JSON.parse(fs193.readFileSync(PHONE_LINK_FILE, "utf8"));
@@ -63616,9 +63652,13 @@ async function* forgetHost(context, id, here) {
     return yield* json(503, { message: UNREADABLE });
   }
   const { [id]: _gone, ...rest } = whole.machines;
+  const stillNamed = typeof host.key === "string" && !Object.values(rest).some((each) => isObject(each) && each.key === host.key) && peersOf(readLink()).some((peer) => peer.key === host.key);
+  if (stillNamed) {
+    const gone = await removed(context, host.key);
+    if (statusOf(gone) !== 200 && statusOf(gone) !== 404)
+      return yield* gone;
+  }
   writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: rest }, null, 2));
-  if (typeof host.key === "string" && !Object.values(rest).some((each) => isObject(each) && each.key === host.key))
-    removeHere(host.key);
   return yield* json(200, {});
 }
 
@@ -64124,13 +64164,11 @@ var answersAlone = () => OWN_HOME_MAC && !openAppHost();
 function macFront(handle = engineHandler(readEngineFile, { name: os24.hostname() }), timing) {
   return async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
-    if (answersAlone())
+    if (!macAppAnswers(route) || boxAnswers(route) || answersAlone())
       return yield* handle(request, phone, signal);
     if (isMachinesRoute(route))
       return yield* machinesRoute(request, phone, signal, route, timing);
-    if (macAppAnswers(route) && !boxAnswers(route))
-      return yield* toApp(request, phone, signal);
-    yield* handle(request, phone, signal);
+    yield* toApp(request, phone, signal);
   };
 }
 async function runMacLink() {
@@ -65673,6 +65711,7 @@ export {
   macDocsChanged,
   macFeatures,
   macFront,
+  macKeys,
   macLink,
   macNoticeHold,
   macPeersBody,

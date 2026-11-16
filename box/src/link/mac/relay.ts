@@ -72,10 +72,9 @@ export const answersAlone = (): boolean => OWN_HOME_MAC && !openAppHost();
 export function macFront(handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() }), timing?: AppTiming): LinkHandler {
   return async function* (request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): AsyncGenerator<AnswerPiece> {
     const route = String(request.path ?? "").split("?")[0];
-    if (answersAlone()) return yield* handle(request, phone, signal);
+    if (!macAppAnswers(route) || boxAnswers(route) || answersAlone()) return yield* handle(request, phone, signal);
     if (isMachinesRoute(route)) return yield* machinesRoute(request, phone, signal, route, timing);
-    if (macAppAnswers(route) && !boxAnswers(route)) return yield* toApp(request, phone, signal);
-    yield* handle(request, phone, signal);
+    yield* toApp(request, phone, signal);
   };
 }
 
