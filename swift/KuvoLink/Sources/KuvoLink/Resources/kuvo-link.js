@@ -5895,8 +5895,6 @@ function said6({ S, prefs, dropped }) {
     dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some((name) => exists4(path169.join(S, "Usage", name))))
     dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
-  if (prefs.toolApproval !== "askFirst")
-    dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");
 }
 function runUpgrades(run, move) {
   const made = new Set;
@@ -51772,7 +51770,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "55c348774c91";
+var BRIDGE_VERSION = "46bb5dd84c13";
 
 // box/src/link/rehome/move.ts
 init_outside();
