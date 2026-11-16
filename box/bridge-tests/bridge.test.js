@@ -1726,6 +1726,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Chats marked in their sessions' metadata: kuvo/info names the folder they're in.)
     "sessions.chat": ["GET", "kuvo/info"],
     "sessions.glance": ["POST", "kuvo/sessions/glance"],
+    "sessions.archived-groups": ["POST", "kuvo/sessions/list"],
     "sessions.list": ["POST", "kuvo/sessions/list"],
     "sessions.mentions": ["GET", "kuvo/sessions/ses_none/mentions?for=files"],
     "sessions.models": ["POST", "kuvo/sessions/models"],
