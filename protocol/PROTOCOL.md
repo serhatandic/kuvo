@@ -7605,13 +7605,16 @@ above. Only on a Mac.
   seconds, then stopped by its pid; all of it only while `ps` says that pid is a keeper (`--box`
   in its command line): a record left by one that's gone names nothing to stop. Then everything
   else of the earlier Kuvo Code's still running, whatever started it and whether or not it left a
-  record, found by what each runs (`lsof`, once, never by a name: a program in its folder, its
-  engine's, its bridge's and its server's, or in an app with its bundle ID that isn't the one
-  moving it) but the move and what started it: its keeper's launch agent (`<ID>.box`) let go
+  record, found by what each runs (`lsof`, once, never by a name: a program in its own `engine`
+  or `box` folder, its engine's, its bridge's and its server's, never one of yours in a worktree
+  or chat there; or in an app with its bundle ID and another program's name than the one moving
+  it, so no copy of this app is), but the move and what started it, once what refuses it
+  whatever runs was checked: its keeper's launch agent (`<ID>.box`) let go
   of, each asked to stop (`SIGTERM`), then made to after 15 seconds; one still running refuses
   the move. A program that isn't Kuvo's with a file in its folder open to write in refuses it
-  too, named as you know it (its app's name, else its command's: "Visual Studio Code is still
-  using your earlier Kuvo Code's files. Quit it, then try again."). What it found and stopped
+  too, named as you know it (its app's name, else its command's: "Xcode is still using your
+  earlier Kuvo Code's files. Quit it, then try again.", a program that isn't an app by its
+  command, in quotes)). What it found and stopped
   goes to the move's log (`run.log`) alone, never on screen.
 - **Refused**, changing nothing, each in words to show: a copy of the app into the real
   `~/.kuvo-code` (or Kuvo Code itself into another); the release not whole (each file as its
@@ -7672,8 +7675,8 @@ above. Only on a Mac.
     progress still said, it stops what of the earlier Kuvo Code's runs again (as **First**
     does), refuses where a program that isn't Kuvo's has what changed open (named, as there),
     and runs again from the start, three times in all; then "Something kept changing your
-    sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open,
-    then try again." What changed goes to `run.log` alone. From here it only goes forward.
+    sessions while Kuvo copied them, so nothing was moved. Quit the earlier Kuvo Code wherever
+    it's open, then try again." One try is counted, however many rounds. What changed goes to `run.log` alone. From here it only goes forward.
   A failure that's the person's to act on is said as it is (`failed.message`); any other, in
   one sentence ("Kuvo couldn't move your sessions this time, and left everything as it was.
   Try again."), with what went wrong in `updates/rehome/run.log`.

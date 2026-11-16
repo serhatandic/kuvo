@@ -317,7 +317,7 @@ const keptLike = (journal: Journal) => (folder: string): string | null => {
 /** The first file in `files` (or in their folders) changed since `since` (ms), or null: by a file's
  * status time, which a write, a rename into its folder or a change of its mode moves. In `run`, the
  * box's processes' records (never moved) and the folder itself, which they're written into, aside. */
-function changedSince(files: string[], since: number, run: string, by: "ctimeMs" | "mtimeMs" = "ctimeMs"): string | null {
+function changedSince(files: string[], since: number, run: string, by: "ctimeMs" | "mtimeMs" = "ctimeMs", databaseFolders: Record<string, string[]> = {}): string | null {
   const walk = (file: string): string | null => {
     if (path.dirname(file) === run && PROCESS_RECORD.test(path.basename(file))) return null;
     // (SQLite's shared-memory index beside a database, which any program that only reads it
@@ -325,7 +325,11 @@ function changedSince(files: string[], since: number, run: string, by: "ctimeMs"
     if (by === "mtimeMs" && file.endsWith(".db-shm")) return null;
     let kind: fs.Stats;
     try { kind = fs.lstatSync(file); } catch { return null; }
-    if (kind[by] >= since && file !== run) return file;
+    // (Nor a database's log that holds nothing, which a reader makes as it opens it.)
+    if (by === "mtimeMs" && file.endsWith(".db-wal") && kind.size === 0) return null;
+    // (A database's folder that holds what it did, but SQLite's own files a reader made or took away.)
+    const quiet = by === "mtimeMs" && kind.isDirectory() && databaseFolders[file] !== undefined && sameBesideSQLite(listOf(file), databaseFolders[file]);
+    if (kind[by] >= since && file !== run && !quiet) return file;
     if (!kind.isDirectory()) return null;
     for (const name of listOf(file)) {
       const found = walk(path.join(file, name));
@@ -340,11 +344,17 @@ function changedSince(files: string[], since: number, run: string, by: "ctimeMs"
   return null;
 }
 
+/** Whether two lists of a folder's names are the same, but SQLite's files beside a database. */
+const sameBesideSQLite = (now: string[], then: string[]): boolean => {
+  const kept = (names: string[]) => names.filter(name => !/\.db-(shm|wal)$/.test(name)).sort().join("\n");
+  return kept(now) === kept(then);
+};
+
 /** Something written in the earlier Kuvo Code's folder while it was copied (`file`, the first
  * found): the move went back, and whoever runs it may stop the writer and run it again. */
 export class ChangedMeanwhile extends Said {
   constructor(readonly file: string) {
-    super("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open, then try again.");
+    super("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit the earlier Kuvo Code wherever it's open, then try again.");
   }
 }
 let lastChanged: string | null = null;
@@ -539,6 +549,11 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
   }
   if (at("clone")) {
     journal.clonedAt = Date.now();
+    // (What the earlier Kuvo Code's databases' folder holds now, to tell SQLite's own files from a change.)
+    if (journal.run) {
+      const databases = path.join(journal.from, "opencode", "data", "opencode");
+      journal.databaseFolders = { [databases]: listOf(databases) };
+    }
     stepTo(journal, "clone");
     cloneAll(journal);
     settleBoxFiles(journal);
@@ -626,7 +641,7 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
         const sources = journal.placements.filter(each => !each.installed).map(each => each.from);
         // (What was written, or added or taken away: a change of a file's attributes alone, which a
         // backup or Spotlight may make, loses nothing.)
-        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path.join(journal.from, "box", "run"), "mtimeMs") : null;
+        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path.join(journal.from, "box", "run"), "mtimeMs", journal.databaseFolders) : null;
         if (changed) {
           console.error(`Changed in the earlier Kuvo Code's folder while it was copied: ${changed}`);
           throw new ChangedMeanwhile(changed);

@@ -180,7 +180,7 @@ export function mac07(root: string, given: (mac: Mac) => void = () => {}, { at, 
   // The app's own, which stays the app's.
   put(join(S, "Browser", "x"), "browser")
   // The app that carries the release, with `kuvo-keys`.
-  put(join(mac.bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string></dict></plist>\n`)
+  put(join(mac.bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${APP_ID}</string><key>CFBundleExecutable</key><string>kuvo</string></dict></plist>\n`)
   put(join(mac.bundle, "Contents", "MacOS", "kuvo-keys"), KEYS_STAND_IN, 0o755)
   // This Mac's keys, in its Keychain under the app's names.
   put(join(mac.keychain, "app", "phone-link.key"), "the link's key")

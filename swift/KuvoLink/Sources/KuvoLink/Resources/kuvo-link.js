@@ -41939,7 +41939,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d8423196c784";
+var BRIDGE_VERSION = "337ec6b4713a";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -42478,7 +42478,7 @@ var keptLike = (journal) => (folder) => {
   const was = path142.join(journal.keptBefore, path142.relative(journal.to, folder));
   return exists6(was) ? was : null;
 };
-function changedSince(files, since, run, by = "ctimeMs") {
+function changedSince(files, since, run, by = "ctimeMs", databaseFolders = {}) {
   const walk = (file) => {
     if (path142.dirname(file) === run && PROCESS_RECORD.test(path142.basename(file)))
       return null;
@@ -42490,7 +42490,10 @@ function changedSince(files, since, run, by = "ctimeMs") {
     } catch {
       return null;
     }
-    if (kind[by] >= since && file !== run)
+    if (by === "mtimeMs" && file.endsWith(".db-wal") && kind.size === 0)
+      return null;
+    const quiet = by === "mtimeMs" && kind.isDirectory() && databaseFolders[file] !== undefined && sameBesideSQLite(listOf(file), databaseFolders[file]);
+    if (kind[by] >= since && file !== run && !quiet)
       return file;
     if (!kind.isDirectory())
       return null;
@@ -42508,11 +42511,16 @@ function changedSince(files, since, run, by = "ctimeMs") {
   }
   return null;
 }
+var sameBesideSQLite = (now, then) => {
+  const kept = (names) => names.filter((name) => !/\.db-(shm|wal)$/.test(name)).sort().join(`
+`);
+  return kept(now) === kept(then);
+};
 
 class ChangedMeanwhile extends Said {
   file;
   constructor(file) {
-    super("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open, then try again.");
+    super("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit the earlier Kuvo Code wherever it's open, then try again.");
     this.file = file;
   }
 }
@@ -42683,6 +42691,10 @@ async function carryOn2(journal, rewriter) {
   }
   if (at("clone")) {
     journal.clonedAt = Date.now();
+    if (journal.run) {
+      const databases = path142.join(journal.from, "opencode", "data", "opencode");
+      journal.databaseFolders = { [databases]: listOf(databases) };
+    }
     stepTo(journal, "clone");
     cloneAll(journal);
     settleBoxFiles(journal);
@@ -42762,7 +42774,7 @@ async function carryOn2(journal, rewriter) {
         throw new Error(`${written} changed as it moved, so it went back.`);
       if (journal.run) {
         const sources = journal.placements.filter((each) => !each.installed).map((each) => each.from);
-        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path142.join(journal.from, "box", "run"), "mtimeMs") : null;
+        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path142.join(journal.from, "box", "run"), "mtimeMs", journal.databaseFolders) : null;
         if (changed) {
           console.error(`Changed in the earlier Kuvo Code's folder while it was copied: ${changed}`);
           throw new ChangedMeanwhile(changed);
@@ -53931,7 +53943,7 @@ function schemaRefusal2(appFolder, home) {
     fs168.rmSync(scratch, { recursive: true, force: true });
   }
 }
-function runRefusal({ appFolder, home }, plan, pinned) {
+function quietRefusal({ appFolder, home }, plan, pinned) {
   const real = located(home) === located(path178.join(accountHome(), ".kuvo-code"));
   if (real !== (plan.id === "run.kuvo.code"))
     return real ? "Only Kuvo itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo itself moves into ~/.kuvo-code only.";
@@ -53943,11 +53955,6 @@ function runRefusal({ appFolder, home }, plan, pinned) {
     return DAMAGED;
   if (!exists9(appFolder))
     return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
-  const old = runningIn(path178.join(appFolder, "box", "run"));
-  if (old.length)
-    return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}) and didn't stop when asked. Restart this Mac, then try again.`;
-  if (runningIn(path178.join(home, "run")).length)
-    return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
   const target = nearest(home);
   if (fs168.statSync(appFolder).dev !== fs168.statSync(target).dev || diskKind(appFolder) !== "apfs")
     return "Kuvo can't move your sessions on this disk: your home folder must be on one APFS disk.";
@@ -53956,7 +53963,15 @@ function runRefusal({ appFolder, home }, plan, pinned) {
   const free = freeBytes(target);
   if (free !== null && free < needed)
     return `There isn't enough room on this Mac to move your sessions. Free up ${Math.ceil(needed / 1e6)} MB, then try again.`;
-  return heldRefusal(appFolder) ?? schemaRefusal2(appFolder, home);
+  return schemaRefusal2(appFolder, home);
+}
+function runningRefusal({ appFolder, home }) {
+  const old = runningIn(path178.join(appFolder, "box", "run"));
+  if (old.length)
+    return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}) and didn't stop when asked. Restart this Mac, then try again.`;
+  if (runningIn(path178.join(home, "run")).length)
+    return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
+  return heldRefusal(appFolder);
 }
 var ROUNDS = 3;
 function ancestors() {
@@ -53981,8 +53996,11 @@ function touching(appFolder, app) {
     return [];
   const folders = [...new Set([appFolder, located(appFolder)])];
   const under = (file) => folders.some((folder) => file === folder || file.startsWith(folder + "/"));
+  const own = (file) => folders.some((folder) => ["engine", "box"].some((name) => file.startsWith(path178.join(folder, name) + "/")) && !file.startsWith(path178.join(folder, "box", "artifacts") + "/"));
   const asked = spawnSync18("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
-  const own = ancestors(), mover = located(app.bundle);
+  if (asked.error || asked.signal)
+    console.error(`lsof couldn't say what uses the earlier Kuvo Code's folder: ${asked.error?.message ?? asked.signal}`);
+  const mine = ancestors(), mover = located(app.bundle), moversProgram = bundleSays(app.bundle, "CFBundleExecutable");
   const bundles = new Map;
   const bundleOf = (program) => {
     const at = program.indexOf(".app/");
@@ -53990,7 +54008,7 @@ function touching(appFolder, app) {
       return null;
     const bundle = program.slice(0, at + 4);
     if (!bundles.has(bundle))
-      bundles.set(bundle, { id: bundleSays(bundle, "CFBundleIdentifier"), name: bundleSays(bundle, "CFBundleDisplayName") ?? bundleSays(bundle, "CFBundleName") });
+      bundles.set(bundle, { id: bundleSays(bundle, "CFBundleIdentifier"), name: bundleSays(bundle, "CFBundleDisplayName") ?? bundleSays(bundle, "CFBundleName"), program: bundleSays(bundle, "CFBundleExecutable") });
     return { bundle, ...bundles.get(bundle) };
   };
   const found = [];
@@ -54000,7 +54018,7 @@ function touching(appFolder, app) {
     const value = line.slice(1);
     switch (line[0]) {
       case "p":
-        each = own.has(Number(value)) ? null : { pid: Number(value), command: "", program: "", old: false, files: [], writes: false, name: "" };
+        each = mine.has(Number(value)) ? null : { pid: Number(value), command: "", program: "", old: false, files: [], written: [], writes: false, name: "" };
         if (each)
           found.push(each);
         break;
@@ -54022,16 +54040,18 @@ function touching(appFolder, app) {
           each.program = value;
         if (under(value) && fd !== "txt") {
           each.files.push(value);
-          if (/[wu]/.test(access))
+          if (/[wu]/.test(access)) {
             each.writes = true;
+            each.written.push(value);
+          }
         }
         break;
     }
   }
   return found.flatMap((each) => {
     const bundle = each.program ? bundleOf(each.program) : null;
-    each.old = under(each.program) || bundle !== null && bundle.id === app.id && located(bundle.bundle) !== mover;
-    each.name = bundle?.name ?? each.command;
+    each.old = own(each.program) || bundle !== null && bundle.id === app.id && located(bundle.bundle) !== mover && bundle.program !== null && moversProgram !== null && bundle.program !== moversProgram;
+    each.name = bundle?.name ?? `“${each.command}”`;
     return each.old || each.files.length ? [each] : [];
   });
 }
@@ -54049,8 +54069,10 @@ async function stopOldSetup(appFolder, app, { asked = 15000, made = 5000 } = {})
   let found = touching(appFolder, app);
   if (found.some((each) => each.old)) {
     const tools = launchTools();
-    if (tools)
-      spawnSync18(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, stdio: "ignore" });
+    if (tools) {
+      const out = spawnSync18(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
+      console.error(`launchctl bootout ${app.id}.box: ${out.status ?? out.signal} ${(out.stderr ?? "").trim()}`);
+    }
     const old = found.filter((each) => each.old);
     console.error(`Stopping what still runs of the earlier Kuvo Code: ${old.map((each) => `${each.pid} ${each.program || each.command}`).join(", ")}`);
     const waitFor = async (limit) => {
@@ -54252,17 +54274,20 @@ async function rehomeRun(folders, options) {
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: Date.now(), step: "plan", message: refusal }, asked: null });
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
     };
+    let pinned = null;
+    try {
+      pinned = checkedRelease(plan.release).engine;
+    } catch {}
+    const quiet = quietRefusal(folders, plan, pinned);
+    if (quiet)
+      return refuse(quiet);
     if (plan.source === "app-box")
       await stopOldKeeper(appFolder);
     const app = { id: options.id, bundle: options.bundle };
     const stopped = await stopOldSetup(appFolder, app);
     if (stopped)
       return refuse(stopped);
-    let pinned = null;
-    try {
-      pinned = checkedRelease(plan.release).engine;
-    } catch {}
-    const refusal = runRefusal(folders, plan, pinned);
+    const refusal = runningRefusal(folders);
     if (refusal)
       return refuse(refusal);
     if (located(plan.engine) === located(path178.join(home, "updates", "install", "engine"))) {
@@ -54270,6 +54295,7 @@ async function rehomeRun(folders, options) {
         if (name !== pinned)
           fs168.rmSync(path178.join(plan.engine, name), { recursive: true, force: true });
     }
+    const triesBefore = readRecord(home).tries ?? 0;
     for (let round = 1;; round++) {
       const now = Date.now();
       const outcome = await run3({
@@ -54291,7 +54317,8 @@ async function rehomeRun(folders, options) {
       if (!changed || round >= ROUNDS)
         return outcome;
       notePhase(home, "plan");
-      const writers = touching(appFolder, app).filter((each) => !each.old && each.files.some((file) => file === changed || file.startsWith(changed + "/")));
+      noteRecord(home, { tries: triesBefore + 1 });
+      const writers = touching(appFolder, app).filter((each) => !each.old && each.writes && each.written.some((file) => file === changed || file.startsWith(changed + "/")));
       if (writers.length) {
         console.error(`Using what changed (${changed}): ${writers.map((each) => `${each.pid} ${each.program || each.command}`).join(", ")}`);
         return refuse(stillUsing(writers));

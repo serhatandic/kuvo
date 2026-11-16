@@ -134,7 +134,7 @@ test.if(mac)("an earlier Kuvo Code that still has its database open refuses the 
     expect(refused.status).toBe(1)
     expect(refused.said).toMatchObject({ result: "refused", status: { state: "failed", tries: 1, nextTry: null } })
     // (Named as you know it, never by a path.)
-    expect(refused.said!.message).toMatch(/^\w+ is still using your earlier Kuvo Code's files\. Quit it, then try again\.$/)
+    expect(refused.said!.message).toMatch(/^“\w+” is still using your earlier Kuvo Code's files\. Quit it, then try again\.$/)
     expect(existsSync(join(m.K, "box"))).toBe(false)
     expect(snapshot(m.S)).toEqual(before)
   } finally {
@@ -262,7 +262,7 @@ test.if(mac)("something that goes on writing in the earlier Kuvo Code's folder s
   const written = join(m.S, "Chats", "c1", "written-meanwhile.md")
   const stopped = run(m, { KUVO_TEST_REHOME_WRITE_AT: "after-check", KUVO_TEST_REHOME_WRITE_FILE: written, KUVO_TEST_REHOME_WRITE_TEXT: "new" })
   expect(stopped.status).toBe(1)
-  expect(stopped.said!.message).toBe("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open, then try again.")
+  expect(stopped.said!.message).toBe("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit the earlier Kuvo Code wherever it's open, then try again.")
   expect(stopped.errors).toContain("Running the move again (3 of 3)")
   expect(existsSync(join(m.K, "box"))).toBe(false)
   expect(run(m).said).toMatchObject({ result: "done" })
@@ -277,6 +277,49 @@ test.if(mac)("a program that only reads the earlier Kuvo Code's database while i
   expect(moved.errors).not.toContain("Running the move again")
 }, LIMIT)
 
+test.if(mac)("a program that opens and closes the earlier Kuvo Code's database to read it while it's copied (SQLite's files beside it made and taken away) never stops the move", () => {
+  const m = mac07(root)
+  // (Its log, empty as a reader leaves it, and its index: there now, none when it was cloned.)
+  const moved = run(m, { KUVO_TEST_REHOME_WRITE_AT: "after-check", KUVO_TEST_REHOME_WRITE_FILE: join(m.S, "opencode", "data", "opencode", "opencode.db-wal"), KUVO_TEST_REHOME_WRITE_TEXT: "" })
+  expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+  expect(moved.errors).not.toContain("Running the move again")
+}, LIMIT)
+
+test.if(mac)("the earlier app still open is stopped, but programs of yours run from its folder (a chat's build) and another copy of Kuvo itself never are", async () => {
+  const m = mac07(root)
+  const sign = (file: string) => expect(spawnSync("/usr/bin/codesign", ["-f", "-s", "-", file]).status).toBe(0)
+  // A program built in a chat's folder there, running.
+  const built = join(m.S, "Chats", "c1", "build", "server")
+  mkdirSync(join(m.S, "Chats", "c1", "build"), { recursive: true })
+  spawnSync("/bin/cp", ["/bin/zsh", built]); sign(built)
+  // Another copy of the app moving it (its ID, and its program's name), opened from elsewhere.
+  const copy = join(m.home, "Downloads", "Kuvo Code.app")
+  mkdirSync(join(copy, "Contents", "MacOS"), { recursive: true })
+  spawnSync("/bin/cp", [join(m.bundle, "Contents", "Info.plist"), join(copy, "Contents", "Info.plist")])
+  const program = join(copy, "Contents", "MacOS", "kuvo")
+  spawnSync("/bin/cp", ["/bin/zsh", program]); sign(program)
+  // And the earlier app itself, still open: its ID, a program of another name.
+  const earlier = join(m.home, "Applications", "Earlier.app")
+  mkdirSync(join(earlier, "Contents", "MacOS"), { recursive: true })
+  put(join(earlier, "Contents", "Info.plist"), readFileSync(join(m.bundle, "Contents", "Info.plist"), "utf8").replace("<string>kuvo</string>", "<string>Kuvo Code</string>"))
+  const earlierProgram = join(earlier, "Contents", "MacOS", "Kuvo Code")
+  spawnSync("/bin/cp", ["/bin/zsh", earlierProgram]); sign(earlierProgram)
+  const running = [built, program, earlierProgram].map(file => spawn(file, ["-c", "read line"], { stdio: ["pipe", "ignore", "ignore"] }))
+  const earlierEnded = new Promise<string | null>(resolve => running[2].once("exit", (_, signal) => resolve(signal)))
+  try {
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const moved = run(m)
+    expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+    expect(moved.errors).toContain(`Stopping what still runs of the earlier Kuvo Code: ${running[2].pid} ${earlierProgram}`)
+    expect(moved.errors).not.toContain(`${running[0].pid} `)
+    expect(moved.errors).not.toContain(`${running[1].pid} `)
+    expect(await earlierEnded).toBe("SIGTERM")
+    for (const each of running.slice(0, 2)) expect(each.exitCode === null && each.signalCode === null).toBe(true)
+  } finally {
+    for (const each of running) { try { each.stdin!.end() } catch {} ; if (each.exitCode === null && each.signalCode === null) await new Promise(resolve => each.once("exit", resolve)) }
+  }
+}, LIMIT)
+
 test.if(mac)("an earlier Kuvo Code's program still running from its folder and writing there is found and stopped before anything's copied, and the move finishes without you", async () => {
   const m = mac07(root)
   // (Its engine's program, as a stand-in: a shell, run from the earlier Kuvo Code's own folder, as
@@ -287,7 +330,8 @@ test.if(mac)("an earlier Kuvo Code's program still running from its folder and w
   // (Signed anew, ad hoc: macOS runs a system program only from where the system keeps it.)
   expect(spawnSync("/usr/bin/codesign", ["-f", "-s", "-", program]).status).toBe(0)
   const log = join(m.S, "Chats", "c1", "activity.jsonl")
-  const writer = spawn(program, ["-c", 'while :; do echo x >> "$1"; /bin/sleep 0.1; done', "sh", log], { stdio: "ignore", detached: true })
+  // (Never for good, should the test itself be stopped part way.)
+  const writer = spawn(program, ["-c", 'for i in {1..600}; do echo x >> "$1"; /bin/sleep 0.1; done', "sh", log], { stdio: "ignore" })
   const ended = new Promise<string | null>(resolve => writer.once("exit", (_, signal) => resolve(signal)))
   try {
     await new Promise<void>(resolve => { const look = () => existsSync(log) ? resolve() : setTimeout(look, 20); look() })
@@ -311,7 +355,7 @@ test.if(mac)("another app writing in the earlier Kuvo Code's folder is named in 
     await new Promise<void>(resolve => other.stdout.once("data", () => resolve()))
     const refused = run(m)
     expect(refused.status).toBe(1)
-    expect(refused.said!.message).toBe("zsh is still using your earlier Kuvo Code's files. Quit it, then try again.")
+    expect(refused.said!.message).toBe("“zsh” is still using your earlier Kuvo Code's files. Quit it, then try again.")
     expect(refused.said!.message).not.toContain("/")
     expect(refused.errors).toContain(`${other.pid} /bin/zsh: ${log}`)
     expect(other.exitCode).toBe(null)

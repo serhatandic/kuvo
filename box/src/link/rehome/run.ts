@@ -86,6 +86,12 @@ function schemaRefusal(appFolder: string, home: string): string | null {
 /** Why the move can't go ahead now, or null: checked before anything changes, each in words that
  * say what to do. */
 function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string | null): string | null {
+  return quietRefusal({ appFolder, home }, plan, pinned) ?? runningRefusal({ appFolder, home });
+}
+
+/** What refuses the move whatever runs: checked first, so nothing is stopped for a move that
+ * wouldn't go ahead. */
+function quietRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string | null): string | null {
   const real = located(home) === located(path.join(accountHome(), ".kuvo-code"));
   if (real !== (plan.id === "run.kuvo.code")) return real ? "Only Kuvo itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo itself moves into ~/.kuvo-code only.";
   // (The release whole, every file as it says, with its helper; and its engine, fetched.)
@@ -94,9 +100,6 @@ function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string 
   // (Kuvo Code itself always brings what hands its keys over: one without it isn't whole.)
   if (real && !plan.keys) return DAMAGED;
   if (!exists(appFolder)) return "There's nothing of an earlier Kuvo Code's on this Mac to move.";
-  const old = runningIn(path.join(appFolder, "box", "run"));
-  if (old.length) return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}) and didn't stop when asked. Restart this Mac, then try again.`;
-  if (runningIn(path.join(home, "run")).length) return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
   // One disk, cloned: never copied.
   const target = nearest(home);
   if (fs.statSync(appFolder).dev !== fs.statSync(target).dev || diskKind(appFolder) !== "apfs") return "Kuvo can't move your sessions on this disk: your home folder must be on one APFS disk.";
@@ -105,7 +108,15 @@ function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string 
   const needed = (sizeOf(path.join(database, "opencode.db")) + sizeOf(path.join(database, "opencode.db-wal"))) * 1.1 + 200_000_000;
   const free = freeBytes(target);
   if (free !== null && free < needed) return `There isn't enough room on this Mac to move your sessions. Free up ${Math.ceil(needed / 1_000_000)} MB, then try again.`;
-  return heldRefusal(appFolder) ?? schemaRefusal(appFolder, home);
+  return schemaRefusal(appFolder, home);
+}
+
+/** What refuses it for what still runs, once what of the earlier Kuvo Code's runs was stopped. */
+function runningRefusal({ appFolder, home }: Folders): string | null {
+  const old = runningIn(path.join(appFolder, "box", "run"));
+  if (old.length) return `An earlier Kuvo Code is still running in the background on this Mac (${old.join(", ")}) and didn't stop when asked. Restart this Mac, then try again.`;
+  if (runningIn(path.join(home, "run")).length) return "Kuvo is already running from ~/.kuvo-code on this Mac. Restart this Mac, then try again.";
+  return heldRefusal(appFolder);
 }
 
 /** How many times a move runs, by itself, when something wrote in what it copied meanwhile. */
@@ -115,7 +126,7 @@ const ROUNDS = 3;
  * (`old`: one in its folder, or in its app, a bundle with its ID that isn't the one moving it), or
  * has files open in its folder (`files`; `writes`, any of them for writing), and how to name it to
  * you (`name`: its app's, or its command's). */
-export interface Toucher { pid: number; command: string; program: string; old: boolean; files: string[]; writes: boolean; name: string }
+export interface Toucher { pid: number; command: string; program: string; old: boolean; files: string[]; written: string[]; writes: boolean; name: string }
 
 /** This process and those it was started by (the installer, the app): never stopped. */
 function ancestors(): Set<number> {
@@ -144,15 +155,20 @@ export function touching(appFolder: string, app: { id: string; bundle: string })
   if (process.platform !== "darwin" || typeof process.getuid !== "function") return [];
   const folders = [...new Set([appFolder, located(appFolder)])];
   const under = (file: string) => folders.some(folder => file === folder || file.startsWith(folder + "/"));
+  // Its own programs' folders alone (its engine, its box's): never what's yours in its folder, a
+  // program built and run in a worktree or a chat there.
+  const own = (file: string) => folders.some(folder => ["engine", "box"].some(name => file.startsWith(path.join(folder, name) + "/")) && !file.startsWith(path.join(folder, "box", "artifacts") + "/"));
   const asked = spawnSync("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60_000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
-  const own = ancestors(), mover = located(app.bundle);
-  const bundles = new Map<string, { id: string | null; name: string | null }>();
+  // (What it couldn't ask, for support: nothing found then, and what's written meanwhile is still caught.)
+  if (asked.error || asked.signal) console.error(`lsof couldn't say what uses the earlier Kuvo Code's folder: ${asked.error?.message ?? asked.signal}`);
+  const mine = ancestors(), mover = located(app.bundle), moversProgram = bundleSays(app.bundle, "CFBundleExecutable");
+  const bundles = new Map<string, { id: string | null; name: string | null; program: string | null }>();
   const bundleOf = (program: string) => {
     // (The outermost app it's in: a helper inside an app is that app's.)
     const at = program.indexOf(".app/");
     if (at < 0) return null;
     const bundle = program.slice(0, at + 4);
-    if (!bundles.has(bundle)) bundles.set(bundle, { id: bundleSays(bundle, "CFBundleIdentifier"), name: bundleSays(bundle, "CFBundleDisplayName") ?? bundleSays(bundle, "CFBundleName") });
+    if (!bundles.has(bundle)) bundles.set(bundle, { id: bundleSays(bundle, "CFBundleIdentifier"), name: bundleSays(bundle, "CFBundleDisplayName") ?? bundleSays(bundle, "CFBundleName"), program: bundleSays(bundle, "CFBundleExecutable") });
     return { bundle, ...bundles.get(bundle)! };
   };
   const found: Toucher[] = [];
@@ -161,7 +177,7 @@ export function touching(appFolder: string, app: { id: string; bundle: string })
     const value = line.slice(1);
     switch (line[0]) {
       case "p":
-        each = own.has(Number(value)) ? null : { pid: Number(value), command: "", program: "", old: false, files: [], writes: false, name: "" };
+        each = mine.has(Number(value)) ? null : { pid: Number(value), command: "", program: "", old: false, files: [], written: [], writes: false, name: "" };
         if (each) found.push(each);
         break;
       case "c": if (each) each.command = value; break;
@@ -172,15 +188,17 @@ export function touching(appFolder: string, app: { id: string; bundle: string })
         if (fd === "txt" && !each.program) each.program = value;
         if (under(value) && fd !== "txt") {
           each.files.push(value);
-          if (/[wu]/.test(access)) each.writes = true;
+          if (/[wu]/.test(access)) { each.writes = true; each.written.push(value); }
         }
         break;
     }
   }
   return found.flatMap(each => {
     const bundle = each.program ? bundleOf(each.program) : null;
-    each.old = under(each.program) || (bundle !== null && bundle.id === app.id && located(bundle.bundle) !== mover);
-    each.name = bundle?.name ?? each.command;
+    // (The earlier app: its ID, which this one shares, and a program of another name, so another
+    // copy of this one, opened from elsewhere, is never taken for it.)
+    each.old = own(each.program) || (bundle !== null && bundle.id === app.id && located(bundle.bundle) !== mover && bundle.program !== null && moversProgram !== null && bundle.program !== moversProgram);
+    each.name = bundle?.name ?? `“${each.command}”`;
     return each.old || each.files.length ? [each] : [];
   });
 }
@@ -200,7 +218,10 @@ async function stopOldSetup(appFolder: string, app: { id: string; bundle: string
   let found = touching(appFolder, app);
   if (found.some(each => each.old)) {
     const tools = launchTools();
-    if (tools) spawnSync(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30_000, stdio: "ignore" });
+    if (tools) {
+      const out = spawnSync(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30_000, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
+      console.error(`launchctl bootout ${app.id}.box: ${out.status ?? out.signal} ${(out.stderr ?? "").trim()}`);
+    }
     const old = found.filter(each => each.old);
     console.error(`Stopping what still runs of the earlier Kuvo Code: ${old.map(each => `${each.pid} ${each.program || each.command}`).join(", ")}`);
     const waitFor = async (limit: number) => {
@@ -397,15 +418,18 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
       noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: Date.now(), step: "plan", message: refusal }, asked: null });
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
     };
+    let pinned: string | null = null;
+    try { pinned = checkedRelease(plan.release).engine; } catch {}
+    // (What refuses it whatever runs, first: nothing is stopped for a move that wouldn't go ahead.)
+    const quiet = quietRefusal(folders, plan, pinned);
+    if (quiet) return refuse(quiet);
     if (plan.source === "app-box") await stopOldKeeper(appFolder);
     // Everything else of the earlier Kuvo Code's still running stopped too, whatever started it
     // (and whether or not it left a record): it would go on writing in what's copied.
     const app = { id: options.id, bundle: options.bundle };
     const stopped = await stopOldSetup(appFolder, app);
     if (stopped) return refuse(stopped);
-    let pinned: string | null = null;
-    try { pinned = checkedRelease(plan.release).engine; } catch {}
-    const refusal = runRefusal(folders, plan, pinned);
+    const refusal = runningRefusal(folders);
     if (refusal) return refuse(refusal);
     // (Only this release's engine goes into the box: never a download cut short, nor another version's.)
     // (And only where the installer stages it: never a folder named by mistake.)
@@ -415,6 +439,7 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
     // Something written there while it was copied: the move went back, whatever wrote it is
     // stopped where it's the earlier Kuvo Code's, and the move runs again, by itself, a few times.
     // One of another app's that goes on writing is named, in words, for you to quit.
+    const triesBefore = readRecord(home).tries ?? 0;
     for (let round = 1; ; round++) {
       const now = Date.now();
       const outcome = await run({
@@ -427,7 +452,9 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
       const changed = takeLastChanged();
       if (!changed || round >= ROUNDS) return outcome;
       notePhase(home, "plan");
-      const writers = touching(appFolder, app).filter(each => !each.old && each.files.some(file => file === changed || file.startsWith(changed + "/")));
+      // (One try, however many rounds: each that went back counted it again.)
+      noteRecord(home, { tries: triesBefore + 1 });
+      const writers = touching(appFolder, app).filter(each => !each.old && each.writes && each.written.some(file => file === changed || file.startsWith(changed + "/")));
       if (writers.length) {
         console.error(`Using what changed (${changed}): ${writers.map(each => `${each.pid} ${each.program || each.command}`).join(", ")}`);
         return refuse(stillUsing(writers));

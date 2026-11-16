@@ -194,6 +194,10 @@ export interface Journal {
   /** When it began to clone: what's changed since where it moves from (written there meanwhile)
    * only its copy would have, so it goes back. */
   clonedAt?: number;
+  /** A move the box runs itself: what each folder of the earlier Kuvo Code's databases held as it
+   * was cloned (names), so SQLite's own files beside a database, made and taken away by any program
+   * that only reads it, aren't taken for a change. */
+  databaseFolders?: Record<string, string[]>;
   /** Keep This Mac Awake was off in the app: the box's own setting says so too. */
   keepsAwakeOff?: boolean;
   /** A move the box runs whole itself (`rehome --run`, #713), with no keeper before it: the app
