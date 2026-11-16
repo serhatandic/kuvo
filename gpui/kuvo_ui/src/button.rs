@@ -91,6 +91,7 @@ pub struct Button {
     shortcut: Option<SharedString>,
     style: ButtonStyle,
     size: ButtonSize,
+    icon_size: IconSize,
     pill: bool,
     square: bool,
     disabled: bool,
@@ -112,6 +113,7 @@ impl Button {
             shortcut: None,
             style: ButtonStyle::default(),
             size: ButtonSize::default(),
+            icon_size: IconSize::Nav,
             pill: false,
             square: false,
             disabled: false,
@@ -158,6 +160,12 @@ impl Button {
 
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
+        self
+    }
+
+    /// The icon's size (16 px in the title bar and toolbars); the button keeps its size.
+    pub fn icon_size(mut self, size: IconSize) -> Self {
+        self.icon_size = size;
         self
     }
 
@@ -353,7 +361,7 @@ impl RenderOnce for Button {
             button = button.tooltip(move |_window, cx| crate::menu::Tooltip::new(text.clone()).build(cx));
         }
 
-        let size = IconSize::Nav;
+        let size = self.icon_size;
         let leading = if self.loading {
             Some(crate::small::spinner("loading", size, icon_color).into_any_element())
         } else {

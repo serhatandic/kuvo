@@ -2152,7 +2152,7 @@ impl Workspace {
             .px(space::S3)
             .border_b_1()
             .border_color(c.border)
-            .child(Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings").ghost().size(ButtonSize::Small).tooltip("Bot Settings").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
+            .child(Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).tooltip("Bot Settings").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
             .children(listed.as_ref().map(|bot| areas::bot_face(&bot.look, px(22.))))
             .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
             .children(listed.as_ref().map(|bot| {

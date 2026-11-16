@@ -1,4 +1,4 @@
-//! Lucide icons adapted to a 16-unit grid with 1.2-unit strokes, in two sizes.
+//! Lucide icons adapted to a 16-unit grid with 1.2-unit strokes, in Zed's sizes.
 //!
 //! The SVGs live in `gpui/assets/icons` and are compiled into the binary, so an icon can never
 //! go missing at run time. GPUI draws an SVG as a mask, so an icon takes the colour it's given.
@@ -7,20 +7,37 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Hsla, IntoElement, Pixels, RenderOnce, SharedString, Styled, Window, px, svg};
 
-/// The two sizes icons come in.
+/// The sizes icons come in: Zed's scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IconSize {
-    /// 14 px: navigation, rows, buttons, menus.
+    /// 10 px: a dot-sized mark beside text.
+    Indicator,
+    /// 12 px: inside small chips.
+    XSmall,
+    /// 14 px: navigation, rows, buttons, menus, the composer's picks.
     #[default]
     Nav,
+    /// 16 px: icon buttons in the title bar and in toolbars and headers above a view.
+    Medium,
+    /// 18 px: the left rail's areas and its bottom buttons.
+    Rail,
     /// 20 px: cards and empty states.
     Card,
 }
 
 impl IconSize {
+    /// Zed's name for the 14 px size (the same as `Nav`).
+    pub const SMALL: IconSize = IconSize::Nav;
+}
+
+impl IconSize {
     pub fn pixels(self) -> Pixels {
         match self {
+            Self::Indicator => px(10.),
+            Self::XSmall => px(12.),
             Self::Nav => px(14.),
+            Self::Medium => px(16.),
+            Self::Rail => px(18.),
             Self::Card => px(20.),
         }
     }

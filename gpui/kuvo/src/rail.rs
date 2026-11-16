@@ -111,7 +111,7 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
         .cursor_pointer()
         .when(selected, |t| t.bg(selected_bg))
         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
-        .child(Icon::new(icon).size(IconSize::Card).color(if selected { c.text } else { c.icon }))
+        .child(Icon::new(icon).size(IconSize::Rail).color(if selected { c.text } else { c.icon }))
         .when(waiting > 0, |t| t.child(div().absolute().top(px(-3.)).right(px(-5.)).child(count_badge(waiting, cx))))
 }
 

@@ -42,6 +42,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             Button::icon_only("back", IconName::ArrowLeft, "Back")
                 .ghost()
                 .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
                 .tooltip("⌘[")
                 .disabled(!workspace.can_go_back())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(Back), cx)),
@@ -50,6 +51,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             Button::icon_only("forward", IconName::ArrowRight, "Forward")
                 .ghost()
                 .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
                 .tooltip("⌘]")
                 .disabled(!workspace.can_go_forward())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(Forward), cx)),
@@ -58,6 +60,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             Button::icon_only("new-session", IconName::Plus, "New Session")
                 .ghost()
                 .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
                 .tooltip("⌘N").disabled(workspace.client().gate().is_held())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
         );
@@ -65,6 +68,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
         Button::icon_only("toggle-panel", IconName::PanelRight, if workspace.is_panel_open() { "Hide Panel" } else { "Show Panel" })
             .ghost()
             .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
             .selected(workspace.is_panel_open())
             .tooltip("⌥⌘0")
             .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(cx)))
@@ -96,6 +100,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                     Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
                         .ghost()
                         .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
                         .selected(workspace.sidebar_shown())
                         .tooltip("⌘B")
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
@@ -142,6 +147,7 @@ fn session_more_menu(workspace: &Workspace, session: &str, cx: &Context<Workspac
     let trigger = Button::icon_only("session-more", IconName::More, "Session actions")
         .ghost()
         .size(ButtonSize::Small)
+                .icon_size(IconSize::Medium)
         .selected(selected)
         .tooltip("Session actions");
     let session_id = session.to_owned();
@@ -176,7 +182,7 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
     };
     // A long name is cut, so back, forward and + stay at the sidebar's edge.
     let shown: gpui::SharedString = if name.chars().count() > 18 { format!("{}…", name.chars().take(17).collect::<String>()).into() } else { name.clone() };
-    let trigger = Button::new("computer-switcher", shown).ghost().size(ButtonSize::Small).icon(IconName::Computer).icon_after(IconName::ChevronDown);
+    let trigger = Button::new("computer-switcher", shown).ghost().size(ButtonSize::Small).icon_size(IconSize::Medium).icon(IconName::Computer).icon_after(IconName::ChevronDown);
     let menu_name = name.clone();
     // Your other computers, as the box lists them (`kuvo/computers`), each with how it's reached.
     // A workspace by itself shows its one box: they're listed, and can't be switched to.
@@ -297,9 +303,9 @@ fn update_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyElem
     let open = workspace.update_card_open();
     let label = chip_label(&held);
     let leading = if held.updating {
-        spinner("update-chip-spinner", IconSize::Nav, c.icon).into_any_element()
+        spinner("update-chip-spinner", IconSize::Medium, c.icon).into_any_element()
     } else {
-        Icon::new(if held.attention { IconName::Warning } else { IconName::ArrowDown }).color(if held.attention { c.warning } else { c.icon }).into_any_element()
+        Icon::new(if held.attention { IconName::Warning } else { IconName::ArrowDown }).size(IconSize::Medium).color(if held.attention { c.warning } else { c.icon }).into_any_element()
     };
     let chip = div()
         .id("update-chip")
