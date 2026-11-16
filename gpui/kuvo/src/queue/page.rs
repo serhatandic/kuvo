@@ -2,10 +2,11 @@
 //! chips to take off), its items as rows in raised cards under each status, an item's page with its
 //! chips, and the sheets over them (a new item, an item rewritten, a label made, changed, removed).
 
+use kuvo_ui::anchor::{Placement, Popover};
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
     AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred,
-    div, list, point, prelude::FluentBuilder as _, px,
+    div, img, list, point, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::work_queue::{File, Item, ItemChange, ItemSession, Link};
 use kuvo_ui::{
@@ -518,7 +519,7 @@ impl QueueView {
         // Its menu, under it (over it where there's no room below).
         let menu = open.then(|| {
             let menu = self.picker_view(cx);
-            div().absolute().top_full().left_0().child(deferred(anchored().anchor(gpui::Anchor::TopLeft).offset(point(px(0.), space::S1)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2))
+            Popover::new(SharedString::from(format!("chip-menu-motion-{}", field.slug())), Placement::below(), menu).priority(2)
         });
         div().relative().flex_none().child(chip).children(menu).into_any_element()
     }
@@ -698,16 +699,32 @@ impl QueueView {
 
     fn file_row(&mut self, file: File, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let icon = if file.kind.starts_with("image/") { IconName::Image } else { IconName::File };
+        let image = file.kind.starts_with("image/");
+        let key = self.whole().map(|whole| format!("{}/{}", whole.item.id, file.name)).unwrap_or_default();
+        if image && !self.picture_reads.contains_key(&key) {
+            if let Some(whole) = self.whole() {
+                let (item, name, read_key) = (whole.item.id.clone(), file.name.clone(), key.clone());
+                self.picture_reads.insert(key.clone(), crate::pictures::Read::Reading);
+                self.run(format!("picture-{key}"), move |client| {
+                    match client.work_item_file(&item, &name) {
+                        Ok(bytes) => crate::pictures::shown(bytes),
+                        Err(error) => crate::pictures::Read::Failed { why: error.to_string(), again: false },
+                    }
+                }, move |this, read, cx| { this.picture_reads.insert(read_key, read); cx.notify(); }, cx);
+            }
+        }
+        let thumb = match self.picture_reads.get(&key) {
+            Some(crate::pictures::Read::Shown { thumb, .. }) => img(thumb.clone()).size(px(52.)).into_any_element(),
+            _ => Icon::new(if image { IconName::Image } else { IconName::File }).color(c.icon).into_any_element(),
+        };
+        let picture = kuvo_box::pictures::Picture { id: key, source: kuvo_box::pictures::Source::File(String::new()), name: Some(file.name.clone()), caption: None };
         let selector = format!("item-file-{}", file.name);
         card_row(first, last, cx)
             .debug_selector(move || selector)
-            .flex()
-            .items_center()
-            .gap(space::S3)
-            .px(space::S5)
-            .py(space::S3)
-            .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(Icon::new(icon).color(c.icon)))
+            .id(SharedString::from(format!("queue-file-{}", file.name)))
+            .when(image, |row| row.cursor_pointer().on_click(cx.listener(move |this, _, window, cx| { this.viewing = Some(picture.clone()); window.focus(&this.focus, cx); cx.notify(); })))
+            .flex().items_center().gap(space::S3).px(space::S5).py(space::S3)
+            .child(thumb)
             .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(file.name.clone()))
             .child(div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(size_words(file.size)))
             .into_any_element()
@@ -934,7 +951,7 @@ impl QueueView {
                     .child(Button::icon_only("sheet-close", IconName::Close, "Close").ghost().size(ButtonSize::Small).disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)))),
             )
             .child(div().debug_selector(|| "sheet-title-field".into()).px(space::S5).pt(space::S1).child(self.title.clone()))
-            .child(div().debug_selector(|| "sheet-body-field".into()).px(space::S5).pt(space::S1).pb(space::S3).child(self.body.clone()))
+            .child(div().debug_selector(|| "sheet-body-field".into()).px(space::S5).pt(space::S1).pb(space::S3).child(self.body_composer.clone()))
             .children(chips.map(|chips| div().px(space::S5).pb(space::S4).child(chips)))
             // Why the box turned it down, in its words.
             .children(self.sheet_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).px(space::S5).pb(space::S3).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
@@ -1173,6 +1190,12 @@ impl Render for QueueView {
             let content = self.sheet_content(sheet, cx);
             div().id("queue-sheet-layer").absolute().inset_0().flex().justify_center().p(space::S6).when(high, |d| d.items_start().pt(px(88.))).when(!high, |d| d.items_center()).bg(dim(cx)).occlude().child(content)
         });
+        let viewer = self.viewing.as_ref().map(|picture| {
+            div().id("queue-picture-viewer").absolute().inset_0()
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| { if event.keystroke.key == "escape" { this.viewing = None; cx.notify(); } }))
+                .on_click(cx.listener(|this, _, _, cx| { this.viewing = None; cx.notify(); }))
+                .child(crate::pictures::viewer(picture, 0, 1, self.picture_reads.get(&picture.id), window))
+        });
         div()
             .id("queue-page")
             .debug_selector(|| if listing { "queue-page".into() } else { "item-page".into() })
@@ -1187,5 +1210,6 @@ impl Render for QueueView {
             .child(div().flex_1().min_h_0().child(page))
             .children(sheet)
             .children(scrim)
+            .children(viewer)
     }
 }

@@ -164,10 +164,27 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   // A coding agent's sign-in page comes back to its computer, unless its bridge says it can finish
   // on another device.
   const here = agents && meta.remoteSignIn !== true ? { here: true as const } : {};
+  // Two ways an account goes, told apart in their words: an agent's own sign-in is signed out (the
+  // agent stays, ready to sign in again); one you added is signed out and forgotten.
   const remove: AccountAction = {
     id: "remove",
     label: "Remove Account",
-    confirm: { title: `Remove ${name}?`, message: `It’s signed out on ${computer}, and its models leave the model picker. A turn running on it stops; its sessions stay.`, label: "Remove Account" },
+    confirm: { title: `Remove ${name}?`, message: `This account is signed out and forgotten on ${computer}: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.`, label: "Remove Account" },
+  };
+  // Where the agent keeps one sign-in for you and Kuvo Code alike (Codex's and Grok's in your home
+  // on a Mac), signing out signs it out in Terminal too, and says so; otherwise only Kuvo Code's own goes.
+  const shared = meta.signOutShared === true;
+  const stays = meta.signOutStops === true ? "A turn running on it stops; your sessions stay" : "Your sessions stay";
+  const signOut: AccountAction = {
+    id: "signOut",
+    label: "Sign Out",
+    confirm: {
+      title: `Sign out of ${name}?`,
+      message: shared
+        ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. ${stays}; sign in again to use it.`
+        : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. ${stays}; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
+      label: "Sign Out",
+    },
   };
   if (agents) {
     if (installs) actions.push({ id: "install", label: "Install" });
@@ -178,7 +195,8 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
     const latest = text(meta.latestVersion);
     const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating) actions.push({ id: "update", label: `Update to ${latest}` });
-    if (meta.signsOut === true && said.length) actions.push({ id: "signOut", label: "Sign Out" });
+    // The agent's own sign-in signs out, signed in or ended; one you added is removed instead.
+    if (!added && !installs && meta.signsOut === true && (said.length || state === "ended")) actions.push(signOut);
     if (added) actions.push({ id: "rename", label: "Rename" }, remove);
     return finish();
   }

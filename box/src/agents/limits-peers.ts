@@ -54,14 +54,9 @@ export interface LimitsDirectory {
   isPeer?(key: string): boolean
   /**
    * Whether a box is one of your own computers for what's yours alone (spending resets, Always
-   * Allow, what you spend beyond your limits, usage totals): a peer, neither of the two a machine
-   * two people's Macs share, nor in another setup.
+   * Allow, what you spend beyond your limits, usage totals): a peer, once the link has said.
    */
   isYours?(key: string): boolean
-  /** Whether the link says this box is a machine set up by Macs that aren't all in one setup. */
-  readonly sharedHere?: boolean
-  /** Whether a peer says it's such a machine. */
-  isSharedPeer?(key: string): boolean
 }
 
 interface Kept {
@@ -235,9 +230,9 @@ export class LimitsPeers {
       if (taken && (!this.noticeOurs(from) || given.noticeSetup !== this.directory.setup)) { delete taken.notices; delete taken.noticeState }
       return taken ? [taken] : []
     })
-    // (From a box that isn't one of your own computers, or before the link has said, only what such
-    // a box is told, whatever it said: a machine Macs of two setups share never keeps one's spending
-    // or Always Allow for the other. Once the link says one is yours, it's asked for all of its own,
+    // (From a box that isn't one of your own computers (one a peer only vouches for), or before the
+    // link has said, only what such a box is told, whatever it said: it never keeps your spending or
+    // Always Allow. Once the link says one is yours, it's asked for all of its own,
     // `directorySaid`. What was kept before, from a restart, is kept whole and shown so only once
     // the link says it's yours: `rows`, `freshest`.)
     const accounts = !this.ours(from) ? forVouched(read) : read
@@ -300,7 +295,7 @@ export class LimitsPeers {
     return this.noticeOurs(key) ? accounts : withoutNotices(accounts)
   }
 
-  /** Whether a box is one of your own computers (not one a peer of yours only vouches for, a machine two people's Macs share, or a box of another setup). */
+  /** Whether a box is one of your own computers (a peer, not one a peer of yours only vouches for). */
   private ours(key: string) {
     return this.directory.isYours?.(key) === true
   }

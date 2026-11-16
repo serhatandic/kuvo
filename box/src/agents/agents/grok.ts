@@ -82,21 +82,29 @@ export class GrokAgent implements Agent {
     } catch {}
   }
 
-  /** Its own sign-in on a machine: Kuvo Code's, in its folder there, so signed out here. */
+  /** Its own sign-in: Kuvo Code's on a machine (in its folder there), yours on a Mac (your
+   * GROK_HOME or `~/.grok`, which Grok in Terminal uses too: `signOutShared`). An added account is
+   * removed instead. */
   signOut?: () => Promise<void>
+  signOutShared?: boolean
 
   constructor(
     readonly context: AgentContext,
     readonly instance: AgentAccount = { id: "default" },
   ) {
     this.providerID = providerID("grok", instance.id)
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home
       this.signOut = async () => {
-        await signOutWith("Grok", this.executable(), ["logout"], this.env())
+        // A key from XAI_API_KEY isn't Grok's sign-in to forget: whatever it cached goes, and it says the key keeps it signed in.
+        const key = Boolean(process.env.XAI_API_KEY?.trim())
+        if (key) await signOutWith("Grok", this.executable(), ["logout"], this.env()).catch(() => {})
+        else await signOutWith("Grok", this.executable(), ["logout"], this.env())
         // A session's Grok holds the sign-in it started with: its next message starts one signed out.
         this.programUpdated()
         this.known.reset()
         this.status = undefined
+        if (key) throw new Error("Grok stays signed in with XAI_API_KEY from your shell’s environment. Remove it there to sign out.")
       }
     }
   }

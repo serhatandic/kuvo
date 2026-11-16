@@ -6,6 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { inline } from "../server/attached";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { accountHome, APP_FOLDER, BOTS, homeFolder, K, OWN_HOME_MAC } from "../home";
@@ -15,7 +17,7 @@ import { isClosed, priorityNamed, PRIORITIES, statusName, statusNamed, STATUSES 
 import { assigneeFor } from "./assignees";
 import { takeNumber, type Primary } from "./numbers";
 import {
-  changeQueues, dayOf, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
+  changeQueues, dayOf, FILE_NAME, FILES, filesOf, matching, MOST_BODY, MOST_EVENTS, MOST_FILE, MOST_FILES, MOST_ITEMS, MOST_LINKS, MOST_NOTE, MOST_NOTES, MOST_TITLE, newItemID, noteHanded, placeBeside, placeIn, Refusal,
   type Book, type Item, type ItemEvent, type KeptFile, type Source, type Who,
 } from "./store";
 import { nameOf, refOf } from "./view";
@@ -147,6 +149,76 @@ export function stageFiles(given: unknown, places: FilePlaces | null): { staged:
     clear();
     throw error;
   }
+}
+
+/** A file a client attached, as the composer carries it (`{uri, name?}`): its bytes and name. A
+ * local `file://` URL is read only for Kuvo Code's app on this same computer (`local`): from a
+ * phone, another computer or a forwarded act it's refused, so nothing can read this computer's
+ * files through an item. */
+function clientFile(entry: unknown, local: boolean): { bytes: Buffer; name: string } {
+  if (!isObject(entry) || typeof entry.uri !== "string") return refuse("A file needs its carried URI.");
+  let name = typeof entry.name === "string" ? entry.name : "";
+  const carried = inline(entry);
+  if (carried) {
+    if (carried.bytes.length > MOST_FILE) refuse(`A file is over ${Math.round(MOST_FILE / 1_000_000)} MB: too big to keep with an item.`);
+    return { bytes: carried.bytes, name: name || `attachment${Object.entries(TYPES).find(([, mime]) => mime === carried.mime)?.[0] ?? ".bin"}` };
+  }
+  if (!local || !entry.uri.startsWith("file://")) return refuse("Send the file's contents with it.");
+  let handle: number;
+  try {
+    handle = fs.openSync(fileURLToPath(entry.uri), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+  } catch {
+    return refuse("That attached file can't be read: attach it again.");
+  }
+  try {
+    const opened = fs.fstatSync(handle);
+    if (!opened.isFile()) refuse("That attached file isn't a file.");
+    if (opened.size > MOST_FILE) refuse(`A file is over ${Math.round(MOST_FILE / 1_000_000)} MB: too big to keep with an item.`);
+    return { bytes: fs.readFileSync(handle), name: name || path.basename(fileURLToPath(entry.uri)) };
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+/** The files a client attached to an item it adds or changes (`files`), read into `staging` before
+ * the queue's lock is taken, as an agent's are (`stageFiles`); the change keeps them with the item. */
+export function stageClientFiles(given: unknown, local: boolean): { staged: Staged[]; clear: () => void } {
+  if (given === undefined) return { staged: [], clear: () => {} };
+  if (!Array.isArray(given)) return refuse("Send files as a list.");
+  if (given.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most.`);
+  const folder = path.join(STAGING, crypto.randomBytes(8).toString("hex"));
+  const clear = () => fs.rmSync(folder, { recursive: true, force: true });
+  try {
+    const staged = given.map((entry, index) => {
+      const { bytes, name: named } = clientFile(entry, local);
+      const name = shortName(path.basename(named.replace(/\\/g, "/")));
+      if (!FILE_NAME.test(name)) refuse("That file needs a name.");
+      fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+      const staged = path.join(folder, String(index));
+      fs.writeFileSync(staged, bytes, { mode: 0o600 });
+      return { staged, name, size: bytes.length };
+    });
+    return { staged, clear };
+  } catch (error) { clear(); throw error; }
+}
+
+/** Files more than can go to another computer at once (413). */
+export class TooBig extends Refusal {}
+
+/** What a client attached, for another computer's box (`there`, by name): a local file's bytes
+ * carried with it (only Kuvo Code's app here may name one, `local`), as the other box never reads
+ * a path it's sent; `most` bytes in all, as much as goes between boxes at once. */
+export function carriedFiles(given: unknown, local: boolean, there: string, most: number): unknown {
+  if (!Array.isArray(given)) return given;
+  if (given.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most.`);
+  let total = 0;
+  return given.map(entry => {
+    const carried = isObject(entry) && typeof entry.uri === "string" ? inline(entry) : null;
+    const { bytes, name } = carried ? { bytes: carried.bytes, name: "" } : clientFile(entry, local);
+    total += bytes.length;
+    if (total > most) throw new TooBig(`These files are too big to send to ${there} with one change (${most / 1_000_000} MB in all at most). Attach fewer or smaller files.`);
+    return carried ? entry : { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
+  });
 }
 
 const TYPES: Record<string, string> = {

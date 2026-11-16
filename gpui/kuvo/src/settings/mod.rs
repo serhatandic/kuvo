@@ -446,7 +446,7 @@ impl SettingsView {
     /// Your computers the picker lists: your own (those of another setup aren't yours to set).
     pub(crate) fn listed_computers(&self) -> Vec<Computer> {
         match &self.computers {
-            Reading::Ready(computers) => computers.iter().filter(|computer| !computer.apart).cloned().collect(),
+            Reading::Ready(computers) => computers.clone(),
             _ => Vec::new(),
         }
     }
@@ -1466,7 +1466,8 @@ impl SettingsView {
                 let removing = account.clone();
                 self.account_change(account, move |client| client.remove_agent_account(&removing), "Removing…", cx)
             }
-            Act::SignOut { account } => self.account_change(account.clone(), move |client| client.sign_out_agent(&account), "Signing out…", cx),
+            Act::SignOut { account, confirm: Some(asks) } => self.ask(asks.title, asks.message, asks.label, Act::SignOut { account, confirm: None }),
+            Act::SignOut { account, confirm: None } => self.account_change(account.clone(), move |client| client.sign_out_agent(&account), "Signing out…", cx),
             Act::SetModel { path, model, was } => {
                 let key = rows_model_key(path);
                 self.set_busy(&key, "Saving…");

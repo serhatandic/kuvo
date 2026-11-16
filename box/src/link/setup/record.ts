@@ -24,8 +24,7 @@ export interface SetupWord {
 
 /** What a box keeps of the setup it's in (link.json's `setup`): the setup's word, the main
  * computer's signing key, and its own role. `aside`: kept only so a lower epoch of it is never taken
- * (its main computer stopped naming it, or this box is shared with another Mac's, PROTOCOL.md "Your
- * setup", Shared machines), and followed for nothing else. `conflict`: another main computer named
+ * (its main computer stopped naming it), and followed for nothing else. `conflict`: another main computer named
  * at the same epoch, which this box didn't take. */
 export interface SetupRecord extends SetupWord {
   sign: string;

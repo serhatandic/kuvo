@@ -234,17 +234,9 @@ test("a member's box vouches for the app beside it to the main computer, and ans
   assert.ok(!fs.existsSync(forwards) || !fs.readdirSync(forwards).length, "nothing left to send");
 });
 
-test("a machine shared with another setup, and a member its main computer set aside, add no device and vouch for none", async () => {
+test("a member its main computer set aside adds no device and vouches for none", async () => {
   const key = device();
   const given = { key, name: "Laptop", kind: "desktop" };
-  // Two Macs of different setups set it up.
-  member({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer] } } });
-  link.updateLink(state => { state.setup.aside = true; return state; });
-  tell(mac, { features: ["devices.pair", "work-queue.forward"] });
-  assert.deepEqual(await ask(APP, "POST", "kuvo/devices/pair", given), { status: 409, body: { message: "This computer is shared with another setup, so it can't add your devices by itself." } });
-  // In no setup at all, still shared.
-  alone({ mac: mac.pub, macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer] } } });
-  assert.equal((await ask(APP, "POST", "kuvo/devices/pair", given)).status, 409);
   // Its main computer doesn't name it now: stepping aside opens no pairing.
   member();
   link.updateLink(state => { state.setup.aside = true; return state; });

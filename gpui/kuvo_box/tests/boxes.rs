@@ -92,13 +92,12 @@ impl Transport for StandInBox {
 }
 
 /// A setup: this computer (a MacBook, a member), the main computer (a Mac mini) and a Linux
-/// machine, the last two on the relay; and a machine shared with another setup, filed apart.
+/// machine, the last two on the relay.
 struct Setup {
     relay: Relay,
     macbook: Arc<StandInBox>,
     mini: (Arc<StandInBox>, Host),
     devbox: (Arc<StandInBox>, Host),
-    shared: (Arc<StandInBox>, Host),
     keeper: Arc<MemoryKeeper>,
     kept: tempfile::TempDir,
     lines: Sender<String>,
@@ -114,13 +113,13 @@ impl Setup {
             let host = Host::start(&relay, served.clone(), name);
             (served, host)
         };
-        let (mini, devbox, shared) = (remote("Mac mini"), remote("devbox"), remote("shared-box"));
+        let (mini, devbox) = (remote("Mac mini"), remote("devbox"));
         let (lines, receiver) = channel();
         let macbook = Arc::new(StandInBox { name: "MacBook".into(), here: true, lines: Mutex::new(Some(receiver)), ..StandInBox::default() });
-        let setup = Setup { relay, macbook, mini, devbox, shared, keeper: Arc::new(MemoryKeeper::default()), kept: tempfile::tempdir().unwrap(), lines };
+        let setup = Setup { relay, macbook, mini, devbox, keeper: Arc::new(MemoryKeeper::default()), kept: tempfile::tempdir().unwrap(), lines };
         *setup.macbook.computers.lock().unwrap() = setup.list();
         // The nearest box vouches for the app to the main computer, and every box of the setup
-        // takes the device from the main computer's phones document. Never the shared machine.
+        // takes the device from the main computer's phones document.
         let (mini, devbox) = (setup.mini.1.clone(), setup.devbox.1.clone());
         setup.pairs(move |asked| {
             let key: [u8; 32] = keys::decode_exact(asked["key"].as_str().unwrap()).expect("a key");
@@ -138,14 +137,10 @@ impl Setup {
     /// `kuvo/computers` as the MacBook's box says it.
     fn list(&self) -> Value {
         let row = |name: &str, kind: &str, host: &Host| json!({ "key": host.key_text(), "name": name, "kind": kind, "reach": "connected", "via": "relay", "address": host.address_text(), "relay": RELAY_URL });
-        let mut shared = row("shared-box", "machine", &self.shared.1);
-        shared["apart"] = json!(true);
-        shared["shared"] = json!(true);
         json!({ "computers": [
             { "key": MACBOOK_KEY, "name": "MacBook", "kind": "mac", "here": true, "reach": "connected", "via": "here", "address": "AAECAwQFBgcICQoLDA0ODw", "relay": RELAY_URL },
             row("Mac mini", "mac", &self.mini.1),
             row("devbox", "machine", &self.devbox.1),
-            shared,
         ] })
     }
 
@@ -195,12 +190,12 @@ fn from_a_member_computer_the_app_pairs_through_its_own_box_and_reaches_the_othe
     let boxes = setup.boxes();
     boxes.read_list().unwrap();
     // Before it's paired, nothing's asked of another computer.
-    assert_eq!(reach(&boxes), [("MacBook".into(), Reach::Nearest), ("Mac mini".into(), Reach::Connecting), ("devbox".into(), Reach::Connecting), ("shared-box".into(), Reach::Apart)]);
+    assert_eq!(reach(&boxes), [("MacBook".into(), Reach::Nearest), ("Mac mini".into(), Reach::Connecting), ("devbox".into(), Reach::Connecting)]);
     assert!(setup.mini.1.hellos().is_empty());
 
     boxes.settle();
     assert_eq!(boxes.pairing(), Pairing::Paired);
-    assert_eq!(reach(&boxes), [("MacBook".into(), Reach::Nearest), ("Mac mini".into(), Reach::Connected), ("devbox".into(), Reach::Connected), ("shared-box".into(), Reach::Apart)]);
+    assert_eq!(reach(&boxes), [("MacBook".into(), Reach::Nearest), ("Mac mini".into(), Reach::Connected), ("devbox".into(), Reach::Connected)]);
     // It asked its own box, once, with its public key, as a desktop.
     let asks = setup.pair_asks();
     assert_eq!(asks.len(), 1);
@@ -218,21 +213,6 @@ fn from_a_member_computer_the_app_pairs_through_its_own_box_and_reaches_the_othe
     // One box's client finds another's, as a settings picker does.
     let mini = boxes.rows().into_iter().find(|row| row.computer.name == "Mac mini").unwrap().computer;
     assert_eq!(boxes.nearest().unwrap().computer(&mini).unwrap().get::<Value>("whoami").unwrap()["name"], "Mac mini");
-}
-
-#[test]
-fn a_computer_filed_apart_is_never_connected_to() {
-    let setup = Setup::new();
-    // Even were its box to take this device (it must not), the client never opens a session there.
-    setup.shared.1.pair([1; 32]);
-    let boxes = setup.boxes();
-    boxes.read_list().unwrap();
-    boxes.settle();
-    boxes.settle();
-    assert!(boxes.client(&setup.shared.1.key_text()).is_none());
-    assert!(setup.shared.1.hellos().is_empty(), "no session was ever opened with the shared machine");
-    assert!(setup.shared.0.seen.lock().unwrap().is_empty());
-    assert_eq!(reach(&boxes).last().unwrap(), &("shared-box".to_owned(), Reach::Apart));
 }
 
 #[test]
@@ -349,12 +329,12 @@ fn the_kept_list_opens_the_app_with_your_computers_and_holds_nothing_secret() {
     boxes.settle();
     let path = setup.kept.path().join("desktop/boxes.json");
     let kept = std::fs::read_to_string(&path).expect("kept");
-    // Public facts only: never this device's key or secret, nor a computer that isn't yours.
+    // Public facts only: never this device's key or secret.
     let Kept::Found(secret) = setup.keeper.read() else { panic!("its key is in the keeper") };
     for part in secret.split('.') {
         assert!(!kept.contains(part));
     }
-    assert!(kept.contains("Mac mini") && !kept.contains("shared-box"));
+    assert!(kept.contains("Mac mini"));
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -433,7 +413,7 @@ fn a_key_that_cant_be_read_now_is_never_replaced_by_a_new_one() {
 }
 
 #[test]
-fn a_computer_filed_apart_or_dropped_later_is_let_go_and_its_session_ended() {
+fn a_computer_dropped_later_is_let_go_and_its_session_ended() {
     let setup = Setup::new();
     let boxes = setup.boxes();
     boxes.read_list().unwrap();
@@ -444,13 +424,13 @@ fn a_computer_filed_apart_or_dropped_later_is_let_go_and_its_session_ended() {
     let before = boxes.client_made(&devbox);
     assert!(before.is_some());
 
-    // The list files it apart now (it's shared with another setup).
+    // The list drops it.
     let mut list = setup.list();
-    list["computers"][2]["apart"] = json!(true);
+    list["computers"].as_array_mut().unwrap().remove(2);
     *setup.macbook.computers.lock().unwrap() = list;
     boxes.read_list().unwrap();
     assert!(boxes.client(&devbox).is_none() && boxes.client_made(&devbox).is_none());
-    assert_eq!(reach(&boxes)[2], ("devbox".to_owned(), Reach::Apart));
+    assert!(!reach(&boxes).iter().any(|(name, _)| name == "devbox"));
     // Its session was ended there, not left open: devbox sees a new hello only if asked again.
     let hellos = setup.devbox.1.hellos().len();
     let _ = held.get::<Value>("whoami");

@@ -6,13 +6,14 @@
 //! the box says (`kuvo/work?bot=`, `kuvo/work/background/<session>`), read again as it says it
 //! changed; nothing's worked out here. The card goes when nothing runs.
 
+use kuvo_ui::anchor::{Placement, Popover};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    Anchor, AnyElement, App, AppContext as _, Context, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Task, Window, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Context, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::background::{Background, Command, Output};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
@@ -737,7 +738,7 @@ impl WorkBars {
                 cx.notify();
             }))
             .child(div().text_mono(TypeSize::Caption).text_color(if printed { c.text } else { c.text_muted }).child(words));
-        div().absolute().top_0().right_0().child(deferred(anchored().anchor(Anchor::BottomRight).offset(point(px(0.), -space::S1)).snap_to_window_with_margin(px(8.)).child(panel)).with_priority(1)).into_any_element()
+        Popover::new("command-output-motion", Placement::above().align_end(), panel).into_any_element()
     }
 }
 

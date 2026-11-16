@@ -1,33 +1,17 @@
 // What a box takes of your setup (PROTOCOL.md, "Your setup"): a machine follows the setup its Mac
 // leads, as its peers document names it; it never goes back to a lower epoch of it, and at the same
-// epoch keeps the main computer it has (noting the other). A machine more than one Mac set up, when
-// those Macs aren't all in one setup, follows none (shared machines number as before, from the first
-// Mac you set up, until they're joined). This Mac's box leads its own (`lead.ts`), and takes none.
+// epoch keeps the main computer it has (noting the other). A machine more than one Mac set up is
+// yours all the same (only you set your computers up: no one else's Mac shares one), and follows
+// one setup: the one it has, or, where more than one of its Macs leads one, the one led by the Mac
+// it numbers from. This Mac's box leads its own (`lead.ts`), and takes none.
 
 import type { Doc } from "../../shared/documents";
-import { isObject } from "../../shared/json";
 import { IS_MAC } from "../home";
 import { macDoc, macsOf } from "../peers/known";
 import { macSign } from "../state";
-import { followedSetup, ledSetup, setupDoc } from "./record";
+import { rankedPrimary } from "../work-queue/numbers";
+import { followedSetup, ledSetup } from "./record";
 import type { LinkState } from "../state";
-
-// The boxes a peers document names as Macs (the main computer itself, and Macs in its setup).
-const macsNamed = (doc: Doc | null | undefined): string[] => (Array.isArray(doc?.body.boxes) ? doc.body.boxes : [])
-  .filter(box => isObject(box) && box.kind === "mac" && typeof box.key === "string").map(box => (box as { key: string }).key);
-
-/** Whether this box is a machine shared between Macs not all in the setup it has: more than one Mac
- * set it up, and the setup's document doesn't name each as one of its Macs (with none, more than one
- * Mac). Such a machine follows no setup, and tells its Macs it's shared, so none leads one. */
-export function sharedMachine(link: LinkState | null | undefined): boolean {
-  if (IS_MAC || !link) return false;
-  const macs = macsOf(link);
-  if (macs.length < 2) return false;
-  const setup = link.setup?.role === "member" ? link.setup : null;
-  const doc = setup ? macDoc(link, setup.primary, "peers") ?? setupDoc(link) : null;
-  const named = doc && setup ? new Set([setup.primary, ...macsNamed(doc)]) : new Set<string>();
-  return !macs.every(mac => named.has(mac));
-}
 
 /** This box's setup brought up to date with the peers documents it holds (in place, under
  * link.json's lock). A machine with no Mac keeps what it leads (`lead.ts` makes it); one a Mac set
@@ -35,7 +19,7 @@ export function sharedMachine(link: LinkState | null | undefined): boolean {
  * documents name, the one each names led by the Mac that signed it. */
 export function settleSetup(link: LinkState): void {
   // (Within it: a machine with no Mac; one set up by a Mac; the setup it keeps, as its main
-  // computer's newest document says it; one it takes; and set aside while it's shared.)
+  // computer's newest document says it; and one it takes.)
   if (IS_MAC) return;
   const macs = macsOf(link);
   if (!macs.length) {
@@ -44,6 +28,9 @@ export function settleSetup(link: LinkState): void {
   }
   if (link.setup?.role === "primary") delete link.setup;
   const offers = macs.map(mac => ({ mac, doc: macDoc(link, mac, "peers") })).map(({ mac, doc }) => ({ mac, doc, setup: ledSetup(doc) })).filter(each => each.setup && each.setup.primary === each.mac);
+  // (Its main computer's newest document no longer naming it, and another of its Macs leading one:
+  // that one, so a machine never stays in none while one of your Macs leads.)
+  if (link.setup?.aside && !offers.some(each => each.mac === link.setup!.primary) && offers.length) delete link.setup;
   const kept = link.setup;
   // (The key its main computer signs with, as its setup over SSH last gave it: the trust root.)
   if (kept && macSign(link, kept.primary)) kept.sign = macSign(link, kept.primary)!;
@@ -58,14 +45,16 @@ export function settleSetup(link: LinkState): void {
       kept.epoch = own.setup!.epoch;
       delete kept.aside;
     } else if (doc && !ledSetup(doc)) kept.aside = true;
-  } else if (offers.length === 1) {
-    const { setup, doc } = offers[0];
-    link.setup = { id: setup!.id, epoch: setup!.epoch, primary: setup!.primary, sign: doc!.origin, role: "member" };
+    return;
   }
-  if (link.setup && sharedMachine(link)) link.setup.aside = true;
+  // (More than one of its Macs leading a setup, as they may for a moment once a second Mac sets it
+  // up: the one it numbers from, the first you set up; none until that's one of them.)
+  const ranked = offers.length > 1 ? rankedPrimary(link) : null;
+  const taken = offers.length === 1 ? offers[0] : offers.find(each => ranked && "peer" in ranked && ranked.peer.key === each.mac);
+  if (taken) link.setup = { id: taken.setup!.id, epoch: taken.setup!.epoch, primary: taken.setup!.primary, sign: taken.doc!.origin, role: "member" };
 }
 
-/** A peers document this box didn't take (`takeDoc`), looked at for one more thing: one of its own
+/** A peers document this box is given (`takeDoc`), looked at for one more thing: one of its own
  * Macs naming itself the main computer of the setup this box follows, at its epoch, which isn't the
  * main computer this box has. That's two main computers at once (PROTOCOL.md, "Your setup"): this box
  * keeps its own, and notes the other for clients to show. */

@@ -5194,9 +5194,6 @@
          },
          "workingTitle?": "string",
          "shared": "bool",
-         "apart?": {
-          "literal": true
-         },
          "reach": {
           "oneOf": [
            {
@@ -5386,9 +5383,6 @@
          },
          "workingTitle?": "string",
          "shared": "bool",
-         "apart?": {
-          "literal": true
-         },
          "reach": {
           "oneOf": [
            {
@@ -6286,6 +6280,9 @@
             "literal": "work-queue.anywhere"
            },
            {
+            "literal": "work-queue.attachments"
+           },
+           {
             "literal": "work-queue.counts"
            },
            {
@@ -7010,6 +7007,9 @@
            },
            {
             "literal": "work-queue.anywhere"
+           },
+           {
+            "literal": "work-queue.attachments"
            },
            {
             "literal": "work-queue.counts"

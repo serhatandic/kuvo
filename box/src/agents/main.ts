@@ -61,6 +61,7 @@ import { queueFiles } from "../shared/queues"
 import { HangWatch, isEngine } from "../shared/hang"
 import { notesBeside } from "./notes"
 import { agentAccounts, BOX_ONLY_SERVICES, Limits } from "./limits"
+import { signedInAgents, signIns } from "./sign-ins"
 import { LimitsPeers } from "./limits-peers"
 import { LimitResets } from "./limits-resets"
 import { PricingStore } from "./usage/pricing"
@@ -315,7 +316,30 @@ const voice = new VoiceWords(places)
 // Your plans' limits for each account here, read on their makers' schedules and kept between runs.
 // The engine's sign-ins too (Settings › Accounts), as the engine lists them with their secrets.
 const engineAccounts = new EngineAccounts(() => link.request("GET", "/api/credential"))
-const limits = new Limits(() => [...agentAccounts(roster.all()), ...engineAccounts.accounts()], join(home, "limits.json"), Date.now, () => engineAccounts.refresh(), () => engineAccounts.answered)
+// The coding agents' accounts are those signed in here, as Settings › Accounts shows them
+// (sign-ins.ts): one signed out is gone from the rings at once, and what was read of it with it.
+const limits = new Limits(
+  () => [...agentAccounts(signedInAgents(roster.all())), ...engineAccounts.accounts()],
+  join(home, "limits.json"),
+  Date.now,
+  async () => void (await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())])),
+  () => engineAccounts.answered && signIns.allSaid(roster.all()),
+)
+// Signed in: read now (what was kept of it went as it signed out). Signed out: told at once.
+signIns.changed = (provider) => {
+  if (signIns.signedIn(provider)) return void limits.readAgain(provider).catch(() => {})
+  limits.ownChanged()
+  void limits.tick()
+}
+// A sign-in the bridge hears of itself (Claude ending one in a run, an account removed): asked again.
+subscribe((event) => {
+  if (event.type !== "integration.updated") return
+  const agent = roster.all().find((each) => each.providerID === (event.data as { integrationID?: unknown } | undefined)?.integrationID)
+  if (agent) void signIns.ask(agent, false)
+  else limits.ownChanged()
+})
+// (Each coding agent's service is covered here, whether or not one is signed in now.)
+limits.covers = () => agentAccounts(roster.all()).map((account) => account.service)
 // (And Antigravity's, which only boxes read: covered here signed in or not.)
 limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES]
 // Shared with your other computers' boxes: each account read once across them, and listed on each.

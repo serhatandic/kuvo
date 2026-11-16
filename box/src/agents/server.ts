@@ -33,6 +33,7 @@ import { groupRoutes } from "./groups/routes"
 import type { GroupRunner } from "./groups/runner"
 import type { GroupStore } from "./groups/store"
 import { shell, shellOutput, shells, stopShell } from "./shells"
+import { signIns } from "./sign-ins"
 import type { Integration, Model } from "./wire"
 
 export interface Context {
@@ -138,7 +139,14 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
   const [account, maintained] = await Promise.all([
     // A check that fails is its program's (each agent says itself when it isn't installed): it's
     // there, and says why, rather than offering its installer again.
-    agent.account(fresh).catch((error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
+    agent.account(fresh).then(
+      (account) => {
+        // (The rings follow what Accounts shows, sign-ins.ts: a check that failed isn't a sign-out there.)
+        signIns.record(agent.providerID, account)
+        return account
+      },
+      (error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) }),
+    ),
     maintainedSoon(agent, fresh),
   ])
   const before = lastSeen.get(agent.providerID)
@@ -170,6 +178,10 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
       account: account.label,
       install: agent.install,
       signsOut: Boolean(agent.signOut),
+      // Signing out signs it out in Terminal too (its own sign-in is yours).
+      signOutShared: Boolean(agent.signOut && agent.signOutShared),
+      // Signing out stops a turn running on it.
+      signOutStops: Boolean(agent.signOut && agent.signOutStops),
       // Its program's version, and the newest (an old Claude Code lists old models).
       version: maintained?.installed,
       latestVersion: maintained?.latest,
@@ -198,6 +210,7 @@ async function models(agents: Agent[], hidden = false): Promise<Model[]> {
     agents.map(async (agent) => {
       try {
         const account = await agent.account()
+        signIns.record(agent.providerID, account)
         return account.signedIn ? await agent.models(hidden ? { hidden } : undefined) : []
       } catch {
         return []
@@ -264,7 +277,7 @@ export function handler(context: Context) {
             const created = Date.now()
             // Long enough for a download first (Antigravity's agent) on a slow connection.
             const expires = created + 30 * 60_000
-            const stop = watchSignIn(attempt, expires, () => void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {}))
+            const stop = watchSignIn(attempt, expires, () => void signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {}))
             attempts.set(id, { agent, attempt, created, expires, stop })
             return located({ attemptID: id, url: attempt.url, instructions: attempt.instructions, mode: attempt.mode, acceptsCode: attempt.acceptsCode || undefined, userCode: attempt.userCode, time: { created, expires } })
           }
@@ -295,7 +308,7 @@ export function handler(context: Context) {
           const { key } = await body()
           if (!agent.signInWithKey) return error(400, `${agent.name} doesn't take a key here.`)
           await agent.signInWithKey(String(key ?? "").trim())
-          void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {})
+          void signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {})
           return json({})
         }
         // Its program installed with its maker's installer (the command `metadata.install` shows),
@@ -315,6 +328,11 @@ export function handler(context: Context) {
         if (b === "disconnect" && method === "POST") {
           if (!agent.signOut) return error(400, `Sign out of ${agent.name} where you signed in.`)
           await agent.signOut()
+          // Gone from the rings at once, with what was read of it (sign-ins.ts).
+          await signIns.ask(agent)
+          // Its models leave every picker now, not at the next list.
+          emit("integration.updated", { integrationID: agent.providerID })
+          emit("model.updated", {})
           return json({})
         }
       }
@@ -512,6 +530,8 @@ export function handler(context: Context) {
           sessions.forgetProvider(target.providerID)
           await target.removeAccount?.().catch(() => {})
           target.shutdown?.()
+          // Signed out as it goes: gone from the rings at once (sign-ins.ts).
+          signIns.record(target.providerID, { signedIn: false })
           roster.accounts.remove(target.providerID)
           roster.sync()
           emit("integration.updated", { integrationID: target.providerID })

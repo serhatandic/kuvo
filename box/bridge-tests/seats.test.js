@@ -493,64 +493,38 @@ test("a box only a peer knew is forgotten once no peer names it: nothing goes to
   assert.equal(link.openMail(link.readFrame(mail.subarray(17)).body, link.readLink(), () => link.vouchedOf(link.readLink()))?.vouched, true);
 });
 
-test("the bridge is told which peers aren't your own computers for plan limits' resets, Always Allow and usage totals (#701): every peer of a machine two people's Macs share, a machine that says it's one, and one of another setup", () => {
+// #783: only you set your computers up, so every peer is one of your own computers: none is ever
+// told to the bridge as apart or shared, whatever an earlier Kuvo Code's word or a setup says.
+test("the bridge is told every peer is one of your own computers: a machine more than one Mac set up, one an earlier Kuvo Code says is shared, one in another setup (#783)", () => {
   fresh();
   const air = box("mac", "air");
-  const apart = given => Object.fromEntries(link.seatPeers(given).boxes.filter(each => each.key === mac.pub || each.key === second.pub).map(each => [each.key === mac.pub ? "mac" : "second", each.apart === true]));
+  const marked = given => link.seatPeers(given).boxes.filter(each => each.apart || each.shared).map(each => each.name);
   let at = Date.now();
   const tells = agents => link.takeAgents(second.peer, { at: ++at, list: [], ...agents });
-  // A machine one Mac set up, its peers saying nothing of a setup: all yours.
-  tells({});
-  assert.deepEqual(apart(link.readLink()), { mac: false, second: false });
-  // The other machine says two people's Macs share it: it isn't.
   tells({ shared: true });
-  assert.deepEqual(apart(link.readLink()), { mac: false, second: true });
-  // In a setup: a peer of another isn't; one of the same, or one that doesn't say, is.
+  assert.deepEqual(marked(link.readLink()), []);
   const inSetup = { ...link.readLink(), setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } };
   tells({ setup: "set_BBBBBBBBBBBBBBBBBBBBBB" });
-  assert.deepEqual(apart(inSetup), { mac: false, second: true });
-  tells({ setup: "set_AAAAAAAAAAAAAAAAAAAAAA" });
-  assert.deepEqual(apart(inSetup), { mac: false, second: false });
-  tells({});
-  assert.deepEqual(apart(inSetup), { mac: false, second: false });
-  // This box is a machine two people's Macs set up: none of its peers is anyone's own computer here.
-  assert.deepEqual(apart({ ...link.readLink(), macs: [mac.pub, air.pub] }), { mac: true, second: true });
-  assert.equal(link.seatPeers({ ...link.readLink(), macs: [mac.pub, air.pub] }).shared, true, "and its bridge hears it's shared");
-  assert.equal("shared" in link.seatPeers(link.readLink()), false);
-  // A shared machine whose agents' mail doesn't say so (an older box, its engine not answering)
-  // but whose numbering mail does: not yours either.
+  assert.deepEqual(marked(inSetup), []);
+  const twoMacs = { ...link.readLink(), macs: [mac.pub, air.pub] };
+  assert.deepEqual(marked(twoMacs), []);
+  assert.equal("shared" in link.seatPeers(twoMacs), false);
   const queues = path.join(run, "work-queue", "peers");
   fs.mkdirSync(queues, { recursive: true });
   fs.writeFileSync(path.join(queues, `${second.pub}.json`), JSON.stringify({ id: "wqt_secondtoldsecond", at: 1, heard: 1, kind: "machine", since: 50, items: [], owners: [], labels: [], shared: true }));
-  assert.deepEqual(apart(link.readLink()), { mac: false, second: true });
+  assert.deepEqual(marked(link.readLink()), []);
   fs.rmSync(queues, { recursive: true, force: true });
 });
 
-test("a box that becomes a machine Macs of two setups share, or follows another setup, says so at once, not at the next round (#701)", () => {
+test("a box whose setup changes says so at once, not at the next round; a second Mac setting it up changes nothing to tell", () => {
   fresh();
   const air = box("mac", "air");
   // (Each write of the link is looked at: the first says nothing changed.)
   link.whereChanged(link.readLink());
   assert.equal(link.whereChanged(link.readLink()), false, "the same: nothing to tell");
-  const shared = { ...link.readLink(), macs: [mac.pub, air.pub] };
-  assert.equal(link.whereChanged(shared), true, "now shared: told at once");
-  assert.equal(link.whereChanged(shared), false);
+  assert.equal(link.whereChanged({ ...link.readLink(), macs: [mac.pub, air.pub] }), false, "another of your Macs: nothing to tell");
   const inSetup = { ...link.readLink(), setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } };
   assert.equal(link.whereChanged(inSetup), true, "another setup: told at once");
-});
-
-test("a second Mac of another setup setting this machine up (setup, its own command) tells the bridge at once, the relay there or not (#701)", async () => {
-  fresh();
-  const air = box("mac", "air");
-  const before = link.readLink();
-  const told = bridge();
-  await link.tellIfSharingChanged(before, before, told.ask);
-  assert.deepEqual(told.asked, [], "nothing changed: nothing told");
-  await link.tellIfSharingChanged(before, { ...before, macs: [mac.pub, air.pub] }, told.ask);
-  assert.equal(told.asked.length, 1);
-  assert.equal(told.asked[0].method, "PUT");
-  assert.equal(told.asked[0].body.shared, true);
-  assert.ok(told.asked[0].body.boxes.every(each => each.apart === true));
 });
 
 test("the usage panel's settings (PROTOCOL.md, \"Usage settings\") go between your own computers only: to a peer as a seat's mail, never to a box only a peer knows, and from it never to the bridge", async () => {
@@ -560,15 +534,15 @@ test("the usage panel's settings (PROTOCOL.md, \"Usage settings\") go between yo
   const sent = [];
   const host = { send: bytes => sent.push(bytes) };
   // The bridge is told the setup this box follows, which settings stay within: `null` once it's
-  // settled on none (a setup set aside, a machine Macs share), not said while it can't say yet.
+  // settled on none (a setup set aside), not said while it can't say yet.
   assert.equal("setup" in link.seatPeers(link.readLink()), false, "no record yet (a box from before setups, updating): not said");
   const withSetup = { ...link.readLink(), setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } };
   assert.equal(link.seatPeers(withSetup).setup, "set_AAAAAAAAAAAAAAAAAAAAAA");
   assert.equal(link.seatPeers({ ...withSetup, setup: { ...withSetup.setup, aside: true } }).setup, null, "set aside: none");
   // A main computer whose keys aren't its record's (not read yet as its link starts): not said.
   assert.equal("setup" in link.seatPeers({ ...withSetup, setup: { ...withSetup.setup, role: "primary", primary: second.pub } }), false);
-  // A machine two Macs set up: none, settled.
-  assert.equal(link.seatPeers({ ...link.readLink(), macs: [mac.pub, air.pub] }).setup, null, "a machine Macs share: none");
+  // A machine two Macs set up, its setup not taken yet: not said, as any box that can't say yet.
+  assert.equal("setup" in link.seatPeers({ ...link.readLink(), macs: [mac.pub, air.pub] }), false);
   const mail = { kind: "settings", at: 7, digest: "d", setup: "set_AAAAAAAAAAAAAAAAAAAAAA", usage: { notifications: { value: { underTenPercent: true, healthyToClose: false, closeToRunningOut: false }, stamp: { v: 7, by: here.pub } } } };
   // To one of your computers: as a seat's, kept nowhere.
   assert.equal(link.carrySeat(host, { id: "sm_settings01", to: second.pub, durable: false, mail }, link.readLink()), true);

@@ -99,7 +99,7 @@ import { sendToPhones } from "./notices/push";
 import { announce, forgetMacsAgents, refreshOwn } from "./peers/agents";
 import { forgetOldMacs, KEY, leaveMac, macsOf, noteOnline, peersOf, takeLegacyPeers } from "./peers/known";
 import { peerMail, receiveMail } from "./peers/mail";
-import { tellIfSharingChanged, tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
+import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
 import { authorizePhone, confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
@@ -215,7 +215,7 @@ export { deviceAct, givenDevice, pairDeviceFromHere, pairHere } from "./peers/de
 export { noLongerNeeded } from "./keeper";
 export { changedWork, digestOf, docMails, docsWork, greetWork, macPeersBody, ownDoc, takeDoc } from "./documents/work";
 export { leadsNow, noteSetupNow, settleOwnSetup } from "./setup/lead";
-export { settleSetup, sharedMachine } from "./setup/settle";
+export { settleSetup } from "./setup/settle";
 export { followedSetup, newSetupID, startsFromOthers } from "./setup/record";
 export { setupView } from "./setup/view";
 export { foundOf, hereNow, judgeComputer, judgeHere, oursNow, OWN_BOX_RAN } from "./setup/judge";
@@ -229,7 +229,7 @@ export { listComputers, ownComputer } from "./areas/computers";
 export { composeLetter } from "./letters/letter";
 export { composeAgents } from "./peers/directory";
 export { nameAgents, namedAgents, namesIn } from "./peers/naming";
-export { bridgeAsk, bridgeClock, carrySeat, seatPayloads, seatPeers, takeLimits, takeSeat, tellIfSharingChanged, tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
+export { bridgeAsk, bridgeClock, carrySeat, seatPayloads, seatPeers, takeLimits, takeSeat, tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 export { announce, ownAgents, refreshOwn, writeAgents } from "./peers/agents";
 export { answered, deliverLeftAnswers, letterMail, letterWent, sendOutbox } from "./letters/outbox";
 export { takeLetter } from "./letters/take";
@@ -291,8 +291,8 @@ zoneFollowers.add(() => {
 });
 
 onLinkWritten(link => {
-  // The setup it follows, or whether Macs of two setups share it, changed: its bridge and its peers
-  // hear at once which computers are yours (PROTOCOL.md, "Plan limits", Whose).
+  // The setup it follows changed: its bridge and its peers hear at once (the usage panel's
+  // settings go between the boxes of one setup).
   if (whereChanged(link)) {
     tellSeatPeers(link, true).catch(() => {});
     const host = IS_MAC ? macLink.host : liveHost;
@@ -1029,9 +1029,6 @@ async function setup(): Promise<void> {
     console.log("{}");
     return;
   }
-  // Shared by Macs of two setups now, or no longer: the bridge hears at once which computers are
-  // yours, the relay or not (the running link tells your other computers at its next round).
-  await tellIfSharingChanged(old, link);
   // A new relay or name needs a new connection, and a newer bridge replaces an older one.
   let runningVersion = null;
   try { runningVersion = fs.readFileSync(VERSION_FILE, "utf8").trim(); } catch {}

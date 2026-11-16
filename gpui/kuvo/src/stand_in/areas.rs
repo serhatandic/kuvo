@@ -345,7 +345,7 @@ pub fn adding_goes_on(areas: &mut Areas) -> bool {
 /// The computers as listed now: those removed gone, those being reached again so.
 fn reach_titles() -> Value {
     json!({ "connecting": "Connecting…", "held": "Needs an update", "away": "Can’t be reached",
-        "notPaired": "Hasn’t taken this app yet", "shared": "Shared machine", "apart": "Another setup’s",
+        "notPaired": "Hasn’t taken this app yet",
         "unreached": "Can’t be reached from this app" })
 }
 
@@ -356,7 +356,7 @@ fn listed(areas: &Areas) -> Vec<Value> {
         if busy {
             setup["why"] = json!("It’s being set up now.");
         }
-        json!({ "key": format!("key_added_{name}"), "name": name, "kind": "machine", "id": name, "shared": false, "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [],
+        json!({ "key": format!("key_added_{name}"), "name": name, "kind": "machine", "id": name, "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [],
             "features": kuvo_box::gate::REQUIRED,
             "actions": [{ "id": "rename", "label": "Rename" },
                 { "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } },
@@ -443,32 +443,31 @@ fn listed(areas: &Areas) -> Vec<Value> {
 }
 
 /// Your computers, the stand-in itself first: a machine at work, a Mac that's away, a Mac on an
-/// older Kuvo Code, and a machine shared with another setup; `more` machines after them. Each with
+/// older Kuvo Code; `more` machines after them. Each with
 /// what can be done with it from here, as a Mac's box that writes its machines' records offers it.
 fn computers(alone: bool, more: usize) -> Vec<Value> {
     let remove = |name: &str| json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Remove {name}?"), "message": format!("Your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } });
     let mut computers = vec![json!({
-        "key": "key_stand_in", "name": super::NAME, "kind": "mac", "here": true, "shared": false, "reach": "connected",
+        "key": "key_stand_in", "name": super::NAME, "kind": "mac", "here": true, "reach": "connected",
         "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "here", "working": 1, "atWork": [{ "id": "ses_limits", "title": "Plan limits" }], "limits": ["claude", "codex", "copilot", "grok", "openrouter"],
         "features": kuvo_box::gate::REQUIRED, "actions": [],
     })];
     if !alone {
         computers.extend([
-            json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "shared": false, "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2,
+            json!({ "key": "key_devbox", "name": "devbox", "kind": "machine", "id": "devbox", "reach": "connected", "version": "0.8.0", "engine": "2.3.0", "system": "Ubuntu 24.04.1 LTS", "via": "relay", "working": 2,
                 "atWork": [{ "id": "ses_dev_1", "title": "Migrate the billing tables" }, { "id": "ses_dev_2", "title": "Nightly test run" }], "limits": ["claude"], "features": kuvo_box::gate::REQUIRED,
                 "actions": [{ "id": "rename", "label": "Rename" }, remove("devbox")] }),
-            json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "shared": false, "reach": "away", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [], "features": kuvo_box::gate::REQUIRED,
+            json!({ "key": "key_studio", "name": "studio-mini", "kind": "mac", "reach": "away", "version": "0.8.0", "engine": "2.3.0", "system": "macOS 15.1", "via": "relay", "working": 0, "atWork": [], "limits": [], "features": kuvo_box::gate::REQUIRED,
                 "actions": [{ "id": "connect", "label": "Connect" }] }),
             // A Mac on an older Kuvo Code: what it answers lacks what this app needs, and it never said what's at work.
-            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "shared": false, "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": kuvo_box::gate::BASELINE, "actions": [] }),
-            json!({ "key": "key_build", "name": "build-box", "kind": "machine", "id": "build-box", "shared": true, "apart": true, "reach": "connected", "system": "Debian 12", "via": "relay", "limits": [], "actions": [] }),
+            json!({ "key": "key_old", "name": "old-mini", "kind": "mac", "reach": "connected", "version": "0.9.180", "engine": "1.14.0", "system": "macOS 14.6", "via": "relay", "limits": ["claude"], "features": kuvo_box::gate::BASELINE, "actions": [] }),
         ]);
     }
     let reaches = ["connected", "connected", "away", "connecting", "unknown"];
     computers.extend((0..more).map(|ix| {
         let reach = reaches[ix % reaches.len()];
         let name = format!("worker-{:02}", ix + 1);
-        let mut computer = json!({ "key": format!("key_more_{ix}"), "name": name, "kind": "machine", "id": name, "shared": false, "reach": reach, "via": if reach == "unknown" { "peer" } else { "relay" }, "limits": [], "actions": [] });
+        let mut computer = json!({ "key": format!("key_more_{ix}"), "name": name, "kind": "machine", "id": name, "reach": reach, "via": if reach == "unknown" { "peer" } else { "relay" }, "limits": [], "actions": [] });
         if reach == "unknown" {
             computer["through"] = json!("devbox");
         } else {
@@ -551,7 +550,8 @@ fn accounts(now: f64) -> Vec<Value> {
             (None, Some(_)) => Some("long"),
             _ => None,
         };
-        let mut row = json!({ "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE });
+        // (Signed in on this computer, as its box says: `boxes`, `here`.)
+        let mut row = json!({ "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE, "boxes": [{ "key": "here-key", "name": "This Mac", "here": true }] });
         if let Some(bar) = bar {
             row["bar"] = json!(bar);
         }
@@ -568,6 +568,12 @@ fn accounts(now: f64) -> Vec<Value> {
             ended["ended"] = json!(true);
             ended["problem"] = json!({ "kind": "ended", "message": "Its Cursor plan isn't active now." });
             ended
+        },
+        // Signed in only on another computer (its `boxes` don't say `here`): listed in Usage, no ring here.
+        {
+            let mut elsewhere = row("zai", "Z.ai · mini-local", None, "", "Coding Pro", vec![window("five_hour", "Session", 0.3, 2.0 * HOUR, Some(300), None, None)]);
+            elsewhere["boxes"] = json!([{ "key": "mini-key", "name": "mini-local" }]);
+            elsewhere
         },
         row("claude", "Claude · Personal", Some("claude"), "Personal", "Pro", vec![window("five_hour", "Session", 0.18, 4.1 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.22, 2.0 * DAY, Some(10080), None, None)]),
         row("codex", "Codex", Some("codex"), "", "Pro", vec![window("primary", "Session", 0.74, 52.0 * MINUTE, Some(300), None, None), window("secondary", "Weekly", 0.41, 5.0 * DAY, Some(10080), None, None)]),

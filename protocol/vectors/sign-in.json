@@ -1544,7 +1544,7 @@
    ]
   },
   {
-   "about": "a coding agent its bridge can sign out of (Cursor, Antigravity): Sign Out while it's signed in",
+   "about": "a coding agent its bridge can sign out of (Cursor, Antigravity, Kuvo Code's own sign-in): Sign Out while it's signed in, which asks first and says Terminal's is left",
    "agents": true,
    "account": {
     "id": "cursor",
@@ -1609,7 +1609,95 @@
     },
     {
      "id": "signOut",
-     "label": "Sign Out"
+     "label": "Sign Out",
+     "confirm": {
+      "title": "Sign out of Cursor?",
+      "message": "Cursor is signed out in Kuvo Code on Studio, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, Cursor stays as it is.",
+      "label": "Sign Out"
+     }
+    }
+   ],
+   "connections": [
+    {
+     "state": "signedIn",
+     "line": "you@example.com"
+    }
+   ]
+  },
+  {
+   "about": "a coding agent whose own sign-in is yours, shared with Terminal (Codex, Grok on a Mac): Sign Out says it signs out there too, and a turn running on it stops where it does (Codex)",
+   "agents": true,
+   "account": {
+    "id": "codex-cli",
+    "name": "Codex",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "chatgpt",
+      "label": "Sign in with ChatGPT"
+     }
+    ],
+    "connections": [
+     {
+      "type": "agent",
+      "label": "you@example.com",
+      "method": "oauth",
+      "status": {
+       "status": "connected",
+       "message": "Signed in as you@example.com"
+      }
+     }
+    ],
+    "metadata": {
+     "source": "agent",
+     "agent": "codex",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": false,
+     "unchecked": false,
+     "signsOut": true,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true,
+     "addedAccounts": true,
+     "signOutShared": true,
+     "signOutStops": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "chatgpt",
+      "label": "Sign in with ChatGPT"
+     }
+    ],
+    "environment": [],
+    "hint": "Sign in with ChatGPT"
+   },
+   "plan": true,
+   "state": "signedIn",
+   "line": "Signed in as you@example.com",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Codex"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Codex"
+    },
+    {
+     "id": "signOut",
+     "label": "Sign Out",
+     "confirm": {
+      "title": "Sign out of Codex?",
+      "message": "Codex is signed out on Studio, in Terminal too, and its models leave the model picker. A turn running on it stops; your sessions stay; sign in again to use it.",
+      "label": "Sign Out"
+     }
     }
    ],
    "connections": [
@@ -1942,7 +2030,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Claude Code · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
+      "message": "This account is signed out and forgotten on Studio: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.",
       "label": "Remove Account"
      }
     }
@@ -2014,7 +2102,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Claude Code · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
+      "message": "This account is signed out and forgotten on Studio: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.",
       "label": "Remove Account"
      }
     }
@@ -2083,6 +2171,80 @@
      "id": "addAnother",
      "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "about": "a coding agent whose sign-in ended, that its bridge can sign out of: Sign In Again, or Sign Out",
+   "agents": true,
+   "account": {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "connections": [],
+    "metadata": {
+     "source": "agent",
+     "agent": "claude",
+     "accountID": "default",
+     "installed": true,
+     "signInEnded": true,
+     "unchecked": false,
+     "signsOut": true,
+     "outdated": false,
+     "updates": false,
+     "remoteSignIn": true,
+     "addedAccounts": true
+    }
+   },
+   "computer": "Studio",
+   "offered": {
+    "methods": [
+     {
+      "type": "oauth",
+      "id": "subscription",
+      "label": "Claude Pro or Max"
+     },
+     {
+      "type": "key",
+      "label": "Anthropic API key"
+     }
+    ],
+    "environment": [],
+    "hint": "Claude Pro or Max"
+   },
+   "plan": true,
+   "state": "ended",
+   "line": "Sign-in ended",
+   "actions": [
+    {
+     "id": "signInAgain",
+     "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "signOut",
+     "label": "Sign Out",
+     "confirm": {
+      "title": "Sign out of Claude Code?",
+      "message": "Claude Code is signed out in Kuvo Code on Studio, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, Claude Code stays as it is.",
+      "label": "Sign Out"
+     }
     }
    ],
    "connections": []
@@ -3590,7 +3752,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Claude Code · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
+      "message": "This account is signed out and forgotten on Studio: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.",
       "label": "Remove Account"
      }
     }
@@ -3599,7 +3761,7 @@
    "added": true
   },
   {
-   "about": "an account you added with an agent its bridge can sign out of: Sign Out too, while it's signed in",
+   "about": "an account you added, with an agent its bridge can sign out of: never Sign Out, only Remove Account (signed out and forgotten), which asks first",
    "agents": true,
    "account": {
     "id": "cursor@9a8b7c6d",
@@ -3659,10 +3821,6 @@
      "sheetTitle": "Sign In to Cursor · Work"
     },
     {
-     "id": "signOut",
-     "label": "Sign Out"
-    },
-    {
      "id": "rename",
      "label": "Rename"
     },
@@ -3671,7 +3829,7 @@
      "label": "Remove Account",
      "confirm": {
       "title": "Remove Cursor · Work?",
-      "message": "It’s signed out on Studio, and its models leave the model picker. A turn running on it stops; its sessions stay.",
+      "message": "This account is signed out and forgotten on Studio: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.",
       "label": "Remove Account"
      }
     }

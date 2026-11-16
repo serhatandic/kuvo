@@ -649,14 +649,26 @@ fn an_agent_not_installed_is_installed_then_signed_in(cx: &mut TestAppContext) {
 fn an_agent_signs_out_and_an_added_account_is_removed_asked_first(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
-    section(&workspace, cx, "Accounts");
+    let view = section(&workspace, cx, "Accounts");
+    // The agent's own sign-in: Sign Out, asked first in the box's words (Codex's is yours, so
+    // Terminal's goes too, and it says so). Nothing's sent until it's confirmed.
     click(cx, "account-codex-cli-menu");
-    click(cx, "menu-item-Sign Out");
+    click(cx, "menu-item-Sign Out…");
+    let (title, message, button) = view.read_with(cx, |view, _| view.confirm_words()).expect("Sign Out asks first");
+    assert_eq!((title.as_str(), button.as_str()), ("Sign out of Codex?", "Sign Out"));
+    assert!(message.contains("in Terminal too"), "{message}");
+    assert!(stand_in.seen_at("POST", "kuvo/agents/api/integration/codex-cli/disconnect").is_empty());
+    click(cx, "confirm-go");
     assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/integration/codex-cli/disconnect").len(), 1);
     assert!(shown(cx, "account-codex-cli-sign-in"));
+    // One you added: no Sign Out of its own, only Remove Account, which says it's forgotten.
     click(cx, "account-claude-code@w0rk1a2b-menu");
+    assert!(!shown(cx, "menu-item-Sign Out…"));
     click(cx, "menu-item-Remove Account…");
     assert!(shown(cx, "settings-confirm"));
+    let (title, message, button) = view.read_with(cx, |view, _| view.confirm_words()).expect("Remove asks first");
+    assert_eq!((title.as_str(), button.as_str()), ("Remove Claude Code · Work?", "Remove Account"));
+    assert!(message.contains("signed out and forgotten"), "{message}");
     click(cx, "confirm-go");
     assert_eq!(stand_in.seen_at("DELETE", "kuvo/agents/api/kuvo/accounts/claude-code%40w0rk1a2b").len(), 1);
     assert!(!shown(cx, "account-claude-code@w0rk1a2b"));

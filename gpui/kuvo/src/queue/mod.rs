@@ -238,6 +238,9 @@ pub struct QueueView {
     /// The sheets' fields, made once: an item's title and description, a label's name.
     title: Entity<TextField>,
     body: Entity<TextField>,
+    body_composer: Entity<crate::composer::Composer>,
+    picture_reads: HashMap<String, crate::pictures::Read>,
+    viewing: Option<kuvo_box::pictures::Picture>,
     name: Entity<TextField>,
     /// What New Item's chips say.
     draft: Draft,
@@ -278,7 +281,8 @@ impl QueueView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> QueueView {
         let search = cx.new(|cx| TextField::new(cx).bare().placeholder("Search items"));
         let title = cx.new(|cx| TextField::new(cx).bare().title().placeholder("Item title"));
-        let body = cx.new(|cx| TextField::new(cx).bare().multi_line(3, 12).placeholder("Add a description. Markdown works."));
+        let body_composer = cx.new(|cx| crate::composer::Composer::item(client.clone(), cx));
+        let body = body_composer.read(cx).field().clone();
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let picker_field = cx.new(|cx| TextField::new(cx).bare());
         let subscriptions = vec![
@@ -344,6 +348,9 @@ impl QueueView {
             sheet_opened: 0,
             title,
             body,
+            body_composer,
+            picture_reads: HashMap::new(),
+            viewing: None,
             name,
             draft: Draft::default(),
             create_more: false,
@@ -384,6 +391,11 @@ impl QueueView {
 
     pub fn search_field(&self) -> &Entity<TextField> {
         &self.search
+    }
+
+    /// The description composer, including its shared attachment draft.
+    pub fn item_composer(&self) -> &Entity<crate::composer::Composer> {
+        &self.body_composer
     }
 
     /// The fields an item is written in: its title and its description.
@@ -998,6 +1010,12 @@ impl QueueView {
             }
             Act::New => {
                 self.title.update(cx, |field, cx| field.set_text("", cx));
+                // (Files go with a new one where this computer keeps them.)
+                let attaching = self.client.gate().has("work-queue.attachments");
+                self.body_composer.update(cx, |composer, cx| {
+                    composer.clear_attachments(cx);
+                    composer.set_attaching(attaching, cx);
+                });
                 self.body.update(cx, |field, cx| field.set_text("", cx));
                 // What the box says a new item starts as (`new`), shown and sent, so what's shown
                 // is what's made; then as the list shown: its status, or its label.
@@ -1015,6 +1033,12 @@ impl QueueView {
                 // (Its title and description, where the box says they may be changed.)
                 let Some(whole) = self.whole().filter(|whole| whole.item.can.edit).cloned() else { return };
                 self.title.update(cx, |field, cx| field.set_text(whole.item.title.clone(), cx));
+                self.body_composer.update(cx, |composer, cx| {
+                    composer.clear_attachments(cx);
+                    composer.set_image_offset(whole.files.iter().filter(|file| file.kind.starts_with("image/")).count());
+                    // (As its box says: where its computer keeps them.)
+                    composer.set_attaching(whole.item.can.attach, cx);
+                });
                 self.body.update(cx, |field, cx| {
                     field.set_text(whole.body.clone(), cx);
                     // (From its start, so a long one opens on its first lines.)
@@ -1175,6 +1199,7 @@ impl QueueView {
         if self.saving {
             return;
         }
+        self.body_composer.update(cx, |composer, cx| composer.clear_attachments(cx));
         self.sheet = None;
         self.picker = None;
         self.sheet_error = None;
@@ -1195,7 +1220,7 @@ impl QueueView {
         if let (Sheet::Edit(_), Some((was_title, was_body))) = (&sheet, &self.editing) {
             rewritten.title = (&title != was_title).then(|| title.clone());
             rewritten.body = (&body != was_body).then(|| body.clone());
-            if rewritten == ItemChange::default() {
+            if rewritten == ItemChange::default() && self.body_composer.read(cx).attached().is_empty() {
                 self.close_sheet(cx);
                 return;
             }
@@ -1209,15 +1234,25 @@ impl QueueView {
             Item(Box<kuvo_box::Result<Item>>),
             Labels(kuvo_box::Result<Vec<Label>>),
         }
+        let paths = if matches!(sheet, Sheet::New | Sheet::Edit(_)) { self.body_composer.read(cx).attached().to_vec() } else { Vec::new() };
+        let pasted = crate::pasted::folder(cx);
+        let remote_item = matches!(sheet, Sheet::Edit(_)) && self.whole().is_some_and(|whole| whole.item.computer.is_some() || whole.told);
         // (Under its own name: a later sheet's save never drops this one's answer.)
         self.run(
             format!("sheet-{opened}"),
-            move |client| match &sheet {
-                Sheet::New => Answer::Item(Box::new(client.add_work_item(&NewItem { title, body, status: draft.status, priority: draft.priority, labels: draft.labels, assignee: draft.assignee, due: draft.due }))),
-                Sheet::Edit(item) => Answer::Item(Box::new(client.change_work_item(item, &rewritten))),
-                Sheet::NewLabel => Answer::Labels(client.add_label(&name, color.as_deref()).map(|(labels, _)| labels)),
-                Sheet::EditLabel(id) => Answer::Labels(client.change_label(id, Some(&name), color.as_deref()).map(|(labels, _)| labels)),
-                Sheet::RemoveLabel(id) => Answer::Labels(client.remove_label(id).map(|(labels, _)| labels)),
+            move |client| {
+                let files = match kuvo_box::parts::carried(&paths, client.here() && !remote_item, &|path| path.starts_with(&pasted)) {
+                    Ok(files) => files,
+                    Err(error) => return Answer::Item(Box::new(Err(kuvo_box::Error::BadAnswer(error)))),
+                };
+                rewritten.files = files.clone();
+                match &sheet {
+                    Sheet::New => Answer::Item(Box::new(client.add_work_item(&NewItem { title, body, files, status: draft.status, priority: draft.priority, labels: draft.labels, assignee: draft.assignee, due: draft.due }))),
+                    Sheet::Edit(item) => Answer::Item(Box::new(client.change_work_item(item, &rewritten))),
+                    Sheet::NewLabel => Answer::Labels(client.add_label(&name, color.as_deref()).map(|(labels, _)| labels)),
+                    Sheet::EditLabel(id) => Answer::Labels(client.change_label(id, Some(&name), color.as_deref()).map(|(labels, _)| labels)),
+                    Sheet::RemoveLabel(id) => Answer::Labels(client.remove_label(id).map(|(labels, _)| labels)),
+                }
             },
             move |this, answer, cx| {
                 // The sheet it was sent from, still open where it was: it closes, or says why not.
@@ -1251,6 +1286,7 @@ impl QueueView {
                     // Create more: it stays, its text cleared for the next one.
                     None if its_sheet && sent == Sheet::New && this.create_more => {
                         this.title.update(cx, |field, cx| field.set_text("", cx));
+                        this.body_composer.update(cx, |composer, cx| composer.clear_attachments(cx));
                         this.body.update(cx, |field, cx| field.set_text("", cx));
                         this.created = Some(made.map_or_else(|| "Added.".to_owned(), |label| format!("Added {label}.")));
                         this.wants_focus = Some(this.title.focus_handle(cx));

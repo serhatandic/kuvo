@@ -812,14 +812,14 @@ impl AreaView {
                     .items_center()
                     .gap(space::S2)
                     .px(space::S2)
-                    .py(space::S1_5)
+                    .py(space::S2)
                     .mb(space::S0_5)
                     .rounded(radius::NAV)
                     .cursor_pointer()
                     .when(selected, |r| r.bg(selected_bg))
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key, cx))
-                    .child(bot_face(&bot.id, &bot.look, px(28.)))
+                    .child(bot_face(&bot.id, &bot.look, px(BOT_FACE)))
                     .child(two_lines(bot.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx)), &c))
                     .into_any_element(),
             );
@@ -843,8 +843,8 @@ impl AreaView {
                     format!("On {computer}")
                 };
                 let face = match &there.look {
-                    Some(look) => bot_face(&there.id, look, px(28.)),
-                    None => div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
+                    Some(look) => bot_face(&there.id, look, px(BOT_FACE)),
+                    None => div().flex().flex_none().items_center().justify_center().size(px(BOT_FACE)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
                 rows.push(
                     div()
@@ -854,7 +854,7 @@ impl AreaView {
                         .items_center()
                         .gap(space::S2)
                         .px(space::S2)
-                        .py(space::S1_5)
+                        .py(space::S2)
                         .mb(space::S0_5)
                         .rounded(radius::NAV)
                         .cursor_pointer()
@@ -1022,16 +1022,11 @@ impl AreaView {
             }
             Reading::Ready(computers) => computers,
         };
-        let (shared, yours): (Vec<&Computer>, Vec<&Computer>) = computers.iter().partition(|computer| computer.shared || computer.apart);
-        if !yours.iter().any(|computer| computer.here) {
+        if !computers.iter().any(|computer| computer.here) {
             rows.push(self.this_row(cx));
         }
-        rows.extend(yours.into_iter().map(|computer| self.computer_row(computer, cx)));
+        rows.extend(computers.iter().map(|computer| self.computer_row(computer, cx)));
         rows.push(add_row(self, cx));
-        if !shared.is_empty() {
-            rows.push(div().debug_selector(|| "header-shared".into()).child(SectionHeader::new("shared", "Shared Machines")).into_any_element());
-            rows.extend(shared.into_iter().map(|computer| self.computer_row(computer, cx)));
-        }
         rows
     }
 
@@ -1150,6 +1145,10 @@ pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
     })
 }
 
+/// A bot's face in the Bots sidebar, in points: its rows are this plus even padding above and
+/// below. Other places keep their own sizes (the header's 22, a mention's 16).
+const BOT_FACE: f32 = 40.;
+
 /// A two-line row's words: its name over the line under it, set as the type ramp says
 /// (`TextRole::RowTitle` over `RowDetail`).
 pub(crate) fn two_lines(name: impl Into<SharedString>, detail: impl IntoElement, c: &kuvo_ui::theme::Colors) -> AnyElement {
@@ -1262,11 +1261,11 @@ mod tests {
     fn a_computers_line_says_how_the_box_reaches_it() {
         let computer = |json: &str| serde_json::from_str::<kuvo_box::areas::Computer>(json).unwrap();
         let line = |json: &str| computer_line(&computer(json));
-        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connected","system":"Ubuntu 24.04.1 LTS","via":"relay","working":0,"limits":[]}"#), "Ubuntu 24.04.1 LTS");
-        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"connecting","title":"Connecting","via":"relay","working":0,"limits":[]}"#), "Connecting");
-        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","shared":false,"reach":"away","title":"Can’t be reached","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
-        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","title":"Known through devbox","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
-        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","shared":false,"reach":"unknown","title":"Not reached directly","via":"peer","working":0,"limits":[]}"#), "Not reached directly");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","reach":"connected","system":"Ubuntu 24.04.1 LTS","via":"relay","working":0,"limits":[]}"#), "Ubuntu 24.04.1 LTS");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","reach":"connecting","title":"Connecting","via":"relay","working":0,"limits":[]}"#), "Connecting");
+        assert_eq!(line(r#"{"key":"a","name":"devbox","kind":"machine","reach":"away","title":"Can’t be reached","via":"relay","working":0,"limits":[]}"#), "Can’t be reached");
+        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","reach":"unknown","title":"Known through devbox","via":"peer","through":"devbox","working":0,"limits":[]}"#), "Known through devbox");
+        assert_eq!(line(r#"{"key":"b","name":"Studio","kind":"mac","reach":"unknown","title":"Not reached directly","via":"peer","working":0,"limits":[]}"#), "Not reached directly");
     }
 
     #[test]

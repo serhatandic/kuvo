@@ -71,7 +71,7 @@ export async function keptFiles(given: unknown[], session: string, modelInput: M
 }
 
 // A file sent with its contents (a base64 `data:` URI): its type and bytes.
-function inline(file: PromptFile): { mime: string; bytes: Buffer } | null {
+export function inline(file: PromptFile): { mime: string; bytes: Buffer } | null {
   const match = typeof file?.uri === "string" ? /^data:([^;,]*)((?:;[^;,]*)*);base64,/.exec(file.uri) : null;
   if (!match) return null;
   return { mime: (match[1] || "application/octet-stream").toLowerCase(), bytes: Buffer.from((file.uri as string).slice(match[0].length), "base64") };

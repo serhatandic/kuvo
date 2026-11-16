@@ -157,21 +157,23 @@ export interface ItemWhole extends ItemSummary {
  * which GitHub closes); `delete` it; `restore` it (a deleted one, and nothing else then). None
  * of them while its conversation moves to another computer (`moving`), or its computer isn't
  * answering (`away`); only `delete` while it's on its way to another computer. */
-export interface Can { edit: boolean; set: boolean; assign: boolean; close: boolean; delete: boolean; restore: boolean; why?: string }
+export interface Can { edit: boolean; set: boolean; assign: boolean; close: boolean; delete: boolean; restore: boolean; attach: boolean; why?: string }
 
-/** `why`: where something can't be done, the reason in words a client shows as they are. */
-export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn" | "computer">, { moving = false, away = false, apart = false }: { moving?: boolean; away?: boolean; apart?: boolean } = {}): Can {
-  const none = { edit: false, set: false, assign: false, close: false, delete: false, restore: false };
+/** `why`: where something can't be done, the reason in words a client shows as they are.
+ * `attach`: files go with a change to its description (`attaching`: false where its computer
+ * doesn't keep a client's files yet, `work-queue.attachments`). */
+export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" | "seen" | "keptIn" | "computer">, { moving = false, away = false, apart = false, attaching = true }: { moving?: boolean; away?: boolean; apart?: boolean; attaching?: boolean } = {}): Can {
+  const none = { edit: false, set: false, assign: false, close: false, delete: false, restore: false, attach: false };
   const there = item.computer?.name ?? "Its computer";
   if (moving) return { ...none, why: "Its conversation is moving to another computer: it can be changed once it's there." };
   if (away) return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
-  // (A machine Macs share outside one setup hands nothing on to another computer.)
+  // (One its computer doesn't take what a client does from another box for.)
   if (apart) return { ...none, why: `It's on ${there}: change it there.` };
   if (item.removed) return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
   if (item.handing) return { ...none, delete: true, why: `It's on its way to ${item.handing.name || "a conversation"} on another computer: it can be changed there once it's arrived.` };
   // (An issue GitHub closed stays Done until it's reopened there.)
   if (item.source) return { ...none, set: item.keptIn === undefined, assign: item.keptIn === undefined && !item.computer, delete: true, why: item.keptIn === undefined ? "Its title, its description and closing it are GitHub's." : "It's closed on GitHub: it's back where it stood once it's reopened there." };
-  return { edit: true, set: true, assign: !item.computer, close: true, delete: true, restore: false };
+  return { edit: true, set: true, assign: !item.computer, close: true, delete: true, restore: false, attach: attaching };
 }
 
 /** The day it is here, `YYYY-MM-DD`. */

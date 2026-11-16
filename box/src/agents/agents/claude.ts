@@ -197,7 +197,8 @@ export class ClaudeAgent implements Agent {
   /** Counts updates of Claude Code: a session's Claude Code started before the last one starts again. */
   program = 0
 
-  /** Its own sign-in on a machine: Kuvo Code's, in its folder there, so signed out here. */
+  /** Its own sign-in: on a Mac, Kuvo Code's token (yours in Terminal stays); on a machine, Kuvo
+   * Code's in its folder there. */
   signOut?: () => Promise<void>
 
   constructor(

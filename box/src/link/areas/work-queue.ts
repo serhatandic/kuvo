@@ -16,11 +16,10 @@ import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/status
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
 import { frozen } from "../moves/records";
-import { sharedMachine } from "../setup/settle";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
-import { Refusal, refuseMoving } from "../work-queue/ops";
+import { carriedFiles, Refusal, refuseMoving, TooBig } from "../work-queue/ops";
 import { TOLD, type ToldItem } from "../work-queue/told";
 import { readLink } from "../state";
 import { ownKey } from "../peers/known";
@@ -30,9 +29,9 @@ import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
-import { forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
-import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { ATTACHMENTS, forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
+import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } from "../work-queue/acts";
+import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
 export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
@@ -112,9 +111,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     items.sort((a, b) => (place.get(a.status) ?? 99) - (place.get(b.status) ?? 99) || computerOf(a).localeCompare(computerOf(b)) || a.order - b.order);
   const moving = frozen();
   const who = assignable();
-  // (A machine Macs share outside one setup hands nothing on to another computer; nor is anything
-  // handed to one that doesn't take what a client does from another box.)
-  const shared = sharedMachine(readLink());
+  // (Nothing is handed to one that doesn't take what a client does from another box.)
   // (A label an item names that no computer lists any more isn't one of its labels.)
   const summary = (item: Item): ItemSummary => {
     const said = withCan(summaryOf(item, known.working, titles, who), moving);
@@ -142,7 +139,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     today: todayHere(),
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: shared || !takesForwarded(item.computer.key) }) })),
+      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key), attaching: takesForwarded(item.computer.key, ATTACHMENTS) }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
     removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary).filter(kept),
@@ -257,7 +254,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (part === "items") {
     if (method !== "POST") return yield* json(405, {});
     if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
-    return yield* answered(addHere(given), json);
+    return yield* answered(addHere(given, fromLocalApp(context.request)), json);
   }
 
   if (part === "import") {
@@ -309,7 +306,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   // (Who it's for is set on the computer that keeps it: that box's `can` is for its own client,
   // whose bots are its own.)
-  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...(isObject(item.can) ? { can: { ...item.can, assign: false } } : {}), computer });
+  // (Attaching too only where this box knows that computer keeps them: it's what it sends them through.)
+  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...(isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}), computer });
   // One that's neither here nor told by any of your computers (an old Done one, a deleted one), for
   // a client: asked of each of them, so a client asks one box whichever keeps it. Null when none
   // has it; `refuse` when some couldn't say, so it may be there.
@@ -338,7 +336,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (whole) return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || !takesForwarded(far.computer.key), attaching: takesForwarded(far.computer.key, ATTACHMENTS) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
@@ -385,9 +383,18 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       far = sought?.far ?? null;
     }
   }
-  if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal }), json);
+  if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal, local: fromLocalApp(context.request) }), json);
   const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
-  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } } : {}) }, signal);
+  // (Files go to that computer's box with their bytes: it never reads a path it's sent.)
+  // (Asked first, before any file is read: that computer keeps them at all.)
+  const attaching = Array.isArray(given.files) && given.files.length > 0;
+  if (attaching && !takesForwarded(far.computer.key, ATTACHMENTS)) return yield* json(409, { message: `${far.computer.name} needs an update before it can keep attached files. Update it and try again.`, computer: far.computer });
+  let files: unknown;
+  try { files = attaching ? carriedFiles(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files; } catch (error) {
+    if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
+    throw error;
+  }
+  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {}) }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
   // What this box has of it now, as that computer's box answered (not when it next tells).
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id) changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);

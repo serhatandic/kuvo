@@ -13,7 +13,7 @@ import { type Doc, DOC_KINDS, type DocKind, type SignedDoc } from "../../shared/
 import { isObject } from "../../shared/json";
 import { addressOf } from "../crypto/keys";
 import { IS_MAC } from "../home";
-import { cleanMoved, leaveMac, macDoc, macsOf, ownKey, peersOf } from "../peers/known";
+import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, lowerEpoch, setupDoc, type SetupWord } from "../setup/record";
@@ -91,20 +91,19 @@ interface Outgoing {
   reply?: boolean;
 }
 
-// Whether this box takes `kind` from `origin`: who its boxes are, in a setup only from its main
-// computer, and otherwise from its own Macs (a box in no setup: an older Mac's machine, a shared one;
-// kept until every box knows setups); phones and personalities from those Macs, its peers, and
-// itself (a copy of its own it lost count of).
+// Whether this box takes `kind` from `origin`: who its boxes are from its own Macs (each set it up,
+// so each is yours) and its setup's main computer; phones and personalities from those Macs, its
+// peers, and itself (a copy of its own it lost count of).
 function takesFrom(link: LinkState, origin: string, kind: DocKind): boolean {
   const macs = macsOf(link).map(mac => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
   // (This Mac takes a copy of its own, one it lost count of.)
-  if (kind === "peers") return setup?.role === "member" ? origin === setup.sign : macs.includes(origin) || (IS_MAC && origin === ownSign(link));
+  if (kind === "peers") return macs.includes(origin) || (setup?.role === "member" && origin === setup.sign) || (IS_MAC && origin === ownSign(link));
   return macs.includes(origin) || origin === ownSign(link) || peersOf(link).some(peer => peer.sign === origin);
 }
 
 // Whether the box with the key `to` takes `kind` from `origin`, as far as this box knows: its setup's
-// document, or else one of this box's Macs', lists them both (or is `origin`; who a setup's or a
+// document, or one of this box's Macs', lists them both (or is `origin`; who a setup's or a
 // Mac's boxes are, only from its signer).
 function takenBy(link: LinkState, to: string, origin: string | null, kind: DocKind): boolean {
   // This Mac's: each of its machines takes all of this Mac's, and the phones and personalities of
@@ -113,8 +112,7 @@ function takenBy(link: LinkState, to: string, origin: string | null, kind: DocKi
     const peers = peersOf(link);
     return peers.some(peer => peer.key === to) && (origin === ownSign(link) || (kind !== "peers" && peers.some(peer => peer.sign === origin)));
   }
-  const setup = setupDoc(link);
-  for (const doc of setup ? [setup] : macsOf(link).map(mac => macDoc(link, mac, "peers"))) {
+  for (const { doc } of macDocs(link)) {
     const boxes = Array.isArray(doc?.body.boxes) ? doc.body.boxes : [];
     if (!boxes.some(box => box?.key === to)) continue;
     if (origin === doc!.origin || (kind !== "peers" && boxes.some(box => box?.sign === origin))) return true;
@@ -138,8 +136,10 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
     if (doc.kind === "peers") noteConflict(link, doc);
     return null;
   }
-  // (Never a lower epoch of the setup this box keeps, whoever signed it.)
+  // (Never a lower epoch of the setup this box keeps, whoever signed it. Another of its Macs naming
+  // itself the main computer of it is taken for its word on its boxes, and noted.)
   if (lowerEpoch(link, doc)) return null;
+  if (doc.kind === "peers") noteConflict(link, doc);
   if (doc.origin === ownSign(link)) {
     if ((doc.kind === "peers" && !IS_MAC) || doc.n > MOST_COUNT) return null;
     const had = link.own?.[doc.kind];

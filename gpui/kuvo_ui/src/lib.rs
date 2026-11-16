@@ -3,6 +3,7 @@
 //! Each module is one block. They read their look from [`theme`] and nothing else, and hold
 //! no product logic: the box decides, these draw.
 
+pub mod anchor;
 pub mod backdrop;
 pub mod bot;
 pub mod button;

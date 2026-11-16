@@ -5,20 +5,19 @@
 //! a separator before destructive actions, keyboard shortcut hints `⌘R` / `⌘⌫` / `⇧⌘⌫`) and
 //! skips action IDs this client doesn't have a control for.
 
-use kuvo_ui::motion::{MotionExt as _, Direction};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 use gpui::{
-    Anchor, AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle,
+    AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle,
     Focusable, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, MouseButton,
-    ParentElement, Render, Styled, Subscription, Task, WeakEntity, Window, actions, anchored,
-    deferred, div, point, px,
+    ParentElement, Render, Styled, Subscription, Task, WeakEntity, Window, actions, div, px,
 };
 use kuvo_box::accounts::Confirm;
 use kuvo_box::session_actions::Actions;
 use kuvo_box::{BoxClient, Listing};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, StyledType, TextField, TextFieldEvent, TypeSize,
+    anchor::{Placement, Popover},
     menu::{Menu, MenuEntry, MenuItem, PopoverMenuHandle},
     theme::{radius, space},
 };
@@ -345,42 +344,16 @@ pub fn open_actions_menu(
     menu
 }
 
-/// Anchors a popover under a sidebar row (`Anchor::TopLeft`).
+/// A session's popover (rename, delete) under its sidebar row, at its leading edge. Make it a
+/// child of the row.
 pub fn row_anchored_popover(popover: AnyElement) -> AnyElement {
-    div()
-        .absolute()
-        .top_full()
-        .left(px(8.))
-        .child(
-            deferred(
-                anchored()
-                    .anchor(Anchor::TopLeft)
-                    .offset(point(px(0.), px(2.)))
-                    .snap_to_window_with_margin(px(8.))
-                    .child(div().id("session-popover-motion").child(popover).animate_in(Direction::FromTop, true)),
-            )
-            .with_priority(1),
-        )
-        .into_any_element()
+    Popover::new("session-popover-motion", Placement::below(), popover).into_any_element()
 }
 
-/// Anchors a popover under the title bar's "•••" button (`Anchor::TopRight`).
+/// A session's popover under the title bar's "•••" button (or the update chip's card under the
+/// chip), lined up with its trailing edge, as it's at the bar's end. Make it a child of the button.
 pub fn title_anchored_popover(popover: AnyElement) -> AnyElement {
-    div()
-        .absolute()
-        .top_full()
-        .right_0()
-        .child(
-            deferred(
-                anchored()
-                    .anchor(Anchor::TopRight)
-                    .offset(point(px(0.), space::S1))
-                    .snap_to_window_with_margin(px(8.))
-                    .child(div().id("session-popover-motion").child(popover).animate_in(Direction::FromTop, true)),
-            )
-            .with_priority(1),
-        )
-        .into_any_element()
+    Popover::new("session-popover-motion", Placement::below().align_end(), popover).into_any_element()
 }
 
 /// Shared target context passed into session popovers (`RenamePopover` / `ConfirmDeletePopover`).

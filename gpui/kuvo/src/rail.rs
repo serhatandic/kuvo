@@ -5,12 +5,12 @@
 //! The rings are their own view ([`Rings`]): their accounts are read on their own clock, so a
 //! reading redraws the rings, not the window.
 
-use kuvo_ui::motion::{MotionExt as _, Direction};
+use kuvo_ui::anchor::{Placement, Popover};
 use std::time::Duration;
 
 use gpui::{
-    Anchor, AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
-    StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, anchored, canvas, deferred, div, point, prelude::FluentBuilder as _, px, svg,
+    AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
+    StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, canvas, div, point, prelude::FluentBuilder as _, px, svg,
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Account, Level};
@@ -192,9 +192,10 @@ impl Rings {
         self.now.unwrap_or_else(time::now_ms)
     }
 
-    /// The accounts drawn as rings: a plan that ended has none (the box says so, `ended`).
+    /// The accounts drawn as rings: those signed in on this computer, as its box says (`boxes`,
+    /// `here`: what its Accounts shows), and never a plan that ended (`ended`).
     fn ringed(&self) -> Vec<&Account> {
-        self.accounts.iter().flatten().filter(|account| !account.ended).collect()
+        self.accounts.iter().flatten().filter(|account| account.here() && !account.ended).collect()
     }
 
     /// The pointer came onto a ring, or left it: its card opens once it rests there (at once
@@ -417,26 +418,21 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, cx: &mut Cont
         .into_any_element()
 }
 
-/// A ring's card: to its right, centred on it (kept in the window), over everything else and
-/// taking the pointer's clicks itself, so what's under it isn't reached and the rings below stay
-/// in view. It starts where the ring ends, so the pointer moves onto it without closing it.
+/// A ring's card: to its right, top-aligned with it (by the rule in `kuvo_ui::anchor`), over
+/// everything else and taking the pointer's clicks itself, so what's under it isn't reached and the
+/// rings below stay in view. It starts where the ring ends (its gap is padding it takes the pointer
+/// on), so the pointer moves onto it without closing it.
 fn card_beside(account: &Account, now: f64, cx: &mut Context<Rings>) -> impl IntoElement {
     let card = account_card(account, now, cx);
-    div().absolute().left_full().top((RING + px(6.)) / 2.).size_0().child(
-        deferred(
-            anchored().anchor(Anchor::LeftCenter).snap_to_window_with_margin(px(8.)).child(
-                div()
-                    .id(SharedString::from(format!("ring-card-{}", account_key(account))))
-                    .debug_selector(|| "ring-card".into())
-                    .occlude()
-                    .pl(space::S2)
-                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.card_hovered(*hovered, cx)))
-                    .child(card_frame(card, cx))
-                    .animate_in(Direction::FromLeft, true),
-            ),
-        )
-        .with_priority(1),
-    )
+    let key = account_key(account);
+    let content = div()
+        .id(SharedString::from(format!("ring-card-{key}")))
+        .debug_selector(|| "ring-card".into())
+        .occlude()
+        .pl(space::S2)
+        .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.card_hovered(*hovered, cx)))
+        .child(card_frame(card, cx));
+    Popover::new(SharedString::from(format!("ring-card-motion-{key}")), Placement::beside().flush(), content)
 }
 
 /// How a ring's arcs are named in tests: the account's service and label.

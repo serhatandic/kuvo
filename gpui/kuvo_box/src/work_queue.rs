@@ -83,6 +83,9 @@ pub struct Can {
     pub delete: bool,
     #[serde(default)]
     pub restore: bool,
+    /// Files may go with a change to it (its computer keeps them: `work-queue.attachments`).
+    #[serde(default)]
+    pub attach: bool,
     /// Where something can't be done, why, in the box's words: shown as they are.
     #[serde(default)]
     pub why: Option<String>,
@@ -426,6 +429,7 @@ impl Narrow {
 pub struct NewItem {
     pub title: String,
     pub body: String,
+    pub files: Vec<crate::parts::File>,
     pub status: Option<String>,
     pub priority: Option<String>,
     pub labels: Vec<String>,
@@ -439,6 +443,8 @@ pub struct NewItem {
 pub struct ItemChange {
     pub title: Option<String>,
     pub body: Option<String>,
+    /// New files to append; existing files stay with the item.
+    pub files: Vec<crate::parts::File>,
     pub status: Option<String>,
     pub priority: Option<String>,
     /// All of its labels, in place of those it had.
@@ -457,6 +463,7 @@ impl ItemChange {
                 body.insert(name.into(), value);
             }
         };
+        if !self.files.is_empty() { put("files", Some(json!(self.files))); }
         put("title", self.title.as_ref().map(|title| json!(title)));
         put("body", self.body.as_ref().map(|body| json!(body)));
         put("status", self.status.as_ref().map(|status| json!(status)));
@@ -526,10 +533,20 @@ impl BoxClient {
         })
     }
 
+    /// Reads a file kept with an item, including one routed to another computer.
+    pub fn work_item_file(&self, item: &str, name: &str) -> Result<Vec<u8>> {
+        let response = self.send(&Request::get(format!("{}/files/{}", item_route(item), paths::segment(name))))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        Ok(response.body)
+    }
+
     /// Adds an item. Whose queue it goes in, and what's left out, are the box's to decide.
     pub fn add_work_item(&self, new: &NewItem) -> Result<Item> {
         let mut body = Map::new();
         body.insert("title".into(), json!(new.title));
+        if !new.files.is_empty() { body.insert("files".into(), json!(new.files)); }
         if !new.body.is_empty() {
             body.insert("body".into(), json!(new.body));
         }
@@ -628,7 +645,7 @@ mod tests {
         assert!(item.at_work() && item.created.by.user && item.overdue);
         assert_eq!((item.status.as_str(), item.priority.as_str(), item.labels.len(), item.due.as_deref()), ("in-progress", "high", 2, Some("2026-11-30")));
         assert_eq!(item.assignee.as_ref().map(|assignee| (assignee.kind.as_str(), assignee.name.as_str(), assignee.look.as_ref().map(|look| look.color.as_str()))), Some(("bot", "Mira", Some("sky"))));
-        assert_eq!(item.can, Can { edit: true, set: true, assign: true, close: true, delete: true, restore: false, why: None });
+        assert_eq!(item.can, Can { edit: true, set: true, assign: true, close: true, delete: true, restore: false, attach: false, why: None });
         assert_eq!((item.updated.by.name.as_deref(), item.progress.as_ref().and_then(|progress| progress.value)), (Some("Mira"), Some(0.4)));
 
         // An issue is named by GitHub's name for it, never its old number; one waiting for a number
@@ -647,6 +664,13 @@ mod tests {
         let by = Narrow { q: "sign up".into(), computers: vec![String::new(), "key_1".into()], sources: vec!["github-pr".into()], owners: vec![], labels: vec!["lbl_a".into(), "lbl_b".into()] };
         assert_eq!(by.route(), "kuvo/work-queue?owner=all&counts=1&q=sign%20up&computers=,key_1&sources=github-pr&labels=lbl_a,lbl_b");
         assert!(Narrow::default().is_empty() && !by.is_empty());
+    }
+
+    #[test]
+    fn attached_files_use_the_composers_wire_shape_and_empty_edits_preserve_files() {
+        let change = ItemChange { body: Some("[Image 1]".into()), files: vec![crate::parts::File { uri: "data:image/png;base64,AQID".into(), name: Some("shot.png".into()) }], ..Default::default() };
+        assert_eq!(change.body(), json!({ "body": "[Image 1]", "files": [{ "uri": "data:image/png;base64,AQID", "name": "shot.png" }] }));
+        assert_eq!(ItemChange::default().body(), json!({}));
     }
 
     #[test]

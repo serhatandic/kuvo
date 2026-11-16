@@ -214,6 +214,16 @@ pub struct Composer {
     noted: String,
     /// Files and pictures that go with what's written, in the order they were added.
     attached: Vec<PathBuf>,
+    /// An item's description (`Composer::item`) in place of a message: the same paste and drop of
+    /// files, without a conversation's controls.
+    item_editor: bool,
+    /// An item's description takes files: only where the item's computer keeps them
+    /// (`set_attaching`); with none offered, ⌘V pastes text and nothing can be dropped.
+    item_attaching: bool,
+    /// Which draft of attachments is the latest: a paste or copy finishing for an earlier one is left.
+    attachment_generation: u64,
+    /// The pictures an item keeps already: a new one's name (`[Image n]`) follows them.
+    image_offset: usize,
     /// What you're replying to (a message, or a part of one), ahead of your words as it's sent,
     /// each with your answer to it in a field of its own (`answers`, in the same order), as 0.7's.
     quotes: Vec<Quote>,
@@ -268,6 +278,15 @@ impl Composer {
     /// The same, for a conversation in `folder` (as its box lists it): what's offered is read
     /// there from the first read (`set_folder`).
     pub fn in_folder(client: BoxClient, target: Target, folder: Option<String>, read: bool, cx: &mut Context<Self>) -> Composer {
+        Self::make(client, target, folder, read, false, cx)
+    }
+
+    /// The shared composer attachment flow, with an item description instead of chat controls.
+    pub fn item(client: BoxClient, cx: &mut Context<Self>) -> Composer {
+        Self::make(client, Target::New(StartIn::Chat), None, false, true, cx)
+    }
+
+    fn make(client: BoxClient, target: Target, folder: Option<String>, read: bool, item_editor: bool, cx: &mut Context<Self>) -> Composer {
         let placeholder: SharedString = match &target {
             Target::Session { .. } => "Ask anything, / for commands".into(),
             Target::New(_) => "What should we work on?".into(),
@@ -276,27 +295,37 @@ impl Composer {
         // (A group chat's messages carry no files.)
         let takes_files = !matches!(target, Target::Group { .. });
         let field = cx.new(|cx| {
-            let field = TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder(placeholder.clone());
-            if takes_files { field.takes_files() } else { field }
+            let field = TextField::new(cx).multi_line(if item_editor { 3 } else { 1 }, if item_editor { 12 } else { 10 }).bare().submits_on_enter(!item_editor).placeholder(if item_editor { "Add a description. Markdown works.".into() } else { placeholder.clone() });
+            if takes_files && !item_editor { field.takes_files() } else { field }
         });
         let pasting = cx.subscribe(&field, |this: &mut Composer, _, pasted: &Pasted, cx| this.paste(pasted.clone(), cx));
-        let subscription = cx.subscribe(&field, |this: &mut Composer, _, event: &TextFieldEvent, cx| match event {
-            TextFieldEvent::Submit(_) => this.send(cx),
-            TextFieldEvent::Cancel => {
-                if this.running && this.text(cx).trim().is_empty() {
-                    this.stop(cx);
-                }
-            }
-            TextFieldEvent::Changed => {
-                this.slash_at = 0;
-                this.read_mentions(cx);
-                if this.note.is_some() && this.text(cx) != this.noted {
-                    this.note = None;
-                }
+        let subscription = cx.subscribe(&field, |this: &mut Composer, _, event: &TextFieldEvent, cx| {
+            if this.item_editor {
                 cx.notify();
+                return;
+            }
+            match event {
+                TextFieldEvent::Submit(_) => this.send(cx),
+                TextFieldEvent::Cancel => {
+                    if this.running && this.text(cx).trim().is_empty() {
+                        this.stop(cx);
+                    }
+                }
+                TextFieldEvent::Changed => {
+                    this.slash_at = 0;
+                    this.read_mentions(cx);
+                    if this.note.is_some() && this.text(cx) != this.noted {
+                        this.note = None;
+                    }
+                    cx.notify();
+                }
             }
         });
         let mut composer = Composer {
+            item_editor,
+            item_attaching: false,
+            attachment_generation: 0,
+            image_offset: 0,
             client,
             target,
             field,
@@ -1228,6 +1257,28 @@ impl Composer {
         cx.notify();
     }
 
+    /// Start a fresh attachment draft, invalidating pending paste and copy completions.
+    pub fn clear_attachments(&mut self, cx: &mut Context<Self>) {
+        self.attachment_generation += 1;
+        self.image_offset = 0;
+        self.attached.clear();
+        self.note = None;
+        cx.notify();
+    }
+
+    /// Continue picture names after the images already kept with an item.
+    pub fn set_image_offset(&mut self, count: usize) {
+        self.image_offset = count;
+    }
+
+    /// Whether an item's description takes files (its computer keeps them, as its box says): where
+    /// it doesn't, there's simply nothing to paste or drop them into.
+    pub fn set_attaching(&mut self, attaching: bool, cx: &mut Context<Self>) {
+        self.item_attaching = attaching;
+        self.field.update(cx, |field, _| field.set_takes_files(attaching));
+        cx.notify();
+    }
+
     /// What goes with what's written: files and pictures, in order.
     pub fn attached(&self) -> &[PathBuf] {
         &self.attached
@@ -1260,7 +1311,8 @@ impl Composer {
         let copy = move || {
             paths.into_iter().map(|path| if crate::pasted::is_another_apps(&path) { crate::pasted::keep_copy(&path, &folder, std::time::SystemTime::now()).unwrap_or(path) } else { path }).collect::<Vec<_>>()
         };
-        self.spawn(cx, copy, |this, paths, cx| this.name_attached(paths, cx));
+        let generation = self.attachment_generation;
+        self.spawn(cx, copy, move |this, paths, cx| { if this.attachment_generation == generation { this.name_attached(paths, cx); } });
     }
 
     fn name_attached(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -1271,7 +1323,7 @@ impl Composer {
             }
             self.attached.push(path.clone());
             if is_picture(&path) {
-                names.push(image_names::name(self.attached.iter().filter(|each| is_picture(each)).count()));
+                names.push(image_names::name(self.image_offset + self.attached.iter().filter(|each| is_picture(each)).count()));
             }
         }
         // (Not into a "!" command, which is the shell's.)
@@ -1290,7 +1342,9 @@ impl Composer {
             Pasted::Files(paths) => self.attach_named(paths, cx),
             Pasted::Picture(image) => {
                 let folder = crate::pasted::folder(cx);
-                self.spawn(cx, move || crate::pasted::save(&image, &folder, std::time::SystemTime::now()), |this, saved, cx| {
+                let generation = self.attachment_generation;
+                self.spawn(cx, move || crate::pasted::save(&image, &folder, std::time::SystemTime::now()), move |this, saved, cx| {
+                    if this.attachment_generation != generation { return; }
                     match saved {
                         Ok(path) => this.attach_named([path], cx),
                         Err(error) => {
@@ -1476,7 +1530,7 @@ impl Composer {
     /// Takes a file off the message, and a picture's name with it (the later ones a number down).
     pub fn detach(&mut self, at: usize, cx: &mut Context<Self>) {
         if at < self.attached.len() {
-            let number = is_picture(&self.attached[at]).then(|| self.attached[..=at].iter().filter(|each| is_picture(each)).count());
+            let number = is_picture(&self.attached[at]).then(|| self.image_offset + self.attached[..=at].iter().filter(|each| is_picture(each)).count());
             self.attached.remove(at);
             if let Some(number) = number {
                 let (now, words) = (self.text(cx), image_names::removing(number, &self.text(cx)));
@@ -2209,6 +2263,13 @@ impl Composer {
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.item_editor {
+            return div().id("item-composer").debug_selector(|| "item-composer".into()).w_full().flex().flex_col().gap(space::S2)
+                .children(self.attachments(cx)).child(self.field.clone())
+                .children(self.note.as_ref().map(|note| div().child(note.text.clone())))
+                .when(self.item_attaching, |editor| editor.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_named(paths.paths().to_vec(), cx))))
+                .into_any_element();
+        }
         let held = self.client.gate().is_held();
         if self.field_held != held {
             self.field_held = held;
@@ -2319,6 +2380,7 @@ impl Render for Composer {
             .flex_col()
             .child(div().debug_selector(|| "composer-card".into()).child(card))
             .children(note)
+            .into_any_element()
     }
 }
 

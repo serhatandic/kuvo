@@ -149,9 +149,8 @@ export class UsagePeers {
 
   /**
    * Whether a box isn't one of your own computers, whose use is in no total: one a peer vouches for
-   * (another Mac beside a machine you share), any peer of a machine two people's Macs share, a
-   * machine that is one, or a box of another setup (`LimitsDirectory.isYours`); as the link says,
-   * or until it has since this started, as it last said.
+   * (not one of your peers: `LimitsDirectory.isYours`); as the link says, or until it has since
+   * this started, as it last said.
    */
   private vouched(key: string): boolean {
     if (!this.directory.isYours) return false

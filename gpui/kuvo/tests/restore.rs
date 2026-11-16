@@ -167,8 +167,8 @@ fn each_computer_opens_where_it_was_and_the_window_on_the_computer_it_showed(cx:
 fn a_computer_not_reached_leaves_the_window_on_this_one(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // build-box is filed apart: this app doesn't reach it.
-    std::fs::write(&path, json!({ "place": { "computer": "key_build" } }).to_string()).unwrap();
+    // studio-mini is away: this app doesn't reach it.
+    std::fs::write(&path, json!({ "place": { "computer": "key_studio" } }).to_string()).unwrap();
     let mut waited = false;
     let (home, cx) = open_meanwhile(cx, &path, |home, cx| {
         // Before your computers are known: nothing drawn, not this computer's window first.
@@ -179,7 +179,7 @@ fn a_computer_not_reached_leaves_the_window_on_this_one(cx: &mut TestAppContext)
     assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()));
     assert!(!shown(cx, "window-restoring"));
     // Still kept, for when it's reached again.
-    assert_eq!(file(&path)["place"]["computer"], "key_build");
+    assert_eq!(file(&path)["place"]["computer"], "key_studio");
 }
 
 #[gpui::test]

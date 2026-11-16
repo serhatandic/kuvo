@@ -4,8 +4,7 @@
 //! offline. Every other is reached directly, over the link, as a paired device ([`crate::link`]).
 //!
 //! - The list is a box's `kuvo/computers`, followed on the nearest box (or, with none here, on
-//!   the first that answers). The client connects only to your own computers: never one filed
-//!   `apart` (a shared machine, another setup's), and only at the key and address a box it already
+//!   the first that answers). The client connects only at the key and address a box it already
 //!   trusts gave it.
 //! - It pairs by asking the nearest box (`POST kuvo/devices/pair`): that box is a member of your
 //!   setup and vouches for the app on its computer to the main computer. Nothing is pasted or
@@ -46,8 +45,6 @@ pub enum Reach {
     Away(String),
     /// It turned this device away: not paired there (yet), or removed.
     NotPaired,
-    /// Not one of your own computers: listed, never connected to.
-    Apart,
     /// The list doesn't say where it is (its Kuvo Code is older, or it's known only by another
     /// computer's word): it can't be reached from here.
     Unreached,
@@ -347,7 +344,7 @@ impl Boxes {
         let kept = Kept {
             paired: state.kept.paired.clone(),
             // Public facts of your own computers only, as the list gave them.
-            computers: state.list.iter().filter(|computer| !computer.apart && !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone() }).collect(),
+            computers: state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone() }).collect(),
         };
         if kept == state.kept {
             return;
@@ -365,8 +362,8 @@ impl Boxes {
     }
 
     /// Takes a box's list of your computers (`from_nearest`: the nearest box said it, so the one it
-    /// calls `here` is this computer's): a client for each of your own it can reach, none for one
-    /// that's filed apart, and those it no longer lists let go.
+    /// calls `here` is this computer's): a client for each it can reach, and those it no longer
+    /// lists let go.
     pub fn take(&self, computers: &[Computer], from_nearest: bool) {
         let mut state = self.state();
         if from_nearest {
@@ -375,7 +372,7 @@ impl Boxes {
         let mut listed = HashSet::new();
         for computer in computers {
             let key = computer.key.clone();
-            if key.is_empty() || computer.apart || state.nearest_key.as_deref() == Some(&key) || !listed.insert(key.clone()) {
+            if key.is_empty() || state.nearest_key.as_deref() == Some(&key) || !listed.insert(key.clone()) {
                 continue;
             }
             let at = (computer.address.clone(), computer.relay.clone());
@@ -423,7 +420,7 @@ impl Boxes {
                 }
             }
         }
-        // One the list drops, or files apart now, is never talked to again: its session ends.
+        // One the list drops is never talked to again: its session ends.
         let dropped: Vec<String> = state.linked.keys().filter(|key| !listed.contains(*key)).cloned().collect();
         for key in dropped {
             if let Some(old) = state.linked.remove(&key) {
@@ -449,8 +446,6 @@ impl Boxes {
                 computer.here = nearest;
                 let reach = if nearest {
                     Reach::Nearest
-                } else if computer.apart {
-                    Reach::Apart
                 } else if state.linked.contains_key(&computer.key) {
                     state.reach.get(&computer.key).cloned().unwrap_or(Reach::Connecting)
                 } else {

@@ -344,8 +344,9 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
- * a machine's name on its Mac; whether it's a machine Macs of different setups share; `apart`, it
- * isn't one of your own computers (such a machine, or a box of another setup); whether it's
+ * a machine's name on its Mac; `shared`, always false (every computer listed is yours, #783;
+ * COMPAT(#783 shared-false): kept for apps that read it, goes on the user's word once none does);
+ * whether it's
  * heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
  * there, its engine's and its system, as it said them; what its box answers (`features`, as it
  * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by
@@ -358,7 +359,7 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
-  shared: bool, "apart?": literal(true), reach: words("connected", "connecting", "away", "unknown"),
+  shared: bool, reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
   via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),

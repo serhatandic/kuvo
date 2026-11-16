@@ -21,12 +21,11 @@ import { peersOf } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { offRelay } from "../letters/leave";
 import { IS_MAC } from "../home";
-import { sharedMachine } from "../setup/settle";
 import { readLink } from "../state";
 import { computerName } from "../peers/computer-name";
 import { mailsFor } from "./parts";
 import { refNames, WORK_QUEUE, type ItemRef } from "./store";
-import { readTold, toldItemOf, type ToldItem } from "./told";
+import { toldItemOf, type ToldItem } from "./told";
 import type { MailSender } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
@@ -35,6 +34,8 @@ import type { Computer } from "./view";
 /** What a box's agents' mail says when it takes what you do to an item from your other computers'
  * boxes (`kuvo/info`'s `features` too). */
 export const FORWARD_FEATURE = "work-queue.forward";
+/** What a computer says as it keeps the files a client attaches to an item (PROTOCOL.md). */
+export const ATTACHMENTS = "work-queue.attachments";
 
 /** Whether the computer `key` takes what you do to its items from another box (`feature`: what it
  * says it takes, for another area's: renaming and removing your machines, `computers.manage`). */
@@ -108,9 +109,9 @@ const read = (file: string): Record<string, unknown> | null => {
  * the item as they name it). */
 export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now()): Promise<Forwarded> {
   const peer = peersOf(link).find(each => each.key === computer.key);
-  // (One it doesn't know any more, or that doesn't take it yet: changed there, as before. Nor from
-  // a machine Macs share outside one setup: another person's computers may tell it theirs.)
-  if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
+  if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS)) return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
@@ -148,10 +149,9 @@ const listed = (names: string[]) => (names.length < 3 ? names.join(" and ") : `$
  * boxes at once, for a client (PROTOCOL.md, "The Work Queue", "Across your computers", Found where
  * it's kept): so a client asks one box, whichever keeps the item. A live one answers at once; a
  * deleted one only once every computer answered, as another may keep it live (an issue is one item,
- * and of two the one changed last). Never from a machine Macs share outside one setup, which asks
- * no other computer. */
+ * and of two the one changed last). */
 export async function seekElsewhere(named: string, ref: ItemRef, signal?: AbortSignal | null, link: LinkState | null = readLink()): Promise<Sought> {
-  const peers = sharedMachine(link) ? [] : peersOf(link);
+  const peers = peersOf(link);
   // (A name the box that keeps it wouldn't take, or an asker that's gone: no one is asked.)
   if (!peers.length || named.length > 300 || signal?.aborted) return { missing: true };
   const here = ownName();
@@ -374,9 +374,6 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
     did.set(key, { until: kept.until, answer: value, answered: now });
     return answer(value);
   }
-  // (From a machine Macs share outside one setup: another person may use it. Such a machine never
-  // hands one on itself; this holds against one that would, once it has told it's shared.)
-  if (readTold(sender.key)?.shared) return answer({ status: 409, value: { message: `${here} doesn't take changes from ${computerName(peer)}, a machine shared with other Macs: change it from ${here}.` } });
   // (One from long ago, sent again, or from a computer whose clock is far off: not done. Each is
   // remembered until it would be too old to take, so none is ever taken twice.)
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });

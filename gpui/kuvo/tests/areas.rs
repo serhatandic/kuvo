@@ -260,21 +260,18 @@ fn a_bots_row_shows_what_the_box_says_its_doing_now(cx: &mut TestAppContext) {
 }
 
 /// Computers lists your computers as the box does (`kuvo/computers`): the one this window shows
-/// first, then the others; a machine shared with another setup under its own header. No Mac is
-/// asked for its machines.
+/// first, then the others. No Mac is asked for its machines.
 #[gpui::test]
-fn computers_lists_yours_as_the_box_does_with_shared_machines_apart(cx: &mut TestAppContext) {
+fn computers_lists_yours_as_the_box_does(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-computers");
     let this = bounds(cx, "computer-this").expect("this one");
     let devbox = bounds(cx, "computer-key_devbox").expect("devbox");
     let studio = bounds(cx, "computer-key_studio").expect("one that's away");
-    let header = bounds(cx, "header-shared").expect("Shared Machines");
-    let shared = bounds(cx, "computer-key_build").expect("a shared machine");
     // The box says how each is reached: a dot for each it lists.
     assert!(bounds(cx, "computer-dot-this").is_some() && bounds(cx, "computer-dot-key_studio").is_some());
-    assert!(this.top() < devbox.top() && devbox.top() < studio.top() && studio.top() < header.top() && header.top() < shared.top());
+    assert!(this.top() < devbox.top() && devbox.top() < studio.top() && studio.top() < bounds(cx, "computer-key_old").expect("an older one").top());
     assert!(stand_in.seen_at("GET", "kuvo/machines").is_empty());
     click(cx, "computer-key_devbox");
     assert_eq!(title(&workspace, cx).as_deref(), Some("devbox"));
@@ -306,11 +303,11 @@ fn the_switcher_lists_your_other_computers_as_the_box_does(cx: &mut TestAppConte
 }
 
 #[gpui::test]
-fn a_box_alone_lists_itself_and_no_shared_machines(cx: &mut TestAppContext) {
+fn a_box_alone_lists_itself(cx: &mut TestAppContext) {
     let (_workspace, cx) = open(cx, StandIn::empty(Replies::Never));
     click(cx, "rail-computers");
     assert!(bounds(cx, "computer-this").is_some());
-    assert!(bounds(cx, "header-shared").is_none());
+    assert!(bounds(cx, "computer-key_devbox").is_none());
 }
 
 #[gpui::test]
@@ -378,7 +375,29 @@ fn a_plan_that_ended_has_no_ring(cx: &mut TestAppContext) {
     assert!(second.contains(&personal.center()), "Cursor's ended plan isn't drawn in its place");
 }
 
-/// Resting on a ring opens its card to the ring's right, centred on it, leaving the rings below
+/// The rail's rings are this computer's: an account signed in only on another computer (its row's
+/// `boxes` never `here`) has no ring here, and the next account takes its place.
+#[gpui::test]
+fn an_account_signed_in_only_elsewhere_has_no_ring_here(cx: &mut TestAppContext) {
+    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    assert!(bounds(cx, "ring-zai-arc-0").is_none(), "Z.ai is signed in on mini-local only");
+    let second = bounds(cx, "ring-1").expect("a second ring");
+    let personal = bounds(cx, "ring-claude-Personal-arc-0").expect("Claude · Personal's ring");
+    assert!(second.contains(&personal.center()), "the next account of this computer's takes its place");
+}
+
+/// Lets an entry motion (`animate_in`, 150 ms) run to its end, a frame at a time at 60 Hz, so a
+/// card is measured where it settles and not where it starts.
+fn settle_entry_motion(cx: &mut VisualTestContext) {
+    for _ in 0..12 {
+        cx.executor().advance_clock(std::time::Duration::from_micros(16_667));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.simulate_next_frame(cx));
+        cx.run_until_parked();
+    }
+}
+
+/// Resting on a ring opens its card to the ring's right, top-aligned with it, leaving the rings below
 /// in view; the card takes the clicks on it, so what's under it isn't reached; moving onto it
 /// keeps it open, and off both closes it.
 #[gpui::test]
@@ -395,9 +414,10 @@ fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppCont
     assert!(bounds(cx, "ring-card").is_none(), "not before the pointer rests");
     cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
     cx.run_until_parked();
+    settle_entry_motion(cx);
     let card = bounds(cx, "ring-card").expect("its card");
     assert!(card.left() >= ring.right() - px(0.5), "to the ring's right: {card:?} beside {ring:?}");
-    assert!((card.center().y - ring.center().y).abs() < px(1.), "centred on the ring: {card:?} beside {ring:?}");
+    assert!((card.top() - ring.top()).abs() < px(1.), "top-aligned with the ring: {card:?} beside {ring:?}");
     assert!(card.left() >= below.right() - px(0.5), "the ring below stays in view");
 
     // Onto the card: it stays open. A click on it reaches nothing under it (a section of Settings).
@@ -440,7 +460,7 @@ fn an_open_card_follows_the_pointer_down_the_rings(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(second.center(), None, Modifiers::default());
     cx.run_until_parked();
     let card = bounds(cx, "ring-card").expect("the card, at once");
-    assert!((card.center().y - second.center().y).abs() < px(1.), "beside the second ring");
+    assert!((card.top() - second.top()).abs() < px(1.), "beside the second ring, top-aligned: {card:?} {second:?}");
 }
 
 #[gpui::test]

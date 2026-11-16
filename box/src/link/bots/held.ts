@@ -24,10 +24,7 @@ import type { KnownBot } from "./elsewhere";
 import { listOf, locked, textOf, writePrivate } from "../files";
 import { IS_MAC, RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
-import { computerName } from "../peers/computer-name";
 import { mailFor, peersOf } from "../peers/known";
-import { isApart } from "../peers/apart";
-import { sharedMachine } from "../setup/settle";
 import { ownName } from "../letters/start";
 import { macLink, readLink } from "../state";
 import { botHere, isModel, noteBotsChanged } from "./here";
@@ -148,10 +145,9 @@ function allHeld(link: LinkState | null = readLink()): Held[] {
 
 /** The computer that keeps `bot`, as its box last told this one (its agents), or else as the client
  * named it (`on`: its key, or its id on its Mac): one of this box's peers, never this box. */
-export function keeperOf(bot: string, on: string | null | undefined, link: LinkState | null = readLink(), except?: string, { ownOnly = true }: { ownOnly?: boolean } = {}): Peer | null {
+export function keeperOf(bot: string, on: string | null | undefined, link: LinkState | null = readLink(), except?: string): Peer | null {
   const told = readPeerAgents();
-  // (Only your own computers: never one that isn't only yours, whatever its list says.)
-  const peers = peersOf(link).filter(peer => peer.key !== except && !(ownOnly && isApart(peer.key, link, told)));
+  const peers = peersOf(link).filter(peer => peer.key !== except);
   // (Two that list it, one moving it to the other: the one that told this box last.)
   const listing = peers.filter(peer => told[peer.key]?.list?.some(agent => agent.kind === "bot" && agent.id === bot))
     .sort((a, b) => (told[b.key]?.heard ?? told[b.key]?.at ?? 0) - (told[a.key]?.heard ?? told[a.key]?.at ?? 0))[0];
@@ -235,14 +231,10 @@ export function holdEdit(bot: string, given: { change: unknown } | { delete: tru
   const no = (status: 400 | 404 | 409 | 503, message: string): HoldAnswer => ({ status, value: { message } });
   if (!BOT_ID.test(bot)) return no(404, "That bot isn’t there any more.");
   const link = readLink();
-  // (Found among all of this box's computers, so one that isn't only yours is said.)
-  const keeper = keeperOf(bot, on, link, undefined, { ownOnly: false });
+  const keeper = keeperOf(bot, on, link);
   const named = removed && on ? plainName(on).slice(0, 200) : "";
   if (!keeper && !named) return no(404, "That bot isn’t there any more.");
   const computer = keeper ? shownName(keeper) : named;
-  // (Only for one of your own computers: not on a machine two people's Macs share, nor for one
-  // that is, or that follows another setup.)
-  if (keeper ? isApart(keeper.key, link) : sharedMachine(link)) return no(409, `${ownName()} doesn’t keep changes for ${computer}, which isn’t only yours: change it from ${computer}.`);
   if ("change" in given && isObject(given.change) && "work" in given.change) return no(409, `${computer} isn’t connected: change its work settings once it’s back.`);
   const checked = "change" in given ? checkedChange(given.change) : null;
   if (checked && "error" in checked) return no(400, checked.error);
@@ -492,9 +484,6 @@ export async function takeBotEdit(sender: MailSender, given: unknown, reply: (pa
   if (taking.has(key)) return;
   const kept = readTaken(now)[key];
   if (kept) return answer(kept.status, kept.message);
-  // (Only from one of your own computers: not on a machine two people's Macs share, nor from one
-  // that is, or that follows another setup.)
-  if (isApart(sender.key, link)) return answer(403, `${ownName()} doesn’t take changes to its bots from ${computerName(peer)}, which isn’t only yours: change them from ${ownName()}.`);
   taking.add(key);
   try {
     let done: { status: number; value: unknown };

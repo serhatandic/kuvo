@@ -1593,6 +1593,11 @@ fn main() -> anyhow::Result<()> {
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
             }
+            // A menu or card that just opened is shown fully in, not on the first frame of its
+            // entry motion: its clock is the executor's, moved on by just the motion's length.
+            cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
+            cx.update_window(any, |_, window, _| window.refresh())?;
+            cx.run_until_parked();
             let image = cx.capture_screenshot(any)?;
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;

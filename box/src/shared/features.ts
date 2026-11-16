@@ -214,6 +214,7 @@ export const FEATURES = [
   "work",
   "work-queue",
   "work-queue.anywhere",
+  "work-queue.attachments",
   "work-queue.counts",
   "work-queue.edit",
   "work-queue.elsewhere",

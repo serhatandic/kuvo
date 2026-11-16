@@ -840,7 +840,7 @@ fn can(item: &Value) -> Value {
         can["delete"] = json!(true);
         return can;
     }
-    json!({ "edit": true, "set": true, "assign": here, "close": true, "delete": true, "restore": false })
+    json!({ "edit": true, "set": true, "assign": here, "close": true, "delete": true, "restore": false, "attach": true })
 }
 
 /// An item as a list shows it: without what it says, with how many notes, files and links it has

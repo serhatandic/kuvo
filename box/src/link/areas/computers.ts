@@ -24,7 +24,6 @@ import { followedLive } from "../follow";
 import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
 import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
-import { isApart } from "../peers/apart";
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
 import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
@@ -43,7 +42,6 @@ import { mainElsewhere } from "../setup/main-only";
 import { followedSetup } from "../setup/record";
 import { fromLocalApp } from "../server/context";
 import { updateLink } from "../state";
-import { sharedMachine } from "../setup/settle";
 import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
@@ -169,10 +167,10 @@ function ownAddress(link: LinkState | null): string | undefined {
 }
 
 /** Where a client reaches one of your own computers' boxes itself (`computers.reach`): its address
- * on the relay, and the relay this box reaches it through. Nothing for a machine shared with
- * another setup, or while this box has no relay or doesn't know the address. */
+ * on the relay, and the relay this box reaches it through. Nothing while this box has no relay or
+ * doesn't know the address. */
 function reachOf(link: LinkState | null, address: string | undefined): { address?: string; relay?: string } {
-  if (!link?.relay || !address || !ADDRESS.test(address) || sharedMachine(link)) return {};
+  if (!link?.relay || !address || !ADDRESS.test(address)) return {};
   return { address, relay: link.relay };
 }
 
@@ -191,7 +189,7 @@ export function computerWords(computer: Pick<ListedComputer, "reach" | "name" | 
     : reach === "unknown" ? { title: `${name}’s settings can’t be shown here`, detail: `${here} doesn’t reach ${name} itself, so its settings can’t be read or changed from here.` } : undefined;
   return { title, reachTitles: {
     connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached",
-    notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s",
+    notPaired: "Hasn’t taken this app yet",
     unreached: "Can’t be reached from this app",
   }, ...(notice ? { detail: notice.detail, notice } : {}), ...(settingsNotice ? { settingsNotice } : {}), ...(working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {}) };
 }
@@ -225,7 +223,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     name: ownComputerName(),
     kind: IS_MAC ? "mac" : "machine",
     here: true,
-    shared: sharedMachine(link),
+    shared: false,
     reach: "connected",
     via: "here",
     ...reachOf(link, ownAddress(link)),
@@ -246,20 +244,15 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(keeping.update ? { update: keeping.update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
-  // A machine Macs of different setups share lists itself alone: the others there aren't all one
-  // person's computers (as `kuvo/setup` refuses there).
-  if (sharedMachine(link)) return withActions();
   const peers = peersOf(link);
   const reach = readReach();
   const leads = followedSetup(link)?.role === "primary";
-  // (Those that aren't your own: a shared machine, a box of another setup.)
-  const apart = new Set(peers.filter(peer => isApart(peer.key, link, told)).map(peer => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
     const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
-    const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
+    const mine = said?.computer;
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
-    const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
+    const features = said?.features && !said.featuresCut ? said.features : undefined;
     // (Kept from vouching, as only the main computer knows: a device it added was removed.)
     const blocked = vouchBlockOf(link, peer.key);
     computers.push({
@@ -267,28 +260,25 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       name: peer.name,
       kind: peer.kind,
       ...(peer.id ? { id: peer.id } : {}),
-      shared: said?.shared === true,
-      ...(apart.has(peer.key) ? { apart: true as const } : {}),
+      shared: false,
       // (Not heard from since this box knew of it, and not found away: still being reached.)
       reach: standing,
       via: "relay",
-      // (Where a client of your own reaches it itself: never one that isn't yours.)
-      ...(apart.has(peer.key) ? {} : reachOf(link, peer.address)),
+      // (Where a client of yours reaches it itself.)
+      ...reachOf(link, peer.address),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}) } : {}),
       ...(features ? { features } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
-      // by one that never said it (an older box, or one that isn't yours).
+      // by one that never said it (an older box).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
       limits: limits.get(peer.key) ?? [],
-      ...(leads && blocked && !apart.has(peer.key) ? { vouching: { blocked: true as const, words: blockedWords(blocked.device, peer.name) } } : {}),
+      ...(leads && blocked ? { vouching: { blocked: true as const, words: blockedWords(blocked.device, peer.name) } } : {}),
     });
   }
-  // The boxes a peer vouches for (another Mac's, beside a machine two Macs share): known by that
-  // peer's word alone, for plan limits, so nothing is known of what they run or whether they answer.
-  // One only a peer that isn't yours vouches for (the other Mac of a machine two people share)
-  // isn't one of your computers: left out.
+  // The boxes a peer vouches for (another of your Macs, beside a machine both set up): known by that
+  // peer's word alone, so nothing is known of what they run or whether they answer.
   for (const box of byName(vouchedOf(link, told))) {
-    const through = peers.find(peer => !apart.has(peer.key) && told[peer.key]?.boxes?.some(each => each.key === box.key));
+    const through = peers.find(peer => told[peer.key]?.boxes?.some(each => each.key === box.key));
     if (!through) continue;
     computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", through: through.name, limits: limits.get(box.key) ?? [] });
   }
@@ -359,7 +349,7 @@ async function* allowDevices(context: RouteContext, key: string): AsyncGenerator
   if (main) return yield* json(409, { message: `Allow it from ${main.name || peersOf(link).find(peer => peer.key === main.key)?.name || "your main computer"}.`, primary: main.key });
   if (followedSetup(link)?.role !== "primary") return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
   if (computer.here) return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
-  if (computer.apart || computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
+  if (computer.via !== "relay") return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
   // (Not kept from it: the same answer. What was removed stays removed: its app makes a new key.)
   updateLink(kept => (kept && allowVouching(kept, key) ? kept : null));
   return yield* json(200, {});
