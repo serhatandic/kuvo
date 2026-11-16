@@ -60,7 +60,8 @@ export interface PhoneEntry {
   [more: string]: unknown;
 }
 
-// At most so many in one removal, and so many removals kept (the oldest go first).
+// At most so many in one removal, and so many removals kept (the oldest go first: a computer
+// removed adds one for each device its box vouched for, 16 at most).
 const MOST_AT_ONCE = 16;
 const MOST_KEPT = 256;
 
@@ -98,6 +99,17 @@ export function takeOffVouched(link: LinkState, by: string): boolean {
   for (const each of theirs) noteRemoved(link, each.key, each.pairing ?? "");
   if (theirs.length) link.phones = link.phones!.filter(each => each.by !== by);
   return theirs.length > 0;
+}
+
+/** A computer set up again with keys made anew (`from`, its box's key before; `to`, the one it has
+ * now), in place: what's kept by its box's key goes by the new one, the devices it vouched for
+ * and its being kept from vouching, so removing the computer still takes its app off your
+ * devices, and new keys don't let it vouch again. */
+export function vouchMoved(link: LinkState, from: string, to: string): void {
+  if (from === to) return;
+  for (const phone of link.phones ?? []) if (phone.by === from) phone.by = to;
+  const blocked = vouchBlockOf(link, from);
+  if (blocked) link.vouchBlocked = [...link.vouchBlocked!.filter(each => each.key !== from && each.key !== to), { ...blocked, key: to }];
 }
 
 /** What a confirm adds, before a computer is removed or uninstalled, where its box vouched for a

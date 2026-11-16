@@ -2389,6 +2389,16 @@ function takeOffVouched(link, by) {
     link.phones = link.phones.filter((each) => each.by !== by);
   return theirs.length > 0;
 }
+function vouchMoved(link, from, to) {
+  if (from === to)
+    return;
+  for (const phone of link.phones ?? [])
+    if (phone.by === from)
+      phone.by = to;
+  const blocked = vouchBlockOf(link, from);
+  if (blocked)
+    link.vouchBlocked = [...link.vouchBlocked.filter((each) => each.key !== from && each.key !== to), { ...blocked, key: to }];
+}
 function allowVouching(link, key) {
   if (!vouchBlockOf(link, key))
     return false;
@@ -5433,9 +5443,9 @@ function worktrees({ prefs, staged }) {
 }
 function machines({ prefs, staged }) {
   const listed = [...Array.isArray(prefs["machines.unsaved"]) ? prefs["machines.unsaved"] : [], ...Array.isArray(prefs.machines) ? prefs.machines : []].filter((each) => isObject(each) && typeof each.destination === "string" && each.destination.length > 0);
-  if (!listed.length)
-    return;
   const file = staged("machines.json");
+  if (!listed.length)
+    return fs161.existsSync(file) ? undefined : writeWhole(file, "[]");
   const had = readJSON2(file);
   const list = Array.isArray(had) ? had.filter(isObject) : [];
   for (const machine of listed) {
@@ -42030,6 +42040,10 @@ ${engineOf(version)}
 ${link("box seed")}`;
 var uninstall = (version, key, only) => String.raw`${K2}
 ${engineOf(version)}
+# (The key Kuvo Code's app there is known by among your devices, which the box that removes this
+# computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
+# its Keychain, which isn't reached from here: there, being taken off your devices keeps it out.)
+${only ? 'rm -rf "$K/desktop"' : ""}
 if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}'; exit 0; fi
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
@@ -42039,10 +42053,6 @@ if [ -f "$K/data/opencode/opencode.db" ]; then
   KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 "$E" -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.env.KUVO_DB); try { db.run("DELETE FROM credential"); } catch {} db.close()' >/dev/null 2>&1 || true
 fi
 rm -rf "$K/integrations" "$K/keys" "$K/box/keys" "$K/box/bot-keys"
-# (And the key Kuvo Code's app there is known by among your devices, which the box that removes this
-# computer takes off them too. On a Mac the app keeps it in its Keychain, which isn't reached from
-# here: there, being taken off your devices is what keeps it out.)
-rm -rf "$K/desktop"
 rm -f "$K/run/launch.env" "$K/run/launch.notes"
 if [ -d "$K/agents" ]; then
   find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null
@@ -43517,7 +43527,11 @@ async function join3(reach, destination, name, identity) {
   let named = name;
   const changed = updateLink((link) => {
     const state = link ?? { phones: [] };
-    const others = (Array.isArray(state.macPeers) ? state.macPeers : []).filter((each) => isObject(each) && each.key !== peer.key && each.id !== destination);
+    const peers = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(isObject);
+    const others = peers.filter((each) => each.key !== peer.key && each.id !== destination);
+    for (const each of peers)
+      if (each.id === destination && typeof each.key === "string")
+        vouchMoved(state, each.key, peer.key);
     return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }).link;
   });
   if (!changed || !peersOf(changed).some((each) => each.key === peer.key))
@@ -51656,7 +51670,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "379687dd10d3";
+var BRIDGE_VERSION = "c99ccc6e99f4";
 
 // box/src/link/rehome/move.ts
 init_outside();

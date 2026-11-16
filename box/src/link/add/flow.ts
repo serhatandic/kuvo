@@ -21,7 +21,7 @@ import { macLinkCheck } from "../mac/link";
 import { LIST_FILE, PHONE_LINK_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
-import { vouchedWords } from "../phones";
+import { vouchedWords, vouchMoved } from "../phones";
 import { oldAppAttached, removeHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
@@ -347,7 +347,10 @@ async function join(reach: Reach, destination: string, name: string, identity: s
   const changed = updateLink(link => {
     const state = link ?? { phones: [] };
     // (Under its id here, or its key, once: set up again with keys made anew, it's the same machine.)
-    const others = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(each => isObject(each) && each.key !== peer.key && each.id !== destination);
+    const peers = (Array.isArray(state.macPeers) ? state.macPeers : []).filter(isObject);
+    const others = peers.filter(each => each.key !== peer.key && each.id !== destination);
+    // (And what's kept by the key it had goes by the one it has now: the devices its box vouched for.)
+    for (const each of peers) if (each.id === destination && typeof each.key === "string") vouchMoved(state, each.key, peer.key);
     return setMacPeers(state, { peers: [...others, peer], moved: state.macMoved }).link;
   });
   if (!changed || !peersOf(changed).some(each => each.key === peer.key)) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);

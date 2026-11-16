@@ -212,6 +212,10 @@ ${link("box route")}`;
  * uninstall said (JSON); exit 1 when that couldn't stop everything. */
 export const uninstall = (version: string, key: string, only: boolean): string => String.raw`${K}
 ${engineOf(version)}
+# (The key Kuvo Code's app there is known by among your devices, which the box that removes this
+# computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
+# its Keychain, which isn't reached from here: there, being taken off your devices keeps it out.)
+${only ? 'rm -rf "$K/desktop"' : ""}
 if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}'; exit 0; fi
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}
@@ -221,10 +225,6 @@ if [ -f "$K/data/opencode/opencode.db" ]; then
   KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 "$E" -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.env.KUVO_DB); try { db.run("DELETE FROM credential"); } catch {} db.close()' >/dev/null 2>&1 || true
 fi
 rm -rf "$K/integrations" "$K/keys" "$K/box/keys" "$K/box/bot-keys"
-# (And the key Kuvo Code's app there is known by among your devices, which the box that removes this
-# computer takes off them too. On a Mac the app keeps it in its Keychain, which isn't reached from
-# here: there, being taken off your devices is what keeps it out.)
-rm -rf "$K/desktop"
 rm -f "$K/run/launch.env" "$K/run/launch.notes"
 if [ -d "$K/agents" ]; then
   find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null

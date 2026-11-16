@@ -583,6 +583,37 @@ test("a Mac that has Kuvo Code's app is someone's already: it's added, and none 
   assert.equal((await over(uninstall.body.try.id)).state, "done");
 });
 
+test("a computer set up again with keys made anew is still the one whose app goes with it when it's removed (#753)", async () => {
+  // (Its host key is trusted already, from when it was added before: nothing is asked.)
+  const done = await over((await ask("POST", "kuvo/computers/add", { destination: "macbook" })).body.try.id);
+  assert.equal(done.state, "done", JSON.stringify(done.failure));
+  // Kuvo Code's app there, one of your devices on its box's word.
+  const appThere = k(link.publicOf(link.newKey()));
+  link.updateLink(state => {
+    link.pairDevice(state, { key: appThere, name: "MacBook screen", by: done.computer.key });
+    return state;
+  });
+  // Its box's keys are lost there (stopped, its link's file gone), and it's set up again: the same
+  // computer, at the same address, with keys of its own made anew.
+  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  for (const file of ["box.pid", "link.pid"]) {
+    let pid = 0;
+    try { pid = Number(fs.readFileSync(path.join(kuvo, "run", file), "utf8")); } catch {}
+    if (pid > 1 && alive(pid) && command(pid).includes(kuvo)) process.kill(pid);
+  }
+  fs.rmSync(path.join(kuvo, "run", "link.json"));
+  const again = await ask("POST", `kuvo/computers/${done.computer.key}/setup`);
+  const set = await over(again.body.try.id);
+  assert.equal(set.state, "done", JSON.stringify(set.failure));
+  const now = link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine");
+  assert.deepEqual(now.map(each => [each.name, each.key === done.computer.key]), [["macbook", false]], "the one computer, by another key");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone", "MacBook screen"], "its app is still one of your devices");
+  // Taken off your computers: its app goes with it all the same.
+  const uninstall = await ask("POST", `kuvo/computers/${now[0].key}/uninstall`);
+  assert.equal((await over(uninstall.body.try.id)).state, "done");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
+});
+
 test("an add that fails, or is stopped, after Kuvo Code started on a computer that had nothing leaves nothing running there and no key behind", async () => {
   const kuvo = path.join(homes.mini, ".kuvo-code");
   const gone = why => {

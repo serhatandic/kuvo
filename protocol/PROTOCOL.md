@@ -1691,9 +1691,13 @@ machines; a client that wants every computer's facts asks the box that has it as
     another box, `uninstall` below, or `removed` in `kuvo/link/peers`). What another computer
     vouched for, a phone, and what the writer paired itself stay. The removed computer isn't
     noted as kept from vouching (`vouchBlocked`): it's no machine of the writer's now, so its
-    vouch isn't taken, and added again it vouches as a new one does. `confirm.message` says
+    vouch isn't taken, and added again it vouches as a new one does. (A computer set up again
+    with keys made anew is the same computer: what the writer keeps by its box's key, `by` on
+    the devices it vouched for and its entry in `vouchBlocked`, goes by the new key as its
+    record does, so removing it later still takes its app off.) `confirm.message` says
     "Kuvo Code's app on <computer> is taken off your devices." on the box that knows of such a
-    device (the main computer). `200 {}`, and the same for one removed already (whose devices,
+    device (the main computer alone: `by` is in no document, so a member's box that hands the
+    removal on doesn't say it, though it holds there too). `200 {}`, and the same for one removed already (whose devices,
     were any left from before this, go then).
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
@@ -1840,7 +1844,8 @@ machines; a client that wants every computer's facts asks the box that has it as
     which takes that app off your devices on every computer. (On a Mac the app keeps its key in
     its Keychain, which SSH doesn't reach: there, being taken off your devices is what keeps it
     out. Where another Mac still uses the computer, nothing is deleted there, and its app is
-    taken off this setup's devices all the same.) The rest of its folder stays. Asked while that computer is being set up, the
+    taken off this setup's devices all the same. The app's folder goes even where no Kuvo Code
+    that runs is found there.) The rest of its folder stays. Asked while that computer is being set up, the
     try under way is stopped first and waited for, so nothing starts it again behind the removal
     (#603). Both are offered in `actions` (`setup`, `uninstall` with its `confirm`; `why` while
     one is under way) on machines the box has an SSH address for, and are `404` for any other.
@@ -7582,7 +7587,9 @@ above. Only on a Mac.
     only for its settings stays removed;
   - worktrees' records (`worktrees`, those whose folder is still there) and removed ones
     (`removedWorktrees`) → `box/worktrees.json` (`worktrees`, `handedOver`);
-  - your machines (`machines`) → `machines.json`, by `destination`;
+  - your machines (`machines`) → `machines.json`, by `destination`; with none, an empty list
+    where there's no list yet (no list beside `phone-link.json`'s machines would read as one
+    that can't be told, "Machines");
   - Settings › Git (`git.branchPrefix`, `git.commitInstructions`, `git.pullRequestInstructions`)
     → the engine's settings, where they have none, once (`box/git.json`'s `moved`);
   - integrations' keys named in the engine's settings (and each bot's) where the app wrote them
