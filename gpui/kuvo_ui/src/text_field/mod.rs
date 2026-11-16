@@ -277,6 +277,16 @@ impl TextField {
         self
     }
 
+    /// Hides what's typed as dots (and never copies or cuts it), or shows it again.
+    pub fn set_masked(&mut self, masked: bool, cx: &mut Context<Self>) {
+        self.masked = masked;
+        cx.notify();
+    }
+
+    pub fn is_masked(&self) -> bool {
+        self.masked
+    }
+
     /// Drawn without its own border and fill, for use inside a card such as the composer.
     pub fn bare(mut self) -> Self {
         self.bare = true;

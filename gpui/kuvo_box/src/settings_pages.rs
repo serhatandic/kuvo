@@ -146,6 +146,9 @@ pub struct Action {
     /// What it asks for before it's done (`settings.flows`).
     #[serde(default)]
     pub form: Option<Form>,
+    /// It lets something use what's yours from now on: a client makes sure it's you first.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// A form an action asks to be filled in first: its sheet's title, its button's words, its fields
@@ -175,6 +178,10 @@ pub enum FieldKind {
     Switch,
     Folder,
     Pairs,
+    /// Hidden as it's typed (several lines, with `multi`: a note's text, not hidden); it opens empty.
+    Secret,
+    /// A file chosen on this computer, sent as `{name, data}`.
+    File,
     #[serde(other)]
     Unknown,
 }
@@ -203,6 +210,20 @@ pub struct Field {
     pub shown: Option<Shown>,
     #[serde(default)]
     pub can: Option<Can>,
+    /// A `secret`'s: several lines.
+    #[serde(default)]
+    pub multi: bool,
+    /// A `secret`'s: where the value it keeps is read when you ask to see it.
+    #[serde(default)]
+    pub shows: Option<Shows>,
+    /// A `pairs`' values: hidden as they're typed.
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default)]
+    pub file: Option<FileWords>,
+    /// It lets something use what's yours from now on: a client makes sure it's you first.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 impl Field {
@@ -224,6 +245,86 @@ impl Field {
 pub struct PairWords {
     pub key: String,
     pub value: String,
+}
+
+/// Where a `secret` field's kept value is read, only when you ask to see it: `GET route` of the
+/// same box, whose `values[field]` it is.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Shows {
+    pub route: String,
+    pub field: String,
+}
+
+/// A `file` field's words: its button's, and what it says before one is chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FileWords {
+    pub choose: String,
+    pub none: String,
+}
+
+/// The most of a chosen file a form sends; one bigger is sent as its name and size alone.
+pub const MOST_FILE_BYTES: usize = 1_000_000;
+
+/// A file chosen for a `file` field, as its value: `{name, data}` (its bytes, standard base64), or
+/// for one bigger than a form sends (`size`, its real size), `{name, size}`.
+pub fn file_value(name: &str, bytes: &[u8], size: u64) -> Value {
+    if bytes.len() > MOST_FILE_BYTES || size > MOST_FILE_BYTES as u64 {
+        return json!({ "name": name, "size": size });
+    }
+    use base64::Engine as _;
+    json!({ "name": name, "data": base64::engine::general_purpose::STANDARD.encode(bytes) })
+}
+
+/// A form's values as a check gets them: what's secret never goes with a check (PROTOCOL.md, "A
+/// box's settings"). A `secret` field's text is a `•` for each character, a `secret` pairs' values
+/// too (their names as typed), and a `file` is its name and size, without its bytes.
+pub fn for_check(fields: &[Field], values: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    fn dots(value: &Value) -> Value {
+        match value {
+            Value::String(text) => Value::String("\u{2022}".repeat(text.chars().count())),
+            // (Anything else in a secret's place is no text to count: sent as nothing.)
+            _ => Value::Null,
+        }
+    }
+    let mut checked = values.clone();
+    for field in fields {
+        let Some(value) = checked.get_mut(&field.id) else { continue };
+        match field.kind {
+            FieldKind::Secret => *value = dots(value),
+            FieldKind::Pairs if field.secret => {
+                if let Some(list) = value.as_array_mut() {
+                    for pair in list {
+                        if let Some(each) = pair.get_mut("value") {
+                            *each = dots(each);
+                        }
+                    }
+                }
+            }
+            FieldKind::File => {
+                if let Some(file) = value.as_object() {
+                    let size = file.get("size").and_then(Value::as_u64).or_else(|| file.get("data").and_then(Value::as_str).map(base64_size));
+                    let mut kept = serde_json::Map::new();
+                    if let Some(name) = file.get("name") {
+                        kept.insert("name".into(), name.clone());
+                    }
+                    if let Some(size) = size {
+                        kept.insert("size".into(), json!(size));
+                    }
+                    *value = Value::Object(kept);
+                } else if !value.is_null() {
+                    *value = Value::Null;
+                }
+            }
+            _ => {}
+        }
+    }
+    checked
+}
+
+/// How many bytes standard base64 `data` holds.
+fn base64_size(data: &str) -> u64 {
+    let padding = data.bytes().rev().take_while(|byte| *byte == b'=').count().min(2);
+    ((data.len() / 4) * 3).saturating_sub(padding) as u64
 }
 
 /// When a field is drawn: while `field` is one of `is`.
@@ -595,6 +696,18 @@ impl BoxClient {
         answered(response).map(Sent::Changed)
     }
 
+    /// The value a `secret` field keeps, read only when you ask to see it (`shows`): `GET route`'s
+    /// `values[field]`, the rest of the answer dropped as it's read. (Never in an error's words.)
+    pub fn shown_secret(&self, shows: &Shows) -> Result<String> {
+        let mut answer: Value = self.value(&Request::get(shows.route.trim_start_matches('/')))?;
+        let value = answer.get_mut("values").and_then(|values| values.get_mut(&shows.field)).map(Value::take);
+        drop(answer);
+        match value {
+            Some(Value::String(text)) => Ok(text),
+            _ => Err(Error::BadAnswer("There's nothing to show.".into())),
+        }
+    }
+
     /// A form's values checked as they're typed, changing nothing.
     pub fn check_setting_form(&self, section: &str, row: &str, was: &str, action: &str, values: &serde_json::Map<String, Value>) -> Result<Checked> {
         let path = format!("{}/{}/{}/check", page_route(section), segment(row), segment(action));
@@ -692,5 +805,83 @@ mod row_metadata_tests {
         assert_eq!(gb.number(-0.0), "0");
         let tenths = Unit { name: "GB".into(), factor: 1_000_000_000.0, decimals: 1, rounding: Rounding::Nearest };
         assert_eq!(tenths.display(1342177280.0), "1.3 GB");
+    }
+}
+
+#[cfg(test)]
+mod form_field_tests {
+    use super::*;
+
+    fn form() -> Form {
+        serde_json::from_value(json!({ "title": "Edit", "submit": "Save", "fields": [
+            { "id": "password", "title": "Password", "kind": "secret", "placeholder": "Unchanged", "shows": { "route": "/kuvo/things/1/shown", "field": "password" } },
+            { "id": "note", "title": "Note", "kind": "secret", "multi": true },
+            { "id": "env", "title": "Values", "kind": "pairs", "secret": true, "pairs": { "key": "NAME", "value": "value" } },
+            { "id": "headers", "title": "Headers", "kind": "pairs", "pairs": { "key": "Header", "value": "value" } },
+            { "id": "key", "title": "Key file", "kind": "file", "file": { "choose": "Choose…", "none": "No file" } },
+            { "id": "name", "title": "Name", "kind": "text" },
+            { "id": "later", "title": "Later", "kind": "hologram" },
+            { "id": "who", "title": "Who can use it", "kind": "choice", "verified": true, "choices": [] }
+        ] }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_form_reads_secrets_files_and_what_an_older_box_leaves_out() {
+        let form = form();
+        let kinds: Vec<FieldKind> = form.fields.iter().map(|field| field.kind).collect();
+        assert_eq!(kinds, [FieldKind::Secret, FieldKind::Secret, FieldKind::Pairs, FieldKind::Pairs, FieldKind::File, FieldKind::Text, FieldKind::Unknown, FieldKind::Choice]);
+        assert!(form.fields[7].verified && !form.fields[0].verified);
+        assert_eq!(form.fields[0].shows, Some(Shows { route: "/kuvo/things/1/shown".into(), field: "password".into() }));
+        assert!(!form.fields[0].multi && form.fields[1].multi);
+        assert!(form.fields[2].secret && !form.fields[3].secret);
+        assert_eq!(form.fields[4].file, Some(FileWords { choose: "Choose…".into(), none: "No file".into() }));
+        // (A box from before these fields: none of them, and the field reads as it did.)
+        let name = &form.fields[5];
+        assert!(!name.multi && !name.secret && !name.verified && name.shows.is_none() && name.file.is_none());
+        let actions: Vec<Action> = serde_json::from_value(json!([{ "id": "grant", "title": "Let It Use…", "verified": true }, { "id": "remove", "title": "Remove" }])).unwrap();
+        assert!(actions[0].verified && !actions[1].verified);
+    }
+
+    #[test]
+    fn a_check_gets_dots_for_secrets_and_a_files_name_and_size_and_the_values_stay_as_typed() {
+        let form = form();
+        let values = json!({
+            "password": "hunter2é",
+            "note": "line one\nline two",
+            "env": [{ "key": "TOKEN", "value": "abc123" }, { "key": "EMPTY", "value": "" }],
+            "headers": [{ "key": "Accept", "value": "text/plain" }],
+            "key": file_value("id_ed25519", b"secret bytes", 12),
+            "name": "Mine",
+            "later": { "kept": true }
+        });
+        let values = values.as_object().unwrap().clone();
+        let checked = for_check(&form.fields, &values);
+        assert_eq!(checked["password"], json!("••••••••"));
+        assert_eq!(checked["note"], json!("•".repeat(17)));
+        assert_eq!(checked["env"], json!([{ "key": "TOKEN", "value": "••••••" }, { "key": "EMPTY", "value": "" }]));
+        assert_eq!(checked["headers"], values["headers"]);
+        assert_eq!(checked["key"], json!({ "name": "id_ed25519", "size": 12 }));
+        assert_eq!((checked["name"].clone(), checked["later"].clone()), (json!("Mine"), json!({ "kept": true })));
+        // What's sent with the action itself is what was typed.
+        assert_eq!(values["key"], json!({ "name": "id_ed25519", "data": "c2VjcmV0IGJ5dGVz" }));
+        assert!(!serde_json::to_string(&checked).unwrap().contains("hunter2") && !serde_json::to_string(&checked).unwrap().contains("abc123"));
+    }
+
+    #[test]
+    fn a_files_size_is_counted_from_its_data_and_one_too_big_goes_without_it() {
+        for size in 0..7usize {
+            let bytes = vec![7u8; size];
+            let value = file_value("f", &bytes, size as u64);
+            let checked = for_check(&form().fields, json!({ "key": value }).as_object().unwrap());
+            assert_eq!(checked["key"]["size"], json!(size), "{size} bytes");
+        }
+        let big = file_value("big.bin", &vec![0u8; MOST_FILE_BYTES + 1], 5_000_000);
+        assert_eq!(big, json!({ "name": "big.bin", "size": 5_000_000 }));
+        // As the form opened (a file kept before, named): its name, as it was.
+        let kept = for_check(&form().fields, json!({ "key": { "name": "old.pem" } }).as_object().unwrap());
+        assert_eq!(kept["key"], json!({ "name": "old.pem" }));
+        let none = for_check(&form().fields, json!({ "key": null }).as_object().unwrap());
+        assert_eq!(none["key"], Value::Null);
     }
 }

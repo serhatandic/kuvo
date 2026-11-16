@@ -75,6 +75,8 @@ icons! {
     Copy => "copy",
     Drive => "drive",
     External => "external",
+    Eye => "eye",
+    EyeOff => "eye-off",
     File => "file",
     Folder => "folder",
     Globe => "globe",
