@@ -209,8 +209,8 @@ test("an update while a coding agent's turn and an engine's turn run stops neith
   assert.ok(runs(firstBridge.pid), "nor the bridge running the agent's turn");
 
   // The server and the link take the new code by themselves.
-  const secondServe = await serveUp(firstServe);
-  const secondLink = await linkUp(firstLink);
+  await serveUp(firstServe);
+  await linkUp(firstLink);
   assert.ok(!runs(firstServe) && !runs(firstLink), "the ones on the code before went");
   // The bridge waits for its turn: it still runs, the turn on it.
   assert.equal(readJSON(path.join(RUN, "bridge.json")).pid, firstBridge.pid);
@@ -234,7 +234,11 @@ test("an update while a coding agent's turn and an engine's turn run stops neith
 
   // Live afterwards: each answers on the new code, and the update is judged well (by the judge the
   // keeper started for it, the updater here being a test's).
-  assert.ok(runs(secondServe) && runs(secondLink) && runs(secondBridge.pid));
+  // (A server or link started again within a second of the new link's arrival may be ended once
+  // more by the keeper, which can't tell it from one on the code before, and started again.)
+  await serveUp(firstServe);
+  await linkUp(firstLink);
+  assert.ok(runs(secondBridge.pid));
   await until(() => !fs.existsSync(path.join(RUN, "update-trial")), "the update judged");
   assert.equal(readJSON(path.join(RUN, "update.json")).last?.to, "0.10.0", JSON.stringify(readJSON(path.join(RUN, "update.json"))));
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8").trim(), "0.10.0", "kept");

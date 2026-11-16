@@ -215,6 +215,10 @@ cd "$K/workspace"
 # ended with the engine. Where it listens noted once it says (`"url"` in its log); a port someone
 # else took, another, three times at most.
 if [ -n "$bridge_only" ]; then
+  # (Never what an older Mac gave the engine's start: its settings and keys, which the engine's own
+  # start writes away and unsets.)
+  unset KUVO_SETTINGS KUVO_PRIVATE_SETTINGS
+  for v in $(env | sed -n 's/^\(KUVO_KEY_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
   [ -n "$aport" ] && [ -n "${KUVO_AGENTS_PASSWORD-}" ] && [ -f "$K/bin/kuvo-agents.js" ] || exit 3
   kuvo_runs "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents && exit 0
   mkdir -p "$K/agents" && chmod 700 "$K/agents"

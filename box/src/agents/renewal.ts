@@ -76,6 +76,9 @@ export interface RenewalOptions {
   check?: (build: string) => Promise<boolean | undefined>
   now?: () => number
   zone?: string
+  /** The engine its keeper starts it on now, where that's another than the one it runs on (an
+   * update brought a new engine): it makes way for that as for a newer build. */
+  engineBehind?: () => string | undefined
   /** A test's: it holds this long after it saw the newer one, whatever the hour; and how long
    * nothing must run before it goes. */
   holdAfter?: number
@@ -231,9 +234,18 @@ export class Renewal {
     return !work.turns && (this.holding || !work.other)
   }
 
+  /** What it makes way for now: another build in its place, or (none) the engine its keeper starts
+   * it on, when that's another than its own (`engine <version>`). */
+  private newerInPlace(): string | undefined {
+    const build = this.newerBuild()
+    if (build) return build
+    const engine = this.options.engineBehind?.()
+    return engine ? `engine ${engine}` : undefined
+  }
+
   /** The build in its place now, when it's another than its own: read again only when the file
    * changed (one being replaced, a moment missing, is as it was). */
-  private newerInPlace(): string | undefined {
+  private newerBuild(): string | undefined {
     let stat
     try {
       stat = statSync(this.options.script)

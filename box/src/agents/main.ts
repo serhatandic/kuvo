@@ -541,9 +541,16 @@ renewal =
             checking.on("close", (code, signal) => {
               clearTimeout(timer)
               // (Ended by a signal, out of memory say, or out of time: nothing said of the bundle.)
-              done(late || signal ? undefined : code === 0 && said.trim() === `ok ${newer}`)
+              // (Making way for its engine: the bundle in place, its own build, runs on that one.)
+              done(late || signal ? undefined : code === 0 && said.trim() === `ok ${newer.startsWith("engine ") ? bundleBuild(script) : newer}`)
             })
           }),
+        // (One its keeper keeps, on another engine than the keeper's now: an update brought a new one.)
+        engineBehind: () => {
+          if (!kept) return undefined
+          const engine = keeperEngine(machineHome!)
+          return engine && engine !== basename(dirname(process.execPath)) ? engine : undefined
+        },
         holdAfter: renewHoldAfter,
         settle: renewSettle,
       })

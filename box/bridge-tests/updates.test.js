@@ -349,11 +349,35 @@ test("a new server that starts again and again is unwell: the code from before i
   const state = read(path.join(home, "run", "update.json"));
   assert.equal(state.trial, undefined);
   assert.equal(state.last.result, "failed");
-  assert.match(state.last.message, /0\.10\.0 didn't run well here \(its serve didn't\), so it went back to 0\.9\.0/);
+  assert.match(state.last.message, /0\.10\.0 didn't run well here \(its server for your devices didn't run\), so it went back to 0\.9\.0/);
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
   await waitFor(() => fs.existsSync(engineFile), "an engine runs again");
   engines.add(read(engineFile).pid);
   fs.rmSync(path.join(home, "run", "serve.needed"));
+});
+
+test("a rollback begun that didn't get it all back is carried on by the next judge, not judged again; nothing is judged while Kuvo is stopped until it next starts", async () => {
+  machine();
+  release();
+  assert.equal((await update()).result, "updated");
+  engines.add(read(engineFile).pid);
+  // Stopped until it next starts (Stop Kuvo on this Mac): no judging meanwhile, the trial kept.
+  write(path.join(home, "run", "paused"), "");
+  looks = 0;
+  assert.equal(await settle(), "none");
+  assert.equal(looks, 0);
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), true);
+  fs.rmSync(path.join(home, "run", "paused"));
+  // A rollback begun before (its first try failed): carried on, at once, without a look.
+  write(path.join(home, "run", "update-restore"), "1");
+  let putBack = 0;
+  assert.equal(await settle({ rollBack: () => { putBack++; return link.rollBackCode(); } }), "unwell");
+  assert.equal(putBack, 1);
+  assert.equal(looks, 0);
+  assert.equal(boxVersion(), "0.9.0");
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+  await waitFor(() => fs.existsSync(engineFile), "an engine runs again");
+  engines.add(read(engineFile).pid);
 });
 
 test("an agent's browser waiting on you (a sign-in) holds an update the box begins itself: nothing is stopped or swapped", async t => {

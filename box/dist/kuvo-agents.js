@@ -36560,6 +36560,13 @@ class Renewal {
     return !work.turns && (this.holding || !work.other);
   }
   newerInPlace() {
+    const build = this.newerBuild();
+    if (build)
+      return build;
+    const engine = this.options.engineBehind?.();
+    return engine ? `engine ${engine}` : undefined;
+  }
+  newerBuild() {
     let stat;
     try {
       stat = statSync17(this.options.script);
@@ -37698,9 +37705,15 @@ renewal = onMachine && build ? new Renewal({
     checking.on("error", () => (clearTimeout(timer), done(undefined)));
     checking.on("close", (code, signal) => {
       clearTimeout(timer);
-      done(late || signal ? undefined : code === 0 && said.trim() === `ok ${newer}`);
+      done(late || signal ? undefined : code === 0 && said.trim() === `ok ${newer.startsWith("engine ") ? bundleBuild(script) : newer}`);
     });
   }),
+  engineBehind: () => {
+    if (!kept3)
+      return;
+    const engine = keeperEngine(machineHome);
+    return engine && engine !== basename13(dirname24(process.execPath)) ? engine : undefined;
+  },
   holdAfter: renewHoldAfter,
   settle: renewSettle
 }) : undefined;
@@ -37740,4 +37753,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents cb95e305a74917916db3bc98bc8d3436ebee6f9df24b2219accf4fbc1649d9ac
+// Built from Packages/Box/src/agents a0fd0fb40bd0e1d65e07a4bd35b174915d467559d5a18c9ded5a5f90cce1a891

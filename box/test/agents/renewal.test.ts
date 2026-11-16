@@ -256,3 +256,25 @@ test("the engine a machine's keeper starts: the one its script names while it's 
   writeFileSync(join(root, "bin", "kuvo-start"), "#!/bin/sh\nV=2.11.0\n")
   expect(keeperEngine(root)).toBe("2.10.0")
 })
+
+test("a bridge its keeper keeps makes way for the engine its keeper starts now, as for a newer build, checking its own build on that engine: an update's new engine reaches its agents too", async () => {
+  const script = join(base, "engine-behind.js")
+  bundle(script, own)
+  let engine: string | undefined
+  let renewed = 0
+  const checked: string[] = []
+  const renewal = new Renewal({
+    script, build: own, work: () => ({ turns: false, other: false }), hold: () => {}, renew: () => void renewed++, told: () => {},
+    engineBehind: () => engine, check: async (build) => (checked.push(build), true), settle: 0, longEnough: 0, uptime: () => 1,
+  })
+  renewal.look()
+  expect(renewal.state).toBeNull()
+  engine = "1.1.0"
+  renewal.look()
+  expect(renewal.state?.waits).toBe("quiet")
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  renewal.look()
+  await new Promise((resolve) => setTimeout(resolve, renewalTiming.grace + 50))
+  expect(checked).toEqual(["engine 1.1.0"])
+  expect(renewed).toBe(1)
+})

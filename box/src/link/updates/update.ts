@@ -19,7 +19,7 @@ import { isObject, parsed } from "../../shared/json";
 import { nightOf } from "../../shared/night";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
-import { alive, engineHome, engineRole, processRuns as runs, runsAs } from "../../shared/platform";
+import { alive, commandLineOf, engineHome, engineRole, processRuns as runs, runsAs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { LastUpdate, UpdateStatus, UpdateStep } from "../../shared/routes/box";
 import { quote } from "../../shared/text";
@@ -146,6 +146,8 @@ export interface UpdateTrial {
   /** How the engine's data was as a newer engine took it (`keepData`), to tell later whether that
    * engine wrote to it. */
   dataKept?: string;
+  /** Whether the updater stopped the engine for a new one and hasn't started it yet. */
+  engineStopped?: boolean;
   healthy?: boolean;
 }
 
@@ -636,6 +638,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // bridge running on, and only once nothing works there or on your word (above).
     if (otherEngine) {
       stopped = true;
+      noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
       const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300_000);
       // COMPAT(0.8 beta update): an engine the keeper's stop left running though its record names it
@@ -650,6 +653,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     }
     swapped = true;
+    const swappedAt = Date.now();
     swapping();
     if (staged) {
       fs.mkdirSync(engineFolder, { recursive: true, mode: 0o700 });
@@ -677,7 +681,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: Date.now(), ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -735,6 +739,15 @@ function readRelease(file: string, limit: number): Buffer {
     if (stat.isFile() && stat.size <= limit) return fs.readFileSync(file);
   } catch {}
   throw new Error("That release can't be read.");
+}
+
+// The engine version the coding agents' bridge runs on now (its runtime's folder), or null.
+function bridgeEngine(): string | null {
+  try {
+    const bridge = readBridgeFile();
+    if (!bridge?.pid || !runs(bridge.pid, "kuvo-agents")) return null;
+    return /\/engine\/([^/\s]+)\/opencode(\s|$)/.exec(commandLineOf(bridge.pid) ?? "")?.[1] ?? null;
+  } catch { return null; }
 }
 
 // The version of the engine running here, as its record says (null: none noted).
@@ -795,7 +808,10 @@ export function confirmUpdate(clock = Date.now): boolean {
   try { engine = readEngineFile()?.version; } catch {}
   fs.rmSync(UPDATE_TRIAL, { force: true });
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
-  if (engine) for (const name of listOf(path.join(K, "engine"))) if (name !== engine && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
+  // (Not the one the coding agents' bridge still runs on, until it moves to the new: its agents'
+  // tools run from it.)
+  const bridgeOn = bridgeEngine();
+  if (engine) for (const name of listOf(path.join(K, "engine"))) if (name !== engine && name !== bridgeOn && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
   noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
   dropOldBackups(clock());
   return true;

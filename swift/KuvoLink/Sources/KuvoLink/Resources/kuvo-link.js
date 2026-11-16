@@ -14639,6 +14639,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     trial = true;
     if (otherEngine) {
       stopped = true;
+      noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path40.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
       const stop = ran("sh", [path40.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300000);
       if (stop.status === 0 && previous?.pid)
@@ -14650,6 +14651,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     }
     swapped = true;
+    const swappedAt = Date.now();
     swapping();
     if (staged) {
       fs37.mkdirSync(engineFolder, { recursive: true, mode: 448 });
@@ -14671,7 +14673,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     ran("sh", [path40.join(K, "bin", "kuvo-start"), otherEngine ? "start" : "box"], keeperEnv);
     step("starting");
     writePrivate(path40.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: Date.now(), ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -14722,6 +14724,16 @@ function readRelease(file, limit) {
       return fs37.readFileSync(file);
   } catch {}
   throw new Error("That release can't be read.");
+}
+function bridgeEngine() {
+  try {
+    const bridge = readBridgeFile();
+    if (!bridge?.pid || !processRuns(bridge.pid, "kuvo-agents"))
+      return null;
+    return /\/engine\/([^/\s]+)\/opencode(\s|$)/.exec(commandLineOf(bridge.pid) ?? "")?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 function runningEngineVersion() {
   try {
@@ -14779,9 +14791,10 @@ function confirmUpdate(clock = Date.now) {
   } catch {}
   fs37.rmSync(UPDATE_TRIAL, { force: true });
   fs37.rmSync(ROLLBACK, { recursive: true, force: true });
+  const bridgeOn = bridgeEngine();
   if (engine) {
     for (const name of listOf(path40.join(K, "engine")))
-      if (name !== engine && !name.startsWith("."))
+      if (name !== engine && name !== bridgeOn && !name.startsWith("."))
         fs37.rmSync(path40.join(K, "engine", name), { recursive: true, force: true });
   }
   noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
@@ -43022,7 +43035,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cd1a35740ee9";
+var BRIDGE_VERSION = "a6d3fb323c26";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -70106,7 +70119,6 @@ import { spawn as spawn21, spawnSync as spawnSync20 } from "node:child_process";
 import fs203 from "node:fs";
 import path214 from "node:path";
 import { performance as performance2 } from "node:perf_hooks";
-init_files2();
 init_home();
 var PIECES = ["info", "serve", "run", "engine", "bridge"];
 var HEALTH = { window: 5 * 60000, every: 1e4, fails: 3, failingFor: 60000, restarts: 3 };
@@ -70231,7 +70243,9 @@ async function lookAtPieces(trial, since, last = {}) {
   } catch {}
   const bridgeWanted = fs203.existsSync(path214.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
   let bridgeOK = !bridgeWanted;
-  if (bridgePid)
+  if (bridgePid && bridge.renewal?.waits === "restart")
+    bridgeOK = false;
+  else if (bridgePid)
     bridgeOK = !!bridge.port && !!bridge.password && await answers2(bridge, "api/session/active");
   return {
     info: { ok: infoOK },
@@ -70249,7 +70263,7 @@ function rollBackCode() {
   return ran.status === 0 && !updateOnTrial();
 }
 async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
-  if (!updateOnTrial() || isUpdating() || judging2())
+  if (!updateOnTrial() || isUpdating() || judging2() || stoppedOnPurpose())
     return "none";
   const opened = updateState().trial;
   let to = opened?.to;
@@ -70261,12 +70275,25 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
     return "none";
   const trial = opened ?? { from: "", to, at: mtime5(path214.join(RUN, "update-trial")) };
   const since = trial.swapped ?? trial.at;
-  writePrivate(JUDGE_FILE, String(process.pid));
+  if (!takeJudgeMark())
+    return "none";
+  if (fs203.existsSync(path214.join(RUN, "update-restore"))) {
+    try {
+      return putBack3(trial, to, null, rollBack);
+    } finally {
+      dropJudgeMark();
+    }
+  }
+  if (trial.engineStopped) {
+    spawnSync20("sh", [path214.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
+    delete trial.engineStopped;
+    noteUpdate({ trial });
+  }
   const lastLook = {};
   const looking = look ?? ((open, swapped) => lookAtPieces(open, swapped, lastLook));
   const judged = { well: 0, fails: {}, failing: {}, pids: {}, ...trial.judged ?? {} };
   judged.failing = {};
-  const stillOpen = () => updateOnTrial() && boxVersion() === to && !isUpdating();
+  const stillOpen = () => updateOnTrial() && boxVersion() === to && !isUpdating() && !stoppedOnPurpose();
   try {
     let before = clock();
     for (;; ) {
@@ -70306,10 +70333,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
         noteUpdate({ trial: { ...trial, judged } });
         if (!judged.engineAnswered)
           newEngineUnused(trial);
-        const back = rollBack();
-        const message = back ? `${to} didn't run well here (${unwell === "info" ? "Kuvo didn't answer" : `its ${unwell === "run" ? "link" : unwell} didn't`}), so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.` : `${to} didn't run well here, and couldn't go back to ${trial.from || "what it had"}.`;
-        noteUpdate({ trial: back ? null : { ...trial, judged }, last: { at: Date.now(), result: "failed", message, from: trial.from, to }, ...back ? { offerFailed: { version: to, at: Date.now(), takenBack: true, message } } : {} });
-        return "unwell";
+        return putBack3({ ...trial, judged }, to, unwell, rollBack);
       }
       judged.well = PIECES.every((piece) => looked[piece].ok) ? judged.well + passed : 0;
       noteUpdate({ trial: { ...trial, judged } });
@@ -70323,14 +70347,49 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
       await wait(every);
     }
   } finally {
-    try {
-      if (Number(fs203.readFileSync(JUDGE_FILE, "utf8")) === process.pid)
-        fs203.rmSync(JUDGE_FILE, { force: true });
-    } catch {}
+    dropJudgeMark();
   }
 }
+var PIECE_WORDS = { info: "Kuvo didn't answer", serve: "its server for your devices didn't run", run: "its link to your phone and computers didn't run", engine: "its engine didn't run", bridge: "its coding agents didn't run" };
+function putBack3(trial, to, why, rollBack) {
+  const back = rollBack();
+  const reason = why ? ` (${PIECE_WORDS[why]})` : "";
+  const message = back ? `${to} didn't run well here${reason}, so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.` : `${to} didn't run well here${reason}, and couldn't go back to ${trial.from || "what it had"}${updateOnTrial() ? ": it tries again in a moment." : ", so it stays on it."}`;
+  noteUpdate({ ...updateOnTrial() ? {} : { trial: null }, last: { at: Date.now(), result: "failed", message, from: trial.from, to }, offerFailed: { version: to, at: Date.now(), takenBack: true, message } });
+  return "unwell";
+}
+var stoppedOnPurpose = () => fs203.existsSync(path214.join(RUN, "paused")) || fs203.existsSync(path214.join(RUN, "off"));
+function takeJudgeMark() {
+  for (let tries = 0;tries < 2; tries++) {
+    try {
+      fs203.writeFileSync(JUDGE_FILE, String(process.pid), { flag: "wx", mode: 384 });
+      return true;
+    } catch {
+      if (judging2())
+        return false;
+      try {
+        fs203.rmSync(JUDGE_FILE, { force: true });
+      } catch {}
+    }
+  }
+  return false;
+}
+function dropJudgeMark() {
+  try {
+    if (Number(fs203.readFileSync(JUDGE_FILE, "utf8")) === process.pid)
+      fs203.rmSync(JUDGE_FILE, { force: true });
+  } catch {}
+}
 function startSettling() {
-  spawn21(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+  const version = keeperEngine(K);
+  const runtime = version ? path214.join(K, "engine", version, "opencode") : null;
+  if (!runtime || !fs203.existsSync(runtime))
+    return;
+  try {
+    const child = spawn21(runtime, ["--config=/dev/null", "--no-env-file", path214.join(K, "bin", "kuvo-link.js"), "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K } });
+    child.on("error", () => {});
+    child.unref();
+  } catch {}
 }
 
 // box/src/link/areas/group-settings.ts
@@ -71765,6 +71824,7 @@ export {
   repeatText,
   resumeStarts,
   retellBots,
+  rollBackCode,
   runMacLink,
   runMacPeers,
   savedMacConfig,

@@ -192,7 +192,7 @@ export { botPersonalities, changePersonalities, mergePersonalities, personalitie
 export { keyFilesWait, syncKeyFiles } from "./keys";
 export { KEEP_UP_FILE, keepUpRound, keepingSelfUp } from "./add/keep-up";
 export { codeCheck, codeInPlace } from "./updates/code-in-place";
-export { HEALTH, lookAtPieces, settleUpdate } from "./updates/health";
+export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/health";
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";

@@ -199,3 +199,22 @@ test("an older Mac's mark a day old is taken away, so the watchdog its start bro
   // And nothing killed by a pattern.
   for (const each of [where, before]) assert.doesNotMatch(exists(path.join(each.folder, "reached")) ? fs.readFileSync(path.join(each.folder, "reached"), "utf8") : "", /pkill/);
 });
+
+test("a rollback that can't put it all back (a disk full) is tried three times, then gives up: the trial ends and the box starts as it is, never left stopped", async () => {
+  const where = home();
+  const { K, R, env, folder } = where;
+  write(path.join(R, "update-trial"), "0.10.0");
+  // An update from before's restore.sh: it stops the engine, then a copy fails.
+  write(path.join(K, "updates", "rollback", "restore.sh"), `#!/bin/sh\ntouch '${R}/stopped'\necho tried >>'${folder}/tries'\nexit 1\n`, 0o700);
+  const rollback = () => spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "rollback"], { env, encoding: "utf8" }).status;
+  for (let tries = 1; tries <= 3; tries++) {
+    assert.notEqual(rollback(), 0, `try ${tries} fails`);
+    assert.equal(exists(path.join(R, "update-trial")), true, "still on trial, to try again");
+  }
+  assert.equal(rollback(), 2, "it gives up");
+  assert.equal(fs.readFileSync(path.join(folder, "tries"), "utf8"), "tried\ntried\ntried\n");
+  assert.equal(exists(path.join(R, "update-trial")), false, "the trial ends");
+  assert.equal(exists(path.join(R, "stopped")), false, "not left stopped");
+  assert.equal(exists(path.join(R, "update-restore")), false);
+  assert.equal(exists(path.join(R, ".rolling-back")), false, "its lock let go");
+});

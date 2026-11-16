@@ -271,23 +271,24 @@ keep)
       fi
       rm -f "$R/attached"
     fi
-    # COMPAT(0.8 beta update): an update into this release taken by a Mac's box from before it,
-    # whose server (`serve`, its helper's) runs on with the code from before and never leaves for
-    # the new: that one server, by the number it noted (run/serve.json), and only while it's
-    # that server and started before the new link was put there, is ended, for its helper to start
-    # the new one. Goes once no Mac's box is from before beta.31.
-    if [ -f "$R/update-trial" ] && own_mac; then
-      s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)
-      if is "$s" "$K/bin/kuvo-link.js serve" && ! is "$s" --kept; then
+    # COMPAT(0.8 beta update): an update into this release onto a box from before it (taken by its
+    # own updater, or by the installer an app carries), whose server (`serve`, a Mac's helper's;
+    # `serve --kept`) and link (`run`) run on with the code from before and never leave for the new:
+    # each, by the number it noted (run/serve.json, run/link.pid), and only while it's that program
+    # and started before the new link was put there, is ended, for what keeps it running (the
+    # helper, this keeper) to start the new one. Goes once no box is from before beta.31.
+    if [ -f "$R/update-trial" ]; then
+      # (When the link was put there: its change time, which a copy can't carry over, as it
+      # carries the release's own time over, for a file a Mac's disk clones.)
+      m=$(stat -c %Z "$K/bin/kuvo-link.js" 2>/dev/null || stat -f %c "$K/bin/kuvo-link.js" 2>/dev/null)
+      for s in "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)" "$(cat "$R/link.pid" 2>/dev/null)"; do
+        is "$s" "$K/bin/kuvo-link.js" || continue
         # (How long it has run, from `ps`'s [[dd-]hh:]mm:ss, the same on macOS and Linux.)
         e=$(ps -o etime= -p "$s" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '{ s = $NF + 60 * $(NF - 1); if (NF >= 3) s += 3600 * $(NF - 2); if (NF >= 4) s += 86400 * $(NF - 3); print s }')
-        # (When the link was put there: its change time, which a copy can't carry over, as it
-        # carries the release's own time over, for a file a Mac's disk clones.)
-        m=$(stat -c %Z "$K/bin/kuvo-link.js" 2>/dev/null || stat -f %c "$K/bin/kuvo-link.js" 2>/dev/null)
         # (Within a second of it: `ps` counts whole seconds. A new one started that soon is ended
-        # once, and its helper starts it again.)
+        # once, and started again.)
         if [ -n "$e" ] && [ -n "$m" ] && [ $(($(date +%s) - e)) -le $((m + 1)) ]; then kill -TERM "$s" 2>/dev/null; fi
-      fi
+      done
     fi
     # An update on trial that nothing judges (its updater went: the machine went down, or it was
     # from before the one health rule): a judge of its own, `update --settle`, which takes the
@@ -336,7 +337,8 @@ keep)
       waking=$!
     fi
     # (A test's keeper goes round as often as it says.)
-    sleep "${KUVO_TEST_KEEP_ROUND:-15}"
+    r=${KUVO_TEST_KEEP_ROUND:-15}; case $r in '' | *[!0-9]* | 0) r=15 ;; esac
+    sleep "$r"
   done
   ;;
 engine)
@@ -419,6 +421,22 @@ rollback)
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
   [ -f "$R/update-trial" ] || exit 0
   [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
+  # One at a time (a judge and the keeper at once, say): a second goes, unless the first's gone.
+  if ! mkdir "$R/.rolling-back" 2>/dev/null; then
+    is "$(cat "$R/.rolling-back/pid" 2>/dev/null)" kuvo-start && exit 1
+    rm -rf "$R/.rolling-back"; mkdir "$R/.rolling-back" 2>/dev/null || exit 1
+  fi
+  echo $$ >"$R/.rolling-back/pid"
+  trap 'rm -rf "$R/.rolling-back"' EXIT
+  # Three tries that couldn't put it all back (a disk full, say), and it gives up: the trial ends,
+  # and the box starts as it is, never left stopped.
+  tries=$(cat "$R/update-restore" 2>/dev/null || echo 0)
+  if [ "$tries" -ge 3 ]; then
+    rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries" "$R/stopped"
+    sh "$K/bin/kuvo-start" start >/dev/null 2>&1
+    exit 2
+  fi
+  echo $((tries + 1)) >"$R/update-restore"
   # COMPAT(0.8 rollback data): a rollback an update from before rollbacks were code only kept holds
   # the engine's data (updates/rollback/data), which its restore.sh would put back over everything
   # written since: moved aside first, to updates/backups (the latest only), where nothing puts it

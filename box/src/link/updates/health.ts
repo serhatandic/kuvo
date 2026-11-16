@@ -27,7 +27,7 @@ import { macFeatures } from "../../shared/routes/mac";
 import { sleep } from "../../shared/wait";
 import { asked } from "../engine/client";
 import { writePrivate } from "../files";
-import { BRIDGE_FILE, ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, SCRIPT } from "../home";
+import { BRIDGE_FILE, ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, PID_FILE, REAL_BOX, RUN } from "../home";
 import { boxVersion, confirmUpdate, isUpdating, newEngineUnused, noteUpdate, updateOnTrial, updateState, type UpdateTrial } from "./update";
 
 /** The pieces judged. */
@@ -155,7 +155,9 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   try { keeps = /^bridge\)/m.test(fs.readFileSync(path.join(K, "bin", "kuvo-start"), "utf8")); } catch {}
   const bridgeWanted = fs.existsSync(path.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && (keeps || !!engine?.agentsPort);
   let bridgeOK = !bridgeWanted;
-  if (bridgePid) bridgeOK = !!bridge!.port && !!bridge!.password && (await answers(bridge!, "api/session/active"));
+  // (One whose new build doesn't run here, or that nothing would start again, isn't taking it.)
+  if (bridgePid && bridge!.renewal?.waits === "restart") bridgeOK = false;
+  else if (bridgePid) bridgeOK = !!bridge!.port && !!bridge!.password && (await answers(bridge!, "api/session/active"));
 
   return {
     info: { ok: infoOK },
@@ -195,7 +197,7 @@ export function rollBackCode(): boolean {
 
 /** Judges the update on trial (one judge at a time) until it's well or unwell, by the one rule. */
 export async function settleUpdate({ clock = () => performance.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} }: SettleOptions = {}): Promise<Settled> {
-  if (!updateOnTrial() || isUpdating() || judging()) return "none";
+  if (!updateOnTrial() || isUpdating() || judging() || stoppedOnPurpose()) return "none";
   // The trial, as the update that opened it noted it (one from before this rule notes no features,
   // nor when it swapped: its start then).
   const opened = updateState().trial;
@@ -204,13 +206,25 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
   if (!to) return "none";
   const trial: UpdateTrial = opened ?? { from: "", to, at: mtime(path.join(RUN, "update-trial")) };
   const since = trial.swapped ?? trial.at;
-  writePrivate(JUDGE_FILE, String(process.pid));
+  // The judge's mark, taken whole or not at all: never two judges (nor two rollbacks) at once.
+  if (!takeJudgeMark()) return "none";
+  // A rollback begun that didn't get it all back: carried on, not judged again (`kuvo-start
+  // rollback` gives up after three tries, ending the trial and starting the box as it is).
+  if (fs.existsSync(path.join(RUN, "update-restore"))) {
+    try { return putBack(trial, to, null, rollBack); } finally { dropJudgeMark(); }
+  }
+  // Its updater cut off after it stopped the engine for a new one, before it started it: started.
+  if (trial.engineStopped) {
+    spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600_000 });
+    delete trial.engineStopped;
+    noteUpdate({ trial });
+  }
   const lastLook: { engineLog?: number } = {};
   const looking = look ?? ((open: UpdateTrial, swapped: number) => lookAtPieces(open, swapped, lastLook));
   const judged: Judged = { well: 0, fails: {}, failing: {}, pids: {}, ...(trial.judged ?? {}) };
   // (A judge taken up again: what failed counts from its own time again.)
   judged.failing = {};
-  const stillOpen = () => updateOnTrial() && boxVersion() === to && !isUpdating();
+  const stillOpen = () => updateOnTrial() && boxVersion() === to && !isUpdating() && !stoppedOnPurpose();
   try {
     let before = clock();
     for (;;) {
@@ -246,12 +260,7 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
       if (unwell) {
         noteUpdate({ trial: { ...trial, judged } });
         if (!judged.engineAnswered) newEngineUnused(trial);
-        const back = rollBack();
-        const message = back
-          ? `${to} didn't run well here (${unwell === "info" ? "Kuvo didn't answer" : `its ${unwell === "run" ? "link" : unwell} didn't`}), so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.`
-          : `${to} didn't run well here, and couldn't go back to ${trial.from || "what it had"}.`;
-        noteUpdate({ trial: back ? null : { ...trial, judged }, last: { at: Date.now(), result: "failed", message, from: trial.from, to }, ...(back ? { offerFailed: { version: to, at: Date.now(), takenBack: true, message } } : {}) });
-        return "unwell";
+        return putBack({ ...trial, judged }, to, unwell, rollBack);
       }
       judged.well = PIECES.every(piece => looked[piece].ok) ? judged.well + passed : 0;
       noteUpdate({ trial: { ...trial, judged } });
@@ -264,12 +273,58 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
       await wait(every);
     }
   } finally {
-    try { if (Number(fs.readFileSync(JUDGE_FILE, "utf8")) === process.pid) fs.rmSync(JUDGE_FILE, { force: true }); } catch {}
+    dropJudgeMark();
   }
+}
+
+/** What each piece is, in words. */
+const PIECE_WORDS: Record<Piece, string> = { info: "Kuvo didn't answer", serve: "its server for your devices didn't run", run: "its link to your phone and computers didn't run", engine: "its engine didn't run", bridge: "its coding agents didn't run" };
+
+// The code from before put back (`rollBack`), and how that went noted: unwell for `why` (none: a
+// rollback begun before, carried on).
+function putBack(trial: UpdateTrial, to: string, why: Piece | null, rollBack: () => boolean): Settled {
+  const back = rollBack();
+  const reason = why ? ` (${PIECE_WORDS[why]})` : "";
+  const message = back
+    ? `${to} didn't run well here${reason}, so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.`
+    : `${to} didn't run well here${reason}, and couldn't go back to ${trial.from || "what it had"}${updateOnTrial() ? ": it tries again in a moment." : ", so it stays on it."}`;
+  noteUpdate({ ...(updateOnTrial() ? {} : { trial: null }), last: { at: Date.now(), result: "failed", message, from: trial.from, to }, offerFailed: { version: to, at: Date.now(), takenBack: true, message } });
+  return "unwell";
+}
+
+/** Whether Kuvo here is stopped until it starts again, or off: nothing to judge meanwhile (the
+ * next start's keeper starts a judge again). */
+const stoppedOnPurpose = (): boolean => fs.existsSync(path.join(RUN, "paused")) || fs.existsSync(path.join(RUN, "off"));
+
+// The judge's mark, made only where there's none (one whose judge went is taken over).
+function takeJudgeMark(): boolean {
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      fs.writeFileSync(JUDGE_FILE, String(process.pid), { flag: "wx", mode: 0o600 });
+      return true;
+    } catch {
+      if (judging()) return false;
+      try { fs.rmSync(JUDGE_FILE, { force: true }); } catch {}
+    }
+  }
+  return false;
+}
+
+function dropJudgeMark(): void {
+  try { if (Number(fs.readFileSync(JUDGE_FILE, "utf8")) === process.pid) fs.rmSync(JUDGE_FILE, { force: true }); } catch {}
 }
 
 /** A judge in a process of its own (`kuvo-link.js update --settle`), outliving the one that starts
  * it: for an update whose own process can't stay to judge (the installer's, which an app waits on). */
 export function startSettling(): void {
-  spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+  // (From the box's own files, on the engine its keeper starts, as the keeper starts one: never
+  // the installer's, whose staged files are gone once the update ends.)
+  const version = keeperEngine(K);
+  const runtime = version ? path.join(K, "engine", version, "opencode") : null;
+  if (!runtime || !fs.existsSync(runtime)) return;
+  try {
+    const child = spawn(runtime, ["--config=/dev/null", "--no-env-file", path.join(K, "bin", "kuvo-link.js"), "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K } });
+    child.on("error", () => {});
+    child.unref();
+  } catch {}
 }

@@ -3020,8 +3020,7 @@ did: the box keeps working as itself ("For released Macs").
   switch: a machine keeps up with the Macs and phones that use it), for a release at least three
   days old. Or now (Update Now, `POST kuvo/update {now: true}`), whatever its age. Either way, whatever is
   at work there: an update stops nothing. Only a release with another engine than the one running
-  restarts the engine (step 6 of the update design makes even that wait without stopping work):
-  that one waits until nothing runs, or Update Now, which a client asks about first, saying what
+  restarts the engine: that one waits until nothing runs, or Update Now, which a client asks about first, saying what
   stops (`keepingSelfUp` gives the words; a release that keeps the engine has no question). Where a release
   Kuvo Code here offered waits, newer than the box, Update Now takes that one
   (`computers.update.here`), however it rested after failing; `409` with words to show where it
@@ -3112,10 +3111,14 @@ did: the box keeps working as itself ("For released Macs").
        exits cleanly (0) only when it's stopped on purpose: the box turned off (`run/off`), Stop Kuvo
        on this Mac (`run/paused`), launchd or you quitting it, another copy running, or a refusal
        only you can clear. A crash is restarted too.
-     - A `serve` from before this (an update into it, taken by the box before it) doesn't leave by
-       itself: while an update is on trial, a Mac's keeper ends the `serve` that `run/serve.json`
-       names, only while that number runs `kuvo-link.js serve` (not `--kept`) and started before
-       `bin/kuvo-link.js` was written, for its helper to start the new one.
+     - A `serve`, `serve --kept` or `run` from before this (an update into it, taken by the box's
+       updater from before, or by the installer an app carries) doesn't leave by itself: while an
+       update is on trial, the keeper ends the one `run/serve.json` or `run/link.pid` names, only
+       while that number runs the box's `kuvo-link.js` and started before `bin/kuvo-link.js` was
+       written, for what keeps it running (its helper, the keeper) to start the new one.
+     - A bridge the keeper keeps also makes way for the engine its keeper starts now, where that's
+       another than the one it runs on (`waits` as for a newer build, checked on that engine); until
+       it has, confirming an update keeps the engine folder it runs from.
   6. **One health rule** judges it, the same on every box. The judge is the updater's own process,
      which stays once it has swapped (the installer's, which an app waits on, starts one of its own:
      `kuvo-link.js update --settle`), holding `run/update-judge.pid`. When an update is on trial and
@@ -3141,7 +3144,14 @@ did: the box keeps working as itself ("For released Macs").
      in a row over a minute at least, or starts again more than three times: `kuvo-start rollback`
      puts the code back (never the data), `last` says it failed and went back, in words, and the
      version rests a day (`offerFailed`). Nothing else says an update is well: not the relay's
-     welcome, not a server, not a timer.
+     welcome, not a server, not a timer. A rollback that didn't get it all back is carried on by
+     the next judge, not judged again; after three tries `kuvo-start rollback` gives up, ends the
+     trial and starts the box as it is (never left stopped). Only one rollback runs at a time
+     (`run/.rolling-back`), and one judge (`run/update-judge.pid`, made only where there's none).
+     An updater cut off after it stopped the engine for a new one (`trial.engineStopped`) has its
+     judge start it first. While Kuvo is stopped until it next starts (`paused`) or off, nothing is
+     judged; the next start's keeper starts a judge again. A bridge that won't take the new build
+     (`renewal.waits: "restart"`) counts as failing.
   7. It notes what it installed (`updates/installed.json`, its `files`, never its bundles). Each
      night it checks the files against that note. A Mac notes `run/mac-installing` while it puts its files in place, and marking the
      box clears it. Drift seen on two checks, and not while a Mac is installing, means a Mac with an
@@ -3248,7 +3258,8 @@ new version without cutting a turn:
   (a crash, a hang ended, an update's new engine) never ends it or a turn on it; the engine's launch
   neither starts nor ends it, and `engine.json` no longer names it (`bridge.json` does). The
   keeper's `stop`, `restart`, `pause` and `off` still end it with the engine. A bridge a launch
-  from before started beside its engine runs on, never ending with it.
+  from before started beside its engine (its loop restarting it while that engine lives) runs on
+  until it ends; a bridge of this build, even started so, never ends with its engine.
 - **The link** (`kuvo-link.js run`) has no turns: `setup`, which a Mac runs as it connects, starts
   a newer one over the one running, as before.
 - **The engine** isn't ours to hold turns in. A Mac starts a newer one only when it connects and
