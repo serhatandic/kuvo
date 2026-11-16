@@ -40,9 +40,10 @@ beforeEach(() => {
   client = {}
   cleared()
 })
-afterAll(() => {
+afterAll(async () => {
   cleared()
-  held.close()
+  // (Closed before the next file holds one: a close that came after would say nothing's held.)
+  await new Promise(done => held.close(done))
 })
 
 /** The client asking: one that says it makes sure it's you first (Touch ID) before what lets

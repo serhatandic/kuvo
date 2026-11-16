@@ -29,7 +29,7 @@ use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::models::Offered;
 use kuvo_box::settings::{Config, UsageSettings};
 use kuvo_box::settings_pages::{Changed, Page, Section};
-use kuvo_ui::{IconName, TextField, TextFieldEvent};
+use kuvo_ui::{ActiveTheme as _, IconName, TextField, TextFieldEvent};
 use serde_json::Value;
 
 use crate::areas::Reading;
@@ -166,7 +166,9 @@ pub struct SettingsView {
     pages: HashMap<String, Reading<Page>>,
     /// What makes sure it's you (Touch ID, or the computer's password) before what lets something
     /// use what's yours from now on (`verified`); none where this app can't ask.
-    confirm: Option<crate::confirm_you::ConfirmYou>,
+    confirm_you: Option<crate::confirm_you::ConfirmYou>,
+    /// Drawn in dark: the page is built again when the app's light or dark changes (System follows the Mac).
+    dark: bool,
     /// The page open, followed as it changes (where the app runs against a box that streams).
     follow: Option<(String, Follow<Followed<Page>>)>,
     search: Entity<TextField>,
@@ -295,7 +297,8 @@ impl SettingsView {
             sections: Reading::NotYet,
             reading_sections: false,
             pages: HashMap::new(),
-            confirm: crate::confirm_you::ConfirmYou::of(cx),
+            confirm_you: crate::confirm_you::ConfirmYou::of(cx),
+            dark: cx.theme().appearance.is_dark(),
             follow: None,
             search,
             query: String::new(),
@@ -655,7 +658,7 @@ impl SettingsView {
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
-                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters, expanded: &self.expanded, confirms: self.confirm.is_some() }),
+                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters, expanded: &self.expanded, confirms: self.confirm_you.is_some() }),
                 Some(Reading::Failed(why)) => vec![Block::Note { key: "note-page".into(), words: format!("{} couldn’t be read: {why}", entry.title), busy: false, warning: true }],
                 _ => vec![rows::note("note-page", format!("Reading {}…", entry.title), true)],
             },
@@ -832,6 +835,7 @@ impl SettingsView {
 
     /// Works the page's items out again, from what it's drawn from now.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        self.dark = cx.theme().appearance.is_dark();
         self.yours_now = cx.try_global::<crate::yours::Store>().map(|store| (store.now().clone(), store.problem().map(str::to_owned))).unwrap_or_default();
         let name = self.computer_name();
         let placeholder = if self.side == Side::Yours { "Search your settings…".to_owned() } else { format!("Search {name}’s settings…") };
