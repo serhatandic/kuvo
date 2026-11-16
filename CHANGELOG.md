@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - **Kuvo is in the menu bar** on a Mac, for as long as it runs there, with the desktop app open or not: its mark shows how many sessions are at work and a dot when something needs you. Click it to see what needs you, what's at work and your plan limits' rings, to **Open Kuvo**, or to **Stop Kuvo on this Mac** (asked first while something's at work or the app is open, whose window closes too; it starts again when you open Kuvo or next log in). The first time you quit the desktop app, a note says Kuvo keeps working and where to find it.
+- Moving from an earlier Kuvo Code no longer says your Keychain is locked when it isn't. When macOS needs your OK for Kuvo to take this Mac's keys along, it asks: enter your Mac's password and click Always Allow. If the keys still can't be taken along, Kuvo says so in plain words.
 - The desktop rail puts Bots above Sessions (⌃1 and ⌃2). Opening a bot goes straight to its chat; Bot Settings opens from its header.
 - Coding agents offer Add Another Account, with a separate sign-in; cancelling removes the unfinished account.
 
