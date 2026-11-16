@@ -154,6 +154,8 @@ class Reach {
   private options: string[] = [];
   /** It's been reached: no other address is tried from then on. */
   private reached = false;
+  /** What ssh said at the address it was added under, where that didn't answer. */
+  private firstSaid: string | null = null;
   private readonly others: OtherAddress[];
   constructor(private readonly destination: string, private readonly name: string, private readonly tell: Telling, others: OtherAddress[] = []) {
     this.target = destination;
@@ -163,6 +165,7 @@ class Reach {
   /** Moves on to the next of its other addresses, where there's one left and none was reached yet. */
   private async next(said: string): Promise<boolean> {
     if (this.reached || !this.others.length) return false;
+    this.firstSaid ??= said;
     const other = this.others.shift()!;
     console.error(`Kuvo couldn't reach ${this.name} at ${this.target} over SSH (${said || "no answer"}); trying ${other.address}.`);
     await hangUp(this.target, this.way, this.options).catch(() => {});
@@ -191,6 +194,9 @@ class Reach {
         tries--;
         continue;
       }
+      // (None of its other addresses answered: it couldn't be reached, as at the first. What one of
+      // them said, someone else's computer at a home network's address say, isn't what's true of it.)
+      if (elsewhere && trouble.kind !== "refused") throw unreached(this.name, `${this.firstSaid ?? ""} (and at its other addresses: ${lastLine(ran.stderr)})`);
       if (tries >= 3) throw unreached(this.name, lastLine(ran.stderr));
       if (trouble.kind === "unknownHost") {
         await this.askKey("hostKey", `Is this ${this.name}?`,

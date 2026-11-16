@@ -124,9 +124,6 @@ export const macLink: {
   wake: (() => void) | null;
   /** When this Mac's app last said its link's config (the old app, as it attaches). */
   appSaid?: number;
-  /** When the old app last asked something of this box after it moved out of its folder, and was
-   * told it's been replaced (`linkRoute`). */
-  oldAppSeen?: number;
   statusFollowers: Set<() => void>;
   phoneFollowers: Set<() => void>;
 } = { config: null, overlay: null, status: { state: "off" }, host: null, wake: null, statusFollowers: new Set(), phoneFollowers: new Set() };

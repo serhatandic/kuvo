@@ -308,11 +308,9 @@ export async function* linkRoute(context: RouteContext): AsyncGenerator<AnswerPi
   }
   if (!IS_MAC || !request.fromApp) return yield* json(403, { message: "Only Kuvo Code on this computer can do that." });
   // Only the old app (before 1.0) asks these. Once this Mac's box has moved out of its folder, it's
-  // out of date and in charge of nothing here: told so, never let write this box's link, its
-  // machines or its settings, nor count as attached (`oldAppAttached`). Kuvo Code's app offers to
-  // put it in the Trash (`oldAppSeen`, this Mac's row in `kuvo/computers`).
+  // out of date and in charge of nothing here: refused with words, never let write this box's
+  // link, its machines or its settings, nor count as attached (`oldAppAttached`).
   if (movedFromOldApp()) {
-    macLink.oldAppSeen = Date.now();
     return yield* json(410, { message: `Kuvo Code 1.0 has replaced this app on ${ownName()}. Quit it and move it to the Trash: everything it did is in Kuvo Code now.` });
   }
   return yield* macLinkRoute(route, request, signal);

@@ -16,10 +16,11 @@ import type { ComputerAction, ComputerUpdate, ListedComputer } from "../../share
 import { isObject } from "../../shared/json";
 import { peerReach } from "../areas/computers";
 import { writePrivate } from "../files";
-import { RUN } from "../home";
+import { IS_MAC, RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { peersOf } from "../peers/known";
+import { mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
 import { boxVersion, isUpdating, newerVersion, offerFailedAgain, offerHeld, offerWaits, updateStatus } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
@@ -217,7 +218,10 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
     if (!older || computer.reach === "away") return none;
     // (Something keeps this box from it: the old app attached, no link yet, files missing. Its own
     // words say what to do; nothing to press here.)
-    if (!can.can) return { update: line("waiting", `Kuvo on ${name} needs an update`, can.message), actions: [] };
+    // (Only where it's this box's to clear, a Mac's that isn't another's member: a Linux box or a
+    // member never brings machines up, so it says nothing, and a client draws what the box that
+    // does says.)
+    if (!can.can) return IS_MAC && !mainElsewhere(readLink()) ? { update: line("waiting", `Kuvo on ${name} needs an update`, can.message), actions: [] } : none;
     // One older that this box didn't set up over SSH (another Mac did, or its record didn't come
     // along): set up over SSH from here once, which Set Up Over SSH begins (a client opens Add a
     // Machine at its address, `id`, for you to confirm).
@@ -247,11 +251,11 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
   // (A failure or a miss says so, with Try Again: a new try replaces it. Its words where they're
   // more than "it couldn't be reached", which the title says.)
   const missed = (title: string, why: string | undefined) => {
-    const own = why && !why.startsWith(`Couldn’t reach ${name}`) ? sentence(why) : "Make sure it’s on and connected, then Try Again. ";
+    const own = why && !why.startsWith("Couldn’t reach ") ? sentence(why) : "Make sure it’s on and connected, then Try Again. ";
     return { update: line("failed", title, `${own}Kuvo also tries again by itself later.`), actions: action("Try Again") };
   };
-  if (was?.failed) return missed(was.failed.why?.startsWith(`Couldn’t reach ${name}`) ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
-  if (was?.unreached && was.unreached >= was.checked) return missed(`Couldn’t reach ${name}`, was.unreachedWhy);
+  if (was?.failed) return missed(was.failed.why?.startsWith("Couldn’t reach ") ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
+  if (was?.unreached && was.unreached >= was.checked) return missed(was.unreachedWhy?.includes("couldn’t be checked") ? `Couldn’t check ${name}` : `Couldn’t reach ${name}`, was.unreachedWhy);
   if (was?.since !== undefined && working !== 0 && now - was.since >= LONG_WAIT) return { update: line("waiting", `Kuvo on ${name} hasn’t been free for a day`, "It updates once nothing’s at work there, or now with Update Now.", true), actions: action("Update Now") };
   if (working === 0) return { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: action("Update Now") };
   return { update: line("waiting", `Kuvo on ${name} updates once nothing’s at work there`, "Or now with Update Now: what’s at work there keeps going."), actions: action("Update Now") };
