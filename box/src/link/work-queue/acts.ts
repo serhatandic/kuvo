@@ -123,6 +123,8 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
         const fields = fieldsOf(given);
         if ([fields.before, fields.after].some(each => each !== undefined && refOf(each) === null)) throw new Refusal("There's no item like that to put it beside.");
         if (item.source && (fields.title !== undefined || fields.body !== undefined)) throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
+        // (As its `can.attach` says: files go with what you write of it.)
+        if (item.source && staged!.staged.length) throw new Refusal(`${nameOf(item)} takes its description from GitHub: attach files there.`);
         // (An issue GitHub closed stands as it is until it's reopened there: nothing of it is set here.)
         refuseClosedThere(item);
         const acting: Acting = { who: YOU, now, staged: staged!.staged, fileOps: [] };

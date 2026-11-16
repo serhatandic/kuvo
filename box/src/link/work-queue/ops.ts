@@ -202,14 +202,22 @@ export function stageClientFiles(given: unknown, local: boolean): { staged: Stag
   } catch (error) { clear(); throw error; }
 }
 
-/** What a client attached, for another computer's box: a local file's bytes carried with it (only
- * Kuvo Code's app here may name one, `local`), as the other box never reads a path it's sent. */
-export function carriedFiles(given: unknown, local: boolean): unknown {
+/** Files more than can go to another computer at once (413). */
+export class TooBig extends Refusal {}
+
+/** What a client attached, for another computer's box (`there`, by name): a local file's bytes
+ * carried with it (only Kuvo Code's app here may name one, `local`), as the other box never reads
+ * a path it's sent; `most` bytes in all, as much as goes between boxes at once. */
+export function carriedFiles(given: unknown, local: boolean, there: string, most: number): unknown {
   if (!Array.isArray(given)) return given;
+  if (given.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most.`);
+  let total = 0;
   return given.map(entry => {
-    if (isObject(entry) && typeof entry.uri === "string" && inline(entry)) return entry;
-    const { bytes, name } = clientFile(entry, local);
-    return { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
+    const carried = isObject(entry) && typeof entry.uri === "string" ? inline(entry) : null;
+    const { bytes, name } = carried ? { bytes: carried.bytes, name: "" } : clientFile(entry, local);
+    total += bytes.length;
+    if (total > most) throw new TooBig(`These files are too big to send to ${there} with one change (${most / 1_000_000} MB in all at most). Attach fewer or smaller files.`);
+    return carried ? entry : { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
   });
 }
 

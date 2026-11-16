@@ -19,7 +19,7 @@ import { frozen } from "../moves/records";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
-import { carriedFiles, Refusal, refuseMoving } from "../work-queue/ops";
+import { carriedFiles, Refusal, refuseMoving, TooBig } from "../work-queue/ops";
 import { TOLD, type ToldItem } from "../work-queue/told";
 import { readLink } from "../state";
 import { ownKey } from "../peers/known";
@@ -30,7 +30,7 @@ import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
 import { ATTACHMENTS, forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
-import { actHere, addHere, fileOf, GITHUB_WAIT, withCan } from "../work-queue/acts";
+import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } from "../work-queue/acts";
 import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
@@ -306,7 +306,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   // (Who it's for is set on the computer that keeps it: that box's `can` is for its own client,
   // whose bots are its own.)
-  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...(isObject(item.can) ? { can: { ...item.can, assign: false } } : {}), computer });
+  // (Attaching too only where this box knows that computer keeps them: it's what it sends them through.)
+  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...(isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}), computer });
   // One that's neither here nor told by any of your computers (an old Done one, a deleted one), for
   // a client: asked of each of them, so a client asks one box whichever keeps it. Null when none
   // has it; `refuse` when some couldn't say, so it may be there.
@@ -385,9 +386,12 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal, local: fromLocalApp(context.request) }), json);
   const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
   // (Files go to that computer's box with their bytes: it never reads a path it's sent.)
+  // (Asked first, before any file is read: that computer keeps them at all.)
+  const attaching = Array.isArray(given.files) && given.files.length > 0;
+  if (attaching && !takesForwarded(far.computer.key, ATTACHMENTS)) return yield* json(409, { message: `${far.computer.name} needs an update before it can keep attached files. Update it and try again.`, computer: far.computer });
   let files: unknown;
-  try { files = carriedFiles(given.files, fromLocalApp(context.request)); } catch (error) {
-    if (error instanceof Refusal) return yield* json(400, { message: error.message });
+  try { files = attaching ? carriedFiles(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files; } catch (error) {
+    if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
   const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {}) }, signal);

@@ -24158,14 +24158,22 @@ function stageClientFiles(given, local) {
     throw error;
   }
 }
-function carriedFiles2(given, local) {
+
+class TooBig extends Refusal {
+}
+function carriedFiles2(given, local, there, most) {
   if (!Array.isArray(given))
     return given;
+  if (given.length > MOST_FILES)
+    refuse(`An item keeps ${MOST_FILES} files at most.`);
+  let total = 0;
   return given.map((entry) => {
-    if (isObject(entry) && typeof entry.uri === "string" && inline(entry))
-      return entry;
-    const { bytes, name } = clientFile(entry, local);
-    return { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
+    const carried = isObject(entry) && typeof entry.uri === "string" ? inline(entry) : null;
+    const { bytes, name } = carried ? { bytes: carried.bytes, name: "" } : clientFile(entry, local);
+    total += bytes.length;
+    if (total > most)
+      throw new TooBig(`These files are too big to send to ${there} with one change (${most / 1e6} MB in all at most). Attach fewer or smaller files.`);
+    return carried ? entry : { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
   });
 }
 var TYPES = {
@@ -32673,6 +32681,8 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
           throw new Refusal("There's no item like that to put it beside.");
         if (item.source && (fields.title !== undefined || fields.body !== undefined))
           throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
+        if (item.source && staged.staged.length)
+          throw new Refusal(`${nameOf(item)} takes its description from GitHub: attach files there.`);
         refuseClosedThere(item);
         const acting = { who: YOU, now, staged: staged.staged, fileOps: [] };
         changeItem2(book, item, fields, acting);
@@ -32761,7 +32771,7 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS))
-    return { status: 409, refused: `${computer.name} needs an update before it can keep attached images. Update it and try again.` };
+    return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
   if (awaySince(peer.key) !== null)
     return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
@@ -35353,7 +35363,7 @@ function conversationHash(exports) {
   return hash.digest("base64url");
 }
 
-class TooBig extends Error {
+class TooBig2 extends Error {
 }
 function bytesIn(folder, most, counted = 0) {
   let names = [];
@@ -35382,7 +35392,7 @@ async function pack(id, contents) {
   const original = contents.folder ? folderOf3(contents.kind, contents.thing) : null;
   const carried = contents.lane ? path118.join(folder, "carry") : null;
   if (Buffer.byteLength(moveJSON) + (original ? bytesIn(original, MOST_BUNDLE) : 0) + (carried ? bytesIn(carried, MOST_BUNDLE) : 0) + filesSize(contents.workQueue) > MOST_BUNDLE)
-    throw new TooBig;
+    throw new TooBig2;
   fs113.rmSync(staging, { recursive: true, force: true });
   fs113.mkdirSync(staging, { recursive: true, mode: 448 });
   fs113.writeFileSync(path118.join(staging, "move.json"), moveJSON, { mode: 384 });
@@ -36237,7 +36247,7 @@ async function carryOn(id) {
   if (takenBack())
     return;
   const bundle = await pack(id, contents).catch((error) => {
-    throw error instanceof TooBig ? new Refused(say.tooBig(record.name)) : error;
+    throw error instanceof TooBig2 ? new Refused(say.tooBig(record.name)) : error;
   });
   if (bundle.size > MOST_BUNDLE)
     throw new Refused(say.tooBig(record.name));
@@ -43222,7 +43232,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a2491544bedb";
+var BRIDGE_VERSION = "cd125eeca281";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63470,7 +63480,7 @@ async function* workQueueRoute(context, match) {
   if (!ref)
     return yield* json(404, { message: "There's no such item." });
   const find = (items) => matching2(items, ref)[0] ?? null;
-  const fromThere = (item, computer) => ({ ...item, ...isObject(item.can) ? { can: { ...item.can, assign: false } } : {}, computer });
+  const fromThere = (item, computer) => ({ ...item, ...isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}, computer });
   const seek = async () => {
     if (!fromClient(context))
       return null;
@@ -63553,12 +63563,15 @@ async function* workQueueRoute(context, match) {
   if (!far)
     return yield* answered4(await actHere({ ...asked, ref, given, targets, signal, local: fromLocalApp(context.request) }), json);
   const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
+  const attaching = Array.isArray(given.files) && given.files.length > 0;
+  if (attaching && !takesForwarded(far.computer.key, ATTACHMENTS))
+    return yield* json(409, { message: `${far.computer.name} needs an update before it can keep attached files. Update it and try again.`, computer: far.computer });
   let files;
   try {
-    files = carriedFiles2(given.files, fromLocalApp(context.request));
+    files = attaching ? carriedFiles2(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files;
   } catch (error) {
     if (error instanceof Refusal)
-      return yield* json(400, { message: error.message });
+      return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
   const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {} }, signal);

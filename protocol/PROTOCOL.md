@@ -6521,7 +6521,9 @@ With `work-queue.attachments`, both create and edit take `files`, the composer's
 Kuvo Code's app on the box's own computer (over its own server, `x-kuvo-from: app` or `mac`) and
 refused (400) from a phone, the relay, `box route` or another box, so nothing reads the box's files
 through an item. For an item on another computer the box sends each file's bytes there (`data:`;
-409 when that computer lacks `work-queue.attachments`). The box copies them into the item's own
+409 when that computer lacks `work-queue.attachments`, asked before any file is read; 413 for more
+than 4 MB in all, as much as goes between boxes with one change). An issue's or pull request's
+item takes none (400), as its `can.attach` says. The box copies them into the item's own
 files, as an agent's (25 MB each, 50 an item, a name taken twice numbered); an edit appends and
 keeps earlier files; they go when the item is deleted for good. A client offers attaching on a new
 item where its box has `work-queue.attachments`, and on an item where `can.attach`.

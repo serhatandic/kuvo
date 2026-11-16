@@ -896,6 +896,17 @@ test("what you do to an item another computer keeps, asked of this box, is done 
 
   forwardsTold(true);
   assert.equal((await view("all")).items.find(item => item.number === 500).can.attach, true, "lab keeps attached files now");
+  // A file of this computer named by a phone, or more than goes between boxes at once: refused
+  // here, nothing sent.
+  const named = path.join(home, "named.png");
+  fs.writeFileSync(named, "x");
+  const fromPhone = await route("PATCH", "kuvo/work-queue/items/500", { files: [{ uri: new URL(`file://${named}`).href }] }, { fromApp: true });
+  assert.equal(fromPhone.status, 400);
+  const tooBig = await route("PATCH", "kuvo/work-queue/items/500", { files: [1, 2].map(n => ({ uri: "data:image/png;base64," + Buffer.alloc(2_100_000).toString("base64"), name: `${n}.png` })) });
+  assert.equal(tooBig.status, 413);
+  assert.match(tooBig.body.message, /too big to send to lab/);
+  assert.equal(mailTo(lab).length, 0, "nothing went to lab");
+  fs.rmSync(named);
   // A picture of this computer goes to lab with its bytes: lab never reads a path it's sent.
   const attaching = path.join(home, "shot.png");
   fs.writeFileSync(attaching, "x");
@@ -1140,7 +1151,7 @@ test("an item no computer told this box of, asked of this box by a client, comes
   assert.deepEqual([read.body.item.title, read.body.item.body, read.body.item.told], ["Item 7", "What only the Mac keeps", false]);
   assert.deepEqual(read.body.item.computer, studio, "said to be on the Mac, as this box names it");
   // (What may be done to it is the Mac's word, but for who it's for: set there, among its bots.)
-  assert.deepEqual(read.body.item.can, { edit: true, set: true, assign: false, close: true, delete: true, restore: false });
+  assert.deepEqual(read.body.item.can, { edit: true, set: true, assign: false, close: true, delete: true, restore: false, attach: false }, "nor attaching, as this box doesn't know it keeps files");
   assert.deepEqual(fs.readdirSync(forwards), [], "nothing left behind");
 
   // One of its files: found the same way, then its bytes from the Mac.
@@ -1259,6 +1270,14 @@ test("asked by another of your computers' boxes, this box does it to the item it
   await takeFrom(mac, { act: { ...act, body: { status: "todo" } } });
   assert.deepEqual(mailTo(mac).map(each => each.workQueue.acted), [answer.workQueue.acted]);
   assert.equal((await moves()).length, 1);
+  // A file of this computer named by another box: refused, nothing read or kept (it sends bytes).
+  const secret = path.join(home, "secret.txt");
+  fs.writeFileSync(secret, "not for another box");
+  await takeFrom(mac, { act: { id: actID(), method: "PATCH", item: id, body: { files: [{ uri: new URL(`file://${secret}`).href, name: "secret.txt" }] }, at: Date.now() } });
+  assert.equal(mailTo(mac)[0].workQueue.acted.status, 400);
+  assert.deepEqual((await route("GET", `kuvo/work-queue/items/${id}`)).body.item.files, []);
+  fs.rmSync(secret);
+
   // One that was under way as this box stopped: it can't tell whether it was done.
   const cut = { id: actID(), method: "PATCH", item: id, body: { status: "todo" }, at: Date.now() };
   write(path.join(queues, "acted.json"), { ...read(path.join(queues, "acted.json")), [`${mac.pub} ${cut.id}`]: { until: Date.now() + 600_000, answer: null } });
