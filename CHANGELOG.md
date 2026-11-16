@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Settings › **Skills**, **Commands** and **Custom Auto** are in the desktop app for each of your computers. Create and edit skills and commands, install a skill from a GitHub repository and folder, restore deleted skills, and arrange Custom Auto’s model fallback lists with an effort for each model.
+
 - Your settings in the desktop app now has **General** and **Notifications**. General's **Open code and text in** picks the editor a file opens in, and a file shown in Files on this Mac has **Open in** (your editor) at its top. Notifications shows a notification when a session on any of your computers finishes or asks you something while Kuvo isn't in front (clicking one opens that session), with a sound, a count of what waits for you on the Dock icon, and a button to macOS's notification settings; each can be turned off. Your theme is now kept across restarts too.
 - Settings › Git, Worktrees and Storage in the desktop app are laid out like the rest of Settings: one card per group, fields saved when you press Return or click away (no Save buttons), commit and pull request instructions in full-width boxes, one worktree folder field showing the default, and Storage shows how much Kuvo takes on the computer as a bar with a breakdown.
 - Allowing Kuvo Helper in macOS (Screen Recording, Accessibility) is now a step when you set up Kuvo or move to it, each with its own **Open System Settings**, instead of a banner in the window. **Not Now** skips it; Settings › This Mac still shows how each stands.

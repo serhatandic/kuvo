@@ -158,11 +158,42 @@
                   "id": "model",
                   "title": "Model",
                   "kind": "choice",
-                  "value": "",
-                  "choices": []
+                  "value": "[\"codex-cli\",\"fast\"]",
+                  "choices": [
+                    {
+                      "id": "[\"codex-cli\",\"fast\"]",
+                      "title": "Fast (codex-cli)"
+                    },
+                    {
+                      "id": "[\"codex-cli\",\"other\"]",
+                      "title": "Other (codex-cli)"
+                    }
+                  ]
                 },
                 {
-                  "id": "variant",
+                  "id": "effort-0",
+                  "title": "Effort",
+                  "kind": "choice",
+                  "value": "",
+                  "choices": [
+                    {
+                      "id": "",
+                      "title": "Default"
+                    },
+                    {
+                      "id": "high",
+                      "title": "high"
+                    }
+                  ],
+                  "shown": {
+                    "field": "model",
+                    "is": [
+                      "[\"codex-cli\",\"fast\"]"
+                    ]
+                  }
+                },
+                {
+                  "id": "effort-1",
                   "title": "Effort",
                   "kind": "choice",
                   "value": "",
@@ -171,16 +202,22 @@
                       "id": "",
                       "title": "Default"
                     }
-                  ]
+                  ],
+                  "shown": {
+                    "field": "model",
+                    "is": [
+                      "[\"codex-cli\",\"other\"]"
+                    ]
+                  }
                 }
               ],
-              "revision": "5soofEMmY5gshr7R"
+              "revision": "EGJyM4SIHn99W5EY"
             }
           },
           "items": [
             {
               "id": "entry-first-0",
-              "title": "1. fast",
+              "title": "1. Fast",
               "line": "codex-cli",
               "kind": "actions",
               "value": {
@@ -206,12 +243,38 @@
                         "choices": [
                           {
                             "id": "[\"codex-cli\",\"fast\"]",
-                            "title": "fast (codex-cli)"
+                            "title": "Fast (codex-cli)"
+                          },
+                          {
+                            "id": "[\"codex-cli\",\"other\"]",
+                            "title": "Other (codex-cli)"
                           }
                         ]
                       },
                       {
-                        "id": "variant",
+                        "id": "effort-0",
+                        "title": "Effort",
+                        "kind": "choice",
+                        "value": "",
+                        "choices": [
+                          {
+                            "id": "",
+                            "title": "Default"
+                          },
+                          {
+                            "id": "high",
+                            "title": "high"
+                          }
+                        ],
+                        "shown": {
+                          "field": "model",
+                          "is": [
+                            "[\"codex-cli\",\"fast\"]"
+                          ]
+                        }
+                      },
+                      {
+                        "id": "effort-1",
                         "title": "Effort",
                         "kind": "choice",
                         "value": "",
@@ -220,10 +283,16 @@
                             "id": "",
                             "title": "Default"
                           }
-                        ]
+                        ],
+                        "shown": {
+                          "field": "model",
+                          "is": [
+                            "[\"codex-cli\",\"other\"]"
+                          ]
+                        }
                       }
                     ],
-                    "revision": "mtXokLFmShbwYpWO"
+                    "revision": "EGJyM4SIHn99W5EY"
                   }
                 },
                 {
@@ -251,14 +320,10 @@
                   }
                 }
               ],
-              "notice": {
-                "words": "Not available now: Custom Auto passes it by",
-                "tone": "quiet"
-              },
-              "revision": "_FTcaZW3icpqVQt4"
+              "revision": "BMWZj0V-juz8V2W7"
             }
           ],
-          "revision": "5ISHV5sdkv2SgqNS"
+          "revision": "xuFPM9hcwatHoCwN"
         }
       ]
     },
@@ -282,11 +347,42 @@
                   "id": "model",
                   "title": "Model",
                   "kind": "choice",
-                  "value": "",
-                  "choices": []
+                  "value": "[\"codex-cli\",\"fast\"]",
+                  "choices": [
+                    {
+                      "id": "[\"codex-cli\",\"fast\"]",
+                      "title": "Fast (codex-cli)"
+                    },
+                    {
+                      "id": "[\"codex-cli\",\"other\"]",
+                      "title": "Other (codex-cli)"
+                    }
+                  ]
                 },
                 {
-                  "id": "variant",
+                  "id": "effort-0",
+                  "title": "Effort",
+                  "kind": "choice",
+                  "value": "",
+                  "choices": [
+                    {
+                      "id": "",
+                      "title": "Default"
+                    },
+                    {
+                      "id": "high",
+                      "title": "high"
+                    }
+                  ],
+                  "shown": {
+                    "field": "model",
+                    "is": [
+                      "[\"codex-cli\",\"fast\"]"
+                    ]
+                  }
+                },
+                {
+                  "id": "effort-1",
                   "title": "Effort",
                   "kind": "choice",
                   "value": "",
@@ -295,14 +391,20 @@
                       "id": "",
                       "title": "Default"
                     }
-                  ]
+                  ],
+                  "shown": {
+                    "field": "model",
+                    "is": [
+                      "[\"codex-cli\",\"other\"]"
+                    ]
+                  }
                 }
               ],
-              "revision": "5soofEMmY5gshr7R"
+              "revision": "EGJyM4SIHn99W5EY"
             }
           },
           "items": [],
-          "revision": "_lDY6QsgNPkzdwqm"
+          "revision": "7JZI1aBG1fjTFhj2"
         }
       ]
     }

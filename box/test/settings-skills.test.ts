@@ -106,3 +106,20 @@ test("quoted descriptions round trip and malformed Other Places stays untouched"
   expect(shown.notes[0].tone).toBe("warning")
   expect(readFileSync(CONFIG_FILE, "utf8")).toBe(before)
 })
+
+test("discovered skills keep metadata and both lists offer the existing search control", async () => {
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch() { return Response.json({ data: Array.from({ length: 7 }, (_, index) => ({ id: `found-${index}`, name: `Found ${index}`, description: `Use found ${index}`, path: `/builtin/found-${index}/SKILL.md` })) }) } })
+  const discovered = engineHandler((() => ({ port: server.port, password: "test" })) as any, { name: "test" }, (() => null) as any)
+  try {
+    const shown = (await ask(discovered, "GET", "kuvo/settings/skills")).json
+    const list = rows(shown).find((row:any) => row.id === "skills")
+    expect(list.search.placeholder).toBe("Search skills")
+    expect(list.items.find((row:any) => row.id === "skill-found-0")).toMatchObject({ title: "Found 0", line: "Use found 0", badge: { words: "Built in", tone: "quiet" } })
+    for (let index = 0; index < 7; index++) {
+      const name = `deleted-${index}`
+      expect((await ask(handler, "PUT", `kuvo/skills/${name}`, { text: skillDocument(name, "For testing", "Text"), new: true })).status).toBe(200)
+      expect((await ask(handler, "DELETE", `kuvo/skills/${name}`)).status).toBe(200)
+    }
+    expect(rows(await page()).find((row:any) => row.id === "deleted").search).toEqual({ placeholder: "Search recently deleted", empty: "No deleted skill matches “{query}”." })
+  } finally { server.stop(true) }
+})

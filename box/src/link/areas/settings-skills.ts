@@ -76,18 +76,23 @@ async function page(context: RouteContext): Promise<SettingsPage> {
     const text = yours.get(name);
     const source = known.own.github[name];
     const about = skillAbout(text ?? "");
+    const discovered = known.engine!.find(each => each.id === name);
+    const title = about.name || (typeof discovered?.name === "string" && discovered.name) || name;
+    const description = about.description || (typeof discovered?.description === "string" ? discovered.description : undefined);
+    const origin = source?.repository || (text !== undefined ? "Added here" : typeof discovered?.path === "string" && discovered.path.startsWith("/builtin/") ? "Built in" : undefined);
+    const location = typeof discovered?.path === "string" ? discovered.path : undefined;
     const actions: SettingAction[] = text === undefined ? [] : [
       ...(!source ? [{ id: "edit", title: "Edit…", form: form(name, text) }] : []),
       { id: "remove", title: source ? "Remove…" : "Delete Skill…", style: "destructive", confirm: { title: `Delete ${name}?`, body: DELETION, button: "Delete" } },
     ];
-    return item({ id: `skill-${name}`, title: name, kind: "switch", value: !disabled(known.config, name), can: known.config.permissions === undefined || Array.isArray(known.config.permissions) ? true : { why: "Permissions are set as something other than a list. Change them in the settings file." }, ...(about.description ? { line: about.description } : {}), actions });
+    return item({ id: `skill-${name}`, title, kind: "switch", value: !disabled(known.config, name), can: known.config.permissions === undefined || Array.isArray(known.config.permissions) ? true : { why: "Permissions are set as something other than a list. Change them in the settings file." }, ...(description ? { line: description } : {}), ...(origin ? { badge: { words: origin, tone: "quiet" as const } } : location ? { notice: { words: location, tone: "quiet" as const } } : {}), actions });
   });
   const trash = await asked(context, skillsRoute, "GET", "kuvo/skill-trash");
   const places = valueAt(known.config, ["skills"]);
   if (places !== undefined && !Array.isArray(places)) return unreadPage("skills", "Skills", { status: 409, value: { message: "Other Places is set as something other than a list. Change it in the settings file." } });
   return { id: "skills", title: "Skills", groups: [
-    { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
-    ...(trash.status === 200 && trash.value.entries.length ? [{ id: "deleted-skills", title: "Recently Deleted", note: DELETION, rows: [row({ id: "deleted", title: "Recently Deleted", kind: "list", items: trash.value.entries.map((each: any) => item({ id: `trash-${each.id}`, title: each.name, line: each.description, kind: "actions", actions: [{ id: "restore", title: "Restore" }] })) })] }] : []),
+    { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, ...(skills.length > 6 ? { search: { placeholder: "Search skills", empty: "No skills match “{query}”." } } : {}), empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
+    ...(trash.status === 200 && trash.value.entries.length ? [{ id: "deleted-skills", title: "Recently Deleted", note: DELETION, rows: [row({ id: "deleted", title: "Recently Deleted", kind: "list", ...(trash.value.entries.length > 6 ? { search: { placeholder: "Search recently deleted", empty: "No deleted skill matches “{query}”." } } : {}), items: trash.value.entries.map((each: any) => item({ id: `trash-${each.id}`, title: each.name, line: each.description, kind: "actions", actions: [{ id: "restore", title: "Restore" }] })) })] }] : []),
     { id: "get-skills", title: "Get Skills", note: "These come from their authors on GitHub, not from Kuvo Code. A skill can include scripts the agent may run, so look at what's in one before you add it.", rows: [row({ id: "install", title: "Get Skills", kind: "actions", actions: [{ id: "install", title: "Add Skill…", form: { title: "Add Skill", submit: "Add Skill", fields: [
       { id: "repository", title: "Repository", kind: "text", value: "", placeholder: "Another repository on GitHub, like owner/skills" },
       { id: "path", title: "Skill’s folder in the repository", kind: "text", value: "", placeholder: "skills/release-notes" },
