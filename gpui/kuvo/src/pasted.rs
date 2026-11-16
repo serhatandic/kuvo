@@ -107,7 +107,7 @@ fn stamp(now: SystemTime) -> String {
 
 /// How far this computer's clock is ahead of UTC at `seconds`, in seconds.
 #[cfg(target_os = "macos")]
-fn utc_offset(seconds: i64) -> i64 {
+pub(crate) fn utc_offset(seconds: i64) -> i64 {
     let time: libc::time_t = seconds as libc::time_t;
     let mut parts: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `localtime_r` writes only into `parts`, which lives through the call.
@@ -116,7 +116,7 @@ fn utc_offset(seconds: i64) -> i64 {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn utc_offset(_seconds: i64) -> i64 {
+pub(crate) fn utc_offset(_seconds: i64) -> i64 {
     0
 }
 

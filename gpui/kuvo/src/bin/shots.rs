@@ -54,6 +54,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // What the agent did between its words, grouped: folded to a line (one that failed shows
+    // anyway; the one under way on its line), then opened; and messages from other agents as cards.
+    Screen { slug: "tool-groups", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "tool-groups-open", width: 1280., height: 1100., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(tool_groups_open) },
+    Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
     Screen { slug: "select-paragraph", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_paragraph) },
@@ -71,7 +76,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "question", width: 1280., height: 820., session: Some("ses_cms"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "slash", width: 1280., height: 820., session: Some("ses_recipes"), typed: Some("/"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "narrow", width: 860., height: 760., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "steps", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[("msg_s2", 2), ("msg_s5", 0), ("msg_s5", 1)], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "steps", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[("msg_s2", 2), ("msg_s5", 2), ("msg_s5", 4)], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "search", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: Some("redis"), walks: 1, attach: &[], panel: None },
     Screen { slug: "walking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 3, attach: &[], panel: None },
     Screen { slug: "attached", width: 1280., height: 820., session: Some("ses_dark"), typed: Some("This is how the settings look in dark mode now: the cards blend into the page."), empty: false, opens: &[], search: None, walks: 0, attach: &["shots/theme-dark.png", "kuvo_ui/src/theme.rs"], panel: None },
@@ -966,6 +971,27 @@ fn select(workspace: &mut Workspace, from: &str, to: &str, window: &mut Window, 
     assert!(found, "{from:?} … {to:?} isn't in the conversation");
 }
 
+fn tool_groups_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| {
+            for group in ["msg_s5", "msg_s5#6"] {
+                view.toggle(kuvo::entries::Fold::Group(group.to_owned()), cx);
+            }
+        });
+    }
+}
+
+/// The messages from other agents in view, the longer one opened.
+fn agent_letters(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| {
+            view.toggle(kuvo::entries::Fold::Card("msg_s3a".to_owned(), 0), cx);
+            let at = view.entries().iter().position(|entry| entry.key() == "msg_s3a").unwrap_or(0);
+            view.list().list_state().scroll_to(gpui::ListOffset { item_ix: at.saturating_sub(2), offset_in_item: gpui::px(0.) });
+        });
+    }
+}
+
 fn select_paragraph(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     select(workspace, "into the success path", "under the email field?", window, cx);
 }
@@ -1340,7 +1366,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     if let Some(view) = workspace.conversation() {
                         for (step, n) in screen.opens {
-                            view.update(cx, |view, cx| view.toggle(kuvo::entries::Fold::Step((*step).to_owned(), *n), cx));
+                            view.update(cx, |view, cx| view.open_step(step, *n, cx));
                         }
                     }
                     let composer = match workspace.conversation() {

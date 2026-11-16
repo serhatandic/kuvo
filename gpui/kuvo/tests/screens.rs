@@ -287,19 +287,16 @@ fn a_run_streams_into_the_conversation_and_its_end_shows(cx: &mut TestAppContext
     cx.run_until_parked();
     let streamed = view.read_with(cx, |view, _| {
         view.entries().iter().find_map(|entry| match entry {
-            Entry::Message(message) => match message.as_ref() {
-                Message::Assistant(step) if step.id == "msg_s5" => step.content.iter().find_map(|content| match content {
-                    Content::Text(text) => Some(text.clone()),
-                    _ => None,
-                }),
+            Entry::Words { step, parts, .. } if step.id == "msg_s5" => parts.iter().find_map(|n| match &step.content[*n] {
+                Content::Text(text) => Some(text.clone()),
                 _ => None,
-            },
+            }),
             _ => None,
         })
     });
     assert!(streamed.unwrap().ends_with("checking the lint now. All 14 pass."));
     assert!(view.read_with(cx, |view, _| view.list().is_following()));
-    let step = bounds(cx, "entry-msg_s5").unwrap();
+    let step = bounds(cx, "entry-msg_s5#5").unwrap();
     let working = bounds(cx, "entry-working").unwrap();
     assert!(step.bottom() <= working.top());
 
@@ -1034,33 +1031,67 @@ fn a_tool_step_opens_to_what_it_printed_and_long_output_unfolds(cx: &mut TestApp
     let (workspace, cx) = open(cx, stand_in);
     open_session(&workspace, "ses_signup", cx);
 
+    // What it did between its words is one line until it's opened; a step that failed shows anyway.
+    assert!(bounds(cx, "tool-msg_s5:4").is_none(), "folded in its group");
+    assert!(bounds(cx, "tool-msg_s5:3").is_some(), "the failed check shows outside the fold");
+    let group = bounds(cx, "group-msg_s5").expect("the group's line");
+    cx.simulate_click(group.center(), Modifiers::default());
+    cx.run_until_parked();
+
     // Closed, a step is one line; a click opens it to the command and what it printed, folded.
-    assert!(bounds(cx, "output-msg_s5:1").is_none());
-    let row = bounds(cx, "tool-msg_s5:1").expect("the test run's row");
+    assert!(bounds(cx, "output-msg_s5:4").is_none());
+    let row = bounds(cx, "tool-msg_s5:4").expect("the test run's row");
     cx.simulate_click(row.center(), Modifiers::default());
     cx.run_until_parked();
-    let folded = bounds(cx, "output-msg_s5:1").expect("its output, under it");
+    let folded = bounds(cx, "output-msg_s5:4").expect("its output, under it");
 
     // Show all: the rest of it, then folded again.
-    let fold = bounds(cx, "output-msg_s5:1-fold").expect("the fold's button");
+    let fold = bounds(cx, "output-msg_s5:4-fold").expect("the fold's button");
     cx.simulate_click(fold.center(), Modifiers::default());
     cx.run_until_parked();
-    let whole = bounds(cx, "output-msg_s5:1").expect("its output, whole");
+    let whole = bounds(cx, "output-msg_s5:4").expect("its output, whole");
     assert!(whole.size.height > folded.size.height + px(100.), "{whole:?} vs {folded:?}");
-    let fold = bounds(cx, "output-msg_s5:1-fold").expect("Show less");
+    let fold = bounds(cx, "output-msg_s5:4-fold").expect("Show less");
     cx.simulate_click(fold.center(), Modifiers::default());
     cx.run_until_parked();
-    assert_eq!(bounds(cx, "output-msg_s5:1").map(|b| b.size.height), Some(folded.size.height));
+    assert_eq!(bounds(cx, "output-msg_s5:4").map(|b| b.size.height), Some(folded.size.height));
 
     // An edit opens to its changes; a step still running has nothing to open.
-    let edit = bounds(cx, "tool-msg_s5:0").expect("the edit's row");
+    let edit = bounds(cx, "tool-msg_s5:2").expect("the edit's row");
     cx.simulate_click(edit.center(), Modifiers::default());
     cx.run_until_parked();
-    assert!(bounds(cx, "diff-msg_s5:0-0").is_some());
-    let running = bounds(cx, "tool-msg_s5:3").expect("the lint running");
+    assert!(bounds(cx, "diff-msg_s5:2-0").is_some());
+    let lint = bounds(cx, "group-msg_s5#6").expect("the group under way");
+    cx.simulate_click(lint.center(), Modifiers::default());
+    cx.run_until_parked();
+    let running = bounds(cx, "tool-msg_s5:7").expect("the lint running");
     cx.simulate_click(running.center(), Modifiers::default());
     cx.run_until_parked();
-    assert!(bounds(cx, "output-msg_s5:3").is_none());
+    assert!(bounds(cx, "output-msg_s5:7").is_none());
+}
+
+#[gpui::test]
+fn another_agents_message_is_a_card_from_it_that_opens_whole_and_to_its_conversation(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    open_session(&workspace, "ses_signup", cx);
+    // (Brought into view: the conversation opens at its newest.)
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let at = view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == "msg_s3a").unwrap());
+    view.read_with(cx, |view, _| view.list().list_state().scroll_to(gpui::ListOffset { item_ix: at - 2, offset_in_item: px(0.) }));
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    // A card from it, not a bubble of yours, with its first line; and a session's news, short, whole.
+    let folded = bounds(cx, "letter-msg_s3a-0").expect("the card from “Check the other forms”");
+    assert!(bounds(cx, "letter-msg_s3b-0").is_some(), "the news of a session it started");
+    cx.simulate_click(folded.center(), Modifiers::default());
+    cx.run_until_parked();
+    let whole = bounds(cx, "letter-msg_s3a-0").unwrap();
+    assert!(whole.size.height > folded.size.height + px(20.), "{folded:?} → {whole:?}");
+    // Open: its conversation.
+    let open_it = bounds(cx, "open-msg_s3a-0").expect("Open");
+    cx.simulate_click(open_it.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_sub".to_owned()));
 }
 
 fn type_in(field: &Entity<kuvo_ui::TextField>, text: &str, cx: &mut VisualTestContext) {

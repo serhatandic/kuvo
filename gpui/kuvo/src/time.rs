@@ -184,3 +184,10 @@ mod tests {
         assert_eq!((day_after("2026-12-30", 7), day_after("today", 1)), (Some("2027-01-06".into()), None));
     }
 }
+
+/// The time of day `ms` (since 1970) was on this computer's clock: "14:05".
+pub fn clock(ms: f64) -> String {
+    let seconds = (ms / 1000.) as i64;
+    let of_day = (seconds + crate::pasted::utc_offset(seconds)).rem_euclid(86_400);
+    format!("{:02}:{:02}", of_day / 3600, of_day % 3600 / 60)
+}

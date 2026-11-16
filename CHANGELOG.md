@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- In the desktop app, what the agent does between its replies folds into one line ("Read 4 files, ran 2 commands, searched once"), evenly spaced; click it to see each step. The step under way shows on that line, and a step that failed shows even when it's folded. Kuvo's own tools and other MCP servers' read in plain words ("Started a session", "Linear · List issues") instead of names like `kuvo-browser_start_session`.
+- In the desktop app, a message from another agent, or news from a session it started, shows as a card from it again (who it's from, its first line, the time, and **Open** to go to that conversation), not as a bubble of yours. Click it to read all of it.
 - Your settings now lists the keyboard shortcuts Kuvo uses, lets you choose the Side Panel’s first tab, and keeps your anonymous usage choice under Privacy. Nothing is sent yet.
 
 - In the desktop app, ⌘V in the composer attaches a copied screenshot or picture, and files copied in the Finder, as 0.7 did, instead of doing nothing or pasting their names.

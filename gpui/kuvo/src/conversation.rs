@@ -391,6 +391,10 @@ impl ConversationView {
         self.asks_failed = None;
         self.asks.update(cx, |card, cx| card.take(asks, cx));
         self.bars.update(cx, |bars, cx| bars.asks_changed(cx));
+        // The step it waits on shows outside its group while it does: the newest group drawn again.
+        if let Some(ix) = self.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) {
+            self.list.changed(ix);
+        }
         cx.notify();
     }
 
@@ -526,13 +530,25 @@ impl ConversationView {
 
     /// Opens or closes a thinking block or a tool step, or folds an output again.
     pub fn toggle(&mut self, fold: Fold, cx: &mut Context<Self>) {
-        let step = fold.step().to_owned();
         if !self.open.remove(&fold) {
-            self.open.insert(fold);
+            self.open.insert(fold.clone());
         }
-        if let Some(ix) = self.entries.iter().position(|entry| entry.key() == step) {
+        if let Some(ix) = self.entries.iter().position(|entry| entry.holds(&fold)) {
             self.list.changed(ix);
         }
+        cx.notify();
+    }
+
+    /// Opens step `n` of `step` (a tool step, to what it printed or changed), and the group it's in.
+    pub fn open_step(&mut self, step: &str, n: usize, cx: &mut Context<Self>) {
+        let fold = Fold::Step(step.to_owned(), n);
+        if let Some(ix) = self.entries.iter().position(|entry| entry.holds(&fold)) {
+            if let Entry::Steps { key, .. } = &self.entries[ix] {
+                self.open.insert(Fold::Group(key.clone()));
+            }
+            self.list.changed(ix);
+        }
+        self.open.insert(fold);
         cx.notify();
     }
 
@@ -728,7 +744,9 @@ impl Render for ConversationView {
                 };
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
-                entries::render(ix, entry, &this.open, toggle, own, &this.selection, cx)
+                let bars = this.bars.clone();
+                let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() };
+                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.
