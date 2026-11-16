@@ -466,6 +466,8 @@ test.if(mac)("a box its Mac removed from ~/.kuvo-code is set aside first, and pu
     put(join(w.K, "run", "link.json"), "{\"name\":\"Old\"}")
     put(join(w.K, "updates", "rollback", "old"), "old")
     put(join(w.K, "trash", "old-one"), "old trash")
+    // (The desktop app's own folder: never set aside, nor sent anywhere when the move goes back.)
+    put(join(w.K, "desktop", "boxes.json"), "{\"paired\":\"k\"}")
   }
   const back = world(gone)
   const before = { S: snapshot(back.S), K: snapshot(back.K) }
@@ -483,6 +485,9 @@ test.if(mac)("a box its Mac removed from ~/.kuvo-code is set aside first, and pu
   expect(readFileSync(join(w.K, "trash", aside, "trash", "old-one"), "utf8")).toBe("old trash")
   // (And the moved box's own trash beside it.)
   expect(existsSync(join(w.K, "trash", "t1", "f"))).toBe(true)
+  // The desktop app's own folder stays where it is, never taken for an earlier box's.
+  expect(readFileSync(join(w.K, "desktop", "boxes.json"), "utf8")).toContain("paired")
+  expect(existsSync(join(w.K, "trash", aside, "desktop"))).toBe(false)
 }, 60_000)
 
 /** A new Mac: Kuvo Code just installed, its engine downloaded into its folder and the few files the
@@ -508,6 +513,8 @@ test.if(mac)("a new Mac's box is made in its home of its own from the start, wit
     // A box its Mac removed there once, set aside.
     put(join(w.K, "run", "off"), "")
     put(join(w.K, "run", "link.json"), "{\"name\":\"Old\"}")
+    // And the desktop app's own folder, which stays where it is.
+    put(join(w.K, "desktop", "boxes.json"), "{\"paired\":\"k\"}")
   })
   const before = snapshot(w.S)
   const made = rehome(w, ["--new", "--release", w.release, "--keeps-awake", "off"])
@@ -521,6 +528,8 @@ test.if(mac)("a new Mac's box is made in its home of its own from the start, wit
   const [aside] = readdirSync(join(w.K, "trash")).filter(name => name.startsWith("earlier-box-"))
   expect(readFileSync(join(w.K, "trash", aside, "run", "link.json"), "utf8")).toContain("Old")
   expect(existsSync(join(w.K, "run"))).toBe(false)
+  expect(readFileSync(join(w.K, "desktop", "boxes.json"), "utf8")).toContain("paired")
+  expect(existsSync(join(w.K, "trash", aside, "desktop"))).toBe(false)
   expect(snapshot(w.S)).toEqual(before)
   // Made already: nothing more, and `here` takes it for this Mac's box before it has first run (no
   // card yet), never for none.
@@ -738,6 +747,8 @@ test.if(mac)("a move back brings the box back into the app's folder as it is now
   // Used in its home meanwhile.
   put(join(w.K, "data", "opencode", "since"), "a session made since")
   put(join(w.K, "attachments", "ses_3", "d.png"), "sent since")
+  // (And the desktop app's own folder, which never goes into the app's: below.)
+  put(join(w.K, "desktop", "boxes.json"), "{\"paired\":\"k\"}")
   // (Its keeper runs it, as it would: its own record is no refusal.)
   const keeper = Bun.spawn(["/bin/sh", "-c", "read line", "kuvo-start"], { stdin: "pipe" })
   put(join(w.K, "run", "box.pid"), String(keeper.pid))
@@ -769,8 +780,10 @@ test.if(mac)("a move back brings the box back into the app's folder as it is now
   expect(readFileSync(join(w.S, "opencode", "data", "opencode", "since"), "utf8")).toBe("a session made since")
   expect(readFileSync(join(w.S, "box", "attachments", "ses_3", "d.png"), "utf8")).toBe("sent since")
   expect(existsSync(join(w.S, "box", "box", "kind"))).toBe(false)
-  // ~/.kuvo-code holds no box any more (its files kept, for support), and the app uses its own.
-  expect(readdirSync(w.K)).toEqual(["updates"])
+  // ~/.kuvo-code holds no box any more (its files kept, for support), and the app uses its own; the
+  // desktop app's own folder stays there, never in the app's folder.
+  expect(readdirSync(w.K).sort()).toEqual(["desktop", "updates"])
+  expect(existsSync(join(w.S, "box", "desktop"))).toBe(false)
   expect(readdirSync(join(w.K, "updates"))).toEqual(["rehome"])
   expect(here(w)).toMatchObject({ use: "own", verdict: "free" })
   // It moves again only on Move Now: never by itself, undoing your Move Back.

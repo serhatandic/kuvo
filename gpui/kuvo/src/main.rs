@@ -8,7 +8,7 @@ use gpui::{App, AppContext as _, Bounds, Focusable, Menu, MenuItem, TitlebarOpti
 use kuvo::launch::{Launch, Opens};
 use kuvo::{Home, Quit, bind_keys};
 use kuvo_box::BoxClient;
-use kuvo_box::boxes::{Boxes, Options};
+use kuvo_box::boxes::Boxes;
 use kuvo_box::install::Installer;
 use kuvo_box::link::WebSocketDial;
 use kuvo_box::transport::Transport;
@@ -146,25 +146,15 @@ fn opens() -> Opens {
 fn your_boxes(root: &str, app_id: &str) -> Result<(Boxes, BoxClient), String> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let found = kuvo_box::place::this_mac_of(&home, root, app_id).ok_or_else(|| "Kuvo Code isn't set up on this Mac.".to_owned()).and_then(|found| kuvo_box::place::server(&found, "this Mac").map_err(|error| error.to_string()));
-    let folder = kuvo::keeper::folder_of(&home, root, app_id);
     #[cfg(target_os = "macos")]
     let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::Keychain::new(format!("{app_id}.desktop")));
     #[cfg(not(target_os = "macos"))]
-    let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::PrivateFile::new(folder.join("identity")));
+    let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::PrivateFile::new(kuvo::keeper::folder_of(&home, root).join("identity")));
     let (nearest, missing) = match found {
         Ok(server) => (Some(Arc::new(server) as Arc<dyn Transport>), None),
         Err(why) => (None, Some(why)),
     };
-    let boxes = Boxes::new(Options {
-        nearest,
-        keeper,
-        dial: Arc::new(WebSocketDial),
-        name: kuvo_box::boxes::device_name(),
-        // (The bundle's version where it was built into one: scripts/build-desktop-app.sh.)
-        app: option_env!("KUVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_owned(),
-        kept: Some(folder.join("boxes.json")),
-        timing: Default::default(),
-    });
+    let boxes = kuvo::keeper::boxes(&home, root, nearest, keeper, Arc::new(WebSocketDial));
     // The nearest box; with none here, the first of your computers the last run kept.
     let first = boxes.nearest().or_else(|| boxes.rows().iter().find(|row| row.usable()).and_then(|row| boxes.client(row.key())));
     first.map(|first| (boxes, first)).ok_or_else(|| missing.unwrap_or_else(|| "Kuvo Code isn't set up on this Mac.".to_owned()))

@@ -9,7 +9,9 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -315,6 +317,53 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   fs.rmSync(path.join(where.K, "box", "permissions-later.json"), { recursive: true });
   // Nothing here grants anything, whatever it's sent.
   assert.equal((await box.ask("kuvo/box/permissions", "PUT")).status, 405);
+  await box.stop();
+});
+
+test("kuvo/box/permissions: a permission switched on in System Settings is said as a client asks, the helper asked to look again first", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, async () => {
+  const where = home("mac");
+  const facts = path.join(where.run, "permissions.json");
+  const started = Math.floor(Date.now() / 1000 - process.uptime());
+  // The helper's host interface (a stand-in: this test's own process, as the note's writer): what
+  // macOS allows it now, noted as it's asked to look (`permissions`), as the helper does; it proves
+  // it's what wrote host.json first, as the box asks.
+  const password = "h".repeat(48);
+  let allowed = false;
+  let knows = true;
+  const asked = [];
+  const note = () => write(facts, JSON.stringify({ v: 1, pid: process.pid, started, screenRecording: allowed, accessibility: false }));
+  const host = http.createServer((request, response) => {
+    let body = "";
+    request.on("data", chunk => { body += chunk; });
+    request.on("end", () => {
+      asked.push(request.url);
+      const answer = (status, value) => { response.writeHead(status, { "content-type": "application/json", connection: "close" }); response.end(JSON.stringify(value)); };
+      if (request.url === "/hello") {
+        const { nonce } = JSON.parse(body);
+        return answer(200, { proof: crypto.createHmac("sha256", password).update(["kuvo-host-hello", nonce, `127.0.0.1:${host.address().port}`].join("\0")).digest("hex") });
+      }
+      if (request.headers.authorization !== `Bearer ${password}`) return answer(401, {});
+      if (request.url === "/permissions" && knows) { note(); return answer(200, {}); }
+      answer(404, {});
+    });
+  });
+  await new Promise(resolve => host.listen(0, "127.0.0.1", resolve));
+  atEnd(() => new Promise(resolve => host.close(resolve)));
+  write(path.join(where.run, "host.json"), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, password }), 0o600);
+  note();
+  const box = await served(where);
+  assert.equal((await box.ask("kuvo/box/permissions")).body.screenRecording, false);
+  // Switched on while the tile's up: said at the next ask, not at the helper's next look.
+  allowed = true;
+  assert.equal((await box.ask("kuvo/box/permissions")).body.screenRecording, true);
+  assert.ok(asked.includes("/permissions"));
+  // A helper from before it could be asked so: the note as it last wrote it.
+  knows = false;
+  allowed = false;
+  assert.equal((await box.ask("kuvo/box/permissions")).body.screenRecording, true);
+  // None answering at all: the same.
+  fs.rmSync(path.join(where.run, "host.json"));
+  assert.equal((await box.ask("kuvo/box/permissions")).body.screenRecording, true);
   await box.stop();
 });
 

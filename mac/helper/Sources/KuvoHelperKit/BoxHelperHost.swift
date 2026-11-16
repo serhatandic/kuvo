@@ -31,6 +31,8 @@ public final class BoxHelperHost {
     private lazy var server = LoopbackServer { [weak self] request in await self?.respond(to: request) ?? HTTPResponse(status: 503) }
     /// What opens the app (`open`; a test's stand-in).
     var opener = "/usr/bin/open"
+    /// What macOS allows the helper, asked afresh and noted for the box (`/permissions`).
+    var permissionsNow: (() async -> Void)?
 
     public init(home: URL, keychain: HostKeychain, prefix: String, app: String) {
         self.home = home
@@ -242,6 +244,11 @@ public final class BoxHelperHost {
         case "/app/open":
             guard let bundle = given["bundle"] as? String, bundle.hasPrefix("/") else { return HTTPResponse(status: 400) }
             return await openApp(URL(filePath: bundle))
+        case "/permissions":
+            // What macOS allows it, noted afresh in `run/permissions.json` before this answers, for
+            // the box to say as a client asks (the helper's own look is every minute).
+            await permissionsNow?()
+            return .json([:])
         case "/trash":
             guard let path = given["path"] as? String else { return HTTPResponse(status: 400) }
             toFinderTrash(path)

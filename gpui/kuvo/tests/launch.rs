@@ -246,8 +246,8 @@ fn a_move_the_box_refuses_is_said_in_its_words(cx: &mut TestAppContext) {
     assert_eq!(verbs(&bundle), ["status", "move"]);
     assert_eq!(line(&launch, cx), "Couldn’t move your sessions");
     assert_eq!(message(&launch, cx).as_deref(), Some(not_yet));
-    // Said plainly, as nothing of the earlier Kuvo Code runs meanwhile.
-    assert!(shown(cx, "launch-again") && shown(cx, "launch-note") && !opened(&launch, cx));
+    // Try Again, and no second line under it.
+    assert!(shown(cx, "launch-again") && !shown(cx, "launch-note") && !opened(&launch, cx));
     // Refused before any step: none is marked as where it stopped.
     assert_eq!(steps_drawn(cx), ["ahead", "ahead", "ahead", "ahead", "ahead"]);
 }
@@ -257,7 +257,7 @@ fn an_earlier_kuvo_code_s_sessions_are_moved_and_the_app_opens(cx: &mut TestAppC
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = carried(made.path());
     bundle.says("status", None, 0, &[&to_move()]);
-    let dropped = "New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.";
+    let dropped = "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.";
     let done = format!(r#"{{"result":"done","verdict":"ours","started":true,"status":{{"dropped":["{dropped}"],{STEPS}}}}}"#);
     bundle.says("move", None, 0, &[r#"{"step":"plan","title":"Checking this Mac","index":1,"of":5}"#, r#"{"step":"done","title":"Starting Kuvo on this Mac","index":5,"of":5}"#, &done]);
     let here = Here::default();
@@ -313,7 +313,7 @@ fn a_move_that_stops_says_where_and_why_in_the_box_s_words_and_tries_again_from_
     assert_eq!(message(&launch, cx).as_deref(), Some(why));
     // Where the box says it stopped, not the last step this window happened to hear of.
     assert_eq!(steps_drawn(cx), ["done", "done", "stopped", "ahead", "ahead"]);
-    assert!(shown(cx, "launch-message") && shown(cx, "launch-note") && shown(cx, "launch-again") && !opened(&launch, cx));
+    assert!(shown(cx, "launch-message") && !shown(cx, "launch-note") && shown(cx, "launch-again") && !opened(&launch, cx));
     // Try Again, from the same card: this time it moves.
     bundle.says("move", None, 0, &[r#"{"step":"plan","title":"Checking this Mac","index":1,"of":5}"#, DONE]);
     here.answers(&StandIn::at(Replies::Never, NOW));
@@ -540,7 +540,7 @@ fn an_installer_that_breaks_under_a_move_is_said_in_the_move_s_card(cx: &mut Tes
     bundle.says("move", None, 3, &["not an answer"]);
     let here = Here::default();
     let (launch, cx) = open(cx, installer, &here);
-    // The move's own card still: its steps, that nothing runs meanwhile, and Try Again.
+    // The move's own card still: its steps and Try Again.
     assert_eq!(line(&launch, cx), "Couldn’t move your sessions");
-    assert!(shown(cx, "launch-steps") && shown(cx, "launch-note") && shown(cx, "launch-again") && !opened(&launch, cx));
+    assert!(shown(cx, "launch-steps") && !shown(cx, "launch-note") && shown(cx, "launch-again") && !opened(&launch, cx));
 }

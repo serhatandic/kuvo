@@ -173,12 +173,12 @@ test.if(mac)("a Mac with no machines left gets an empty list of them, never none
   expect(readJSON(join(m.K, "machines.json"))).toEqual([])
 }, 120_000)
 
-test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, with a relay of your own; a Mac that ran everything without asking is told new sessions start with Auto", () => {
+test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, with a relay of your own; a Mac that ran everything without asking isn't told anything about it (new sessions start with Auto as everywhere)", () => {
   const m = mac07(root, m => preferences(m, { phoneLink: false, "phoneLink.relay": "wss://relay.example.test/" }))
   expect(run(m).said).toMatchObject({ result: "done" })
   expect(readJSON(join(m.K, "run", "mac-link.json"))).toMatchObject({ phones: false, relay: "wss://relay.example.test", app: "" })
   expect(existsSync(join(m.K, "box", "approval.json"))).toBe(false)
-  expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toEqual(["New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking."])
+  expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toEqual([])
 }, 120_000)
 
 test.if(mac)("0.8.0-beta.1's own: personalities you removed stay removed, and a letter already seen stays seen", () => {
