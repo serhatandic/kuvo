@@ -1037,8 +1037,12 @@ pub fn bot_face(look: &Look, size: Pixels) -> AnyElement {
 
 /// Quiet words in a sidebar's place: loading, nothing yet, or what's wrong.
 pub fn quiet(words: &str, busy: bool, cx: &App) -> AnyElement {
-    if busy { return div().into_any_element(); }
     let c = &cx.theme().colors;
+    if busy {
+        return div().w_full().h(px(28.)).px(space::S2).flex().items_center()
+            .child(div().w(px(96.)).h(px(6.)).rounded(px(3.)).bg(c.text_faint).opacity(0.2))
+            .into_any_element();
+    }
     div()
         .w_full()
         .flex()
@@ -1048,7 +1052,6 @@ pub fn quiet(words: &str, busy: bool, cx: &App) -> AnyElement {
         .pt(space::S3)
         .text_ui(TypeSize::Small)
         .text_color(c.text_muted)
-        .children(busy.then(|| div().pt(px(3.)).child(spinner("area-loading", IconSize::Nav, c.text_muted))))
         .child(div().flex_1().min_w_0().child(words.to_owned()))
         .into_any_element()
 }

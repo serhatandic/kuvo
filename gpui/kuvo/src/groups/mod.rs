@@ -530,7 +530,7 @@ impl GroupsView {
         ]);
         let offered = self.offered();
         let bots: AnyElement = match (&self.joinable, offered.is_empty()) {
-            (Reading::NotYet, true) => kuvo_ui::small::LoadingLabel::new("joinable-loading", "Loading the bots…").into_any_element(),
+            (Reading::NotYet, true) => kuvo_ui::small::LoadingLabel::new("joinable-loading", "Loading the bots…").compact().into_any_element(),
             (Reading::Failed(why), true) => div().debug_selector(|| "joinable-failed".into()).p(space::S5).text_ui(TypeSize::Small).text_color(c.warning).child(format!("The bots couldn’t be read: {why}")).into_any_element(),
             (_, true) => div().debug_selector(|| "joinable-none".into()).p(space::S5).text_ui(TypeSize::Small).text_color(c.text_muted).child("There are no bots here to bring together yet. Make one with the + beside Bots.").into_any_element(),
             (_, false) => {

@@ -225,12 +225,7 @@ impl BotsView {
             Control::Busy(words) => {
                 // Dependencies can arrive separately. The sessions note owns progress while
                 // present; otherwise only the first pending control says that we're reading.
-                let first = self.items.iter().find_map(|item| match item {
-                    Item::Row { row, .. } if matches!(&row.control, Control::Busy(words) if words.starts_with("Loading")) => Some(row.key.as_str()),
-                    _ => None,
-                });
-                let other_note = self.items.iter().any(|item| matches!(item, Item::Note { busy: true, .. }));
-                if words.starts_with("Loading") && (other_note || first != Some(key)) {
+                if words.starts_with("Loading") && self.loading_control.as_deref() != Some(key) {
                     div().h(px(24.)).into_any_element()
                 } else {
                     kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("{key}-busy")), words).compact().into_any_element()

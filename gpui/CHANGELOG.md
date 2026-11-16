@@ -2,6 +2,6 @@
 
 ## Unreleased
 
-- Center and delay desktop loading states, keep Work Queue headers steady, and prevent title-bar controls from zooming the window.
+- Loading now shows one quiet message in the middle of what's loading, only if it takes a moment; Work Queue headers no longer change height; double-clicking a title-bar button no longer zooms the window.
 
 - Desktop controls now use consistent Lucide icons throughout the app.

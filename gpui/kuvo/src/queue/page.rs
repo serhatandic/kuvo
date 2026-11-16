@@ -138,7 +138,6 @@ impl QueueView {
                 .gap(space::S2)
                 .text_ui(TypeSize::Small)
                 .text_color(c.text_muted)
-
                 .child(div().flex_1().min_w_0().child(words))
                 .into_any_element(),
             Row::Back(to) => div()

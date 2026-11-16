@@ -428,7 +428,8 @@ impl RenderOnce for LoadingLabel {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let started = *window.use_keyed_state((self.id.clone(), "started"), cx, |_, _| std::time::Instant::now()).read(cx);
         let color = cx.theme().colors.text_muted;
-        div().w_full().min_h(px(if self.compact { 24. } else { 160. })).flex().items_center().justify_center()
+        let selector = self.id.to_string();
+        div().debug_selector(move || selector).w_full().min_h(px(if self.compact { 24. } else { 160. })).flex().items_center().justify_center()
             .when(self.fill, |d| d.flex_1().h_full().min_h_0())
             .text_ui(TypeSize::Small).text_color(color).child(self.words)
             .with_animation(self.id, Animation::new(Duration::from_millis(1400)).repeat(), move |label, delta| {

@@ -797,7 +797,7 @@ fn quiet(text: &str, cx: &Context<SignIn>) -> AnyElement {
 }
 
 fn working(text: &str, _cx: &Context<SignIn>) -> AnyElement {
-    kuvo_ui::small::LoadingLabel::new("sign-in-loading", text.to_owned()).into_any_element()
+    kuvo_ui::small::LoadingLabel::new("sign-in-loading", text.to_owned()).compact().into_any_element()
 }
 
 fn footer(buttons: Vec<AnyElement>) -> AnyElement {

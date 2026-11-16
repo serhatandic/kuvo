@@ -951,7 +951,7 @@ impl Render for SettingsView {
                         .into_any_element()
                 }
             } else {
-                kuvo_ui::small::LoadingLabel::new("settings-folder-reading", "Reading this folder…").into_any_element()
+                kuvo_ui::small::LoadingLabel::new("settings-folder-reading", "Reading this folder…").compact().into_any_element()
             };
             let ready = picker.folder.is_some();
             let at = picker.at;
