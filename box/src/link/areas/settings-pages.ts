@@ -46,7 +46,8 @@ import { APP_FOLDER, IS_MAC, RUN } from "../home";
 import { HELPER_NAME, helperAtLogin } from "../helper";
 import { MAC_LINK_FILE } from "../mac/link";
 import { letDevicesConnect } from "../mac/routes";
-import { boxPermissions } from "../permissions";
+import { freshBoxPermissions } from "../permissions";
+import type { BoxPermissions } from "../../shared/routes/box";
 import { macLink } from "../state";
 import { agentsWorking, newerVersion, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
@@ -624,7 +625,8 @@ export const computerFacts = {
   /** Whether its engine runs now (its record names where it answers). */
   running: (context: RouteContext): boolean => { try { return Boolean(context.readEngine()?.port); } catch { return false; } },
   atLogin: helperAtLogin,
-  permissions: boxPermissions,
+  /** What macOS allows its helper, as it sees it now (`freshBoxPermissions`). */
+  permissions: (): BoxPermissions | Promise<BoxPermissions> => freshBoxPermissions(),
   update: updateStatus,
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
@@ -704,7 +706,7 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   const groups: SettingGroup[] = [{ id: "computer", rows }];
 
   // What macOS allows the program a Mac's own agents run under: only there.
-  const permissions = computerFacts.permissions();
+  const permissions = await computerFacts.permissions();
   if (permissions.applies) {
     const helper = permissions.name ?? HELPER_NAME;
     const allows: SettingRow[] = [];
