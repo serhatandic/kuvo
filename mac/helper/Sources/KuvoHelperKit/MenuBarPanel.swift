@@ -83,24 +83,46 @@ struct Palette {
 
 /// What the panel's buttons do.
 public struct MenuBarActions {
-    public var open: () -> Void
+    /// Opens the desktop app; at one of your computers, or a session there, where it's given.
+    public var open: (OpenAt?) -> Void
     public var stop: () -> Void
 
-    public init(open: @escaping () -> Void, stop: @escaping () -> Void) {
+    public init(open: @escaping (OpenAt?) -> Void, stop: @escaping () -> Void) {
         self.open = open
         self.stop = stop
     }
 }
 
-/// The item's panel (option A, picked 11-16): Kuvo on this Mac and where it is, what needs you,
-/// what's at work (with the bot it works for), each account's rings, Open Kuvo, and Stop.
+/// The item's panel (option A, picked 11-16; every computer, option B, #781): each of your
+/// computers, this Mac first, with whether it's reached, what needs you there, what's at work (with
+/// the bot it works for) and the rings of the accounts signed in there; a click opens the desktop
+/// app at that computer or session. Then Open Kuvo, and Stop, for this Mac alone.
 public struct MenuBarPanel: View {
     let look: MenuBarLook
     let actions: MenuBarActions
     @Environment(\.colorScheme) private var scheme
 
-    /// The most rows of each kind it lists: the rest are counted ("2 more").
-    static let most = 6
+    /// The most rows of each kind it lists for a computer: the rest are counted ("2 more"); fewer
+    /// for each where there are several.
+    static func most(of computers: Int) -> Int { computers > 1 ? 3 : 6 }
+
+    /// The tallest its computers get before they scroll.
+    static let tallest: CGFloat = 460
+
+    /// How tall the computers are drawn, from their rows' fixed heights.
+    static func height(of computers: [AtWork.Computer], most: Int) -> CGFloat {
+        computers.enumerated().reduce(0) { height, each in
+            let (index, computer) = each
+            let asking = computer.asking.prefix(most).count, sessions = computer.sessions.prefix(most).count
+            var rows = CGFloat(30 + 2) + CGFloat(asking + sessions) * 28 + (index > 0 ? 9 : 0)
+            if asking > 0, max(computer.waiting ?? 0, computer.asking.count) > asking { rows += 22 }
+            if sessions > 0, (computer.working ?? 0) > sessions { rows += 22 }
+            if asking + sessions == 0, computer.isHere || computer.reach != "away" { rows += 24 }
+            let accounts = min(computer.rings.count, 6)
+            if accounts > 0 { rows += CGFloat((accounts + 1) / 2) * 37 + 4 }
+            return height + rows
+        }
+    }
 
     public init(look: MenuBarLook, actions: MenuBarActions) {
         self.look = look
@@ -110,21 +132,30 @@ public struct MenuBarPanel: View {
     public var body: some View {
         let p = Palette(dark: scheme == .dark)
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Kuvo on this Mac").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
-                Spacer()
-                HStack(spacing: 5) {
-                    Circle().fill(look.stage == .stopping ? p.faint : (look.atWork == nil ? p.warning : p.success)).frame(width: 6, height: 6)
-                    Text(look.status).font(.system(size: 12)).foregroundStyle(p.muted)
+            if look.atWork == nil {
+                HStack {
+                    Text("Kuvo on this Mac").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
+                    Spacer()
+                    Status(word: look.status, color: look.stage == .stopping ? p.faint : p.warning, p: p)
                 }
-                .accessibilityElement(children: .combine)
+                .padding(.horizontal, 10).frame(height: 30)
+            } else {
+                let most = Self.most(of: look.computers.count)
+                let list = VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(look.computers.enumerated()), id: \.element.key) { index, computer in
+                        if index > 0 { Divider(p: p) }
+                        ComputerSection(computer: computer, look: look, most: most, p: p, open: actions.open)
+                    }
+                }
+                // (Scrolled only past its tallest: every row's height is fixed, so that's known ahead.)
+                if Self.height(of: look.computers, most: most) > Self.tallest {
+                    ScrollView { list }.frame(height: Self.tallest)
+                } else {
+                    list
+                }
             }
-            .padding(.horizontal, 10).frame(height: 30)
             Divider(p: p)
-            if let atWork = look.atWork {
-                content(atWork, p)
-            }
-            ActionRow(symbol: "macwindow", title: "Open Kuvo", shortcut: "⌘O", tint: p.text, p: p, action: actions.open)
+            ActionRow(symbol: "macwindow", title: "Open Kuvo", shortcut: "⌘O", tint: p.text, p: p) { actions.open(nil) }
                 .keyboardShortcut("o", modifiers: .command)
             ActionRow(symbol: "stop.circle", title: "Stop Kuvo on this Mac…", shortcut: nil, tint: p.text, p: p, action: actions.stop)
                 .disabled(!look.canStop)
@@ -134,52 +165,125 @@ public struct MenuBarPanel: View {
         .frame(width: 300)
         .background(p.card)
     }
+}
 
-    @ViewBuilder
-    private func content(_ atWork: AtWork, _ p: Palette) -> some View {
-        if !atWork.asking.isEmpty {
-            Heading(text: "Needs you", p: p)
-            ForEach(atWork.asking.prefix(Self.most), id: \.id) { asking in
-                Line(title: asking.title ?? "A session", detail: nil, p: p) { Circle().fill(p.warning).frame(width: 7, height: 7) }
+/// A dot and a word: how a computer stands.
+private struct Status: View {
+    let word: String?
+    let color: Color
+    let p: Palette
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            if let word { Text(word).font(.system(size: 12)).foregroundStyle(p.muted) }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// One of your computers: its name and how it stands (a click opens it in the desktop app), what
+/// needs you there, what's at work, and its accounts' rings.
+private struct ComputerSection: View {
+    let computer: AtWork.Computer
+    let look: MenuBarLook
+    let most: Int
+    let p: Palette
+    let open: (OpenAt?) -> Void
+
+    /// Where the desktop app opens it: this Mac's by no key (the app's nearest), another's by its.
+    private func at(_ session: String? = nil) -> OpenAt { OpenAt(computer: computer.isHere ? nil : computer.key, session: session) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Hovered(p: p, action: { open(at()) }) {
+                HStack(spacing: 7) {
+                    Image(systemName: computer.kind == "mac" ? "laptopcomputer" : "server.rack").font(.system(size: 11, weight: .regular)).foregroundStyle(p.icon).frame(width: 14)
+                    Text(computer.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text).lineLimit(1).truncationMode(.middle)
+                    if computer.isHere { Text("This Mac").font(.system(size: 12)).foregroundStyle(p.faint).lineLimit(1).fixedSize() }
+                    Spacer(minLength: 8)
+                    standing
+                }
+                .padding(.horizontal, 10).frame(height: 30)
+            }
+            .accessibilityLabel(spokenName)
+            .accessibilityHint("Opens it in Kuvo")
+            if !computer.asking.isEmpty {
+                ForEach(computer.asking.prefix(most), id: \.id) { asking in
+                    Hovered(p: p, action: { open(at(asking.id)) }) {
+                        Line(title: asking.title ?? "A session", detail: nil, p: p) { Circle().fill(p.warning).frame(width: 7, height: 7) }
+                    }
                     .accessibilityLabel("\(asking.title ?? "A session"), \(asking.asks ?? "waits on you")")
                     .help(asking.asks ?? "")
+                }
+                More(count: max(computer.waiting ?? 0, computer.asking.count) - min(computer.asking.count, most), p: p)
             }
-            More(count: max(atWork.waiting.sessions, atWork.asking.count) - min(atWork.asking.count, Self.most), p: p)
-        }
-        if !atWork.sessions.isEmpty {
-            Heading(text: "At work", p: p)
-            ForEach(atWork.sessions.prefix(Self.most), id: \.id) { session in
-                Line(title: session.title ?? "A session", detail: session.bot, p: p) { Spinner(p: p) }
+            if !computer.sessions.isEmpty {
+                ForEach(computer.sessions.prefix(most), id: \.id) { session in
+                    Hovered(p: p, action: { open(at(session.id)) }) {
+                        Line(title: session.title ?? "A session", detail: session.bot, p: p) { Spinner(p: p) }
+                    }
+                    .accessibilityLabel([session.title ?? "A session", "at work", session.bot.map { "for \($0)" }].compactMap { $0 }.joined(separator: ", "))
+                }
+                More(count: (computer.working ?? 0) - min(computer.sessions.count, most), p: p)
             }
-            More(count: atWork.working - min(atWork.sessions.count, Self.most), p: p)
+            // (Away says so beside its name: nothing more under it.)
+            if computer.asking.isEmpty, computer.sessions.isEmpty, computer.isHere || computer.reach != "away" {
+                Text(quiet).font(.system(size: 12)).foregroundStyle(p.faint)
+                    .padding(.leading, 33).padding(.trailing, 10).frame(height: 24, alignment: .leading)
+            }
+            if !computer.rings.isEmpty {
+                Accounts(accounts: computer.rings, p: p)
+            }
         }
-        if atWork.asking.isEmpty, atWork.sessions.isEmpty {
-            Text(atWork.background > 0 ? "Work is running in the background" : "Nothing at work")
-                .font(.system(size: 12)).foregroundStyle(p.faint)
-                .padding(.horizontal, 10).frame(height: 28)
+        .padding(.bottom, 2)
+    }
+
+    /// How it stands: this Mac's Kuvo running; another reached (a dot alone), being reached, or away.
+    @ViewBuilder private var standing: some View {
+        if computer.isHere {
+            Status(word: look.status, color: look.stage == .stopping ? p.faint : p.success, p: p)
+        } else {
+            switch computer.reach {
+            case "connected": Status(word: nil, color: p.success, p: p)
+            case "connecting": Status(word: "Connecting…", color: p.warning, p: p)
+            default: Status(word: "Away", color: p.faint, p: p)
+            }
         }
-        if !atWork.rings.isEmpty {
-            Divider(p: p)
-            Accounts(accounts: atWork.rings, p: p)
+    }
+
+    private var spokenName: String {
+        let standing = computer.isHere ? "this Mac, \(look.status)" : computer.reach == "connected" ? "connected" : computer.reach == "connecting" ? "connecting" : "away"
+        return "\(computer.name), \(standing)"
+    }
+
+    /// What's said where nothing is listed.
+    private var quiet: String {
+        if computer.working == nil { return computer.reach == "connecting" ? "Reaching it…" : "Update Kuvo there to see its work" }
+        if computer.isHere, (look.atWork?.background ?? 0) > 0 { return "Work is running in the background" }
+        return "Nothing at work"
+    }
+}
+
+/// A row that opens something: highlighted under the pointer, as the panel's actions are.
+private struct Hovered<Content: View>: View {
+    let p: Palette
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var hovered = false
+    var body: some View {
+        Button(action: action) {
+            content()
+                .contentShape(Rectangle())
+                .background(RoundedRectangle(cornerRadius: 6).fill(hovered ? p.hover : .clear))
         }
-        Divider(p: p)
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
     }
 }
 
 private struct Divider: View {
     let p: Palette
     var body: some View { Rectangle().fill(p.border).frame(height: 1).padding(.horizontal, 10).padding(.vertical, 4) }
-}
-
-private struct Heading: View {
-    let text: String
-    let p: Palette
-    var body: some View {
-        Text(text).font(.system(size: 11, weight: .medium)).foregroundStyle(p.faint)
-            .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityAddTraits(.isHeader)
-    }
 }
 
 private struct More: View {

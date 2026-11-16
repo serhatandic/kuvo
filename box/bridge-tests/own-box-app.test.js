@@ -128,7 +128,7 @@ const said = result => result.content.map(part => part.text).join("");
 test("the app registers with its place; a browser call goes to its tools as it came, with whose it is", async () => {
   const registered = await route("POST", "kuvo/box/app", { tools, bundle: BUNDLE });
   assert.equal(registered.status, 200, JSON.stringify(registered.body));
-  assert.deepEqual(registered.body, { bundle: BUNDLE, open: true, updating: false, opening: false, failed: null });
+  assert.deepEqual(registered.body, { bundle: BUNDLE, desktop: null, open: true, updating: false, opening: false, failed: null });
   assert.equal(fs.statSync(path.join(run, "app.json")).mode & 0o777, 0o600);
   const server = toolServer();
   const result = await server.call("browser_navigate", { url: "https://example.com" }, "ses_work");
@@ -141,6 +141,12 @@ test("the app registers with its place; a browser call goes to its tools as it c
   // Its place is a whole path to the app, and its tools answer on this Mac only.
   assert.equal((await route("POST", "kuvo/box/app", { tools, bundle: "Kuvo Code.app" })).status, 400);
   assert.equal((await route("POST", "kuvo/box/app", { tools: { url: "http://example.com/mcp", token: TOKEN } })).status, 400);
+});
+
+test("where Kuvo's desktop app is isn't taken from `box route`, which anything on the Mac can run", async () => {
+  const said = await route("POST", "kuvo/box/app", { desktop: "/Applications/Kuvo.app" });
+  assert.equal(said.status, 403);
+  assert.equal((await route("GET", "kuvo/box/app")).body.desktop, null);
 });
 
 test("with the app closed, browser calls from two of the box's tool servers open it once, where it registered, and each goes on", async () => {

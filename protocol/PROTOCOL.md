@@ -471,8 +471,10 @@ connection.
   `shared: true` (it's a machine set up by Macs that aren't all in one setup), by which the receiver counts it as one of
   your own computers, for resets, Always Allow and usage totals, only within one setup (#701; "Plan
   limits", "Across your computers", Whose), and `computer` (`{version?, engine?, system?,
-  working, atWork?, oldApp?, addresses?}`: Kuvo Code's version there, its engine's, its system as people know
-  it, how many of its sessions are at work and which, and, on a Mac's box, that the old app is
+  working, atWork?, waiting?, asking?, oldApp?, addresses?}`: Kuvo Code's version there, its engine's, its system as people know
+  it, how many of its sessions are at work and which, how many wait on you and which (`asking`, ten
+  at most, `{id, title?, asks?}`, `asks` what it asks in its box's words; since #781, for the menu
+  bar of your other computers, "In the menu bar"), and, on a Mac's box, that the old app is
   attached to it, for `kuvo/computers`, "Computers"; and, on a machine, where else its Macs may
   reach it over SSH (`addresses`: its tailnet's IPv4 addresses first, its host name, its other
   networks' IPv4 addresses, never a loopback or link-local one, nor a container's or VM's bridge; eight at most, each a host name or
@@ -8192,8 +8194,15 @@ app's panel through it, with no Chromium of its own. A machine's box answers `40
   Sparkle does. `bundle` left out keeps the one before. `GET` and each `POST` answer `{bundle, open,
   updating, opening, failed}`: where it's installed (null before it ever said), whether its tools
   answer now, whether an update installs (said in the last two minutes), whether an opening is under
-  way, and the last opening that failed, within its rest (`{at, message}`, `at` in ms). Kept in
-  `run/app.json` (`{bundle, tools, host, at}`, `0600`).
+  way, and the last opening that failed, within its rest (`{at, message}`, `at` in ms), and `desktop`
+  (below). Kept in `run/app.json` (`{bundle, desktop, tools, host, at}`, `0600`).
+- **Kuvo's desktop app** (#781): `POST kuvo/box/app` `{desktop}`, only from the app itself over
+  this box's server (`x-kuvo-from: app`; `403` otherwise, `box route` too, which anything on the
+  Mac can run), a whole path to its `.app`: the desktop app says where it is as it opens, once its
+  nearest box says `applies` ("In the menu bar"), so Kuvo Helper's **Open Kuvo** opens that very
+  copy, never an older one with the same bundle ID. Kept apart from `bundle`: the desktop app has no
+  browser for agents yet, so it's never what a browser call opens. Answered as above, with
+  `desktop` (null before it ever said; left out by a box from before).
 - **The app's own host** (`box.app.host`, #333 piece 6b). The box's host is its helper, which holds
   its keys but can't answer what only the open app can: a phone's ask of the Mac's own routes
   (`link/route`, "This Mac's box: the relay") and what the panel's browser is signed in to
@@ -8584,7 +8593,7 @@ work: its sessions, bots and wake-ups go on under Kuvo Helper. So Kuvo Helper, t
 runs, draws Kuvo in the menu bar for as long as it runs the box (the item goes with it), from the
 box's facts alone:
 
-- `GET kuvo/box/at-work` → `{applies, working, sessions, asking, waiting, background, busy, rings}`,
+- `GET kuvo/box/at-work` → `{applies, working, sessions, asking, waiting, background, busy, rings, computers}`,
   and `GET kuvo/box/at-work/events`, a line now and one as it changes (its sessions starting,
   stopping and asking, its bots, the work left running), the rings read again every 15 s.
   - `applies`: whether this box is shown in its computer's menu bar (a Mac's own box in a home of
@@ -8601,6 +8610,17 @@ box's facts alone:
   - `rings`: each account's rings, in the box's order (the plan limits' `rows`), `{service, title,
     short?: {used, level}, long?: {used, level}}`, as "Plan limits" says them; none while the
     coding agents' bridge doesn't run.
+  - `computers` (#781; left out by a box from before): every one of your computers, this one first
+    (`here: true`), then each of its peers that's one of your own computers by name (never a
+    machine Macs of different setups share, another setup's box, or one known by a peer's word
+    alone; a shared machine lists itself alone): `{key, name, kind, here?, reach, working?,
+    sessions, waiting?, asking, rings}`. `reach` as `kuvo/computers` says it (`connected`,
+    `connecting`, `away`). This one's as above (`waiting`, its sessions waiting on you); another's as
+    it last told this box with its agents ("Peers", `computer`'s `working`, `atWork`, `waiting`,
+    `asking`), nothing while it's away (what it said is old), and `working` and `waiting` left out
+    where it never said (an older box). `rings`: the accounts signed in there, as the plan limits'
+    rows say which computers each is on (its `boxes`). The events line comes again as a peer's word
+    or reach changes too.
 - `POST kuvo/box/stop` → `202 {stopping: true}`: **Stop Kuvo on this Mac**, until it next starts.
   Only over the box's own server with its password (the helper, or the app on this Mac): a phone
   or another computer gets `403`, since nothing there could start it again. Only where `applies`
@@ -8615,9 +8635,17 @@ box's facts alone:
   most, while launchd still has the stopped helper running: a kickstart then would be lost as it
   exits). A machine's box refuses `pause` (exit 3).
 - **Kuvo Helper's item**: Kuvo's mark (the app icon's artwork in one colour, a template), the count
-  of sessions at work beside it, and a dot while anything waits on you (any of `waiting`'s counts). Its panel: Kuvo on this Mac and whether it's starting, running or
-  stopping; what needs you; what's at work, with the bot each works for; each account's rings;
-  **Open Kuvo** (the desktop app, opened or brought forward); **Stop Kuvo on this Mac…**, which asks
+  of sessions at work on all your computers beside it, and a dot while anything waits on you (any of
+  `waiting`'s counts, or a session waiting on another of your computers). Its panel: each of your
+  computers (`computers`; this Mac alone from a box from before), this Mac first with whether its
+  Kuvo is starting, running or stopping, the others with whether they're reached; for each, what
+  needs you, what's at work (with the bot each works for), and the rings of the accounts signed in
+  there. A click on a computer or a session opens the desktop app there, by the link
+  `kuvo-code://open?computer=<key>&session=<id>` (each where there's one; no `computer` for this
+  Mac's own box), which the desktop app takes (its `CFBundleURLTypes`) as a notification clicked.
+  **Open Kuvo** (the desktop app, opened or brought forward): the copy that last said where it is
+  (`kuvo/box/app`'s `desktop`), where it's still there and signed as Kuvo; else the newest copy
+  with Kuvo's bundle ID (by `CFBundleVersion`, as Sparkle orders them). **Stop Kuvo on this Mac…**, which asks
   first while `busy` or while the desktop app is open, which it quits too once the stop is taken
   (its window would have nothing to reach). A stop that hasn't ended the helper 30 seconds on is
   said not to have taken. Quit as AppKit has it (Activity Monitor, logging out) goes as SIGTERM

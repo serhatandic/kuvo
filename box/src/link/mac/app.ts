@@ -9,9 +9,11 @@
 // it), at the box's ask (`app/open` on the host interface).
 //
 // What it keeps, in `run` (each only you can read):
-// - `app.json`: `{bundle, tools: {url, token} | null, host: {url, password} | null, at}`, the app as
-//   it last registered (`host`: where its own host interface answers what only it can, for a phone's
-//   ask of the Mac's own routes and the panel's sign-ins, `openAppHost`);
+// - `app.json`: `{bundle, desktop, tools: {url, token} | null, host: {url, password} | null, at}`, the
+//   app as it last registered (`host`: where its own host interface answers what only it can, for a
+//   phone's ask of the Mac's own routes and the panel's sign-ins, `openAppHost`; `desktop`: where Kuvo's
+//   desktop app is that last opened with this box, which Kuvo Helper's Open Kuvo opens, #781: never
+//   the app opened for the browser, which the desktop app has none of yet);
 // - `app-opening.json`: `{at, by}`, an opening under way, and which process asked for it;
 // - `app-open-failed.json`: `{at, message}`, the last opening that failed;
 // - `app-updating`: noted as the app quits to install an update (by its time).
@@ -55,6 +57,7 @@ const NO_OPENER = "nothing that opens it is running on this Mac";
 /** The app as it last registered: where it's installed, and while it's open, where its tools answer. */
 export interface AppRecord {
   bundle: string | null;
+  desktop: string | null;
   tools: { url: string; token: string } | null;
   host: { url: string; password: string } | null;
   at: number;
@@ -95,7 +98,7 @@ function hostOf(given: unknown): AppRecord["host"] {
 export function readApp(): AppRecord | null {
   const said = readJSON(APP_FILE());
   if (!isObject(said)) return null;
-  return { bundle: bundleOf(said.bundle), tools: toolsOf(said.tools), host: hostOf(said.host), at: typeof said.at === "number" ? said.at : 0 };
+  return { bundle: bundleOf(said.bundle), desktop: bundleOf(said.desktop), tools: toolsOf(said.tools), host: hostOf(said.host), at: typeof said.at === "number" ? said.at : 0 };
 }
 
 /** Whether the app has said where its tools answer (and hasn't said it quit). */
@@ -125,12 +128,21 @@ export function updating(now = Date.now()): boolean {
 export function registerApp(given: { tools: AppRecord["tools"]; bundle?: string | null; host?: AppRecord["host"] }, now = Date.now()): AppRecord {
   const before = readApp();
   const host = given.tools === null ? null : given.host ?? null;
-  const record: AppRecord = { bundle: given.bundle ?? before?.bundle ?? null, tools: given.tools, host, at: now };
+  const record: AppRecord = { bundle: given.bundle ?? before?.bundle ?? null, desktop: before?.desktop ?? null, tools: given.tools, host, at: now };
   writePrivate(APP_FILE(), JSON.stringify(record));
   if (record.tools) {
     fs.rmSync(FAILED_FILE(), { force: true });
     fs.rmSync(UPDATING_FILE(), { force: true });
   }
+  return record;
+}
+
+/** Kuvo's desktop app opened with this box, from `desktop` (its whole path): kept as where Open Kuvo
+ * opens it, whatever else the record says left as it is. */
+export function registerDesktop(desktop: string, now = Date.now()): AppRecord {
+  const before = readApp();
+  const record: AppRecord = { bundle: before?.bundle ?? null, desktop, tools: before?.tools ?? null, host: before?.host ?? null, at: before?.at ?? now };
+  writePrivate(APP_FILE(), JSON.stringify(record));
   return record;
 }
 
@@ -158,6 +170,7 @@ export function appStatus(now = Date.now()) {
   const opening = readOpening();
   return {
     bundle: app?.bundle ?? null,
+    desktop: app?.desktop ?? null,
     open: app?.tools != null,
     updating: updating(now),
     opening: opening !== null && !stale(opening, now),
@@ -298,7 +311,7 @@ const ONLY_MAC = "Only Kuvo on a Mac in its own folder has its app register with
 
 /** `kuvo/box/app`: how this Mac's app stands (`GET`, for any client), and its registration (`POST`, from Kuvo Code
  * itself): `{tools: {url, token}, bundle, host?}` as it opens, `{tools: null}` as it quits, `{updating:
- * true}` as it quits to install an update. `host` (`{url, password}`, `box.app.host`), where the
+ * true}` as it quits to install an update; `{desktop}`, Kuvo's desktop app as it opens. `host` (`{url, password}`, `box.app.host`), where the
  * app's own host interface answers what only it can, only from the app itself (`fromApp`, over this
  * box's server): never from `box route`, which anything you run could use to have your phones' asks
  * sent elsewhere. */
@@ -312,6 +325,16 @@ export async function* appRoute({ request, json }: RouteContext): AsyncGenerator
   if (!isObject(given)) return yield* json(400, { message: "Say where its tools answer (tools), or that it quits (tools: null)." });
   if (given.updating === true) {
     noteUpdating();
+    return yield* json(200, appStatus());
+  }
+  // Kuvo's desktop app, saying where it is as it opens (`{desktop}` alone).
+  // (Only from the app itself, over this box's server: never `box route`, which anything you run
+  // could use to have Open Kuvo open another copy.)
+  if ("desktop" in given && !("tools" in given)) {
+    if (!request.fromApp) return yield* json(403, { message: "Only Kuvo itself says where its desktop app is." });
+    const desktop = bundleOf(given.desktop);
+    if (!desktop) return yield* json(400, { message: "Say where the desktop app is: a whole path to it (…/Kuvo.app)." });
+    registerDesktop(desktop);
     return yield* json(200, appStatus());
   }
   if (!("tools" in given)) return yield* json(400, { message: "Say where its tools answer (tools), or that it quits (tools: null)." });

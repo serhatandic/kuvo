@@ -7,8 +7,9 @@ nonisolated private let log = Logger(subsystem: "run.kuvo.code", category: "menu
 
 /// Kuvo in the menu bar (PROTOCOL.md, "In the menu bar"), drawn by Kuvo Helper for as long as it
 /// runs Kuvo on this Mac: it's the part that always runs, so the item is there whenever Kuvo is,
-/// with the app open or not, and goes with it. What it shows is the box's (`AtWorkFeed`); it offers
-/// Open Kuvo (the desktop app, opened or brought forward) and Stop Kuvo on this Mac (asked first
+/// with the app open or not, and goes with it. What it shows is the box's (`AtWorkFeed`): every one
+/// of your computers, as this Mac's Kuvo hears of them; it offers Open Kuvo (the desktop app, opened
+/// or brought forward, at one of your computers or a session there) and Stop Kuvo on this Mac (asked first
 /// while the box says something would stop), which the box does (`kuvo/box/stop`): the helper goes
 /// once its keeper has, the item with it.
 @MainActor
@@ -62,7 +63,7 @@ public final class MenuBarItem: NSObject {
     }
 
     private func panelDrawn() {
-        let panel = MenuBarPanel(look: look, actions: MenuBarActions(open: { [weak self] in self?.openKuvo() }, stop: { [weak self] in self?.stopKuvo() }))
+        let panel = MenuBarPanel(look: look, actions: MenuBarActions(open: { [weak self] at in self?.openKuvo(at) }, stop: { [weak self] in self?.stopKuvo() }))
         if let hosting = popover.contentViewController as? NSHostingController<MenuBarPanel> {
             hosting.rootView = panel
         } else {
@@ -81,19 +82,31 @@ public final class MenuBarItem: NSObject {
         popover.contentViewController?.view.window?.makeKey()
     }
 
-    /// Open Kuvo: the desktop app, opened where it's closed, brought forward where it's open.
-    func openKuvo() {
+    /// Open Kuvo: the desktop app, opened where it's closed, brought forward where it's open; at
+    /// `at` (one of your computers, a session there) where it's given. The very copy that opened with
+    /// this Mac's Kuvo last, as it told the box, else the newest copy installed (`DesktopApp`).
+    func openKuvo(_ at: OpenAt? = nil) {
         popover.performClose(nil)
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app) else {
-            return say("Kuvo isn’t installed on this Mac", "Install Kuvo again to open it. What’s at work here goes on meanwhile.")
-        }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
-            guard let error else { return }
-            log.error("Kuvo didn't open: \(error.localizedDescription, privacy: .public)")
-            let why = error.localizedDescription
-            Task { @MainActor [weak self] in self?.say("Kuvo didn’t open", why) }
+        Task {
+            let registered = await feed.registeredDesktop()
+            let app = self.app
+            let copies = NSWorkspace.shared.urlsForApplications(withBundleIdentifier: app)
+            guard let url = DesktopApp.pick(registered: registered, copies: copies, app: app, trusted: { BoxHelperBundle.isKuvoCode($0, identifier: app) }) else {
+                return say("Kuvo isn’t installed on this Mac", "Install Kuvo again to open it. What’s at work here goes on meanwhile.")
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            let opened: @Sendable (Error?) -> Void = { error in
+                guard let error else { return }
+                log.error("Kuvo didn't open: \(error.localizedDescription, privacy: .public)")
+                let why = error.localizedDescription
+                Task { @MainActor [weak self] in self?.say("Kuvo didn’t open", why) }
+            }
+            if let at {
+                NSWorkspace.shared.open([at.url], withApplicationAt: url, configuration: configuration) { _, error in opened(error) }
+            } else {
+                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in opened(error) }
+            }
         }
     }
 

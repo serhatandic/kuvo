@@ -74,6 +74,11 @@ pub struct Home {
     restoring: Option<String>,
     window_handle: gpui::AnyWindowHandle,
     _restoring: Option<Task<()>>,
+    /// A link to another computer (`kuvo-code://open`) that came before this app reaches it (as the
+    /// app opens for it, or while it's being reached): shown once it is, waited for at most
+    /// `RESTORE_WAITS_AT_MOST`, as the computer shown last time is.
+    opening: Option<Open>,
+    _opening: Option<Task<()>>,
 }
 
 /// How long the window waits for your computers' list before it opens on the nearest instead
@@ -82,6 +87,15 @@ const RESTORE_WAITS_AT_MOST: Duration = Duration::from_secs(3);
 
 /// How often this computer's box is asked again whether it's in the menu bar, while it hasn't said.
 const MENU_BAR_ASKED_EVERY: Duration = Duration::from_secs(30);
+
+/// The app bundle `executable` runs from (`<bundle>.app/Contents/MacOS/<executable>`); none for a
+/// program in no bundle (`cargo run`).
+fn own_bundle(executable: &std::path::Path) -> Option<std::path::PathBuf> {
+    let contents = executable.parent().filter(|folder| folder.file_name().is_some_and(|name| name == "MacOS"))?.parent()?;
+    let bundle = contents.parent()?;
+    (contents.file_name()? == "Contents" && bundle.extension()? == "app" && bundle.is_absolute()).then(|| bundle.to_owned())
+}
+
 /// How often this Mac's box is asked again whether this app brings it up, while it can't be reached.
 const OWN_UPDATE_ASKED_EVERY: Duration = Duration::from_secs(30);
 
@@ -110,7 +124,7 @@ impl Home {
                 let _ = home.update(cx, |home, cx| home.notifier.update(cx, |notifier, cx| notifier.clicked(&response.tag, cx)));
             });
         }
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None, opening: None, _opening: None };
         home.make(&shown, first, window, cx);
         // The computer shown last time, where it isn't this one: once the list says it's reached.
         home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown);
@@ -125,6 +139,20 @@ impl Home {
             }));
         }
         home.ask_menu_bar(cx);
+        // Links opened in the app (`kuvo-code://open`: the menu bar's Kuvo Helper opens its
+        // computers and their sessions so), shown as a notification clicked would show them,
+        // those from before the window was there first.
+        if live {
+            let opened = crate::notifications::opened::receiver();
+            cx.spawn_in(window, async move |this, cx| {
+                while let Ok(open) = opened.recv().await {
+                    if this.update_in(cx, |home, window, cx| home.open_notice(&open, window, cx)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         // Closing the window quits the app (it has only the one): the first time, the note first.
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| this.update(cx, |home, cx| !home.notes_quit(window, cx)).unwrap_or(true));
@@ -160,6 +188,15 @@ impl Home {
                 let client = nearest.clone();
                 if let Ok(said) = cx.background_executor().spawn(async move { client.at_work() }).await {
                     this.update(cx, |this, _| this.in_menu_bar = Some(said.applies)).ok();
+                    // Kuvo on this Mac is in the menu bar: it's told where this app is, so its Open
+                    // Kuvo opens this very app (an older copy with the same ID never). What it
+                    // answers is no matter: an older box doesn't take it.
+                    if said.applies
+                        && let Some(bundle) = std::env::current_exe().ok().and_then(|executable| own_bundle(&executable))
+                    {
+                        let client = nearest.clone();
+                        cx.background_executor().spawn(async move { client.register_desktop(&bundle.to_string_lossy()) }).await.ok();
+                    }
                     return;
                 }
                 cx.background_executor().timer(MENU_BAR_ASKED_EVERY).await;
@@ -224,6 +261,24 @@ impl Home {
 
     /// A notification clicked: the window comes forward on its computer, at its session.
     fn open_notice(&mut self, open: &Open, window: &mut Window, cx: &mut Context<Self>) {
+        // Another computer this app doesn't reach yet (it opened for this link, or that computer is
+        // being reached): waited for, a little, rather than lost.
+        if self.slot(&open.computer) != NEAREST && self.boxes.client(&open.computer).is_none() {
+            cx.activate(true);
+            window.activate_window();
+            self.opening = Some(open.clone());
+            self._opening = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(RESTORE_WAITS_AT_MOST).await;
+                this.update(cx, |this, cx| {
+                    this.opening = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+            return;
+        }
+        self.opening = None;
+        self._opening = None;
         // (It wins over where the window was last time.)
         self.restoring = None;
         cx.activate(true);
@@ -593,6 +648,16 @@ impl Home {
                 self.restoring = None;
                 self._restoring = None;
             }
+        }
+        // A link waiting for its computer: shown once this app reaches it.
+        if self.opening.as_ref().is_some_and(|open| self.boxes.client(&open.computer).is_some())
+            && let Some(open) = self.opening.take()
+        {
+            self._opening = None;
+            let (this, handle) = (cx.entity().downgrade(), self.window_handle);
+            App::defer(cx, move |cx| {
+                handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.open_notice(&open, window, cx))).ok();
+            });
         }
         let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
         let nearest = self.boxes.nearest_key();

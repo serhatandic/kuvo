@@ -18,6 +18,21 @@ import Testing
 
     static var said: AtWork { AtWork.read(Data(answer.utf8))! }
 
+    /// As a box with two other computers answers (box/bridge-tests/at-work-computers.test.js holds
+    /// the box to it): this Mac, a machine at work with a session waiting on you, and a Mac away.
+    static let everywhere = """
+    {"applies":true,"working":1,"sessions":[{"id":"ses_1","title":"Fix sign-up form validation","bot":"Mira"}],"asking":[],"waiting":{"sessions":0,"bots":0,"queue":0},"background":0,"busy":true,
+     "rings":[{"service":"claude","title":"Claude","short":{"used":0.62,"level":"calm"}},{"service":"codex","title":"Codex","short":{"used":0.91,"level":"near"},"long":{"used":0.4,"level":"calm"}}],
+     "computers":[
+      {"key":"","name":"MacBook Pro","kind":"mac","here":true,"reach":"connected","working":1,"sessions":[{"id":"ses_1","title":"Fix sign-up form validation","bot":"Mira"}],"waiting":0,"asking":[],
+       "rings":[{"service":"claude","title":"Claude","short":{"used":0.62,"level":"calm"}}]},
+      {"key":"KEYminiKEYminiKEYminiKEYminiKEYminiKEYmini0","name":"mini-local","kind":"mac","reach":"connected","working":2,"sessions":[{"id":"ses_a","title":"Ship the release"},{"id":"ses_b","title":"Nightly dependency bump"}],
+       "waiting":1,"asking":[{"id":"ses_q","title":"Deploy preview to staging","asks":"asks to run a command"}],
+       "rings":[{"service":"claude","title":"Claude","short":{"used":0.62,"level":"calm"}},{"service":"codex","title":"Codex","short":{"used":0.91,"level":"near"},"long":{"used":0.4,"level":"calm"}}]},
+      {"key":"KEYdevboxKEYdevboxKEYdevboxKEYdevboxKEYdevb","name":"devbox","kind":"machine","reach":"away","sessions":[],"asking":[],"rings":[]}
+     ]}
+    """
+
     static let quiet = AtWork(applies: true, working: 0, sessions: [], asking: [], waiting: .init(sessions: 0, bots: 0, queue: 0), background: 0, busy: false, rings: [])
 
     @Test func theItemShowsHowManySessionsWorkAndWhetherSomethingWaitsOnYou() {
@@ -32,6 +47,65 @@ import Testing
         // Before the box answers, nothing is claimed.
         #expect(MenuBarLook(.starting).count == nil)
         #expect(MenuBarLook(.starting).spoken == "Kuvo, starting")
+    }
+
+    /// Every one of your computers (#781): the item counts what's at work on all of them, and its
+    /// dot is for a session waiting on any of them; the panel lists each, this Mac first.
+    @Test func theItemAndPanelShowEveryComputer() throws {
+        let said = try #require(AtWork.read(Data(Self.everywhere.utf8)))
+        let look = MenuBarLook(.running(said))
+        #expect(look.computers.map(\.name) == ["MacBook Pro", "mini-local", "devbox"])
+        #expect(look.computers.map(\.isHere) == [true, false, false])
+        #expect(look.count == 3, "one here, two on mini-local")
+        #expect(look.needsYou, "a session on mini-local waits on you")
+        #expect(look.spoken == "Kuvo, 3 sessions at work, 1 waiting on you")
+        // Each computer's own rings: mini-local's Codex isn't this Mac's.
+        #expect(look.computers[0].rings.map(\.service) == ["claude"])
+        #expect(look.computers[1].rings.map(\.service) == ["claude", "codex"])
+        // Away: nothing said of it now.
+        #expect(look.computers[2].reach == "away" && look.computers[2].working == nil)
+        // Stop is this Mac's alone: it asks of this Mac's one session, not the others'.
+        #expect(look.stopQuestion(appOpen: false).detail == "A session is at work. Kuvo stops now, and starts again when you open it.")
+        // An older box that lists no computers: this Mac alone, from what it says of itself.
+        let older = MenuBarLook(.running(Self.said))
+        #expect(older.computers.count == 1)
+        #expect(older.computers[0].isHere && older.computers[0].working == 3 && older.computers[0].asking.count == 1)
+    }
+
+    /// A click opens the desktop app at the computer, or the session: by a link it takes, this
+    /// Mac's by no key (the app's own box), another's by its key.
+    @Test func openingAComputerOrASessionIsALinkTheAppTakes() {
+        #expect(OpenAt(computer: nil).url.absoluteString == "kuvo-code://open")
+        #expect(OpenAt(computer: nil, session: "ses_1").url.absoluteString == "kuvo-code://open?session=ses_1")
+        #expect(OpenAt(computer: "KEY-_mini0", session: "ses_q").url.absoluteString == "kuvo-code://open?computer=KEY-_mini0&session=ses_q")
+    }
+
+    /// Open Kuvo opens the very copy of the desktop app that told this Mac's Kuvo where it is; where
+    /// that's gone (or isn't Kuvo), the newest copy installed, never an older one with the same ID.
+    @Test func openKuvoOpensTheAppThatRegisteredElseTheNewestCopy() throws {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "kuvo-desktop-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func app(_ name: String, id: String = "run.kuvo.code", version: String, build: String) throws -> URL {
+            let url = folder.appending(path: "\(name)/Kuvo.app")
+            try FileManager.default.createDirectory(at: url.appending(path: "Contents/MacOS"), withIntermediateDirectories: true)
+            let info: [String: Any] = ["CFBundleIdentifier": id, "CFBundleShortVersionString": version, "CFBundleVersion": build, "CFBundleExecutable": "kuvo", "CFBundlePackageType": "APPL"]
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: url.appending(path: "Contents/Info.plist"))
+            return url
+        }
+        let old = try app("old", version: "0.9.180", build: "0.9.180")
+        let beta = try app("beta", version: "1.0.0-beta.2", build: "1.0.0b2")
+        let release = try app("release", version: "1.0.0", build: "1.0.0")
+        let other = try app("other", id: "com.example.other", version: "9.9.9", build: "9.9.9")
+        let all = [old, release, beta, other]
+        // The registered copy, though a newer one is installed.
+        #expect(DesktopApp.pick(registered: beta, copies: all, app: "run.kuvo.code", trusted: { _ in true }) == beta)
+        // None registered, or it's gone, another app, or not Kuvo's: the newest copy (a release above its betas).
+        #expect(DesktopApp.pick(registered: nil, copies: [old, beta, release], app: "run.kuvo.code", trusted: { _ in true }) == release)
+        #expect(DesktopApp.pick(registered: folder.appending(path: "gone/Kuvo.app"), copies: [old, beta], app: "run.kuvo.code", trusted: { _ in true }) == beta)
+        #expect(DesktopApp.pick(registered: other, copies: [old, beta], app: "run.kuvo.code", trusted: { _ in true }) == beta)
+        #expect(DesktopApp.pick(registered: old, copies: [old, beta], app: "run.kuvo.code", trusted: { $0 != old }) == beta)
+        // Nothing of Kuvo's installed.
+        #expect(DesktopApp.pick(registered: nil, copies: [other], app: "run.kuvo.code", trusted: { _ in true }) == nil)
     }
 
     @Test func stopAsksFirstWhileTheBoxSaysSomethingWouldStopOrDoesntSayYetOrTheAppIsOpen() {
@@ -138,18 +212,30 @@ import Testing
         var long = Self.said
         long.sessions = (1...9).map { AtWork.Session(id: "ses_\($0)", title: "A session with a title much too long to fit on one line of the panel \($0)", bot: $0 % 2 == 0 ? "A bot with a long name" : nil) }
         long.working = 14
+        // Many computers, each with much at work: the list scrolls past its tallest.
+        var crowded = try #require(AtWork.read(Data(Self.everywhere.utf8)))
+        crowded.computers = (1...6).map { n in AtWork.Computer(key: "key\(n)", name: "Computer with a rather long name \(n)", kind: n % 2 == 0 ? "mac" : "machine", here: n == 1 ? true : nil, reach: "connected",
+                                                               working: 9, sessions: long.sessions, waiting: 0, asking: [], rings: Self.said.rings) }
         let states: [(String, MenuBarLook)] = [
             ("working", MenuBarLook(.running(Self.said))), ("idle", MenuBarLook(.running(Self.quiet))), ("starting", MenuBarLook(.starting)),
             ("stopping", MenuBarLook(.stopping)), ("many", MenuBarLook(.running(long))),
+            ("computers", MenuBarLook(.running(try #require(AtWork.read(Data(Self.everywhere.utf8)))))), ("crowded", MenuBarLook(.running(crowded))),
         ]
         let folder = ProcessInfo.processInfo.environment["HELPER_SHOTS"].map { URL(filePath: $0) }
         for (name, look) in states {
             for dark in [false, true] {
-                let panel = MenuBarPanel(look: look, actions: MenuBarActions(open: {}, stop: {})).environment(\.colorScheme, dark ? .dark : .light)
+                let panel = MenuBarPanel(look: look, actions: MenuBarActions(open: { _ in }, stop: {})).environment(\.colorScheme, dark ? .dark : .light)
                 let renderer = ImageRenderer(content: panel)
                 renderer.scale = 2
                 let image = try #require(renderer.nsImage)
                 #expect(image.size.width == 300, "\(name): the panel keeps its width")
+                #expect(image.size.height <= MenuBarPanel.tallest + 120, "\(name): its computers scroll past their tallest")
+                // The height it works out ahead (to scroll only past its tallest) is the one drawn.
+                if look.atWork != nil {
+                    let computers = MenuBarPanel.height(of: look.computers, most: MenuBarPanel.most(of: look.computers.count))
+                    let drawn = min(computers, MenuBarPanel.tallest) + 6 * 2 + 9 + 28 * 2
+                    #expect(abs(image.size.height - drawn) <= 2, "\(name): \(image.size.height) drawn, \(drawn) worked out")
+                }
                 if let folder, let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
                     try png.write(to: folder.appending(path: "panel-\(name)-\(dark ? "dark" : "light").png"))
                 }

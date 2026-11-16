@@ -130,11 +130,13 @@ export const BOX_PERMISSIONS = object({
 });
 
 /** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This Mac's app"): where it's
- * installed, as it last registered; whether it's open (its tools answer), quits to install an update
- * now, is being opened for a browser call; and the last opening that failed, within its five-minute
- * rest (`at` in ms, and what agents were told). */
+ * installed, as it last registered; where Kuvo's desktop app that opened with it last is (`desktop`,
+ * the one Kuvo Helper's Open Kuvo opens, #781); whether it's open (its tools answer), quits to
+ * install an update now, is being opened for a browser call; and the last opening that failed,
+ * within its five-minute rest (`at` in ms, and what agents were told). */
 export const BOX_APP = object({
   bundle: nullable(string),
+  "desktop?": nullable(string),
   open: bool,
   updating: bool,
   opening: bool,
@@ -145,14 +147,31 @@ export const BOX_APP = object({
  * and how close that is (`calm`, `near`, `over`; a word a client doesn't know is drawn quietly). */
 const AT_WORK_RING = object({ used: number, level: string });
 
+/** An account's rings, by its service's id and its name as the box names it. */
+const AT_WORK_ACCOUNT = object({ service: string, title: string, "short?": AT_WORK_RING, "long?": AT_WORK_RING });
+
+/** One of your computers as the menu bar shows it (`kuvo/box/at-work`'s `computers`, #781): its key
+ * (`""` for this box while it has none) and name, what it is, whether it's this box (`here`), and
+ * whether it's heard from (`connected`), being reached, or not lately (`away`); how many of its
+ * sessions are at work (`working`) and wait on you (`waiting`), where it said (an older box, or one
+ * that's away, doesn't), and the first few of each, as on this box; and the rings of the accounts
+ * signed in there. */
+const AT_WORK_COMPUTER = object({
+  key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), reach: words("connected", "connecting", "away"),
+  "working?": number, sessions: list(object({ id: string, "title?": string, "bot?": string })),
+  "waiting?": number, asking: list(object({ id: string, "title?": string, "asks?": string })),
+  rings: list(AT_WORK_ACCOUNT),
+});
+
 /** What's at work in Kuvo on this computer now, as facts for what's always on screen there (Kuvo
  * Helper's menu bar item, `kuvo/box/at-work`, PROTOCOL.md "In the menu bar"): whether this box has
  * such an item (`applies`: a Mac's own box in a home of its own, which Kuvo Helper runs); its
  * sessions at work (how many, and the latest few, by id and title, with the bot each works for, by
  * name); those waiting on you (the latest few, with what each asks in the box's words); what waits
  * on you in each area (`kuvo/waiting`'s counts); how many sessions have work running besides their
- * turn (`background`); whether anything would stop with Kuvo here (`busy`); and each account's
- * rings, in the box's order (its plan limits' `rows`), named as the box names them. */
+ * turn (`background`); whether anything would stop with Kuvo here (`busy`); each account's
+ * rings, in the box's order (its plan limits' `rows`), named as the box names them; and each of
+ * your computers as the menu bar shows it, this one first (`computers`, since #781). */
 export const AT_WORK = object({
   applies: bool,
   working: number,
@@ -161,7 +180,8 @@ export const AT_WORK = object({
   waiting: object({ sessions: number, bots: number, queue: number }),
   background: number,
   busy: bool,
-  rings: list(object({ service: string, title: string, "short?": AT_WORK_RING, "long?": AT_WORK_RING })),
+  rings: list(AT_WORK_ACCOUNT),
+  "computers?": list(AT_WORK_COMPUTER),
 });
 export type AtWork = Infer<typeof AT_WORK>;
 

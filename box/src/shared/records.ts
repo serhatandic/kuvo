@@ -100,6 +100,11 @@ export interface ToldComputer {
   system?: string;
   working?: number;
   atWork?: AtWorkSession[];
+  /** How many of its sessions wait on you now, and which (the first few, the latest asking first,
+   * each with what it asks in that box's words): said with `working` since #781, for the menu bar
+   * of your other computers. One that didn't say it is left out, never taken as none. */
+  waiting?: number;
+  asking?: AskingSession[];
   /** A Mac's box with the old Kuvo Code app (before 1.0) attached: it takes no removals now. */
   oldApp?: true;
   /** Where else its Macs may reach it over SSH, as it knows itself: its tailnet's addresses first,
@@ -112,6 +117,14 @@ export interface ToldComputer {
 export interface AtWorkSession {
   id: string;
   title?: string;
+}
+
+/** A session waiting on you on a computer: its id there, its title, and what it asks, in that
+ * box's words ("asks to run a command"). */
+export interface AskingSession {
+  id: string;
+  title?: string;
+  asks?: string;
 }
 
 /** `run/agents.json`: everyone, for list_agents here (kuvo-browser.js reads it), and this box's

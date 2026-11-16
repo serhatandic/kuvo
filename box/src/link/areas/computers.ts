@@ -18,12 +18,12 @@ import { FEATURES } from "../../shared/features";
 import { isObject, parsed, type Body } from "../../shared/json";
 import type { ListedComputer } from "../../shared/routes/box";
 import { macFeatures } from "../../shared/routes/mac";
-import type { AtWorkSession, Target, ToldComputer } from "../../shared/records";
+import type { AskingSession, AtWorkSession, Target, ToldComputer } from "../../shared/records";
 import { call, readEngineFile } from "../engine/client";
 import { followedLive } from "../follow";
 import { IS_MAC, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
-import { keptList, listFollowers, listNow } from "../lists/sessions";
-import { MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
+import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
+import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { addressOf } from "../crypto/keys";
 import { ADDRESS, ownKey, peersOf } from "../peers/known";
@@ -87,14 +87,31 @@ export function atWorkHere(): AtWorkSession[] {
     .map(([id, { facts }]) => ({ id, ...(plainName(facts.title) ? { title: plainName(facts.title).slice(0, 200) } : {}) }));
 }
 
+/** This box's sessions waiting on you, as `list` has them, the latest asking first: conversations
+ * (not a subagent's or a run kept out of sight), not archived, this box's own copy; each with what
+ * it asks, in the box's words, where the list says. */
+export function askingOf(list: Kept | null): AskingSession[] {
+  const asks = new Map((list?.needsYou ?? []).map(each => [each.session, each.asks.summary]));
+  return Object.entries(list?.sessions ?? {})
+    .filter(([, { facts }]) => facts.asked !== undefined && !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden")
+    .sort(([one, a], [other, b]) => b.facts.asked! - a.facts.asked! || (one < other ? -1 : 1))
+    .map(([id, { facts }]) => {
+      const title = plainName(facts.title).slice(0, 200);
+      const said = asks.get(id);
+      return { id, ...(title ? { title } : {}), ...(said ? { asks: said } : {}) };
+    });
+}
+
 /** How many of this box's sessions are at work now (`atWorkHere`). */
 export const workingHere = (): number => atWorkHere().length;
 
 /** What this box says of itself, here and to its peers (with its agents' mail): Kuvo Code's version
- * and its engine's, its system, and how many of its sessions are at work, and the first few of them. */
+ * and its engine's, its system, how many of its sessions are at work and how many wait on you, and
+ * the first few of each. */
 export function ownComputer(): ToldComputer {
   system ??= { name: systemName() };
   const atWork = atWorkHere();
+  const asking = askingOf(keptList());
   let engine: string | undefined;
   try { engine = readEngineFile()?.version || undefined; } catch {}
   const version = IS_MAC ? macLink.config?.app || MAC_APP_VERSION || undefined : boxVersion() || undefined;
@@ -104,6 +121,8 @@ export function ownComputer(): ToldComputer {
     ...(system.name ? { system: system.name } : {}),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_AT_WORK),
+    waiting: asking.length,
+    asking: asking.slice(0, MOST_ASKING),
     ...(oldAppAttached() ? { oldApp: true as const } : {}),
     ...(IS_MAC ? {} : { addresses: ownAddresses() }),
   };
