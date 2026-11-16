@@ -23,11 +23,9 @@ import type { SessionFacts } from "../shared/routes/sessions";
 import { askingOf, peerReach } from "./areas/computers";
 import { waitingOf } from "./areas/waiting";
 import { ownComputerName } from "./computer-name";
-import { isApart } from "./peers/apart";
 import { PEER_AGENTS_FILE, readPeerAgents } from "./peers/directory";
 import { ownKey, peersOf } from "./peers/known";
 import { PEER_REACH } from "./peers/reach";
-import { sharedMachine } from "./setup/settle";
 import { readLink } from "./state";
 import { botFollowers, botHere } from "./bots/here";
 import { call } from "./engine/client";
@@ -100,9 +98,7 @@ type Computer = NonNullable<AtWork["computers"]>[number];
  * it, then each of your other computers by name, as it last told this box: whether it's heard from,
  * how many of its sessions are at work and wait on you, and the first few of each (nothing while
  * it's away: what it said then is old; left out where it never said, an older box), and the rings
- * of the accounts signed in there. Never a computer that isn't one of yours (a machine Macs of
- * different setups share, another setup's box), nor one known by a peer's word alone; a shared
- * machine lists itself alone. */
+ * of the accounts signed in there. Never one known by a peer's word alone. */
 export function computersOf(here: Omit<AtWork, "computers">, rings: RingsOn[], waitingHere: number, link: LinkState | null = readLinkSafely(), now = Date.now()): Computer[] {
   const own = link ? ownKey(link) : null;
   const ringsFor = (key: string) => rings.filter(each => each.on.includes(key) || (key === "here" && own !== null && each.on.includes(own))).map(each => each.rings);
@@ -110,9 +106,9 @@ export function computersOf(here: Omit<AtWork, "computers">, rings: RingsOn[], w
     key: own ?? "", name: ownComputerName(), kind: IS_MAC ? "mac" : "machine", here: true, reach: "connected",
     working: here.working, sessions: here.sessions, waiting: waitingHere, asking: here.asking, rings: ringsFor("here"),
   }];
-  if (!link || sharedMachine(link)) return computers;
+  if (!link) return computers;
   const told = readPeerAgents();
-  const peers = peersOf(link).filter(peer => !isApart(peer.key, link, told)).sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+  const peers = [...peersOf(link)].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   for (const peer of peers) {
     const said = told[peer.key]?.computer;
     const { away, reach } = peerReach(peer.key, told, undefined, undefined, now);

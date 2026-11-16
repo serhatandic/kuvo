@@ -19,8 +19,6 @@ import { frozen } from "../moves/records";
 import { attentionGiven } from "../notices/hold";
 import { macSign, readLink, updateLink } from "../state";
 import { announce, toldPeers, writeAgents } from "./agents";
-import { isApart, saysApart } from "./apart";
-import { sharedMachine } from "../setup/settle";
 import { takeZone } from "../zone/setting";
 import { takeAgents, vouchedOf } from "./directory";
 import { forgetOldMacs, macsOf, mailFor, openMail, peersOf, takeLegacyPeers } from "./known";
@@ -46,20 +44,13 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     const bytes = link && mailFor(peer, { ...message, at: Date.now() }, link);
     if (bytes) try { host?.send(bytes); } catch {}
   };
-  if (isObject(payload.agents)) {
-    // (What it runs is kept only from one of your own computers: PROTOCOL.md, "Computers".)
-    const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
-    if (takeAgents(sender, agents)) {
-      writeAgents();
-      // (Its bots show in this box's list of those elsewhere: its followers hear at once. Only
-      // one of your own computers' do.)
-      if (!saysApart(sender.key, payload.agents)) noteBotsChanged();
-    }
+  if (isObject(payload.agents) && takeAgents(sender, payload.agents)) {
+    writeAgents();
+    // (Its bots show in this box's list of those elsewhere: its followers hear at once.)
+    noteBotsChanged();
   }
-  // Your time zone (`zone/setting.ts`), only from one of your own computers in this box's setup,
-  // and never on a machine two setups share: as the agents' mail it comes with says, else as it
-  // last told.
-  if (isObject(payload.zone) && !sharedMachine(readLink()) && !(isObject(payload.agents) ? saysApart(sender.key, payload.agents) : isApart(sender.key))) takeZone(payload.zone);
+  // Your time zone (`zone/setting.ts`), from any of your computers.
+  if (isObject(payload.zone)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
   // It's just connected, and may have missed what this box told it (the relay keeps nothing):

@@ -380,7 +380,7 @@ test("numbers come from the first computer you set up: a Mac before a machine, t
   assert.equal(link.primaryOf(link.readLink(), file, lost + 4 * 86_400_000).peer.key, mac.pub);
 });
 
-test("a machine in a setup numbers from its main computer, whatever a peer says of a Mac set up earlier; one Macs share outside one setup works it out as before, and says it's shared", async () => {
+test("a machine in a setup numbers from its main computer, whatever a peer says of a Mac set up earlier; a second Mac of yours setting it up leaves it in that setup, never saying it's shared", async () => {
   const file = path.join(queues, "numbers.json");
   // Its Mac leads a setup, as the Mac's signed peers document says.
   const seed = link.newSigningSeed();
@@ -406,8 +406,8 @@ test("a machine in a setup numbers from its main computer, whatever a peer says 
   await link.pushQueues(host, link.readLink(), targets, Date.now());
   assert.equal(mailTo(lab)[0].workQueue.told.shared, false);
 
-  // A second Mac sets it up, in no one setup: it sets its setup aside, numbers as before, and says
-  // it's shared.
+  // A second Mac (one of yours: only you set your computers up) sets it up, leading no setup: it
+  // stays in the one it has, numbering from its main computer, and never says it's shared.
   const second = link.newSigningSeed();
   link.updateLink(current => {
     current.macs = [mac.pub, later.pub];
@@ -415,14 +415,14 @@ test("a machine in a setup numbers from its main computer, whatever a peer says 
     link.docsWork({ link: current, library: { personalities: [], removed: [] } }, { key: later.pub, sign: link.signingKeyOf(second) }, { give: [link.signDoc(second, "peers", 1, { boxes: [{ ...later.peer, sign: link.signingKeyOf(second) }, here.peer], moved: [], left: [] })] });
     return current;
   });
-  assert.equal(link.readLink().setup.aside, true);
+  assert.equal(link.readLink().setup.aside, undefined);
   sent.length = 0;
   link.forgetQueuesTold();
   // (What it tells is made again at most once a minute.)
   await link.pushQueues(host, link.readLink(), targets, Date.now() + 120_000);
-  assert.equal(mailTo(lab)[0].workQueue.told.shared, true);
-  assert.equal(link.followedSetup(link.readLink()), null);
-  assert.deepEqual(link.primaryOf(link.readLink(), file), link.rankedPrimary(link.readLink(), file), "numbering as piece 3 has it");
+  assert.equal(mailTo(lab)[0].workQueue.told.shared, false);
+  assert.equal(link.followedSetup(link.readLink())?.primary, mac.pub);
+  assert.deepEqual(link.primaryOf(link.readLink(), file), { peer: link.peersOf(link.readLink()).find(peer => peer.key === mac.pub) });
   sent.length = 0;
 });
 
@@ -1083,12 +1083,6 @@ test("a computer that keeps the item but isn't answering: said at once, plainly,
   link.queueForwardTiming.wait = 20_000;
   mailTo(lab);
 
-  // On a machine Macs share outside one setup (another person may use it): never handed on.
-  fresh({ macs: [mac, later] });
-  const shared = await route("DELETE", "kuvo/work-queue/items/500");
-  assert.equal(shared.status, 409);
-  assert.match(shared.body.message, /#500 "Item 500" is on lab: change it there\./);
-  assert.deepEqual(mailTo(lab), []);
   fresh();
 
   // A lab from before: changed there, as it was.
@@ -1227,10 +1221,6 @@ test("an item no computer told this box of, asked of this box by a client, comes
   for await (const piece of handle({ method: "GET", path: "kuvo/work-queue/items/7", headers: {}, fromMac: true }, undefined)) pieces.push(piece);
   assert.equal(pieces.find(each => each.head).head.status, 404);
   assert.deepEqual([mailTo(lab), mailTo(mac)], [[], []]);
-  // Nor from a machine Macs share outside one setup: it asks no other computer.
-  fresh({ macs: [mac, later] });
-  assert.equal((await ask("GET", "kuvo/work-queue/items/7")).status, 404);
-  assert.deepEqual([mailTo(lab), mailTo(mac)], [[], []]);
 });
 
 test("asked by another of your computers' boxes, this box does it to the item it keeps as its own client would, answers once for each ask, and takes it only from your computers", async () => {
@@ -1319,12 +1309,6 @@ test("asked by another of your computers' boxes, this box does it to the item it
   assert.deepEqual([noLonger.workQueue.acted.status, noLonger.workQueue.acted.value], [404, { message: "It's no longer on devbox: it may have moved. Look again in a moment." }]);
   assert.deepEqual(mailTo(lab), [], "nothing sent on to lab");
 
-  // From a machine Macs share outside one setup (another person may use it): refused.
-  receive(lab, { workQueue: telling([], { shared: true }) });
-  sent.length = 0;
-  await takeFrom(lab, { act: { id: actID(), method: "POST", action: "restore", item: id, at: Date.now() } });
-  assert.deepEqual(mailTo(lab)[0].workQueue.acted.value, { message: "devbox doesn't take changes from lab, a machine shared with other Macs: change it from devbox." });
-  assert.equal(await deleted(), true);
   // From a box that isn't one of your computers: nothing at all.
   const stranger = box("machine", "stranger");
   await link.takeWorkQueueMail(stranger.peer, { act: { id: actID(), method: "POST", action: "restore", item: id, at: Date.now() } }, host, places);

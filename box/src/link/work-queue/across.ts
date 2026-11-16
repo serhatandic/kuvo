@@ -25,7 +25,6 @@ import { deviceAct } from "../peers/devices";
 import { writerAct } from "../peers/manage";
 import { mailsFor, takePart } from "./parts";
 import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
-import { sharedMachine } from "../setup/settle";
 import { noteSetupNow } from "../setup/lead";
 import { allItems, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
 import { doneByRead, SEEN_FILE, seenOf, withSeen } from "./github";
@@ -55,8 +54,8 @@ interface Telling {
 }
 
 /** How this box numbers, as it tells its peers: its kind, when it was set up, the highest number it
- * used or holds, its primary (itself, or another, with when that one was set up), and whether it's a
- * machine Macs share outside one setup (said by every box that knows setups). */
+ * used or holds, its primary (itself, or another, with when that one was set up), and `shared: false`,
+ * which says it knows setups (older Macs wait for it before they lead one; never true now, #783). */
 export function numberingNow(link: LinkState | null): Numbering {
   const primary = primaryOf(link);
   const own = link ? ownKey(link) : null;
@@ -68,7 +67,9 @@ export function numberingNow(link: LinkState | null): Numbering {
     const told = primary.via ? readTold(primary.via.key)?.primary?.since : readTold(primary.peer.key)?.since;
     named = { key: primary.peer.key, kind: primary.peer.kind, ...(told ? { since: told } : {}) };
   }
-  return { kind, since, top: topOf(), ...(named ? { primary: named } : {}), shared: sharedMachine(link) };
+  // COMPAT(#783 shared-false): older Macs lead a setup only once each machine says `shared: false`.
+  // Goes on the user's word, once no Mac from before #783 connects.
+  return { kind, since, top: topOf(), ...(named ? { primary: named } : {}), shared: false };
 }
 
 /** An item as this box tells it: its summary, with who handed it on; an issue's with when this

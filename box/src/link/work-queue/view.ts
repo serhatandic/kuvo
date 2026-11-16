@@ -165,7 +165,7 @@ export function canOf(item: Pick<ItemSummary, "removed" | "handing" | "source" |
   const there = item.computer?.name ?? "Its computer";
   if (moving) return { ...none, why: "Its conversation is moving to another computer: it can be changed once it's there." };
   if (away) return { ...none, why: `${there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back.` };
-  // (A machine Macs share outside one setup hands nothing on to another computer.)
+  // (One its computer doesn't take what a client does from another box for.)
   if (apart) return { ...none, why: `It's on ${there}: change it there.` };
   if (item.removed) return { ...none, restore: true, why: "It's deleted: bring it back to change it." };
   if (item.handing) return { ...none, delete: true, why: `It's on its way to ${item.handing.name || "a conversation"} on another computer: it can be changed there once it's arrived.` };

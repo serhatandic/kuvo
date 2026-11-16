@@ -15,7 +15,7 @@ import path from "node:path";
 import { IS_MAC, RUN } from "../home";
 import { MOVED_FOR, movedAway } from "../moves/records";
 import { Frame, frame, relaySend } from "../relay/frames";
-import { setupDoc } from "../setup/record";
+import { followedSetup, setupDoc } from "../setup/record";
 import { macSign, updateLink } from "../state";
 import type { LinkState } from "../state";
 
@@ -174,12 +174,10 @@ export function takeLegacyPeers(link: LinkState, mac: string, peers: unknown, at
 }
 
 // Each of this box's Macs' word on its boxes: its peers document, or the list it gave before it
-// signed them (`legacy`). In a setup, its main computer's word alone (PROTOCOL.md, "Your setup").
-function macWords(link: LinkState | null | undefined): MacWord[] {
-  const setup = setupDoc(link);
-  if (setup) return [{ boxes: Array.isArray(setup.body.boxes) ? setup.body.boxes.slice(0, MOST_PEERS) : [], moved: setup.body.moved }];
-  return macsOf(link).map(mac => {
-    const doc = macDoc(link, mac, "peers");
+// signed them (`legacy`). In a setup, its main computer's first (PROTOCOL.md, "Your setup"); every
+// Mac that set this box up is yours, so each one's word counts.
+function macWords(link: LinkState | null | undefined, only?: string): MacWord[] {
+  return macDocs(link).filter(each => only === undefined || each.mac === only).map(({ mac, doc }) => {
     if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
     // COMPAT(beta.1 peers-list): a beta.1 Mac's list, in place of its peers document. Goes on the user's word, once no Mac from before 1.0 connects.
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
@@ -218,12 +216,18 @@ export function movesTold(link: LinkState | null | undefined, now = Date.now()):
   return words;
 }
 
-/** The boxes you removed, so they're no peers of this one (`left`: this Mac's own record, or what
- * its Macs' peers documents say, or in a setup its main computer's), not those just missing from a
- * list for now. */
-export function removedBoxes(link: LinkState | null | undefined): Set<string> {
+/** Each of this machine's Macs with its peers document (null for none yet): its setup's main
+ * computer first, by the document it takes as its setup's. */
+export function macDocs(link: LinkState | null | undefined): { mac: string; doc: Doc | null }[] {
   const setup = setupDoc(link);
-  const left = IS_MAC ? (Array.isArray(link?.left) ? link.left : []) : (setup ? [setup] : macsOf(link).map(mac => macDoc(link, mac, "peers"))).flatMap(doc => {
+  const main = setup ? followedSetup(link)!.primary : null;
+  return [...(setup ? [{ mac: main!, doc: setup }] : []), ...macsOf(link).filter(mac => mac !== main).map(mac => ({ mac, doc: macDoc(link, mac, "peers") }))];
+}
+
+/** The boxes you removed, so they're no peers of this one (`left`: this Mac's own record, or what
+ * its Macs' peers documents say), not those just missing from a list for now. */
+export function removedBoxes(link: LinkState | null | undefined): Set<string> {
+  const left = IS_MAC ? (Array.isArray(link?.left) ? link.left : []) : macDocs(link).map(each => each.doc).flatMap(doc => {
     const named = doc?.body.left;
     return Array.isArray(named) ? named.filter((key): key is string => typeof key === "string") : [];
   });
@@ -261,12 +265,13 @@ const renamed = (link: LinkState, peer: Peer): Peer => {
   return typeof name === "string" && name ? { ...peer, name } : peer;
 };
 
-/** The boxes this box's Macs name (in a setup, its main computer's word alone), itself among them:
- * what each is called there, and what it is. A Mac's box names its own machines (`peersOf`). */
-export function namedBoxes(link: LinkState | null | undefined): Peer[] {
+/** The boxes this box's Macs name (in a setup, its main computer's first; `only`, that one Mac's
+ * word alone), itself among them: what each is called there, and what it is. A Mac's box names its
+ * own machines (`peersOf`). */
+export function namedBoxes(link: LinkState | null | undefined, only?: string): Peer[] {
   if (!link || IS_MAC) return [];
   const byKey = new Map<string, Peer>();
-  for (const word of macWords(link)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
+  for (const word of macWords(link, only)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
   return [...byKey.values()];
 }
 

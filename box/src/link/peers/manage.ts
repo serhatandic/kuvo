@@ -19,14 +19,12 @@ import { tellGone } from "../mac/link";
 import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
 import { macName, mainElsewhere } from "../setup/main-only";
-import { sharedMachine } from "../setup/settle";
 import { takeOffVouched, vouchedWords } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
 import { writePrivate } from "../files";
 import { ownName } from "../letters/start";
 import type { LinkState } from "../state";
 import type { Act, Acted } from "../work-queue/forward";
-import { isApart } from "./apart";
 import { readPeerAgents } from "./directory";
 import { macsOf, namedBoxes, peersOf } from "./known";
 import { awaySince } from "./reach";
@@ -39,11 +37,11 @@ export const MANAGE_FEATURE = "computers.manage";
 export const MOST_NAME = 100;
 
 /** Who writes your machines' records, as this box knows: itself, the computer it hands what you do
- * to (by its key and name), or none (a machine Macs of different setups share, or no Mac's). */
+ * to (by its key and name), or none (no Mac's). */
 export type Writer = { here: true } | { here: false; key: string; name: string } | null;
 
 export function writerOf(link: LinkState | null | undefined): Writer {
-  if (!link || sharedMachine(link)) return null;
+  if (!link) return null;
   // (Named as its own record names it, else as this box lists it.)
   const named = (key: string, name: string, or: string) => name || peersOf(link).find(peer => peer.key === key)?.name || or;
   const main = mainElsewhere(link);
@@ -54,10 +52,11 @@ export function writerOf(link: LinkState | null | undefined): Writer {
 }
 
 /** The machines whose records the writer keeps, by key, as this box knows them: a Mac's own, or
- * those its Macs' documents name (this machine among them). */
+ * those the writer's own document names (this machine among them; never another Mac's machines,
+ * which that Mac keeps). */
 function writtenMachines(link: LinkState | null | undefined, writer: Writer): Set<string> {
   if (!writer) return new Set();
-  const boxes = writer.here ? peersOf(link) : namedBoxes(link);
+  const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
   return new Set(boxes.filter(box => box.kind === "machine").map(box => box.key));
 }
 
@@ -98,15 +97,12 @@ export function writerFacts(link: LinkState | null = readLink()): WriterFacts {
 
 /** Why `computer` can't be renamed (`rename`) or removed (`remove`) from this box, in words a client
  * shows as they are; null when it can. `here`: this box's own name. */
-export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "shared" | "apart" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
+export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
   const name = computer.name || "This computer";
   const { writer } = facts;
-  // (The Mac that set up a machine shared with another setup keeps its own record of it.)
-  const mine = writer?.here === true && Boolean(computer.key) && facts.machines.has(computer.key);
-  if ((computer.shared || computer.apart) && !mine) return `${name} is shared with another setup, so it isn't yours to ${what} from here.`;
   if (computer.kind === "mac") return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here) return `${here} can't remove itself: remove it from another of your computers.`;
-  if (!writer) return macsOf(readLink()).length > 1 || sharedMachine(link) ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
+  if (!writer) return macsOf(link).length > 1 ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.reachable) return `${here} can't reach ${(writer as { name: string }).name}, which keeps your machines' records: ${what} ${name} from there.`;
   if (!computer.key || !facts.machines.has(computer.key)) return `${name} isn't one of ${writer.here ? here : writer.name}’s machines, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.takes) return `${(writer as { name: string }).name} needs a newer Kuvo Code to ${what} your machines. Update it, then try again.`;
@@ -122,7 +118,7 @@ function waitsFor(computer: Pick<ListedComputer, "name">, here: string, facts: W
 
 /** Why `computer` can't be removed (or renamed) from this box now, all of it: what `whyNot` says,
  * or that it waits for the old app to be quit. */
-export function refusal(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "shared" | "apart" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
+export function refusal(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "via">, what: "rename" | "remove", here: string, link: LinkState | null = readLink(), facts: WriterFacts = writerFacts(link)): string | null {
   return whyNot(computer, what, here, link, facts) ?? (what === "remove" ? waitsFor(computer, here, facts) : null);
 }
 
@@ -216,10 +212,8 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   const link = readLink();
   const writer = writerOf(link);
   if (!writer?.here) return answer(409, { message: `${ownName()} doesn't keep your machines' records.` });
-  if (isApart(sender.key, link)) return answer(409, { message: "Only your own computers can rename and remove your machines." });
   // (The same rules as the asking box's, again here: it may be older, or not say true.)
   const target = peersOf(link).find(peer => peer.key === act.item);
-  if (target && isApart(target.key, link)) return answer(409, { message: `${target.name} is shared with another setup: only ${ownName()} itself can ${act.method === "DELETE" ? "remove" : "rename"} it.` });
   if (target && act.method === "DELETE" && oldAppAttached()) return answer(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);

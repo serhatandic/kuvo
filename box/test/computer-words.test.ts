@@ -30,7 +30,7 @@ test("local app reach states have box supplied words even when the answering com
   const { reachTitles } = computerWords({ reach: "connected", name: "mini" }, "Studio");
   expect(reachTitles).toEqual({
     connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached",
-    notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s",
+    notPaired: "Hasn’t taken this app yet",
     unreached: "Can’t be reached from this app",
   });
 });

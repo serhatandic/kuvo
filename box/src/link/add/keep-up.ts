@@ -18,7 +18,6 @@ import { peerReach } from "../areas/computers";
 import { writePrivate } from "../files";
 import { IS_MAC, RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
-import { isApart } from "../peers/apart";
 import { peersOf } from "../peers/known";
 import { mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
@@ -132,7 +131,7 @@ export async function keepUpRound(clock: () => number = Date.now): Promise<void>
     const link = readLink();
     const told = readPeerAgents();
     for (const peer of peersOf(link)) {
-      const at = peer.kind === "machine" && !isApart(peer.key, link, told) ? sshAddressOf(peer.key) : null;
+      const at = peer.kind === "machine" ? sshAddressOf(peer.key) : null;
       if (!at || underWay(at.destination)) continue;
       const now = clock();
       // (Away: asleep, off or offline. Looked at again once it's back.)
@@ -200,10 +199,10 @@ const sessions = (count: number): string => `${count} ${count === 1 ? "session i
  * this box can't bring it up, why, and what to do: set it up over SSH from here once (`add`), or
  * what keeps this box from it (`canAdd`'s words). Nothing for one as new as this box, one that's
  * away now, and one this box neither set up nor could. */
-export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "apart" | "reach" | "version" | "working">, here: string, now = Date.now()): { update?: ComputerUpdate; actions: ComputerAction[] } {
+export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "reach" | "version" | "working">, here: string, now = Date.now()): { update?: ComputerUpdate; actions: ComputerAction[] } {
   const none = { actions: [] };
   if (computer.here) return keepingSelfUp(computer.name || here, computer.working);
-  if (computer.apart || computer.kind !== "machine" || !computer.key) return none;
+  if (computer.kind !== "machine" || !computer.key) return none;
   const mine = boxVersion();
   if (!mine) return none;
   const name = computer.name || "this machine";

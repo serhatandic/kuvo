@@ -15,7 +15,6 @@ import { followed } from "../follow";
 import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, memberHosts } from "../setup/main-only";
-import { sharedMachine } from "../setup/settle";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
 import { onLinkWritten, readLink } from "../state";
@@ -112,7 +111,5 @@ export async function* memberComputersRoute(context: RouteContext): AsyncGenerat
   if (method !== "GET" || route !== "kuvo/hosts") return yield* engineRoute(context);
   const hosts = memberHosts(link);
   if (hosts) return yield* json(200, hosts);
-  // Shared (more than one Mac set it up): which computers are yours is your own Mac's to say.
-  if (sharedMachine(link)) return yield* json(503, { message: "This computer is shared with more than one Mac: see your computers on the Mac you paired with." });
   return yield* json(503, { message: "This computer can't list your computers yet. Try again in a moment." });
 }

@@ -527,23 +527,8 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.deepEqual(await loft.open(member), { refused: true });
   assert.deepEqual([(await phone.open(main)).kind, (await studio.open(main)).kind, (await studio.open(member)).kind, (await phone.open(member)).kind], ["mac", "mac", "machine", "machine"]);
 
-  // (5) A member that says it's shared with another setup vouches for no one: mailed with the
-  // member's own key, as its box would, the main computer answers no and pairs nothing.
-  const act = vouch(link.publicOf(link.newKey()).toString("base64url"));
-  mailToMac(labKey, { agents: { at: Date.now() + 600_000, list: [], shared: true }, workQueue: { act }, at: Date.now() });
-  const answered = await eventually(() => {
-    for (const each of relay.delivered) {
-      if (!each.to.equals(member.address)) continue;
-      try {
-        const acted = JSON.parse(link.openOneWay(link.readFrame(each.payload).body, labKey, link.publicOf(macKey)).payload.toString("utf8")).workQueue?.acted;
-        if (acted?.id === act.id) return acted;
-      } catch {}
-    }
-    return null;
-  });
-  assert.deepEqual(answered, { id: act.id, status: 409, value: { message: "Only computers in Studio Mac's own setup can add your devices." } });
   const now = (await ask("GET", "kuvo/phones")).json.phones.map(each => each.key);
-  assert.ok(!now.includes(act.item) && !now.includes(stray), "neither vouch paired anyone");
+  assert.ok(!now.includes(stray), "the stray vouch paired no one");
   // A Mac that lets no device in ("Let my devices connect" off) vouches for none either, were it
   // a member: its own switch counts, not only its main computer's.
   const wasConfig = link.macLink.config;
@@ -555,10 +540,4 @@ test("the desktop app on a member's computer is paired through its own box and r
   link.macLink.config = wasConfig;
   assert.equal(off.status, 409);
   assert.match(off.json.message, /^“Let my devices connect” is off on /);
-  // (7) And one that isn't yours says no way in: listed apart, with no address or relay.
-  const theirs = (await ask("GET", "kuvo/computers")).json.computers.find(each => each.key === lab.key);
-  assert.deepEqual([theirs.apart, theirs.address, theirs.relay], [true, undefined, undefined]);
-  // Nor is anything said of its adding your devices, or allowed: it adds none while it isn't yours.
-  assert.deepEqual([theirs.vouching, theirs.actions.some(each => each.id === "allow-devices")], [undefined, false]);
-  assert.deepEqual(await ask("POST", allow, undefined, { fromApp: true, served: true }), { status: 409, json: { message: "lab isn't one of Studio Mac's own computers, so it adds none of your devices." } });
 });

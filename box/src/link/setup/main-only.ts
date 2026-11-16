@@ -9,11 +9,9 @@ import { IS_MAC } from "../home";
 import { macDoc, macsOf } from "../peers/known";
 import type { LinkState } from "../state";
 import { setupDoc } from "./record";
-import { sharedMachine } from "./settle";
 
 /** The main computer of the setup this box is a member of: its key and name; null on the main
- * computer itself and in no setup. One set aside counts too (a shared machine, or its main computer
- * not naming it now): it's still that computer's, and stepping aside never opens pairing again. */
+ * computer itself and in no setup. One set aside counts too (its main computer not naming it now): it's still that computer's, and stepping aside never opens pairing again. */
 export function mainElsewhere(link: LinkState | null | undefined): { key: string; name: string } | null {
   const setup = link?.setup;
   if (!setup || setup.role !== "member" || typeof setup.primary !== "string") return null;
@@ -39,16 +37,16 @@ export const addElsewhere = (main: { key: string; name: string }) => ({ message:
 
 /** `kuvo/hosts` as a member says it, from the document of the setup it follows: every machine in
  * the setup a phone reaches directly (itself too), as a Mac lists its machines; the main computer's
- * Mac isn't one (a phone pairs with it). Set aside by its one Mac (which leads no setup now), from
- * that Mac's own peers document: its phones are all that Mac's. Null where this box is no member,
- * has no relay to name, holds no such document yet, or is shared: its Macs' phones aren't all one
- * Mac's, so no one Mac's list is theirs to read. */
+ * Mac isn't one (a phone pairs with it). Set aside (its main computer leads no setup now), from
+ * each of its Macs' own peers documents: they're all yours. Null where this box is no member, has
+ * no relay to name, or holds no such document yet. */
 export function memberHosts(link: LinkState | null | undefined): Hosts | null {
-  if (IS_MAC || !mainElsewhere(link) || !link?.relay || sharedMachine(link)) return null;
-  const doc = setupDoc(link) ?? (link.setup!.aside && macsOf(link).length === 1 ? macDoc(link, link.setup!.primary, "peers") : null);
-  if (!doc) return null;
+  if (IS_MAC || !mainElsewhere(link) || !link?.relay) return null;
+  const setup = setupDoc(link);
+  const docs = setup ? [setup] : link.setup!.aside ? macsOf(link).map(mac => macDoc(link, mac, "peers")).filter(doc => doc !== null) : [];
+  if (!docs.length) return null;
   const hosts: Hosts["hosts"][number][] = [];
-  for (const box of Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []) {
+  for (const box of docs.flatMap(doc => (Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []))) {
     if (!isObject(box) || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some(each => each.key === box.key)) continue;
     const name = String(box.name ?? "").slice(0, 100);
     hosts.push({ kind: "machine", name, address: box.address, key: box.key, relay: link.relay, machine: typeof box.id === "string" && box.id ? box.id : name, anotherMac: false, removed: false });

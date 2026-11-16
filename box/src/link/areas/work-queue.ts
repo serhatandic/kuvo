@@ -16,7 +16,6 @@ import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/status
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
 import { frozen } from "../moves/records";
-import { sharedMachine } from "../setup/settle";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
 import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
@@ -112,9 +111,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     items.sort((a, b) => (place.get(a.status) ?? 99) - (place.get(b.status) ?? 99) || computerOf(a).localeCompare(computerOf(b)) || a.order - b.order);
   const moving = frozen();
   const who = assignable();
-  // (A machine Macs share outside one setup hands nothing on to another computer; nor is anything
-  // handed to one that doesn't take what a client does from another box.)
-  const shared = sharedMachine(readLink());
+  // (Nothing is handed to one that doesn't take what a client does from another box.)
   // (A label an item names that no computer lists any more isn't one of its labels.)
   const summary = (item: Item): ItemSummary => {
     const said = withCan(summaryOf(item, known.working, titles, who), moving);
@@ -142,7 +139,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     today: todayHere(),
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: shared || !takesForwarded(item.computer.key) }) })),
+      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key) }) })),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
     removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary).filter(kept),
@@ -338,7 +335,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       if (whole) return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
     // (As it was told: nothing to do to it from here until its computer answers.)
-    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || !takesForwarded(far.computer.key) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;

@@ -146,12 +146,12 @@ test("a rename or remove this Mac took and was cut short by a restart is done ag
   assert.deepEqual(link.removeHere(mini.pub), { status: 200, value: {} });
 });
 
-test("a machine this Mac set up that another setup shares too is still this Mac's to rename and remove", async () => {
+test("a machine this Mac set up that an earlier Kuvo Code says another Mac shares is listed as yours, and this Mac's to rename and remove (#783)", async () => {
   fresh();
-  // It says it's shared with another setup's Mac.
+  // It says it's shared, as an earlier Kuvo Code did once another of your Macs set it up too.
   link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ at: Date.now(), agents: { at: Date.now(), list: [], shared: true } })), devbox.key, link.publicOf(mac)).message, undefined, (sender, payload) => link.peerMail(sender, payload, null));
   const shared = (await link.listComputers("Studio", null)).find(each => each.key === devbox.pub);
-  assert.deepEqual([shared.apart, shared.actions.map(action => action.id)], [true, ["rename", "remove"]]);
+  assert.deepEqual([shared.apart, shared.shared, shared.actions.map(action => action.id)], [undefined, false, ["rename", "remove"]]);
   assert.deepEqual(await ask("DELETE", `kuvo/computers/${devbox.pub}`), { status: 200, body: {} });
 });
 
@@ -204,14 +204,12 @@ test("while the old Kuvo Code app is attached to this Mac's box, removing a mach
   await reopened();
 });
 
-test("a machine's other computers can't remove or rename one shared with another setup through this Mac: only this Mac itself can", async () => {
+test("your other computers rename a machine through this Mac, one an earlier Kuvo Code says is shared too (#783)", async () => {
   fresh();
   link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ at: Date.now(), agents: { at: Date.now(), list: [], shared: true } })), devbox.key, link.publicOf(mac)).message, undefined, (sender, payload) => link.peerMail(sender, payload, null));
-  const [removed] = await handed(mini, { method: "DELETE", item: devbox.pub });
-  assert.deepEqual([removed.status, removed.value], [409, { message: "devbox is shared with another setup: only Studio itself can remove it." }]);
-  const [renamed] = await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Shared" } });
-  assert.equal(renamed.status, 409);
-  assert.deepEqual(names(), ["devbox", "mini", "attic"]);
+  const [renamed] = await handed(mini, { method: "PATCH", item: devbox.pub, body: { name: "Build box" } });
+  assert.equal(renamed.status, 200);
+  assert.deepEqual(names(), ["Build box", "mini", "attic"]);
 });
 
 test("a name you gave a machine is the one your phones are given for it too", async () => {

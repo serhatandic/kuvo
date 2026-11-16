@@ -59,8 +59,6 @@ import { macLink } from "../state";
 import { agentsWorking, newerVersion, offerHeld, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
-import { sharedMachine } from "../setup/settle";
-import { readLink } from "../state";
 import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -632,18 +630,14 @@ async function clockPage(context: RouteContext): Promise<SettingsPage> {
   if (!here.yours) choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
   // (A computer without the zone's rules, a Linux machine without tzdata, wakes on UTC: said so.)
   const unruled = here.yours && !zoneFilesFor(setting).zoneinfo && !hasZoneRules(here.zone);
-  // (A machine Macs of two setups share keeps its pick to itself: "Your time zone".)
-  const alone = sharedMachine(readLink());
-  const everywhere = alone ? `on ${name}` : "on all your computers";
+  const everywhere = "on all your computers";
   const line = unruled
     ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.`
     : setting?.carried
       ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it ${everywhere}.`
       : here.yours
         ? `Bots' wake-ups and times of day go by it ${everywhere}. It's ${offset} now.`
-        : alone
-          ? `None set yet: ${name} goes by its own clock. Pick one for ${name}.`
-          : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+        : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "clock", title: "Clock",
     groups: [{

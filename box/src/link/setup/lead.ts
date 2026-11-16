@@ -1,6 +1,6 @@
 // When a box leads a setup of its own (PROTOCOL.md, "Your setup"): this Mac's box, once it numbers
-// on its own and each of its machines has said it isn't shared with another Mac (so Macs that share a
-// machine stay numbering as before, from the first one set up); a box no Mac set up (one you paired a phone with
+// on its own (Macs that set up the same machine number from the first one set up, which leads) and
+// each of its machines has said it knows setups; a box no Mac set up (one you paired a phone with
 // by itself, on Linux say). It's made once, at epoch 1, with this box as the main computer, and named
 // in this Mac's peers document, which its machines take. Looked at once a minute, and as the box
 // starts; with what follows it on this box: its card (`card.ts`) and its peers told.

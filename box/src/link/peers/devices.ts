@@ -3,8 +3,7 @@
 // pairs phones (your setup's main computer, or a box in no setup), it pairs the app's key at once.
 // A member of a setup vouches for it instead: it hands the ask to the main computer's box by mail
 // (`work-queue/forward.ts`, as what you do to one of your machines is handed on), which pairs it
-// only for a box its own peers document names as one of its machines, never one shared with
-// another setup, and only while it lets your devices in. Every box of the setup then lets the
+// only for a box its own peers document names as one of its machines, and only while it lets your devices in. Every box of the setup then lets the
 // device in from the main computer's phones document, as it does a phone. A removed key stays out,
 // and so does the computer that vouched for it: removing a device a box vouched for keeps that box
 // from vouching for another (`vouchBlocked`, phones.ts), until you allow it again on the main
@@ -21,12 +20,10 @@ import { ownName } from "../letters/start";
 import { fits, pairDevice } from "../phones";
 import { mainElsewhere } from "../setup/main-only";
 import { followedSetup } from "../setup/record";
-import { sharedMachine } from "../setup/settle";
 import { macLink, readLink, updateLink } from "../state";
 import { forwardAct, takesForwarded } from "../work-queue/forward";
 import type { LinkState } from "../state";
 import type { Act, Acted } from "../work-queue/forward";
-import { isApart } from "./apart";
 import { readPeerAgents } from "./directory";
 import { macsOf, ownKey, peersOf } from "./known";
 import type { MailSender } from "./known";
@@ -110,8 +107,7 @@ export function pairHere(device: AskingDevice, by?: { key: string; name: string 
 const ownMachines = (link: LinkState): Set<string> => new Set(IS_MAC ? macPeersBody(link).boxes.filter(box => box.kind === "machine").map(box => box.key as string) : []);
 
 /** A member's box vouching for the app on its computer (`area: "devices"`, by mail): paired here
- * only on the setup's main computer, for a box its own peers document names, that isn't shared
- * with another setup (as it says, or as this box knows it). */
+ * only on the setup's main computer, for a box its own peers document names. */
 export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
   const here = ownName();
   const link = readLink();
@@ -119,7 +115,7 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<Acted> {
   if (!device) return answer(400, NOT_GIVEN);
   const setup = followedSetup(link);
   if (!link || setup?.role !== "primary") return answer(409, { message: `${here} isn't your setup's main computer, so it adds no devices for your other computers.` });
-  if (sharedMachine(link) || isApart(sender.key, link) || !ownMachines(link).has(sender.key)) return answer(409, { message: `Only computers in ${here}'s own setup can add your devices.` });
+  if (!ownMachines(link).has(sender.key)) return answer(409, { message: `Only computers in ${here}'s own setup can add your devices.` });
   // (Named as `kuvo/computers` lists it, where you allow it again.)
   return pairHere(device, { key: sender.key, name: peersOf(link).find(peer => peer.key === sender.key)?.name || "that computer" });
 }
@@ -130,7 +126,6 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   const link = readLink();
   const device = givenDevice(given, link);
   if (!device) return answer(400, NOT_GIVEN);
-  if (sharedMachine(link)) return answer(409, { message: "This computer is shared with another setup, so it can't add your devices by itself." });
   // Each Mac's own switch counts: one that lets no device in asks its main computer for none.
   if (switchOff()) return answer(409, switchOffWords());
   const main = mainElsewhere(link);
