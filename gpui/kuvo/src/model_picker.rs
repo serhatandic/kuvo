@@ -624,6 +624,7 @@ impl ModelPicker {
                         .flex()
                         .items_center()
                         .gap(space::S2)
+                        .w_full()
                         .h(scaled(px(ROW)))
                         .pl(space::S3)
                         .pr(space::S2)
@@ -769,6 +770,7 @@ impl Render for ModelPicker {
         } else {
             uniform_list("model-rows", rows, cx.processor(|this, range: Range<usize>, _, cx| this.rows_in(range, cx)))
                 .track_scroll(&self.scroll)
+                .w_full()
                 .h(height)
                 .p(space::S1)
                 .into_any_element()

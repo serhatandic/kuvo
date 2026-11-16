@@ -249,9 +249,11 @@ fn timings(cx: &mut TestAppContext) {
             steps.push(took);
         }
         // Scrolling: a wheel event's frame.
-        let list = bounds(cx, "model-picker").unwrap();
+        // (Found by its selector, which only a debug build has.)
+        let list = bounds(cx, "model-picker");
         let mut scrolls = Vec::new();
-        for _ in 0..30 {
+        for _ in 0..if list.is_some() { 30 } else { 0 } {
+            let list = list.unwrap();
             cx.simulate_event(gpui::ScrollEvent { position: list.center(), delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-40.))), modifiers: Modifiers::default(), touch_phase: gpui::TouchPhase::Moved, source: gpui::ScrollSource::Pointer });
             let took = cx.update(|window, cx| {
                 let start = Instant::now();
@@ -270,6 +272,8 @@ fn timings(cx: &mut TestAppContext) {
         say("open to first frame", opens);
         say("search a keystroke (background)", searches);
         say("arrow and frame", steps);
-        say("scroll frame", scrolls);
+        if !scrolls.is_empty() {
+            say("scroll frame", scrolls);
+        }
     }
 }
