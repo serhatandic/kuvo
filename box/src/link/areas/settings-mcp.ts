@@ -266,7 +266,8 @@ function flowOf(context: RouteContext, flow: ReturnType<typeof flowsOf>[number])
     ...(opens ? { opens } : {}),
     // (Its page ends at an address on this box's computer: from elsewhere, pasted back.)
     ...(context.request.fromApp ? {} : { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } }),
-    actions: [...(opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : []), { id: "finish", title: "Finish" }, { id: "cancel", title: "Cancel" }],
+    // (`finish` takes a pasted address: offered only with the field for it.)
+    actions: [...(opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : []), ...(context.request.fromApp ? [] : [{ id: "finish", title: "Finish" }]), { id: "cancel", title: "Cancel" }],
   };
 }
 

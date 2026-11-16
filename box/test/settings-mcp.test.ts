@@ -230,13 +230,14 @@ test("a server's sign-in is led by the box: started, followed, done, and its ser
   // The page ends at an address on the box's computer: the app beside it has nothing to paste;
   // any other client (a phone, another computer) pastes the address back.
   expect(tracker.flow.code).toBeUndefined()
+  expect(tracker.flow.actions.map((each: any) => each.id)).toEqual(["open-sign-in", "cancel"])
   tracker = rowOf(await page(false), "server-tracker")
-  expect(tracker.flow.code).toEqual({ title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" })
   expect(tracker.flow.actions.map((each: any) => each.id)).toEqual(["open-sign-in", "finish", "cancel"])
+  expect(tracker.flow.code).toEqual({ title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" })
   // Sign In… isn't offered twice.
   expect(tracker.actions.map((each: any) => each.id)).toEqual(["edit", "remove"])
   // Open Sign-In Page is the client's to open.
-  expect((await act(tracker, "open-sign-in")).status).toBe(400)
+  expect((await act(tracker, "open-sign-in", undefined, tracker.revision, false)).status).toBe(400)
 
   // The address the page ended on, pasted: loaded on this computer, and the engine signs it in.
   const pasted = `http://127.0.0.1:${fake.port}/mcp/oauth/callback?code=abc&state=1`

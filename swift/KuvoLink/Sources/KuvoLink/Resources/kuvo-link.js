@@ -51772,7 +51772,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f71275ec89c1";
+var BRIDGE_VERSION = "fc2751d21adf";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62872,7 +62872,7 @@ function flowOf(context, flow) {
     line: "Finish signing in on its page in your browser.",
     ...opens ? { opens } : {},
     ...context.request.fromApp ? {} : { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } },
-    actions: [...opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : [], { id: "finish", title: "Finish" }, { id: "cancel", title: "Cancel" }]
+    actions: [...opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : [], ...context.request.fromApp ? [] : [{ id: "finish", title: "Finish" }], { id: "cancel", title: "Cancel" }]
   };
 }
 async function followFlows(known) {
