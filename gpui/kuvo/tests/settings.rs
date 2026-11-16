@@ -670,11 +670,12 @@ fn models_are_set_in_this_computers_settings_from_what_was_read(cx: &mut TestApp
     let (workspace, cx) = open(cx, stand_in.clone());
     section(&workspace, cx, "Models");
     click(cx, "model-2-menu");
-    click(cx, "menu-item-GPT-6");
+    click(cx, "model-rail-openai");
+    click(cx, "model-row-openai/gpt-6");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/config"), vec![json!({ "changes": [{ "path": ["subagent_model"], "value": "openai/gpt-6", "was": null }] })]);
     // The box's answer is shown: the menu names it.
     click(cx, "model-2-menu");
-    click(cx, "menu-item-Same as the conversation");
+    click(cx, "model-row-unset");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/config").last(), Some(&json!({ "changes": [{ "path": ["subagent_model"], "value": null, "was": "openai/gpt-6" }] })));
 }
 
@@ -820,7 +821,8 @@ fn a_change_the_box_turns_down_is_said_over_the_page(cx: &mut TestAppContext) {
     // Changed on its computer meanwhile: refused, and read again.
     stand_in.set_config_value(&["model"], json!("google/gemini-3-pro"));
     click(cx, "model-0-menu");
-    click(cx, "menu-item-GPT-6");
+    click(cx, "model-rail-openai");
+    click(cx, "model-row-openai/gpt-6");
     assert!(shown(cx, "settings-problem"));
     assert_eq!(stand_in.seen_at("GET", "kuvo/config").len(), 2);
     click(cx, "settings-problem-close");
@@ -1455,8 +1457,10 @@ fn agents_are_listed_as_the_box_says_and_edited_in_its_form(cx: &mut TestAppCont
     assert!(form_words(&view, cx).contains(&("mode".into(), "New sessions can start in it, and it works when you name it or another agent hands it part of the work.".into())));
     click(cx, "settings-form-mode-menu");
     click(cx, "menu-item-Subagent");
+    // Its model from the model picker, as everywhere a model is picked.
     click(cx, "settings-form-model-menu");
-    click(cx, "menu-item-Claude Sonnet 4.5");
+    click(cx, "model-rail-anthropic");
+    click(cx, "model-row-anthropic/claude-sonnet-4-5");
     click(cx, "settings-form-submit");
     let sent = bodies(&stand_in, "POST", "kuvo/settings/agents/agent-reviewer/edit");
     assert_eq!(sent.len(), 1);

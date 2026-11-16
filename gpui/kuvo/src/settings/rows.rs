@@ -235,6 +235,10 @@ pub enum Control {
     /// (words, a quieter line, what picking one does, or none where it can't be picked from here,
     /// and whether it's it).
     Menu { shown: Option<String>, choices: Vec<(String, Option<String>, Option<Act>, bool)> },
+    /// A model, from the model picker (the engine's models, which the engine's settings name as
+    /// `provider/model`): what's shown, the model now, what leaving it unset means, and where it's
+    /// set.
+    Model { shown: String, current: Option<kuvo_box::typed::ModelRef>, unset: String, path: &'static [&'static str], was: Option<String> },
     /// Buttons, in order.
     Buttons(Vec<Push>),
     /// A field (kept by the view under the row's key), saved as Return is pressed or it's left
@@ -719,6 +723,7 @@ fn models(facts: &Facts) -> Vec<Block> {
         Reading::Ready(offered) => offered.models.iter().filter(|model| model.side == kuvo_box::models::Side::Engine && model.is_offered()).map(|model| (format!("{}/{}", model.provider_id, model.id), model.name.clone())).collect(),
         _ => Vec::new(),
     };
+    let ready = matches!(facts.offered, Reading::Ready(_));
     let rows = MODEL_SETTINGS
         .iter()
         .enumerate()
@@ -727,9 +732,12 @@ fn models(facts: &Facts) -> Vec<Block> {
             let now = config.model_at(path);
             let control = facts.busy(&key).unwrap_or_else(|| {
                 let shown = now.as_ref().map(|now| offered.iter().find(|(id, _)| id == now).map_or_else(|| now.clone(), |(_, name)| name.clone())).unwrap_or_else(|| (*none).to_owned());
-                let mut choices = vec![((*none).to_owned(), None, Some(Act::SetModel { path, model: None, was: now.clone() }), now.is_none())];
-                choices.extend(offered.iter().map(|(id, name)| (name.clone(), None, Some(Act::SetModel { path, model: Some(id.clone()), was: now.clone() }), now.as_deref() == Some(id))));
-                Control::Menu { shown: Some(shown), choices }
+                if !ready {
+                    // (The models not read yet, or not readable: only leaving it to the engine.)
+                    return Control::Menu { shown: Some(shown), choices: vec![((*none).to_owned(), None, Some(Act::SetModel { path, model: None, was: now.clone() }), now.is_none())] };
+                }
+                let current = now.as_deref().and_then(|now| now.split_once('/')).map(|(provider, id)| kuvo_box::typed::ModelRef { provider_id: provider.to_owned(), id: id.to_owned(), variant: None });
+                Control::Model { shown, current, unset: (*none).to_owned(), path, was: now.clone() }
             });
             Row::new(key, *title, *detail, control)
         })

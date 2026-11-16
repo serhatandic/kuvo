@@ -12,10 +12,14 @@ use gpui::{
     StyledImage as _, Subscription, Task, Window, actions, div, img, prelude::FluentBuilder as _, px,
 };
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::model_picker::{Catalog, ModelPicker};
+
 use kuvo_box::approval::{Approval, Here, Picked, Shown};
-use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartIn, effort_title};
+use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartIn, Starred, effort_title};
 use kuvo_box::typed::{self, Answer, ModelRef, Offers};
 use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
@@ -30,7 +34,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-actions!(composer, [SlashNext, SlashPrevious, SlashPick, SlashDismiss, SendQueued]);
+actions!(composer, [SlashNext, SlashPrevious, SlashPick, SlashDismiss, SendQueued, ChooseModel]);
 
 const CONTEXT: &str = "Composer";
 const SLASH: &str = "SlashMenu";
@@ -44,7 +48,7 @@ const SLASH_MOST: usize = 8;
 
 /// The keys "/"'s list takes while it shows, ahead of the field's own; ⌘Return, for after this run.
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([KeyBinding::new("cmd-enter", SendQueued, Some(CONTEXT))]);
+    cx.bind_keys([KeyBinding::new("cmd-enter", SendQueued, Some(CONTEXT)), KeyBinding::new("cmd-shift-m", ChooseModel, Some(CONTEXT))]);
     let context = format!("{SLASH} > {}", kuvo_ui::text_field::CONTEXT);
     let context = Some(context.as_str());
     cx.bind_keys([
@@ -172,6 +176,10 @@ pub struct Composer {
     has_queue: bool,
     /// The menu beside Send while the agent works.
     send_menu: PopoverMenuHandle,
+    /// The model picker, open from its chip or ⇧⌘M.
+    model_menu: PopoverMenuHandle,
+    /// What the picker offers, worked out once for what the box last said.
+    catalog: Option<Arc<Catalog>>,
     /// Messages sent from here that the conversation doesn't have yet, in the order sent.
     outgoing: Vec<Outgoing>,
     /// Whether it reads the box by itself (the app), or shows what it's handed (tests and shots).
@@ -298,6 +306,8 @@ impl Composer {
             on_its_way: None,
             has_queue: false,
             send_menu: PopoverMenuHandle::default(),
+            model_menu: PopoverMenuHandle::default(),
+            catalog: None,
             outgoing: Vec::new(),
             live: read,
             models: Models::default(),
@@ -577,6 +587,7 @@ impl Composer {
             self.picked = models.offered.as_ref().and_then(|offered| offered.starting.clone().flatten());
         }
         self.models = models;
+        self.catalog = None;
         cx.notify();
     }
 
@@ -616,6 +627,9 @@ impl Composer {
         if let Some(offered) = offered {
             if self.picked.is_none() {
                 self.picked = offered.starting.clone().flatten();
+            }
+            if self.models.offered.as_ref() != Some(&offered) {
+                self.catalog = None;
             }
             self.models.offered = Some(offered);
         }
@@ -1741,45 +1755,86 @@ impl Composer {
             .collect()
     }
 
+    /// What the picker offers here, worked out once for what the box last said.
+    fn catalog(&mut self) -> Arc<Catalog> {
+        if let Some(catalog) = &self.catalog {
+            return catalog.clone();
+        }
+        let side = match &self.target {
+            Target::Session { place, .. } => Some(Side::of(*place)),
+            Target::New(_) | Target::Group { .. } => None,
+        };
+        let catalog = Arc::new(self.models.offered.as_ref().map(|offered| Catalog::new(offered, |model| side.is_none_or(|side| model.side == side))).unwrap_or_default());
+        self.catalog = Some(catalog.clone());
+        catalog
+    }
+
+    /// The picker, as it opens: what the box offers, the model now marked, your stars.
+    fn model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ModelPicker> {
+        let catalog = self.catalog();
+        let starred = self.models.offered.as_ref().and_then(|offered| offered.starred.clone());
+        let notice = (!self.can_pick()).then(|| "Finding where this conversation runs…".into());
+        // Another side's models (the engine's, or the coding agents') carry the conversation
+        // over to a new session there, which this app can't do yet.
+        let note = self.left_out().then(|| "Other agents’ models aren’t in this app yet: start a new session to use one.".into());
+        let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
+        let (current, client) = (self.model(), self.client.clone());
+        cx.new(|cx| {
+            ModelPicker::new(
+                catalog,
+                starred,
+                current,
+                Some(client),
+                Rc::new(move |picked, _, cx| {
+                    if let Some(picked) = picked {
+                        this.update(cx, |this, cx| this.pick_keeping_effort(picked, cx)).ok();
+                    }
+                }),
+                window,
+                cx,
+            )
+            .notice(notice)
+            .note(note)
+            .on_starred(Rc::new(move |starred: Vec<Starred>, cx| {
+                kept.update(cx, |this, _| {
+                    if let Some(offered) = this.models.offered.as_mut() {
+                        offered.starred = Some(starred);
+                    }
+                })
+                .ok();
+            }))
+        })
+    }
+
+    /// Opens the model picker (⇧⌘M, and shots).
+    pub fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<ModelPicker>> {
+        if self.chip_label().is_none() || self.client.gate().is_held() {
+            return None;
+        }
+        let picker = self.model_picker(window, cx);
+        self.model_menu.open(picker.clone(), window, cx);
+        cx.notify();
+        Some(picker)
+    }
+
+    /// The model picked, at the effort it had where the new one offers it too (as 0.7 kept it).
+    fn pick_keeping_effort(&mut self, mut picked: ModelRef, cx: &mut Context<Self>) {
+        let effort = self.model().and_then(|model| model.variant);
+        let offers = self.models.offered.as_ref().and_then(|offered| offered.models.iter().find(|model| model.is(&picked))).map(|model| model.efforts.clone()).unwrap_or_default();
+        picked.variant = effort.filter(|effort| offers.contains(effort));
+        self.pick(picked, cx);
+    }
+
     fn model_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let name = self.chip_label()?;
-        let model = self.model();
-        let offered = self.menu_models();
-        let left_out = self.left_out();
-        let can_pick = self.can_pick();
+        let trigger = div().debug_selector(|| "model-chip".into()).child(Button::new("model-chip", name.clone()).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).tooltip(name).tooltip_keys("⇧⌘M"));
         let this = cx.entity().downgrade();
-        let current = model.clone();
-        let trigger = Button::new("model-chip", name).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).icon_after(IconName::ChevronDown);
         Some(
-            PopoverMenu::new("model-menu", trigger, move |_, cx| {
-                let (offered, current, this) = (offered.clone(), current.clone(), this.clone());
-                let (left_out, can_pick) = (left_out, can_pick);
-                cx.new(|cx| {
-                    let mut menu = Menu::new(cx).width(px(260.));
-                    if !can_pick {
-                        menu = menu.entry(MenuEntry::new("Finding where this conversation runs…").disabled(true));
-                        return menu;
-                    }
-                    if offered.is_empty() {
-                        menu = menu.entry(MenuEntry::new("No models to offer yet").disabled(true));
-                    }
-                    for model in offered {
-                        let reference = model.reference();
-                        let checked = current.as_ref().is_some_and(|current| current.provider_id == reference.provider_id && current.id == reference.id);
-                        let this = this.clone();
-                        menu = menu.entry(MenuEntry::new(model.name.clone()).checked(checked).on_select(move |_, cx| {
-                            this.update(cx, |this, cx| this.pick(reference.clone(), cx)).ok();
-                        }));
-                    }
-                    // Another side's models (the engine's, or the coding agents') carry the
-                    // conversation over to a new session there, which this app can't do yet.
-                    if left_out {
-                        menu = menu.separator().entry(MenuEntry::new("Other agents’ models").detail("not in this app yet").disabled(true));
-                    }
-                    menu
-                })
-            })
-            .into_any_element(),
+            PopoverMenu::view("model-menu", trigger, move |window, cx| this.update(cx, |this, cx| this.model_picker(window, cx)).expect("the composer opens its picker"))
+                .with_handle(self.model_menu.clone())
+                .above()
+                .centered()
+                .into_any_element(),
         )
     }
 
@@ -1802,7 +1857,6 @@ impl Composer {
                     .ghost()
                     .size(ButtonSize::Small)
                     .icon(approval_icon(&shown.approval))
-                    .icon_after(IconName::ChevronDown)
                     .tooltip(tip),
             )
             .children(holding.is_some().then(|| div().absolute().top(px(5.)).right(px(5.)).size(px(6.)).rounded_full().bg(c.warning)));
@@ -1838,6 +1892,8 @@ impl Composer {
                     menu
                 })
             })
+            .above()
+            .centered()
             .into_any_element(),
         )
     }
@@ -1855,7 +1911,6 @@ impl Composer {
                 .ghost()
                 .size(ButtonSize::Small)
                 .icon(if worktree { IconName::Branch } else { IconName::Folder })
-                .icon_after(IconName::ChevronDown)
                 .tooltip("Where the session works: in the project’s folder, or in a worktree of its own"),
         );
         let this = cx.entity().downgrade();
@@ -1874,6 +1929,8 @@ impl Composer {
                         }))
                 })
             })
+            .above()
+            .centered()
             .into_any_element(),
         )
     }
@@ -1918,7 +1975,8 @@ impl Composer {
         }
         let label = model.variant.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());
         let this = cx.entity().downgrade();
-        let trigger = Button::new("effort-chip", label).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).icon_after(IconName::ChevronDown);
+        // (Its own pick beside the model's, of only the efforts that model offers.)
+        let trigger = div().debug_selector(|| "effort-chip".into()).child(Button::new("effort-chip", label).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).tooltip("Effort: how hard it thinks before it answers"));
         Some(
             PopoverMenu::new("effort-menu", trigger, move |_, cx| {
                 let (efforts, model, this) = (efforts.clone(), model.clone(), this.clone());
@@ -1935,6 +1993,8 @@ impl Composer {
                     menu
                 })
             })
+            .above()
+            .centered()
             .into_any_element(),
         )
     }
@@ -2126,7 +2186,7 @@ impl Composer {
         let trigger = Button::icon_only("send-choices", IconName::ChevronDown, "More ways to send").ghost().size(ButtonSize::Small).disabled(self.sending);
         div()
             .debug_selector(|| "send-choices".into())
-            .child(PopoverMenu::new("send-choices-menu", trigger, move |_, cx| Self::send_menu(this.clone(), can_queue, cx)).with_handle(self.send_menu.clone()).align_right())
+            .child(PopoverMenu::new("send-choices-menu", trigger, move |_, cx| Self::send_menu(this.clone(), can_queue, cx)).with_handle(self.send_menu.clone()).align_right().above().centered())
             .into_any_element()
     }
 
@@ -2245,6 +2305,9 @@ impl Render for Composer {
             .id("composer")
             .key_context(context.as_str())
             .on_action(cx.listener(|this, _: &SendQueued, _, cx| this.send_as(SendAs::Queue, cx)))
+            .on_action(cx.listener(|this, _: &ChooseModel, window, cx| {
+                this.open_model_picker(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &SlashNext, _, cx| this.slash_step(1, cx)))
             .on_action(cx.listener(|this, _: &SlashPrevious, _, cx| this.slash_step(-1, cx)))
             .on_action(cx.listener(|this, _: &SlashPick, window, cx| this.slash_pick(this.slash_at, window, cx)))

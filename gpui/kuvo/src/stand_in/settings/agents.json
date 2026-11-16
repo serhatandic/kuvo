@@ -94,27 +94,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -386,27 +406,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -692,27 +732,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -984,27 +1044,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -1276,27 +1356,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -1578,27 +1678,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -1880,27 +2000,47 @@
               {
                "id": "anthropic/claude-sonnet-4-5",
                "title": "Claude Sonnet 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-sonnet-4-5"
+               }
               },
               {
                "id": "anthropic/claude-haiku-4-5",
                "title": "Claude Haiku 4.5",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-haiku-4-5"
+               }
               },
               {
                "id": "anthropic/claude-opus-4-1",
                "title": "Claude Opus 4.1",
-               "line": "anthropic"
+               "line": "anthropic",
+               "model": {
+                "providerID": "anthropic",
+                "id": "claude-opus-4-1"
+               }
               },
               {
                "id": "openai/gpt-5",
                "title": "GPT-5",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5"
+               }
               },
               {
                "id": "openai/gpt-5-mini",
                "title": "GPT-5 mini",
-               "line": "openai"
+               "line": "openai",
+               "model": {
+                "providerID": "openai",
+                "id": "gpt-5-mini"
+               }
               }
              ]
             },
@@ -2183,27 +2323,47 @@
            {
             "id": "anthropic/claude-sonnet-4-5",
             "title": "Claude Sonnet 4.5",
-            "line": "anthropic"
+            "line": "anthropic",
+            "model": {
+             "providerID": "anthropic",
+             "id": "claude-sonnet-4-5"
+            }
            },
            {
             "id": "anthropic/claude-haiku-4-5",
             "title": "Claude Haiku 4.5",
-            "line": "anthropic"
+            "line": "anthropic",
+            "model": {
+             "providerID": "anthropic",
+             "id": "claude-haiku-4-5"
+            }
            },
            {
             "id": "anthropic/claude-opus-4-1",
             "title": "Claude Opus 4.1",
-            "line": "anthropic"
+            "line": "anthropic",
+            "model": {
+             "providerID": "anthropic",
+             "id": "claude-opus-4-1"
+            }
            },
            {
             "id": "openai/gpt-5",
             "title": "GPT-5",
-            "line": "openai"
+            "line": "openai",
+            "model": {
+             "providerID": "openai",
+             "id": "gpt-5"
+            }
            },
            {
             "id": "openai/gpt-5-mini",
             "title": "GPT-5 mini",
-            "line": "openai"
+            "line": "openai",
+            "model": {
+             "providerID": "openai",
+             "id": "gpt-5-mini"
+            }
            }
           ]
          },

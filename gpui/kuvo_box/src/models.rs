@@ -168,10 +168,35 @@ pub struct Known {
     pub agents: bool,
 }
 
+/// A provider of the models offered, named as its side names it (`models.offered.providers`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Provider {
+    pub id: String,
+    pub name: String,
+    /// Its account's own label (a coding agent's second sign-in, "Work").
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// A starred model: its provider and id (`models.starred`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
+pub struct Starred {
+    #[serde(rename = "providerID")]
+    pub provider_id: String,
+    pub id: String,
+}
+
 /// The models offered, in the order a picker draws them, and the one a new session starts on.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Offered {
     pub models: Vec<OfferedModel>,
+    /// Each provider's name (none from a box before `models.offered.providers`).
+    #[serde(default)]
+    pub providers: Vec<Provider>,
+    /// Your starred models, in the order starred, as the box keeps them for every client; `None`
+    /// from a box that keeps none (before `models.starred`): stars can't be kept there.
+    #[serde(default)]
+    pub starred: Option<Vec<Starred>>,
     #[serde(default)]
     pub known: Known,
     /// The coding agents' accounts whose list isn't all they run yet: one of theirs not listed
@@ -185,6 +210,11 @@ pub struct Offered {
 }
 
 impl Offered {
+    /// `provider`'s name, as its side names it (its id where the box names none).
+    pub fn provider_name(&self, provider: &str) -> String {
+        self.providers.iter().find(|each| each.id == provider).map(|each| each.name.clone()).unwrap_or_else(|| provider.to_owned())
+    }
+
     /// Whether both sides could say their models.
     pub fn is_whole(&self) -> bool {
         self.known.engine && self.known.agents
@@ -206,6 +236,12 @@ impl Offered {
             self.models.extend(before.models.iter().filter(on(Side::Agents)).cloned());
             self.listing = before.listing.clone();
             self.known.agents = true;
+        }
+        // (The names of the providers of what was kept.)
+        for provider in &before.providers {
+            if !self.providers.iter().any(|each| each.id == provider.id) && self.models.iter().any(|model| model.provider_id == provider.id) {
+                self.providers.push(provider.clone());
+            }
         }
         self
     }
@@ -278,6 +314,17 @@ impl BoxClient {
         }
         let path = if query.is_empty() { "kuvo/models/offered".to_owned() } else { format!("kuvo/models/offered?{}", query.join("&")) };
         self.get(&path)
+    }
+
+    /// Stars `model` or takes its star away (`kuvo/models/starred`): your starred models now.
+    pub fn set_starred(&self, model: &Starred, starred: bool) -> Result<Vec<Starred>> {
+        #[derive(Deserialize)]
+        struct Told {
+            starred: Vec<Starred>,
+        }
+        let body = json!({ "providerID": model.provider_id, "id": model.id, "starred": starred });
+        let told: Told = decode(&self.send(&Request::post("kuvo/models/starred", body))?)?;
+        Ok(told.starred)
     }
 
     /// Puts `session` on `model` (with its effort as `variant`), from its next step.

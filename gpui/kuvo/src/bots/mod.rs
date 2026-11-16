@@ -104,6 +104,9 @@ pub enum Control {
     Danger(String, Act),
     /// What's chosen, and the choices: each one's name, a line under it, what it does, whether it's on.
     Menu { shown: String, choices: Vec<(String, String, Act, bool)> },
+    /// A model, from the model picker: what's shown, the model now, and whether it's New Bot's
+    /// (whose first choice leaves it to the box: what `unset` says).
+    Model { shown: String, current: Option<ModelRef>, new: Option<(String, String)> },
     /// The new bot's name, typed in the row.
     NameField,
 }
@@ -446,6 +449,22 @@ impl BotsView {
         }
     }
 
+    /// The models offered, as the box last said them (the model picker's).
+    pub(crate) fn offered_models(&self) -> Option<&Offered> {
+        self.offered()
+    }
+
+    pub(crate) fn client(&self) -> &BoxClient {
+        &self.client
+    }
+
+    /// Your stars as a picker changed them, kept for the next one opened.
+    pub(crate) fn keep_starred(&mut self, starred: Vec<kuvo_box::models::Starred>) {
+        if let Reading::Ready(offered) = &mut self.offered {
+            offered.starred = Some(starred);
+        }
+    }
+
     fn offered(&self) -> Option<&Offered> {
         match &self.offered {
             Reading::Ready(offered) => Some(offered),
@@ -613,10 +632,7 @@ impl BotsView {
         // Its model, among those the box offers.
         let model = match (&self.offered, &bot.model) {
             (Reading::NotYet, _) => Control::Busy("Loading…".into()),
-            (Reading::Ready(offered), model) => Control::Menu {
-                shown: model.as_ref().map(|model| self.model_name(model)).unwrap_or_else(|| "None".into()),
-                choices: offered.models.iter().filter(|each| each.is_offered()).map(|each| (each.name.clone(), String::new(), Act::SetModel(each.reference()), model.as_ref().is_some_and(|model| each.is(model)))).collect(),
-            },
+            (Reading::Ready(_), model) => Control::Model { shown: model.as_ref().map(|model| self.model_name(model)).unwrap_or_else(|| "None".into()), current: model.clone(), new: None },
             (Reading::Failed(_), model) => Control::Text(model.as_ref().map(|model| self.model_name(model)).unwrap_or_default()),
         };
         let model_line = match &self.offered {
@@ -737,10 +753,7 @@ impl BotsView {
             (None, Some(starting)) => starting.clone(),
             (None, None) => "Picked for you".into(),
         };
-        let mut models = vec![(starting.clone().unwrap_or_else(|| "Picked for you".into()), format!("What a new bot starts on, on {}", self.this_box), Act::FormModel(None), self.form.model.is_none())];
-        if let Some(offered) = self.offered() {
-            models.extend(offered.models.iter().filter(|each| each.is_offered()).map(|each| (each.name.clone(), String::new(), Act::FormModel(Some(each.reference())), self.form.model.as_ref().is_some_and(|model| each.is(model)))));
-        }
+        let unset = (starting.clone().unwrap_or_else(|| "Picked for you".into()), format!("What a new bot starts on, on {}", self.this_box));
         let mut rows = vec![
             Row { key: "new-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::NameField },
             Row {
@@ -755,7 +768,7 @@ impl BotsView {
                 detail: has.map(|each| each.description.clone()).filter(|line| !line.is_empty()).unwrap_or_else(|| "How it talks.".into()),
                 control: Control::Menu { shown: has.map(|each| each.name.clone()).or(personality).unwrap_or_else(|| OWN_WAY.to_owned()), choices },
             },
-            Row { key: "new-model".into(), title: "Model".into(), detail: "What it thinks with.".into(), control: Control::Menu { shown: model_shown, choices: models } },
+            Row { key: "new-model".into(), title: "Model".into(), detail: "What it thinks with.".into(), control: Control::Model { shown: model_shown, current: self.form.model.clone(), new: Some(unset) } },
         ];
         if !templates.projects.is_empty() {
             let mut projects = vec![("A folder of its own".to_owned(), String::new(), Act::FormProject(None), self.form.project.is_none())];

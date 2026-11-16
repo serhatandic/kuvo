@@ -17,7 +17,10 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
+use std::{rc::Rc, sync::Arc};
+
 use super::{Act, BotsView, Control, Item, Row, Sheet, Shown, Tone, state_words};
+use crate::model_picker::{Catalog, ModelPicker};
 use crate::areas::{bot_face, look_tint};
 
 /// The widest the page's cards grow (Settings' width).
@@ -235,6 +238,45 @@ impl BotsView {
             Control::Danger(label, act) => button(key, label, act, true, cx).into_any_element(),
             Control::Face(look, label, act) => div().flex().items_center().gap(space::S3).children(look.map(|look| bot_face(&look, px(28.)))).child(button(key, label, act, false, cx)).into_any_element(),
             Control::NameField => div().debug_selector(|| "new-name-field".into()).w(px(260.)).child(self.new_name.clone()).into_any_element(),
+            Control::Model { shown, current, new } => {
+                let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
+                let offered = self.offered_models().cloned().unwrap_or_default();
+                let client = self.client().clone();
+                crate::model_picker::setting_button(
+                    key,
+                    shown,
+                    move |window, cx| {
+                        let mut catalog = Catalog::new(&offered, |_| true);
+                        let is_new = new.is_some();
+                        if let Some((title, line)) = new.clone() {
+                            catalog = catalog.with_unset(title, line, current.is_none());
+                        }
+                        let (this, kept, client, current, starred) = (this.clone(), kept.clone(), client.clone(), current.clone(), offered.starred.clone());
+                        cx.new(|cx| {
+                            ModelPicker::new(
+                                Arc::new(catalog),
+                                starred,
+                                current,
+                                Some(client),
+                                Rc::new(move |picked, _, cx| {
+                                    let act = match (is_new, picked) {
+                                        (true, picked) => Act::FormModel(picked),
+                                        (false, Some(picked)) => Act::SetModel(picked),
+                                        (false, None) => return,
+                                    };
+                                    this.update(cx, |this, cx| this.act(act, cx)).ok();
+                                }),
+                                window,
+                                cx,
+                            )
+                            .on_starred(Rc::new(move |starred, cx| {
+                                kept.update(cx, |this, _| this.keep_starred(starred)).ok();
+                            }))
+                        })
+                    },
+                    cx,
+                )
+            }
             Control::Menu { shown, choices } => {
                 let this = cx.entity().downgrade();
                 let id = SharedString::from(format!("{key}-menu"));
