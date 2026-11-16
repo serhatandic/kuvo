@@ -476,10 +476,14 @@ impl AreaView {
                     _ => bots.groups.iter().any(|group| group.id == id),
                 }),
             },
-            (Area::Queue, "item") => match &self.queue {
+            (Area::Queue, "item" | "status" | "label") => match &self.queue {
                 Reading::NotYet => None,
                 Reading::Failed(_) => Some(true),
-                Reading::Ready(said) => Some(said.items.iter().chain(&said.removed).any(|item| item.id == id)),
+                Reading::Ready(said) => Some(match kind {
+                    "item" => said.items.iter().chain(&said.removed).any(|item| item.id == id),
+                    "status" => said.statuses.iter().any(|status| status.id == id),
+                    _ => said.labels.iter().any(|label| label.id == id),
+                }),
             },
             (Area::Computers, "computer") => match &self.computers {
                 Reading::NotYet => None,

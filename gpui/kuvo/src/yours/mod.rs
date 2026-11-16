@@ -159,17 +159,16 @@ pub struct Panel {
 }
 
 /// Where the window was, kept as you go (so a quit, a closed window or a crash leaves it), to
-/// open there again: the computer it showed, whether the area's sidebar was folded away, and on
-/// each computer the area in front and what was open in each area. Nothing here is a computer's:
-/// it's only where this device's window was.
+/// open there again: the computer it showed, and on each computer the area in front, what was
+/// open in each area and whether the area's sidebar was folded away. Nothing here is a
+/// computer's: it's only where this device's window was. Kept quietly ([`keep`]): what follows
+/// your settings doesn't hear it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Place {
     /// The computer shown, by its key (none: this computer's own, else the first it reaches).
     #[serde(deserialize_with = "or_default")]
     pub computer: Option<String>,
-    #[serde(deserialize_with = "or_default")]
-    pub sidebar_folded: bool,
     /// Each computer's, by its key ([`NEAREST`] for this computer's own).
     #[serde(deserialize_with = "or_default")]
     pub computers: std::collections::BTreeMap<String, Spot>,
@@ -180,10 +179,13 @@ pub const NEAREST: &str = "nearest";
 
 /// Where a computer's window was: the area in front (`sessions`, `bots`, `queue`, `computers`, as
 /// [`crate::area::Area::slug`] names them), the conversation open in Sessions, the bot whose
-/// conversation was open in Bots, and the row picked in each other area, by the area's slug.
+/// conversation was open in Bots, the row picked in each other area (by the area's slug), and
+/// whether the sidebar was folded away (a wide window's).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Spot {
+    #[serde(deserialize_with = "or_default")]
+    pub sidebar_folded: bool,
     #[serde(deserialize_with = "or_default")]
     pub area: Option<String>,
     #[serde(deserialize_with = "or_default")]
@@ -205,7 +207,6 @@ pub struct Yours {
     pub privacy: Privacy,
     /// The first Quit's note was seen on this device (`quit_note`).
     pub quit_note_seen: bool,
-    pub place: Place,
 }
 
 /// One change to your settings, as a row makes it.
@@ -221,9 +222,13 @@ pub enum Change {
     ShareAnonymousUsage(bool),
     QuitNoteSeen,
     QueueOpened(String, f64),
+}
+
+/// A move of the window's, kept in [`Place`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Moved {
     /// The computer the window shows now (none: this computer's own).
-    ShownComputer(Option<String>),
-    SidebarFolded(bool),
+    Computer(Option<String>),
     /// Where a computer's window is now, by its key.
     Spot(String, Spot),
 }
@@ -241,11 +246,6 @@ impl Change {
             Change::ShareAnonymousUsage(on) => yours.privacy.share_anonymous_usage = on,
             Change::QueueOpened(computer, at) => { yours.queue_last_opened.insert(computer, at); }
             Change::QuitNoteSeen => yours.quit_note_seen = true,
-            Change::ShownComputer(computer) => yours.place.computer = computer,
-            Change::SidebarFolded(folded) => yours.place.sidebar_folded = folded,
-            Change::Spot(computer, spot) => {
-                yours.place.computers.insert(computer, spot);
-            }
         }
     }
 }
@@ -260,9 +260,11 @@ fn page<T: DeserializeOwned + Default>(file: &Value, key: &str) -> T {
 pub struct Store {
     path: Option<PathBuf>,
     now: Yours,
-    file: Map<String, Value>,
+    /// Where the window was: changed quietly, through a shared borrow ([`keep`]).
+    place: std::cell::RefCell<Place>,
+    file: std::cell::RefCell<Map<String, Value>>,
     /// Why the last change couldn't be written, where it couldn't.
-    problem: Option<String>,
+    problem: std::cell::RefCell<Option<String>>,
 }
 
 impl Global for Store {}
@@ -277,8 +279,9 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen, place: page(&value, "place") };
-        Store { path, now, file, problem: None }
+        let now = Yours { queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
+        let place: Place = page(&value, "place");
+        Store { path, now, place: place.into(), file: file.into(), problem: None.into() }
     }
 
     pub fn now(&self) -> &Yours {
@@ -289,22 +292,42 @@ impl Store {
         self.path.as_deref()
     }
 
-    pub fn problem(&self) -> Option<&str> {
-        self.problem.as_deref()
+    pub fn problem(&self) -> Option<String> {
+        self.problem.borrow().clone()
+    }
+
+    pub fn place(&self) -> Place {
+        self.place.borrow().clone()
+    }
+
+    /// Keeps a move of the window's, writing the file where it changed what's kept.
+    pub fn keep(&self, moved: Moved) {
+        {
+            let mut place = self.place.borrow_mut();
+            match moved {
+                Moved::Computer(computer) if place.computer != computer => place.computer = computer,
+                Moved::Spot(computer, spot) if place.computers.get(&computer) != Some(&spot) => {
+                    place.computers.insert(computer, spot);
+                }
+                _ => return,
+            }
+        }
+        *self.problem.borrow_mut() = self.write().err();
     }
 
     /// Makes `change`, and writes the file (whole, through a file beside it, so a stop halfway
     /// leaves the one before).
     pub fn change(&mut self, change: Change) {
         change.apply(&mut self.now);
-        self.problem = self.write().err();
+        *self.problem.borrow_mut() = self.write().err();
     }
 
-    fn write(&mut self) -> Result<(), String> {
+    fn write(&self) -> Result<(), String> {
+        let mut file = self.file.borrow_mut();
         let pages = [("panel", serde_json::to_value(&self.now.panel)), ("privacy", serde_json::to_value(&self.now.privacy)), ("appearance", serde_json::to_value(&self.now.appearance)), ("general", serde_json::to_value(&self.now.general)), ("notifications", serde_json::to_value(&self.now.notifications))];
         for (key, page) in pages {
             let Ok(Value::Object(page)) = page else { continue };
-            let kept = self.file.entry(key).or_insert_with(|| Value::Object(Map::new()));
+            let kept = file.entry(key).or_insert_with(|| Value::Object(Map::new()));
             if !kept.is_object() {
                 *kept = Value::Object(Map::new());
             }
@@ -315,13 +338,13 @@ impl Store {
                 }
             }
         }
-        self.file.insert("queueLastOpened".into(), serde_json::to_value(&self.now.queue_last_opened).unwrap());
-        self.file.insert("place".into(), serde_json::to_value(&self.now.place).unwrap());
+        file.insert("queueLastOpened".into(), serde_json::to_value(&self.now.queue_last_opened).unwrap());
+        file.insert("place".into(), serde_json::to_value(&*self.place.borrow()).unwrap());
         if self.now.quit_note_seen {
-            self.file.insert(QUIT_NOTE_SEEN.into(), Value::Bool(true));
+            file.insert(QUIT_NOTE_SEEN.into(), Value::Bool(true));
         }
         let Some(path) = &self.path else { return Ok(()) };
-        let text = serde_json::to_string_pretty(&self.file).map_err(|error| error.to_string())?;
+        let text = serde_json::to_string_pretty(&*file).map_err(|error| error.to_string())?;
         if let Some(folder) = path.parent() {
             std::fs::create_dir_all(folder).map_err(|error| error.to_string())?;
         }
@@ -352,17 +375,6 @@ pub fn change(change: Change, cx: &mut App) {
     if !cx.has_global::<Store>() {
         init(None, cx);
     }
-    // (Where the window is is kept as you go: written only when it moved.)
-    let place = &cx.global::<Store>().now.place;
-    let same = match &change {
-        Change::ShownComputer(computer) => &place.computer == computer,
-        Change::SidebarFolded(folded) => place.sidebar_folded == *folded,
-        Change::Spot(computer, spot) => place.computers.get(computer) == Some(spot),
-        _ => false,
-    };
-    if same {
-        return;
-    }
     let effect = change.clone();
     cx.update_global::<Store, _>(|store, _| store.change(change));
     match effect {
@@ -377,6 +389,20 @@ pub fn change(change: Change, cx: &mut App) {
         }
         Change::TextSize(size) => kuvo_ui::TextSize::set(size.ui(), cx),
         _ => {}
+    }
+}
+
+/// Where the window was last time (nothing kept yet: nowhere).
+pub fn place(cx: &App) -> Place {
+    cx.try_global::<Store>().map(Store::place).unwrap_or_default()
+}
+
+/// Keeps a move of the window's as you go (written only where it changed what's kept), quietly:
+/// what follows your settings isn't told, as nothing it draws changed. Nothing's kept where your
+/// settings weren't read (tests that don't ask for them).
+pub fn keep(moved: Moved, cx: &App) {
+    if let Some(store) = cx.try_global::<Store>() {
+        store.keep(moved);
     }
 }
 

@@ -113,7 +113,7 @@ impl Home {
         let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None };
         home.make(&shown, first, window, cx);
         // The computer shown last time, where it isn't this one: once the list says it's reached.
-        home.restoring = crate::yours::now(cx).place.computer.filter(|key| key != &shown);
+        home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown);
         if live && home.restoring.is_some() {
             home._restoring = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(RESTORE_WAITS_AT_MOST).await;
@@ -341,8 +341,8 @@ impl Home {
         true
     }
 
-    /// The computer shown last time, where this app reaches it now (being reached, or held for its
-    /// update, it says so itself); else the window stays on the one it opened with, quietly.
+    /// The computer shown last time, where this app reaches it now (connected, or held for its
+    /// update, which it says itself); else the window stays on the one it opened with, quietly.
     fn restore_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.restoring.take() else { return };
         self._restoring = None;
@@ -353,9 +353,9 @@ impl Home {
     }
 
     /// Keeps the computer shown now, for the next time the window opens.
-    fn keep_shown(&self, cx: &mut App) {
+    fn keep_shown(&self, cx: &App) {
         let computer = if self.shown == NEAREST { None } else { Some(self.shown.clone()) };
-        crate::yours::change(crate::yours::Change::ShownComputer(computer), cx);
+        crate::yours::keep(crate::yours::Moved::Computer(computer), cx);
     }
 
     /// Whether the window still waits for your computers' list to show the one it showed last time.
@@ -558,11 +558,23 @@ impl Home {
         }
         // Your computers are known (the nearest box listed them, or there's none here and the
         // kept list is all there is): the computer shown last time, if it's reached.
-        if self.restoring.is_some() && (self.boxes.nearest().is_none() || self.boxes.nearest_key().is_some()) {
-            let (this, handle) = (cx.entity().downgrade(), self.window_handle);
-            App::defer(cx, move |cx| {
-                handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.restore_shown(window, cx))).ok();
-            });
+        // One still being reached is waited for (at most `RESTORE_WAITS_AT_MOST`, then this
+        // computer's window): one that isn't answering yet isn't opened on.
+        if let Some(key) = self.restoring.clone()
+            && (self.boxes.nearest().is_none() || self.boxes.nearest_key().is_some())
+        {
+            let row = self.boxes.rows().into_iter().find(|row| row.key() == key);
+            if self.live && row.as_ref().is_some_and(|row| row.reach == kuvo_box::boxes::Reach::Connecting) {
+                // (Asked again as it's reached, or isn't.)
+            } else if row.is_some_and(|row| row.usable()) {
+                let (this, handle) = (cx.entity().downgrade(), self.window_handle);
+                App::defer(cx, move |cx| {
+                    handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.restore_shown(window, cx))).ok();
+                });
+            } else {
+                self.restoring = None;
+                self._restoring = None;
+            }
         }
         let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
         let nearest = self.boxes.nearest_key();
@@ -602,7 +614,8 @@ impl Render for Home {
         });
         if self.restoring.is_some() {
             // (Nothing yet, not another computer's window first: only the window's colour.)
-            return div().debug_selector(|| "window-restoring".into()).size_full().bg(cx.theme().colors.background).into_any_element();
+            // (Quit meanwhile: its note, over it.)
+            return div().debug_selector(|| "window-restoring".into()).relative().size_full().bg(cx.theme().colors.background).children(note).into_any_element();
         }
         div().relative().size_full().child(self.workspace().clone()).children(note).into_any_element()
     }

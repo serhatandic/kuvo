@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{Entity, TestAppContext, VisualTestContext, px, size};
+use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext, px, size};
 use kuvo::Home;
 use kuvo::area::Area;
 use kuvo::stand_in::{Replies, StandIn};
@@ -25,13 +25,17 @@ fn kept() -> (tempfile::TempDir, PathBuf) {
 /// The app opened (again): your settings read from `path`, a window over a fresh stand-in;
 /// `meanwhile` happens before your computers' list and the box's lists are read.
 fn open_meanwhile<'a>(cx: &'a mut TestAppContext, path: &Path, meanwhile: impl FnOnce(&Entity<Home>, &mut VisualTestContext)) -> (Entity<Home>, &'a mut VisualTestContext) {
+    open_over(cx, path, StandIn::at(Replies::Never, NOW), meanwhile)
+}
+
+fn open_over<'a>(cx: &'a mut TestAppContext, path: &Path, stand_in: StandIn, meanwhile: impl FnOnce(&Entity<Home>, &mut VisualTestContext)) -> (Entity<Home>, &'a mut VisualTestContext) {
     let path = path.to_owned();
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
         kuvo::bind_keys(cx);
         kuvo::yours::init(Some(path), cx);
     });
-    let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));
+    let boxes = kuvo::home::stand_in_boxes(stand_in);
     let first = boxes.nearest().expect("the nearest box");
     let window = cx.add_window(move |window, cx| Home::new(boxes, first, false, window, cx));
     let home = window.root(cx).unwrap();
@@ -192,4 +196,39 @@ fn a_notifications_place_wins_over_last_times(cx: &mut TestAppContext) {
     assert_eq!(shown_key(&home, cx), home.read_with(cx, |home, _| home.boxes().nearest_key()), "not last time's computer");
     assert_eq!(opened(&home, cx).as_deref(), Some("ses_limits"), "the notification's session, not last time's");
     assert_eq!(file(&path)["place"]["computer"], Value::Null);
+}
+
+#[gpui::test]
+fn the_sidebar_brought_back_by_a_search_stays_back_after_a_restart(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        workspace(&home, cx).update_in(cx, |workspace, window, cx| {
+            workspace.toggle_sidebar(window, cx);
+            // (Typing in the landing view's composer.)
+            window.focus(&workspace.landing().focus_handle(cx), cx);
+        });
+        cx.run_until_parked();
+        assert!(!workspace(&home, cx).read_with(cx, |workspace, _| workspace.sidebar_shown()));
+        cx.simulate_keystrokes("cmd-shift-f");
+        cx.run_until_parked();
+        assert!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.sidebar_shown()));
+    }
+    let (home, cx) = open(cx, &path);
+    assert!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.sidebar_shown()));
+}
+
+#[gpui::test]
+fn an_archived_conversation_opens_again_as_it_is_still_there(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    {
+        let (home, cx) = open(cx, &path);
+        workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_limits", window, cx));
+        cx.run_until_parked();
+    }
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_engine_archived("ses_limits", true);
+    let (home, cx) = open_over(cx, &path, stand_in, |_, _| {});
+    assert_eq!(opened(&home, cx).as_deref(), Some("ses_limits"));
+    assert_eq!(file(&path)["place"]["computers"]["nearest"]["session"], "ses_limits");
 }

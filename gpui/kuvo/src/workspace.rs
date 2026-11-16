@@ -464,8 +464,7 @@ impl Workspace {
             computers_task: None,
             _waiting_follow: None,
             _computers_follow: None,
-            // (As it was last folded away, on this device.)
-            folded: crate::yours::now(cx).place.sidebar_folded,
+            folded: false,
             shown_narrow: false,
             narrow: false,
             history: vec![Nav::Landing],
@@ -825,7 +824,11 @@ impl Workspace {
                 self.prune_session_popover(cx);
                 self.refresh_active_row_actions(cx);
             }
-            ListUpdate::Waiting(why) => self.lists = Lists::Waiting(why),
+            ListUpdate::Waiting(why) => {
+                // (Its engine isn't answering yet: Sessions' own view meanwhile, not nothing.)
+                self.restoring.session = None;
+                self.lists = Lists::Waiting(why);
+            }
             ListUpdate::Held { .. } => {
                 // (Held for its update: the held view, not last time's conversation.)
                 self.restoring.session = None;
@@ -1695,6 +1698,7 @@ impl Workspace {
             self.show_area(Area::Sessions, window, cx);
         }
         self.bring_out_sidebar(window);
+        self.keep_place(cx);
         self.walked = None;
         window.focus(&self.search.focus_handle(cx), cx);
         cx.notify();
@@ -1933,7 +1937,7 @@ impl Workspace {
             self.shown_narrow = !self.shown_narrow;
         } else {
             self.folded = !self.folded;
-            crate::yours::change(crate::yours::Change::SidebarFolded(self.folded), cx);
+            self.keep_place(cx);
         }
         self.prune_session_popover(cx);
         // Folded with the keyboard in it (its search, its list): the keyboard goes to the main view.
@@ -2073,8 +2077,9 @@ impl Workspace {
     /// Opens where this computer's window was last time, as kept under `key` in your settings
     /// (`yours::Place`), and keeps where it goes from now on. Called once, as the window makes it.
     pub fn restore(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
-        let spot = crate::yours::now(cx).place.computers.get(&key).cloned().unwrap_or_default();
+        let spot = crate::yours::place(cx).computers.get(&key).cloned().unwrap_or_default();
         self.place_key = Some(key);
+        self.folded = spot.sidebar_folded;
         self.kept_area = spot.area.clone();
         self.restoring_now = true;
         for area in [Area::Bots, Area::Queue, Area::Computers] {
@@ -2112,18 +2117,33 @@ impl Workspace {
         if !self.listing.is_read() {
             return cx.notify();
         }
-        if kuvo_box::sessions::place(self.listing.facts(&session)).is_none() {
+        // (Archived, or a bot's, it's still there: only one the list no longer has is gone.)
+        if self.listing.facts(&session).is_none() {
             // (Gone for good: no longer kept.)
             self.keep_place(cx);
             return cx.notify();
         }
-        let area = self.area;
+        // Behind another area, or with the keyboard somewhere of yours meanwhile (a search), it
+        // opens without taking the keyboard or the window from you.
+        let (area, folded, shown_narrow) = (self.area, self.folded, self.shown_narrow);
+        let yours = window.focused(cx).filter(|focused| *focused != self.focus && *focused != self.landing.focus_handle(cx));
+        let history = (area != Area::Sessions).then(|| (self.history.clone(), self.at));
         self.restoring_now = true;
         self.open_session_now(&session, window, cx);
-        if area != Area::Sessions {
-            self.show_area_as_kept(area, window, cx);
-        }
         self.restoring_now = false;
+        if let Some((history, at)) = history {
+            (self.history, self.at) = (history, at);
+            self.area = area;
+            self.show_composer_on_screen(cx);
+            match self.bot_chat() {
+                Some((_, view)) => window.focus(&view.focus_handle(cx), cx),
+                None => window.focus(&self.focus, cx),
+            }
+        }
+        (self.folded, self.shown_narrow) = (folded, shown_narrow);
+        if let Some(yours) = yours {
+            window.focus(&yours, cx);
+        }
         cx.notify();
     }
 
@@ -2145,11 +2165,15 @@ impl Workspace {
         self.restoring.bot = None;
         match self.bot_session(&bot, cx) {
             Some(session) => {
+                let yours = window.focused(cx).filter(|focused| *focused != self.focus && *focused != self.landing.focus_handle(cx));
                 self.restoring_now = true;
                 let (folded, shown_narrow) = (self.folded, self.shown_narrow);
                 self.open_bot_chat(&bot, &session, None, window, cx);
                 (self.folded, self.shown_narrow) = (folded, shown_narrow);
                 self.restoring_now = false;
+                if let Some(yours) = yours {
+                    window.focus(&yours, cx);
+                }
             }
             None => {
                 let key = format!("bot:{bot}");
@@ -2208,8 +2232,8 @@ impl Workspace {
         }
         let session = self.restoring.session.clone().or_else(|| self.opened().map(str::to_owned));
         let bot = self.restoring.bot.clone().or_else(|| self.bot_chat.as_ref().filter(|_| self.in_bot_chat).map(|chat| chat.bot.clone()));
-        let spot = crate::yours::Spot { area: self.kept_area.clone(), session, bot, picked };
-        crate::yours::change(crate::yours::Change::Spot(key, spot), cx);
+        let spot = crate::yours::Spot { sidebar_folded: self.folded, area: self.kept_area.clone(), session, bot, picked };
+        crate::yours::keep(crate::yours::Moved::Spot(key, spot), cx);
     }
 
     /// Whether last time's conversation is still to open (nothing's drawn in its place meanwhile).
@@ -2228,6 +2252,12 @@ impl Workspace {
         }
         let this = cx.entity().downgrade();
         cx.defer(move |cx| drop(this.update(cx, |this, cx| this.keep_place(cx))));
+        // (Opening where the window was isn't steps of yours to go back through.)
+        if self.restoring_now {
+            self.history = vec![nav];
+            self.at = 0;
+            return;
+        }
         if self.history.get(self.at) == Some(&nav) {
             return;
         }
