@@ -1705,7 +1705,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     with keys made anew is the same computer: what the writer keeps by its box's key, `by` on
     the devices it vouched for and its entry in `vouchBlocked`, goes by the new key as its
     record does, so removing it later still takes its app off.) `confirm.message` says
-    "Kuvo Code's app on <computer> is taken off your devices." on the box that knows of such a
+    "Kuvo Code’s app on <computer> is taken off your devices." on the box that knows of such a
     device (the main computer alone: `by` is in no document, so a member's box that hands the
     removal on doesn't say it, though it holds there too). `200 {}`, and the same for one removed already (whose devices,
     were any left from before this, go then).

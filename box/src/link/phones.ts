@@ -115,7 +115,7 @@ export function vouchMoved(link: LinkState, from: string, to: string): void {
 /** What a confirm adds, before a computer is removed or uninstalled, where its box vouched for a
  * device this box lets in (the main computer alone knows): that Kuvo Code's app there goes too. */
 export const vouchedWords = (link: LinkState | null | undefined, key: string | undefined, name: string): string =>
-  (key && (link?.phones ?? []).some(each => each.by === key) ? ` Kuvo Code's app on ${name} is taken off your devices.` : "");
+  (key && (link?.phones ?? []).some(each => each.by === key) ? ` Kuvo Code’s app on ${name} is taken off your devices.` : "");
 
 /** The removal that keeps the box `key` from vouching now, if any. */
 export const vouchBlockOf = (link: LinkState | null | undefined, key: string | undefined) => (key ? (link?.vouchBlocked ?? []).find(each => each.key === key) : undefined);

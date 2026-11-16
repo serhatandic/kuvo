@@ -10,13 +10,12 @@
 // Letting a computer add Kuvo Code's app to your devices again (`allow-devices`) is the main
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
-import fs from "node:fs";
 import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { macDocsChanged } from "../documents/exchange";
 import { IS_MAC } from "../home";
 import { tellGone } from "../mac/link";
-import { LIST_FILE } from "../mac/machines";
+import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { sharedMachine } from "../setup/settle";
@@ -204,11 +203,9 @@ export function removeHere(key: string): Acted {
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
 // it off: what `kuvo/machines` and whether the link meets machines go by. One that won't read stays.
 function forgetSaved(id: string): void {
-  try {
-    const saved: unknown = JSON.parse(fs.readFileSync(LIST_FILE, "utf8"));
-    if (!Array.isArray(saved) || !saved.some(each => each?.destination === id)) return;
-    writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each?.destination !== id), null, 2));
-  } catch {}
+  const saved = savedMachines();
+  if (!saved?.some(each => each.destination === id)) return;
+  try { writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2)); } catch {}
 }
 
 /** What another of your computers' box handed here (`area: "computers"`): done as this box's own

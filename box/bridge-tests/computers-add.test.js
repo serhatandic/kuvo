@@ -503,7 +503,7 @@ test("uninstalling while it's being set up waits for the start under way, then n
     return state;
   });
   const confirms = (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key).actions.find(action => action.id === "uninstall").confirm.message;
-  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Kuvo Code's app on studio is taken off your devices\. Its sessions stay/);
+  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Kuvo Code’s app on studio is taken off your devices\. Its sessions stay/);
   // A Set Up Again, held at its start there (the script that can't be cut short).
   fs.writeFileSync(path.join(fake, "hold"), 'bin/kuvo-start" start');
   const setup = await ask("POST", `kuvo/computers/${peer.key}/setup`);

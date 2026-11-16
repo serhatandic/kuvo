@@ -3,7 +3,7 @@
 // and agents of this Mac's conversations.
 
 import fs from "node:fs";
-import { LIST_FILE } from "./machines";
+import { savedMachines } from "./machines";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -108,12 +108,7 @@ export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
 
 // The machines on this Mac's list of machines (`machines.json`), by their ids there.
 function savedIds(): Set<string> {
-  try {
-    const saved: unknown = JSON.parse(fs.readFileSync(LIST_FILE, "utf8"));
-    return new Set(Array.isArray(saved) ? saved.filter(each => typeof each?.destination === "string").map(each => each.destination as string) : []);
-  } catch {
-    return new Set();
-  }
+  return new Set((savedMachines() ?? []).map(each => each.destination));
 }
 
 /** What setting up a machine over SSH gives it (`kuvo/link/setup`; `add/flow.ts`, the box adding

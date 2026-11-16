@@ -246,7 +246,7 @@ test("removing a computer takes Kuvo Code's app on it off your devices, however 
   const removals = () => link.ownPhones(link.readLink()).removed;
   // Its confirm says so before you remove it, where its app is one of your devices.
   const confirm = async (computer, id = "remove") => (await link.listComputers("Studio", null)).find(each => each.key === computer.pub).actions.find(action => action.id === id).confirm.message;
-  assert.equal(await confirm(attic), "Your other computers stop reaching attic. Kuvo Code's app on attic is taken off your devices. It keeps running, with its sessions, and you can add it again later.");
+  assert.equal(await confirm(attic), "Your other computers stop reaching attic. Kuvo Code’s app on attic is taken off your devices. It keeps running, with its sessions, and you can add it again later.");
 
   // Removed from this Mac: both devices its box added go, noted among the removals by the pairing
   // each had, which this box's phones document carries to your other computers.
