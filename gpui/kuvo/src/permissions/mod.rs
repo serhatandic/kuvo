@@ -43,9 +43,10 @@ const LET_GO_AFTER: Duration = Duration::from_secs(1);
 struct KeptTile {
     window: WindowHandle<Tile>,
     shown: bool,
-    /// Whether it's been put beside System Settings yet: only once, so it stays where it is, or
-    /// where you moved it, from one permission to the next.
-    placed: bool,
+    /// System Settings' window as it was when the tile was last put beside it: put there again
+    /// only when that window moves, so from one permission to the next it stays where it is, or
+    /// where you moved it.
+    beside: Option<gpui::Bounds<gpui::Pixels>>,
     /// Hearing it closed with its own button.
     _closed: Subscription,
 }
@@ -247,9 +248,9 @@ impl HeadsUp {
         cx.notify();
     }
 
-    /// While it's asked for, or the tile waits for the next: the tile put beside System Settings,
-    /// and the box asked each second whether it's allowed yet (macOS says nothing when Screen
-    /// Recording changes).
+    /// While it's asked for, or the tile waits for the next: the tile kept beside System Settings
+    /// (and gone once that's closed), and the box asked each second whether it's allowed yet
+    /// (macOS says nothing when Screen Recording changes).
     fn follow(&mut self, cx: &mut Context<Self>) {
         self._follow = Some(cx.spawn(async move |this, cx| {
             let mut ticks = 0u32;
@@ -273,7 +274,9 @@ impl HeadsUp {
                         this.stop_asking(cx);
                         return false;
                     }
-                    if ticks.is_multiple_of(ASKS_EVERY) {
+                    // (Only while one's asked for: the tile waiting, hidden, needs no answer, and
+                    // coming back to the window asks anyway.)
+                    if this.asking.is_some() && ticks.is_multiple_of(ASKS_EVERY) {
                         this.read(cx);
                     }
                     true
@@ -315,7 +318,7 @@ impl HeadsUp {
         if live {
             window.update(cx, |_, window, _| mac::never_key(window)).ok();
         }
-        self.tile = Some(KeptTile { window, shown: true, placed: false, _closed: closed });
+        self.tile = Some(KeptTile { window, shown: true, beside: None, _closed: closed });
     }
 
     /// The tile hidden where it is, kept for the next permission.
@@ -330,9 +333,11 @@ impl HeadsUp {
         let _ = (cx, live);
     }
 
-    /// The tile gone: hidden at once, and its window let go a moment later. (A window AppKit
-    /// still watched as it went, for the Touch Bar, stopped the app; this one never takes the
-    /// keyboard, so isn't watched, and is out of sight well before it's let go all the same.)
+    /// The tile gone: hidden at once, and its window let go a moment later. That order is what
+    /// keeps the app up: freed while AppKit's Touch Bar still watched it (as the key window), the
+    /// tile stopped the app ("removeObserver … not registered"). Hidden, it's no longer key, AppKit
+    /// looks elsewhere at its next update, and only then is it let go. (It's rarely key at all:
+    /// [`mac::never_key`].)
     fn close_tile(&mut self, cx: &mut Context<Self>) {
         let Some(kept) = self.tile.take() else { return };
         let window = kept.window;
@@ -348,19 +353,19 @@ impl HeadsUp {
         .detach();
     }
 
-    /// Puts the tile beside System Settings' window the first time it has one on screen, and
-    /// leaves it be after that. Says whether that window is there (none where that isn't looked
+    /// Puts the tile beside System Settings' window when it first has one on screen, and again only
+    /// when that window has moved. Says whether that window is there (none where that isn't looked
     /// for: tests and shots follow no real window).
     fn place(&mut self, cx: &mut Context<Self>) -> Option<bool> {
         #[cfg(target_os = "macos")]
         if self.live {
             let Some(settings) = mac::settings_window() else { return Some(false) };
-            if let Some(kept) = self.tile.as_mut().filter(|kept| kept.shown && !kept.placed) {
+            if let Some(kept) = self.tile.as_mut().filter(|kept| kept.shown && kept.beside != Some(settings)) {
                 let displays: Vec<_> = cx.displays().iter().map(|display| display.bounds()).collect();
                 let main = cx.primary_display().map(|display| display.bounds())?;
                 let screen = displays.into_iter().find(|display| display.intersects(&settings)).unwrap_or(main);
                 let to = tile::beside(settings, screen);
-                kept.placed = true;
+                kept.beside = Some(settings);
                 kept.window.update(cx, |_, window, _| mac::move_window(window, to, main.size.height)).ok();
             }
             return Some(true);

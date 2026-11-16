@@ -1,7 +1,7 @@
 //! The small window beside System Settings while it's open for a permission macOS has you add by
 //! hand: the program's icon, to drag into the list, the way you'd drag an app from Finder. It
-//! floats over System Settings, put beside its window once and then left where it is (or where you
-//! move it), never taking the keyboard. One tile serves the whole step: hidden while you're back in
+//! floats over System Settings, put beside its window and moved again only when that window moves
+//! (otherwise left where it is, or where you move it), not taking the keyboard. One tile serves the whole step: hidden while you're back in
 //! Kuvo between permissions and shown again in the same place for the next, and gone once nothing's
 //! left to allow by hand, when System Settings closes, or when you close it.
 //!

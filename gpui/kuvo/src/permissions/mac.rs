@@ -88,13 +88,16 @@ pub fn move_window(window: &Window, to: Point<Pixels>, main_height: Pixels) {
     }
 }
 
-/// Keeps the tile's panel from ever becoming the key window, clicked or dragged from: the
+/// Keeps the tile's panel from becoming the key window when it's clicked or dragged from: the
 /// keyboard stays with System Settings (or Kuvo), and AppKit's Touch Bar, which watches the key
-/// window's views, never watches the tile's. (It did, on a Mac with a Touch Bar: when the tile
-/// went, AppKit later stopped watching views already gone, and the app was stopped with
+/// window's views, isn't set watching the tile's. (It was, on a Mac with a Touch Bar: when the
+/// tile went, AppKit later stopped watching views already gone, and the app was stopped with
 /// "removeObserver … not registered".) GPUI's windows all say they can become key; an NSPanel
-/// that `becomesKeyOnlyIfNeeded` only does for a view that needs the keyboard, which GPUI's
-/// doesn't ask for. The mouse still reaches it: the icon is dragged and the buttons pressed as before.
+/// that `becomesKeyOnlyIfNeeded` only does on a click for a view that needs the keyboard, which
+/// GPUI's doesn't ask for. AppKit may still make it key on its own (with every other window of
+/// Kuvo's minimized, say): hiding it before it's let go is what covers that (`close_tile`). The
+/// mouse still reaches it: the icon is dragged and the buttons pressed as before (with the plain
+/// arrow over it: GPUI sets the pointer's shape only for the key window).
 pub fn never_key(window: &Window) {
     let Some(native) = native(window) else { return };
     // SAFETY: a live NSWindow on the main thread; only an NSPanel is sent the panel's setter.
