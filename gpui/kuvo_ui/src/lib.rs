@@ -4,6 +4,7 @@
 //! no product logic: the box decides, these draw.
 
 pub mod backdrop;
+pub mod bot;
 pub mod button;
 pub mod chat_list;
 pub mod code_block;

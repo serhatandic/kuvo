@@ -139,6 +139,8 @@ struct State {
     group_followers: HashMap<u64, (String, Sender<String>)>,
     /// Those following the chats' list (`kuvo/groups/events`).
     groups_followers: HashMap<u64, Sender<String>>,
+    /// Those following its bots (`kuvo/bots/events`).
+    bots_followers: HashMap<u64, Sender<String>>,
     /// What it says for a first run.
     first_run: first_run::FirstRun,
     permissions: permissions::Permissions,
@@ -581,6 +583,23 @@ impl StandIn {
         let mut state = self.state();
         let at = state.made.unwrap_or_else(now_ms);
         state.bots.refuse(bot, computer, message, at);
+    }
+
+    /// One more bot here, idle, in `look`.
+    pub fn add_bot(&self, id: &str, name: &str, look: Value) {
+        let mut state = self.state();
+        let now = state.made.unwrap_or_else(now_ms);
+        state.bots.add(id, name, look, now);
+        state.sync_bots();
+    }
+
+    /// What `bot` is doing now, as its box says it (`bots.now`): those following the bots hear it.
+    pub fn set_bot_now(&self, bot: &str, now: Value) {
+        let mut state = self.state();
+        if let Some(listed) = state.bots.bots.iter_mut().find(|each| each["id"] == json!(bot)) {
+            listed["now"] = now;
+        }
+        state.sync_bots();
     }
 
     /// `bot`'s computer no longer lists it (deleted there, or that computer was removed).
@@ -1165,6 +1184,11 @@ impl State {
     /// Each bot's own conversation is one of the box's sessions (kind `bot`, which the lists show
     /// nowhere), and goes with its bot.
     fn sync_bots(&mut self) {
+        // Those following the bots hear them as they are now.
+        if let Some((200, list)) = self.bots.answer("GET", "kuvo/bots", &|_| None, &Value::Null, &[], 0.) {
+            let line = list.to_string();
+            self.bots_followers.retain(|_, sender| sender.send(line.clone()).is_ok());
+        }
         let now = self.made.unwrap_or_else(now_ms);
         let theirs: Vec<(String, String, String, String)> = self.bots.bots.iter().filter_map(|bot| Some((bot["session"].as_str()?.to_owned(), bot["name"].as_str()?.to_owned(), bot["folder"].as_str()?.to_owned(), bot["id"].as_str()?.to_owned()))).collect();
         let before = self.sessions.len();
@@ -2313,6 +2337,29 @@ impl Transport for StandIn {
             let inner = self.inner.clone();
             let closer = Closer::new(move || {
                 inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).git_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        // The bots, followed: as they are now, then again as they change.
+        if route == "kuvo/bots/events" {
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                if let Some((200, list)) = state.bots.answer("GET", "kuvo/bots", &|_| None, &Value::Null, &[], 0.) {
+                    let _ = sender.send(list.to_string());
+                }
+                let id = state.next;
+                state.next += 1;
+                state.bots_followers.insert(id, sender);
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).bots_followers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

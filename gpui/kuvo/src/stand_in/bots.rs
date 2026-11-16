@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use super::{HOME, HOUR};
 
 const COLORS: &[&str] = &["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"];
-const SHAPES: &[&str] = &["round", "squircle", "pebble", "gem", "bloom"];
+const SHAPES: &[&str] = &["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"];
 const FACES: &[&str] = &["calm", "happy", "sleepy", "wink", "curious", "bright"];
 
 /// The stand-in's bots.
@@ -55,16 +55,16 @@ impl Bots {
         let mut mira = bot(
             "bot_mira", "Mira", "sky", "round", "Looks after the website",
             "Keeps the sign-up flow working, reviews what changes on the site each morning, and starts a session for anything that breaks.",
-            Some("preset.mentor"), json!({ "working": 1, "asking": 1 }),
+            Some("preset.mentor"), json!({ "working": 1, "asking": 1, "state": "needsYou", "since": now - 60_000.0 }),
         );
         mira["project"] = json!(format!("{HOME}/Projects/website"));
         Bots {
             bots: vec![
                 mira,
-                bot("bot_inbox", "Inbox Helper", "coral", "squircle", "Drafts replies to support mail", "", Some("preset.cheerful"), json!({ "working": 0, "asking": 1 })),
+                bot("bot_inbox", "Inbox Helper", "coral", "squircle", "Drafts replies to support mail", "", Some("preset.cheerful"), json!({ "working": 0, "asking": 1, "state": "needsYou", "since": now - 600_000.0 })),
                 // One with no session listed (its row shows its job), and one whose newest finished.
-                bot("bot_release", "Release Captain", "lime", "pebble", "Ships a beta every Friday", "", None, json!({ "working": 0, "asking": 0 })),
-                bot("bot_docs", "Docs Keeper", "violet", "gem", "Keeps the docs matching the code", "", Some("preset.perfectionist"), json!({ "working": 0, "asking": 0, "finished": now - 3.0 * HOUR })),
+                bot("bot_release", "Release Captain", "lime", "pebble", "Ships a beta every Friday", "", None, json!({ "working": 0, "asking": 0, "state": "idle", "since": now - HOUR })),
+                bot("bot_docs", "Docs Keeper", "violet", "gem", "Keeps the docs matching the code", "", Some("preset.perfectionist"), json!({ "working": 0, "asking": 0, "finished": now - 3.0 * HOUR, "state": "done", "since": now - 3.0 * HOUR })),
             ],
             // A rename made from another of your clients for a bot that lives on a Mac that's away.
             held: vec![json!({ "bot": "bot_scout", "box": "key_studio-mini", "computer": "studio-mini", "name": "Scout", "look": { "color": "amber", "shape": "gem", "face": "calm" }, "change": { "name": "Scout", "job": { "line": "Watches CI", "details": "" } }, "since": now - 2.0 * HOUR })],
@@ -79,6 +79,17 @@ impl Bots {
             unsealed: false,
             stopped: false,
         }
+    }
+
+    /// One more bot, idle (the cost's measure fills a sidebar with them).
+    pub fn add(&mut self, id: &str, name: &str, look: Value, now: f64) {
+        let short = id.trim_start_matches("bot_");
+        self.bots.push(json!({
+            "id": id, "session": format!("ses_{short}"), "name": name, "look": look,
+            "job": "Keeps the docs in step", "jobDetails": "", "paused": false, "watching": 0, "agents": false,
+            "folder": format!("{HOME}/.kuvo-code/bots/{short}"), "created": now - 30.0 * 24.0 * HOUR,
+            "now": { "working": 0, "asking": 0, "state": "idle", "since": now },
+        }));
     }
 
     /// How many of its bots have a session waiting on you.
@@ -182,6 +193,21 @@ impl Bots {
             ("GET", ["kuvo", "bots", "templates"]) => (200, templates(projects)),
             ("POST", ["kuvo", "bots"]) => self.make(body, projects, now),
             ("PATCH", ["kuvo", "bots", id]) => self.change(id, body, now),
+            // Seen: what it finished or stopped on is read, so it's idle again (`bots.state`).
+            ("POST", ["kuvo", "bots", id, "seen"]) => match self.bots.iter_mut().find(|bot| bot["id"] == json!(id)) {
+                None => (404, json!({ "message": "That bot isn’t there any more." })),
+                Some(bot) => {
+                    if matches!(bot["now"]["state"].as_str(), Some("done" | "blocked")) {
+                        bot["now"]["state"] = json!("idle");
+                        bot["now"]["since"] = json!(now);
+                        if let Some(now) = bot["now"].as_object_mut() {
+                            now.remove("blocked");
+                            now.remove("blockedBy");
+                        }
+                    }
+                    (200, json!({}))
+                }
+            },
             ("DELETE", ["kuvo", "bots", id]) => self.delete(id, now),
             ("GET", ["kuvo", "work"]) => match query("bot") {
                 None => (400, json!({ "message": "Say whose work: bot=<id>." })),
@@ -237,7 +263,7 @@ impl Bots {
         // From a template the bot waits, and its job is for your composer; otherwise it writes first.
         let made = json!({ "bot": bot, "firstMessage": template.map(|template| template["job"].clone()).unwrap_or(Value::Null) });
         // (It lists with what it's doing; what making it answered doesn't say.)
-        bot["now"] = json!({ "working": 0, "asking": 0 });
+        bot["now"] = json!({ "working": 0, "asking": 0, "state": "idle", "since": now });
         self.bots.push(bot);
         if let Some(request) = body["request"].as_str() {
             self.made.insert(request.to_owned(), made.clone());

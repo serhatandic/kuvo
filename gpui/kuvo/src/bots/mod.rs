@@ -411,6 +411,12 @@ impl BotsView {
         self.bots()?.elsewhere.iter().find(|bot| bot.id == id && !bot.unlisted)
     }
 
+    /// The creature the page's faces are: the bot shown (the same as its other copies), else New
+    /// Bot's own.
+    fn face_key(&self) -> String {
+        self.subject().map(|(id, ..)| id).unwrap_or_else(|| "new-bot".to_owned())
+    }
+
     /// The bot a sheet is about: the one shown, here or on another computer, where the box lists
     /// it. Its id, its name and its look.
     fn subject(&self) -> Option<(String, String, Option<Look>)> {

@@ -556,7 +556,7 @@ impl GroupsView {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(c.hover))
                                 .on_click(cx.listener(move |this, _, _, cx| this.act(Act::Toggle(id.clone()), cx)))
-                                .child(face(bot.look.as_ref(), px(28.), cx))
+                                .child(face(&bot.id, bot.look.as_ref(), px(28.), cx))
                                 .child(
                                     div()
                                         .flex_1()

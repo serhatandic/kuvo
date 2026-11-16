@@ -127,6 +127,17 @@ pub struct BotsSaid {
     pub held_unsaid: bool,
 }
 
+/// A line of `kuvo/bots/events` reads as the list does.
+impl<'de> Deserialize<'de> for BotsSaid {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let answer = Value::deserialize(deserializer)?;
+        if !answer.get("bots").is_some_and(Value::is_array) {
+            return Err(serde::de::Error::custom("the box didn’t list its bots"));
+        }
+        Ok(said(&answer))
+    }
+}
+
 impl BotsSaid {
     /// This answer, with what `before` said the box holds where this one couldn't say.
     pub fn keeping(mut self, before: Option<&BotsSaid>) -> BotsSaid {
@@ -466,6 +477,22 @@ impl BoxClient {
     /// When each bot's work last changed, now and as it changes.
     pub fn follow_work_changes(&self, timing: crate::Timing) -> crate::Follow<crate::follow::Followed<WorkChanged>> {
         crate::follow::follow_lines(self, "kuvo-box work", "kuvo/work/events".into(), "kuvo/work/events".into(), timing)
+    }
+
+    /// The box's bots followed: the list now, and again as they change (made, changed, deleted,
+    /// and what each is doing: `bots.now`, its `state` too).
+    pub fn follow_bots(&self, timing: crate::Timing) -> crate::Follow<crate::follow::Followed<BotsSaid>> {
+        crate::follow::follow_lines(self, "kuvo-box bots", "kuvo/bots/events".into(), "kuvo/bots".into(), timing)
+    }
+
+    /// You've seen what a bot did (its conversation shown): the box reads its sessions that ended
+    /// since you last did, so it's no longer done or blocked on any client (`bots.state`).
+    pub fn bot_seen(&self, bot: &str) -> Result<()> {
+        let response = self.send(&Request::post(format!("kuvo/bots/{}/seen", crate::paths::segment(bot)), serde_json::json!({})))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        Ok(())
     }
 
     /// Every session of a bot's work stopped (Stop All).

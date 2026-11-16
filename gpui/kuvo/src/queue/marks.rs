@@ -86,7 +86,7 @@ fn agent_mark(id: &str) -> Option<(&'static str, String)> {
 pub fn who_mark(look: Option<&Look>, id: &str, name: &str, size: Pixels, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     match (look, agent_mark(id)) {
-        (Some(look), _) => bot_face(look, size),
+        (Some(look), _) => bot_face(id, look, size),
         (None, Some((path, service))) => div()
             .debug_selector({
                 let selector = format!("agent-mark-{service}");

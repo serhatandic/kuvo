@@ -288,6 +288,8 @@ pub struct Workspace {
     /// Whether Bots' main view was on screen as the window was last drawn (a group chat there is
     /// followed and marked read only while it is).
     groups_on_screen: bool,
+    /// The bot whose conversation shows, as Bots was last told.
+    chat_open: Option<String>,
     /// How many things wait on you in each area, as the box counts them (`kuvo/waiting`): followed
     /// where its box streams, else read again as its session list changes.
     waiting: Waiting,
@@ -428,6 +430,7 @@ impl Workspace {
             bot_chat: None,
             in_bot_chat: false,
             groups_on_screen: false,
+            chat_open: None,
             waiting: Waiting::default(),
             queue_badge_open_pending: false,
             queue_badge_items: Vec::new(),
@@ -617,6 +620,11 @@ impl Workspace {
     /// How the box stands changed: the first run is told, and a box just reached is asked whether
     /// it's been had, where that isn't known yet.
     fn box_changed(&mut self, cx: &mut Context<Self>) {
+        // The box's bots are drawn offline while it can't be reached (a box can't say so itself).
+        let reached = !matches!(self.box_state, BoxState::Unreachable(_));
+        if let Some(view) = self.area_view(Area::Bots).cloned() {
+            view.update(cx, |view, cx| view.set_reached(reached, cx));
+        }
         if let Some(run) = self.first_run().cloned() {
             let (state, name) = (self.box_state.clone(), self.box_name());
             run.update(cx, |run, cx| run.set_box(state, name, cx));
@@ -2004,7 +2012,8 @@ impl Workspace {
                 let computers = computers.clone();
                 run.update(cx, |run, cx| run.set_computers(computers, cx));
             }
-            for area in [Area::Computers, Area::Settings] {
+            // (Bots: a bot on a computer that's away is drawn offline.)
+            for area in [Area::Computers, Area::Settings, Area::Bots] {
                 if let Some(view) = self.area_view(area).cloned() {
                     let computers = computers.clone();
                     view.update(cx, |view, cx| view.set_computers(computers, cx));
@@ -2153,7 +2162,7 @@ impl Workspace {
             .border_b_1()
             .border_color(c.border)
             .child(Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).tooltip("Bot Settings").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
-            .children(listed.as_ref().map(|bot| areas::bot_face(&bot.look, px(22.))))
+            .children(listed.as_ref().map(|bot| areas::bot_face(&bot.id, &bot.look, px(22.))))
             .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
             .children(listed.as_ref().map(|bot| {
                 let words = bot.job.clone();
@@ -2803,6 +2812,14 @@ impl Render for Workspace {
             self.groups_on_screen = groups_on_screen;
             if let Some(view) = self.area_view(Area::Bots).cloned() {
                 view.update(cx, |view, cx| view.set_on_screen(groups_on_screen, cx));
+            }
+        }
+        // The bot whose conversation shows: what it finished or stopped on is seen (the box's).
+        let chat_open = self.bot_chat().map(|(bot, _)| bot.to_owned());
+        if self.chat_open != chat_open {
+            self.chat_open = chat_open.clone();
+            if let Some(view) = self.area_view(Area::Bots).cloned() {
+                view.update(cx, |view, cx| view.set_chat_open(chat_open, cx));
             }
         }
         let sessions = self.area == Area::Sessions;

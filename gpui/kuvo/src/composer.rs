@@ -1720,7 +1720,7 @@ impl Composer {
             .map(|member| {
                 let name = member.name.clone();
                 let selector = format!("ask-{}", member.id);
-                let face = crate::groups::chat::face(member.look.as_ref(), px(20.), cx);
+                let face = crate::groups::chat::face(&member.id, member.look.as_ref(), px(20.), cx);
                 div()
                     .id(SharedString::from(selector.clone()))
                     .debug_selector(move || selector)

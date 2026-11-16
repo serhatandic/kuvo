@@ -14,13 +14,14 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look};
+use kuvo_ui::bot::State;
 use kuvo_box::work_queue::QueueSaid;
 use kuvo_box::bots::{BotsSaid, Elsewhere, Held, Refused};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TypeSize,
     row::{NavRow, SectionHeader},
     menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
-    small::{count_badge, spinner, status_dot},
+    small::{spinner, status_dot},
     theme::{radius, space},
 };
 
@@ -121,6 +122,13 @@ pub struct AreaView {
     _queue_page: Vec<gpui::Subscription>,
     /// The group chats followed, in Bots (the app): the list as it changes.
     _groups_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<kuvo_box::groups::Groups>>, Task<()>)>,
+    /// The bots followed, in Bots (the app): what each is doing, as it changes.
+    _bots_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>, Task<()>)>,
+    /// Whether the box is reached: its bots are drawn offline while it isn't.
+    reached: bool,
+    /// The bot whose conversation the window shows, and what the box was last told it saw there.
+    chat_open: Option<String>,
+    seen_told: Option<(String, Option<u64>)>,
 }
 
 impl EventEmitter<Picked> for AreaView {}
@@ -240,7 +248,21 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        let bots_follow = (area == Area::Bots && live).then(|| {
+            let follow = client.follow_bots(kuvo_box::Timing::default());
+            let updates = follow.updates().clone();
+            let task = cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    if let kuvo_box::follow::Followed::Now(said) = update
+                        && this.update(cx, |this, cx| this.take_bots(said, cx)).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            (follow, task)
+        });
+        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -272,6 +294,72 @@ impl AreaView {
             view.update(cx, |view, cx| view.set_listed(groups, all, cx));
         }
         cx.notify();
+    }
+
+    /// The bots as the box says them now (followed): drawn in the sidebar and handed to their page,
+    /// the group chats staying as they were read. Before the list's first read, its read stands.
+    fn take_bots(&mut self, said: BotsSaid, cx: &mut Context<Self>) {
+        let Reading::Ready(before) = &self.bots else { return };
+        let bots = Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups: before.groups.clone(), groups_failed: None };
+        if matches!(&self.bots, Reading::Ready(before) if before.bots == bots.bots && before.elsewhere == bots.elsewhere && before.held == bots.held && before.refused == bots.refused) {
+            return;
+        }
+        self.take(Read::Bots(Ok(bots)), cx);
+    }
+
+    /// What each bot is doing, told to its face (`bot_face`): the box's state, or offline while the
+    /// box can't be reached; a bot on another computer is offline while that one is away, and idle
+    /// otherwise (its state is its own box's to say).
+    fn tell_faces(&mut self, cx: &mut Context<Self>) {
+        let Reading::Ready(bots) = &self.bots else { return };
+        let mut told: Vec<(String, State)> = bots.bots.iter().map(|bot| (bot.id.clone(), if self.reached { crate::bot_face::state_of(&bot.now) } else { State::Offline })).collect();
+        let away = |computer: &str| match &self.computers {
+            Reading::Ready(computers) => computers.iter().any(|each| each.name == computer && each.reach == "away"),
+            _ => false,
+        };
+        told.extend(bots.elsewhere.iter().map(|there| (there.id.clone(), if !self.reached || away(&there.computer) { State::Offline } else { State::Idle })));
+        for (id, state) in told {
+            crate::bot_face::tell(&id, state, cx);
+        }
+        self.tell_seen(cx);
+    }
+
+    /// Whether the box is reached (the window's own word): its bots are drawn offline while not.
+    pub fn set_reached(&mut self, reached: bool, cx: &mut Context<Self>) {
+        if self.reached != reached {
+            self.reached = reached;
+            self.tell_faces(cx);
+            cx.notify();
+        }
+    }
+
+    /// The bot whose conversation the window shows now, if any: what it finished or stopped on is
+    /// seen, and the box is told so (`POST kuvo/bots/<id>/seen`), for every client.
+    pub fn set_chat_open(&mut self, bot: Option<String>, cx: &mut Context<Self>) {
+        if self.chat_open != bot {
+            self.chat_open = bot;
+            self.tell_seen(cx);
+        }
+    }
+
+    fn tell_seen(&mut self, cx: &mut Context<Self>) {
+        let (Some(open), Reading::Ready(bots)) = (&self.chat_open, &self.bots) else { return };
+        let Some(bot) = bots.bots.iter().find(|bot| &bot.id == open) else { return };
+        if !matches!(bot.now.state, kuvo_box::areas::BotState::Done | kuvo_box::areas::BotState::Blocked) {
+            return;
+        }
+        // Once for each time it got there (its `since`).
+        let told = (bot.id.clone(), bot.now.since.map(|since| since as u64));
+        if self.seen_told.as_ref() == Some(&told) {
+            return;
+        }
+        self.seen_told = Some(told);
+        let (client, id) = (self.client.clone(), bot.id.clone());
+        if !self.live {
+            let _ = client.bot_seen(&id);
+            return;
+        }
+        cx.background_executor().spawn(async move { client.bot_seen(&id) }).detach();
     }
 
     /// Whether Bots' main view is on screen (Bots shown, no bot's conversation over it): a group
@@ -364,6 +452,7 @@ impl AreaView {
                 settings.update(cx, |settings, cx| settings.set_computers(computers, cx));
             }
             self.computers = computers;
+            self.tell_faces(cx);
             cx.notify();
         }
     }
@@ -423,6 +512,7 @@ impl AreaView {
                     bots
                 });
                 self.bots = reading(bots, &self.bots);
+                self.tell_faces(cx);
                 // The same reading, handed to the page.
                 let said = match &self.bots {
                     Reading::NotYet => Reading::NotYet,
@@ -635,17 +725,10 @@ impl AreaView {
             let key = format!("bot:{}", bot.id);
             let selected = self.is_selected(&key);
             // What it's doing now is the box's (`now`): its sessions at work and waiting on you,
-            // or when the newest finished; with none of them, its job.
-            let (working, asking) = (bot.now.working, bot.now.asking);
+            // or when the newest finished; with none of them, its job. Its face shows it too (no
+            // spinner or badge beside it: the bot says it).
+            let asking = bot.now.asking;
             let words = doing(&bot.now, self.now()).unwrap_or_else(|| bot.job.clone());
-            let id = bot.id.clone();
-            let trailing: Option<AnyElement> = if asking > 0 {
-                Some(div().debug_selector(move || format!("bot-asking-{id}")).child(count_badge(asking, cx)).into_any_element())
-            } else if working > 0 {
-                Some(div().debug_selector(move || format!("bot-working-{id}")).child(spinner(SharedString::from(format!("bot-spin-{}", bot.id)), IconSize::Nav, c.text_muted)).into_any_element())
-            } else {
-                None
-            };
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
             rows.push(
@@ -663,8 +746,7 @@ impl AreaView {
                     .when(selected, |r| r.bg(selected_bg))
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key, cx))
-                    // Still, as the user asked: the Mac's animated faces aren't brought over yet.
-                    .child(bot_face(&bot.look, px(28.)))
+                    .child(bot_face(&bot.id, &bot.look, px(28.)))
                     .child(
                         div()
                             .flex_1()
@@ -674,7 +756,6 @@ impl AreaView {
                             .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(bot.name.clone()))
                             .child(div().truncate().text_ui(TypeSize::Small).text_color(if asking > 0 { c.accent } else { c.text_muted }).child(words)),
                     )
-                    .children(trailing.map(|trailing| div().flex_none().child(trailing)))
                     .into_any_element(),
             );
         }
@@ -697,7 +778,7 @@ impl AreaView {
                     format!("On {computer}")
                 };
                 let face = match &there.look {
-                    Some(look) => bot_face(look, px(28.)),
+                    Some(look) => bot_face(&there.id, look, px(28.)),
                     None => div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
                 rows.push(
@@ -974,9 +1055,13 @@ pub fn computer_line(computer: &Computer) -> String {
 }
 
 /// What a bot is doing, in words, from the box's facts: "1 at work, 1 waiting on you", "Waiting
-/// on you", "2 at work"; with neither, "Finished 3h ago" from when its newest session last changed;
-/// none where the box says none of them (its row shows its job).
+/// on you", "2 at work"; stopped where nothing waits on you ("Hit a usage limit", "Stopped on an
+/// error"); with none of them, "Finished 3h ago" from when its newest session last changed; none
+/// where the box says none of them (its row shows its job).
 pub(crate) fn doing(now: &BotNow, at: f64) -> Option<String> {
+    if now.blocked > 0 && now.asking == 0 {
+        return Some(if now.blocked_by.as_deref() == Some("limit") { "Hit a usage limit" } else { "Stopped on an error" }.to_owned());
+    }
     let at_work = (now.working > 0).then(|| format!("{} at work", now.working));
     let waiting = (now.asking > 0).then(|| if now.working > 0 { format!("{} waiting on you", now.asking) } else { "Waiting on you".to_owned() });
     match (at_work, waiting) {
@@ -1006,33 +1091,9 @@ pub fn look_tint(color: &str) -> Hsla {
     .into()
 }
 
-/// A bot's still face: its look's colour and shape, with calm eyes (the Mac's `BotAvatar` drawn
-/// without moving; its faces and animation aren't brought over yet). A look this doesn't know is
-/// graphite and round, as the Mac shows one.
-pub fn bot_face(look: &Look, size: Pixels) -> AnyElement {
-    let tint = look_tint(&look.color);
-    // Deep tints get light eyes, as the Mac's (`isDeep`).
-    let deep = !matches!(look.color.as_str(), "mint" | "sky" | "pink" | "coral" | "orange" | "amber" | "lime");
-    let eye = if deep { gpui::hsla(0., 0., 1., 0.92) } else { gpui::hsla(0., 0., 0.12, 0.9) };
-    let corner = match look.shape.as_str() {
-        "squircle" => size * 0.3,
-        "pebble" => size * 0.42,
-        "gem" => size * 0.18,
-        "bloom" => size * 0.36,
-        _ => size / 2.,
-    };
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .gap(size * 0.16)
-        .size(size)
-        .rounded(corner)
-        .bg(tint)
-        .child(div().w(size * 0.11).h(size * 0.2).rounded(radius::PILL).bg(eye))
-        .child(div().w(size * 0.11).h(size * 0.2).rounded(radius::PILL).bg(eye))
-        .into_any_element()
+/// A bot's face, live (`bot_face`): the creature of the bot `id` in `look`.
+pub fn bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
+    crate::bot_face::bot_face(id, look, size)
 }
 
 /// Quiet words in a sidebar's place: loading, nothing yet, or what's wrong.
@@ -1121,7 +1182,7 @@ mod tests {
 
     #[test]
     fn a_bot_says_what_its_doing_from_the_boxs_facts() {
-        let now = |working, asking, finished| BotNow { working, asking, finished };
+        let now = |working, asking, finished| BotNow { working, asking, finished, ..BotNow::default() };
         let hour = 3_600_000.;
         assert_eq!(doing(&now(1, 1, None), 0.).as_deref(), Some("1 at work, 1 waiting on you"));
         assert_eq!(doing(&now(0, 1, None), 0.).as_deref(), Some("Waiting on you"));

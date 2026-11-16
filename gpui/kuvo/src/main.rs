@@ -35,6 +35,8 @@ fn main() {
     }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
+        // Reduce Motion, as macOS has it now and as it changes: the bots and spinners hold still.
+        kuvo::reduce_motion::init(cx);
         // Touch ID, or this Mac's password, before what lets something use what's yours from now on.
         kuvo::confirm_you::init(cx);
         // Your settings, kept in the app's own folder (none for the made-up box: kept while it runs).

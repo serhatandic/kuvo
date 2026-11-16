@@ -244,17 +244,18 @@ fn a_project_shows_the_boxs_sums_of_who_waits_and_who_works(cx: &mut TestAppCont
     assert!(bounds(cx, "project-asking-Website").is_some() && bounds(cx, "project-working-Website").is_none());
 }
 
-/// A bot's row is drawn from what the box says it's doing now (`now`): a count where it waits on
-/// you, a spinner where it only works, neither where it does nothing.
+/// A bot's row is drawn from what the box says it's doing now (`now`): its face in the box's
+/// state, and no spinner or count beside it (the bot says it; the rail keeps its count).
 #[gpui::test]
 fn a_bots_row_shows_what_the_box_says_its_doing_now(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.waiting().bots), 2, "the rail's count is the box's");
     click(cx, "rail-bots");
-    assert!(bounds(cx, "bot-asking-bot_mira").is_some(), "at work and waiting: the count");
-    assert!(bounds(cx, "bot-asking-bot_inbox").is_some());
-    for quiet in ["bot_release", "bot_docs"] {
-        assert!(bounds(cx, &format!("bot-asking-{quiet}")).is_none() && bounds(cx, &format!("bot-working-{quiet}")).is_none(), "{quiet}");
+    let drawn = |cx: &mut VisualTestContext, bot: &str| cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown(bot));
+    assert_eq!(drawn(cx, "bot_mira"), Some(kuvo_ui::bot::State::NeedsYou), "at work and waiting: needs you");
+    assert_eq!(drawn(cx, "bot_docs"), Some(kuvo_ui::bot::State::Done));
+    for bot in ["bot_mira", "bot_inbox", "bot_release", "bot_docs"] {
+        assert!(bounds(cx, &format!("bot-asking-{bot}")).is_none() && bounds(cx, &format!("bot-working-{bot}")).is_none(), "{bot}");
     }
 }
 

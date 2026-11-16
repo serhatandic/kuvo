@@ -73,6 +73,16 @@ pub struct Facts {
     /// The bot it is, or works for, by its id (as `kuvo/bots` lists it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot: Option<String>,
+    /// Its model is reasoning now, as the box debounces it (`bots.state`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<bool>,
+    /// It stopped on an error or a limit you haven't seen, or retries one for long: which (`error`,
+    /// `limit`; a word a newer box may add to).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<String>,
+    /// It ended a turn you haven't read: when (ms, its `time.idle`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<f64>,
 }
 
 impl Facts {

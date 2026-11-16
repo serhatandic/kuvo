@@ -28,7 +28,9 @@ pub struct Look {
 }
 
 /// What a bot is doing now, as facts (`bots.now`): how many of its sessions are at work, how many
-/// wait on you, and, with neither, when the newest of them last changed (ms).
+/// wait on you, and, with neither, when the newest of them last changed (ms); how many of those at
+/// work are thinking and how many are blocked (stopped on an error or a limit you haven't seen);
+/// and the one state the box says it's in, since when (`bots.state`).
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct BotNow {
     #[serde(default)]
@@ -37,6 +39,47 @@ pub struct BotNow {
     pub asking: usize,
     #[serde(default)]
     pub finished: Option<f64>,
+    #[serde(default)]
+    pub thinking: usize,
+    #[serde(default)]
+    pub blocked: usize,
+    /// What blocked the newest blocked one: `error` or `limit` (a word a newer box may add to).
+    #[serde(default, rename = "blockedBy")]
+    pub blocked_by: Option<String>,
+    #[serde(default)]
+    pub state: BotState,
+    /// Since when (ms), as the box saw it change.
+    #[serde(default)]
+    pub since: Option<f64>,
+}
+
+/// The one state a box says a bot is in (`bots.now.state`): which it is, by its precedence, is the
+/// box's, so every client draws the same bot the same way. (Offline isn't one: a box can't say it
+/// can't be reached, so a client draws that itself.) One a newer box names is drawn idle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BotState {
+    #[default]
+    Idle,
+    Working,
+    Thinking,
+    NeedsYou,
+    Blocked,
+    Done,
+    Asleep,
+}
+
+impl<'de> Deserialize<'de> for BotState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        Ok(match Option::<String>::deserialize(deserializer)?.as_deref() {
+            Some("working") => BotState::Working,
+            Some("thinking") => BotState::Thinking,
+            Some("needsYou") => BotState::NeedsYou,
+            Some("blocked") => BotState::Blocked,
+            Some("done") => BotState::Done,
+            Some("asleep") => BotState::Asleep,
+            _ => BotState::Idle,
+        })
+    }
 }
 
 /// One bot, as `kuvo/bots` lists it.
@@ -688,7 +731,18 @@ mod tests {
         .unwrap();
         let read: Vec<Bot> = bots.into_iter().filter_map(|bot| serde_json::from_value(bot).ok()).collect();
         assert_eq!(read.len(), 1);
-        assert_eq!(read[0].now, BotNow { working: 1, asking: 0, finished: None });
+        assert_eq!(read[0].now, BotNow { working: 1, asking: 0, ..BotNow::default() });
+    }
+
+    /// The one state the box says a bot is in, with its facts (`bots.state`); a word a newer box
+    /// adds is read as idle, and the rest of the bot stays.
+    #[test]
+    fn a_bots_state_is_read_as_the_box_says_it() {
+        let now = |json: &str| serde_json::from_str::<BotNow>(json).unwrap();
+        let blocked = now(r#"{"working":0,"asking":0,"blocked":1,"blockedBy":"limit","state":"blocked","since":5}"#);
+        assert_eq!((blocked.state, blocked.blocked, blocked.blocked_by.as_deref(), blocked.since), (BotState::Blocked, 1, Some("limit"), Some(5.)));
+        assert_eq!(now(r#"{"working":2,"asking":0,"thinking":2,"state":"thinking","since":1}"#).thinking, 2);
+        assert_eq!(now(r#"{"working":0,"asking":0,"state":"napping","since":1}"#).state, BotState::Idle);
     }
 
     #[test]

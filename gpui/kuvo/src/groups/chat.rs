@@ -527,10 +527,10 @@ pub fn blank_face(size: gpui::Pixels, cx: &App) -> AnyElement {
     div().flex().flex_none().items_center().justify_center().size(size).rounded(radius::PILL).bg(c.sunken).child(Icon::new(IconName::Bot).size(IconSize::Nav).color(c.icon)).into_any_element()
 }
 
-/// A member's face, or the blank one when its look isn't known.
-pub fn face(look: Option<&Look>, size: gpui::Pixels, cx: &App) -> AnyElement {
+/// A member's face (the bot `id`'s creature), or the blank one when its look isn't known.
+pub fn face(id: &str, look: Option<&Look>, size: gpui::Pixels, cx: &App) -> AnyElement {
     match look {
-        Some(look) => bot_face(look, size),
+        Some(look) => bot_face(id, look, size),
         None => blank_face(size, cx),
     }
 }
@@ -584,8 +584,8 @@ impl GroupChatView {
         let c = &cx.theme().colors;
         let author = self.author(bot);
         let (face, name, note, opens): (AnyElement, String, Option<&str>, Option<(String, String)>) = match &author {
-            Author::Member { id, name, look, session } => (face(look.as_ref(), px(24.), cx), name.clone(), None, session.clone().map(|session| (id.clone(), session))),
-            Author::Left { name, look } => (bot_face(look, px(24.)), name.clone(), Some("Left the chat"), None),
+            Author::Member { id, name, look, session } => (face(id, look.as_ref(), px(24.), cx), name.clone(), None, session.clone().map(|session| (id.clone(), session))),
+            Author::Left { name, look } => (bot_face(bot, look, px(24.)), name.clone(), Some("Left the chat"), None),
             Author::Gone => (blank_face(px(24.), cx), "A bot that left".into(), None, None),
         };
         let kind = match (said.kind.as_str(), &said.report) {
@@ -666,7 +666,7 @@ impl GroupChatView {
                 .px(space::S4)
                 .py(px(10.))
                 .when(!last, |d| d.border_b_1().border_color(c.border))
-                .child(div().pt(px(1.)).child(face(look.as_ref(), px(18.), cx)))
+                .child(div().pt(px(1.)).child(face(&task.bot, look.as_ref(), px(18.), cx)))
                 .child(
                     div()
                         .flex_1()
@@ -767,7 +767,7 @@ impl GroupChatView {
                     .flex()
                     .items_center()
                     .gap(space::S2)
-                    .child(face(look.as_ref(), px(24.), cx))
+                    .child(face(bot, look.as_ref(), px(24.), cx))
                     .child(div().debug_selector(|| "talking-name".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(if matches!(self.chat.activity.last(), Some(Activity::Writing)) { format!("{name} is writing…") } else { format!("{name} is working…") }))
                     .child(spinner("talking-spin", IconSize::Nav, c.text_faint)),
             )
@@ -845,7 +845,7 @@ pub fn faces(group: &Group, size: gpui::Pixels, cx: &App) -> AnyElement {
         .flex_none()
         .items_center()
         .children(group.members.iter().take(SHOWN).enumerate().map(|(n, member)| {
-            div().when(n > 0, |d| d.ml(-(size * 0.28))).p(px(2.)).rounded(radius::PILL).bg(c.surface).child(face(member.look.as_ref(), size, cx))
+            div().when(n > 0, |d| d.ml(-(size * 0.28))).p(px(2.)).rounded(radius::PILL).bg(c.surface).child(face(&member.id, member.look.as_ref(), size, cx))
         }))
         .when(more > 0, |d| d.child(div().pl(space::S1).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("+{more}"))))
         .into_any_element()

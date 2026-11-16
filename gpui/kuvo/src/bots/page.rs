@@ -18,7 +18,7 @@ use kuvo_ui::{
 };
 
 use super::{Act, BotsView, Control, Item, Row, Sheet, Shown, Tone, state_words};
-use crate::areas::{bot_face, look_tint};
+use crate::areas::bot_face;
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 720.;
@@ -31,13 +31,16 @@ impl BotsView {
             Item::Title(title) => div().pt(space::S8).pb(space::S2).text_ui(TypeSize::Title).medium().text_color(c.text).child(title).into_any_element(),
             Item::Head { bot, doing } => self.head(&bot, doing, cx),
             Item::ElsewhereHead { key, name, look, line } => div()
-                .debug_selector(move || format!("elsewhere-head-{key}"))
+                .debug_selector({
+                    let key = key.clone();
+                    move || format!("elsewhere-head-{key}")
+                })
                 .pt(space::S8)
                 .pb(space::S2)
                 .flex()
                 .items_center()
                 .gap(space::S4)
-                .child(face_or_blank(look.as_ref(), px(64.), cx))
+                .child(face_or_blank(&key, look.as_ref(), px(64.), cx))
                 .child(
                     div()
                         .flex_1()
@@ -158,8 +161,7 @@ impl BotsView {
             .flex()
             .items_center()
             .gap(space::S4)
-            // Still, as the user asked: no animated faces here yet.
-            .child(bot_face(&bot.look, px(64.)))
+            .child(bot_face(&bot.id, &bot.look, px(64.)))
             .child(
                 div()
                     .flex_1()
@@ -233,7 +235,10 @@ impl BotsView {
             },
             Control::Button(label, act) => button(key, label, act, false, cx).into_any_element(),
             Control::Danger(label, act) => button(key, label, act, true, cx).into_any_element(),
-            Control::Face(look, label, act) => div().flex().items_center().gap(space::S3).children(look.map(|look| bot_face(&look, px(28.)))).child(button(key, label, act, false, cx)).into_any_element(),
+            Control::Face(look, label, act) => {
+                let id = self.face_key();
+                div().flex().items_center().gap(space::S3).children(look.map(|look| bot_face(&id, &look, px(28.)))).child(button(key, label, act, false, cx)).into_any_element()
+            }
             Control::NameField => div().debug_selector(|| "new-name-field".into()).w(px(260.)).child(self.new_name.clone()).into_any_element(),
             Control::Menu { shown, choices } => {
                 let this = cx.entity().downgrade();
@@ -366,7 +371,7 @@ impl BotsView {
         let blank = div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(IconName::Plus).color(c.icon)).into_any_element();
         let mut tiles = vec![tile(None, blank, "Blank".into(), "Tell it its job yourself, in its chat.".into(), picked.is_none(), cx)];
         for template in templates {
-            let leading = face_or_blank(template.look.as_ref(), px(28.), cx);
+            let leading = face_or_blank(&format!("template:{}", template.id), template.look.as_ref(), px(28.), cx);
             tiles.push(tile(Some(template.id.clone()), leading, template.name, template.job, picked.as_ref() == Some(&template.id), cx));
         }
         div().debug_selector(|| "new-templates".into()).flex().flex_wrap().gap(space::S3).children(tiles).into_any_element()
@@ -493,6 +498,9 @@ impl BotsView {
             return div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element();
         };
         let label = |words: &'static str| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
+        let dark = cx.theme().appearance.is_dark();
+        // The preview is the bot itself (the same creature as its other copies); New Bot's its own.
+        let id = self.face_key();
         let colors = looks.colors.iter().map(|color| {
             let on = *color == look.color;
             let (selector, picked) = (format!("look-color-{color}"), color.clone());
@@ -508,7 +516,7 @@ impl BotsView {
                 .border_color(if on { c.text } else { gpui::transparent_black() })
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.pick_look(Some(&picked), None, cx)))
-                .child(div().size(px(22.)).rounded(radius::PILL).bg(look_tint(color)))
+                .child(div().size(px(22.)).rounded(radius::PILL).bg(kuvo_ui::bot::swatch(color, dark)))
         });
         let colors: Vec<_> = colors.collect();
         let shapes: Vec<_> = looks
@@ -530,14 +538,14 @@ impl BotsView {
                     .bg(c.card)
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| this.pick_look(None, Some(&picked), cx)))
-                    .child(bot_face(&Look { color: look.color.clone(), shape: shape.clone(), face: look.face.clone() }, px(32.)))
+                    .child(bot_face(&format!("look:{shape}"), &Look { color: look.color.clone(), shape: shape.clone(), face: look.face.clone() }, px(32.)))
             })
             .collect();
         div()
             .flex()
             .flex_col()
             .gap(space::S3)
-            .child(div().debug_selector(|| "look-preview".into()).flex().justify_center().py(space::S2).child(bot_face(look, px(72.))))
+            .child(div().debug_selector(|| "look-preview".into()).flex().justify_center().py(space::S2).child(bot_face(&id, look, px(72.))))
             .child(label("Colour"))
             .child(div().flex().flex_wrap().gap(space::S1).children(colors))
             .child(div().pt(space::S1).child(label("Shape")))
@@ -546,10 +554,10 @@ impl BotsView {
     }
 }
 
-/// A look's face; with none (the box's to pick), a quiet blank of the same size.
-fn face_or_blank(look: Option<&Look>, size: gpui::Pixels, cx: &App) -> AnyElement {
+/// A look's face, the creature `id`'s; with none (the box's to pick), a quiet blank of the same size.
+fn face_or_blank(id: &str, look: Option<&Look>, size: gpui::Pixels, cx: &App) -> AnyElement {
     match look {
-        Some(look) => bot_face(look, size),
+        Some(look) => bot_face(id, look, size),
         None => div().flex().flex_none().items_center().justify_center().size(size).rounded(radius::PILL).bg(cx.theme().colors.sunken).child(Icon::new(IconName::Bot).color(cx.theme().colors.icon)).into_any_element(),
     }
 }

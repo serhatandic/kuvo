@@ -32,8 +32,9 @@ raw-window-handle = "0.6"
 # Your settings' Notifications and General: the Dock's count, and which editors
 # are on this Mac (notifications.rs, yours/mac.rs); and the app updating itself, Sparkle loaded
 # from the bundle and driven through its classes (updates/sparkle.rs).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL", "NSSet", "NSUserDefaults", "NSDate", "NSError", "NSDictionary", "NSArray", "NSObject", "NSEnumerator"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace"] }
+# And macOS's Reduce Motion followed as it changes (reduce_motion.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL", "NSSet", "NSUserDefaults", "NSDate", "NSError", "NSDictionary", "NSArray", "NSObject", "NSEnumerator", "NSNotification", "NSOperation", "block2"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace", "NSAccessibility"] }
 # Posting notifications with macOS's own sound (Focus and System Settings silence it), clicks
 # going to GPUI's delegate by the same identifier.
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
@@ -68,4 +69,14 @@ required-features = ["shots"]
 [[bin]]
 name = "scroll_bench"
 path = "src/bin/scroll_bench.rs"
+required-features = ["shots"]
+
+[[bin]]
+name = "bot_shots"
+path = "src/bin/bot_shots.rs"
+required-features = ["shots"]
+
+[[bin]]
+name = "bot_bench"
+path = "src/bin/bot_bench.rs"
 required-features = ["shots"]
