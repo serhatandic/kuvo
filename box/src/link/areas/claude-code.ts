@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { APP_KEY_FILES, INTEGRATION_DATA, K, homeFolder } from "../home";
 import { engineList } from "../engine/client";
-import { askedAbout, homeSecrets } from "../fence/policy";
+import { askedAbout, homeSecrets, throughLinks } from "../fence/policy";
 import { readSettings, valueAt } from "./config";
 import type { EngineRecord } from "../../shared/records";
 import type { ClaudeCode, ClaudeCodeImport } from "../../shared/routes/settings";
@@ -90,7 +90,10 @@ async function claudePlaces(claude: string): Promise<Places> {
   const own = await fs.promises.realpath(claude).catch(() => null);
   return {
     roots: [...homes, ...store, ...(own && !homes.some(each => within(each, own)) ? [own] : [])],
-    refused: (await Promise.all(refused.map(both))).flat(),
+    // (Those by where their links lead, asking about names alone: they're ~/Library and what's in
+    // it, another app's data among it, which macOS guards, and opening one had it ask, or say it
+    // stopped Kuvo "from accessing data from other apps", with no one there to answer.)
+    refused: [...new Set(refused.flatMap(folder => [folder, throughLinks(folder)]))],
     store,
   };
 }

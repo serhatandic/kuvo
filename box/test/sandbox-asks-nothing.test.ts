@@ -30,8 +30,9 @@ const environment = (home: string) => ({ HOME: home, PATH: "/usr/bin:/bin", TMPD
 /** Loaded before the box's code: what would open a folder macOS guards in your account's home (all of
  * ~/Library: it guards more of it than it says) by that name is noted in `noted`, and doesn't reach the
  * system. This checkout is its own, wherever it is. The box also reads your SSH and GitHub settings in
- * your real home, which may link to or name a guarded folder: those it finds empty here. */
-function guard(root: string): { preload: string; noted: string } {
+ * your real home, which may link to or name a guarded folder: those it finds empty here. With `home`,
+ * that's the account's home as the system says it (`id -P`), and the one guarded. */
+function guard(root: string, home = accountHome()): { preload: string; noted: string } {
   const preload = join(root, "note-opens.cjs")
   const noted = join(root, "opened")
   writeFileSync(noted, "")
@@ -42,7 +43,7 @@ function guard(root: string): { preload: string; noted: string } {
   writeFileSync(preload, `
 const fs = require("fs")
 const empty = where => typeof where === "string" && new RegExp(${JSON.stringify(yours)}).test(where)
-const guarded = where => typeof where === "string" && !where.startsWith(${JSON.stringify(checkout + "/")}) && new RegExp(${JSON.stringify(`^${accountHome()}/(${names})(/|$)`)}, "i").test(where)
+const guarded = where => typeof where === "string" && !where.startsWith(${JSON.stringify(checkout + "/")}) && new RegExp(${JSON.stringify(`^${home}/(${names})(/|$)`)}, "i").test(where)
 const stop = (name, where) => {
   fs.appendFileSync(${JSON.stringify(noted)}, name + " " + where + "\\n")
   return Object.assign(new Error("ENOENT: " + where), { code: "ENOENT" })
@@ -59,6 +60,14 @@ for (const name of ["openSync", "readFileSync", "readdirSync", "opendirSync", "w
 wrap(fs.realpathSync, "native", "realpathSync.")
 wrap(fs, "realpathSync", "")
 for (const name of ["open", "readFile", "readdir", "opendir", "realpath"]) wrap(fs.promises, name, "promises.")
+${home === accountHome() ? "" : `
+const child = require("child_process")
+const spawn = child.spawnSync
+child.spawnSync = Object.assign(function (command, args, ...rest) {
+  if (command === "/usr/bin/id" && args && args[0] === "-P") return { status: 0, stdout: ${JSON.stringify(`test:*:${process.getuid?.() ?? 0}:20::0:0:Test:${home}:/bin/zsh
+`)}, stderr: "" }
+  return spawn.call(this, command, args, ...rest)
+}, spawn)`}
 `)
   return { preload, noted }
 }
@@ -122,6 +131,27 @@ test.skipIf(process.platform !== "darwin")("a box says where it is without openi
     await box.exited
   }
 }, 30_000)
+
+// Settings › Agents lists Claude Code's subagents on this computer, keeping clear of your secrets
+// by where they really are: among them another app's data (1Password's group container), Safari's
+// and your browsers'. Looking those up by opening them had macOS ask, or tell you it stopped "Kuvo"
+// from accessing data from other apps; only their names are asked about.
+test.skipIf(process.platform !== "darwin")("Claude Code's list opens nothing macOS guards, another app's data included", async () => {
+  const root = scratch()
+  // (A home of the test's own, guarded as macOS guards yours, with 1Password's data in it.)
+  const home = join(root, "home")
+  mkdirSync(join(home, "Library", "Group Containers", "2BUA8C4S2C.com.1password"), { recursive: true })
+  const claude = join(home, ".claude")
+  mkdirSync(join(claude, "agents"), { recursive: true })
+  writeFileSync(join(claude, "agents", "helper.md"), "---\nname: helper\ndescription: Helps.\n---\nHelp.\n")
+  const { preload, noted } = guard(root, home)
+  const list = join(import.meta.dir, "..", "src", "link", "areas", "claude-code.ts")
+  const ran = Bun.spawnSync([process.execPath, "--preload", preload, "-e", `import { claudeCodeList } from ${JSON.stringify(list)}; console.log(JSON.stringify(await claudeCodeList(${JSON.stringify(claude)}, {}, new Set())))`],
+    { env: { ...environment(home), KUVO_HOME: join(root, "kuvo") }, cwd: root })
+  expect(ran.exitCode, ran.stderr.toString()).toBe(0)
+  expect(JSON.parse(ran.stdout.toString()).agents.map((agent: { name: string }) => agent.name)).toEqual(["helper"])
+  expect(await Bun.file(noted).text()).toBe("")
+})
 
 // What macOS does for a folder it asks about, as far as the box sees it: one opened before you've
 // answered holds whoever opened it (here two seconds, noted), one asked about off the box's thread
