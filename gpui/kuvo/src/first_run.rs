@@ -1,7 +1,8 @@
 //! The first run: what the window shows until the box says you've had it (`welcomed` in
 //! `kuvo/setup`). One step at a time in a card on the dotted backdrop: a welcome, the coding agents
-//! and plans to sign in to, and where to work (a computer, and a folder on it); then the window
-//! opens on its landing view, set to start where you picked.
+//! and plans to sign in to, what macOS must allow the program agents run under (only on a Mac
+//! whose Kuvo says one isn't allowed yet: [`crate::permissions`]), and where to work (a computer,
+//! and a folder on it); then the window opens on its landing view, set to start where you picked.
 //!
 //! Every fact is the box's: the accounts, how each stands and what can be done with it, in its
 //! words (`kuvo/sign-in/accounts`: `plan` keeps the plans in the list and the keys apart, `added`
@@ -49,6 +50,9 @@ pub enum Step {
     Agents,
     /// The accounts a key is entered for, behind "Use an API Key Instead…" (part of Agents).
     Keys,
+    /// What macOS must allow the program this Mac's agents run under, each with its own Open
+    /// System Settings; only where this Mac's Kuvo says one isn't allowed yet.
+    Allow,
     /// A computer, and a folder on it.
     Where,
     /// A folder chosen by looking through the computer's folders (part of Where).
@@ -56,12 +60,13 @@ pub enum Step {
 }
 
 impl Step {
-    /// Which of the three dots it's at.
-    fn dot(self) -> usize {
+    /// Which of the dots it's at (`allow`: whether the permissions' step is among them).
+    fn dot(self, allow: bool) -> usize {
         match self {
             Step::Welcome => 0,
             Step::Agents | Step::Keys => 1,
-            Step::Where | Step::Browse => 2,
+            Step::Allow => 2,
+            Step::Where | Step::Browse => 2 + usize::from(allow),
         }
     }
 }
@@ -121,10 +126,16 @@ pub struct FirstRun {
     problems: HashMap<String, String>,
     /// Now, as the folders' times count from it (fixed for shots).
     now: Option<f64>,
+    /// What macOS allows this Mac's agents, as the window's own reads it (none: not asked).
+    permissions: Option<Entity<crate::permissions::HeadsUp>>,
+    /// Whether the permissions' step has been shown: it stays one of the steps, back and forth,
+    /// once what it asked is allowed.
+    allow_shown: bool,
     focus: FocusHandle,
     wants_focus: bool,
     scroll: ScrollHandle,
     tasks: Vec<Task<()>>,
+    _permissions: Option<Subscription>,
 }
 
 impl EventEmitter<Finished> for FirstRun {}
@@ -178,13 +189,39 @@ impl FirstRun {
             installing: HashSet::new(),
             problems: HashMap::new(),
             now: None,
+            permissions: None,
+            allow_shown: false,
             focus: cx.focus_handle(),
             wants_focus: true,
             scroll: ScrollHandle::new(),
             tasks: Vec::new(),
+            _permissions: None,
         };
         run.read(cx);
         run
+    }
+
+    /// What macOS allows this Mac's agents: where it says one isn't allowed yet, a step of its
+    /// own before where to work.
+    pub fn set_permissions(&mut self, permissions: Entity<crate::permissions::HeadsUp>, cx: &mut Context<Self>) {
+        self._permissions = Some(cx.observe(&permissions, |_, _, cx| cx.notify()));
+        self.permissions = Some(permissions);
+    }
+
+    /// Whether the permissions' step is one of the steps: shown already, or this Mac's Kuvo says
+    /// something isn't allowed yet.
+    fn allows(&self, cx: &App) -> bool {
+        self.allow_shown || self.permissions.as_ref().is_some_and(|permissions| permissions.read(cx).asks())
+    }
+
+    /// The step after the agents: the permissions', where it's one of them, else where to work.
+    fn after_agents(&self, cx: &App) -> Step {
+        if self.allows(cx) { Step::Allow } else { Step::Where }
+    }
+
+    /// What macOS allows this Mac's agents, as the step reads it.
+    pub fn permissions(&self) -> Option<&Entity<crate::permissions::HeadsUp>> {
+        self.permissions.as_ref()
     }
 
     // MARK: What it shows, for the window and for tests
@@ -395,7 +432,7 @@ impl FirstRun {
     }
 
     /// Whether the step's way on can be taken now.
-    pub fn can_go_on(&self) -> bool {
+    pub fn can_go_on(&self, cx: &App) -> bool {
         if self.client.gate().is_held() {
             return false;
         }
@@ -404,6 +441,8 @@ impl FirstRun {
             // step is passed over goes by them.)
             Step::Welcome => self.box_state == BoxState::Connected && !self.settling(),
             Step::Agents | Step::Keys => true,
+            // (Once nothing is asked about: else Not Now is the way on.)
+            Step::Allow => !self.permissions.as_ref().is_some_and(|permissions| permissions.read(cx).asks()),
             Step::Where => self.place.is_some() && self.elsewhere().is_none(),
             Step::Browse => matches!(self.browsing, Some((_, Listed::Ready(_)))),
         }
@@ -413,6 +452,7 @@ impl FirstRun {
 
     fn show(&mut self, step: Step, cx: &mut Context<Self>) {
         self.step = step;
+        self.allow_shown |= step == Step::Allow;
         self.wants_focus = true;
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
         cx.notify();
@@ -420,16 +460,21 @@ impl FirstRun {
 
     /// The step's way on (its button, or Return).
     pub fn go_on(&mut self, cx: &mut Context<Self>) {
-        if !self.can_go_on() {
+        if !self.can_go_on(cx) {
             return;
         }
         match self.step {
-            // Straight on to where to work, where the box says a model runs and nothing needs you.
-            Step::Welcome => self.show(if self.ready() { Step::Where } else { Step::Agents }, cx),
+            // Straight on past the agents, where the box says a model runs and nothing needs you.
+            Step::Welcome => {
+                let next = if self.ready() { self.after_agents(cx) } else { Step::Agents };
+                self.show(next, cx)
+            }
             Step::Agents => {
                 self.close_sign_in(cx);
-                self.show(Step::Where, cx);
+                let next = self.after_agents(cx);
+                self.show(next, cx);
             }
+            Step::Allow => self.show(Step::Where, cx),
             Step::Keys => {
                 self.close_sign_in(cx);
                 self.show(Step::Agents, cx);
@@ -459,7 +504,11 @@ impl FirstRun {
                 self.close_sign_in(cx);
                 self.show(Step::Agents, cx);
             }
-            Step::Where => self.show(Step::Agents, cx),
+            Step::Allow => self.show(Step::Agents, cx),
+            Step::Where => {
+                let back = if self.allow_shown { Step::Allow } else { Step::Agents };
+                self.show(back, cx)
+            }
             Step::Browse => {
                 self.browsing = None;
                 self.show(Step::Where, cx);
@@ -468,6 +517,18 @@ impl FirstRun {
     }
 
     /// The accounts a key is entered for, in the plans' place.
+    /// Not Now on the permissions' step: what it asked about is put off (the box keeps that), and
+    /// on to where to work.
+    pub fn not_now(&mut self, cx: &mut Context<Self>) {
+        if self.step != Step::Allow {
+            return;
+        }
+        if let Some(permissions) = self.permissions.clone() {
+            permissions.update(cx, |permissions, cx| permissions.not_now(cx));
+        }
+        self.show(Step::Where, cx);
+    }
+
     pub fn show_keys(&mut self, cx: &mut Context<Self>) {
         self.close_sign_in(cx);
         self.show(Step::Keys, cx);
@@ -589,6 +650,26 @@ impl FirstRun {
         if let Some((_, sheet)) = self.sign_in.clone() {
             sheet.update(cx, |sheet, cx| sheet.close(cx));
         }
+    }
+
+    // MARK: What macOS allows
+
+    fn allow_step(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(permissions) = self.permissions.clone() else { return Vec::new() };
+        let (title, line) = permissions.read(cx).heading();
+        let asks = permissions.read(cx).asks();
+        let foot = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::S2)
+            .pt(space::S1)
+            .child(Button::new("first-run-back", "Back").icon(IconName::ArrowLeft).ghost().on_click(cx.listener(|this, _, _, cx| this.go_back(cx))))
+            .child(div().flex_1())
+            .when(asks, |d| d.child(Button::new("first-run-not-now", "Not Now").ghost().on_click(cx.listener(|this, _, _, cx| this.not_now(cx)))))
+            .child(Button::new("first-run-next", "Continue").primary().shortcut("↵").size(ButtonSize::Medium).disabled(!self.can_go_on(cx)).on_click(cx.listener(|this, _, _, cx| this.go_on(cx))))
+            .into_any_element();
+        vec![heading(&title, Some(&line), cx), self.body(vec![permissions.into_any_element()]), foot]
     }
 
     // MARK: Where to work
@@ -765,7 +846,7 @@ impl FirstRun {
             .pt(space::S1)
             .when(back, |d| d.child(Button::new("first-run-back", "Back").icon(IconName::ArrowLeft).ghost().on_click(cx.listener(|this, _, _, cx| this.go_back(cx)))))
             .child(div().flex_1())
-            .child(Button::new("first-run-next", next).primary().shortcut("↵").size(ButtonSize::Medium).loading(self.settling()).disabled(!self.can_go_on()).on_click(cx.listener(|this, _, _, cx| this.go_on(cx))))
+            .child(Button::new("first-run-next", next).primary().shortcut("↵").size(ButtonSize::Medium).loading(self.settling()).disabled(!self.can_go_on(cx)).on_click(cx.listener(|this, _, _, cx| this.go_on(cx))))
             .into_any_element()
     }
 
@@ -1224,7 +1305,7 @@ impl FirstRun {
 }
 
 /// Where you are in the steps: the current one longer.
-pub(crate) fn step_dots(at: usize, cx: &App) -> AnyElement {
+pub(crate) fn step_dots(at: usize, of: usize, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     div()
         .debug_selector(|| "first-run-dots".into())
@@ -1232,7 +1313,7 @@ pub(crate) fn step_dots(at: usize, cx: &App) -> AnyElement {
         .flex_none()
         .items_center()
         .gap(space::S1_5)
-        .children((0..3).map(|ix| div().h(px(6.)).w(if ix == at { px(16.) } else { px(6.) }).rounded(radius::PILL).bg(if ix == at { c.text } else { c.border_strong })))
+        .children((0..of).map(|ix| div().h(px(6.)).w(if ix == at { px(16.) } else { px(6.) }).rounded(radius::PILL).bg(if ix == at { c.text } else { c.border_strong })))
         .into_any_element()
 }
 
@@ -1249,12 +1330,14 @@ impl Render for FirstRun {
                 Step::Welcome => self.welcome(cx),
                 Step::Agents => self.agents(cx),
                 Step::Keys => self.keys_step(cx),
+                Step::Allow => self.allow_step(cx),
                 Step::Where => self.where_step(cx),
                 Step::Browse => self.browse_step(cx),
             }
         };
-        let dot = if held { 0 } else { self.step.dot() };
-        card_frame(card, dot, cx)
+        let allows = self.allows(cx);
+        let dot = if held { 0 } else { self.step.dot(allows) };
+        framed(card, Some((dot, if allows { 4 } else { 3 })), cx)
             .id("first-run")
             .debug_selector(|| "first-run".into())
             .key_context("FirstRun")
@@ -1274,7 +1357,7 @@ impl Render for FirstRun {
             }))
             .on_action(cx.listener(|_, _: &ToggleAppearance, _, cx| {
                 let next = cx.theme().appearance.toggled();
-                kuvo_ui::Theme::set_appearance(next, cx);
+                crate::yours::set_theme(next, cx);
             }))
     }
 }
@@ -1283,7 +1366,7 @@ impl Render for FirstRun {
 /// window moved by it), one card in the middle, and the steps' dots under it. Setting up this
 /// Mac draws in it too ([`crate::launch`]), so the welcome that follows is the same card.
 pub(crate) fn card_frame(card: Vec<AnyElement>, dot: usize, cx: &App) -> gpui::Div {
-    framed(card, Some(dot), cx)
+    framed(card, Some((dot, 3)), cx)
 }
 
 /// The same frame for a card that isn't one of the first run's steps (a move from an earlier
@@ -1292,7 +1375,8 @@ pub(crate) fn card_alone(card: Vec<AnyElement>, cx: &App) -> gpui::Div {
     framed(card, None, cx)
 }
 
-fn framed(card: Vec<AnyElement>, dot: Option<usize>, cx: &App) -> gpui::Div {
+/// `dot`: which of how many dots it's at, under the card (none: no dots).
+fn framed(card: Vec<AnyElement>, dot: Option<(usize, usize)>, cx: &App) -> gpui::Div {
     let c = cx.theme().colors.clone();
     let width: Pixels = px(CARD);
     div()
@@ -1337,7 +1421,7 @@ fn framed(card: Vec<AnyElement>, dot: Option<usize>, cx: &App) -> gpui::Div {
                         .shadow(cx.theme().elevated_shadow())
                         .children(card),
                 )
-                .children(dot.map(|dot| step_dots(dot, cx))),
+                .children(dot.map(|(at, of)| step_dots(at, of, cx))),
         )
 }
 

@@ -28,13 +28,16 @@ const fn listed(id: &'static str, title: &'static str, icon: IconName, group: &'
     Listed { id, title, icon, group, keywords }
 }
 
-/// Your settings: this app's own, on this device, kept and drawn by the app.
-pub const YOURS: &[Listed] = &[listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors")];
+/// Your settings: this app's own, on this device, kept (`crate::yours`) and drawn by the app.
+/// Adding one: `.claude/notes/yours-settings-pattern.md`.
+pub const YOURS: &[Listed] = &[
+    listed("general", "General", IconName::Settings, "", "open files editor code text"),
+    listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors"),
+    listed("notifications", "Notifications", IconName::Bell, "", "sound badge dock finished waits asks alerts"),
+];
 
 /// Yours that the desktop app hasn't yet: each opens a page saying so.
 pub const YOURS_LATER: &[Listed] = &[
-    listed("general", "General", IconName::Settings, "", "window swipe open files"),
-    listed("notifications", "Notifications", IconName::Bell, "", "sound badge finished waits"),
     listed("voice", "Voice", IconName::Mic, "", "microphone dictation speech"),
     listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
     listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
@@ -111,6 +114,8 @@ pub enum Act {
     SetModel { path: &'static [&'static str], model: Option<String>, was: Option<String> },
     SetNotice(Notice, bool),
     SetDark(bool),
+    /// One of your own settings changed, kept on this device.
+    Yours(crate::yours::Change),
     /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
     /// its confirm, where it has one, was answered).
     Change { at: At, value: Value, asked: bool },
@@ -128,6 +133,8 @@ pub enum Act {
     Open(String),
     /// Opens another section of the computer shown.
     Section(String),
+    /// Opens or closes what a row keeps folded (a meter's breakdown), by its key.
+    Expand(String),
     /// Goes to a place in Settings (`mod.rs`, its keys): another section, or the other side.
     Go(String),
     /// What a described row offers that asks for values first: its form, as a sheet.
@@ -223,8 +230,17 @@ pub enum Control {
     Menu { shown: Option<String>, choices: Vec<(String, Option<String>, Option<Act>, bool)> },
     /// Buttons, in order.
     Buttons(Vec<Push>),
-    /// A field (kept by the view under the row's key), and the buttons beside it.
-    Field { unit: Option<String>, lines: Option<(usize, usize)>, masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
+    /// A field (kept by the view under the row's key), saved as Return is pressed or it's left
+    /// (`save`), never with a button of its own; in it, where the row has them, a folder to
+    /// choose (`browse`) and common values to pick (`picks`); a change on its way (`busy`) is a
+    /// spinner in it, the field kept; and buttons beside it (`more`: a secret's Cancel).
+    Field { unit: Option<String>, lines: Option<(usize, usize)>, masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push>, browse: Option<Act>, picks: Vec<Push>, busy: Option<String> },
+    /// A short choice of two or three, side by side: each one's words, what picking it does
+    /// (none where it can't be picked from here), and whether it's it.
+    Segments(Vec<(String, Option<Act>, bool)>),
+    /// A whole by its parts, as one bar with a legend: the row's actions (Refresh) over it, a
+    /// change on its way, and whether its breakdown is open (`open`, toggled by `expand`).
+    Parts { parts: Vec<Part>, actions: Vec<Push>, busy: Option<String>, open: bool, expand: Act },
     /// It opens something: a section, a page.
     Opens(Act),
     /// A change on its way.
@@ -234,6 +250,27 @@ pub enum Control {
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
     Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
+}
+
+/// One part of a whole, as drawn: its name, its words, its share of the whole (0 to 1), and what
+/// it's made of (each one's name and words).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Part {
+    pub title: String,
+    pub words: String,
+    pub share: f32,
+    pub parts: Vec<(String, String)>,
+}
+
+/// Where a row's control goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// Its name and line on the left, the control on the right, in its group's card.
+    #[default]
+    Beside,
+    /// On the page itself, full width, no card: a group's one multi-line field (under the group's
+    /// title and words), or a whole by its parts.
+    Bare,
 }
 
 /// A flow the box leads for a row, as drawn under it.
@@ -280,11 +317,14 @@ pub struct Row {
     /// One more line under it, set apart.
     pub notice: Option<(String, Tone)>,
     pub flow: Option<FlowDrawn>,
+    pub layout: Layout,
+    /// Words before its control (an `actions` row's size), quieter.
+    pub aside: Option<String>,
 }
 
 impl Row {
     pub fn new(key: impl Into<String>, title: impl Into<String>, detail: impl Into<String>, control: Control) -> Row {
-        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control, badge: None, notice: None, flow: None }
+        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control, badge: None, notice: None, flow: None, layout: Layout::Beside, aside: None }
     }
 
     fn leading(mut self, leading: Leading) -> Row {
@@ -363,10 +403,37 @@ fn capitalized(words: &str) -> String {
     chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
+/// What your own settings' pages are drawn from: your settings now, and what this device has.
+pub struct YoursFacts<'a> {
+    pub yours: &'a crate::yours::Yours,
+    pub dark: bool,
+    /// The editors on this Mac General offers.
+    pub editors: &'a [crate::yours::editors::Editor],
+    /// Why the last change couldn't be kept, where it couldn't.
+    pub problem: Option<&'a str>,
+    /// Where System Settings shows this app's notifications.
+    pub notification_settings: &'a str,
+}
+
+/// A switch of your own settings: on, and the change flipping it makes.
+fn yours_switch(on: bool, change: fn(bool) -> crate::yours::Change) -> Control {
+    Control::Switch { on, act: Some(Act::Yours(change(!on))) }
+}
+
 /// One of your own settings' pages, as blocks.
-pub fn yours(section: &str, dark: bool) -> Vec<Block> {
-    match section {
+pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
+    use crate::yours::Change;
+    let mut blocks = match section {
+        "general" => {
+            let picked = facts.yours.general.editor.as_deref().and_then(|id| facts.editors.iter().find(|editor| editor.id == id));
+            let default = "Default text editor";
+            let mut choices = vec![(default.to_owned(), None, Some(Act::Yours(Change::Editor(None))), picked.is_none())];
+            choices.extend(facts.editors.iter().map(|editor| (editor.name.clone(), None, Some(Act::Yours(Change::Editor(Some(editor.id.clone())))), picked == Some(editor))));
+            let editor = Row::new("row-editor", "Open code and text in", "From Files, for a file on this Mac.", Control::Menu { shown: Some(picked.map_or(default, |editor| &editor.name).to_owned()), choices });
+            vec![Block::Group("Files".into(), String::new(), vec![editor])]
+        }
         "appearance" => {
+            let dark = facts.dark;
             let theme = Row::new(
                 "row-theme",
                 "Theme",
@@ -375,8 +442,22 @@ pub fn yours(section: &str, dark: bool) -> Vec<Block> {
             );
             vec![Block::Group("Theme".into(), String::new(), vec![theme])]
         }
+        "notifications" => {
+            let now = &facts.yours.notifications;
+            let rows = vec![
+                Row::new("row-notify-sessions", "Sessions", "When one finishes or asks you something, and bots’ and group chats’ news. Only while Kuvo isn’t in front.", yours_switch(now.sessions, Change::Sessions)),
+                Row::new("row-notify-sound", "Play a sound", "", yours_switch(now.sound, Change::Sound)),
+                Row::new("row-notify-dock", "Count on the Dock icon", "What waits for you, on all your computers.", yours_switch(now.dock, Change::Dock)),
+                Row::new("row-notify-system", "System notification settings", "How they look, or to allow them again.", Control::Buttons(vec![Push::new("Open", Act::Open(facts.notification_settings.to_owned()))])),
+            ];
+            vec![Block::Group(String::new(), String::new(), rows)]
+        }
         _ => Vec::new(),
+    };
+    if let Some(problem) = facts.problem.filter(|_| !blocks.is_empty()) {
+        blocks.push(Block::Note { key: "note-yours-problem".into(), words: format!("Your change couldn’t be kept for next time: {problem}"), busy: false, warning: true });
     }
+    blocks
 }
 
 /// One of a computer's pages this app still draws itself, as blocks.

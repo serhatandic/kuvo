@@ -1153,7 +1153,10 @@ if (main) {
     if (knowsEngineSettings()) {
       try { applyCompatibility(); } catch {}
     }
-    process.stdout.write(engineConfigContent(process.env.OPENCODE_CONFIG_CONTENT));
+    // `engine-config tools`, from the box's own start (`kuvo-launch`, a Mac's own box's too): with
+    // Kuvo Code's own tools for its engine, run with this same runtime, the engine's. (Not for the
+    // retired Mac app's box in its folder, whose app gives its engine its own.)
+    process.stdout.write(engineConfigContent(process.env.OPENCODE_CONFIG_CONTENT, argument === "tools" ? { runtime: process.execPath } : undefined));
   }
   // A machine's start scripts' too: the PATH your login shell sets up there (`~/.local/bin`, nvm's
   // node), then the folders of the one it was run with, for the engine and what it starts, which a
