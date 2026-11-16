@@ -14,6 +14,7 @@ import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { macDocsChanged } from "../documents/exchange";
 import { IS_MAC } from "../home";
+import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
@@ -80,7 +81,8 @@ export const OLD_APP_GRACE = 60_000;
 /** Whether the old Kuvo Code app (the Mac app before 1.0) is attached to this Mac's box now: it,
  * and only it, follows the box's link (`kuvo/link/status/events`) for as long as it's open, and
  * says its link's config first, as it attaches or attaches again. */
-export const oldAppAttached = (now = Date.now()): boolean => IS_MAC && (macLink.statusFollowers.size > 0 || now - (macLink.appSaid ?? -Infinity) < OLD_APP_GRACE);
+export const oldAppAttached = (now = Date.now()): boolean => IS_MAC && !movedFromOldApp() && (macLink.statusFollowers.size > 0 || now - (macLink.appSaid ?? -Infinity) < OLD_APP_GRACE);
+
 
 /** Why a removal isn't taken while the old app is attached to the Mac `mac` (its name). */
 export const oldAppWords = (mac: string, name: string): string => `Quit the old Kuvo Code app on ${mac} first: it keeps its own list of machines, and would add ${name} back.`;

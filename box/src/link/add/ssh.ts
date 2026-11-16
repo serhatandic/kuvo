@@ -107,6 +107,9 @@ export interface RunOptions {
   /** How long it may take, ms. */
   most?: number;
   way?: Way;
+  /** More of `ssh`'s options, for this connection alone (reaching a computer at another of its
+   * addresses: `Reached.options`). */
+  options?: string[];
 }
 
 /** The command `ssh` runs there for `script`: in base64, so any login shell hands it to `sh` whole.
@@ -165,12 +168,34 @@ function run(args: string[], options: RunOptions): Promise<Ran> {
 /** Runs `script` on `destination` with `sh`, over a connection shared with this try's other
  * scripts. Its status is the script's; 255 is ssh's own (it couldn't connect, or sign in). */
 export const remote = (destination: string, script: string, options: RunOptions = {}): Promise<Ran> =>
-  run([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), "--", destination, commandFor(script)], options);
+  run([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...(options.options ?? []), "--", destination, commandFor(script)], options);
 
 /** Lets go of the connection shared with `destination` (as a try ends): nothing of it stays. */
-export async function hangUp(destination: string, way?: Way): Promise<void> {
+export async function hangUp(destination: string, way?: Way, options: string[] = []): Promise<void> {
   if (!socketFolder()) return;
-  await run([...BASE, ...sharing(), ...signingIn(way), "-O", "exit", "--", destination], { most: 10_000, way });
+  await run([...BASE, ...sharing(), ...signingIn(way), ...options, "-O", "exit", "--", destination], { most: 10_000, way });
+}
+
+/** How `ssh` reaches `destination` as your config has it (`ssh -G`): the host it connects to, as
+ * signing in, on which port, with which of your keys. Where that can't be read, what the
+ * destination itself says (`user@host`). */
+export async function sshConfigOf(destination: string): Promise<{ host: string; user: string | null; port: string | null; keys: string[] }> {
+  const at = destination.lastIndexOf("@");
+  const plain = { host: at >= 0 ? destination.slice(at + 1) : destination, user: at >= 0 ? destination.slice(0, at) : null, port: null, keys: [] as string[] };
+  const ran = await run(["-G", "--", destination], { most: 10_000 }).catch(() => null);
+  if (!ran || ran.status !== 0) return plain;
+  const said = (name: string) => ran.stdout.split("\n").filter(line => line.startsWith(`${name} `)).map(line => line.slice(name.length + 1).trim()).filter(Boolean);
+  const home = homeFolder();
+  const keys = said("identityfile").map(file => (file.startsWith("~/") ? path.join(home, file.slice(2)) : file)).filter(file => path.isAbsolute(file) && fs.existsSync(file));
+  return { host: said("hostname")[0] ?? plain.host, user: said("user")[0] ?? plain.user, port: said("port")[0] ?? null, keys };
+}
+
+/** The options that reach a computer at `other`, one of its addresses, as `destination` is reached:
+ * as the same user, on the same port, with the same keys, and its host key checked against the one
+ * known for `destination`'s host (`HostKeyAlias`), so no key is taken on trust for an address of its own. */
+export async function reachedAs(destination: string): Promise<string[]> {
+  const config = await sshConfigOf(destination);
+  return ["-o", `HostKeyAlias=${config.host}`, ...(config.port ? ["-p", config.port] : []), ...(config.user ? ["-l", config.user] : []), ...config.keys.flatMap(key => ["-i", key])];
 }
 
 /** A host's key as it was read: its line for a known hosts file, its kind and its fingerprint as
