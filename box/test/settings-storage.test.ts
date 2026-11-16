@@ -214,7 +214,8 @@ test("Storage measures what Kuvo keeps: the whole as parts, Kuvo's folder, Refre
   mkdirSync(join(ENGINE_DATA, "worktree", "tree"), { recursive: true })
   writeFileSync(join(ENGINE_DATA, "worktree", "tree", "big"), Buffer.alloc(300_000))
   mkdirSync(join(K, "browser"), { recursive: true })
-  writeFileSync(join(K, "browser", "profile"), Buffer.alloc(100_000))
+  mkdirSync(join(K, "browser", "profile"), { recursive: true })
+  writeFileSync(join(K, "browser", "profile", "storage-test-blob"), Buffer.alloc(100_000))
   mkdirSync(join(K, "engine"), { recursive: true })
   writeFileSync(join(K, "engine", "opencode"), Buffer.alloc(200_000))
   // As it's first read: measuring, said, with no parts yet; the page follows once it's in.
