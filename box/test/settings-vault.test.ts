@@ -88,7 +88,7 @@ test("the items are listed by name with what each is and how it's used, and neve
     ["GitHub", "Sign-in · octo · github.com", "On its own"],
   ])
   expect(items.items[2].actions.map((each: any) => each.title)).toEqual(["Edit…", "Who Can Use It…", "Delete…"])
-  expect(shown.groups.find((group: any) => group.id === "items").note).toContain("encrypted, with a key only your devices hold")
+  expect(shown.groups.find((group: any) => group.id === "items").note).toContain("encrypted, with a key that Kuvo on your iPhone keeps")
   expect(rowOf(shown, "pause")).toMatchObject({ kind: "switch", value: false, can: true })
   for (const secret of ["key-value-1", "issuer-1", "a note to read"]) expect(JSON.stringify(shown)).not.toContain(secret)
 })
@@ -217,10 +217,26 @@ test("Who Can Use It… lists who may, lets another bot use it, and takes it awa
   expect((await act(row, "who", { everyone: "always" })).status).toBe(400)
 })
 
+test("a key's other field is taken away from Edit…, and a new file is added only with its bytes", async () => {
+  store.makeVault()
+  const key = await store.addItem({ kind: "key", name: "Store Key", sites: [], values: { value: "the-key-value", isuer_id: "typo-value" } })
+  let row = rowOf(await page(), `item-${key.id}`)
+  const edit = actionOf(row, "edit").form
+  expect(edit.fields.find((field: any) => field.id === "remove")).toMatchObject({ kind: "choice", value: "none", choices: [{ id: "none", title: "None" }, { id: "isuer_id", title: "Isuer Id" }] })
+  expect((await act(row, "edit", { ...opening(row, "edit"), remove: "isuer_id" })).status).toBe(200)
+  expect(store.itemByID(key.id)!.fields).toEqual(["value"])
+  expect(await store.valuesOf(key.id)).toEqual({ value: "the-key-value" })
+  // A new file sent as a check is (its name and size): refused, nothing added.
+  const items = rowOf(await page(), "items")
+  const refused = await act(items, "add", { ...opening(items, "add"), kind: "file", name: "Signing Key", file: { name: "AuthKey.p8", size: 1234 } })
+  expect(refused.status).toBe(400)
+  expect(store.readItems().map(each => each.name)).toEqual(["Store Key"])
+})
+
 test("Delete… takes the item away with its values and grants", async () => {
   const github = await made()
   const row = rowOf(await page(), `item-${github.id}`)
-  expect(actionOf(row, "delete")).toMatchObject({ style: "destructive", confirm: { title: `Delete “GitHub” from ${here}’s vault?`, button: "Delete" } })
+  expect(actionOf(row, "delete")).toMatchObject({ style: "destructive", confirm: { title: "Delete “GitHub” from the vault?", button: "Delete" } })
   const done = await act(row, "delete")
   expect(done.status).toBe(200)
   expect(store.readItems()).toEqual([])
@@ -250,10 +266,10 @@ test("what agents wait on you for is answered from the page: once, always after 
   expect((await act(group.rows[1], "once")).status).toBe(200)
   expect(await seat).toMatchObject({ answer: "once" })
   const give = rowOf(await page(), group.rows[2].id)
-  expect(actionOf(give, "give").form.fields.map((field: any) => [field.id, field.value, field.verified ?? false])).toEqual([["item", github.id, false], ["how", "once", true]])
+  expect(actionOf(give, "give").form.fields.map((field: any) => [field.id, field.value, field.verified ?? false])).toEqual([["item", "", false], ["how", "once", true]])
   expect((await act(give, "give", { item: github.id, how: "always" })).status).toBe(200)
   expect(await needing).toMatchObject({ answer: "always", item: github.id })
-  // One answered elsewhere meanwhile: the page now.
+  // One answered elsewhere meanwhile is gone from the page: refused, nothing answered.
   const gone = asks.ask({ kind: "use", item: github.id, itemName: "GitHub", botName: "Scout" })
   const row = (await page()).groups[0].rows[0]
   asks.answer(asks.listAsks()[0]!.id, { answer: "no" })
@@ -294,7 +310,7 @@ test("a locked vault says so and shows nothing else; a request that isn't a clie
   // An agent's command on this computer, say: not a client.
   const outside = await page(false)
   expect(outside.groups).toEqual([])
-  expect(outside.notes[0].words).toBe("Only Kuvo Code on your Mac or iPhone can do this.")
+  expect(outside.notes[0].words).toBe("Only Kuvo on your devices can open lokum’s vault.")
 })
 
 test("the page followed is sent again as the vault changes, without a value", async () => {

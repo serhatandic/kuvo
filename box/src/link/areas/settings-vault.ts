@@ -15,7 +15,7 @@ import type { SettingAction, SettingBadge, SettingField, SettingFieldWords, Sett
 import { isObject } from "../../shared/json";
 import path from "node:path";
 import { listBots } from "../bots/list";
-import { VAULT_FOLDER } from "../home";
+import { BOTS, VAULT_FOLDER } from "../home";
 import type { RouteContext } from "../server/context";
 import { listAsks } from "../vault/asks";
 import { agentsUseVault } from "../vault/gate";
@@ -121,6 +121,11 @@ function itemFields(each: VaultItem | null): SettingField[] {
     for (const field of each?.fields.filter(name => name !== "value") ?? []) {
       fields.push({ id: `field-${field}`, title: label(field), kind: "secret", placeholder: "Unchanged", shows: SHOW(each!.id, field) });
     }
+    // (One of them taken away, a save at a time: what 0.7's remove button on each did.)
+    const extras = each?.fields.filter(name => name !== "value") ?? [];
+    if (extras.length) {
+      fields.push({ id: "remove", title: "Remove a Field", kind: "choice", value: "none", choices: [{ id: "none", title: "None" }, ...extras.map(field => ({ id: field, title: label(field) }))] });
+    }
     fields.push({
       id: "more", title: each ? "Add Fields" : "Other Fields", kind: "pairs", secret: true, value: [], pairs: { key: "field_name", value: "Value" },
       line: "For a key with more than one part, like an issuer ID.", ...only("key"),
@@ -139,7 +144,7 @@ function itemFields(each: VaultItem | null): SettingField[] {
 /** Where its values are kept, in a sentence. */
 const keptWords = (state: VaultState, computer: string) => state.store === "keychain"
   ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.`
-  : `Kept on ${computer}, encrypted, with a key only your devices hold. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
+  : `Kept on ${computer}, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
 
 const addForm = (known: Facts, computer: string): SettingForm => ({ title: "Add Item", submit: "Add", fields: itemFields(null), note: keptWords(known.state, computer) });
 const editForm = (each: VaultItem): SettingForm => ({ title: each.name, submit: "Save", fields: itemFields(each), note: "A value left empty stays as it is." });
@@ -168,7 +173,7 @@ interface Given {
 /** The form's values read, for its check and its submit alike: each field's words, whether it can
  * be sent, and what it makes (`given`). A value is never said, only whether it's there and long
  * enough: a check gets each masked. */
-function readForm(known: Facts, each: VaultItem | null, values: Record<string, unknown>): SettingsChecked & { given?: Given } {
+function readForm(known: Facts, each: VaultItem | null, values: Record<string, unknown>, submit = false): SettingsChecked & { given?: Given } {
   const fields: SettingFieldWords[] = [];
   let ready = true;
   const say = (id: string, words: string, tone: SettingFieldWords["tone"]) => {
@@ -220,7 +225,13 @@ function readForm(known: Facts, each: VaultItem | null, values: Record<string, u
   if (kind === "login") secret("password", "password", !each);
   if (kind === "key") {
     secret("value", "value", !each);
-    for (const field of each?.fields.filter(name => name !== "value") ?? []) secret(`field-${field}`, field, false);
+    const removed = text(values.remove);
+    for (const field of each?.fields.filter(name => name !== "value") ?? []) {
+      if (field === removed) {
+        if (text(values[`field-${field}`])) say(`field-${field}`, `${label(field)} is being removed: leave it empty, or don’t remove it.`, "warning");
+        else given.values[field] = null;
+      } else secret(`field-${field}`, field, false);
+    }
     for (const pair of pairs(values.more).filter(pair => pair.key || pair.value)) {
       const field = pair.key.toLowerCase().replaceAll(" ", "_");
       if (!field) say("more", "Give each value a name.", "warning");
@@ -235,7 +246,8 @@ function readForm(known: Facts, each: VaultItem | null, values: Record<string, u
     const file = isObject(values.file) ? values.file : null;
     const data = typeof file?.data === "string" ? file.data : null;
     const size = data !== null ? Buffer.byteLength(data, "base64") : typeof file?.size === "number" ? file.size : null;
-    if (size === null) {
+    // (Sent with its bytes only: a check's name and size alone add nothing.)
+    if (size === null || (submit && data === null && !each)) {
       // (The one it has, sent back as it opened: unchanged.)
       if (!each) {
         say("file", "Choose the file.", "quiet");
@@ -306,7 +318,7 @@ function askRow(ask: VaultAsk, known: Facts): SettingItem {
     form: {
       title: `Give ${asker} an Item`, submit: "Give",
       fields: [
-        { id: "item", title: "Item", kind: "choice", value: known.items[0]!.id, choices: known.items.map(each => ({ id: each.id, title: each.name, line: lineOf(each) })) },
+        { id: "item", title: "Item", kind: "choice", value: "", choices: known.items.map(each => ({ id: each.id, title: each.name, line: lineOf(each) })) },
         ...(mayAlways(ask) ? [{ id: "how", title: "For", kind: "choice" as const, value: "once", verified: true, choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On" }] }] : []),
       ],
       ...(ask.need ? { note: `It needs ${ask.need}.` } : {}),
@@ -381,8 +393,9 @@ export function sentence(entry: VaultActivity): string {
 
 async function vaultPage(context: RouteContext): Promise<SettingsPage> {
   const known = await facts(context);
-  if (!("state" in known)) return unreadPage("vault", TITLE, known);
   const computer = computerHere(context);
+  // (Anything but your devices and the app beside it: an agent's command, say.)
+  if (!("state" in known)) return unreadPage("vault", TITLE, known.status === 403 ? { status: 403, value: { message: `Only Kuvo on your devices can open ${whose(computer)} vault.` } } : known);
   const { state } = known;
   const notes: { words: string; tone: "quiet" | "warning" }[] = [];
   if (state.locked) {
@@ -406,7 +419,7 @@ async function vaultPage(context: RouteContext): Promise<SettingsPage> {
       actions: [
         { id: "edit", title: "Edit…", form: editForm(each) },
         { id: "who", title: "Who Can Use It…", form: whoForm(known, each) },
-        { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from ${whose(computer)} vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } },
+        { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from the vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } },
       ],
     });
     return { ...kept, ...(badge ? { badge } : {}) };
@@ -483,7 +496,7 @@ async function vaultAct(context: RouteContext, at: SettingItem, action: SettingA
   if (!("state" in known)) return refusal(known) ?? { status: 503, message: said(known, "This computer's vault couldn't be read.") };
 
   if (at.id === "items" && action.id === "add") {
-    const checked = readForm(known, null, values ?? {});
+    const checked = readForm(known, null, values ?? {}, true);
     if (!checked.given) return formRefused(checked);
     const { kind, ...rest } = checked.given;
     return itemRefused(await vault(context, "POST", "kuvo/vault/items", { kind, ...rest, ...(rest.username ? {} : { username: undefined }) }), kind);
@@ -521,7 +534,7 @@ async function vaultAct(context: RouteContext, at: SettingItem, action: SettingA
   const route = `kuvo/vault/items/${encodeURIComponent(id)}`;
   switch (action.id) {
     case "edit": {
-      const checked = readForm(known, each, values ?? {});
+      const checked = readForm(known, each, values ?? {}, true);
       if (!checked.given) return formRefused(checked);
       const { kind: _, values: typed, ...rest } = checked.given;
       // A value given as it's kept already isn't a change (Show, then Save): asked of the vault
@@ -606,5 +619,5 @@ export const vaultSection: Section & { listed: SettingsSection } = {
   },
   read: vaultPage, change: vaultChange, act: vaultAct, check: vaultCheck,
   // (What agents ask waits in the process that holds the vault: listed there each second.)
-  look: () => `${FILES.map(mtime).join(" ")} ${isLocked()} ${agentsUseVault()} ${holdsVault() ? listAsks().map(ask => ask.id).join(",") : Math.floor(Date.now() / 1000)}`,
+  look: () => `${FILES.map(mtime).join(" ")} ${mtime(BOTS)} ${isLocked()} ${agentsUseVault()} ${holdsVault() ? listAsks().map(ask => ask.id).join(",") : Math.floor(Date.now() / 1000)}`,
 };

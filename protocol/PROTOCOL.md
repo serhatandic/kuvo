@@ -8788,7 +8788,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   - An action may ask for values first: `form: {title, submit, fields, note?}`, drawn as a sheet
     with the box's title, its fields in order, `note` under them, Cancel and `submit`'s words. A
     field is `{id, title, kind, line?, value?, placeholder?, choices?, mono?, folder?, pairs?,
-    shown?, can?, multi?, shows?, secret?, file?}`; its kinds: `text` (a line), `lines` (several;
+    shown?, can?, multi?, shows?, secret?, file?, verified?}`; its kinds: `text` (a line), `lines` (several;
     `mono` in a typeface that keeps a command's flags apart), `choice` (a segmented pick of
     `choices`; a client may draw many as a menu), `switch`, `folder` (the box's picker, with its
     `folder` words; clearing it sends empty text), `pairs` (names and values, `pairs: {key, value}`
@@ -8803,7 +8803,11 @@ so a client still on those (the phone) sees every change kept just as they keep 
     one is kept, sent back as it is when none is chosen. A secret's value, a `secret` pairs' values
     and a file's bytes go only with the action itself: a check gets each as `•` once a character (a
     file as `{name, size}`), so the box can say what's missing or short without seeing it, and no
-    words the box says hold one. `shown: {field,
+    words the box says hold one. A client that can make sure it's you (Touch ID) does so before
+    Show. `verified` (on a field, or on an action): it lets something use what's yours from now
+    on (a vault's grant), so a client makes sure it's you first; one that can't draws it,
+    unavailable, and says to do it where it can (the desktop app: "in Kuvo on your iPhone"). The
+    box can't check that, as it can't for `kuvo/vault/grants` itself. `shown: {field,
     is}` draws it only while that `choice` field is one of `is` (values typed in a field hidden
     meanwhile are kept while the sheet is open, and sent). `can: {why}`: drawn, not changed. The
     values a form opens with are part of its row's revision, and the form has its own (`revision`,
@@ -9001,11 +9005,13 @@ The sections now:
   <need>", its line why and where; `no` (Don't Allow), `once` (Allow Once) and, where Always would
   give it for good, `always` (Always Allow…, asked first); an `item` ask has `no` and `give`
   (Give…: `item`, a choice of the items, and `how`, This Once or From Now On), answered through
-  `kuvo/vault/asks/<id>`; one answered elsewhere meanwhile is stale. Items (`items`, a `list` of
+  `kuvo/vault/asks/<id>`; one answered elsewhere meanwhile is no longer on the page (`404`), and
+  the page followed drops it. Items (`items`, a `list` of
   `item-<id>` by name, its line what it is and its sites, user or file, its `badge` On its own or
   Asks where anyone may use it; searched past six): `edit` (Edit…: `name`, `site` and
   `username` and `password` and `signInOnly` for a sign-in, `hosts` and `value`, `field-<name>`
-  for each other kept field and `more` (`pairs`, secret) for an API key, `file` for a file, `text`
+  for each other kept field, `remove` (one of them to take away) and `more` (`pairs`, secret) for
+  an API key, `file` for a file, `text`
   (`multi`) and `readable` for a note; each kept value with `shows`), `who` (Who Can Use It…:
   `bot-<id>` and `project-<folder>` for each one listed, `everyone`, each On Its Own, Asks Each
   Time or No, and `add-bot`, Let a Bot Use It, which asks each time) and `delete` (Delete…, asked
@@ -9016,7 +9022,9 @@ The sections now:
   which keeps the key it makes). Then `pause` (a `switch`, Pause Agents' Use) and `paused-<who>`
   for each bot or conversation paused (`go-on`, Let Go On); and Activity (`activity`, its newest
   50 as `status` rows, each a sentence, the client's own said plainly, a refusal a warning).
-  Its events follow the vault's files and, in the process that holds it, what's asked.
+  Its events follow the vault's files, the bots, and, in the process that holds it, what's asked.
+  It's for the clients the vault answers (your devices over the relay, the app beside the box): a
+  `box route` reads it as anything else on the computer does, with a note and nothing listed.
 
 - **Archived Sessions** (`archived`): archived sessions grouped by project, from
   `kuvo/sessions/list`; each row uses `kuvo/sessions/<id>/actions` verbatim, including

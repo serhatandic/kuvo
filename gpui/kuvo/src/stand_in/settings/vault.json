@@ -28,7 +28,7 @@
     "title": "Waiting for You",
     "rows": [
      {
-      "id": "ask-q_zg5y9bi5hh",
+      "id": "ask-q_4ovh4p7qy6",
       "title": "Scout wants to use “App Store Connect”",
       "line": "To upload the build to TestFlight",
       "kind": "actions",
@@ -55,7 +55,7 @@
       "revision": "GMR_g8mPjGi0wsDn"
      },
      {
-      "id": "ask-q_ysuqqkda7j",
+      "id": "ask-q_2mn2caggb5",
       "title": "Ranger needs a Sentry token",
       "line": "To read the crash reports",
       "kind": "actions",
@@ -75,30 +75,30 @@
            "id": "item",
            "title": "Item",
            "kind": "choice",
-           "value": "v_pkr7zokcfb",
+           "value": "",
            "choices": [
             {
-             "id": "v_pkr7zokcfb",
+             "id": "v_fzrf6moozn",
              "title": "App Review Contact",
              "line": "Note · Bots may read it"
             },
             {
-             "id": "v_fredbf31tr",
+             "id": "v_nhcev84v8y",
              "title": "App Store Connect",
              "line": "API Key · issuer_id, value"
             },
             {
-             "id": "v_s4s7uno4si",
+             "id": "v_s17qb9tk0x",
              "title": "GitHub",
              "line": "Sign-in · octo@example.com · github.com"
             },
             {
-             "id": "v_l2jepdcy75",
+             "id": "v_nw0zsylxkn",
              "title": "npm Token",
              "line": "API Key · registry.npmjs.org"
             },
             {
-             "id": "v_ih0kmgvl11",
+             "id": "v_yeg339wph9",
              "title": "Signing Key",
              "line": "File · AuthKey_ABC123.p8"
             }
@@ -123,18 +123,18 @@
           }
          ],
          "note": "It needs a Sentry token.",
-         "revision": "YdGccak85EzQLD37"
+         "revision": "NpVasZF4AKcYGkEY"
         }
        }
       ],
-      "revision": "J0OOhwzCmtwye8Pz"
+      "revision": "TS9GZeiJkIcbq-t1"
      }
     ]
    },
    {
     "id": "items",
     "title": "Items",
-    "note": "Kept on lokum, encrypted, with a key only your devices hold. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
+    "note": "Kept on lokum, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
     "rows": [
      {
       "id": "items",
@@ -142,7 +142,7 @@
       "kind": "list",
       "items": [
        {
-        "id": "item-v_pkr7zokcfb",
+        "id": "item-v_fzrf6moozn",
         "title": "App Review Contact",
         "line": "Note · Bots may read it",
         "kind": "actions",
@@ -168,7 +168,7 @@
              "multi": true,
              "placeholder": "Unchanged. Type here to replace it.",
              "shows": {
-              "route": "kuvo/vault/items/v_pkr7zokcfb/values",
+              "route": "kuvo/vault/items/v_fzrf6moozn/values",
               "field": "text"
              }
             },
@@ -244,16 +244,16 @@
           "title": "Delete…",
           "style": "destructive",
           "confirm": {
-           "title": "Delete “App Review Contact” from lokum’s vault?",
+           "title": "Delete “App Review Contact” from the vault?",
            "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
            "button": "Delete"
           }
          }
         ],
-        "revision": "MD13hJybXwhz19q2"
+        "revision": "EtNugjIHBrBV7bZ-"
        },
        {
-        "id": "item-v_fredbf31tr",
+        "id": "item-v_nhcev84v8y",
         "title": "App Store Connect",
         "line": "API Key · issuer_id, value",
         "kind": "actions",
@@ -285,7 +285,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_fredbf31tr/values",
+              "route": "kuvo/vault/items/v_nhcev84v8y/values",
               "field": "value"
              }
             },
@@ -295,9 +295,25 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_fredbf31tr/values",
+              "route": "kuvo/vault/items/v_nhcev84v8y/values",
               "field": "issuer_id"
              }
+            },
+            {
+             "id": "remove",
+             "title": "Remove a Field",
+             "kind": "choice",
+             "value": "none",
+             "choices": [
+              {
+               "id": "none",
+               "title": "None"
+              },
+              {
+               "id": "issuer_id",
+               "title": "Issuer Id"
+              }
+             ]
             },
             {
              "id": "more",
@@ -313,7 +329,7 @@
             }
            ],
            "note": "A value left empty stays as it is.",
-           "revision": "LcoQ2vuROEKOquJ1"
+           "revision": "pKIc3milVOg7OgwY"
           }
          },
          {
@@ -376,16 +392,16 @@
           "title": "Delete…",
           "style": "destructive",
           "confirm": {
-           "title": "Delete “App Store Connect” from lokum’s vault?",
+           "title": "Delete “App Store Connect” from the vault?",
            "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
            "button": "Delete"
           }
          }
         ],
-        "revision": "XZXvWRTzx2z744RB"
+        "revision": "ikH_JPfRatBzshVY"
        },
        {
-        "id": "item-v_s4s7uno4si",
+        "id": "item-v_s17qb9tk0x",
         "title": "GitHub",
         "line": "Sign-in · octo@example.com · github.com",
         "kind": "actions",
@@ -425,7 +441,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_s4s7uno4si/values",
+              "route": "kuvo/vault/items/v_s17qb9tk0x/values",
               "field": "password"
              }
             },
@@ -518,20 +534,20 @@
           "title": "Delete…",
           "style": "destructive",
           "confirm": {
-           "title": "Delete “GitHub” from lokum’s vault?",
+           "title": "Delete “GitHub” from the vault?",
            "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
            "button": "Delete"
           }
          }
         ],
-        "revision": "ycVK1F_XU72TcPba",
+        "revision": "SETqtFzdU8tsXbaP",
         "badge": {
          "words": "On its own",
          "tone": "good"
         }
        },
        {
-        "id": "item-v_l2jepdcy75",
+        "id": "item-v_nw0zsylxkn",
         "title": "npm Token",
         "line": "API Key · registry.npmjs.org",
         "kind": "actions",
@@ -563,7 +579,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_l2jepdcy75/values",
+              "route": "kuvo/vault/items/v_nw0zsylxkn/values",
               "field": "value"
              }
             },
@@ -644,20 +660,20 @@
           "title": "Delete…",
           "style": "destructive",
           "confirm": {
-           "title": "Delete “npm Token” from lokum’s vault?",
+           "title": "Delete “npm Token” from the vault?",
            "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
            "button": "Delete"
           }
          }
         ],
-        "revision": "NyWx9n9HVMMQNp8_",
+        "revision": "vradLYD2Ef246rlK",
         "badge": {
          "words": "Asks",
          "tone": "quiet"
         }
        },
        {
-        "id": "item-v_ih0kmgvl11",
+        "id": "item-v_yeg339wph9",
         "title": "Signing Key",
         "line": "File · AuthKey_ABC123.p8",
         "kind": "actions",
@@ -754,13 +770,13 @@
           "title": "Delete…",
           "style": "destructive",
           "confirm": {
-           "title": "Delete “Signing Key” from lokum’s vault?",
+           "title": "Delete “Signing Key” from the vault?",
            "body": "Agents can’t use it any more. The account or service it’s for isn’t affected.",
            "button": "Delete"
           }
          }
         ],
-        "revision": "7AzJAJOoVHWqUK6x"
+        "revision": "iFdRiiUNz7eBOmcL"
        }
       ],
       "add": {
@@ -936,12 +952,12 @@
           }
          }
         ],
-        "note": "Kept on lokum, encrypted, with a key only your devices hold. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
+        "note": "Kept on lokum, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
         "revision": "qKui_W5ZgL_5bCqO"
        }
       },
       "empty": "Nothing yet. Add a sign-in, a key, a file or a note for your agents to use.",
-      "revision": "_s5KHBlFGw9CNnln"
+      "revision": "ZwZQyZjc03iBG8hL"
      }
     ]
    },
@@ -983,14 +999,14 @@
       "empty": "Nothing used yet.",
       "items": [
        {
-        "id": "activity-a_dfev35kgfd",
+        "id": "activity-a_cqz3yteo5a",
         "title": "You, on your Mac, looked at “npm Token”",
         "line": "Nov 16, 2026 at 2:30 PM",
         "kind": "status",
         "revision": "Z7DBrqSCZsqW7cs6"
        },
        {
-        "id": "activity-a_uimeqit839",
+        "id": "activity-a_pt5cffmxxu",
         "title": "Refused “App Store Connect” on evil.example: not one of its sites. Ranger was paused",
         "line": "Nov 16, 2026 at 2:00 PM",
         "kind": "status",
@@ -998,14 +1014,14 @@
         "revision": "Z7DBrqSCZsqW7cs6"
        },
        {
-        "id": "activity-a_3wf7ckywf8",
+        "id": "activity-a_chvwmqqips",
         "title": "Scout used “GitHub” on github.com",
         "line": "Nov 16, 2026 at 1:00 PM",
         "kind": "status",
         "revision": "Z7DBrqSCZsqW7cs6"
        },
        {
-        "id": "activity-a_1zhdqel4za",
+        "id": "activity-a_c9kilafjy9",
         "title": "Added “GitHub”",
         "line": "Nov 16, 2026 at 12:00 PM",
         "kind": "status",
@@ -1077,10 +1093,10 @@
   }
  },
  "items": {
-  "item-v_pkr7zokcfb": "App Review Contact",
-  "item-v_fredbf31tr": "App Store Connect",
-  "item-v_s4s7uno4si": "GitHub",
-  "item-v_l2jepdcy75": "npm Token",
-  "item-v_ih0kmgvl11": "Signing Key"
+  "item-v_fzrf6moozn": "App Review Contact",
+  "item-v_nhcev84v8y": "App Store Connect",
+  "item-v_s17qb9tk0x": "GitHub",
+  "item-v_nw0zsylxkn": "npm Token",
+  "item-v_yeg339wph9": "Signing Key"
  }
 }

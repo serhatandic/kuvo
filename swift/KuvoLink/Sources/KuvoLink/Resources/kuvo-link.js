@@ -41747,7 +41747,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "026c497323ad";
+var BRIDGE_VERSION = "ce39bea74d32";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63280,6 +63280,10 @@ function itemFields(each) {
     for (const field of each?.fields.filter((name) => name !== "value") ?? []) {
       fields.push({ id: `field-${field}`, title: label(field), kind: "secret", placeholder: "Unchanged", shows: SHOW(each.id, field) });
     }
+    const extras = each?.fields.filter((name) => name !== "value") ?? [];
+    if (extras.length) {
+      fields.push({ id: "remove", title: "Remove a Field", kind: "choice", value: "none", choices: [{ id: "none", title: "None" }, ...extras.map((field) => ({ id: field, title: label(field) }))] });
+    }
     fields.push({
       id: "more",
       title: each ? "Add Fields" : "Other Fields",
@@ -63300,7 +63304,7 @@ function itemFields(each) {
   }
   return fields;
 }
-var keptWords = (state, computer) => state.store === "keychain" ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.` : `Kept on ${computer}, encrypted, with a key only your devices hold. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
+var keptWords = (state, computer) => state.store === "keychain" ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.` : `Kept on ${computer}, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
 var addForm = (known, computer) => ({ title: "Add Item", submit: "Add", fields: itemFields(null), note: keptWords(known.state, computer) });
 var editForm = (each) => ({ title: each.name, submit: "Save", fields: itemFields(each), note: "A value left empty stays as it is." });
 var text8 = (value) => typeof value === "string" ? value : "";
@@ -63308,7 +63312,7 @@ var pairs2 = (value) => Array.isArray(value) ? value.filter(isObject).map((each)
 var SHORTEST2 = 4;
 var FIELD2 = /^[a-z][a-z0-9_]{0,39}$/;
 var LARGEST_FILE = 700000;
-function readForm2(known, each, values) {
+function readForm2(known, each, values, submit = false) {
   const fields = [];
   let ready = true;
   const say = (id, words, tone) => {
@@ -63363,8 +63367,16 @@ function readForm2(known, each, values) {
     secret("password", "password", !each);
   if (kind === "key") {
     secret("value", "value", !each);
-    for (const field of each?.fields.filter((name) => name !== "value") ?? [])
-      secret(`field-${field}`, field, false);
+    const removed = text8(values.remove);
+    for (const field of each?.fields.filter((name) => name !== "value") ?? []) {
+      if (field === removed) {
+        if (text8(values[`field-${field}`]))
+          say(`field-${field}`, `${label(field)} is being removed: leave it empty, or don’t remove it.`, "warning");
+        else
+          given.values[field] = null;
+      } else
+        secret(`field-${field}`, field, false);
+    }
     for (const pair of pairs2(values.more).filter((pair) => pair.key || pair.value)) {
       const field = pair.key.toLowerCase().replaceAll(" ", "_");
       if (!field)
@@ -63385,7 +63397,7 @@ function readForm2(known, each, values) {
     const file = isObject(values.file) ? values.file : null;
     const data = typeof file?.data === "string" ? file.data : null;
     const size = data !== null ? Buffer.byteLength(data, "base64") : typeof file?.size === "number" ? file.size : null;
-    if (size === null) {
+    if (size === null || submit && data === null && !each) {
       if (!each) {
         say("file", "Choose the file.", "quiet");
         ready = false;
@@ -63456,7 +63468,7 @@ function askRow(ask, known) {
       title: `Give ${asker} an Item`,
       submit: "Give",
       fields: [
-        { id: "item", title: "Item", kind: "choice", value: known.items[0].id, choices: known.items.map((each) => ({ id: each.id, title: each.name, line: lineOf3(each) })) },
+        { id: "item", title: "Item", kind: "choice", value: "", choices: known.items.map((each) => ({ id: each.id, title: each.name, line: lineOf3(each) })) },
         ...mayAlways(ask) ? [{ id: "how", title: "For", kind: "choice", value: "once", verified: true, choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On" }] }] : []
       ],
       ...ask.need ? { note: `It needs ${ask.need}.` } : {}
@@ -63548,9 +63560,9 @@ function sentence(entry) {
 }
 async function vaultPage(context) {
   const known = await facts2(context);
-  if (!("state" in known))
-    return unreadPage("vault", TITLE2, known);
   const computer = computerHere2(context);
+  if (!("state" in known))
+    return unreadPage("vault", TITLE2, known.status === 403 ? { status: 403, value: { message: `Only Kuvo on your devices can open ${whose(computer)} vault.` } } : known);
   const { state } = known;
   const notes = [];
   if (state.locked) {
@@ -63576,7 +63588,7 @@ async function vaultPage(context) {
       actions: [
         { id: "edit", title: "Edit…", form: editForm(each) },
         { id: "who", title: "Who Can Use It…", form: whoForm(known, each) },
-        { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from ${whose(computer)} vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } }
+        { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from the vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } }
       ]
     });
     return { ...kept, ...badge ? { badge } : {} };
@@ -63656,7 +63668,7 @@ async function vaultAct(context, at, action, values) {
   if (!("state" in known))
     return refusal5(known) ?? { status: 503, message: said9(known, "This computer's vault couldn't be read.") };
   if (at.id === "items" && action.id === "add") {
-    const checked = readForm2(known, null, values ?? {});
+    const checked = readForm2(known, null, values ?? {}, true);
     if (!checked.given)
       return formRefused2(checked);
     const { kind, ...rest } = checked.given;
@@ -63699,7 +63711,7 @@ async function vaultAct(context, at, action, values) {
   const route = `kuvo/vault/items/${encodeURIComponent(id)}`;
   switch (action.id) {
     case "edit": {
-      const checked = readForm2(known, each, values ?? {});
+      const checked = readForm2(known, each, values ?? {}, true);
       if (!checked.given)
         return formRefused2(checked);
       const { kind: _, values: typed, ...rest } = checked.given;
@@ -63799,7 +63811,7 @@ var vaultSection = {
   change: vaultChange,
   act: vaultAct,
   check: vaultCheck,
-  look: () => `${FILES5.map(mtime2).join(" ")} ${isLocked()} ${agentsUseVault()} ${holdsVault() ? listAsks().map((ask) => ask.id).join(",") : Math.floor(Date.now() / 1000)}`
+  look: () => `${FILES5.map(mtime2).join(" ")} ${mtime2(BOTS)} ${isLocked()} ${agentsUseVault()} ${holdsVault() ? listAsks().map((ask) => ask.id).join(",") : Math.floor(Date.now() / 1000)}`
 };
 
 // box/src/shared/routes/settings-pages.ts

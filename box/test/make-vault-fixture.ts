@@ -5,8 +5,7 @@
 //
 // Run with `bun test/make-vault-fixture.ts` from box/ (it uses a home of its own, and removes it).
 import "./safety"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 const { engineHandler } = await import("../src/link/server/router")

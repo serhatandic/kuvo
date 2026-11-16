@@ -160,7 +160,7 @@ test("a machine's vault is described, changed and followed as a settings page, a
   const outside = routed("GET", "kuvo/settings/vault");
   assert.equal(outside.status, 200);
   assert.deepEqual(outside.json.groups, []);
-  assert.equal(outside.json.notes[0].words, "Only Kuvo Code on your Mac or iPhone can do this.");
+  assert.match(outside.json.notes[0].words, /^Only Kuvo on your devices can open .+’s vault\.$/);
   // (Its page lists nothing to it, so there's nothing there to delete.)
   assert.equal(routed("POST", `kuvo/settings/vault/${row.id}/delete`, { was: row.revision }).status, 404);
   assert.equal((await box.app("GET", "kuvo/vault")).json.items.length, 1);
