@@ -16,6 +16,9 @@ anyhow = "1"
 async-channel = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# A picture pasted as TIFF or BMP (Safari, Preview) kept as a PNG the engine takes (pasted.rs);
+# the same crate GPUI already builds.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
 
 # The app's device key, in the Mac's keychain; and where System Settings' window is, with the
 # drag tile's own window moved beside it (permissions/mac.rs).

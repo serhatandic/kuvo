@@ -22,7 +22,7 @@ use kuvo_box::mentions::{For, Mention};
 use kuvo_box::parts::File;
 use kuvo_box::{BoxClient, Draft, Sent, Where};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Pasted, StyledType, TextField, TextFieldEvent, TypeSize,
     menu::{Menu, MenuEntry, PopoverMenu},
     small::{Chip, ChipTone},
     theme::{radius, space},
@@ -173,6 +173,7 @@ pub struct Composer {
     computer: SharedString,
     tasks: Vec<Task<()>>,
     _field: Subscription,
+    _pasting: Subscription,
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -198,7 +199,13 @@ impl Composer {
             Target::New(_) => "What should we work on?".into(),
             Target::Group { .. } => "Message the group…".into(),
         };
-        let field = cx.new(|cx| TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder(placeholder.clone()));
+        // (A group chat's messages carry no files.)
+        let takes_files = !matches!(target, Target::Group { .. });
+        let field = cx.new(|cx| {
+            let field = TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder(placeholder.clone());
+            if takes_files { field.takes_files() } else { field }
+        });
+        let pasting = cx.subscribe(&field, |this: &mut Composer, _, pasted: &Pasted, cx| this.paste(pasted.clone(), cx));
         let subscription = cx.subscribe(&field, |this: &mut Composer, _, event: &TextFieldEvent, cx| match event {
             TextFieldEvent::Submit(_) => this.send(cx),
             TextFieldEvent::Cancel => {
@@ -257,6 +264,7 @@ impl Composer {
             computer: "this computer".into(),
             tasks: Vec::new(),
             _field: subscription,
+            _pasting: pasting,
         };
         // A group chat has no model of its own to pick, nor "/" to offer: its bots each have theirs.
         if read && !matches!(composer.target, Target::Group { .. }) {
@@ -991,6 +999,27 @@ impl Composer {
             }
         }
         cx.notify();
+    }
+
+    /// What ⌘V brought that isn't text: files copied in the Finder, attached; a picture (a copied
+    /// screenshot, an image copied from a browser), kept as a file to attach (`pasted`). One that
+    /// can't be says so under the composer.
+    pub fn paste(&mut self, pasted: Pasted, cx: &mut Context<Self>) {
+        match pasted {
+            Pasted::Files(paths) => self.attach(paths, cx),
+            Pasted::Picture(image) => {
+                let folder = crate::pasted::folder(cx);
+                self.spawn(cx, move || crate::pasted::save(&image, &folder, std::time::SystemTime::now()), |this, saved, cx| {
+                    match saved {
+                        Ok(path) => this.attach([path], cx),
+                        Err(error) => {
+                            this.set_note(Note { text: error.into(), warning: true }, cx);
+                            cx.notify();
+                        }
+                    }
+                });
+            }
+        }
     }
 
     pub fn detach(&mut self, at: usize, cx: &mut Context<Self>) {

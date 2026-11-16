@@ -15,9 +15,10 @@
 mod layout;
 
 use std::ops::Range;
+use std::path::PathBuf;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    App, Bounds, ClipboardEntry, ClipboardItem, Context, Image, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
     ParentElement, Pixels, Point, Render, ScrollEvent, SharedString, Styled, UTF16Selection,
     Window, actions, div, px,
@@ -157,6 +158,43 @@ pub enum TextFieldEvent {
     Cancel,
 }
 
+/// What ⌘V brought to a field that takes files (`takes_files`), in place of pasting text: files
+/// copied in the Finder, or a picture without text (a copied screenshot, an image copied from a
+/// browser or Preview). Its owner attaches them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pasted {
+    Files(Vec<PathBuf>),
+    Picture(Image),
+}
+
+impl Pasted {
+    /// What a clipboard holds that a field taking files attaches, rather than pasting as text:
+    /// copied files first (their names, which come with them as text, aren't pasted), then a
+    /// picture that came without text. `None` for text.
+    pub fn from_clipboard(item: &ClipboardItem) -> Option<Pasted> {
+        let entries = item.entries();
+        let files: Vec<PathBuf> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        if !files.is_empty() {
+            return Some(Pasted::Files(files));
+        }
+        let text = entries.iter().any(|entry| matches!(entry, ClipboardEntry::String(text) if !text.text().is_empty()));
+        if text {
+            return None;
+        }
+        entries.iter().find_map(|entry| match entry {
+            ClipboardEntry::Image(image) => Some(Pasted::Picture(image.clone())),
+            _ => None,
+        })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EditKind {
     Typing,
@@ -192,6 +230,8 @@ pub struct TextField {
     error: Option<SharedString>,
     /// Drawn as dots and never copied (a key).
     masked: bool,
+    /// Pasted files and pictures go to its owner (`Pasted`).
+    takes_files: bool,
     layout: Option<Layout>,
     /// Where Up and Down aim, so moving through short lines keeps the column.
     goal_x: Option<Pixels>,
@@ -204,6 +244,7 @@ pub struct TextField {
 }
 
 impl EventEmitter<TextFieldEvent> for TextField {}
+impl EventEmitter<Pasted> for TextField {}
 
 impl Focusable for TextField {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -227,6 +268,7 @@ impl TextField {
             disabled: false,
             error: None,
             masked: false,
+            takes_files: false,
             layout: None,
             goal_x: None,
             scroll: px(0.),
@@ -268,6 +310,12 @@ impl TextField {
     /// Whether Return submits (the default) or adds a line.
     pub fn submits_on_enter(mut self, submits: bool) -> Self {
         self.submits = submits;
+        self
+    }
+
+    /// ⌘V of files or a picture is handed to its owner as [`Pasted`] (to attach), not pasted.
+    pub fn takes_files(mut self) -> Self {
+        self.takes_files = true;
         self
     }
 
@@ -694,7 +742,14 @@ impl TextField {
     }
 
     fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else { return };
+        if self.takes_files && !self.disabled
+            && let Some(pasted) = Pasted::from_clipboard(&item)
+        {
+            cx.emit(pasted);
+            return;
+        }
+        if let Some(text) = item.text() {
             self.edit(self.selection.clone(), &text, EditKind::Other, cx);
         }
     }

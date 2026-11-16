@@ -1175,6 +1175,60 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn pasting_a_screenshot_or_copied_files_attaches_them_and_text_still_pastes(cx: &mut TestAppContext) {
+    use gpui::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat};
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let pasted = tempfile::tempdir().unwrap();
+    cx.update(|_, cx| cx.set_global(kuvo::pasted::PastedFolder(pasted.path().to_path_buf())));
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let screenshot = {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(3, 2).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+
+    // A copied screenshot (a picture, no text): ⌘V attaches it, kept as a file, nothing typed.
+    cx.write_to_clipboard(ClipboardItem::from(Image::from_bytes(ImageFormat::Png, screenshot.clone())));
+    cx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+    let attached = composer.read_with(cx, |composer, _| composer.attached().to_vec());
+    assert_eq!(attached.len(), 1);
+    assert_eq!(std::fs::read(&attached[0]).unwrap(), screenshot);
+    assert!(attached[0].file_name().unwrap().to_string_lossy().starts_with("Pasted Image "));
+    assert_eq!(typed(&composer, cx).0, "");
+    assert!(bounds(cx, "attachments").is_some());
+
+    // Files copied in the Finder (their names come as text too): attached, the names not typed.
+    let folder = tempfile::tempdir().unwrap();
+    let (note, photo) = (folder.path().join("list.txt"), folder.path().join("fridge.jpg"));
+    std::fs::write(&note, "rice").unwrap();
+    std::fs::write(&photo, b"jpeg").unwrap();
+    cx.write_to_clipboard(ClipboardItem {
+        entries: vec![ClipboardEntry::ExternalPaths(ExternalPaths([note.clone(), photo.clone()].into_iter().collect())), ClipboardEntry::from("list.txt\nfridge.jpg".to_owned())],
+    });
+    cx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+    assert_eq!(composer.read_with(cx, |composer, _| composer.attached().to_vec()), [attached[0].clone(), note.clone(), photo.clone()]);
+    assert_eq!(typed(&composer, cx).0, "");
+
+    // Text pastes as text, as ever.
+    cx.write_to_clipboard(ClipboardItem::new_string("What's in the fridge?".into()));
+    cx.simulate_keystrokes("cmd-v");
+    cx.run_until_parked();
+    assert_eq!(typed(&composer, cx).0, "What's in the fridge?");
+    assert_eq!(composer.read_with(cx, |composer, _| composer.attached().len()), 3);
+
+    // Send takes the pasted picture with the rest, as a file on this Mac's box.
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let sent = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send");
+    let body = sent.last().and_then(|seen| seen.body.clone()).expect("sent");
+    assert_eq!(body["files"].as_array().map(Vec::len), Some(3));
+    assert!(body["files"][0]["name"].as_str().unwrap().starts_with("Pasted Image "));
+}
+
+#[gpui::test]
 fn at_and_ampersand_offer_what_the_box_suggests_and_an_agent_picked_is_named(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

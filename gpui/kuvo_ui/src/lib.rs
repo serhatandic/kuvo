@@ -19,7 +19,7 @@ pub mod theme;
 
 pub use button::{Button, ButtonSize, ButtonStyle, ShownState};
 pub use icon::{Assets, Icon, IconName, IconSize};
-pub use text_field::{TextField, TextFieldEvent};
+pub use text_field::{Pasted, TextField, TextFieldEvent};
 pub use theme::{ActiveTheme, Appearance, StyledType, TextSize, Theme, TypeSize};
 
 /// Binds the keys the blocks use (text editing, menus). Call once at start-up.

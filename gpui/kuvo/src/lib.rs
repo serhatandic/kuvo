@@ -24,6 +24,7 @@ mod landing;
 pub mod launch;
 pub mod notifications;
 pub mod panel;
+pub mod pasted;
 pub mod permissions;
 pub mod queue;
 pub mod quit_note;
