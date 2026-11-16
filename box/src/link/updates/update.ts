@@ -806,13 +806,14 @@ export function confirmUpdate(clock = Date.now): boolean {
   if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating()) return false;
   let engine: string | null | undefined = null;
   try { engine = readEngineFile()?.version; } catch {}
+  // (How it went noted first: whoever sees the trial over finds it said.)
+  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
   fs.rmSync(UPDATE_TRIAL, { force: true });
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   // (Not the one the coding agents' bridge still runs on, until it moves to the new: its agents'
   // tools run from it.)
   const bridgeOn = bridgeEngine();
   if (engine) for (const name of listOf(path.join(K, "engine"))) if (name !== engine && name !== bridgeOn && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
-  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
   dropOldBackups(clock());
   return true;
 }

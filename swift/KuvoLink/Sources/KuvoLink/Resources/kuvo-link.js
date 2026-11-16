@@ -14789,6 +14789,7 @@ function confirmUpdate(clock = Date.now) {
   try {
     engine = readEngineFile()?.version;
   } catch {}
+  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
   fs37.rmSync(UPDATE_TRIAL, { force: true });
   fs37.rmSync(ROLLBACK, { recursive: true, force: true });
   const bridgeOn = bridgeEngine();
@@ -14797,7 +14798,6 @@ function confirmUpdate(clock = Date.now) {
       if (name !== engine && name !== bridgeOn && !name.startsWith("."))
         fs37.rmSync(path40.join(K, "engine", name), { recursive: true, force: true });
   }
-  noteUpdate({ trial: null, last: { at: clock(), result: "updated", from: state.trial.from, to: state.trial.to } });
   dropOldBackups(clock());
   return true;
 }
@@ -43035,7 +43035,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a6d3fb323c26";
+var BRIDGE_VERSION = "3d3e86bc6d75";
 
 // box/src/link/rehome/move.ts
 init_outside();

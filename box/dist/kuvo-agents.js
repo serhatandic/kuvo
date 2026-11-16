@@ -46,7 +46,7 @@ function yourZone(home = boxHome) {
 }
 
 // box/src/agents/main.ts
-import { mkdirSync as mkdirSync28, readdirSync as readdirSync22, readFileSync as readFileSync40, rmSync as rmSync18 } from "fs";
+import { mkdirSync as mkdirSync28, readdirSync as readdirSync22, readFileSync as readFileSync40, realpathSync as realpathSync10, rmSync as rmSync18 } from "fs";
 import { basename as basename13, dirname as dirname24, join as join42 } from "path";
 
 // box/src/agents/accounts.ts
@@ -37370,6 +37370,13 @@ if (process.argv.slice(2).includes("selftest")) {
 var home3 = process.env.KUVO_AGENTS_HOME;
 var password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCODE_PASSWORD;
 var kept3 = process.env.KUVO_AGENTS_KEPT === "1";
+var ownRuntime = (() => {
+  try {
+    return !!machineHome && realpathSync10(dirname24(dirname24(process.execPath))) === realpathSync10(join42(machineHome, "engine"));
+  } catch {
+    return false;
+  }
+})();
 if (!home3 || !password || onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT))) {
   console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.");
   process.exit(2);
@@ -37709,7 +37716,7 @@ renewal = onMachine && build ? new Renewal({
     });
   }),
   engineBehind: () => {
-    if (!kept3)
+    if (!kept3 || !ownRuntime)
       return;
     const engine = keeperEngine(machineHome);
     return engine && engine !== basename13(dirname24(process.execPath)) ? engine : undefined;
@@ -37753,4 +37760,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents a0fd0fb40bd0e1d65e07a4bd35b174915d467559d5a18c9ded5a5f90cce1a891
+// Built from Packages/Box/src/agents ff8fa67221384f9f5ad4c71b8c9653ff47dde175ed670a708644ae645e2ed6d4

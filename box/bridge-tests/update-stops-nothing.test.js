@@ -20,7 +20,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
-import { NO_BUN, testBun } from "./bun-for-tests.js";
+import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
 import { CODEX_STAND_IN } from "./codex-stand-in.js";
 
 const bun = testBun();
@@ -48,7 +48,10 @@ async function until(check, what, within = 120_000) {
     if (found) return found;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  assert.fail(`never: ${what}`);
+  // (What the bridge said, for what didn't come.)
+  let log = "";
+  try { log = fs.readFileSync(path.join(RUN, "agents.log"), "utf8").slice(-3000); } catch {}
+  assert.fail(`never: ${what}\n${log}`);
 }
 const freePort = () => new Promise(resolve => {
   const server = net.createServer();
@@ -82,7 +85,10 @@ setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0)
   // download one.
   const folder = path.join(home, "engine", "1.0.0");
   fs.mkdirSync(folder, { recursive: true });
-  try { fs.linkSync(bun, path.join(folder, "bun")); } catch { fs.copyFileSync(bun, path.join(folder, "bun")); fs.chmodSync(path.join(folder, "bun"), 0o755); }
+  // (The program itself, never a script that starts it: the bridge sees which engine it runs on by
+  // where its program is.)
+  const program = bunRunsAs(bun);
+  try { fs.linkSync(program, path.join(folder, "bun")); } catch { fs.copyFileSync(program, path.join(folder, "bun")); fs.chmodSync(path.join(folder, "bun"), 0o755); }
   write(path.join(folder, "opencode"), `#!/bin/sh
 [ "$1" = --config=/dev/null ] && shift
 [ "$1" = --no-env-file ] && shift
@@ -177,7 +183,9 @@ const serveUp = besides => until(async () => {
 }, besides ? "a new server to answer" : "the server to answer");
 /** The link (`run`) running, as a process other than `besides`. */
 const linkUp = besides => until(() => {
-  const pid = Number(fs.readFileSync(path.join(RUN, "link.pid"), "utf8").trim() || 0);
+  // (None for a moment, as one goes and the next starts.)
+  let pid = 0;
+  try { pid = Number(fs.readFileSync(path.join(RUN, "link.pid"), "utf8").trim() || 0); } catch {}
   return pid && pid !== besides && runs(pid) ? pid : null;
 }, besides ? "a new link to run" : "the link to run");
 const turns = fake => { try { return fs.readFileSync(path.join(fake, "turns.log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };

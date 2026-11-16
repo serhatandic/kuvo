@@ -13,7 +13,7 @@
 // engine, with KUVO_ENGINE_PORT and OPENCODE_PASSWORD, which it takes until the record says more.)
 
 import { boxZoneIs } from "../shared/zone"
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 import { Accounts, parseProvider } from "./accounts"
 import { record as recordArtifacts } from "./artifacts/record"
@@ -87,6 +87,14 @@ const password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPEN
 // Kept by its box's keeper, which starts it again whenever it ends (rather than a launch beside one
 // engine): it may always make way for a newer build (renewal.ts).
 const kept = process.env.KUVO_AGENTS_KEPT === "1"
+// Whether it runs on one of its box's own engines (`<box>/engine/<version>/opencode`).
+const ownRuntime = (() => {
+  try {
+    return !!machineHome && realpathSync(dirname(dirname(process.execPath))) === realpathSync(join(machineHome, "engine"))
+  } catch {
+    return false
+  }
+})()
 if (!home || !password || (onMachine && (!machineHome || !Number(process.env.KUVO_AGENTS_PORT)))) {
   console.error(onMachine ? "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT and KUVO_AGENTS_PASSWORD are needed." : "KUVO_AGENTS_HOME and OPENCODE_PASSWORD are needed.")
   process.exit(2)
@@ -546,8 +554,9 @@ renewal =
             })
           }),
         // (One its keeper keeps, on another engine than the keeper's now: an update brought a new one.)
+        // (Only where it runs on one of the box's own engines, `engine/<version>/opencode`.)
         engineBehind: () => {
-          if (!kept) return undefined
+          if (!kept || !ownRuntime) return undefined
           const engine = keeperEngine(machineHome!)
           return engine && engine !== basename(dirname(process.execPath)) ? engine : undefined
         },

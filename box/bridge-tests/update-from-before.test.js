@@ -19,7 +19,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
-import { NO_BUN, testBun } from "./bun-for-tests.js";
+import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
 
 const BEFORE = "5d9b7b8db";
 const bun = testBun();
@@ -66,7 +66,10 @@ setInterval(() => { if (!fs.existsSync(${JSON.stringify(home)})) process.exit(0)
 `);
   const folder = path.join(home, "engine", "1.0.0");
   fs.mkdirSync(folder, { recursive: true });
-  try { fs.linkSync(bun, path.join(folder, "bun")); } catch { fs.copyFileSync(bun, path.join(folder, "bun")); fs.chmodSync(path.join(folder, "bun"), 0o755); }
+  // (The program itself, never a script that starts it: the bridge sees which engine it runs on by
+  // where its program is.)
+  const program = bunRunsAs(bun);
+  try { fs.linkSync(program, path.join(folder, "bun")); } catch { fs.copyFileSync(program, path.join(folder, "bun")); fs.chmodSync(path.join(folder, "bun"), 0o755); }
   write(path.join(folder, "opencode"), `#!/bin/sh
 [ "$1" = --config=/dev/null ] && shift
 [ "$1" = --no-env-file ] && shift
