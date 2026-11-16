@@ -123,3 +123,15 @@ test("discovered skills keep metadata and both lists offer the existing search c
     expect(rows(await page()).find((row:any) => row.id === "deleted").search).toEqual({ placeholder: "Search recently deleted", empty: "No deleted skill matches “{query}”." })
   } finally { server.stop(true) }
 })
+
+test("unreadable or invalid skill folders do not hide readable skills", async () => {
+  for (const name of ["empty", "lowercase", "a".repeat(129)]) mkdirSync(join(SKILLS_FOLDER, name), { recursive: true })
+  writeFileSync(join(SKILLS_FOLDER, "lowercase", "skill.md"), skillDocument("lowercase", "A lowercase file", "Text"))
+  writeFileSync(join(SKILLS_FOLDER, "a".repeat(129), "SKILL.md"), "Long folder")
+  const shown = await page()
+  expect(shown.groups.length).toBeGreaterThan(0)
+  expect(rows(shown).find((row:any) => row.id === "skill-release").title).toBe("release")
+  expect(rows(shown).find((row:any) => row.id === "skill-empty")).toBeUndefined()
+  expect(rows(shown).find((row:any) => row.id === `skill-${"a".repeat(129)}`)).toBeUndefined()
+  if (process.platform === "linux") expect(rows(shown).find((row:any) => row.id === "skill-lowercase")).toBeUndefined()
+})

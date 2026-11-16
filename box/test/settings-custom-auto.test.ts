@@ -1,7 +1,7 @@
 import "./safety"
 import { afterAll, beforeEach, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ask, follow } from "./route-answer"
@@ -11,10 +11,14 @@ const { holdVault } = await import("../src/link/vault/holder")
 const root = mkdtempSync(join(tmpdir(), "settings-auto-"))
 let auto: Auto
 let down = false
+let signedIn = true
+const defaultModels = [{ id: "fast", name: "Fast", providerID: "codex-cli", variants: [{ id: "high" }] }, { id: "other", name: "Other", providerID: "codex-cli", variants: [] }]
+let modelCatalog = defaultModels
+const { forgetModelLists } = await import("../src/link/work/model-rule")
 const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
   const url = new URL(request.url), parts = url.pathname.split("/"), id = parts[4]
-  if (url.pathname === "/api/model") return Response.json({ data: [{ id: "fast", name: "Fast", providerID: "codex-cli", variants: [{ id: "high" }] }, { id: "other", name: "Other", providerID: "codex-cli", variants: [] }] })
-  if (url.pathname === "/api/integration") return Response.json({ data: [{ id: "codex-cli", connections: [{}], metadata: { installed: true, modelsComplete: true } }] })
+  if (url.pathname === "/api/model") return Response.json({ data: modelCatalog })
+  if (url.pathname === "/api/integration") return Response.json({ data: [{ id: "codex-cli", connections: signedIn ? [{}] : [], metadata: { installed: true, modelsComplete: true } }] })
   if (!url.pathname.startsWith("/api/kuvo/auto")) return Response.json({ data: [] })
   if (request.method === "GET") return Response.json({ data: { lists: auto.all(), limits: auto.limits() } })
   if (request.method === "GET") { if (new URL(request.url).pathname === "/api/kuvo/auto") return Response.json({data:{lists:auto.all(),limits:[]}}); return Response.json({data:[]}) }
@@ -31,7 +35,7 @@ const processOfBridge = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e
 const handler = engineHandler((() => { throw Error("No engine") }) as any, { name: "test" }, (() => down ? null : { port: server.port, password: "pw", pid: processOfBridge.pid }) as any)
 const held = holdVault(handler, () => () => {})
 afterAll(() => { held.close(); server.stop(true); processOfBridge.kill(); rmSync(root, { recursive: true, force: true }) })
-beforeEach(() => { auto = new Auto(root); auto.setLists([{ id: "first", name: "Features", entries: [{ providerID: "codex-cli", modelID: "fast" }] }, { id: "second", name: "Bugs", entries: [] }]); down = false })
+beforeEach(() => { signedIn = true; modelCatalog = defaultModels; forgetModelLists(); auto = new Auto(root); auto.setLists([{ id: "first", name: "Features", entries: [{ providerID: "codex-cli", modelID: "fast" }] }, { id: "second", name: "Bugs", entries: [] }]); down = false })
 const page = async () => (await ask(handler, "GET", "kuvo/settings/custom-auto")).json
 const rowOf = (page: any, id: string): any => page.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])])).find((row: any) => row.id === id)
 const actionOf = (row: any, id: string) => [...(row.actions ?? []), ...(row.add ? [row.add] : [])].find((action: any) => action.id === id)
@@ -44,7 +48,7 @@ test("Custom Auto lists, ordered models, exact Swift words and ordinary forms", 
  expect(rowOf(shown,"models-second").empty).toBe("Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.")
  expect(rowOf(shown,"lists").items.map((row:any)=>row.title)).toEqual(["Features","Bugs"])
  expect(actionOf(rowOf(shown,"lists"),"add").form.fields[0]).toMatchObject({title:"Name",line:"Its name, as the model picker shows it"})
- expect(rowOf(shown,"list-first").actions.map((action:any)=>action.title)).toEqual(["Edit…","Move Up","Move Down","Delete List"])
+ expect(rowOf(shown,"list-first").actions.map((action:any)=>action.title)).toEqual(["Edit…","Move Down","Delete List"])
 })
 test("name check and refused submit have the same words; wrong types never write", async () => {
  const row = rowOf(await page(),"lists"), form = actionOf(row,"add").form
@@ -88,16 +92,62 @@ test("external changes and every mutation route update the events page", async (
  } finally { stream.stop() }
 })
 
-test("model efforts are conditional and unsupported efforts never write", async () => {
+test("model forms have bounded fields and unsupported efforts never write", async () => {
  const row = rowOf(await page(), "models-first"), form = actionOf(row, "add-model").form
- const unsupported = form.fields.find((field:any) => field.shown?.is.includes(JSON.stringify(["codex-cli","other"])))
- expect(unsupported.choices).toEqual([{id:"",title:"Default"}])
+ expect(form.fields.map((field:any) => field.id)).toEqual(["model", "variant"])
  const before = auto.all()
- const values = {model:JSON.stringify(["codex-cli","other"]),[unsupported.id]:"high"}
+ const values = {model:JSON.stringify(["codex-cli","other"]),variant:"high"}
  const checked = await ask(handler,"POST","kuvo/settings/custom-auto/models-first/add-model/check",{values})
  const refused = await act(row,"add-model",values)
  expect(checked.json.ready).toBe(false)
  expect(refused.status).toBe(400)
  expect(refused.json.fields).toEqual(checked.json.fields)
  expect(auto.all()).toEqual(before)
+})
+
+test("first and last entries omit impossible moves", async () => {
+ const shown = await page()
+ expect(rowOf(shown, "list-first").actions.some((action:any) => action.id === "up")).toBe(false)
+ expect(rowOf(shown, "list-second").actions.some((action:any) => action.id === "down")).toBe(false)
+ expect(rowOf(shown, "entry-first-0").actions.some((action:any) => ["up", "down"].includes(action.id))).toBe(false)
+ expect(JSON.stringify(shown)).not.toContain("Already first.")
+ expect(JSON.stringify(shown)).not.toContain("Already last.")
+})
+
+test("a large catalog keeps two fields per form and only the edited model's efforts", async () => {
+ modelCatalog = Array.from({length: 1000}, (_, index) => ({ id: `model-${index}`, name: `Model ${index}`, providerID: "codex-cli", variants: [{id: `effort-${index}`}] }))
+ auto.setLists([{id:"first",name:"Large",entries:[{providerID:"codex-cli",modelID:"model-0"},{providerID:"codex-cli",modelID:"model-1"}]}])
+ forgetModelLists()
+ const shown = await page()
+ expect(actionOf(rowOf(shown, "models-first"), "add-model").form.fields.length).toBe(2)
+ for (const index of [0,1]) {
+   const form = actionOf(rowOf(shown, `entry-first-${index}`), "edit-model").form
+   expect(form.fields.length).toBe(2)
+   expect(form.fields.find((field:any) => field.id === "variant").choices.map((choice:any) => choice.id)).toEqual(["",`effort-${index}`])
+ }
+})
+
+test("signed-out accounts say why Custom Auto passes their models by", async () => {
+ signedIn = false
+ forgetModelLists()
+ expect(rowOf(await page(), "entry-first-0").notice.words).toBe("Not signed in: Custom Auto passes it by")
+})
+
+test("limit resets use the computer's configured zone and include a date only outside today", async () => {
+ const { autoResetWords } = await import("../src/link/areas/settings-custom-auto")
+ const { setZone, ZONE_FILE } = await import("../src/link/zone/setting")
+ const { forgetZoneRead } = await import("../src/shared/zone")
+ let previous: string | undefined
+ try { previous = readFileSync(ZONE_FILE, "utf8") } catch {}
+ try {
+   setZone("Europe/Istanbul")
+   const now = Date.parse("2026-11-16T08:00:00Z")
+   expect(autoResetWords(Date.parse("2026-11-16T12:45:00Z"), true, now)).toBe("until 3:45 PM")
+   expect(autoResetWords(Date.parse("2026-11-17T12:45:00Z"), false, now)).toContain("Nov 17, 2026")
+   expect(autoResetWords(Date.parse("2026-11-17T12:45:00Z"), false, now)).toContain("3:45 PM")
+   expect(autoResetWords(Date.parse("2026-11-16T22:00:00Z"), true, now)).toContain("Nov 17, 2026")
+ } finally {
+   if (previous === undefined) rmSync(ZONE_FILE, {force:true}); else writeFileSync(ZONE_FILE, previous)
+   forgetZoneRead()
+ }
 })

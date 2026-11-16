@@ -50,6 +50,7 @@ function readForm(known: Facts, name: string | null, values: Record<string, unkn
   const id = name ?? commandName(text(values.name));
   if (name === null) {
     if (!id) { fields.push({ id: "name", words: typed ? "A name needs a letter or a number." : "A short name without spaces: you'll type / and this name.", tone: typed ? "warning" : "quiet" }); ready = false; }
+    else if (id.length > 200) warn("name", "Use a name with 200 characters or fewer.");
     else if (valueAt(known.settings, ["commands", id]) !== undefined || known.commands.some(each => each.name === id)) warn("name", `There's a command called /${id} already.`);
     else if (id !== typed) fields.push({ id: "name", words: `It'll be called /${id}.`, tone: "quiet" });
   }

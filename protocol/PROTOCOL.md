@@ -4075,10 +4075,14 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     whether its engine lists them or not, which a new skill can't take, and which skills came from
     GitHub (the rest you added).
   - `kuvo/skills/<name>` (its folder's name): `GET` → `{"text"}`, its SKILL.md; `PUT {"text",
-    "new"?}` writes it (`new`: a new one, named as Settings names one, lowercase a to z, digits and
+    "new"?, "was"?}` writes it (`new`: a new one, named as Settings names one, lowercase a to z, digits and
     hyphens, and `409 {"message"}` when the name is taken, by a folder there or a skill the engine
     lists from elsewhere; without it, `404` for none, and `409 {"message"}` for one from GitHub,
     which stays as it came, as in Settings); `DELETE` puts its folder away, in Recently Deleted.
+    Both `PUT` and `DELETE` accept optional `was`: the SKILL.md text last read, or `null` when
+    no file was there. If the current text differs, they return
+    `409 {"message": "It changed since you read it."}` without writing or moving the folder. Omitting `was` preserves the
+    earlier behavior. `DELETE` sends it as `{"was": …}` in its request body.
     `400 {"message"}` for a name that isn't a folder's. A 404 or 405 answers `{}`.
   - Recently Deleted (`skills.trash`): each box keeps a skill it put away for 30 days, in
     `trash/skills` in its folder, as `<folder>-<seconds>`: its name says when it was put away,
@@ -8979,7 +8983,9 @@ The sections now:
 - **Custom Auto** (`custom-auto`, group `Models`): named lists of models to try in order,
   described as lists and ordinary forms. New List and Edit ask for a name; Add Model and Change
   the model or its effort offer the models from `kuvo/models/offered` (excluding Auto itself),
-  with an effort choice. Move Up/Down apply to lists and entries, Remove deletes an entry,
+  with a single effort field (the add form checks typed efforts against the selected model;
+  the edit form offers that entry’s efforts). Move Up/Down are offered only where a move is
+  possible and apply to lists and entries, Remove deletes an entry,
   and Delete List confirms first (the last list cannot be deleted). Changes use the coding
   agents' existing `api/kuvo/auto` routes with their per-list `revision` (order uses `was`);
   their 409 becomes a stale page. Limits are shown beside each held model; Try All Again

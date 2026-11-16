@@ -21,11 +21,12 @@ async function facts(context: RouteContext) {
   const config = await asked(context, settingsRoute, "GET", "kuvo/config");
   if (config.status !== 200) return { problem: config };
   const files = await Promise.all((own.value.folders as string[]).map(async name => ({ name, answer: await asked(context, skillsRoute, "GET", `kuvo/skills/${encodeURIComponent(name)}`) })));
-  const unread = files.find(each => each.answer.status !== 200);
-  if (unread) return { problem: unread.answer };
+  // A folder can be empty, use a filename the skill route does not read, or have an invalid
+  // name. It still reserves that name, but must not hide the other readable skills.
+  const readable = files.filter(each => each.answer.status === 200 && typeof each.answer.value?.text === "string");
   let engine: any[] = [];
   try { const target = context.readEngine(); const listed: any = await call(target, "GET", "/api/skill", undefined, AbortSignal.timeout(5000)); if (Array.isArray(listed)) engine = listed; } catch {}
-  return { own: own.value, config: config.value, files: files.map(each => ({ name: each.name, text: each.answer.value.text as string })), engine };
+  return { own: own.value, config: config.value, files: readable.map(each => ({ name: each.name, text: each.answer.value.text as string })), engine };
 }
 
 /** Preserve unknown front matter while editing the two fields Settings owns. */

@@ -76,3 +76,17 @@ test("rewording a line leaves the revision unchanged", async () => {
   const original = row(await page(), "command-test")
   expect(item({ ...original, line: "Different explanation" }).revision).toBe(original.revision)
 })
+
+test("command names respect config's 200-character limit with the same check and refusal words", async () => {
+  const list = row(await page(), "commands"), was = revision(list, "add")
+  const before = readFileSync(CONFIG_FILE, "utf8")
+  const tooLong = { ...values, name: "x".repeat(201) }
+  const checked = await ask(handler, "POST", "kuvo/settings/commands/commands/add/check", { was, values: tooLong })
+  const refused = await ask(handler, "POST", "kuvo/settings/commands/commands/add", { was, values: tooLong })
+  expect(checked.json.ready).toBe(false)
+  expect(refused.status).toBe(400)
+  expect(refused.json.fields).toEqual(checked.json.fields)
+  expect(refused.json.message).toBe("Use a name with 200 characters or fewer.")
+  expect(readFileSync(CONFIG_FILE, "utf8")).toBe(before)
+  expect((await ask(handler, "POST", "kuvo/settings/commands/commands/add/check", { was, values: { ...values, name: "x".repeat(200) } })).json.ready).toBe(true)
+})
