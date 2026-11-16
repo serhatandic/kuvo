@@ -21,7 +21,7 @@ import { readPeerAgents } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { peersOf } from "../peers/known";
 import { readLink } from "../state";
-import { boxVersion, isUpdating, newerVersion, offerHeld, offerWaits, updateState, updateStatus } from "../updates/update";
+import { boxVersion, isUpdating, newerVersion, offerFailedAgain, offerHeld, offerWaits, updateStatus } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
 import { type Running, underWay } from "./tries";
 
@@ -247,8 +247,7 @@ export function keepingSelfUp(name: string, working: number | undefined, blocked
   // (Failed once with nothing changed, it's tried again by itself in a while: said as a failure only
   // once that fails too, or once it was put in place and taken back.)
   if (status.offerFailed && status.offerFailed.version === status.offered) {
-    const failed = updateState().offerFailed;
-    if (status.offerFailed.takenBack || (failed?.version === status.offered && (failed.tries ?? 1) > 1)) return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
+    if (offerFailedAgain(status.offered)) return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
     return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions };
   }
   return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions };

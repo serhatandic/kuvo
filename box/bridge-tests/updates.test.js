@@ -370,25 +370,48 @@ test("an engine that won't stop changes nothing; no release for machines yet is 
   assert.deepEqual(await update(), { result: "current", version: "0.9.0" });
 });
 
-test("an engine an older keeper doesn't know as its own (started with HOME written with a slash at its end) is stopped by the update itself, and the update goes through", async () => {
-  // As Kuvo Helper gave its keeper HOME ("/Users/you/"): the engine runs as "…//.kuvo-code/engine/…".
-  // An older keeper's stop, run from Kuvo Code (HOME "/Users/you"), stops only an engine whose
-  // command line has its own spelling of that path: it stopped nothing, and the update failed.
+test("an older keeper with an engine Kuvo Helper started (HOME written with a slash at its end): run as that engine was started, it stops it, and a stop that fails starts no second engine", async t => {
+  // Kuvo Helper gave its keeper HOME "/Users/you/", so the engine runs as "…//.kuvo-code/engine/…".
+  // An older keeper names its folder from HOME and knows its engine only by that very spelling:
+  // run from Kuvo Code (HOME "/Users/you"), its stop stopped nothing (the update failed: "Its engine
+  // couldn't be stopped to update it."), and its start started a second engine beside the first.
   machine();
   release();
-  const keeperFile = path.join(home, "bin", "kuvo-start");
-  const older = keeper("1.0.0").replace(/^stop\) .*$/m, `stop) touch "$R/stopped"; pid=$(noted); if [ -n "$pid" ] && ps -ww -o command= -p "$pid" | grep -q -- "$K/engine/"; then kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; fi; rm -f "$R/engine.json" ;;`);
-  write(keeperFile, older, 0o700);
+  const above = path.dirname(home), name = path.basename(home);
+  const realHome = process.env.HOME;
+  process.env.HOME = above;
+  t.after(() => { process.env.HOME = realHome; });
+  const older = `#!/bin/sh
+K="$KUVO_HOME"; R="$K/run"; O="$HOME/${name}"
+noted() { sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null; }
+mine() { [ -n "$1" ] && ps -ww -o command= -p "$1" 2>/dev/null | grep -q -- "$O/engine/"; }
+case "$1" in
+stop) [ -f "$K/once" ] || { touch "$K/once"; echo "A start of the engine is under way there." >&2; exit 4; }
+  touch "$R/stopped"; pid=$(noted); if mine "$pid"; then kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; echo "$pid" >>"$K/stopped-by-keeper"; fi; rm -f "$R/engine.json" ;;
+start) rm -f "$R/stopped"; mine "$(noted)" && exit 0; echo started >>"$K/started"; "$O/engine/1.0.0/opencode" serve >/dev/null 2>&1 </dev/null & pid=$!; until [ "$(noted)" = "$pid" ]; do kill -0 "$pid" 2>/dev/null || exit 3; sleep 0.1; done ;;
+esac
+`;
+  write(path.join(home, "bin", "kuvo-start"), older, 0o700);
   stopEngine();
   // (Started in the background of a shell that ends, as a keeper's launch does: not this test's child.)
-  const doubled = home.replace(/\/([^/]+)$/, "//$1");
-  spawnSync("sh", ["-c", `"$1/engine/1.0.0/opencode" serve >/dev/null 2>&1 </dev/null &`, "sh", doubled], { env: process.env });
+  spawnSync("sh", ["-c", `"$1//${name}/engine/1.0.0/opencode" serve >/dev/null 2>&1 </dev/null &`, "sh", above], { env: process.env });
   await waitFor(() => fs.existsSync(engineFile), "the engine runs as the helper started it");
   const running = read(engineFile).pid;
   engines.add(running);
   assert.match(spawnSync("ps", ["-ww", "-o", "command=", "-p", String(running)], { encoding: "utf8" }).stdout, /\/\/[^/]+\/engine\/1\.0\.0\/opencode/);
+
+  // Its stop fails (a start under way): nothing changed, and the engine it had is the one running.
+  const failed = await update();
+  assert.equal(failed.result, "failed");
+  assert.match(failed.message, /couldn't be stopped for the update, so nothing changed/);
+  assert.equal(fs.existsSync(path.join(home, "started")), false, "no second engine started");
+  assert.equal(read(engineFile).pid, running);
+  process.kill(running, 0);
+
+  // Then its own stop stops it, and the update goes through.
   const outcome = await update();
   assert.deepEqual(outcome, { result: "updated", version: "0.10.0" });
+  assert.equal(fs.readFileSync(path.join(home, "stopped-by-keeper"), "utf8").trim(), String(running), "the keeper's own stop");
   assert.throws(() => process.kill(running, 0), "the engine it had is stopped");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
   engines.add(read(engineFile).pid);

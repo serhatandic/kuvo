@@ -2900,9 +2900,11 @@ did: the box keeps working as itself ("For released Macs").
      keeper (`sh -n`).
   3. With another engine version, it first checks there's room to keep the engine's data. It keeps
      each file it replaces in `updates/rollback`, writes `restore.sh` and `run/update-trial`, and
-     only then stops the engine (its keeper's `stop`; an engine its record names that's still
-     running then, its command line this box's engine's, any run of slashes in it taken as one,
-     the update ends itself: TERM, then KILL after ten seconds). It goes on only once the engine
+     only then stops the engine: its keeper's `stop`, run (as its `start` and `restore.sh` are)
+     with HOME spelled as the running engine's command line has it, so a keeper of any age knows
+     that engine as its own (any run of slashes taken as one); an engine its record names that's
+     still running then, its command line this box's engine's, the update ends it itself (TERM,
+     then KILL after ten seconds). It goes on only once the engine
      has stopped; if it can't stop it, nothing has changed, and it starts the engine again. With another engine version, it keeps
      the engine's data (`opencode.db` with its `-wal` and `-shm`) whole or not at all
      (`data.partial`, renamed once copied).
