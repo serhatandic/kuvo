@@ -19,7 +19,9 @@ import type { PromptFile } from "../server/attached";
 import { answerHeaders, modelInput } from "../server/forward";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
-import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, type Outgoing } from "../engine/queue";
+import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, swapHoldsFor, type Outgoing } from "../engine/queue";
+import { swapLine, swapUnderWay } from "../../shared/engine-swap";
+import { RUN } from "../home";
 import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
@@ -154,9 +156,13 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
       if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
-      // For after this run while its queue is paused (a Stop, from any client): it waits on the box,
-      // as what arrives then does (the engine would run all it holds with the next thing it had).
-      if (!command && delivery === "queue" && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() })) {
+      // An engine being changed takes no command meanwhile (it would run on the engine stopped next):
+      // said, in words, to send again once it's back.
+      if (command && swapHoldsFor(target)) return { status: 503, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: `${swapLine(swapUnderWay(RUN)) ?? ""} Send this command again then.`.trim(), engineChanging: true })) };
+      // For after this run while its queue is paused (a Stop, from any client), or while its engine
+      // is being changed (PROTOCOL.md, "A new engine"): it waits on the box, as what arrives then does
+      // (the engine would run all it holds with the next thing it had).
+      if (!command && (delivery === "queue" || swapHoldsFor(target)) && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() }, undefined, target)) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
       const post = async (): Promise<SentAnswer> => {

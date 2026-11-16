@@ -41,6 +41,7 @@ import { leftSignIns } from "./signin"
 import { commandLineOf } from "../shared/platform"
 import { isRealBridgeFolder } from "../shared/account"
 import { updateUnderWay } from "../shared/updating"
+import { untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
 import type { RenewalRecord } from "../shared/records"
@@ -52,7 +53,7 @@ import { setServerSource } from "./servers"
 import { setSubagentSource } from "./subagents"
 import { Carrying } from "./carry"
 import { Store } from "./store"
-import { server as requester } from "./groups/api"
+import { server as requester, type Requester } from "./groups/api"
 import { SeatServer } from "./groups/peer"
 import { LinkDirectory, PeerPost, type PeerParts } from "./groups/post"
 import { GroupRunner } from "./groups/runner"
@@ -254,9 +255,17 @@ if (groupFolders) {
     // Your zone as the box last gave it, for this bridge's clocks until it gives it again.
     boxZoneIs(store.settings()?.boxTimeZone)
     // Its bots in chats on your other computers, and theirs in chats here, through the box's link.
+    // A seat's message to the engine waits while the engine is being changed (PROTOCOL.md, "A new
+    // engine"), bounded as that hold is: it goes to the new one.
+    const engineForSeats: Requester = runFolder ? {
+      request: async (method, path, body, timeout, directory) => {
+        if (method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command)$/.test(path)) await untilSwapLets(runFolder)
+        return link.request(method, path, body, timeout, directory)
+      },
+    } : link
     const runner = new GroupRunner({
       store,
-      engine: link,
+      engine: engineForSeats,
       bridge: () => self,
       trash: groupFolders.trash,
       listen: (session, listener) => link.listen(session, listener),

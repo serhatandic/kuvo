@@ -12,7 +12,7 @@ import { isObject } from "../../shared/json";
 import { isChatsFolder } from "../engine/chats";
 import { asked, call, engineGet } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
-import { writtenByYou } from "../engine/queue";
+import { keepWaiting, writtenByYou } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import { BOTS, CHATS, HERE, homeFolder, IS_MAC } from "../home";
 import { macLink, readLink } from "../state";
@@ -747,7 +747,10 @@ export async function markMade(making: Making, target: Target, session: string, 
 
 /** A session just made on `target`, given its task (it throws where that didn't reach it). */
 export async function promptMade(making: Making, target: Target, session: string): Promise<void> {
-  await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, { id: making.prompt.id, text: making.prompt.text, delivery: "steer", metadata: withParts(undefined, partsOf(making.prompt.text)) });
+  const message = { id: making.prompt.id, text: making.prompt.text, delivery: "steer" as const, metadata: withParts(undefined, partsOf(making.prompt.text)) };
+  // (Its engine being changed: it waits on the box, and goes once the new one runs.)
+  if (keepWaiting(session, message, {}, undefined, target)) return;
+  await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message);
 }
 
 // The rows your other computers last told of `bot`'s work: of its own conversation, and of its

@@ -16,7 +16,8 @@ import { fileURLToPath } from "node:url";
 import { isObject } from "../../shared/json";
 import { locked, writePrivate } from "../files";
 import { RUN } from "../home";
-import { asked } from "./client";
+import { asked, readBridgeFile } from "./client";
+import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { carryUnderWay } from "./carrying";
 import { summaryAtEnd } from "../../shared/summaries";
 import { messageID } from "./sessions";
@@ -46,8 +47,20 @@ interface InboxEntry {
   payload?: { text?: unknown; files?: unknown; metadata?: unknown };
 }
 
-/** A queue as a client reads it. */
-export const shownQueue = ({ paused, held, waiting }: QueueState): QueueState => ({ paused, held, ...(waiting?.length ? { waiting } : {}) });
+/** A queue as a client reads it: with `line`, the words to show while what waits on the box waits for
+ * the engine to change (PROTOCOL.md, "A new engine"). */
+export const shownQueue = ({ paused, held, waiting }: QueueState): QueueState & { line?: string } => {
+  const line = waiting?.length && !paused && swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : null;
+  return { paused, held, ...(waiting?.length ? { waiting } : {}), ...(line ? { line } : {}) };
+};
+
+/** Whether what's sent to `target` waits on the box now: it's the engine (not the coding agents'
+ * bridge, whose turns an engine change never touches) and its change holds (PROTOCOL.md, "A new
+ * engine"). */
+export function swapHoldsFor(target: Target): boolean {
+  if (!swapHolds(RUN)) return false;
+  try { return readBridgeFile()?.port !== target.port; } catch { return true; }
+}
 
 /** Every session's queue the box keeps (one that's neither paused nor holds anything isn't kept). */
 export const readQueues = (): Record<string, QueueState> => files.readQueues(FILES);
@@ -109,9 +122,11 @@ export function orderOf(inbox: InboxEntry[], { held, waiting = [] }: QueueState)
 
 const waitingFile = (id: string) => files.waitingFile(FILES, id);
 
-/** `message` kept on the box while `session`'s queue is paused (see `Shown`): true. Not paused,
- * false: it isn't kept. `place`: where it goes (last, else). */
-export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place): boolean => files.keepWaiting(FILES, session, message, shown, tellFollowers, place);
+/** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while `target`, the
+ * engine, is being changed (`swapHoldsFor`): true. Neither, false: it isn't kept. `place`: where it goes
+ * (last, else). */
+export const keepWaiting = (session: string, message: Outgoing & { id: string }, shown: Shown = {}, place?: files.Place, target?: Target): boolean =>
+  files.keepWaiting(FILES, session, message, shown, tellFollowers, place, target ? swapHoldsFor(target) : false);
 
 /** A message of yours a Stop named as still on its way, as it comes (`kuvo/sessions/<id>/stop
  * {items}`): kept on the box while the queue is paused (as what arrives then is) and held, after
@@ -147,7 +162,7 @@ export const placedBefore = (inbox: InboxEntry[], before: string | undefined): f
 /** `keepWaiting`, put back just ahead of `before` (`placedBefore`), as the engine's inbox is now. */
 export async function keepWaitingBefore(target: Target, session: string, message: Outgoing & { id: string }, shown: Shown, before?: string): Promise<boolean> {
   const inbox = before ? await inboxOf(target, session).catch(() => []) : [];
-  return keepWaiting(session, message, shown, placedBefore(inbox, before));
+  return keepWaiting(session, message, shown, placedBefore(inbox, before), target);
 }
 
 /** `message` to `session`, from the box itself (another agent's letter, a wake-up, a bot's work
@@ -159,7 +174,7 @@ export async function sendInto(target: Target, session: string, message: Outgoin
   // Never the box's own notes, which clients draw as notes; a plain one a client asks about once.)
   const metadata = isBoxNote(message.metadata) ? message.metadata : withPartsOf(message.metadata, message.text);
   const whole = { ...message, id: message.id ?? messageID(), ...(metadata !== undefined ? { metadata } : {}) };
-  if (keepWaiting(session, whole, shown)) return "waits";
+  if (keepWaiting(session, whole, shown, undefined, target)) return "waits";
   await asked(target, "POST", `api/session/${address(session)}/prompt`, whole);
   return "sent";
 }
@@ -462,7 +477,8 @@ export async function takeBackFromInbox(target: Target, session: string, item: s
  * `orderOf` has them, one in the engine's inbox by steering it (which starts a run) if it's queued,
  * by resuming if it's for the next step; one waiting on the box, sent to go now. */
 export async function drain(target: Target, session: string): Promise<void> {
-  if (queueOf(session).paused || (await isRunning(target, session))) return;
+  // (Nothing starts on an engine being changed: what waits goes once the new one runs.)
+  if (queueOf(session).paused || swapHoldsFor(target) || (await isRunning(target, session))) return;
   const inbox = await inboxOf(target, session);
   const first = orderOf(inbox, queueOf(session))[0];
   // (Stopped, or started, while it looked: as it is now.)
@@ -550,6 +566,8 @@ export async function resumeQueue(target: Target, session: string): Promise<Queu
 /** Send Now: `item` to the agent right away, the step under way stopped for it (one that runs goes
  * on from there with it), the queue no longer paused. False when it isn't waiting. */
 export async function sendNow(target: Target, session: string, item: string): Promise<boolean> {
+  // While the engine is being changed: no longer paused, and it goes first once the new one runs.
+  if (swapHoldsFor(target)) return goesFirst(session, item);
   // One waiting on the box: to the engine for now (back where it was if the engine doesn't take it).
   const inbox = await inboxFor(target, session);
   const kept = takeWaiting(session, item, true, inbox);
@@ -582,6 +600,7 @@ export async function sendNow(target: Target, session: string, item: string): Pr
  * with nothing running, goes as Send Now sends it. A queue a Stop holds stays held. `toAgents`:
  * `target` is the bridge. False when it isn't waiting; it throws when the inbox can't be read. */
 export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
+  if (swapHoldsFor(target)) return goesFirst(session, item);
   // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
   // the step you meant to keep going.)
   const entry = (await inboxOf(target, session)).find(each => each.id === item);
@@ -597,6 +616,92 @@ export async function steerQueued(target: Target, session: string, item: string,
     throw error;
   }
   return true;
+}
+
+// Send Now or Steer while the engine is being changed: `item`, waiting on the box, goes first once
+// the new engine runs, the queue no longer paused; false when it isn't waiting on the box.
+function goesFirst(session: string, item: string): boolean {
+  let found = false;
+  changeQueue(session, state => {
+    const shown = state.waiting?.find(each => each.id === item);
+    if (!shown) return state;
+    found = true;
+    return { ...state, paused: false, resumed: Date.now(), held: state.held.filter(id => id !== item), waiting: [shown, ...state.waiting!.filter(each => each !== shown)] };
+  });
+  return found;
+}
+
+/** What `target`'s inbox holds for `session` (messages, not a summary waiting) moved onto the box,
+ * waiting there in the order they'd have gone, held as they were: before an engine is stopped for
+ * another (PROTOCOL.md, "A new engine"), so nothing it held is lost with it. One the engine gave to
+ * the agent first is left. It throws when the inbox can't be read. */
+export async function moveInboxToBox(target: Target, session: string): Promise<number> {
+  const inbox = messagesIn(await inboxOf(target, session));
+  if (!inbox.length) return 0;
+  let moved = 0;
+  // (In the order they'd go, ahead of what waits on the box already.)
+  const order = orderOf(inbox, queueOf(session)).filter(id => inbox.some(entry => entry.id === id));
+  const renamed: Record<string, string> = {};
+  const kept: Waiting[] = [];
+  for (const id of order) {
+    const entry = inbox.find(each => each.id === id)!;
+    const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : null;
+    if (text === null) continue;
+    // (An ID the box can't name a file by: one of its own, the same each time.)
+    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : (renamed[id] = `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`);
+    const files = sendableFiles(entry.payload?.files);
+    const message = { id: own, text, delivery: entry.delivery, ...(files.length ? { files } : {}), ...(isObject(entry.payload?.metadata) ? { metadata: entry.payload!.metadata as Record<string, unknown> } : {}) };
+    writePrivate(waitingFile(own), JSON.stringify(message));
+    try {
+      await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(id)}`);
+    } catch {
+      // (Taken by the agent first, or kept by the engine: it stays where it is.)
+      fs.rmSync(waitingFile(own), { force: true });
+      continue;
+    }
+    const shown = shownOfInbox(entry);
+    kept.push({ id: own, ...(shown.from ? { from: shown.from } : {}), text: shown.words, ...(shown.files.length ? { files: shown.files } : {}), ...(shown.keyword ? { keyword: shown.keyword } : {}), at: Date.now() });
+    moved++;
+  }
+  if (kept.length) changeQueue(session, state => ({
+    ...state,
+    held: state.held.map(id => renamed[id] ?? id),
+    waiting: [...kept, ...(state.waiting ?? []).filter(each => !kept.some(one => one.id === each.id))],
+  }));
+  return moved;
+}
+
+/** What waits on the box for each conversation on `target` that isn't paused, sent there, each once
+ * and in its order (the first to go now, the rest as each was sent): once an engine change is done,
+ * or let go of (PROTOCOL.md, "A new engine"). One the engine doesn't take goes back first, and that
+ * conversation's rest waits for the next look; one whose conversation is gone goes. Sessions the
+ * engine doesn't have (the coding agents') are left. How many went. */
+export async function releaseWaiting(target: Target): Promise<number> {
+  let sent = 0;
+  for (const [session, state] of Object.entries(readQueues())) {
+    if (state.paused || !state.waiting?.length) continue;
+    try {
+      await asked(target, "GET", `api/session/${address(session)}`);
+    } catch {
+      continue;
+    }
+    for (let first = true; ; first = false) {
+      const now = queueOf(session);
+      if (now.paused || !now.waiting?.length) break;
+      const taken = takeWaiting(session);
+      if (!taken) break;
+      if (!taken.message) continue;
+      try {
+        await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, ...(first ? { delivery: "steer" } : {}) });
+        sent++;
+      } catch (error) {
+        if (/ 404\.$/.test(String((error as Error | null)?.message))) break;
+        putBack(session, { ...taken, message: taken.message });
+        break;
+      }
+    }
+  }
+  return sent;
 }
 
 /** An event, as far as the queue reads it. */
