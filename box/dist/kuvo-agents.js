@@ -10133,8 +10133,11 @@ function limitRows(boxes, now) {
     };
     if (members.every((member) => member.box.away))
       row.away = true;
-    if (row.problem?.kind === "ended")
-      row.ended = true;
+    if (row.problem?.kind === "ended") {
+      Object.assign(row, { ended: true, windows: [], rings: {} });
+      delete row.level;
+      delete row.bar;
+    }
     withResetsOn(row, members);
     return row;
   });
@@ -20789,7 +20792,8 @@ function whamWindows(limit, prefix, model, now) {
 async function readGrok(secret, _credential, now) {
   const body = await fetched(engineEndpoints.grok, { Authorization: `Bearer ${secret}`, "X-XAI-Token-Auth": "xai-grok-cli" }, now, "xAI");
   const period = body?.config?.currentPeriod;
-  if (body?.config && typeof body.config === "object" && period === undefined)
+  const config = body?.config;
+  if (config && typeof config === "object" && !Array.isArray(config) && !Object.keys(config).some((key) => /period|percent|limit/i.test(key)))
     throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.");
   const start = date(period?.start);
   const end = date(period?.end);
@@ -36892,4 +36896,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 4e71b8425df5324802ac7726cc16d7c6a6e6778565e8da2f5326d5023148b597
+// Built from Packages/Box/src/agents b00669acb518535c97afb74842adcc836d309e7e6e7ee52c5df359a605d12419

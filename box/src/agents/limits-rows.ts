@@ -126,7 +126,12 @@ export function limitRows(boxes: LimitsBox[], now: number): LimitRow[] {
       })),
     }
     if (members.every((member) => member.box.away)) row.away = true
-    if (row.problem?.kind === "ended") row.ended = true
+    // (Ended as the newest reading says: what another box kept from before is no plan's now.)
+    if (row.problem?.kind === "ended") {
+      Object.assign(row, { ended: true, windows: [], rings: {} })
+      delete row.level
+      delete row.bar
+    }
     withResetsOn(row, members)
     return row
   })

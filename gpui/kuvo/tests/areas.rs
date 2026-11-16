@@ -419,8 +419,27 @@ fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppCont
 
     // Off both: it closes.
     cx.simulate_mouse_move(gpui::point(px(900.), px(300.)), None, Modifiers::default());
+    cx.executor().advance_clock(kuvo::rail::CARD_GRACE);
     cx.run_until_parked();
     assert!(bounds(cx, "ring-card").is_none());
+}
+
+/// Across the gap between two rings, an open card moves to the next ring at once.
+#[gpui::test]
+fn an_open_card_follows_the_pointer_down_the_rings(cx: &mut TestAppContext) {
+    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let (first, second) = (bounds(cx, "ring-0").unwrap(), bounds(cx, "ring-1").unwrap());
+    cx.simulate_mouse_move(first.center(), None, Modifiers::default());
+    cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
+    cx.run_until_parked();
+    assert!(bounds(cx, "ring-card").is_some());
+    // Into the gap, then onto the next ring: no wait, the card beside it.
+    cx.simulate_mouse_move(gpui::point(first.center().x, (first.bottom() + second.top()) / 2.), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(second.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    let card = bounds(cx, "ring-card").expect("the card, at once");
+    assert!((card.center().y - second.center().y).abs() < px(1.), "beside the second ring");
 }
 
 #[gpui::test]

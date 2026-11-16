@@ -1144,6 +1144,17 @@ describe("names, the bar's ring and windows that started over (#668)", () => {
     expect(text).not.toContain("5-hour window: 0% used")
     expect(text).toContain("weekly limit: 40% used")
   })
+
+  // A plan that ended, as the newest reading says, while another computer still kept its old week
+  // (turned away since): the row has no windows or rings, and an agent is told it ended.
+  test("a plan that ended is one, whatever another computer kept of it", async () => {
+    const { describePlanLimits } = await import("../../src/link/work/plan-limits")
+    const ended = { provider: "cursor", service: "cursor", agent: "cursor", identity: "u1", windows: [], checked: 90, problem: { kind: "ended", message: "Its Cursor plan isn't active now." } } as any
+    const kept = { provider: "cursor", service: "cursor", agent: "cursor", identity: "u1", windows: [{ id: "total", used: 0.3, minutes: 43_200, resetsAt: 900, read: 10 }], checked: 50, problem: { kind: "rate-limited", message: "Cursor is turning reads away for now." } } as any
+    const [row] = limitRows([box("mac", "Mac", true, [ended]), box("dev", "devbox", false, [kept])], 100)
+    expect([row!.ended, row!.windows, row!.rings, row!.level]).toEqual([true, [], {}, undefined])
+    expect(describePlanLimits({ accounts: [], rows: [row] }, 100)).toContain("its plan has ended")
+  })
 })
 
 test("a newly added provider is read immediately before its first scheduled tick", async () => {

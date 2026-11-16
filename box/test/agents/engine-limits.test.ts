@@ -190,6 +190,12 @@ test("a SuperGrok plan that ended is listed as ended, with nothing of its last w
   expect([row.ended, row.problem.kind, row.windows, row.rings]).toEqual([true, "ended", [], {}])
 })
 
+test("an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended", async () => {
+  answers["/grok"] = () => Response.json({ config: { current_period: { start: "2026-11-05T00:00:00Z", end: "2026-11-12T00:00:00Z" }, creditUsagePercent: 20 } })
+  const { accounts } = await stated([credential("xai", { type: "oauth", access: "xai-token", expires: NOW + 3_600_000 })])
+  expect(accounts[0]!.problem?.kind).toBe("failed")
+})
+
 test("the Grok agent's own sign-in, in its folder, reads the same pool", async () => {
   const { GrokAgent } = await import("../../src/agents/agents/grok")
   const { agentAccounts } = await import("../../src/agents/limits")

@@ -44,6 +44,9 @@ const REREAD: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_secs(10);
 /// How long the pointer rests on a ring before its card opens (one already open moves at once).
 pub const CARD_DELAY: Duration = Duration::from_millis(300);
+/// How long the card stays once the pointer is on neither ring nor card: across the gap between
+/// two rings, the open card moves to the next at once rather than closing.
+pub const CARD_GRACE: Duration = Duration::from_millis(120);
 
 pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let open = workspace.area();
@@ -128,11 +131,12 @@ pub struct Rings {
     on_ring: Option<usize>,
     on_card: bool,
     opening: Option<Task<()>>,
+    closing: Option<Task<()>>,
 }
 
 impl Rings {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> Rings {
-        let mut rings = Rings { client, accounts: None, now: None, _reading: None, again: None, card: None, on_ring: None, on_card: false, opening: None };
+        let mut rings = Rings { client, accounts: None, now: None, _reading: None, again: None, card: None, on_ring: None, on_card: false, opening: None, closing: None };
         if live {
             rings._reading = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -221,12 +225,26 @@ impl Rings {
         self.settle(cx);
     }
 
-    /// Off both ring and card: the card closes. (Moving from a ring onto its card leaves the one
-    /// and reaches the other in one move, so it stays.)
+    /// Off both ring and card: the card closes, after a moment (`CARD_GRACE`) in which reaching
+    /// another ring moves it there instead.
     fn settle(&mut self, cx: &mut Context<Self>) {
         if self.on_ring.is_none() && !self.on_card {
-            self.card = None;
             self.opening = None;
+            if self.card.is_some() && self.closing.is_none() {
+                self.closing = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(CARD_GRACE).await;
+                    this.update(cx, |this, cx| {
+                        this.closing = None;
+                        if this.on_ring.is_none() && !this.on_card {
+                            this.card = None;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }));
+            }
+        } else {
+            self.closing = None;
         }
         cx.notify();
     }
@@ -241,6 +259,7 @@ impl Rings {
     fn close_card(&mut self, cx: &mut Context<Self>) {
         self.card = None;
         self.opening = None;
+        self.closing = None;
         self.on_card = false;
         cx.notify();
     }
@@ -254,11 +273,20 @@ impl Render for Rings {
         }
         let accounts: Vec<Account> = self.ringed().into_iter().cloned().collect();
         let now = self.now();
-        let card = self.card;
         // As many as the rail has room for (four at most), the rest behind "+N" (which takes a
         // ring's room itself), so Help and Settings stay in reach in a short window.
         let room = ((f32::from(window.viewport_size().height) - RAIL_REST) / RING_ROOM).floor().max(0.) as usize;
         let most = if accounts.len() <= room.min(MOST_RINGS) { accounts.len() } else { room.saturating_sub(1).min(MOST_RINGS) };
+        // A ring gone since (its account left the list, or behind "+N" now) takes its card along,
+        // and what the pointer was on: its card's or ring's leaving is never heard once it's gone.
+        if self.card.is_some_and(|ix| ix >= most) || self.on_ring.is_some_and(|ix| ix >= most) {
+            self.card = None;
+            self.on_ring = None;
+            self.on_card = false;
+            self.opening = None;
+            self.closing = None;
+        }
+        let card = self.card;
         let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, card == Some(ix), cx)).collect();
         // Past the rail's room: "+N", opening Settings › Usage.
         if accounts.len() > most {

@@ -59,6 +59,8 @@ export async function ringsOf(bridge: Target | null, signal?: AbortSignal): Prom
   const rows = isObject(limits) && Array.isArray(limits.rows) ? limits.rows : [];
   return rows.flatMap(row => {
     if (!isObject(row) || typeof row.service !== "string" || typeof row.title !== "string") return [];
+    // A plan that ended has no ring (the bridge's `ended`).
+    if (row.ended === true) return [];
     const rings = isObject(row.rings) ? row.rings : {};
     const short = ringOf(rings.short);
     const long = ringOf(rings.long);

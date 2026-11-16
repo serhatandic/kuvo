@@ -239,7 +239,10 @@ export async function readGrok(secret: string, _credential: unknown, now: number
   const period = body?.config?.currentPeriod
   // An account with no SuperGrok plan now (it ended, or never was) is answered with no period to
   // count: its plan ended, never a reading that failed (proto JSON leaves an unset period out).
-  if (body?.config && typeof body.config === "object" && period === undefined) throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.")
+  // Only where it says nothing of a plan at all (no period, share, limit or billing period under
+  // any name): an answer in a shape this doesn't know stays a read that failed, its ring kept.
+  const config = body?.config
+  if (config && typeof config === "object" && !Array.isArray(config) && !Object.keys(config).some((key) => /period|percent|limit/i.test(key))) throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.")
   const start = date(period?.start)
   const end = date(period?.end)
   if (!start || !end || end <= start) throw new LimitsProblem("failed", "xAI's answer wasn't what Kuvo Code reads.")
