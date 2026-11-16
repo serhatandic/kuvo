@@ -84,19 +84,30 @@ fn updates_says_the_version_and_checks_now(cx: &mut TestAppContext) {
     assert!(shown(opened.cx, "settings-yours-title"));
     assert_eq!(detail(&mut opened, "row-version").as_deref(), Some("Last checked 1 hour ago."));
     assert!(!shown(opened.cx, "row-version-badge"), "a release has no Beta mark");
-    // Check Now: the updater looks (its own window shows what it finds), and the button waits.
+    // Check Now: the updater looks (its own window shows what it finds).
     click(opened.cx, "row-version-check-now");
     assert_eq!(*updater.asked.borrow(), ["check"]);
-    assert_eq!(detail(&mut opened, "row-version").as_deref(), Some("Checking for updates…"));
+    assert_eq!(detail(&mut opened, "row-version").as_deref(), Some("An update is under way."));
+    // Pressed again meanwhile, it's asked again: Sparkle brings its window forward (one lost
+    // behind others is found again from here or the menu).
     click(opened.cx, "row-version-check-now");
-    assert_eq!(updater.asked.borrow().len(), 1, "not again while it's checking");
+    assert_eq!(updater.asked.borrow().len(), 2);
     // It ends by itself, and says so as Sparkle does: the page follows.
     updater.checked(NOW);
     tell.try_send(()).unwrap();
     opened.cx.run_until_parked();
     assert_eq!(detail(&mut opened, "row-version").as_deref(), Some("Last checked just now."));
+}
+
+#[gpui::test]
+fn an_updater_that_couldnt_start_says_so_and_checks_nothing(cx: &mut TestAppContext) {
+    let (updater, _tell, changes) = updater("0.8.0");
+    // (Sparkle said why once, in its own window; it can't check from then on.)
+    updater.facts.borrow_mut().can_check = false;
+    let mut opened = open(cx, Some((updater.clone(), changes)));
+    assert_eq!(detail(&mut opened, "row-version").as_deref(), Some("Kuvo can’t check for updates now."));
     click(opened.cx, "row-version-check-now");
-    assert_eq!(updater.asked.borrow().len(), 2);
+    assert!(updater.asked.borrow().is_empty());
 }
 
 #[gpui::test]

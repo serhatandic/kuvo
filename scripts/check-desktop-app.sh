@@ -9,7 +9,8 @@
 #       the app's, its pack the one it names (SHA-256), every file in the pack what the pack's
 #       box.json says (as `kuvo-install` and the box check it), and Kuvo Helper in it still signed,
 #       as <ID>.box. Sparkle, the app's updater, is in Contents/Frameworks, signed, for Apple silicon,
-#       with Info.plist naming its feed and key (Kuvo Code's own for run.kuvo.code).
+#       and where Info.plist names a feed, its key too (Kuvo Code's own for run.kuvo.code, never for
+#       a copy).
 #   scripts/check-desktop-app.sh --run <Kuvo.app>
 #       That, then a dry run: a COPY of the bundle with another bundle ID (<ID>.check, signed ad
 #       hoc again), in a home folder made for it, is asked what the computer holds
@@ -73,12 +74,22 @@ for binary in "$SPARKLE/Versions/B/Sparkle" "$SPARKLE/Versions/B/Autoupdate" "$S
     [ "$(lipo -archs "$binary")" = arm64 ] || fail "Sparkle's ${binary#"$SPARKLE"/} isn't for Apple silicon alone."
 done
 test ! -e "$SPARKLE/Versions/B/XPCServices" || fail "Sparkle still has its XPC services, which only a sandboxed app uses."
-FEED=$(info SUFeedURL) || fail "its Info.plist names no update feed (SUFeedURL)."
-UPDATE_KEY=$(info SUPublicEDKey) || fail "its Info.plist names no update key (SUPublicEDKey)."
-[ "$(info SUVerifyUpdateBeforeExtraction)" = true ] || fail "its Info.plist doesn't have updates checked before they're unpacked (SUVerifyUpdateBeforeExtraction)."
-if [ "$ID" = run.kuvo.code ]; then
-    [ "$FEED" = "$(sed -n 's/^REAL_FEED_URL="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)" ] || fail "Kuvo Code reads $FEED, not its own feed."
-    [ "$UPDATE_KEY" = "$(sed -n 's/^REAL_UPDATE_PUBLIC_KEY="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)" ] || fail "Kuvo Code trusts updates signed with another key than its own."
+# A feed only where the build named one (the release's: FEED=1; a test copy's own): then its key
+# too, updates checked before they're unpacked, and Kuvo Code's own for Kuvo Code, never for a copy.
+REAL_FEED=$(sed -n 's/^REAL_FEED_URL="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)
+REAL_KEY=$(sed -n 's/^REAL_UPDATE_PUBLIC_KEY="\(.*\)"$/\1/p' scripts/build-desktop-app.sh)
+if FEED=$(info SUFeedURL); then
+    UPDATE_KEY=$(info SUPublicEDKey) || fail "its Info.plist names a feed but no update key (SUPublicEDKey)."
+    [ "$(info SUVerifyUpdateBeforeExtraction)" = true ] || fail "its Info.plist doesn't have updates checked before they're unpacked (SUVerifyUpdateBeforeExtraction)."
+    if [ "$ID" = run.kuvo.code ]; then
+        [ "$FEED" = "$REAL_FEED" ] || fail "Kuvo Code reads $FEED, not its own feed."
+        [ "$UPDATE_KEY" = "$REAL_KEY" ] || fail "Kuvo Code trusts updates signed with another key than its own."
+    elif [ "$FEED" = "$REAL_FEED" ] || [ "$UPDATE_KEY" = "$REAL_KEY" ]; then
+        fail "a copy of its own ($ID) reads Kuvo Code's own feed or trusts its key: it would be offered the real app."
+    fi
+    FEED_SAY="reading $FEED"
+else
+    FEED_SAY="with no feed (it doesn't update itself)"
 fi
 SPARKLE_VERSION=$(plutil -extract CFBundleShortVersionString raw -o - "$SPARKLE/Resources/Info.plist")
 
@@ -135,7 +146,7 @@ test -d "$HELPER" || fail "its release's pack has no Kuvo Helper (bin/Kuvo Helpe
 codesign --verify --deep --strict "$HELPER" || fail "Kuvo Helper, as packed, isn't signed as it was."
 [ "$(identifier "$HELPER")" = "$ID.box" ] || fail "Kuvo Helper is signed as $(identifier "$HELPER"), not as $ID.box."
 
-echo "Checked $APP: $ID $VERSION, signed $SIGNER; $KEYS_SAY; Sparkle $SPARKLE_VERSION reading $FEED; the box's $VERSION release (signed with $KEY_SAYS) with Kuvo Helper."
+echo "Checked $APP: $ID $VERSION, signed $SIGNER; $KEYS_SAY; Sparkle $SPARKLE_VERSION $FEED_SAY; the box's $VERSION release (signed with $KEY_SAYS) with Kuvo Helper."
 [ "$RUN" = 1 ] || exit 0
 
 # The dry run: a copy with an ID of its own, in a home of its own. Never the bundle itself, which
@@ -149,7 +160,8 @@ real_app_guard "scripts/check-desktop-app.sh" "$COPY_ID" "$ROOT" "$COPY_HOME/$RO
 mkdir -p "$work/copy" "$COPY_HOME" "$work/tmp"
 ditto "$APP" "$COPY"
 plutil -replace CFBundleIdentifier -string "$COPY_ID" "$COPY/Contents/Info.plist"
-codesign --force --sign - --options runtime --identifier "$COPY_ID" "$COPY"
+# (As the build signs the app ad hoc: without the hardened runtime, scripts/sign-desktop-app.sh says why.)
+codesign --force --sign - --identifier "$COPY_ID" "$COPY"
 # (Only what it needs of this shell's: no KUVO_* variables, and no home but its own.)
 asked() { env -i PATH="/usr/bin:/bin:/usr/sbin:/sbin" HOME="$COPY_HOME" TMPDIR="$work/tmp" "$@" "$COPY/Contents/MacOS/$EXECUTABLE" --install-status; }
 

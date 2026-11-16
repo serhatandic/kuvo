@@ -415,10 +415,13 @@ fn updates(yours: &Yours) -> Vec<Block> {
     let facts = yours.updates.unwrap_or(&without);
     let detail = match &facts.can {
         Can::Not(why) => why.clone(),
-        Can::Update if facts.busy => "Checking for updates…".to_owned(),
-        Can::Update => checked_words(facts.checked, yours.now),
+        // (A check, a download, or Sparkle's window waiting on you: its window says which.)
+        Can::Update if facts.busy => "An update is under way.".to_owned(),
+        // (Sparkle couldn't start: it said why once, in its own window.)
+        Can::Update if !facts.can_check => "Kuvo can’t check for updates now.".to_owned(),
+        Can::Update => crate::time::last_checked(facts.checked, yours.now),
     };
-    let control = if facts.updates() { Control::Buttons(vec![Push { label: "Check Now".into(), act: facts.can_check.then_some(Act::Update(UpdateAct::Check)) }]) } else { Control::None };
+    let control = if facts.updates() { Control::Buttons(vec![Push { label: "Check Now".into(), act: (facts.can_check || facts.busy).then_some(Act::Update(UpdateAct::Check)) }]) } else { Control::None };
     let mut version = Row::new("row-version", format!("Kuvo {}", facts.version), detail, control);
     if crate::updates::is_beta(&facts.version) {
         version.badge = Some(("Beta".into(), BadgeTone::Quiet));
@@ -444,19 +447,6 @@ fn updates(yours: &Yours) -> Vec<Block> {
         blocks.push(Block::Group("Getting Updates".into(), "Signed updates from Kuvo’s releases.".into(), rows));
     }
     blocks
-}
-
-/// When the app last looked for an update, in words.
-fn checked_words(checked: Option<f64>, now: f64) -> String {
-    let Some(checked) = checked else { return "Not checked yet.".into() };
-    let minutes = ((now - checked) / 60_000.0).max(0.0) as u64;
-    let (count, unit) = match minutes {
-        0 => return "Last checked just now.".into(),
-        1..60 => (minutes, "minute"),
-        60..1440 => (minutes / 60, "hour"),
-        _ => (minutes / 1440, "day"),
-    };
-    format!("Last checked {count} {unit}{} ago.", if count == 1 { "" } else { "s" })
 }
 
 /// One of a computer's pages this app still draws itself, as blocks.
@@ -664,16 +654,6 @@ pub fn found(whole: bool, blocks: Vec<Block>, query: &str) -> Vec<Block> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_last_check_is_said_in_words() {
-        let now = 1_000_000_000_000.0;
-        assert_eq!(checked_words(None, now), "Not checked yet.");
-        assert_eq!(checked_words(Some(now - 20_000.0), now), "Last checked just now.");
-        assert_eq!(checked_words(Some(now - 60_000.0), now), "Last checked 1 minute ago.");
-        assert_eq!(checked_words(Some(now - 5.0 * 3_600_000.0), now), "Last checked 5 hours ago.");
-        assert_eq!(checked_words(Some(now - 3.0 * 86_400_000.0), now), "Last checked 3 days ago.");
-    }
 
     #[test]
     fn search_keeps_the_rows_it_finds_and_whole_sections_it_names() {

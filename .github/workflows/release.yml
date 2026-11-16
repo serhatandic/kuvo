@@ -11,7 +11,7 @@ name: Release
 #
 # Running it by hand (Actions › Release › Run workflow) on main is a dry run: it builds, signs,
 # notarizes and checks all of it, and uploads dist/ (boxes.json, box-<version>.tar.gz, kuvo-install,
-# KuvoCode.dmg, appcast.xml) as a workflow artifact instead of publishing a release. Use it to check
+# appcast.xml; not the disk image) as a workflow artifact instead of publishing a release. Use it to check
 # the secrets and the release build itself.
 #
 # A tag publishes nothing yet: a vMAJOR.MINOR.PATCH tag stops at "verify release tag" until the
@@ -329,14 +329,18 @@ jobs:
         run: |
           set -euo pipefail
           (cd gpui && rustup toolchain install)
-          VERSION="$VERSION" BOX_RELEASE=dist OUT=build ./scripts/build-desktop-app.sh
+          # FEED=1: the only build that names Kuvo Code's own feed and key (0.7's), for updates.
+          FEED=1 VERSION="$VERSION" BOX_RELEASE=dist OUT=build ./scripts/build-desktop-app.sh
           # (No kuvo-keys signed with the Developer ID yet: see the top. Publishing refuses an app without one.)
           KUVO_SIGNED_KEYS=0 SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" ./scripts/sign-desktop-app.sh build/Kuvo.app
           WITHOUT_KEYS=1 ./scripts/check-desktop-app.sh build/Kuvo.app
           app=build/Kuvo.app
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = run.kuvo.code \
             || { echo "Unexpected bundle identifier" >&2; exit 1; }
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$(./scripts/build-version.sh "$VERSION")"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app/Contents/Info.plist")" = https://github.com/serhatandic/kuvo-code/releases/latest/download/appcast.xml \
+            || { echo "The app doesn't read Kuvo Code's own update feed" >&2; exit 1; }
           codesign --verify --strict --deep --verbose=2 "$app"
           codesign -d --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime' \
             || { echo "The hardened runtime is off" >&2; exit 1; }
@@ -409,12 +413,16 @@ jobs:
           python3 ./scripts/merge-appcast.py "$RUNNER_TEMP/item.xml" "$RUNNER_TEMP/current/appcast.xml" > dist/appcast.xml
           cat dist/appcast.xml
 
+      # (Not the disk image: its app is Kuvo Code itself, signed and notarized, and with no kuvo-keys;
+      # opened, it would move a Mac's Kuvo Code 0.7 without handing its Keychain items over.)
       - name: Upload the dry-run build
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: KuvoCode-dry-run
-          path: dist/
+          path: |
+            dist/
+            !dist/KuvoCode.dmg
           retention-days: 3
 
       # Not reached today: a tag stops at "verify release tag" (see the top).

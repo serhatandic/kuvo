@@ -113,7 +113,9 @@ fi
 : >"$work/app.log"
 # (APP_ARGS: for a look at Sparkle's window in dark, -AppleInterfaceStyle Dark.)
 # shellcheck disable=SC2086
-env -u KUVO_DEMO_MACHINE_ROOT "$INSTALLED/Contents/MacOS/kuvo" ${APP_ARGS:-} >>"$work/app.log" 2>&1 &
+# (Only what it needs of this shell's: no KUVO_* variables. Your home folder, where Sparkle keeps
+# the test ID's settings and caches, and the cleanup removes them.)
+env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" TMPDIR="${TMPDIR:-/tmp}" USER="${USER:-}" "$INSTALLED/Contents/MacOS/kuvo" ${APP_ARGS:-} >>"$work/app.log" 2>&1 &
 APP_PID=$!
 echo "Opened the $OLD copy ($APP_PID), reading $FEED."
 

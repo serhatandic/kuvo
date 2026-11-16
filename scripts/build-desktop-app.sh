@@ -36,15 +36,24 @@
 #               folder: the release workflow's, with Kuvo Helper signed and notarized in it), carried
 #               as it is, so the app carries the very files published beside it (the helper built
 #               here goes in none).
-#   FEED_URL, UPDATE_PUBLIC_KEY   the update feed the app reads and the EdDSA key its updates are
-#               signed with (default: Kuvo Code's own, which 0.7 reads too). Only for a copy of its
-#               own (APP_ID not run.kuvo.code): a test's feed and key, never the real app's.
+#   FEED        1: the app reads Kuvo Code's own update feed, with its own key (which 0.7 reads
+#               too), and updates itself from the releases. Only for run.kuvo.code, and only the
+#               release asks for it (release.yml). Without it the app carries Sparkle all the same
+#               but names no feed, so it never updates itself and says so: a local build, a demo
+#               copy or a test's is never offered a real release (0.7's own builds had none either).
+#   FEED_URL, UPDATE_PUBLIC_KEY   a feed of its own and the EdDSA key its updates are signed with,
+#               both, for a copy of its own (APP_ID not run.kuvo.code): a test's
+#               (scripts/try-desktop-update.sh), never the real app's.
 #   BUN, NODE   as scripts/box-release.sh takes them
 #   MIN_SYSTEM  the oldest macOS it runs on (default 26.0)
 # Needs Xcode (the helper, the icon), Rust as gpui/README.md sets it up, Bun and Node. It's a
 # heavy build: run it through scripts/heavy.sh mac-build. When it's built it's checked
 # (scripts/check-desktop-app.sh), without being run.
 set -eu
+# (A release given as a path from where this was run, before going to the checkout.)
+if [ -n "${BOX_RELEASE:-}" ]; then
+    BOX_RELEASE=$(cd "$BOX_RELEASE" && pwd -P)
+fi
 cd "$(dirname "$0")/.."
 
 if [ $# -ne 0 ]; then
@@ -67,14 +76,29 @@ esac
 # same key, so it updates into this app). scripts/set-update-key.sh uploads it for the release.
 REAL_FEED_URL="https://github.com/serhatandic/kuvo-code/releases/latest/download/appcast.xml"
 REAL_UPDATE_PUBLIC_KEY="uG/YbzL4kf+DAYCiTTfK8ztEOBo96hkEAuKk9rw9BE4="
-if [ "$APP_ID" = run.kuvo.code ] && { [ -n "${FEED_URL:-}" ] || [ -n "${UPDATE_PUBLIC_KEY:-}" ]; }; then
-    echo "Kuvo Code itself reads only its own feed, with its own key: FEED_URL and UPDATE_PUBLIC_KEY are for a copy of its own (APP_ID)." >&2
-    exit 2
+if [ "$APP_ID" = run.kuvo.code ]; then
+    if [ -n "${FEED_URL:-}" ] || [ -n "${UPDATE_PUBLIC_KEY:-}" ]; then
+        echo "Kuvo Code itself reads only its own feed, with its own key: FEED_URL and UPDATE_PUBLIC_KEY are for a copy of its own (APP_ID)." >&2
+        exit 2
+    fi
+    if [ "${FEED:-}" = 1 ]; then FEED_URL=$REAL_FEED_URL UPDATE_PUBLIC_KEY=$REAL_UPDATE_PUBLIC_KEY; fi
+else
+    if [ "${FEED:-}" = 1 ]; then
+        echo "Only Kuvo Code itself reads its own feed: a copy of its own (APP_ID) names one of its own, with FEED_URL and UPDATE_PUBLIC_KEY." >&2
+        exit 2
+    fi
+    if { [ -n "${FEED_URL:-}" ] && [ -z "${UPDATE_PUBLIC_KEY:-}" ]; } || { [ -z "${FEED_URL:-}" ] && [ -n "${UPDATE_PUBLIC_KEY:-}" ]; }; then
+        echo "A copy's feed takes both FEED_URL and UPDATE_PUBLIC_KEY." >&2
+        exit 2
+    fi
+    if [ "${UPDATE_PUBLIC_KEY:-}" = "$REAL_UPDATE_PUBLIC_KEY" ] || [ "${FEED_URL:-}" = "$REAL_FEED_URL" ]; then
+        echo "A copy of its own never reads Kuvo Code's own feed or trusts its key: they'd offer it the real app." >&2
+        exit 2
+    fi
 fi
-FEED_URL="${FEED_URL:-$REAL_FEED_URL}"
-UPDATE_PUBLIC_KEY="${UPDATE_PUBLIC_KEY:-$REAL_UPDATE_PUBLIC_KEY}"
+FEED_URL="${FEED_URL:-}"
+UPDATE_PUBLIC_KEY="${UPDATE_PUBLIC_KEY:-}"
 if [ -n "${BOX_RELEASE:-}" ]; then
-    BOX_RELEASE=$(cd "$BOX_RELEASE" && pwd -P)
     for name in boxes.json kuvo-install "box-$VERSION.tar.gz"; do
         test -f "$BOX_RELEASE/$name" || { echo "BOX_RELEASE has no $name for $VERSION: $BOX_RELEASE" >&2; exit 2; }
     done
@@ -144,12 +168,14 @@ put CFBundleVersion string "$BUILD"
 put LSMinimumSystemVersion string "$MIN_SYSTEM"
 put CFBundleIconFile string AppIcon
 [ ! -f "$NEW/Contents/Resources/Assets.car" ] || put CFBundleIconName string AppIcon
-# Its updates, as 0.7's: checked once a day from the start (no question first), and an update
-# checked against the key before it's unpacked.
-put SUFeedURL string "$FEED_URL"
-put SUPublicEDKey string "$UPDATE_PUBLIC_KEY"
-put SUEnableAutomaticChecks bool true
-put SUVerifyUpdateBeforeExtraction bool true
+# Its updates, as 0.7's release's, where a feed is named: checked once a day from the start (no
+# question first), and an update checked against the key before it's unpacked.
+if [ -n "$FEED_URL" ]; then
+    put SUFeedURL string "$FEED_URL"
+    put SUPublicEDKey string "$UPDATE_PUBLIC_KEY"
+    put SUEnableAutomaticChecks bool true
+    put SUVerifyUpdateBeforeExtraction bool true
+fi
 plutil -lint "$INFO" >/dev/null
 
 # Sparkle, trimmed to what the app uses, as 0.7's was: Apple silicon only, no XPC services (only

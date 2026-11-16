@@ -157,8 +157,9 @@ impl Updates {
         }
     }
 
+    /// Looks now; while an update is under way, Sparkle brings its window forward instead.
     pub fn check(&mut self, cx: &mut Context<Self>) {
-        if self.facts.updates() && self.facts.can_check {
+        if self.facts.updates() && (self.facts.can_check || self.facts.busy) {
             self.updater.check();
         }
         self.refresh(cx);
