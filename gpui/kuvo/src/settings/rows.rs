@@ -59,7 +59,6 @@ pub const OWN: &[Listed] = &[
 // BOX-NEEDED: move onto kuvo/settings (#741): each of these.
 pub const LATER: &[Listed] = &[
     listed("custom-auto", "Custom Auto", IconName::Sliders, "Models", ""),
-    listed("agents", "Agents", IconName::Bot, "Agents & Tools", ""),
     listed("commands", "Commands", IconName::Terminal, "Agents & Tools", ""),
     listed("skills", "Skills", IconName::Pencil, "Agents & Tools", ""),
     listed("integrations", "Integrations", IconName::Link, "Agents & Tools", ""),

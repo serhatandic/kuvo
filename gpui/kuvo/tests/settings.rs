@@ -1425,6 +1425,87 @@ fn a_form_whose_thing_changed_meanwhile_stays_open_with_what_was_typed(cx: &mut 
     assert_eq!(typed, json!("npx -y files-server --readonly"));
 }
 
+#[gpui::test]
+fn agents_are_listed_as_the_box_says_and_edited_in_its_form(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_agents();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "agents");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Agents"));
+    // The built-in ones, then yours; a built-in one you changed says so beside its name.
+    for row in ["row-agent-build", "row-agent-plan", "row-agent-general", "row-agent-explore", "row-agent-reviewer", "row-agent-docs-writer"] {
+        assert!(shown(cx, row), "{row}");
+    }
+    assert!(shown(cx, "row-agent-plan-badge") && !shown(cx, "row-agent-build-badge"));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-agent-reviewer")).as_deref(), Some("A mode and a subagent · Reviews a change and says what's wrong, without fixing it."));
+    // Turned on from its switch, from the row's revision.
+    click(cx, "row-agent-docs-writer-switch");
+    let sent = bodies(&stand_in, "PATCH", "kuvo/settings/agents");
+    assert_eq!((sent[0]["row"].clone(), sent[0]["value"].clone()), (json!("agent-docs-writer"), json!(true)));
+
+    // Edit…: its form, with how it's used side by side and its model from a menu.
+    click(cx, "row-agent-reviewer-menu");
+    click(cx, "menu-item-Edit…");
+    assert!(shown(cx, "settings-form"));
+    assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).is_ready()));
+    assert!(shown(cx, "settings-form-mode-subagent") && shown(cx, "settings-form-may-edit-deny"));
+    assert!(form_words(&view, cx).contains(&("mode".into(), "New sessions can start in it, and it works when you name it or another agent hands it part of the work.".into())));
+    click(cx, "settings-form-mode-subagent");
+    click(cx, "settings-form-model-menu");
+    click(cx, "menu-item-Claude Sonnet 4.5");
+    click(cx, "settings-form-submit");
+    let sent = bodies(&stand_in, "POST", "kuvo/settings/agents/agent-reviewer/edit");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["values"]["mode"], json!("subagent"));
+    assert_eq!(sent[0]["values"]["model"], json!("anthropic/claude-sonnet-4-5"));
+    // What it didn't change goes back as it opened: its rules, one a line.
+    assert_eq!(sent[0]["values"]["allowed"], json!("Run commands: git diff *\nRun commands: git log *"));
+    assert!(!shown(cx, "settings-form"), "done: the sheet closes");
+}
+
+#[gpui::test]
+fn a_new_agent_is_made_from_its_form_and_one_of_yours_is_deleted_asked_first(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_agents();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "agents");
+    // A built-in one offers Reset to Built-In, not Delete.
+    click(cx, "row-agent-plan-menu");
+    assert!(shown(cx, "menu-item-Reset to Built-In…") && !shown(cx, "menu-item-Delete Agent…"));
+    cx.simulate_keystrokes("escape");
+    click(cx, "row-agents-add-new-agent");
+    assert!(shown(cx, "settings-form"));
+    click(cx, "settings-form-name-field");
+    cx.simulate_input("Bug Hunter");
+    click(cx, "settings-form-system-field");
+    cx.simulate_input("Look for bugs; change nothing.");
+    click(cx, "settings-form-submit");
+    let sent = bodies(&stand_in, "POST", "kuvo/settings/agents/agents/add");
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0]["values"]["name"].clone(), sent[0]["values"]["mode"].clone(), sent[0]["values"]["system"].clone()), (json!("Bug Hunter"), json!("subagent"), json!("Look for bugs; change nothing.")));
+
+    // Delete, asked first in the box's words.
+    click(cx, "row-agent-docs-writer-menu");
+    click(cx, "menu-item-Delete Agent…");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Delete docs-writer?".into(), "It's removed from this Mac's settings.".into(), "Delete".into())));
+    click(cx, "confirm-go");
+    assert!(!shown(cx, "row-agent-docs-writer"));
+    assert!(shown(cx, "row-agent-plan") && shown(cx, "row-agent-reviewer"), "the rest stay");
+}
+
+#[gpui::test]
+fn claude_codes_agents_are_offered_and_one_is_imported(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_agents();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "agents");
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-claude-security-auditor")).as_deref(), Some("Checks a change for security problems."));
+    assert!(!shown(cx, "row-claude-security-auditor-import"), "imported already");
+    click(cx, "row-claude-test-writer-import");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/settings/agents/claude-test-writer/import").len(), 1);
+    assert!(!shown(cx, "row-claude-test-writer-import"));
+}
+
 /// Git as the box describes it: no Save buttons; a field is saved as it's left (or on Return),
 /// with its row's revision, and leaving one unchanged sends nothing. The instructions are written
 /// full width under their group's heading, not titled again.

@@ -1,0 +1,2476 @@
+{
+ "section": {
+  "id": "agents",
+  "title": "Agents",
+  "group": "Agents & Tools",
+  "icon": "bot",
+  "line": "The built-in agents and your own: how each is used, its model, instructions and what it may do.",
+  "keywords": [
+   "agents",
+   "subagents",
+   "modes",
+   "build",
+   "plan",
+   "instructions",
+   "prompt",
+   "model",
+   "permissions",
+   "rules",
+   "claude code",
+   "import"
+  ]
+ },
+ "page": {
+  "id": "agents",
+  "title": "Agents",
+  "groups": [
+   {
+    "id": "agents",
+    "title": "Agents",
+    "note": "Plan is what /plan turns on. Your own agents work when you name one in a message, or when an agent hands one part of a task; Claude Code, Codex, Cursor, Grok and Antigravity get your subagents too.",
+    "rows": [
+     {
+      "id": "agents",
+      "title": "Agents",
+      "kind": "list",
+      "items": [
+       {
+        "id": "agent-build",
+        "title": "Build",
+        "line": "A mode · The default agent: it can change files and run commands.",
+        "kind": "switch",
+        "value": true,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "Build",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "primary",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "The default agent: it can change files and run commands.",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": true
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "Its built-in instructions",
+             "line": "Leave empty to keep its built-in instructions. Anything here replaces them; the project's AGENTS.md, skills and MCP servers still apply."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "ask",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First (Default)"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "u02HWJlhAZiFTtZR"
+          }
+         }
+        ],
+        "revision": "RV_ipRPaPXSMeJ7b"
+       },
+       {
+        "id": "agent-plan",
+        "title": "Plan",
+        "line": "A mode · Plans and answers without changing files.",
+        "kind": "switch",
+        "value": true,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "Plan",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "primary",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "Plans and answers without changing files.",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": true
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "Plan in short, numbered steps, and say what you'd test.",
+             "placeholder": "Its built-in instructions",
+             "line": "Leave empty to keep its built-in instructions. Anything here replaces them; the project's AGENTS.md, skills and MCP servers still apply."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "deny",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow (Default)"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "ask",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First (Default)"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "wGJn-N87CaYA3E_b"
+          }
+         },
+         {
+          "id": "reset",
+          "title": "Reset to Built-In…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Reset Plan to how it's built in?",
+           "body": "Your changes to it are removed.",
+           "button": "Reset"
+          }
+         }
+        ],
+        "revision": "NdhDMJWu_Y9FdbFw",
+        "badge": {
+         "words": "Changed",
+         "tone": "quiet"
+        }
+       },
+       {
+        "id": "agent-general",
+        "title": "General",
+        "line": "A subagent · Researches questions and runs multi-step tasks for another agent.",
+        "kind": "switch",
+        "value": true,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "General",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "subagent",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "Researches questions and runs multi-step tasks for another agent.",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": true
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "Its built-in instructions",
+             "line": "Leave empty to keep its built-in instructions. Anything here replaces them; the project's AGENTS.md, skills and MCP servers still apply."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "ask",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First (Default)"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "deny",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow (Default)"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "vQDIARS98BTCdhhA"
+          }
+         }
+        ],
+        "revision": "gdlg0hh5F5eMaLdz"
+       },
+       {
+        "id": "agent-explore",
+        "title": "Explore",
+        "line": "A subagent · Finds files and code quickly, without changing anything.",
+        "kind": "switch",
+        "value": true,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "Explore",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "subagent",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "Finds files and code quickly, without changing anything.",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": true
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "Its built-in instructions",
+             "line": "Leave empty to keep its built-in instructions. Anything here replaces them; the project's AGENTS.md, skills and MCP servers still apply."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "deny",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow (Default)"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "deny",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow (Default)"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "deny",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow (Default)"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "GlbPrAyjLi0ie16v"
+          }
+         }
+        ],
+        "revision": "stX2DBOv3O3ZUs0H"
+       },
+       {
+        "id": "agent-docs-writer",
+        "title": "docs-writer",
+        "line": "A subagent · Writes and updates the docs for a change.",
+        "kind": "switch",
+        "value": false,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "docs-writer",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "subagent",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "Writes and updates the docs for a change.",
+             "placeholder": "What it's for, like: Finds bugs and explains them, without changing code",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": false
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "",
+             "placeholder": "How it works: what to look for, what to leave alone, how to report back.",
+             "line": "The project's AGENTS.md, skills and MCP servers apply too."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "ask",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First (Default)"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "QQMvAVqdO5KtKRbz"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete Agent…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete docs-writer?",
+           "body": "It's removed from this Mac's settings.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "W86NPhZA7DIYsH97"
+       },
+       {
+        "id": "agent-reviewer",
+        "title": "reviewer",
+        "line": "A mode and a subagent · Reviews a change and says what's wrong, without fixing it.",
+        "kind": "switch",
+        "value": true,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "reviewer",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "all",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "Reviews a change and says what's wrong, without fixing it.",
+             "placeholder": "What it's for, like: Finds bugs and explains them, without changing code",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "anthropic/claude-opus-4-1",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": true
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "Read the diff, then the code around it. Say what breaks, for whom, and how you know.",
+             "placeholder": "How it works: what to look for, what to leave alone, how to report back.",
+             "line": "The project's AGENTS.md, skills and MCP servers apply too."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "deny",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "ask",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First (Default)"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "Run commands: git diff *\nRun commands: git log *",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "Run commands: git push *",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "uuxRaLsSj55w4W8J"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete Agent…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete reviewer?",
+           "body": "It's removed from this Mac's settings.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "9nWaJq1ahzofBr9i"
+       },
+       {
+        "id": "agent-security-auditor",
+        "title": "security-auditor",
+        "line": "A subagent · Checks a change for security problems.",
+        "kind": "switch",
+        "value": true,
+        "can": true,
+        "actions": [
+         {
+          "id": "edit",
+          "title": "Edit…",
+          "form": {
+           "title": "security-auditor",
+           "submit": "Save",
+           "fields": [
+            {
+             "id": "mode",
+             "title": "Use as",
+             "kind": "choice",
+             "value": "subagent",
+             "choices": [
+              {
+               "id": "primary",
+               "title": "Mode",
+               "line": "A mode new sessions can start in."
+              },
+              {
+               "id": "subagent",
+               "title": "Subagent",
+               "line": "It works when you name it in a message, or when another agent hands it part of the work."
+              },
+              {
+               "id": "all",
+               "title": "Both",
+               "line": "A mode, and a subagent other agents hand work to."
+              }
+             ]
+            },
+            {
+             "id": "description",
+             "title": "Description",
+             "kind": "lines",
+             "value": "Checks a change for security problems.",
+             "placeholder": "What it's for, like: Finds bugs and explains them, without changing code",
+             "line": "Other agents read it to know when to hand it work."
+            },
+            {
+             "id": "model",
+             "title": "Model",
+             "kind": "choice",
+             "value": "",
+             "choices": [
+              {
+               "id": "",
+               "title": "Default",
+               "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+              },
+              {
+               "id": "anthropic/claude-sonnet-4-5",
+               "title": "Claude Sonnet 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-haiku-4-5",
+               "title": "Claude Haiku 4.5",
+               "line": "anthropic"
+              },
+              {
+               "id": "anthropic/claude-opus-4-1",
+               "title": "Claude Opus 4.1",
+               "line": "anthropic"
+              },
+              {
+               "id": "openai/gpt-5",
+               "title": "GPT-5",
+               "line": "openai"
+              },
+              {
+               "id": "openai/gpt-5-mini",
+               "title": "GPT-5 mini",
+               "line": "openai"
+              }
+             ]
+            },
+            {
+             "id": "on",
+             "title": "Use this agent",
+             "kind": "switch",
+             "value": true
+            },
+            {
+             "id": "system",
+             "title": "Instructions",
+             "kind": "lines",
+             "value": "Look for injection.",
+             "placeholder": "How it works: what to look for, what to leave alone, how to report back.",
+             "line": "The project's AGENTS.md, skills and MCP servers apply too."
+            },
+            {
+             "id": "may-edit",
+             "title": "Edit files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ],
+             "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+            },
+            {
+             "id": "may-shell",
+             "title": "Run commands",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-read",
+             "title": "Read files",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-external_directory",
+             "title": "Work outside the project",
+             "kind": "choice",
+             "value": "ask",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First (Default)"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-webfetch",
+             "title": "Open web pages",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-websearch",
+             "title": "Search the web",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-subagent",
+             "title": "Hand work to subagents",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "may-skill",
+             "title": "Use skills",
+             "kind": "choice",
+             "value": "allow",
+             "choices": [
+              {
+               "id": "allow",
+               "title": "Allow (Default)"
+              },
+              {
+               "id": "ask",
+               "title": "Ask First"
+              },
+              {
+               "id": "deny",
+               "title": "Don't Allow"
+              }
+             ]
+            },
+            {
+             "id": "allowed",
+             "title": "Allowed Without Asking",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: npm test *",
+             "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+            },
+            {
+             "id": "asks",
+             "title": "Asks First",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Run commands: git push *"
+            },
+            {
+             "id": "never",
+             "title": "Never Allowed",
+             "kind": "lines",
+             "mono": true,
+             "value": "",
+             "placeholder": "Edit files: *.pem",
+             "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+            }
+           ],
+           "revision": "A348auGEuHnQnkrQ"
+          }
+         },
+         {
+          "id": "delete",
+          "title": "Delete Agent…",
+          "style": "destructive",
+          "confirm": {
+           "title": "Delete security-auditor?",
+           "body": "It's removed from this Mac's settings.",
+           "button": "Delete"
+          }
+         }
+        ],
+        "revision": "3nKPzStzHqmiwZJz"
+       }
+      ],
+      "empty": "None yet.",
+      "add": {
+       "id": "add",
+       "title": "New Agent…",
+       "form": {
+        "title": "New Agent",
+        "submit": "Create Agent",
+        "fields": [
+         {
+          "id": "name",
+          "title": "Name",
+          "kind": "text",
+          "value": "",
+          "placeholder": "Bug Hunter"
+         },
+         {
+          "id": "mode",
+          "title": "Use as",
+          "kind": "choice",
+          "value": "subagent",
+          "choices": [
+           {
+            "id": "primary",
+            "title": "Mode",
+            "line": "A mode new sessions can start in."
+           },
+           {
+            "id": "subagent",
+            "title": "Subagent",
+            "line": "It works when you name it in a message, or when another agent hands it part of the work."
+           },
+           {
+            "id": "all",
+            "title": "Both",
+            "line": "A mode, and a subagent other agents hand work to."
+           }
+          ]
+         },
+         {
+          "id": "description",
+          "title": "Description",
+          "kind": "lines",
+          "value": "",
+          "placeholder": "What it's for, like: Finds bugs and explains them, without changing code",
+          "line": "Other agents read it to know when to hand it work."
+         },
+         {
+          "id": "model",
+          "title": "Model",
+          "kind": "choice",
+          "value": "",
+          "choices": [
+           {
+            "id": "",
+            "title": "Default",
+            "line": "A mode uses the session's model; a subagent the one Settings › Models gives subagents."
+           },
+           {
+            "id": "anthropic/claude-sonnet-4-5",
+            "title": "Claude Sonnet 4.5",
+            "line": "anthropic"
+           },
+           {
+            "id": "anthropic/claude-haiku-4-5",
+            "title": "Claude Haiku 4.5",
+            "line": "anthropic"
+           },
+           {
+            "id": "anthropic/claude-opus-4-1",
+            "title": "Claude Opus 4.1",
+            "line": "anthropic"
+           },
+           {
+            "id": "openai/gpt-5",
+            "title": "GPT-5",
+            "line": "openai"
+           },
+           {
+            "id": "openai/gpt-5-mini",
+            "title": "GPT-5 mini",
+            "line": "openai"
+           }
+          ]
+         },
+         {
+          "id": "system",
+          "title": "Instructions",
+          "kind": "lines",
+          "value": "",
+          "placeholder": "How it works: what to look for, what to leave alone, how to report back.",
+          "line": "The project's AGENTS.md, skills and MCP servers apply too."
+         },
+         {
+          "id": "may-edit",
+          "title": "Edit files",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ],
+          "line": "Default does what Settings › Permissions says. A choice here wins over it for this agent."
+         },
+         {
+          "id": "may-shell",
+          "title": "Run commands",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "may-read",
+          "title": "Read files",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "may-external_directory",
+          "title": "Work outside the project",
+          "kind": "choice",
+          "value": "ask",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First (Default)"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "may-webfetch",
+          "title": "Open web pages",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "may-websearch",
+          "title": "Search the web",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "may-subagent",
+          "title": "Hand work to subagents",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "may-skill",
+          "title": "Use skills",
+          "kind": "choice",
+          "value": "allow",
+          "choices": [
+           {
+            "id": "allow",
+            "title": "Allow (Default)"
+           },
+           {
+            "id": "ask",
+            "title": "Ask First"
+           },
+           {
+            "id": "deny",
+            "title": "Don't Allow"
+           }
+          ]
+         },
+         {
+          "id": "allowed",
+          "title": "Allowed Without Asking",
+          "kind": "lines",
+          "mono": true,
+          "value": "",
+          "placeholder": "Run commands: npm test *",
+          "line": "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything."
+         },
+         {
+          "id": "asks",
+          "title": "Asks First",
+          "kind": "lines",
+          "mono": true,
+          "value": "",
+          "placeholder": "Run commands: git push *"
+         },
+         {
+          "id": "never",
+          "title": "Never Allowed",
+          "kind": "lines",
+          "mono": true,
+          "value": "",
+          "placeholder": "Edit files: *.pem",
+          "line": "Never Allowed wins over Asks First, which wins over Allowed Without Asking."
+         }
+        ],
+        "note": "On this Mac, for every project.",
+        "revision": "FFH_tyr5chYEma8V"
+       }
+      },
+      "revision": "oRM1xupsffcoStz_"
+     }
+    ]
+   },
+   {
+    "id": "claude-code",
+    "title": "From Claude Code",
+    "note": "Agents in ~/.claude/agents on this Mac, brought over as subagents with their description and instructions. They use the session's model and the permissions here, not the tools and model Claude Code gives them.",
+    "rows": [
+     {
+      "id": "claude-security-auditor",
+      "title": "Security Auditor",
+      "line": "Checks a change for security problems.",
+      "kind": "status",
+      "value": "Imported",
+      "revision": "zM99tkKj328EJEoA"
+     },
+     {
+      "id": "claude-test-writer",
+      "title": "Test Writer",
+      "line": "Writes the tests a change is missing.",
+      "kind": "actions",
+      "actions": [
+       {
+        "id": "import",
+        "title": "Import"
+       }
+      ],
+      "revision": "kJppcPA3kVDNl6OZ"
+     }
+    ]
+   }
+  ]
+ },
+ "checks": {
+  "agents/add": {
+   "fields": [
+    {
+     "id": "mode",
+     "words": "It works when you name it in a message, or when another agent hands it part of the work; its description tells them when.",
+     "tone": "quiet"
+    }
+   ],
+   "ready": true
+  },
+  "agent-reviewer/edit": {
+   "fields": [
+    {
+     "id": "mode",
+     "words": "New sessions can start in it, and it works when you name it or another agent hands it part of the work.",
+     "tone": "quiet"
+    }
+   ],
+   "ready": true
+  },
+  "agent-plan/edit": {
+   "fields": [
+    {
+     "id": "mode",
+     "words": "New sessions can start in it, from the mode menu.",
+     "tone": "quiet"
+    }
+   ],
+   "ready": true
+  }
+ }
+}

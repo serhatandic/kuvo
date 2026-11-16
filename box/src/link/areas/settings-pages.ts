@@ -25,6 +25,8 @@ import { isObject, parsed, sortedJSON } from "../../shared/json";
 import { actionsOf, asked, expectedRevision, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Refused, Section } from "./settings-kit";
 import { mcpSection } from "./settings-mcp";
+import { agentsSection } from "./settings-agents";
+import { ACTIONS, choiceIn, EFFECTS, engineDefault, isRule } from "./permission-rules";
 import { SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
 import { budgetConfirmation, fileSize, fileSizeUnit } from "../../shared/artifact-budget";
 import { fitsShape } from "../../shared/shape";
@@ -92,6 +94,7 @@ const SECTIONS: SettingsSection[] = [
   { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "How much Kuvo keeps on this computer, and how much older versions of what agents made keep.", keywords: ["copies", "older versions", "budget", "disk", "clear", "space", "size", "folder"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
+  agentsSection.listed,
   mcpSection.listed,
 ];
 
@@ -107,28 +110,9 @@ const browserAnswer = (context: RouteContext) => browserDataRoute(context, conte
 
 const MODE_NAMES: Record<string, string> = { askFirst: "Ask First", acceptEdits: "Accept Edits", auto: "Auto", fullAccess: "Full Access" };
 
-/** The kinds of action Settings › Permissions has a choice for, each a rule for everything ("*") at
- * the front of the engine's `permissions`, as the Mac's Settings writes them; and what the engine
- * does with none. */
-const ACTIONS = [
-  { id: "edit", title: "Edit files", line: "Changing, creating or deleting files. Plan mode doesn't, by default." },
-  { id: "shell", title: "Run commands", line: "In the terminal." },
-  { id: "read", title: "Read files", line: "Files ending in .env ask first unless you allow this." },
-  { id: "external_directory", title: "Work outside the project", line: "In folders that aren't the project's." },
-  { id: "webfetch", title: "Open web pages" },
-  { id: "websearch", title: "Search the web" },
-  { id: "subagent", title: "Hand work to subagents" },
-  { id: "skill", title: "Use skills" },
-] as const;
-const EFFECTS = [{ id: "allow", title: "Allow" }, { id: "ask", title: "Ask First" }, { id: "deny", title: "Don't Allow" }] as const;
-const engineDefault = (action: string) => (action === "external_directory" ? "ask" : "allow");
-
+// (The kinds of action Settings › Permissions has a choice for, each a rule for everything ("*") at
+// the front of the engine's `permissions`: permission-rules.ts, which Settings › Agents shares.)
 const NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.";
-
-type Rule = { action: string; resource: string; effect: string };
-const isRule = (value: unknown): value is Rule => isObject(value) && typeof value.action === "string" && typeof value.resource === "string" && typeof value.effect === "string";
-/** The choice for `action` in the engine's `permissions`: the last rule for everything, as the engine reads them. */
-const choiceIn = (rules: unknown[], action: string) => rules.filter(isRule).findLast(rule => rule.action === action && rule.resource === "*")?.effect;
 
 async function permissionsPage(context: RouteContext): Promise<SettingsPage> {
   const name = context.info.name || "this computer";
@@ -827,6 +811,7 @@ const PAGES: Record<string, Section> = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => `${Math.floor(Date.now() / 1000)} ${mtime(SIZES_FILE)} ${isMeasuring()}` },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  agents: agentsSection,
   mcp: mcpSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
