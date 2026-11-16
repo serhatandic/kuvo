@@ -21,7 +21,9 @@ use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledT
 #[derive(Clone, Debug)]
 pub enum Read {
     Reading,
-    Shown { image: Arc<Image>, width: u32, height: u32 },
+    /// `thumb`: the same, made small once as it was read (where it's large), for drawing it in the
+    /// conversation; `image` whole, for the viewer.
+    Shown { image: Arc<Image>, thumb: Arc<Image>, width: u32, height: u32 },
     /// It couldn't be read (`again`: trying again may bring it), or isn't a kind that shows here.
     Failed { why: String, again: bool },
 }
@@ -59,6 +61,15 @@ pub fn read(client: &BoxClient, source: &Source) -> Read {
             Some(bytes) => bytes,
             None => return failed(false),
         },
+        // Yours, sent from here: read where you sent it from.
+        Source::Local(path) => match std::fs::metadata(path) {
+            Ok(meta) if meta.len() as usize > PICTURE_MOST => return Read::Failed { why: "This image is too large to show here.".into(), again: false },
+            Ok(_) => match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(_) => return failed(true),
+            },
+            Err(_) => return failed(true),
+        },
         Source::File(uri) => match client.file_bytes(uri, PICTURE_MOST) {
             Ok((bytes, _)) => bytes,
             // Too large to show: trying again wouldn't change that.
@@ -79,9 +90,31 @@ pub fn shown(bytes: Vec<u8>) -> Read {
         image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().ok().and_then(|reader| reader.into_dimensions().ok())
     };
     match size {
-        Some((width, height)) if width > 0 && height > 0 => Read::Shown { image: Arc::new(Image::from_bytes(format, bytes)), width, height },
+        Some((width, height)) if width > 0 && height > 0 => {
+            let thumb = thumbnail(format, &bytes, width, height).map(Arc::new);
+            let image = Arc::new(Image::from_bytes(format, bytes));
+            Read::Shown { thumb: thumb.unwrap_or_else(|| image.clone()), image, width, height }
+        }
         _ => failed(false),
     }
+}
+
+/// The longest side a picture is drawn from in the conversation: twice the largest it's drawn there
+/// (an agent's picture, 560 wide), for a sharp Retina screen.
+const THUMB_SIDE: u32 = 1120;
+
+/// A large picture made small for the conversation (as a PNG), so a screenshot of a 5K screen isn't
+/// decoded and kept whole for a tile of a few hundred points; none for one that's small already, or
+/// that can't be made small (an SVG, an animated GIF). Off the UI thread, once, as it's read.
+fn thumbnail(format: ImageFormat, bytes: &[u8], width: u32, height: u32) -> Option<Image> {
+    if width.max(height) <= THUMB_SIDE || matches!(format, ImageFormat::Svg | ImageFormat::Gif) {
+        return None;
+    }
+    let decoded = image::load_from_memory(bytes).ok()?;
+    let small = decoded.thumbnail(THUMB_SIDE, THUMB_SIDE);
+    let mut out = std::io::Cursor::new(Vec::new());
+    small.write_to(&mut out, image::ImageFormat::Png).ok()?;
+    Some(Image::from_bytes(ImageFormat::Png, out.into_inner()))
 }
 
 fn format_of(bytes: &[u8]) -> Option<ImageFormat> {
@@ -120,7 +153,7 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
     let name = picture.name.clone().unwrap_or_else(|| "Picture".into());
     let selector = format!("picture-{}", picture.id);
     let body: AnyElement = match looks.read.get(picture.id.as_str()) {
-        Some(Read::Shown { image, width, height }) => {
+        Some(Read::Shown { thumb, width, height, .. }) => {
             let (w, h) = fitted(*width, *height, most_w, most_h);
             div()
                 .id(SharedString::from(format!("picture-{}", picture.id)))
@@ -133,7 +166,7 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
                 .border_color(c.border)
                 .cursor_pointer()
                 .on_click(move |_, window, cx| open(&id, window, cx))
-                .child(img(image.clone()).size_full().object_fit(ObjectFit::Contain))
+                .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Contain))
                 .into_any_element()
         }
         read => {
@@ -188,7 +221,7 @@ pub fn viewer(picture: &Picture, at: usize, count: usize, read: Option<&Read>, w
     let size = window.viewport_size();
     let (most_w, most_h) = (f32::from(size.width) - 96., f32::from(size.height) - 160.);
     let shown: AnyElement = match read {
-        Some(Read::Shown { image, width, height }) => {
+        Some(Read::Shown { image, width, height, .. }) => {
             let (w, h) = fitted(*width, *height, most_w.max(80.), most_h.max(80.));
             div().w(px(w)).h(px(h)).child(img(image.clone()).size_full().object_fit(ObjectFit::Contain)).into_any_element()
         }

@@ -94,6 +94,9 @@ pub struct ConversationView {
     /// Each row's pictures, found as it changed (its revision, and which of its steps were open),
     /// not at each drawing: finding them copies what a message carries.
     row_pictures: HashMap<String, (u64, Vec<(String, usize)>, Vec<Picture>)>,
+    /// The pictures of yours sent from here whose copy came without them, by message: drawn from
+    /// here until it has them.
+    sent_pictures: HashMap<String, Vec<Picture>>,
     /// The picture opened over it, by its id, and the keyboard for it (← →, Escape).
     viewing: Option<String>,
     viewer_focus: FocusHandle,
@@ -150,6 +153,7 @@ impl ConversationView {
             running: false,
             pictures: HashMap::new(),
             row_pictures: HashMap::new(),
+            sent_pictures: HashMap::new(),
             viewing: None,
             viewer_focus: cx.focus_handle(),
         };
@@ -365,7 +369,16 @@ impl ConversationView {
         let (rows, revisions): (Vec<Entry>, Vec<u64>) = self.entries.iter().zip(&self.revisions).filter(|(entry, _)| !matches!(entry, Entry::Outgoing { .. })).map(|(entry, revision)| (entry.clone(), *revision)).unzip();
         let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
         self.show(rows, revisions);
+        // (Yours on their way show the pictures they carry.)
+        self.note_sent(cx);
+        self.find_pictures();
+        self.read_pictures(cx);
         cx.notify();
+    }
+
+    /// The pictures of yours sent from here whose copy came without them.
+    fn note_sent(&mut self, cx: &App) {
+        self.sent_pictures = self.composer.read(cx).outgoing().iter().filter(|outgoing| outgoing.arrived).map(|outgoing| (outgoing.id.clone(), kuvo_box::pictures::of_sending(&outgoing.id, &outgoing.files))).filter(|(_, pictures)| !pictures.is_empty()).collect();
     }
 
     pub fn queued(&self) -> &[Item] {
@@ -484,6 +497,7 @@ impl ConversationView {
                 let (rows, revisions) = entries::entries(conversation);
                 let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
                 self.show(rows, revisions);
+                self.note_sent(cx);
                 self.find_pictures();
                 self.read_pictures(cx);
                 self.composer.update(cx, |composer, cx| {
@@ -609,10 +623,16 @@ impl ConversationView {
 
     /// The pictures a row shows: a message of yours carried, a step brought to show you or wrote
     /// in its words, and those a step opened (`open`) brought back for itself.
-    fn pictures_of(entry: &Entry, open: &HashSet<Fold>) -> Vec<Picture> {
+    fn pictures_of(entry: &Entry, open: &HashSet<Fold>, kept: &HashMap<String, Vec<Picture>>) -> Vec<Picture> {
         match entry {
+            // Yours on its way: what you sent, from here.
+            Entry::Outgoing { pictures, .. } => pictures.clone(),
             Entry::Message(message) => match &**message {
-                Message::User(user) => kuvo_box::pictures::of_user(user),
+                // (Its copy came without its files: what you sent from here, meanwhile.)
+                Message::User(user) => {
+                    let carried = kuvo_box::pictures::of_user(user);
+                    if carried.is_empty() { kept.get(&user.id).cloned().unwrap_or_default() } else { carried }
+                }
                 Message::Assistant(step) => step
                     .content
                     .iter()
@@ -666,7 +686,7 @@ impl ConversationView {
     fn find_pictures(&mut self) {
         let mut found = HashMap::new();
         for (entry, revision) in self.entries.iter().zip(&self.revisions) {
-            if !matches!(entry, Entry::Message(_) | Entry::Words { .. } | Entry::Steps { .. }) {
+            if !matches!(entry, Entry::Message(_) | Entry::Words { .. } | Entry::Steps { .. } | Entry::Outgoing { .. }) {
                 continue;
             }
             let key = entry.key().to_owned();
@@ -676,7 +696,7 @@ impl ConversationView {
                 _ => None,
             }).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
             let kept = self.row_pictures.remove(&key).filter(|(was, folds, _)| was == revision && *folds == opened);
-            let row = kept.unwrap_or_else(|| (*revision, opened, Self::pictures_of(entry, &self.open)));
+            let row = kept.unwrap_or_else(|| (*revision, opened, Self::pictures_of(entry, &self.open, &self.sent_pictures)));
             found.insert(key, row);
         }
         self.row_pictures = found;
@@ -844,7 +864,8 @@ impl ConversationView {
             .flex_wrap()
             .justify_end()
             .gap(space::S1)
-            .children(kept.files.iter().map(|path| {
+            // (Its pictures show as pictures, from here.)
+            .children(kept.files.iter().filter(|path| !kuvo_box::pictures::is_picture_path(&path.to_string_lossy())).map(|path| {
                 let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 div().flex().items_center().gap(space::S1).px(space::S2).py(space::S0_5).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint)).child(name)
             }))

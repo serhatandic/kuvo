@@ -1338,6 +1338,83 @@ fn files_sent_to_a_conversation_on_another_computer_go_with_their_bytes_and_pict
     assert!(bounds(cx, "not-sent").is_some());
 }
 
+/// A picture you send is a small thumbnail on your message in every state it's in (sending,
+/// waiting for the agent's next step, not sent, its copy come without it, its copy with it), never a
+/// file's name; a file that isn't a picture keeps its name. Each is among the conversation's pictures.
+#[gpui::test]
+fn a_picture_you_send_is_a_thumbnail_on_your_message_in_every_state(cx: &mut TestAppContext) {
+    let png = |width: u32, height: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, height).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let composer = open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let folder = tempfile::tempdir().unwrap();
+    let (note, shot, tall) = (folder.path().join("list.txt"), folder.path().join("Pasted Image.png"), folder.path().join("tall.png"));
+    std::fs::write(&note, "rice").unwrap();
+    std::fs::write(&shot, png(2880, 1800)).unwrap();
+    std::fs::write(&tall, png(300, 1200)).unwrap();
+    let send = |files: Vec<std::path::PathBuf>, words: &str, cx: &mut VisualTestContext| {
+        composer.update(cx, |composer, cx| composer.attach_named(files, cx));
+        let field = composer.read_with(cx, |composer, _| composer.field().clone());
+        cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+        cx.simulate_input(words);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned()
+    };
+    let size_of = |id: &str, cx: &mut VisualTestContext| bounds(cx, &format!("picture-{id}")).map(|b| (f32::from(b.size.width).round(), f32::from(b.size.height).round()));
+
+    // (Its box's copies come without the files sent, as a box before files were kept.)
+    stand_in.drop_files();
+    // Sending: one picture, at most 240 on its longest side, its shape kept; the note by its name.
+    let id = send(vec![note.clone(), shot.clone()], "Which shelf?", cx);
+    assert!(bounds(cx, "sending").is_some());
+    assert_eq!(size_of(&format!("{id}#1"), cx), Some((240., 150.)));
+    let names = view.read_with(cx, |view, _| view.entries().iter().find_map(|entry| match entry {
+        Entry::Outgoing { files, .. } => Some(files.clone()),
+        _ => None,
+    }));
+    assert_eq!(names, Some(vec!["list.txt".to_owned()]), "only what isn't a picture is a name");
+    // Its copy came without them: still shown, from here.
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(read_now(&client, "ses_recipes").unwrap()), cx));
+    cx.run_until_parked();
+    assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
+    assert_eq!(size_of(&format!("{id}#1"), cx), Some((240., 150.)), "its copy shows it as it went");
+
+    // Waiting for the agent's next step: several, smaller, a tall one as tall as it may be.
+    let mut working = read_now(&client, "ses_recipes").unwrap();
+    working.running = true;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+    let waiting = send(vec![shot.clone(), tall.clone()], "And these?", cx);
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "at-next-step").is_some());
+    assert_eq!(size_of(&format!("{waiting}#0"), cx), Some((160., 100.)));
+    assert_eq!(size_of(&format!("{waiting}#1"), cx), Some((40., 160.)));
+
+    // Not sent: still there, as it was.
+    stand_in.fail_sends();
+    let failed = send(vec![shot.clone()], "Once more", cx);
+    assert!(bounds(cx, "not-sent").is_some());
+    assert_eq!(size_of(&format!("{failed}#0"), cx), Some((240., 150.)));
+
+    // Every one of them is among the conversation's pictures, for the viewer to go through.
+    let all: Vec<String> = view.read_with(cx, |view, _| view.all_pictures().into_iter().map(|picture| picture.id).collect());
+    for id in [format!("{id}#1"), format!("{waiting}#0"), format!("{waiting}#1"), format!("{failed}#0")] {
+        assert!(all.contains(&id), "{id} in {all:?}");
+    }
+    let shown = bounds(cx, &format!("picture-{failed}#0")).unwrap();
+    cx.simulate_click(shown.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.viewing().map(str::to_owned)), Some(format!("{failed}#0")));
+}
+
 #[gpui::test]
 fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

@@ -38,6 +38,25 @@ pub enum Source {
     Inline(std::sync::Arc<str>),
     /// A file on the conversation's computer: its `file://` address.
     File(String),
+    /// A file on this computer, sent from here: a message of yours on its way (or whose copy
+    /// came without it), drawn from what you sent until its box's copy has it.
+    Local(std::path::PathBuf),
+}
+
+/// The pictures among the files a message of yours sent from here (`files`, in the order sent),
+/// as its box's copy will name them (`<message>#<n>`), read from this computer meanwhile.
+pub fn of_sending(message: &str, files: &[std::path::PathBuf]) -> Vec<Picture> {
+    files
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| is_picture_path(&path.to_string_lossy()))
+        .map(|(n, path)| Picture {
+            id: format!("{message}#{n}"),
+            source: Source::Local(path.clone()),
+            name: path.file_name().map(|name| name.to_string_lossy().into_owned()),
+            caption: None,
+        })
+        .collect()
 }
 
 /// The extensions read as pictures.

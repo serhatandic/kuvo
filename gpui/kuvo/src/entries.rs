@@ -50,7 +50,8 @@ pub enum Entry {
     /// Yours, sent from here and on its way (`Composer::outgoing`): drawn at once as your message,
     /// until the box's copy (by the same id) takes its place. `failed`: why it couldn't go; `waits`:
     /// its box took it while the agent works, and it's read at the agent's next step.
-    Outgoing { id: String, words: String, files: Vec<String>, failed: Option<String>, waits: bool },
+    /// `files`: the names of those that aren't pictures; `pictures`: those that are, read from here.
+    Outgoing { id: String, words: String, files: Vec<String>, pictures: Vec<Picture>, failed: Option<String>, waits: bool },
 }
 
 impl Entry {
@@ -78,10 +79,11 @@ impl Entry {
     /// Yours on its way, as its conversation draws it, with the revision it's drawn by: above every
     /// one the box gives, so the box's copy taking its place is always drawn again.
     pub fn outgoing(outgoing: &crate::composer::Outgoing, running: bool) -> (Entry, u64) {
-        let files = outgoing.files.iter().map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let files = outgoing.files.iter().filter(|path| !pictures::is_picture_path(&path.to_string_lossy())).map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let shown = pictures::of_sending(&outgoing.id, &outgoing.files);
         let waits = outgoing.taken && running && outgoing.failed.is_none();
         let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else if waits { u64::MAX - 2 } else { u64::MAX };
-        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, failed: outgoing.failed.clone(), waits }, revision)
+        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, pictures: shown, failed: outgoing.failed.clone(), waits }, revision)
     }
 }
 
@@ -204,10 +206,24 @@ fn shows(step: &Step) -> bool {
 /// The widest a conversation's column gets: it stays readable in a wide window.
 pub const COLUMN: f32 = 720.;
 
-/// How large pictures are drawn, as 0.7 drew them: one a step brought (one alone, several), and
-/// one of yours (one alone, several).
+/// How large pictures are drawn: one a step brought (one alone, several), as 0.7 drew them, fitted
+/// to the column; and yours, as thumbnails on your message (one alone, several), 240 points on
+/// their longest side at most (the user, 11-16: 0.7's 360 × 220 looked out of place).
 const MADE: ((f32, f32), (f32, f32)) = ((560., 420.), (300., 200.));
-const YOURS: ((f32, f32), (f32, f32)) = ((360., 220.), (240., 140.));
+const YOURS: ((f32, f32), (f32, f32)) = ((240., 240.), (160., 160.));
+
+/// Your pictures, as thumbnails on your side, over your words: in a row that wraps, the first
+/// nearest the bubble.
+fn yours_pictures(list: &[Picture], looks: &Looks, cx: &App) -> AnyElement {
+    let (most_w, most_h) = if list.len() == 1 { YOURS.0 } else { YOURS.1 };
+    div()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap(space::S1_5)
+        .children(list.iter().map(|each| crate::pictures::picture(each, most_w, most_h, looks, cx)))
+        .into_any_element()
+}
 
 /// What's opened in a conversation, each by its step's id and which of the step's blocks it is:
 /// a thinking block, a tool step showing what it printed or changed, or that output (or one of its
@@ -265,9 +281,10 @@ pub fn render(
 ) -> AnyElement {
     let body: AnyElement = match entry {
         Entry::Earlier => own,
-        Entry::Outgoing { words, files, failed, waits, .. } => {
+        Entry::Outgoing { words, files, pictures, failed, waits, .. } => {
             let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
-            outgoing(ix, words, files, failed.as_deref(), *waits, sel, own, cx)
+            let shown = (!pictures.is_empty()).then(|| yours_pictures(pictures, looks, cx));
+            outgoing(ix, words, files, shown, failed.as_deref(), *waits, sel, own, cx)
         }
         Entry::Message(message) => match &**message {
             Message::User(user) if user.is_letter() => {
@@ -305,14 +322,14 @@ pub fn message_body(
 ) -> AnyElement {
     let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.to_owned()), base);
     match message {
-        // The pictures it carried, under its words.
+        // The pictures it carried, as thumbnails on it, over its words (as 0.7 put them).
         Message::User(user) => {
             let shown: Vec<Picture> = looks.shown.iter().filter(|picture| picture.id.starts_with(&format!("{}#", user.id)) || picture.id.starts_with(&format!("{}@", user.id))).cloned().collect();
             let words = user_message(ix, &user.parts(), sel(&[]), cx);
             if shown.is_empty() {
                 words
             } else {
-                div().flex().flex_col().items_end().gap(space::S1_5).child(words).child(crate::pictures::pictures(&shown, YOURS.0, YOURS.1, looks, cx)).into_any_element()
+                div().w_full().flex().flex_col().items_end().gap(space::S1_5).child(yours_pictures(&shown, looks, cx)).child(words).into_any_element()
             }
         }
         Message::Assistant(step) => agent_step(step, open, toggle, &sel, looks, cx),
@@ -424,7 +441,8 @@ fn content_units(step: &Step, n: usize, at: u32, open: &HashSet<Fold>) -> Vec<Un
 
 /// Yours on its way: your message as it will show, its files' names under it, and under them
 /// "Sending…", or why it couldn't go with `actions` (Retry, Edit) beside it.
-fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, waits: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>, failed: Option<&str>, waits: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let parts = Parts::words(words.to_owned());
     let names = files.iter().enumerate().map(|(n, name)| Chip::new(("sending-file", ix * 1000 + n), name.clone()).icon(IconName::File).into_any_element());
@@ -453,10 +471,12 @@ fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, wait
             .into_any_element(),
     };
     div()
+        .w_full()
         .flex()
         .flex_col()
         .items_end()
         .gap(space::S1_5)
+        .children(shown)
         .child(user_message(ix, &parts, sel, cx))
         .when(!files.is_empty(), |d| d.child(div().flex().flex_wrap().justify_end().gap(space::S1).children(names)))
         .child(status)
@@ -516,7 +536,9 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
         })
         .collect();
     let has_quotes = !quote_blocks.is_empty();
+    // (The whole column's width, so its bubble is as wide as words need, with pictures over it or not.)
     div()
+        .w_full()
         .flex()
         .flex_col()
         .items_end()
