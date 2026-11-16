@@ -5,7 +5,7 @@
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
-    prelude::FluentBuilder as _, px, svg,
+    prelude::FluentBuilder as _, px,
 };
 use kuvo_box::areas::{Bot, Look};
 use kuvo_box::bots::{WorkSession, WorkState};
@@ -19,7 +19,7 @@ use kuvo_ui::{
 
 use std::{rc::Rc, sync::Arc};
 
-use super::{Act, BotsView, Control, Item, Row, Sheet, Shown, Tone, state_words};
+use super::{Act, BotsView, Control, Item, Row, Sheet, Shown, Tone};
 use crate::model_picker::{Catalog, ModelPicker};
 use crate::areas::bot_face;
 
@@ -135,7 +135,7 @@ impl BotsView {
     }
 
     /// Who it is, what it's doing now, and the way into its conversation.
-    fn head(&mut self, bot: &Bot, doing: Option<String>, cx: &mut Context<Self>) -> AnyElement {
+    fn head(&mut self, bot: &Bot, doing: Option<crate::areas::Doing>, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let (working, asking) = (bot.now.working, bot.now.asking);
         // What it's doing is the box's (`now`): a count where a session waits on you, a spinner
@@ -155,7 +155,7 @@ impl BotsView {
                 .gap(space::S2)
                 .pt(space::S1)
                 .children(mark)
-                .child(div().text_ui(TypeSize::Small).text_color(if asking > 0 { c.accent } else { c.text_muted }).child(doing))
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(kuvo_ui::small::status_words(doing.words, doing.waiting, cx)))
         });
         div()
             .debug_selector(|| "bot-head".into())
@@ -305,7 +305,7 @@ impl BotsView {
                     .bg(c.card)
                     .cursor_pointer()
                     .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(shown))
-                    .child(div().flex().flex_none().flex_col().child(svg().path(IconName::ChevronUp.path()).size(px(10.)).text_color(c.icon)).child(svg().path(IconName::ChevronDown.path()).size(px(10.)).text_color(c.icon)));
+                    .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)));
                 // (The menu is made only as it opens.)
                 PopoverMenu::new(SharedString::from(format!("{key}-popover")), trigger, move |_, cx| {
                     let (choices, this) = (choices.clone(), this.clone());
@@ -347,10 +347,9 @@ impl BotsView {
             WorkState::Finished => Icon::new(IconName::Check).color(c.icon).into_any_element(),
             WorkState::Stopped | WorkState::Idle | WorkState::Other => Icon::new(IconName::Message).color(c.icon).into_any_element(),
         };
-        let line = [Some(project).filter(|project| !project.is_empty()), state_words(session.state).map(str::to_owned)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let (line, waiting) = super::session_line(&project, session.state);
         let title = session.title.clone().filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New Session".into());
         let (selector, line_selector) = (format!("work-{id}"), format!("work-{id}-line"));
-        let asking = session.state == WorkState::Asking;
         div()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector)
@@ -377,7 +376,7 @@ impl BotsView {
                             .flex()
                             .flex_col()
                             .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(title))
-                            .when(!line.is_empty(), |d| d.child(div().debug_selector(move || line_selector).truncate().text_ui(TypeSize::Small).text_color(if asking { c.accent } else { c.text_muted }).child(line))),
+                            .when(!line.is_empty(), |d| d.child(div().debug_selector(move || line_selector).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(kuvo_ui::small::status_words(line, waiting, cx)))),
                     )
                     .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(ago))
                     .child(Icon::new(IconName::ChevronRight).color(c.icon)),

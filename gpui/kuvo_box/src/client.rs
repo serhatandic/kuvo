@@ -191,8 +191,19 @@ impl BoxClient {
     /// (or answering no `kuvo/info`, `404` or `405`) is held. Read again to let a held box go once
     /// it has updated.
     pub fn connect(&self) -> Result<BoxInfo> {
+        self.connect_for(None)
+    }
+
+    /// As [`BoxClient::connect`], for a message under its id (`key`) waiting on it: read with the
+    /// same patience as the message, which the link sends again while it comes back (a message
+    /// sent just after the connection dropped isn't failed by this read alone).
+    fn connect_for(&self, key: Option<&str>) -> Result<BoxInfo> {
         let server = self.transport.refresh();
-        let response = self.transport.send(&Request::get("kuvo/info"))?;
+        let mut asked = Request::get("kuvo/info");
+        if let Some(key) = key {
+            asked = asked.header("idempotency-key", key);
+        }
+        let response = self.transport.send(&asked)?;
         if response.status == 404 || response.status == 405 {
             self.set_gate(Gate::for_features::<String>(None), server);
             return Err(Error::NeedsUpdating { missing: gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect() });
@@ -203,12 +214,13 @@ impl BoxClient {
     }
 
     /// Refused in the client, without reaching the box, while it waits for its update.
-    fn check_gate(&self, path: &str) -> Result<()> {
-        if gate::is_allowed(path) {
+    fn check_gate(&self, request: &Request) -> Result<()> {
+        if gate::is_allowed(&request.path) {
             return Ok(());
         }
         if self.current_gate() == Gate::Unknown {
-            match self.connect() {
+            let key = request.headers.iter().find(|(name, value)| name.eq_ignore_ascii_case("idempotency-key") && !value.is_empty()).map(|(_, key)| key.as_str());
+            match self.connect_for(key) {
                 Ok(_) | Err(Error::NeedsUpdating { .. }) => {}
                 Err(error) => return Err(error),
             }
@@ -221,14 +233,14 @@ impl BoxClient {
 
     /// Sends `request` (behind the gate) and reads its whole answer, whatever its status.
     pub fn send(&self, request: &Request) -> Result<Response> {
-        self.check_gate(&request.path)?;
+        self.check_gate(request)?;
         self.transport.send(&said(request))
     }
 
     /// Opens a followed route (behind the gate). `hold` gets what closes it, before its answer
     /// comes (see [`Transport::open`]).
     pub fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
-        self.check_gate(&request.path)?;
+        self.check_gate(request)?;
         self.transport.open(&said(request), hold)
     }
 

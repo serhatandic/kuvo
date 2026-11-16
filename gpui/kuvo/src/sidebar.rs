@@ -16,7 +16,7 @@ use kuvo_box::search::SEARCHED_FROM;
 use kuvo_box::session_actions::{Action, Actions};
 use kuvo_box::sessions::{Facts, Listing};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
     menu::ContextMenuArea,
     row::{NAV_ROW_HEIGHT, NavRow, SectionHeader},
     small::{Chip, count_badge, spinner, status_dot},
@@ -415,7 +415,7 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
                 .gap(space::S2)
                 .h(NAV_ROW_HEIGHT)
                 .px(space::S2)
-                .text_ui(TypeSize::Body)
+                .text_role(TextRole::RowLabel)
                 .text_color(c.text)
                 .child(Icon::new(IconName::Folder).size(IconSize::Nav).color(c.icon))
                 .child(div().flex_1().min_w_0().truncate().child(name))
@@ -657,7 +657,7 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     } else if asked {
         status_dot(c.accent).into_any_element()
     } else if pinned {
-        Icon::new(IconName::Pin).size(IconSize::Nav).color(if selected { c.text } else { c.text_faint }).into_any_element()
+        Icon::new(IconName::Pin).size(IconSize::Nav).color(if selected { c.icon_on } else { c.text_faint }).into_any_element()
     } else {
         div().into_any_element()
     };
@@ -667,8 +667,8 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
     } else {
         div()
             .flex_none()
-            .text_ui(TypeSize::Caption)
-            .text_color(if asked { c.accent } else { c.text_faint })
+            .text_role(TextRole::Meta)
+            .text_color(c.text_faint)
             .child(when)
             .into_any_element()
     };
@@ -692,7 +692,7 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
         .rounded(radius::NAV)
         .border_1()
         .border_color(if cursor { accent } else { gpui::transparent_black() })
-        .text_ui(TypeSize::Body)
+        .text_role(TextRole::RowLabel)
         .text_color(text_color)
         .when(selected, |r| r.bg(selected_bg))
         .when(!selected && (cursor || is_hovered || menu_open || popover.is_some()), |r| r.bg(hover))
@@ -771,8 +771,8 @@ fn found_row(workspace: &mut Workspace, id: &str, snippet: &str, cursor: bool, c
             }
         }))
         .on_click(cx.listener(move |this, _, window, cx| this.open_session(&open, window, cx)))
-        .child(div().truncate().text_ui(TypeSize::Body).text_color(if selected || !archived { c.text } else { c.text_muted }).child(title))
-        .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).line_clamp(2).child(snippet.trim().to_owned()));
+        .child(div().truncate().text_role(TextRole::RowTitle).text_color(if selected || !archived { c.text } else { c.text_muted }).child(title))
+        .child(div().text_role(TextRole::RowDetail).text_color(c.text_muted).line_clamp(2).child(snippet.trim().to_owned()));
 
     let with_menu = ContextMenuArea::new(SharedString::from(format!("ctx-{row_key}")), row, move |window, cx| {
         workspace_handle.update(cx, |workspace, cx| workspace.open_row_menu(&menu_session, &menu_key, window, cx))
@@ -852,7 +852,7 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
     let end: AnyElement = if show_actions {
         row_hover_actions(id, &row_key, &hover_buttons, cx)
     } else {
-        div().flex_none().text_ui(TypeSize::Caption).text_color(c.accent).child(when).into_any_element()
+        div().flex_none().text_role(TextRole::Meta).text_color(c.text_faint).child(when).into_any_element()
     };
 
     let row = div()
@@ -876,16 +876,8 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
             }
         }))
         .on_click(cx.listener(move |this, _, window, cx| this.open_session(&open, window, cx)))
-        .child(div().flex().flex_none().justify_center().w(IconSize::Nav.pixels()).pt(px(6.)).child(status_dot(c.accent)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(div().truncate().text_ui(TypeSize::Body).text_color(c.text).child(title))
-                .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)),
-        )
+        .child(div().flex().flex_none().justify_center().w(IconSize::Nav.pixels()).pt(px(5.)).child(status_dot(c.accent)))
+        .child(crate::areas::two_lines(title, div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(detail), &c))
         .child(end);
 
     let with_menu = ContextMenuArea::new(SharedString::from(format!("ctx-{row_key}")), row, move |window, cx| {

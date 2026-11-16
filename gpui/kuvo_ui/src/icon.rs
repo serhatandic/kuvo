@@ -1,7 +1,12 @@
-//! Lucide icons adapted to a 16-unit grid with 1.2-unit strokes, in Zed's sizes.
+//! Lucide icons adapted to a 16-unit grid, in Zed's sizes, all drawn with one stroke weight.
 //!
 //! The SVGs live in `gpui/assets/icons` and are compiled into the binary, so an icon can never
 //! go missing at run time. GPUI draws an SVG as a mask, so an icon takes the colour it's given.
+//!
+//! An SVG's stroke grows with the size it's drawn at, so the files' one stroke would make a 22 px
+//! rail icon half as heavy again as a 14 px one in a row. Each size is served its own copy with the
+//! stroke set so it lands at [`STROKE_PX`] on screen (`icons/<size>/<name>.svg`): every icon in
+//! the rail, the title bar, toolbars and rows has the same line.
 
 use std::borrow::Cow;
 
@@ -44,6 +49,20 @@ impl IconSize {
             Self::Card => px(20.),
         }
     }
+
+    /// The width its lines are drawn at on screen: [`STROKE_PX`] from 14 px up; the two sizes
+    /// below it, set inside chips and beside small text, thin in step with their size.
+    pub fn stroke_px(self) -> f32 {
+        let size = f32::from(self.pixels());
+        if size >= 14. { STROKE_PX } else { STROKE_PX * size / 14. }
+    }
+
+    /// The stroke in the file's 16-unit grid that draws [`Self::stroke_px`] at this size.
+    fn stroke_units(self) -> f32 {
+        self.stroke_px() * 16. / f32::from(self.pixels())
+    }
+
+    const ALL: [IconSize; 7] = [Self::Indicator, Self::XSmall, Self::Nav, Self::Medium, Self::Large, Self::Rail, Self::Card];
 }
 
 macro_rules! icons {
@@ -60,9 +79,25 @@ macro_rules! icons {
                 match self { $(IconName::$variant => $file,)* }
             }
 
-            /// The asset path GPUI loads it from.
+            /// The asset path of its file as it is, its lines thickening with the size it's
+            /// drawn at: only for showing that (the gallery's before). Draw with [`Icon`] or
+            /// [`Self::path_at`], which keep one weight.
             pub fn path(self) -> &'static str {
                 match self { $(IconName::$variant => concat!("icons/", $file, ".svg"),)* }
+            }
+
+            /// The asset path GPUI loads it from at `size`, its lines at [`STROKE_PX`]
+            /// (`icons/<size>/<name>.svg`, a static string: icons are drawn every frame).
+            pub fn path_at(self, size: IconSize) -> &'static str {
+                match size {
+                    IconSize::Indicator => match self { $(IconName::$variant => concat!("icons/10/", $file, ".svg"),)* },
+                    IconSize::XSmall => match self { $(IconName::$variant => concat!("icons/12/", $file, ".svg"),)* },
+                    IconSize::Nav => match self { $(IconName::$variant => concat!("icons/14/", $file, ".svg"),)* },
+                    IconSize::Medium => match self { $(IconName::$variant => concat!("icons/16/", $file, ".svg"),)* },
+                    IconSize::Large => match self { $(IconName::$variant => concat!("icons/18/", $file, ".svg"),)* },
+                    IconSize::Rail => match self { $(IconName::$variant => concat!("icons/22/", $file, ".svg"),)* },
+                    IconSize::Card => match self { $(IconName::$variant => concat!("icons/20/", $file, ".svg"),)* },
+                }
             }
 
             fn bytes(self) -> &'static [u8] {
@@ -287,8 +322,30 @@ pub fn mark_path(service: &str) -> Option<&'static str> {
     MARKS.iter().find(|(id, ..)| *id == service).map(|(_, path, _)| *path)
 }
 
-/// Outline width in the 16-unit SVG coordinate space.
+/// Outline width in the files' 16-unit grid: what every file holds, rewritten per size at load
+/// ([`STROKE_PX`]).
 pub const STROKE: &str = "1.2";
+
+/// The width every icon's lines are drawn at on screen, at 14 px and up: one weight for the rail,
+/// the title bar, toolbars and rows, as SF Symbols keep one weight across sizes.
+pub const STROKE_PX: f32 = 1.4;
+
+/// An icon's file at `size`: its stroke set to draw [`STROKE_PX`] there.
+fn at_size(icon: IconName, size: IconSize) -> Vec<u8> {
+    let text = std::str::from_utf8(icon.bytes()).expect("an icon is UTF-8");
+    let stroke = format!("stroke-width=\"{:.3}\"", size.stroke_units());
+    text.replace(&format!("stroke-width=\"{STROKE}\""), &stroke).into_bytes()
+}
+
+/// The icon and size an `icons/<size>/<name>.svg` path names.
+fn sized(path: &str) -> Option<(IconName, IconSize)> {
+    let rest = path.strip_prefix("icons/")?;
+    let (size, file) = rest.split_once('/')?;
+    let size: u32 = size.parse().ok()?;
+    let size = IconSize::ALL.into_iter().find(|s| f32::from(s.pixels()) as u32 == size)?;
+    let name = file.strip_suffix(".svg")?;
+    Some((*IconName::ALL.iter().find(|icon| icon.name() == name)?, size))
+}
 
 /// Kuvo's own mark as Kuvo Helper draws it in the menu bar (the app icon's artwork in one colour,
 /// the user's pick, 11-16): black for a light theme, white for a dark one.
@@ -306,6 +363,9 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         if let Some((_, _, bytes)) = MARKS.iter().chain(PROVIDER_MARKS).find(|(_, mark, _)| *mark == path) {
             return Ok(Some(Cow::Borrowed(bytes)));
+        }
+        if let Some((icon, size)) = sized(path) {
+            return Ok(Some(Cow::Owned(at_size(icon, size))));
         }
         Ok(IconName::ALL
             .iter()
@@ -353,7 +413,7 @@ impl RenderOnce for Icon {
         use crate::theme::ActiveTheme;
         let color = self.color.unwrap_or(cx.theme().colors.icon);
         svg()
-            .path(self.name.path())
+            .path(self.name.path_at(self.size))
             .size(self.size.pixels())
             .flex_none()
             .text_color(color)
@@ -376,7 +436,8 @@ mod tests {
         assert!(Assets.load("icons/nope.svg").unwrap().is_none());
     }
 
-    /// Every icon retains the shared Lucide outline style without runtime rewriting.
+    /// Every icon's file keeps the shared Lucide outline style, one stroke for the sizes' copies to
+    /// rewrite.
     #[test]
     fn every_outline_icon_loads_thin() {
         for icon in IconName::ALL {
@@ -388,6 +449,29 @@ mod tests {
                 assert!(text.contains(&format!("stroke-width=\"{STROKE}\"")), "{}", icon.name());
             }
         }
+    }
+
+    /// Every icon, at every size, is drawn with the same line on screen: a 22 px rail icon's stroke
+    /// is as wide as a 14 px row icon's (the reviews' "one weight").
+    #[test]
+    fn every_size_draws_one_line_weight() {
+        for icon in IconName::ALL {
+            for size in IconSize::ALL {
+                let bytes = Assets.load(&icon.path_at(size)).unwrap().unwrap_or_else(|| panic!("{} at {size:?}", icon.name()));
+                let text = std::str::from_utf8(&bytes).unwrap();
+                usvg::Tree::from_data(&bytes, &usvg::Options::default()).unwrap_or_else(|error| panic!("{}: {error}", icon.name()));
+                if let Some(at) = text.find("stroke-width=\"") {
+                    let units: f32 = text[at + 14..].split('"').next().unwrap().parse().unwrap();
+                    let on_screen = units * f32::from(size.pixels()) / 16.;
+                    let px = f32::from(size.pixels());
+                    // 1.4 px from 14 px up; at 12 and 10 px, 1.2 and 1.0.
+                    let want = if px >= 14. { 1.4 } else { 1.4 * px / 14. };
+                    assert!((on_screen - want).abs() < 0.01, "{} at {size:?}: {on_screen}", icon.name());
+                }
+            }
+        }
+        assert!(Assets.load("icons/23/bot.svg").unwrap().is_none());
+        assert!(Assets.load("icons/14/nope.svg").unwrap().is_none());
     }
 
     /// Every service the box reads limits of has its mark, and it loads as an SVG.

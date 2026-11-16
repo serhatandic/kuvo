@@ -98,6 +98,9 @@ pub struct Button {
     loading: bool,
     selected: bool,
     full_width: bool,
+    /// Its words in the second level and regular weight (a ghost button that says where you are,
+    /// like the title bar's computer, rather than what to do).
+    quiet: bool,
     shown: Option<ShownState>,
     tooltip: Option<SharedString>,
     /// The keys that do the same, shown in its tooltip.
@@ -122,6 +125,7 @@ impl Button {
             loading: false,
             selected: false,
             full_width: false,
+            quiet: false,
             shown: None,
             tooltip: None,
             tooltip_keys: None,
@@ -211,6 +215,13 @@ impl Button {
         self
     }
 
+    /// A ghost button's words quieter: the second level of text, regular weight (other styles
+    /// take only the weight).
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+
     pub fn full_width(mut self) -> Self {
         self.full_width = true;
         self
@@ -284,7 +295,7 @@ impl RenderOnce for Button {
                 fill: self.selected.then_some(c.selected),
                 hover: c.hover,
                 pressed: c.pressed,
-                text: if self.selected || self.label.is_some() { c.text } else { c.text_muted },
+                text: if self.quiet { c.text_muted } else if self.selected || self.label.is_some() { c.text } else { c.icon },
                 border: None,
             },
         };
@@ -300,7 +311,13 @@ impl RenderOnce for Button {
         } else {
             c.border_strong
         };
-        let icon_color = look.text;
+        // A ghost button's icons are drawn as the rail's and the rows' are: the icon grey at rest,
+        // a step up when it's on (its wash says so), never the text's near-black.
+        let icon_color = match self.style {
+            ButtonStyle::Ghost if self.selected => c.icon_on,
+            ButtonStyle::Ghost => c.icon,
+            _ => look.text,
+        };
         let disabled = self.disabled;
 
         // Found by its id in tests (`debug_bounds`).
@@ -316,7 +333,7 @@ impl RenderOnce for Button {
             .h(height)
             .rounded(rounding)
             .text_ui(self.size.type_size())
-            .medium()
+            .font_weight(if self.quiet { crate::theme::REGULAR } else { crate::theme::MEDIUM })
             .text_color(look.text)
             .whitespace_nowrap();
 

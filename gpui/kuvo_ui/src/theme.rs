@@ -150,6 +150,67 @@ impl TextSize {
     }
 }
 
+/// What a piece of text is in the interface, and so how it's set: the type ramp, by role. Every
+/// sidebar, row and the title bar set their words through these (`.text_role(..)`), so a list's
+/// names, the lines under them and its headers read the same everywhere. The sizes are the
+/// brief's four; a role adds the weight and a line height of its own (a row's two lines sit
+/// closer than running text's).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextRole {
+    /// The window's title in the title bar: the strongest words there (14 medium).
+    WindowTitle,
+    /// Beside the title, where it is (the area's name): 13 regular, in the faint level.
+    WindowContext,
+    /// A sidebar's own heading ("Bots", Settings' computer): 17 medium, a step over the names
+    /// in its list (the one size outside the brief's four, as Settings' heading already had it).
+    PaneTitle,
+    /// The name in a two-line row (a bot, a computer, a session waiting on you): 14 medium, its
+    /// line tight to the one under it.
+    RowTitle,
+    /// The line under a row's name: 12 regular, in the second level (its status, its job).
+    RowDetail,
+    /// A one-line navigation row's label (a session, a status, a settings page): 13 regular.
+    RowLabel,
+    /// A section's label in a sidebar, and counts and times at a row's end: 12 regular.
+    Meta,
+}
+
+impl TextRole {
+    /// Its size, at the text size picked.
+    pub fn size(self) -> Pixels {
+        match self {
+            Self::PaneTitle => scaled(px(17.)),
+            other => other.type_size().size(),
+        }
+    }
+
+    /// The size on the brief's scale it's nearest (a heading's 17 is set as its own).
+    pub fn type_size(self) -> TypeSize {
+        match self {
+            Self::WindowTitle | Self::PaneTitle | Self::RowTitle => TypeSize::Body,
+            Self::WindowContext | Self::RowLabel => TypeSize::Small,
+            Self::RowDetail | Self::Meta => TypeSize::Caption,
+        }
+    }
+
+    pub fn weight(self) -> FontWeight {
+        match self {
+            Self::WindowTitle | Self::PaneTitle | Self::RowTitle => MEDIUM,
+            _ => REGULAR,
+        }
+    }
+
+    /// Its line height: a row's two lines (name 18, detail 15) closer than running text's.
+    pub fn line_height(self) -> Pixels {
+        match self {
+            Self::RowTitle => scaled(px(18.)),
+            Self::RowDetail => scaled(px(15.)),
+            Self::PaneTitle => scaled(px(22.)),
+            other => other.type_size().line_height(),
+        }
+    }
+}
+
 /// A size the type scale doesn't name (a page's 17 px heading), at the text size picked.
 pub fn scaled(size: Pixels) -> Pixels {
     let scale = SCALE.with(Cell::get);
@@ -244,9 +305,13 @@ pub struct Colors {
     pub text_muted: Hsla,
     /// The third level: hints, placeholders, timestamps, disabled text.
     pub text_faint: Hsla,
-    /// Outline icons at rest (the rail, sidebars, rows): a mid grey between muted and faint text,
-    /// drawn with a thin stroke ([`crate::icon::STROKE`]); one selected takes `text`.
+    /// Outline icons at rest (the rail, sidebars, rows, ghost buttons): a mid grey between muted
+    /// and faint text, every size drawn with one line ([`crate::icon::STROKE_PX`]).
     pub icon: Hsla,
+    /// An icon whose place is open or on (the rail's open area, a selected row): a step up from
+    /// `icon`, never the text's near-black, so it doesn't read as a bolder icon; its wash says
+    /// it's the one. Dark needs a bigger step than light for the same difference.
+    pub icon_on: Hsla,
     /// Text on the primary (inverted) call to action.
     pub text_on_primary: Hsla,
     /// Text on the accent colour.
@@ -271,6 +336,10 @@ pub struct Colors {
     pub accent: Hsla,
     pub accent_hover: Hsla,
     pub accent_pressed: Hsla,
+    /// What waits on you, in words ("1 waiting on you"): the accent's hue, calmer, so it marks
+    /// what's actionable without outshouting the name above it. Status that isn't actionable is
+    /// never coloured.
+    pub attention: Hsla,
     /// The accent, faint, behind selected text.
     pub selection: Hsla,
     /// The focus ring around a focused field.
@@ -341,15 +410,17 @@ impl Colors {
             text_muted: hex(0x5D5D5D),
             text_faint: hex(0x9E9E9E),
             icon: hex(0x7D7D7D),
+            icon_on: hex(0x5D5D5D),
             text_on_primary: hex(0xFFFFFF),
             text_on_accent: hex(0xFFFFFF),
 
             border: hex(0xEBEBEB),
             border_strong: hex(0xDEDEDE),
 
-            hover: hexa(0x2929290A),
+            // (Selected a step over hover, light enough that the row's words lead, not its wash.)
+            hover: hexa(0x29292908),
             pressed: hexa(0x2929291F),
-            selected: hexa(0x2929291A),
+            selected: hexa(0x29292914),
 
             primary: hex(0x292929),
             primary_hover: hex(0x3B3B3B),
@@ -360,6 +431,7 @@ impl Colors {
             accent: hex(0x0A7AFF),
             accent_hover: hex(0x086DE6),
             accent_pressed: hex(0x0761CC),
+            attention: hex(0x3466B2),
             selection: hexa(0x0A7AFF2E),
             focus_ring: hexa(0x0A7AFF66),
             inline_code: hex(0xF0F0F0),
@@ -411,15 +483,16 @@ impl Colors {
             text_muted: hex(0xA3A3A3),
             text_faint: hex(0x6E6E6E),
             icon: hex(0x8F8F8F),
+            icon_on: hex(0xCFCFCF),
             text_on_primary: hex(0x181818),
             text_on_accent: hex(0xFFFFFF),
 
             border: hex(0x262626),
             border_strong: hex(0x333333),
 
-            hover: hexa(0xFFFFFF0D),
+            hover: hexa(0xFFFFFF0A),
             pressed: hexa(0xFFFFFF1F),
-            selected: hexa(0xFFFFFF1A),
+            selected: hexa(0xFFFFFF17),
 
             primary: hex(0xECECEC),
             primary_hover: hex(0xFFFFFF),
@@ -428,6 +501,7 @@ impl Colors {
             accent: hex(0x2E8BFF),
             accent_hover: hex(0x4799FF),
             accent_pressed: hex(0x2479E0),
+            attention: hex(0x85AEE0),
             selection: hexa(0x2E8BFF47),
             focus_ring: hexa(0x2E8BFF73),
             inline_code: hex(0x2A2A2A),
@@ -575,6 +649,15 @@ pub trait StyledType: Styled + Sized {
         self.font_family(MONO_FONT).text_size(mono).line_height(size.line_height())
     }
 
+    /// Sets the words as their role in the interface says ([`TextRole`]): size, line height and
+    /// weight, in the UI font. The colour stays the caller's (selected, muted, faint).
+    fn text_role(self, role: TextRole) -> Self {
+        self.font_family(UI_FONT)
+            .text_size(role.size())
+            .line_height(role.line_height())
+            .font_weight(role.weight())
+    }
+
     fn medium(self) -> Self {
         self.font_weight(MEDIUM)
     }
@@ -636,6 +719,24 @@ mod tests {
             for fill in [colors.danger_fill, colors.danger_hover, colors.danger_pressed] {
                 assert!(contrast(colors.text_on_accent, fill) >= 4.5, "{fill:?}");
             }
+            // What waits on you reads as words (4.5:1) on every surface it's written on, and is
+            // calmer than the accent (less saturated).
+            for surface in [colors.surface, colors.sidebar, colors.card, colors.background] {
+                assert!(contrast(colors.attention, surface) >= 4.5, "{surface:?}");
+            }
+            assert!(colors.attention.s < colors.accent.s);
+            // A selected row's wash is lighter than pressing one, yet still told apart from the
+            // surface it's on and from a hovered row beside it, on the rail and in a sidebar.
+            assert!(colors.hover.a < colors.selected.a && colors.selected.a < colors.pressed.a);
+            for surface in [colors.background, colors.sidebar] {
+                let (selected, hover) = (surface.blend(colors.selected), surface.blend(colors.hover));
+                assert!(contrast(selected, surface) >= 1.15, "selected on {surface:?}: {}", contrast(selected, surface));
+                assert!(contrast(selected, hover) >= 1.08, "selected beside hover on {surface:?}: {}", contrast(selected, hover));
+            }
+            // An open place's icon is told from those at rest (on its wash), without the text's
+            // near-black.
+            assert!(contrast(colors.icon_on, colors.icon) >= 1.4, "{}", contrast(colors.icon_on, colors.icon));
+            assert!(colors.icon_on != colors.text);
             // Code stays readable on its well: comments 3:1, line numbers 2:1 at least.
             assert!(contrast(colors.syntax.comment, colors.sunken) >= 3.0);
             assert!(contrast(colors.syntax.line_number, colors.sunken) >= 2.0);

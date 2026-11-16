@@ -111,7 +111,9 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
         .cursor_pointer()
         .when(selected, |t| t.bg(selected_bg))
         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
-        .child(Icon::new(icon).size(IconSize::Rail).color(if selected { c.text } else { c.icon }))
+        // The area open is told by its tile, not a heavier icon: its icon only steps up
+        // (`icon_on`), with the same line as the rest (`kuvo_ui::icon::STROKE_PX`).
+        .child(Icon::new(icon).size(IconSize::Rail).color(if selected { c.icon_on } else { c.icon }))
         .when(waiting > 0, |t| t.child(div().absolute().top(px(-3.)).right(px(-4.)).child(count_badge(waiting, cx))))
 }
 
