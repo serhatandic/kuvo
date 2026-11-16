@@ -6447,6 +6447,10 @@ function runsAs(pid, role, proc = "/proc") {
   const line = commandLineOf(pid, proc);
   return line !== undefined && role.test(line);
 }
+function engineRole(root) {
+  const folder = path6.join(path6.resolve(root), "engine").replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\/+/g, "/+");
+  return new RegExp(`${folder}/+`);
+}
 function promptedFolders(platform = process.platform) {
   return platform === "darwin" ? new Set(["Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures"]) : new Set;
 }
@@ -14256,7 +14260,27 @@ async function cameUp(version, withAgents, timeout = 120000, readEngine = readEn
 var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
 var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
 var brokeOff = false;
-var failedDownloading = () => brokeOff;
+var stopFailed = false;
+var failedInPassing = () => brokeOff || stopFailed;
+async function stopEngine(pid) {
+  if (!runsAs(pid, engineRole(K)))
+    return;
+  const gone = async (within) => {
+    for (const began = Date.now();Date.now() - began < within; await sleep(100))
+      if (!alive(pid))
+        return true;
+    return !alive(pid);
+  };
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {}
+  if (await gone(1e4))
+    return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {}
+  await gone(5000);
+}
 async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
   if (!keys.length)
     return { result: "off", message: "Updates aren't set up for this machine yet." };
@@ -14271,7 +14295,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
   let fetching = false;
-  brokeOff = false;
+  brokeOff = stopFailed = false;
   const download = async (get) => {
     fetching = true;
     const got = await get();
@@ -14363,7 +14387,8 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
         throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await download(() => fetchedPatiently(build.url, 400000000, 900000));
+      const engineURL = build.url;
+      const tarball = await download(() => fetchedPatiently(engineURL, 400000000, 900000));
       if (crypto15.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
         throw new Error("The engine isn't what the release says.");
       fs37.writeFileSync(path40.join(stage, "engine.tgz"), tarball, { mode: 384 });
@@ -14399,8 +14424,12 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     trial = true;
     stopped = true;
     const stop = ran("sh", [path40.join(K, "bin", "kuvo-start"), "stop"], {}, 300000);
-    if (stop.status !== 0 || previous?.pid && alive(previous.pid))
-      throw new Error("Its engine couldn't be stopped to update it.");
+    if (stop.status === 0 && previous?.pid)
+      await stopEngine(previous.pid);
+    if (stop.status !== 0 || previous?.pid && alive(previous.pid)) {
+      stopFailed = true;
+      throw new Error("Its engine couldn't be stopped to update it, so nothing changed and it runs as before. Try again in a few minutes.");
+    }
     if (otherEngine)
       keepData();
     swapped = true;
@@ -42052,7 +42081,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2a86c5c451b4";
+var BRIDGE_VERSION = "b99cd33903e2";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -45553,8 +45582,12 @@ function keepingSelfUp(name, working, blocked) {
   const at = working ?? 0;
   const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
   const actions = [{ id: "update-here", label: "Update Now", confirm }];
-  if (status.offerFailed && status.offerFailed.version === status.offered)
-    return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
+  if (status.offerFailed && status.offerFailed.version === status.offered) {
+    const failed = updateState().offerFailed;
+    if (status.offerFailed.takenBack || failed?.version === status.offered && (failed.tries ?? 1) > 1)
+      return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
+    return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions };
+  }
   return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions };
 }
 
@@ -53511,10 +53544,9 @@ function starts() {
     checked: true
   };
 }
-var escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 var RECORDS = [
   ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
-  ["engine.json", new RegExp(`${escaped(path175.join(K, "engine"))}/`), "engine"],
+  ["engine.json", engineRole(K), "engine"],
   ["agents.pid", /kuvo-agents/, "coding agents"],
   ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
   ["serve.json", SERVE_ROLE, "server"],
@@ -69164,7 +69196,7 @@ if (main) {
       }, ...test });
       if (installer && !now && outcome?.result === "busy")
         continue;
-      if (againOnce && outcome?.result === "failed" && !swapped && failedDownloading()) {
+      if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
         againOnce = false;
         await sleep(!REAL_BOX && Number(process.env.KUVO_TEST_FETCH_WAIT) >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? Number(process.env.KUVO_TEST_FETCH_WAIT) : 15000);
         continue;
