@@ -143,5 +143,22 @@ MainActor.assumeIsolated {
         let data = NSBitmapImageRep(data: small.tiffRepresentation!)!.representation(using: .png, properties: [:])!
         try! data.write(to: out.appending(path: "\(name).png"))
     }
+    // The picked mark (11-16, "with gaps") at the sizes it's used: Kuvo Helper's menu bar item
+    // (a template, 18 pt at 3x) and the desktop app's first-Quit card (black and white, 48 px).
+    func tinted(_ image: NSImage, _ side: Int, _ color: NSColor) -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.imageInterpolation = .high
+        let rect = NSRect(x: 0, y: 0, width: side, height: side)
+        image.draw(in: rect)
+        color.set()
+        rect.fill(using: .sourceIn)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])!
+    }
+    try! tinted(withGaps, 54, .black).write(to: out.appending(path: "kuvo-mark-template-54.png"))
+    try! tinted(withGaps, 48, .black).write(to: out.appending(path: "kuvo-mark-black-48.png"))
+    try! tinted(withGaps, 48, .white).write(to: out.appending(path: "kuvo-mark-white-48.png"))
     print("logo-template.png")
 }
