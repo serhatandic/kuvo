@@ -1,6 +1,6 @@
 //! The bars over a conversation's composer, for work going on that the conversation doesn't show
 //! as it happens (as the Mac's `WorkBar`s): a bot's sessions at work ("5 sessions at work ·
-//! answered 1 ask · 2.2M tokens today", with All), the subagents at work under it, and the commands
+//! answered 1 ask", with All), the subagents at work under it, and the commands
 //! it left running ("Running in the background", each with how long it has run, Output and Stop).
 //! Each is a line that folds what's under it; each row opens its conversation. All of it is what
 //! the box says (`kuvo/work?bot=`, `kuvo/work/background/<session>`), read again as it says it
@@ -429,7 +429,7 @@ pub fn work_title(at_work: usize, today: u32) -> String {
     }
 }
 
-/// What it did today besides: the asks it answered, the tokens its sessions used.
+/// What it did today besides: the asks it answered.
 pub fn work_progress(work: &Work) -> Option<String> {
     let mut parts = Vec::new();
     match work.today.answered {
@@ -437,19 +437,7 @@ pub fn work_progress(work: &Work) -> Option<String> {
         1 => parts.push("answered 1 ask".to_owned()),
         n => parts.push(format!("answered {n} asks")),
     }
-    if work.today.tokens > 0 {
-        parts.push(format!("{} tokens today", tokens(work.today.tokens)));
-    }
     (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
-/// A count of tokens, short: "412k", "1.2M".
-pub fn tokens(count: u64) -> String {
-    match count {
-        0..1000 => count.to_string(),
-        1000..1_000_000 => format!("{}k", (count as f64 / 1000.).round() as u64),
-        _ => format!("{:.1}M", count as f64 / 1_000_000.),
-    }
 }
 
 /// What a session asks, as its bot's work says it: "Asks to run npx expo install".
@@ -597,7 +585,7 @@ impl WorkBars {
     fn all_menu(&self, work: &Work, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity().downgrade();
         let sessions = work.sessions.clone();
-        let today = format!("Today: {} started{}", work.today.started, if work.today.tokens > 0 { format!(" · {} tokens", tokens(work.today.tokens)) } else { String::new() });
+        let today = format!("Today: {} started", work.today.started);
         let trigger = div().debug_selector(|| "work-all".into()).child(Button::new("work-all", "All").ghost().size(ButtonSize::Small).tooltip("All of its work today"));
         PopoverMenu::new("work-all-menu", trigger, move |_, cx| {
             let (sessions, this, today) = (sessions.clone(), this.clone(), today.clone());
@@ -785,7 +773,7 @@ mod tests {
     #[test]
     fn the_bots_line_says_what_it_did_today_in_the_macs_words() {
         let work: Work = serde_json::from_value(serde_json::json!({ "sessions": [], "today": { "started": 5, "answered": 1, "tokens": 2_200_000 } })).unwrap();
-        assert_eq!(work_progress(&work).as_deref(), Some("answered 1 ask · 2.2M tokens today"));
+        assert_eq!(work_progress(&work).as_deref(), Some("answered 1 ask"));
         assert_eq!(work_title(5, 5), "5 sessions at work");
         assert_eq!(work_title(0, 1), "1 session today, none at work");
         assert_eq!(elapsed(3_723_000.), "1:02:03");
