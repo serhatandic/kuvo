@@ -133,7 +133,8 @@ test.if(mac)("an earlier Kuvo Code that still has its database open refuses the 
     const refused = run(m)
     expect(refused.status).toBe(1)
     expect(refused.said).toMatchObject({ result: "refused", status: { state: "failed", tries: 1, nextTry: null } })
-    expect(refused.said!.message).toMatch(/^Your sessions are still open in another program on this Mac \(.+\)\. Quit Kuvo Code wherever it's open, then try again\.$/)
+    // (Named as you know it, never by a path.)
+    expect(refused.said!.message).toMatch(/^\w+ is still using your earlier Kuvo Code's files\. Quit it, then try again\.$/)
     expect(existsSync(join(m.K, "box"))).toBe(false)
     expect(snapshot(m.S)).toEqual(before)
   } finally {
@@ -244,16 +245,81 @@ test.if(mac && !REAL_ENGINE)("an engine that can't bring the sessions up to date
   expect(existsSync(join(m.keychain, "helper"))).toBe(false)
 }, LIMIT)
 
-test.if(mac)("something written in the earlier Kuvo Code's folder while it's copied sends the move back: nothing is left behind unsaid", () => {
+test.if(mac)("something written once in the earlier Kuvo Code's folder while it's copied: the move goes back and runs again by itself, taking what was written", () => {
+  const m = mac07(root)
+  const written = join(m.S, "Chats", "c1", "written-meanwhile.md")
+  const moved = run(m, { KUVO_TEST_REHOME_WRITE_AT: "after-check", KUVO_TEST_REHOME_WRITE_FILE: written, KUVO_TEST_REHOME_WRITE_TEXT: "new", KUVO_TEST_REHOME_WRITE_ONCE: "1" })
+  expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+  expect(moved.said).toMatchObject({ result: "done" })
+  expect(readFileSync(join(m.K, "chats", "c1", "written-meanwhile.md"), "utf8")).toBe("new")
+  // (Said for support in the move's log alone.)
+  expect(moved.errors).toContain(`Changed in the earlier Kuvo Code's folder while it was copied: ${join(m.S, "Chats", "c1")}`)
+  expect(moved.errors).toContain("Running the move again (2 of 3)")
+}, LIMIT * 2)
+
+test.if(mac)("something that goes on writing in the earlier Kuvo Code's folder stops the move after a few rounds, in plain words, and the next try takes what was written", () => {
   const m = mac07(root)
   const written = join(m.S, "Chats", "c1", "written-meanwhile.md")
   const stopped = run(m, { KUVO_TEST_REHOME_WRITE_AT: "after-check", KUVO_TEST_REHOME_WRITE_FILE: written, KUVO_TEST_REHOME_WRITE_TEXT: "new" })
   expect(stopped.status).toBe(1)
-  expect(stopped.said!.message).toBe(`Something changed in ${join(m.S, "Chats", "c1")} while your sessions were being copied. Close what's using that folder (Kuvo Code, an editor, a terminal), then try again.`)
+  expect(stopped.said!.message).toBe("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open, then try again.")
+  expect(stopped.errors).toContain("Running the move again (3 of 3)")
   expect(existsSync(join(m.K, "box"))).toBe(false)
-  // The next try takes what was written too.
   expect(run(m).said).toMatchObject({ result: "done" })
   expect(readFileSync(join(m.K, "chats", "c1", "written-meanwhile.md"), "utf8")).toBe("new")
+}, LIMIT * 4)
+
+test.if(mac)("a program that only reads the earlier Kuvo Code's database while it's copied (its shared-memory index rewritten) never stops the move", () => {
+  const shm = (m: { S: string }) => join(m.S, "opencode", "data", "opencode", "opencode.db-shm")
+  const m = mac07(root, m => put(shm(m), "index"))
+  const moved = run(m, { KUVO_TEST_REHOME_WRITE_AT: "after-check", KUVO_TEST_REHOME_WRITE_FILE: shm(m), KUVO_TEST_REHOME_WRITE_TEXT: "index, read again" })
+  expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+  expect(moved.errors).not.toContain("Running the move again")
+}, LIMIT)
+
+test.if(mac)("an earlier Kuvo Code's program still running from its folder and writing there is found and stopped before anything's copied, and the move finishes without you", async () => {
+  const m = mac07(root)
+  // (Its engine's program, as a stand-in: a shell, run from the earlier Kuvo Code's own folder, as
+  // its coding agents' bridge runs its engine; it writes in its folder all the while.)
+  const program = join(m.S, "engine", "2.0.32", "opencode")
+  rmSync(program)
+  spawnSync("/bin/cp", ["/bin/zsh", program])
+  // (Signed anew, ad hoc: macOS runs a system program only from where the system keeps it.)
+  expect(spawnSync("/usr/bin/codesign", ["-f", "-s", "-", program]).status).toBe(0)
+  const log = join(m.S, "Chats", "c1", "activity.jsonl")
+  const writer = spawn(program, ["-c", 'while :; do echo x >> "$1"; /bin/sleep 0.1; done', "sh", log], { stdio: "ignore", detached: true })
+  const ended = new Promise<string | null>(resolve => writer.once("exit", (_, signal) => resolve(signal)))
+  try {
+    await new Promise<void>(resolve => { const look = () => existsSync(log) ? resolve() : setTimeout(look, 20); look() })
+    const moved = run(m)
+    expect(moved.status, moved.errors + JSON.stringify(moved.said)).toBe(0)
+    expect(moved.said).toMatchObject({ result: "done" })
+    expect(moved.errors).toContain(`Stopping what still runs of the earlier Kuvo Code: ${writer.pid} ${program}`)
+    // (Ended by the move, before it copied anything: the test only hears of it now.)
+    expect(await ended).toBe("SIGTERM")
+  } finally {
+    try { process.kill(writer.pid!, "SIGKILL") } catch {}
+  }
+}, LIMIT)
+
+test.if(mac)("another app writing in the earlier Kuvo Code's folder is named in words, never stopped", async () => {
+  const m = mac07(root)
+  const log = join(m.S, "Chats", "c1", "open.log")
+  // (A program that isn't Kuvo's, holding a file there open for writing.)
+  const other = spawn("/bin/zsh", ["-c", 'exec 3>>"$1"; echo ready; read line', "zsh", log], { stdio: ["pipe", "pipe", "ignore"] })
+  try {
+    await new Promise<void>(resolve => other.stdout.once("data", () => resolve()))
+    const refused = run(m)
+    expect(refused.status).toBe(1)
+    expect(refused.said!.message).toBe("zsh is still using your earlier Kuvo Code's files. Quit it, then try again.")
+    expect(refused.said!.message).not.toContain("/")
+    expect(refused.errors).toContain(`${other.pid} /bin/zsh: ${log}`)
+    expect(other.exitCode).toBe(null)
+  } finally {
+    other.stdin.end()
+    await new Promise(resolve => other.once("exit", resolve))
+  }
+  expect(run(m).said).toMatchObject({ result: "done" })
 }, LIMIT)
 
 test.if(mac)("a Mac with nothing of an earlier Kuvo Code's but its browser's data still gets its box, with nothing to bring", () => {

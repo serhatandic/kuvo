@@ -127,7 +127,9 @@ export function heldOpen(folder: string): string[] {
 /** Why a move can't go on while something has the earlier Kuvo Code's database open, or null. */
 export function heldRefusal(appFolder: string): string | null {
   const held = heldOpen(path.join(appFolder, "opencode", "data", "opencode"));
-  return held.length ? `Your sessions are still open in another program on this Mac (${held.join(", ")}). Quit Kuvo Code wherever it's open, then try again.` : null;
+  // (Which, for support, in the move's log alone.)
+  if (held.length) console.error(`The earlier Kuvo Code's database is open for writing in: ${held.join(", ")}`);
+  return held.length ? "Your sessions are still open in another program on this Mac. Quit Kuvo Code wherever it's open, then try again." : null;
 }
 
 /** Looked at once more before the move goes forward: nothing has its database open. */

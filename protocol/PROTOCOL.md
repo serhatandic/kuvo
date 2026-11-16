@@ -7603,7 +7603,16 @@ above. Only on a Mac.
   starts afresh; one at `clear` or later is carried on). A keeper build's keeper is asked to stop
   (`POST stop` on its control, `run/keeper.json`, only ever at `127.0.0.1`), waited for 30
   seconds, then stopped by its pid; all of it only while `ps` says that pid is a keeper (`--box`
-  in its command line): a record left by one that's gone names nothing to stop.
+  in its command line): a record left by one that's gone names nothing to stop. Then everything
+  else of the earlier Kuvo Code's still running, whatever started it and whether or not it left a
+  record, found by what each runs (`lsof`, once, never by a name: a program in its folder, its
+  engine's, its bridge's and its server's, or in an app with its bundle ID that isn't the one
+  moving it) but the move and what started it: its keeper's launch agent (`<ID>.box`) let go
+  of, each asked to stop (`SIGTERM`), then made to after 15 seconds; one still running refuses
+  the move. A program that isn't Kuvo's with a file in its folder open to write in refuses it
+  too, named as you know it (its app's name, else its command's: "Visual Studio Code is still
+  using your earlier Kuvo Code's files. Quit it, then try again."). What it found and stopped
+  goes to the move's log (`run.log`) alone, never on screen.
 - **Refused**, changing nothing, each in words to show: a copy of the app into the real
   `~/.kuvo-code` (or Kuvo Code itself into another); the release not whole (each file as its
   `box.json` says, with its helper) or its engine not fetched ("Check that this Mac is online");
@@ -7611,7 +7620,8 @@ above. Only on a Mac.
   running in `~/.kuvo-code`; two disks, or one that isn't APFS; no room (the database and its log
   × 1.1, plus 200 MB); a program that has the earlier Kuvo Code's database open to write in (`lsof` on
   `opencode*.db` and its `-wal` and `-shm`, by how each has it open: "Quit Kuvo Code wherever
-  it's open"; one that only reads it, a backup or Spotlight, holds nothing back); and a database
+  it's open", which programs in the move's log alone; one that only reads it, a backup or
+  Spotlight, holds nothing back); and a database
   of a schema nobody tried (the pinned engine's, or one it brings up to date: `50
   20261010180456_project_time_archived`, engine 2.0.32's).
 - **Its steps**, journaled as the move's above, with three more:
@@ -7654,10 +7664,16 @@ above. Only on a Mac.
     conversation's, a bot's), vault items, accounts added to coding agents, group chats; none
     may be fewer (`state.json`'s `counts` keeps both, for support).
   - `place`, `fix` as above.
-  - `clear`: nothing is cleared. First, should anything have changed in what it cloned since
-    (a file written there: an earlier Kuvo Code still open, an editor in a worktree there), or
-    a program have its database open to write in, it goes back, saying which folder and to
-    close what's using it. From here it only goes forward.
+  - `clear`: nothing is cleared. First, should anything have been written in what it cloned
+    since the clone began (by its time of last change, `mtime`: a file written, added or taken
+    away; a change of attributes alone, or SQLite's shared-memory index `*.db-shm`, which any
+    program that only reads a database rewrites, loses nothing and is never counted), or a
+    program have its database open to write in, it goes back. Then, by itself and with its
+    progress still said, it stops what of the earlier Kuvo Code's runs again (as **First**
+    does), refuses where a program that isn't Kuvo's has what changed open (named, as there),
+    and runs again from the start, three times in all; then "Something kept changing your
+    sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open,
+    then try again." What changed goes to `run.log` alone. From here it only goes forward.
   A failure that's the person's to act on is said as it is (`failed.message`); any other, in
   one sentence ("Kuvo couldn't move your sessions this time, and left everything as it was.
   Try again."), with what went wrong in `updates/rehome/run.log`.

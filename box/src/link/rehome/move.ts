@@ -86,7 +86,8 @@ const inside = (file: string, folder: string) => file !== folder && file.startsW
 // as the app or a process that started would.
 export function stopPoint(point: string): void {
   if (!IN_TEST_FOLDER) return;
-  if (process.env.KUVO_TEST_REHOME_WRITE_AT === point && process.env.KUVO_TEST_REHOME_WRITE_FILE) {
+  // (`…_ONCE`: only where there's nothing there yet, as a program that wrote once and stopped.)
+  if (process.env.KUVO_TEST_REHOME_WRITE_AT === point && process.env.KUVO_TEST_REHOME_WRITE_FILE && !(process.env.KUVO_TEST_REHOME_WRITE_ONCE && fs.existsSync(process.env.KUVO_TEST_REHOME_WRITE_FILE))) {
     fs.mkdirSync(path.dirname(process.env.KUVO_TEST_REHOME_WRITE_FILE), { recursive: true });
     fs.writeFileSync(process.env.KUVO_TEST_REHOME_WRITE_FILE, process.env.KUVO_TEST_REHOME_WRITE_TEXT ?? "");
   }
@@ -316,12 +317,15 @@ const keptLike = (journal: Journal) => (folder: string): string | null => {
 /** The first file in `files` (or in their folders) changed since `since` (ms), or null: by a file's
  * status time, which a write, a rename into its folder or a change of its mode moves. In `run`, the
  * box's processes' records (never moved) and the folder itself, which they're written into, aside. */
-function changedSince(files: string[], since: number, run: string): string | null {
+function changedSince(files: string[], since: number, run: string, by: "ctimeMs" | "mtimeMs" = "ctimeMs"): string | null {
   const walk = (file: string): string | null => {
     if (path.dirname(file) === run && PROCESS_RECORD.test(path.basename(file))) return null;
+    // (SQLite's shared-memory index beside a database, which any program that only reads it
+    // rewrites: it holds nothing that's copied, and what's written goes to the database or its log.)
+    if (by === "mtimeMs" && file.endsWith(".db-shm")) return null;
     let kind: fs.Stats;
     try { kind = fs.lstatSync(file); } catch { return null; }
-    if (kind.ctimeMs >= since && file !== run) return file;
+    if (kind[by] >= since && file !== run) return file;
     if (!kind.isDirectory()) return null;
     for (const name of listOf(file)) {
       const found = walk(path.join(file, name));
@@ -334,6 +338,21 @@ function changedSince(files: string[], since: number, run: string): string | nul
     if (found) return found;
   }
   return null;
+}
+
+/** Something written in the earlier Kuvo Code's folder while it was copied (`file`, the first
+ * found): the move went back, and whoever runs it may stop the writer and run it again. */
+export class ChangedMeanwhile extends Said {
+  constructor(readonly file: string) {
+    super("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open, then try again.");
+  }
+}
+let lastChanged: string | null = null;
+/** The file a move that went back last found changed meanwhile (once: then forgotten). */
+export function takeLastChanged(): string | null {
+  const file = lastChanged;
+  lastChanged = null;
+  return file;
 }
 
 /** A free name beside `file` for one that's there already ("name 2.ext", …). */
@@ -605,8 +624,13 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
       // changed in what it cloned since (an earlier Kuvo Code still open would be left behind).
       if (journal.run) {
         const sources = journal.placements.filter(each => !each.installed).map(each => each.from);
-        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path.join(journal.from, "box", "run")) : null;
-        if (changed) throw new Said(`Something changed in ${changed} while your sessions were being copied. Close what's using that folder (Kuvo Code, an editor, a terminal), then try again.`);
+        // (What was written, or added or taken away: a change of a file's attributes alone, which a
+        // backup or Spotlight may make, loses nothing.)
+        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path.join(journal.from, "box", "run"), "mtimeMs") : null;
+        if (changed) {
+          console.error(`Changed in the earlier Kuvo Code's folder while it was copied: ${changed}`);
+          throw new ChangedMeanwhile(changed);
+        }
         beforeForward(journal.run, journal.from);
       }
     }
@@ -677,6 +701,7 @@ function failed(journal: Journal, error: unknown, now = Date.now()): string {
   // One that can't be now stays journaled there, and is taken away before the next copy.)
   if (journal.run) try { takeBackKeys(journal.run, home); } catch (problem) { console.error(`This Mac's keys couldn't be taken back: ${(problem as Error).message}`); }
   const raw = error instanceof Error ? error.message : String(error);
+  lastChanged = error instanceof ChangedMeanwhile ? error.file : null;
   // (A move the box runs itself is read by the person at the Mac: what's theirs to act on is said
   // as it is; anything else in one plain sentence, with what went wrong kept for support.)
   const plain = !journal.run || error instanceof Said;
