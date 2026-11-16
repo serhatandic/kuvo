@@ -396,7 +396,7 @@ impl ReadParts {
 
 /// The events that say the box's accounts, models, settings or Custom Auto's lists changed
 /// (PROTOCOL.md, "A session's model").
-pub const MODELS_CHANGED: &[&str] = &["integration.updated", "model.updated", "provider.updated", "config.updated", "kuvo.auto.updated"];
+pub const MODELS_CHANGED: &[&str] = &["credential.updated", "credential.switched", "integration.updated", "model.updated", "provider.updated", "config.updated", "kuvo.auto.updated"];
 
 /// What an event asks of what's shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

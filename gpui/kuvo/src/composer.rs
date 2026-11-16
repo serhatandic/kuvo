@@ -518,7 +518,7 @@ impl Composer {
             Target::New(_) | Target::Group { .. } => None,
         };
         let models = self.models.offered.as_ref().map(|offered| offered.models.as_slice()).unwrap_or_default();
-        models.iter().filter(|model| model.is_offered() && side.is_none_or(|side| model.side == side)).cloned().collect()
+        models.iter().filter(|model| model.is_offered() && (self.models.offered.as_ref().is_some_and(|offered| offered.scoped) || side.is_none_or(|side| model.side == side))).cloned().collect()
     }
 
     /// Whether it's on screen. A kept conversation's composer isn't asked again in the background;
@@ -559,6 +559,7 @@ impl Composer {
     /// Whether the box offers models of another side than the conversation's, which it can't be
     /// put on in place.
     pub fn left_out(&self) -> bool {
+        if self.models.offered.as_ref().is_some_and(|offered| offered.scoped) { return false; }
         let Target::Session { place, .. } = &self.target else { return false };
         let models = self.models.offered.as_ref().map(|offered| offered.models.as_slice()).unwrap_or_default();
         models.iter().any(|model| model.is_offered() && model.side != Side::of(*place))
@@ -1758,6 +1759,8 @@ impl Composer {
     }
 
     /// What the picker offers here, worked out once for what the box last said.
+    /// COMPAT: local side filtering is only for boxes before conversation-scoped offerings;
+    /// remove it when those boxes are no longer supported.
     fn catalog(&mut self) -> Arc<Catalog> {
         if let Some(catalog) = &self.catalog {
             return catalog.clone();
@@ -1766,7 +1769,7 @@ impl Composer {
             Target::Session { place, .. } => Some(Side::of(*place)),
             Target::New(_) | Target::Group { .. } => None,
         };
-        let catalog = Arc::new(self.models.offered.as_ref().map(|offered| Catalog::new(offered, |model| side.is_none_or(|side| model.side == side))).unwrap_or_default());
+        let catalog = Arc::new(self.models.offered.as_ref().map(|offered| Catalog::new(offered, |model| self.models.offered.as_ref().is_some_and(|offered| offered.scoped) || side.is_none_or(|side| model.side == side))).unwrap_or_default());
         self.catalog = Some(catalog.clone());
         catalog
     }
@@ -1778,7 +1781,7 @@ impl Composer {
         let notice = (!self.can_pick()).then(|| "Finding where this conversation runs…".into());
         // Another side's models (the engine's, or the coding agents') carry the conversation
         // over to a new session there, which this app can't do yet.
-        let note = self.left_out().then(|| "Other agents’ models aren’t in this app yet: start a new session to use one.".into());
+        let note = self.models.offered.as_ref().and_then(|offered| offered.note.clone()).map(Into::into).or_else(|| self.left_out().then(|| "This conversation can use models from its own engine or coding agent. Start a new session to use other providers.".into()));
         let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
         let (current, client) = (self.model(), self.client.clone());
         cx.new(|cx| {
@@ -2020,7 +2023,8 @@ enum Said {
 /// for a read that failed), whether it could say all of it itself, and what it says of the conversation's
 /// model (none for a new one).
 fn models_of(client: &BoxClient, target: &Target, picked: Option<&ModelRef>, folder: Option<&str>, before: Option<&Offered>) -> (Option<Offered>, bool, Option<Said>) {
-    let offered = client.offered_models(picked, folder).ok();
+    let session = match target { Target::Session { id, .. } => Some(id.as_str()), _ => None };
+    let offered = client.offered_models_for_session(picked, folder, session).ok();
     let said_all = offered.as_ref().is_some_and(Offered::is_whole);
     let offered = offered.map(|offered| offered.keeping(before));
     let state = match target {

@@ -1797,6 +1797,11 @@ impl StandIn {
                     listed.extend(agents_models().into_iter().map(|model| with("agents", model)));
                 }
                 let mut said = json!({ "models": listed, "known": { "engine": true, "agents": !state.agents_unknown }, "starting": { "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" } });
+                if query(path, "session").map(decoded).is_some_and(|id| state.bots.bots.iter().any(|bot| bot["session"].as_str() == Some(id.as_str()))) {
+                    said["scoped"] = json!(true);
+                    said["models"].as_array_mut().unwrap().retain(|model| model["side"] == "engine");
+                    said["note"] = json!("To use a coding agent in this bot, change its model in Edit Bot.");
+                }
                 if !state.no_stars {
                     said["starred"] = json!(state.starred);
                     said["providers"] = json!(PROVIDERS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>());

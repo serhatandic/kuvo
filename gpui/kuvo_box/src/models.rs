@@ -189,6 +189,10 @@ pub struct Starred {
 /// The models offered, in the order a picker draws them, and the one a new session starts on.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Offered {
+    #[serde(default)]
+    pub scoped: bool,
+    #[serde(default)]
+    pub note: Option<String>,
     pub models: Vec<OfferedModel>,
     /// Each provider's name (none from a box before `models.offered.providers`).
     #[serde(default)]
@@ -302,7 +306,15 @@ impl BoxClient {
     /// model picked last on this client), in `folder` (a project's or a conversation's: what its
     /// own settings add is offered there too, `models.offered.folder`).
     pub fn offered_models(&self, wanted: Option<&ModelRef>, folder: Option<&str>) -> Result<Offered> {
+        self.offered_models_for_session(wanted, folder, None)
+    }
+
+    /// The box decides which models this conversation can use.
+    pub fn offered_models_for_session(&self, wanted: Option<&ModelRef>, folder: Option<&str>, session: Option<&str>) -> Result<Offered> {
         let mut query = Vec::new();
+        if let Some(session) = session {
+            query.push(format!("session={}", paths::query_value(session)));
+        }
         if let Some(folder) = folder.filter(|folder| !folder.is_empty()) {
             query.push(format!("folder={}", paths::query_value(folder)));
         }

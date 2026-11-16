@@ -637,3 +637,25 @@ mod live {
         assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Bot("bot_mira".into()));
     }
 }
+
+#[gpui::test]
+fn bot_composer_uses_the_box_catalog_and_refreshes_after_credentials_change(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-chat");
+    let composer = workspace.read_with(cx, |workspace, cx| workspace.bot_chat().unwrap().1.read(cx).composer().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let offered = client.offered_models(None, None).unwrap();
+    let engine_models = |offered: kuvo_box::models::Offered| offered.models.into_iter().filter(|model| model.side == kuvo_box::models::Side::Engine).collect::<Vec<_>>();
+    let before = engine_models(offered);
+    assert_eq!(composer.read_with(cx, |composer, _| composer.menu_models()), before);
+    stand_in.more_models(1);
+    let view = workspace.read_with(cx, |workspace, _| workspace.bot_chat().unwrap().1.clone());
+    let mut conversation = kuvo::conversation::read_now(&client, "ses_mira").unwrap();
+    conversation.apply(&json!({ "type": "credential.updated", "data": {} }));
+    view.update(cx, |view, cx| view.take(kuvo_box::ConversationUpdate::Conversation(conversation), cx));
+    cx.run_until_parked();
+    assert_eq!(composer.read_with(cx, |composer, _| composer.menu_models()), engine_models(client.offered_models(None, None).unwrap()));
+    assert_eq!(composer.read_with(cx, |composer, _| composer.menu_models().len()), before.len() + 1);
+}
