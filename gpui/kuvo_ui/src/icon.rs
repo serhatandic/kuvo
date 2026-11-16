@@ -1,4 +1,4 @@
-//! Icons: Kuvo's own line icons, drawn on a 16-unit grid, in two sizes.
+//! Lucide icons adapted to a 16-unit grid with 1.2-unit strokes, in two sizes.
 //!
 //! The SVGs live in `gpui/assets/icons` and are compiled into the binary, so an icon can never
 //! go missing at run time. GPUI draws an SVG as a mask, so an icon takes the colour it's given.
@@ -103,7 +103,7 @@ icons! {
     Settings => "settings",
     Shield => "shield",
     Sidebar => "sidebar",
-    SidebarLeft => "sidebar-left",
+    SidebarLeft => "sidebar",
     Sliders => "sliders",
     Sparkle => "sparkle",
     Spinner => "spinner",
@@ -146,17 +146,8 @@ pub fn mark_path(service: &str) -> Option<&'static str> {
     MARKS.iter().find(|(id, ..)| *id == service).map(|(_, path, _)| *path)
 }
 
-/// The width of every outline icon's stroke, in its 16-unit box: 1.25 px at the rail's 20 px,
-/// 1 px at a row's 16 px. The files are drawn at 1.3; this is applied as they load, in one place.
-pub const STROKE: &str = "1.0";
-
-/// An icon's file with its stroke at [`STROKE`].
-fn thinned(bytes: &'static [u8]) -> Cow<'static, [u8]> {
-    match std::str::from_utf8(bytes) {
-        Ok(text) if text.contains("stroke-width=\"1.3\"") => Cow::Owned(text.replace("stroke-width=\"1.3\"", &format!("stroke-width=\"{STROKE}\"")).into_bytes()),
-        _ => Cow::Borrowed(bytes),
-    }
-}
+/// Outline width in the 16-unit SVG coordinate space.
+pub const STROKE: &str = "1.2";
 
 /// Kuvo's own mark as Kuvo Helper draws it in the menu bar (the app icon's artwork in one colour,
 /// the user's pick, 11-16): black for a light theme, white for a dark one.
@@ -178,7 +169,7 @@ impl AssetSource for Assets {
         Ok(IconName::ALL
             .iter()
             .find(|icon| icon.path() == path)
-            .map(|icon| thinned(icon.bytes())))
+            .map(|icon| Cow::Borrowed(icon.bytes())))
     }
 
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
@@ -238,20 +229,21 @@ mod tests {
         for icon in IconName::ALL {
             let bytes = Assets.load(icon.path()).unwrap().unwrap_or_else(|| panic!("{}", icon.name()));
             let text = std::str::from_utf8(&bytes).unwrap();
+            usvg::Tree::from_data(&bytes, &usvg::Options::default()).unwrap_or_else(|error| panic!("{}: {error}", icon.name()));
             assert!(text.starts_with("<svg") && text.contains("viewBox=\"0 0 16 16\""));
         }
         assert!(Assets.load("icons/nope.svg").unwrap().is_none());
     }
 
-    /// Every outline icon loads with the thin stroke, whatever its file says.
+    /// Every icon retains the shared Lucide outline style without runtime rewriting.
     #[test]
     fn every_outline_icon_loads_thin() {
         for icon in IconName::ALL {
             let bytes = Assets.load(icon.path()).unwrap().unwrap();
             let text = std::str::from_utf8(&bytes).unwrap();
             assert!(!text.contains("stroke-width=\"1.3\""), "{}", icon.name());
-            // The spinner's arc is a progress mark, not an outline icon: it keeps its weight.
-            if text.contains("stroke-width") && *icon != IconName::Spinner {
+            assert!(!text.contains("transform=") && !text.contains("clipPath") && !text.contains("<mask"));
+            if text.contains("stroke-width") {
                 assert!(text.contains(&format!("stroke-width=\"{STROKE}\"")), "{}", icon.name());
             }
         }

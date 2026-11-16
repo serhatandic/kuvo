@@ -24,3 +24,4 @@ tree-sitter = "0.27"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+usvg = "0.46"
