@@ -85,16 +85,16 @@ export class SignIns {
    * it stays as last said (a computer offline isn't signed out, and no round waits on one long).
    */
   private async answer(agent: Agent, fresh: boolean): Promise<Account | undefined> {
-    let late: ReturnType<typeof setTimeout> | undefined
+    let tooLate: () => void = () => {}
+    const waited = new Promise<undefined>((resolve) => (tooLate = () => resolve(undefined)))
+    const late = setTimeout(() => tooLate(), this.within)
+    late.unref?.()
     return Promise.race([
       agent.account(fresh).then(
         (account) => account,
         () => undefined,
       ),
-      new Promise<undefined>((resolve) => {
-        late = setTimeout(resolve, this.within)
-        late.unref?.()
-      }),
+      waited,
     ]).finally(() => clearTimeout(late))
   }
 }

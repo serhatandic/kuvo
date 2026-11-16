@@ -35807,15 +35807,15 @@ class SignIns {
       this.record(agent.providerID, account);
   }
   async answer(agent, fresh) {
-    let late;
+    let tooLate = () => {};
+    const waited = new Promise((resolve) => tooLate = () => resolve(undefined));
+    const late = setTimeout(() => tooLate(), this.within);
+    late.unref?.();
     return Promise.race([
       agent.account(fresh).then((account) => account, () => {
         return;
       }),
-      new Promise((resolve) => {
-        late = setTimeout(resolve, this.within);
-        late.unref?.();
-      })
+      waited
     ]).finally(() => clearTimeout(late));
   }
 }
@@ -37784,4 +37784,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 488b7a06140a88d389519e92d6e5bef5c53c495c81e729b75ada9f78f2d1b94a
+// Built from Packages/Box/src/agents 342b357620aaf996cfe4253a386ba0b2ec196fbfa040ef9b399a7a1add2b3955
