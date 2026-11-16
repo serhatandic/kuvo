@@ -13,6 +13,7 @@ use gpui::{
 };
 use kuvo_box::messages::{Content, Message, Step};
 use kuvo_box::{Conversation, Parts, pictures};
+use kuvo_box::pictures::Picture;
 
 use crate::pictures::Looks;
 use kuvo_ui::{
@@ -39,8 +40,9 @@ pub enum Entry {
     /// A run under way, after what it has said so far.
     Working { title: String },
     /// Yours, sent from here and on its way (`Composer::outgoing`): drawn at once as your message,
-    /// until the box's copy (by the same id) takes its place. `failed`: why it couldn't go.
-    Outgoing { id: String, words: String, files: Vec<String>, failed: Option<String> },
+    /// until the box's copy (by the same id) takes its place. `failed`: why it couldn't go; `waits`:
+    /// its box took it while the agent works, and it's read at the agent's next step.
+    Outgoing { id: String, words: String, files: Vec<String>, failed: Option<String>, waits: bool },
 }
 
 impl Entry {
@@ -56,10 +58,11 @@ impl Entry {
 
     /// Yours on its way, as its conversation draws it, with the revision it's drawn by: above every
     /// one the box gives, so the box's copy taking its place is always drawn again.
-    pub fn outgoing(outgoing: &crate::composer::Outgoing) -> (Entry, u64) {
+    pub fn outgoing(outgoing: &crate::composer::Outgoing, running: bool) -> (Entry, u64) {
         let files = outgoing.files.iter().map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
-        let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else { u64::MAX };
-        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, failed: outgoing.failed.clone() }, revision)
+        let waits = outgoing.taken && running && outgoing.failed.is_none();
+        let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else if waits { u64::MAX - 2 } else { u64::MAX };
+        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, failed: outgoing.failed.clone(), waits }, revision)
     }
 }
 
@@ -163,9 +166,9 @@ pub fn render(
 ) -> AnyElement {
     let body: AnyElement = match entry {
         Entry::Earlier => own,
-        Entry::Outgoing { words, files, failed, .. } => {
+        Entry::Outgoing { words, files, failed, waits, .. } => {
             let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
-            outgoing(ix, words, files, failed.as_deref(), sel, own, cx)
+            outgoing(ix, words, files, failed.as_deref(), *waits, sel, own, cx)
         }
         // (What its view draws under it: the files sent with yours, while its copy has none.)
         Entry::Message(message) => div().child(message_body(ix, entry.key(), message, open, toggle, selection, looks, cx)).child(own).into_any_element(),
@@ -191,7 +194,7 @@ pub fn message_body(
     match message {
         // The pictures it carried, under its words.
         Message::User(user) => {
-            let shown = pictures::of_user(user);
+            let shown: Vec<Picture> = looks.shown.iter().filter(|picture| picture.id.starts_with(&format!("{}#", user.id)) || picture.id.starts_with(&format!("{}@", user.id))).cloned().collect();
             let words = user_message(ix, &user.parts(), sel(&[]), cx);
             if shown.is_empty() {
                 words
@@ -231,7 +234,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
     match entry {
         Entry::Message(message) => message_units(message, open),
         // (As the box's copy will be: what you wrote.)
-        Entry::Outgoing { words, .. } if !words.trim().is_empty() => vec![Unit::new(&[0], words.trim(), Lead::Paragraph)],
+        Entry::Outgoing { words, .. } if !quoted(words).1.is_empty() => vec![Unit::new(&[0], quoted(words).1, Lead::Paragraph)],
         _ => Vec::new(),
     }
 }
@@ -240,7 +243,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
 pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
     match message {
         Message::User(user) => {
-            let words = user.parts().words.trim().to_owned();
+            let words = quoted(&user.parts().words).1;
             if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }
         }
         Message::Shell(run) => run.output.as_ref().map(|output| well_units(&output.output, Some(&run.command), open.contains(&Fold::Whole(run.id.clone(), 0, 0)), &[0])).unwrap_or_default(),
@@ -273,11 +276,22 @@ pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
 
 /// Yours on its way: your message as it will show, its files' names under it, and under them
 /// "Sending…", or why it couldn't go with `actions` (Retry, Edit) beside it.
-fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
+fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, waits: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let parts = Parts::words(words.to_owned());
     let names = files.iter().enumerate().map(|(n, name)| Chip::new(("sending-file", ix * 1000 + n), name.clone()).icon(IconName::File).into_any_element());
     let status = match failed {
+        // Its box has it; the agent reads it at its next step (0.7's words), and it can be taken back.
+        None if waits => div()
+            .debug_selector(|| "at-next-step".into())
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .items_center()
+            .gap(space::S2)
+            .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("At its next step"))
+            .child(actions)
+            .into_any_element(),
         None => div().debug_selector(|| "sending".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("Sending…").into_any_element(),
         Some(why) => div()
             .debug_selector(|| "not-sent".into())
@@ -299,6 +313,14 @@ fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, sel:
         .when(!files.is_empty(), |d| d.child(div().flex().flex_wrap().justify_end().gap(space::S1).children(names)))
         .child(status)
         .into_any_element()
+}
+
+/// A message's words as what it quotes (each quote, in order) and what it says itself.
+fn quoted(words: &str) -> (Vec<String>, String) {
+    let segments = kuvo_box::quoting::segments(words);
+    let quotes = segments.iter().filter_map(|(quote, _)| quote.clone()).collect();
+    let own = segments.into_iter().map(|(_, text)| text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n");
+    (quotes, own)
 }
 
 fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {
@@ -328,7 +350,24 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     for (n, agent) in parts.agents.iter().enumerate() {
         below.push(Chip::new(("named", ix * 1000 + n), format!("&{}", agent.name)).icon(IconName::Bot).into_any_element());
     }
-    let words = parts.words.trim().to_owned();
+    // What it replies to, in its bubble above its own words.
+    let (quotes, words) = quoted(parts.words.trim());
+    let quote_blocks: Vec<AnyElement> = quotes
+        .into_iter()
+        .enumerate()
+        .map(|(n, quote)| {
+            div()
+                .debug_selector(move || format!("quoted-{ix}-{n}"))
+                .pl(space::S2)
+                .border_l_2()
+                .border_color(c.border_strong)
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .child(quote)
+                .into_any_element()
+        })
+        .collect();
+    let has_quotes = !quote_blocks.is_empty();
     div()
         .flex()
         .flex_col()
@@ -343,16 +382,20 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
                 .items_end()
                 .gap(space::S1_5)
                 .children(keyword)
-                .when(!words.is_empty(), |d| {
+                .when(!words.is_empty() || has_quotes, |d| {
                     d.child(
                         div()
                             .px(space::S4)
                             .py(px(10.))
                             .rounded(radius::CARD)
                             .bg(c.sunken)
+                            .flex()
+                            .flex_col()
+                            .gap(space::S2)
                             .text_ui(TypeSize::Body)
                             .text_color(c.text)
-                            .child(SelectableText::new(("words", ix), words).selectable(Some(sel.unit(&[0])))),
+                            .children(quote_blocks)
+                            .when(!words.is_empty(), |d| d.child(SelectableText::new(("words", ix), words).selectable(Some(sel.unit(&[0]))))),
                     )
                 }),
         )
@@ -413,10 +456,14 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
                 let failed = status == "failed" || status == "error";
                 let (icon, label, target) = tool_label(name, state, busy);
                 let shown = details(name, state);
-                // (What it brought back for itself: pictures inside it, once it's opened.)
-                let own = pictures::of_step_own(&format!("{}:{n}", step.id), name, state);
+                // (What it brought back for itself: pictures inside it, once it's opened; what it
+                // brought to show you, in the flow. As its conversation found them.)
+                let prefix = format!("{}:{n}-", step.id);
+                let brought: Vec<Picture> = looks.shown.iter().filter(|picture| picture.id.starts_with(&prefix)).cloned().collect();
+                let made_here = pictures::is_made(name, state);
+                let own: Vec<Picture> = if made_here { Vec::new() } else { brought.clone() };
                 let fold = Fold::Step(step.id.clone(), n);
-                let opens = shown.is_some() || !own.is_empty();
+                let opens = shown.is_some() || pictures::has_own(name, state);
                 let opened = opens && open.contains(&fold);
                 let mut row = step_row(SharedString::from(format!("tool-{key}")), icon, label, target, busy, failed, cx);
                 // One with something to show opens to it.
@@ -441,7 +488,7 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
                     blocks.push(div().ml(px(22.)).child(crate::pictures::pictures(&own, MADE.1, MADE.1, looks, cx)).into_any_element());
                 }
                 // A picture it made, showed you, or took of a page to show you: large, in the flow.
-                let made = pictures::of_step(&format!("{}:{n}", step.id), name, state);
+                let made: Vec<Picture> = if made_here { brought } else { Vec::new() };
                 if !made.is_empty() {
                     blocks.push(crate::pictures::pictures(&made, MADE.0, MADE.1, looks, cx));
                 }

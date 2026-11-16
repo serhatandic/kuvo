@@ -1175,6 +1175,42 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn sent_while_the_agent_works_it_waits_for_its_next_step_and_can_be_taken_back(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    // The agent at work: what's said of the conversation before the box hands it what's sent.
+    let mut working = read_now(&client, "ses_recipes").unwrap();
+    working.running = true;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+
+    cx.simulate_input("Also check the oven");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
+    // Its box holds it for the agent's next step: the conversation says so (not "Sending…"), and
+    // the queue over the composer doesn't list it twice.
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [{ "id": id, "words": "Also check the oven", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }] })).unwrap(), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "at-next-step").is_some());
+    assert!(bounds(cx, "sending").is_none());
+    assert!(bounds(cx, "queue").is_none(), "shown once, in the conversation");
+    // The rows before it stay as they were, and it sits before the run under way.
+    let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
+    assert_eq!(keys[keys.len() - 2..], [id.clone(), "working".to_owned()]);
+
+    // Remove asks its box to take it back, as the queue's Remove does.
+    let remove = bounds(cx, &format!("remove-waiting-{id}")).expect("Remove");
+    cx.simulate_click(remove.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.seen_at("DELETE", &format!("kuvo/sessions/ses_recipes/queue/{id}")).len(), 1);
+}
+
+#[gpui::test]
 fn files_sent_to_a_conversation_on_another_computer_go_with_their_bytes_and_pictures_are_named(cx: &mut TestAppContext) {
     let png = |width: u32| {
         let mut out = std::io::Cursor::new(Vec::new());
@@ -1259,6 +1295,37 @@ fn a_box_copy_without_the_files_sent_keeps_them_shown(cx: &mut TestAppContext) {
     assert_eq!(view.read_with(cx, |view, _| view.entries().iter().filter(|entry| entry.key() == id).count()), 1);
     assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
     assert!(bounds(cx, &format!("kept-files-{id}")).is_some(), "the files sent stay in sight");
+}
+
+#[gpui::test]
+fn a_message_of_only_pictures_from_the_phone_shows_them_and_one_that_fails_says_so_with_try_again(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let png = |width: u32| {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(width, 10).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // As the box keeps a phone's photos: one the model reads, carried in the message; one kept on
+    // its disk, named in the message's parts. No words.
+    let kept = "/home/sam/.kuvo-code/attachments/ses_recipes/b10bd6c5/Photo 2.jpeg";
+    stand_in.add_message("ses_recipes", json!({ "type": "user", "id": "msg_ph", "time": { "created": NOW - 60_000.0 }, "text": "",
+        "files": [{ "mime": "image/png", "name": "Photo 1.png", "data": base64::engine::general_purpose::STANDARD.encode(png(30)) }],
+        "metadata": { "kuvo": { "parts": { "words": "", "phone": true, "paths": [kept] } } } }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    cx.run_until_parked();
+    assert!(bounds(cx, "picture-msg_ph#0").is_some(), "the photo it carried");
+    // The one kept on its computer couldn't be read: said plainly, with Try Again.
+    let failed = bounds(cx, &format!("picture-msg_ph@{kept}")).expect("a tile in its place");
+    assert!(failed.size.width > px(0.));
+    let again = bounds(cx, &format!("picture-again-msg_ph@{kept}")).expect("Try Again");
+    stand_in.put_file(kept, png(40));
+    cx.simulate_click(again.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(bounds(cx, &format!("picture-again-msg_ph@{kept}")).is_none());
+    let shown = bounds(cx, &format!("picture-msg_ph@{kept}")).unwrap();
+    assert_eq!((shown.size.width, shown.size.height), (px(40.), px(10.)), "shown once read");
 }
 
 #[gpui::test]

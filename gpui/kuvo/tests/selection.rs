@@ -304,3 +304,50 @@ fn cmd_a_twice_while_the_agent_works_still_copies_once_the_turn_ends(cx: &mut Te
     show_running(&view, messages, false, cx);
     assert_eq!(copied(cx), "Fix the form\n\nOn it.");
 }
+
+fn right_click_at(at: Point<Pixels>, cx: &mut VisualTestContext) {
+    cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
+    cx.run_until_parked();
+}
+
+fn choose(item: &str, cx: &mut VisualTestContext) {
+    let selector: &'static str = Box::leak(format!("menu-item-{item}").into_boxed_str());
+    let at = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{item} isn't in the menu")).center();
+    cx.simulate_click(at, Modifiers::default());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_answer(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    // Part of the reply selected, then its menu’s Add to Chat: the composer has it, the keyboard there.
+    let from = at(&view, "msg_s2", &[3, 0], "When the server", false, cx);
+    let to = at(&view, "msg_s2", &[3, 0], "(the email is taken)", true, cx);
+    drag(from, to, cx);
+    right_click_at(to, cx);
+    choose("Add to Chat", cx);
+    let composer = view.read_with(cx, |view, _| view.composer().clone());
+    assert_eq!(composer.read_with(cx, |composer, _| composer.quotes().iter().map(|quote| quote.text.clone()).collect::<Vec<_>>()), ["When the server answers 409 (the email is taken)"]);
+    assert!(cx.debug_bounds("quote-0").is_some(), "shown above the field");
+
+    // Answered and sent: the quote ahead of the answer, as Markdown, as every app writes it; the
+    // message shows it as a quote above your words.
+    cx.simulate_input("Should it keep the email?");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let sent = view.read_with(cx, |view, _| view.entries().iter().rev().find_map(|entry| match entry {
+        kuvo::entries::Entry::Outgoing { words, .. } => Some(words.clone()),
+        _ => None,
+    }));
+    assert_eq!(sent.as_deref(), Some("> When the server answers 409 (the email is taken)\n\nShould it keep the email?"));
+    assert!(composer.read_with(cx, |composer, _| composer.quotes().is_empty()));
+
+    // Nothing selected: the message under the pointer is quoted whole.
+    let mine = at(&view, "msg_s1", &[0], "completely", false, cx);
+    clicks(mine, 1, cx);
+    right_click_at(mine, cx);
+    choose("Reply", cx);
+    let quoted = composer.read_with(cx, |composer, _| composer.quotes().first().map(|quote| quote.text.clone()));
+    assert!(quoted.is_some_and(|text| text.contains("completely wiped if the email is already taken")));
+}

@@ -144,18 +144,20 @@ pub const CARRIED_FILE_MOST: u64 = 50 * 1024 * 1024;
 pub const CARRIED_MESSAGE_MOST: u64 = 100 * 1024 * 1024;
 
 /// The files attached to a message, as its box takes them. `here`: the box is on this computer,
-/// which opens them where they are (`File::at`). Another computer can't, so each goes with its
-/// bytes (`data:`, as a phone sends them), and its box keeps it there and notes where. One that
-/// can't be read, or is too large to send, is said, by name, in plain words: the message doesn't
-/// go without it.
-pub fn carried(paths: &[std::path::PathBuf], here: bool) -> Result<Vec<File>, String> {
+/// which opens them where they are (`File::at`), but for those the client keeps only a while
+/// (`passing`: a pasted picture), which go as another computer's do. Another computer can't open
+/// them, so each goes with its bytes (`data:`, as a phone sends them), and its box keeps it there
+/// and notes where. One that can't be read, or is too large to send, is said, by name, in plain
+/// words: the message doesn't go without it.
+pub fn carried(paths: &[std::path::PathBuf], here: bool, passing: &dyn Fn(&std::path::Path) -> bool) -> Result<Vec<File>, String> {
     use base64::Engine as _;
-    if here {
-        return Ok(paths.iter().map(|path| File::at(path)).collect());
-    }
     let mut total = 0u64;
     let mut files = Vec::new();
     for path in paths {
+        if here && !passing(path) {
+            files.push(File::at(path));
+            continue;
+        }
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".into());
         let size = std::fs::metadata(path).map_err(|_| format!("“{name}” couldn’t be read."))?.len();
         if size > CARRIED_FILE_MOST {
@@ -261,11 +263,13 @@ mod carried_tests {
         std::fs::create_dir_all(&folder).unwrap();
         let picture = folder.join("a b.png");
         std::fs::write(&picture, [1u8, 2, 3]).unwrap();
-        let here = carried(std::slice::from_ref(&picture), true).unwrap();
+        let here = carried(std::slice::from_ref(&picture), true, &|_| false).unwrap();
         assert!(here[0].uri.starts_with("file://") && here[0].uri.ends_with("a%20b.png"));
-        let there = carried(std::slice::from_ref(&picture), false).unwrap();
+        let there = carried(std::slice::from_ref(&picture), false, &|_| false).unwrap();
         assert_eq!(there, [File { uri: "data:image/png;base64,AQID".into(), name: Some("a b.png".into()) }]);
-        let gone = carried(&[folder.join("gone.png")], false).unwrap_err();
+        // One kept here only a while (a pasted picture) goes with its bytes to this computer's too.
+        assert_eq!(carried(std::slice::from_ref(&picture), true, &|_| true).unwrap(), there);
+        let gone = carried(&[folder.join("gone.png")], false, &|_| false).unwrap_err();
         assert_eq!(gone, "“gone.png” couldn’t be read.");
         std::fs::remove_dir_all(&folder).ok();
     }

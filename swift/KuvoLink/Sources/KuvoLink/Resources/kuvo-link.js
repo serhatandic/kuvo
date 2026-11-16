@@ -14237,6 +14237,8 @@ async function cameUp(version, withAgents, timeout = 120000, readEngine = readEn
 }
 var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
 var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
+var brokeOff = false;
+var failedDownloading = () => brokeOff;
 async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
   if (!keys.length)
     return { result: "off", message: "Updates aren't set up for this machine yet." };
@@ -14250,6 +14252,14 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   if (!takeUpdateLock())
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
+  let fetching = false;
+  brokeOff = false;
+  const download = async (get) => {
+    fetching = true;
+    const got = await get();
+    fetching = false;
+    return got;
+  };
   try {
     step("checking");
     let released;
@@ -14257,7 +14267,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       released = readRelease(path40.join(from, "boxes.json"), 1e6);
     else
       try {
-        released = await fetchedPatiently(url, 1e6, 30000);
+        released = await download(() => fetchedPatiently(url, 1e6, 30000));
       } catch (error) {
         if (/answered 404/.test(String(error?.message)))
           return { result: "current", version: before };
@@ -14277,7 +14287,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     stage = path40.join(UPDATES, manifest.version);
     fs37.rmSync(stage, { recursive: true, force: true });
     fs37.mkdirSync(path40.join(stage, "files"), { recursive: true, mode: 448 });
-    const pack = from ? readRelease(path40.join(from, packName(manifest)), 1e8) : await fetchedPatiently(manifest.pack.url, 1e8, 300000);
+    const pack = from ? readRelease(path40.join(from, packName(manifest)), 1e8) : await download(() => fetchedPatiently(manifest.pack.url, 1e8, 300000));
     if (hexSHA256(pack) !== manifest.pack.sha256)
       throw new Error("The release's files aren't what it says.");
     fs37.writeFileSync(path40.join(stage, "pack.tgz"), pack, { mode: 384 });
@@ -14335,7 +14345,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
         throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await fetchedPatiently(build.url, 400000000, 900000);
+      const tarball = await download(() => fetchedPatiently(build.url, 400000000, 900000));
       if (crypto15.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
         throw new Error("The engine isn't what the release says.");
       fs37.writeFileSync(path40.join(stage, "engine.tgz"), tarball, { mode: 384 });
@@ -14400,6 +14410,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
+    brokeOff = fetching;
     const message = String(error?.message ?? error).slice(0, 300);
     if (stage)
       fs37.rmSync(stage, { recursive: true, force: true });
@@ -42023,7 +42034,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "661629b49f71";
+var BRIDGE_VERSION = "e391316f4df9";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -69131,7 +69142,7 @@ if (main) {
       }, ...test });
       if (installer && !now && outcome?.result === "busy")
         continue;
-      if (againOnce && outcome?.result === "failed" && !swapped) {
+      if (againOnce && outcome?.result === "failed" && !swapped && failedDownloading()) {
         againOnce = false;
         await sleep(!REAL_BOX && Number(process.env.KUVO_TEST_FETCH_WAIT) >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? Number(process.env.KUVO_TEST_FETCH_WAIT) : 15000);
         continue;

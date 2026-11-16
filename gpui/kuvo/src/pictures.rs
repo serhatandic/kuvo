@@ -15,29 +15,39 @@ use gpui::{
 };
 use kuvo_box::BoxClient;
 use kuvo_box::pictures::{self, PICTURE_MOST, Picture, Source};
-use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize, small::spinner, theme::{radius, space}};
+use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, small::spinner, theme::{radius, space}};
 
 /// What's been read of a picture.
 #[derive(Clone, Debug)]
 pub enum Read {
     Reading,
     Shown { image: Arc<Image>, width: u32, height: u32 },
-    /// Why it can't be shown, in plain words.
-    Failed(String),
+    /// It couldn't be read (`again`: trying again may bring it), or isn't a kind that shows here.
+    Failed { why: String, again: bool },
 }
 
-/// What a conversation has read of its pictures, by their sources' keys, and how one opens.
+const COULDNT: &str = "Couldn’t load this image.";
+
+fn failed(again: bool) -> Read {
+    Read::Failed { why: if again { COULDNT.into() } else { "This kind of image can’t be shown here.".into() }, again }
+}
+
+/// What a conversation has read of its pictures, by their ids, the pictures of the row being drawn
+/// (found once as it changed, not at each drawing), and how one opens.
 #[derive(Clone)]
 pub struct Looks<'a> {
     pub read: &'a HashMap<String, Read>,
+    pub shown: &'a [Picture],
     pub open: Rc<dyn Fn(&str, &mut Window, &mut App)>,
+    /// Reads one that couldn't be read again, by its source's key.
+    pub again: Rc<dyn Fn(&str, &mut Window, &mut App)>,
 }
 
 impl Looks<'static> {
     /// None read, and nothing opens (where a view draws no pictures yet).
     pub fn none() -> Looks<'static> {
         static EMPTY: std::sync::LazyLock<HashMap<String, Read>> = std::sync::LazyLock::new(HashMap::new);
-        Looks { read: &EMPTY, open: Rc::new(|_, _, _| {}) }
+        Looks { read: &EMPTY, shown: &[], open: Rc::new(|_, _, _| {}), again: Rc::new(|_, _, _| {}) }
     }
 }
 
@@ -47,13 +57,14 @@ pub fn read(client: &BoxClient, source: &Source) -> Read {
     let bytes = match source {
         Source::Inline(data) => match pictures::inline_bytes(data) {
             Some(bytes) => bytes,
-            None => return Read::Failed("This picture couldn’t be read.".into()),
+            None => return failed(false),
         },
         Source::File(uri) => match client.file_bytes(uri, PICTURE_MOST) {
             Ok((bytes, _)) => bytes,
-            Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 404 => return Read::Failed("This picture isn’t there any more.".into()),
-            Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 413 => return Read::Failed("This picture is too large to show here.".into()),
-            Err(error) => return Read::Failed(format!("This picture couldn’t be read: {error}")),
+            // Too large to show: trying again wouldn't change that.
+            Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 413 => return Read::Failed { why: "This image is too large to show here.".into(), again: false },
+            // Not there yet, or its computer couldn't be reached: Try Again.
+            Err(_) => return failed(true),
         },
     };
     shown(bytes)
@@ -61,7 +72,7 @@ pub fn read(client: &BoxClient, source: &Source) -> Read {
 
 /// Bytes as a picture to draw, by what they are (whatever the name says).
 pub fn shown(bytes: Vec<u8>) -> Read {
-    let Some(format) = format_of(&bytes) else { return Read::Failed("This kind of picture can’t be shown here.".into()) };
+    let Some(format) = format_of(&bytes) else { return failed(false) };
     let size = if format == ImageFormat::Svg {
         Some((512, 512))
     } else {
@@ -69,7 +80,7 @@ pub fn shown(bytes: Vec<u8>) -> Read {
     };
     match size {
         Some((width, height)) if width > 0 && height > 0 => Read::Shown { image: Arc::new(Image::from_bytes(format, bytes)), width, height },
-        _ => Read::Failed("This kind of picture can’t be shown here.".into()),
+        _ => failed(false),
     }
 }
 
@@ -108,7 +119,7 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
     let open = looks.open.clone();
     let name = picture.name.clone().unwrap_or_else(|| "Picture".into());
     let selector = format!("picture-{}", picture.id);
-    let body: AnyElement = match looks.read.get(picture.source.key()) {
+    let body: AnyElement = match looks.read.get(picture.id.as_str()) {
         Some(Read::Shown { image, width, height }) => {
             let (w, h) = fitted(*width, *height, most_w, most_h);
             div()
@@ -127,10 +138,12 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
         }
         read => {
             let (w, h) = (most_w.min(240.), most_h.min(140.));
-            let (lead, words): (AnyElement, String) = match read {
-                Some(Read::Failed(why)) => (Icon::new(IconName::Image).size(IconSize::Card).color(c.text_faint).into_any_element(), format!("{name}: {why}")),
-                _ => (spinner(SharedString::from(format!("reading-{}", picture.id)), IconSize::Nav, c.text_faint).into_any_element(), name),
+            let (lead, words, again): (AnyElement, String, bool) = match read {
+                Some(Read::Failed { why, again }) => (Icon::new(IconName::Image).size(IconSize::Card).color(c.text_faint).into_any_element(), why.clone(), *again),
+                _ => (spinner(SharedString::from(format!("reading-{}", picture.id)), IconSize::Nav, c.text_faint).into_any_element(), name, false),
             };
+            let (retry, key) = (looks.again.clone(), picture.id.as_str().to_owned());
+            let again_selector = format!("picture-again-{}", picture.id);
             div()
                 .debug_selector(move || selector)
                 .w(px(w))
@@ -147,6 +160,9 @@ pub fn picture(picture: &Picture, most_w: f32, most_h: f32, looks: &Looks, cx: &
                 .border_color(c.border)
                 .child(lead)
                 .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).text_center().line_clamp(3).child(words))
+                .when(again, |d| {
+                    d.child(div().debug_selector(move || again_selector).child(Button::new(SharedString::from(format!("picture-again-{}", picture.id)), "Try Again").size(ButtonSize::Small).on_click(move |_, window, cx| retry(&key, window, cx))))
+                })
                 .into_any_element()
         }
     };
@@ -176,7 +192,7 @@ pub fn viewer(picture: &Picture, at: usize, count: usize, read: Option<&Read>, w
             let (w, h) = fitted(*width, *height, most_w.max(80.), most_h.max(80.));
             div().w(px(w)).h(px(h)).child(img(image.clone()).size_full().object_fit(ObjectFit::Contain)).into_any_element()
         }
-        Some(Read::Failed(why)) => div().text_ui(TypeSize::Body).text_color(gpui::white()).child(why.clone()).into_any_element(),
+        Some(Read::Failed { why, .. }) => div().text_ui(TypeSize::Body).text_color(gpui::white()).child(why.clone()).into_any_element(),
         _ => spinner("viewer-reading", IconSize::Card, gpui::white()).into_any_element(),
     };
     let name = picture.name.clone().unwrap_or_else(|| "Picture".into());
@@ -216,15 +232,15 @@ pub fn in_words(step: &str, n: usize, text: &str) -> Vec<Picture> {
 /// fitted to `most`; a web address as a row that opens it in your browser; anything else as its words.
 pub fn words_pictures(step: &str, n: usize, text: &str, most: (f32, f32), looks: &Looks) -> kuvo_ui::markdown::Pictures {
     let urls = kuvo_ui::markdown::images(text);
-    let read: HashMap<String, Read> = in_words(step, n, text).iter().filter_map(|picture| looks.read.get(picture.source.key()).map(|read| (picture.source.key().to_owned(), read.clone()))).collect();
-    let (open, step) = (looks.open.clone(), step.to_owned());
+    let read: HashMap<String, Read> = in_words(step, n, text).iter().filter_map(|picture| looks.read.get(picture.id.as_str()).map(|read| (picture.id.clone(), read.clone()))).collect();
+    let (open, again, step) = (looks.open.clone(), looks.again.clone(), step.to_owned());
     Rc::new(move |url: &str, alt: &str, cx: &App| {
         let at = urls.iter().position(|each| each == url).unwrap_or(0);
         if let Some(mut found) = pictures::of_address(format!("{step}:{n}~{at}"), url, alt) {
             if alt.is_empty() {
                 found.name = None;
             }
-            let looks = Looks { read: &read, open: open.clone() };
+            let looks = Looks { read: &read, shown: &[], open: open.clone(), again: again.clone() };
             return picture(&found, most.0, most.1, &looks, cx);
         }
         let c = &cx.theme().colors;

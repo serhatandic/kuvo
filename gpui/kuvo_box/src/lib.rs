@@ -41,6 +41,7 @@ pub mod permissions;
 pub mod pictures;
 pub mod place;
 pub mod queue;
+pub mod quoting;
 pub mod search;
 pub mod session_actions;
 pub mod sessions;
