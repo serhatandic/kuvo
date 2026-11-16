@@ -51770,7 +51770,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "05f2d6bbd3ed";
+var BRIDGE_VERSION = "3fcd620f2ea7";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63237,6 +63237,7 @@ import { spawnSync as spawnSync19 } from "node:child_process";
 import fs191 from "node:fs";
 import path198 from "node:path";
 init_home();
+init_host_interface();
 function runs(pid) {
   try {
     process.kill(pid, 0);
@@ -63317,10 +63318,25 @@ function boxPermissions() {
   }
   return said(allowed);
 }
+var FRESH_WITHIN = 2000;
+async function freshBoxPermissions() {
+  const host = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac" ? appHost() : null;
+  if (host) {
+    let waited;
+    await Promise.race([
+      askHost(host, "permissions", {}, true).catch(() => null),
+      new Promise((resolve) => {
+        waited = setTimeout(resolve, FRESH_WITHIN);
+      })
+    ]);
+    clearTimeout(waited);
+  }
+  return boxPermissions();
+}
 async function* permissionsRoute({ request, json }) {
   const method = request.method.toUpperCase();
   if (method === "GET")
-    return yield* json(200, boxPermissions());
+    return yield* json(200, await freshBoxPermissions());
   if (method !== "POST")
     return yield* json(405, {});
   let asked;
@@ -63948,7 +63964,7 @@ var computerFacts = {
     }
   },
   atLogin: helperAtLogin,
-  permissions: boxPermissions,
+  permissions: () => freshBoxPermissions(),
   update: updateStatus,
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
@@ -64028,7 +64044,7 @@ async function computerPage(context) {
       ...devices ? { confirm: { title: "Stop letting your devices connect?", body: `Your phone, and Kuvo Code on your other computers, can’t reach ${where} until you turn this on again.`, button: "Turn Off" } } : {}
     }));
   const groups = [{ id: "computer", rows }];
-  const permissions = computerFacts.permissions();
+  const permissions = await computerFacts.permissions();
   if (permissions.applies) {
     const helper = permissions.name ?? HELPER_NAME;
     const allows = [];
