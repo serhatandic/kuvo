@@ -84,6 +84,18 @@ public final class AtWorkFeed {
         }
     }
 
+    /// Where Kuvo's desktop app is that last opened with this Mac's Kuvo, as it told the box
+    /// (`kuvo/box/app`'s `desktop`); nil where it never said, or the box doesn't answer.
+    public func registeredDesktop() async -> URL? {
+        guard let server = server() else { return nil }
+        var request = server.request("kuvo/box/app")
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await session.data(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
+              let said = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let desktop = said["desktop"] as? String, desktop.hasPrefix("/") else { return nil }
+        return URL(filePath: desktop)
+    }
+
     /// Asks the box to stop Kuvo on this Mac until it next starts (`POST kuvo/box/stop`). Nil once
     /// it's under way; else why not, in the box's words where it gave any.
     public func askToStop() async -> String? {
