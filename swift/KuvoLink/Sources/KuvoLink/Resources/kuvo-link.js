@@ -41747,7 +41747,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d1659674a976";
+var BRIDGE_VERSION = "b4a361fee76e";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -52949,6 +52949,7 @@ async function* serveRoute({ request, json }) {
     return yield* json(405, {});
   if (IS_MAC)
     return yield* json(409, { message: "Kuvo Code itself runs the server on this Mac." });
+  const running = runningServe();
   if (method === "POST") {
     if (!request.fromApp && !request.fromMac)
       return yield* json(403, { message: "Only Kuvo Code asks for Kuvo's server on this computer." });
@@ -52962,7 +52963,6 @@ async function* serveRoute({ request, json }) {
       fs163.rmSync(SERVE_NEEDED(), { force: true });
     }
   }
-  const running = runningServe();
   return yield* json(200, { needed: fs163.existsSync(SERVE_NEEDED()), serving: running !== null });
 }
 
