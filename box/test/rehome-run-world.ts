@@ -87,9 +87,12 @@ KC="$HOME/keychain"
 holder=$(cat "$H/updates/rehome/lock/pid" 2>/dev/null)
 echo "$verb \${B##*/}" >>"$HOME/keys-asked"
 [ -n "$holder" ] && [ "$holder" = "$PPID" ] || { echo "kuvo-keys works only for this Mac's box's move, run by it while it holds its lock." >&2; echo "refused $verb" >>"$HOME/keys-asked"; exit 2; }
-if [ -f "$HOME/keychain-locked" ]; then echo '{"error":"The Keychain is locked.","reason":"refused"}'; exit 1; fi
+if [ -f "$HOME/keychain-locked" ]; then echo '{"error":"The Keychain is locked.","reason":"locked"}'; exit 1; fi
 case "$verb" in
 copy)
+    # (Unlocked, macOS keeps an item from it: it wasn't allowed, or it said something else.)
+    if [ -f "$HOME/keychain-not-allowed" ]; then echo '{"error":"Your Keychain didn’t give out phone-link/key (OSStatus -25308).","reason":"not-allowed","status":-25308}'; exit 1; fi
+    if [ -f "$HOME/keychain-refuses" ]; then echo '{"error":"Your Keychain didn’t give out run.kuvo.code.vault (OSStatus -25291).","reason":"refused","status":-25291}'; exit 1; fi
     [ -x "$B/Contents/MacOS/Kuvo Helper" ] || { echo "no helper" >&2; exit 2; }
     [ -z "$(ls "$KC/helper" 2>/dev/null)" ] || { echo '{"error":"Items an earlier box left.","reason":"leftovers"}'; exit 1; }
     [ ! -f "$H/updates/rehome/keychain.json" ] || { echo '{"error":"An earlier try left copies.","reason":"journal"}'; exit 1; }

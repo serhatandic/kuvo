@@ -8,7 +8,9 @@ import Security
 /// the helper, #333 piece 4). It never asks you anything: a read macOS would ask about (a locked
 /// Keychain, a program not in the item's list) is refused, and said so. An item is made with the
 /// programs that may read it named at creation (`SecAccessCreate`), never by changing the list of
-/// one that's there, which macOS asks you about once per item.
+/// one that's there, which macOS asks you about once per item. (The one exception: a read that may
+/// ask whether this program may use an item, `askingIfNeeded`, for `kuvo-keys` reading what an
+/// earlier Kuvo Code signed differently made. A locked Keychain is never asked to be unlocked.)
 ///
 /// Tests (and only tests) give it a keychain file of their own, made with `security create-keychain`
 /// in their folder: it then reads and writes only that file, never your login keychain.
@@ -84,14 +86,16 @@ public struct HostKeychain: Sendable {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    /// An item's secret.
-    public func read(_ service: String, _ account: String) -> Read {
+    /// An item's secret. `askingIfNeeded`: where the item doesn't name this program, macOS may ask
+    /// you whether it may use it (for this read alone, in a process that otherwise never asks,
+    /// `neverAsk`); a locked Keychain is still refused, never asked to be unlocked.
+    public func read(_ service: String, _ account: String, askingIfNeeded: Bool = false) -> Read {
         if isLocked { return .refused(errSecInteractionNotAllowed) }
         var query = Self.base(service, account)
         query[kSecReturnData as String] = true
         guard let query = scoped(query) else { return .refused(errSecNoSuchKeychain) }
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = Self.asking(askingIfNeeded) { SecItemCopyMatching(query as CFDictionary, &result) }
         switch status {
         case errSecSuccess: return (result as? Data).map(Read.found) ?? .missing
         case errSecItemNotFound: return .missing
@@ -99,36 +103,54 @@ public struct HostKeychain: Sendable {
         }
     }
 
-    /// The items of `service`, by account (and label), with no secret read, so it never asks: nil
-    /// when the Keychain won't list them.
-    public func items(_ service: String) -> [Item]? {
+    /// What listing a service found: its items, or what the Keychain said instead.
+    public enum Listing: Equatable, Sendable {
+        case items([Item])
+        case refused(OSStatus)
+    }
+
+    /// The items of `service`, by account (and label), with no secret read, so it never asks.
+    public func list(_ service: String) -> Listing {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
             kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitAll,
         ]
-        guard let query = scoped(query) else { return nil }
+        guard let query = scoped(query) else { return .refused(errSecNoSuchKeychain) }
         var result: CFTypeRef?
-        switch SecItemCopyMatching(query as CFDictionary, &result) {
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        switch status {
         case errSecSuccess:
             let found = (result as? [[String: Any]]) ?? []
-            return found.compactMap { item in
+            return .items(found.compactMap { item in
                 (item[kSecAttrAccount as String] as? String).map { Item(account: $0, label: item[kSecAttrLabel as String] as? String) }
-            }.sorted { $0.account < $1.account }
-        case errSecItemNotFound: return []
-        default: return nil
+            }.sorted { $0.account < $1.account })
+        case errSecItemNotFound: return .items([])
+        default: return .refused(status)
         }
+    }
+
+    /// The items of `service` (`list`): nil when the Keychain won't list them.
+    public func items(_ service: String) -> [Item]? {
+        if case .items(let items) = list(service) { return items }
+        return nil
+    }
+
+    /// What the Keychain says of an item, no secret read: `errSecSuccess` (there),
+    /// `errSecItemNotFound`, or why it won't say.
+    public func look(_ service: String, _ account: String) -> OSStatus {
+        var query = Self.base(service, account)
+        query[kSecReturnAttributes as String] = true
+        guard let query = scoped(query) else { return errSecNoSuchKeychain }
+        var result: CFTypeRef?
+        return SecItemCopyMatching(query as CFDictionary, &result)
     }
 
     /// Whether an item is there (no secret read); nil when the Keychain won't say.
     public func exists(_ service: String, _ account: String) -> Bool? {
-        var query = Self.base(service, account)
-        query[kSecReturnAttributes as String] = true
-        guard let query = scoped(query) else { return nil }
-        var result: CFTypeRef?
-        switch SecItemCopyMatching(query as CFDictionary, &result) {
-        case errSecSuccess: return true
-        case errSecItemNotFound: return false
-        default: return nil
+        switch look(service, account) {
+        case errSecSuccess: true
+        case errSecItemNotFound: false
+        default: nil
         }
     }
 
@@ -206,7 +228,8 @@ public struct HostKeychain: Sendable {
     }
 
     /// One such sign-in's secret.
-    public func internetPassword(server: String, account: String, creator: OSType) -> Read {
+    /// (`askingIfNeeded`, as `read`'s.)
+    public func internetPassword(server: String, account: String, creator: OSType, askingIfNeeded: Bool = false) -> Read {
         if isLocked { return .refused(errSecInteractionNotAllowed) }
         let query: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword, kSecAttrCreator as String: creator, kSecAttrServer as String: server,
@@ -214,7 +237,7 @@ public struct HostKeychain: Sendable {
         ]
         guard let query = scoped(query) else { return .refused(errSecNoSuchKeychain) }
         var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let status = Self.asking(askingIfNeeded) { SecItemCopyMatching(query as CFDictionary, &result) }
         switch status {
         case errSecSuccess: return (result as? Data).map(Read.found) ?? .missing
         case errSecItemNotFound: return .missing
@@ -246,6 +269,17 @@ public struct HostKeychain: Sendable {
     /// fails at once instead.
     public static func neverAsk() {
         SecKeychainSetUserInteractionAllowed(false)
+    }
+
+    /// `body`, with macOS allowed to ask you while it runs where `allowed`, and as it was after.
+    /// (Process-wide: the programs that use it make one Keychain call at a time.)
+    private static func asking(_ allowed: Bool, _ body: () -> OSStatus) -> OSStatus {
+        guard allowed else { return body() }
+        var was: DarwinBoolean = false
+        _ = SecKeychainGetUserInteractionAllowed(&was)
+        SecKeychainSetUserInteractionAllowed(true)
+        defer { SecKeychainSetUserInteractionAllowed(was.boolValue) }
+        return body()
     }
 }
 #endif

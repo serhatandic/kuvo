@@ -63,7 +63,10 @@ public struct KeychainMove: Sendable {
     }
 
     public enum Failure: LocalizedError, Equatable {
-        /// The Keychain wouldn't list or give out an item without asking.
+        /// The Keychain is locked: nothing was read or changed (it's never asked to be unlocked).
+        case locked(String)
+        /// The Keychain wouldn't list or give out an item (what it said: unlocked, this is most often
+        /// `errSecInteractionNotAllowed`, macOS would have asked whether this program may use it).
         case refused(String, OSStatus)
         /// An item couldn't be made, or taken away.
         case unchanged(String, OSStatus)
@@ -79,7 +82,8 @@ public struct KeychainMove: Sendable {
 
         public var errorDescription: String? {
             switch self {
-            case .refused(let item, let status): "Your Keychain didn’t give out \(item) (\(status)): unlock your Mac, then try again."
+            case .locked(let item): "Your Keychain is locked, so \(item) wasn’t read or changed."
+            case .refused(let item, let status): "Your Keychain didn’t give out \(item) (OSStatus \(status))."
             case .unchanged(let item, let status): "Your Keychain didn’t take the change to \(item) (\(status))."
             case .copyMissing(let item): "The box’s copy of \(item) isn’t in your Keychain, so the app’s stays."
             case .originalsRemain(let item): "Kuvo Code’s own \(item) is still in your Keychain: it goes before the box moves back."
@@ -141,8 +145,11 @@ public struct KeychainMove: Sendable {
     /// read one to tell): one left by an earlier box refuses it, and so does any journal left by an
     /// earlier try, however far it got (`copying` or `copied`: the helper's `uncopy` first, then
     /// copy afresh). Says how many there are.
+    ///
+    /// `askingIfNeeded`: each original's read may ask you whether this program may use it (one an
+    /// earlier Kuvo Code signed differently made, `kuvo-keys` in a release); otherwise refused.
     @discardableResult
-    public func copy(trusting helperBundle: URL) throws -> Int {
+    public func copy(trusting helperBundle: URL, askingIfNeeded: Bool = false) throws -> Int {
         let earlier = try journal()
         switch earlier?.state {
         case .settled?, .settling?: return earlier?.items.count ?? 0
@@ -151,23 +158,22 @@ public struct KeychainMove: Sendable {
         case nil: break
         }
         // (Locked, it would ask you to unlock it: the move waits instead.)
-        guard !keychain.isLocked else { throw Failure.refused(app, errSecInteractionNotAllowed) }
+        guard !keychain.isLocked else { throw Failure.locked(app) }
         var entries: [Entry] = []
         for service in Self.services {
-            guard let items = keychain.items("\(app).\(service)") else { throw Failure.refused("\(app).\(service)", errSecInteractionNotAllowed) }
+            let items = try listed("\(app).\(service)")
             entries += items.map { Entry(service: service, account: $0.account, label: $0.label) }
-            guard let there = keychain.items("\(helper).\(service)") else { throw Failure.refused("\(helper).\(service)", errSecInteractionNotAllowed) }
-            if let stray = there.first { throw Failure.leftovers("\(service)/\(stray.account)") }
+            if let stray = try listed("\(helper).\(service)").first { throw Failure.leftovers("\(service)/\(stray.account)") }
         }
         // Each one it will make, listed before any is: whatever stops part way takes them all away.
         try write(Journal(state: .copying, app: app, helper: helper, items: entries))
         for entry in entries {
             let data: Data
-            switch keychain.read("\(app).\(entry.service)", entry.account) {
+            switch keychain.read("\(app).\(entry.service)", entry.account, askingIfNeeded: askingIfNeeded) {
             case .found(let found): data = found
             // (Gone meanwhile: nothing to copy.)
             case .missing: continue
-            case .refused(let status): throw Failure.refused(entry.name, status)
+            case .refused(let status): throw refusal(entry.name, status)
             }
             let status = keychain.add("\(helper).\(entry.service)", entry.account, data, label: entry.label, trusting: [helperBundle])
             guard status == errSecSuccess else { throw status == errSecDuplicateItem ? Failure.leftovers(entry.name) : Failure.unchanged(entry.name, status) }
@@ -188,13 +194,9 @@ public struct KeychainMove: Sendable {
         guard journal.state == .copying || journal.state == .copied, !moveIsDone else {
             throw Failure.journal("The box’s keys were moved already: its copies stay.")
         }
-        guard !keychain.isLocked else { throw Failure.refused(helper, errSecInteractionNotAllowed) }
+        guard !keychain.isLocked else { throw Failure.locked(helper) }
         for entry in journal.items {
-            switch keychain.exists("\(helper).\(entry.service)", entry.account) {
-            case false?: continue
-            case nil: throw Failure.refused(entry.name, errSecInteractionNotAllowed)
-            case true?: break
-            }
+            guard try isThere("\(helper).\(entry.service)", entry.account, entry.name) else { continue }
             let status = keychain.delete("\(helper).\(entry.service)", entry.account)
             guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure.unchanged(entry.name, status) }
         }
@@ -210,17 +212,15 @@ public struct KeychainMove: Sendable {
         guard !FileManager.default.fileExists(atPath: home.appending(path: "box/keychain.json").path(percentEncoded: false)) else {
             throw Failure.journal("This box has keys of its own: they stay.")
         }
-        guard !keychain.isLocked else { throw Failure.refused(helper, errSecInteractionNotAllowed) }
+        guard !keychain.isLocked else { throw Failure.locked(helper) }
         var kept: [String] = []
         for service in Self.services {
-            guard let items = keychain.items("\(helper).\(service)") else { throw Failure.refused("\(helper).\(service)", errSecInteractionNotAllowed) }
-            for item in items {
-                switch keychain.exists("\(app).\(service)", item.account) {
-                case true?:
+            for item in try listed("\(helper).\(service)") {
+                if try isThere("\(app).\(service)", item.account, "\(service)/\(item.account)") {
                     let status = keychain.delete("\(helper).\(service)", item.account)
                     guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure.unchanged("\(service)/\(item.account)", status) }
-                case false?: kept.append("\(service)/\(item.account)")
-                case nil: throw Failure.refused("\(service)/\(item.account)", errSecInteractionNotAllowed)
+                } else {
+                    kept.append("\(service)/\(item.account)")
                 }
             }
         }
@@ -243,7 +243,7 @@ public struct KeychainMove: Sendable {
         guard var journal = try journal() else { throw Failure.journal("There are no copies of the box’s keys, so the app’s stay.") }
         if journal.state == .settled { return }
         guard journal.state == .copied || journal.state == .settling else { throw Failure.journal("The box’s keys weren’t all copied, so the app’s stay.") }
-        guard !keychain.isLocked else { throw Failure.refused(app, errSecInteractionNotAllowed) }
+        guard !keychain.isLocked else { throw Failure.locked(app) }
         for entry in journal.items {
             // (One gone since it was copied, with its original, is gone.)
             let original = keychain.exists("\(app).\(entry.service)", entry.account)
@@ -267,8 +267,7 @@ public struct KeychainMove: Sendable {
     public func back(trusting appBundle: URL) throws {
         var entries: [Entry] = []
         for service in Self.services {
-            guard let items = keychain.items("\(helper).\(service)") else { throw Failure.refused("\(helper).\(service)", errSecInteractionNotAllowed) }
-            entries += items.map { Entry(service: service, account: $0.account, label: $0.label) }
+            entries += try listed("\(helper).\(service)").map { Entry(service: service, account: $0.account, label: $0.label) }
         }
         let journaled = (try journal())?.items ?? []
         if (try journal())?.state != .returning {
@@ -284,7 +283,7 @@ public struct KeychainMove: Sendable {
             switch keychain.read("\(helper).\(entry.service)", entry.account) {
             case .found(let found): data = found
             case .missing: continue
-            case .refused(let status): throw Failure.refused(entry.name, status)
+            case .refused(let status): throw refusal(entry.name, status)
             }
             let status = keychain.add("\(app).\(entry.service)", entry.account, data, label: entry.label, trusting: [appBundle])
             // (Made before it stopped part way.)
@@ -295,6 +294,29 @@ public struct KeychainMove: Sendable {
             guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure.unchanged(entry.name, status) }
         }
         try forgetJournal()
+    }
+
+    /// The items of `service`, or why the Keychain wouldn't list them (locked, or what it said).
+    private func listed(_ service: String) throws -> [HostKeychain.Item] {
+        switch keychain.list(service) {
+        case .items(let items): return items
+        case .refused(let status): throw refusal(service, status)
+        }
+    }
+
+    /// Whether an item is there, or why the Keychain wouldn't say.
+    private func isThere(_ service: String, _ account: String, _ name: String) throws -> Bool {
+        let status = keychain.look(service, account)
+        switch status {
+        case errSecSuccess: return true
+        case errSecItemNotFound: return false
+        default: throw refusal(name, status)
+        }
+    }
+
+    /// A refusal as it is: the Keychain locked, or what it said.
+    private func refusal(_ item: String, _ status: OSStatus) -> Failure {
+        keychain.isLocked ? .locked(item) : .refused(item, status)
     }
 }
 #endif

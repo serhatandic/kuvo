@@ -59,12 +59,14 @@ function freeName(host: string, account: string, taken: Set<string>): string {
  * `kuvo-keys`; `agentSites` and `agentAccounts`: the sites it let agents sign in to alone, and
  * with which account (its preferences). */
 export async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait = 30_000 }: { home: string; keys: string; agentSites: string[]; agentAccounts: Record<string, string>; wait?: number }): Promise<HandedOver> {
-  const read = spawnSync(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  // (macOS may ask you about each sign-in it reads: room for your answers.)
+  const read = spawnSync(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 600_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let said: unknown = null;
   try { said = JSON.parse((read.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
   if (read.status !== 0 || !isObject(said) || !Array.isArray(said.logins)) {
     // (Only its one word for why: what it says besides may name a site or an account.)
-    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`})`, added: 0, short: 0, kept: 0 };
+    const status = isObject(said) && typeof said.status === "number" ? ` OSStatus ${said.status}` : "";
+    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`}${status})`, added: 0, short: 0, kept: 0 };
   }
   const logins = said.logins.filter((each): each is Login => isObject(each) && typeof each.host === "string" && each.host.length > 0 && typeof each.account === "string" && typeof each.password === "string");
   if (!logins.length) return { done: true, added: 0, short: 0, kept: 0 };

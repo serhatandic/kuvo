@@ -168,6 +168,30 @@ test.if(mac)("a locked Keychain stops the move before anything's copied, saying 
   expect(readdirSync(join(m.keychain, "helper")).length).toBe(2)
 }, LIMIT)
 
+test.if(mac)("a Keychain that keeps this Mac's keys from Kuvo without being locked never says it's locked: you're asked for your OK, or told to try again, and only the move's log names the key and what macOS said", () => {
+  for (const [file, shown, logged] of [
+    ["keychain-not-allowed", "Kuvo needs your OK to take this Mac's keys along. Try again, and when macOS asks whether kuvo-keys may use your keychain, enter your Mac's password and click Always Allow.", "kuvo-keys copy: not-allowed (OSStatus -25308): Your Keychain didn’t give out phone-link/key (OSStatus -25308)."],
+    ["keychain-refuses", "Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.", "kuvo-keys copy: refused (OSStatus -25291): Your Keychain didn’t give out run.kuvo.code.vault (OSStatus -25291)."],
+  ]) {
+    const m = mac07(root, m => put(join(m.home, file), ""))
+    const before = snapshot(m.S)
+    const stopped = run(m)
+    expect(stopped.status, file).toBe(1)
+    expect(stopped.said, file).toMatchObject({ result: "failed", status: { state: "failed", failed: { step: "keys" } } })
+    expect(stopped.said!.message, file).toBe(shown)
+    // (No number, no key's name on screen: those are for support, in the move's log.)
+    expect(stopped.said!.message, file).not.toMatch(/-?\d{3,}|phone-link|run\.kuvo/)
+    // (Its log: what the move writes to its errors, which the installer keeps in `run.log`.)
+    expect(stopped.errors, file).toContain(logged)
+    expect(existsSync(join(m.K, "box")), file).toBe(false)
+    expect(snapshot(m.S), file).toEqual(before)
+    // Allowed, trying again moves everything.
+    rmSync(join(m.home, file))
+    expect(run(m).said, file).toMatchObject({ result: "done" })
+    rmSync(m.home, { recursive: true, force: true })
+  }
+}, LIMIT * 2)
+
 test.if(mac)("keys the helper can't read back are taken away again and nothing moves: the app's own stay where they were", () => {
   const m = mac07(root, m => put(join(m.home, "helper-cannot-read"), ""))
   const stopped = run(m)

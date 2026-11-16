@@ -7,8 +7,11 @@ import Security
 /// box moves into a home of its own (protocol/PROTOCOL.md, "This Mac's box: its helper"). Kuvo Code
 /// carries it, signed with Kuvo Code's own identifier and team, which is what the items it made
 /// before go by: it reads them without macOS asking, as the app that made them would. The box's
-/// move runs it; no app's window does Keychain work. It never asks you anything, and reaches only
-/// this account's `~/.kuvo-code`.
+/// move runs it; no app's window does Keychain work. It reaches only this account's `~/.kuvo-code`.
+/// Signed differently from the Kuvo Code that made them (an Apple Development build after a
+/// Developer ID one: the items' list names that one's certificate, not only its team), it isn't
+/// one the items name, so reading each, macOS asks you whether `kuvo-keys` may (Always Allow): those
+/// reads alone may ask, nothing else it does, and never to unlock a locked Keychain.
 ///
 /// It reads what macOS keeps from every other program, so it does nothing for anything but the
 /// box's move: only while a move holds its lock (`updates/rehome/lock/pid`), and only run by the
@@ -57,11 +60,14 @@ public enum KeysTool {
         // Tests alone: a keychain file of their own, and the app they stand for (a debug build is
         // never signed as Kuvo Code).
         let pinned = false
+        // (No one is there to answer macOS in a test.)
+        let asks = false
         let named = option("--test-app")
         if let file = option("--test-keychain"), let password = option("--test-keychain-password") { keychain = HostKeychain(testFile: file, password: password) }
         guard keychain.isTests else { usage("A test build of kuvo-keys reads only a test's keychain: --test-keychain <file> --test-keychain-password <password>.") }
         #else
         let pinned = true
+        let asks = true
         // Who it is, is what it's signed as: nothing it's told. And signed by a team: one signed
         // ad hoc (a local build) could be anyone's, and is never Kuvo Code to your Keychain.
         guard case .team? = BoxHelperBundle.Signer.ofThisProgram else { usage("kuvo-keys runs signed by Kuvo Code’s team.") }
@@ -92,7 +98,7 @@ public enum KeysTool {
                       BoxHelperBundle.isGenuine(trusted, identifier: helper, adHocMatch: !pinned), let seal = BoxHelperBundle.cdhash(trusted) else {
                     usage("Copying needs \(BoxHelperBundle.name) itself, in this Mac’s box and signed by Kuvo Code’s team: --helper <its bundle>.")
                 }
-                let copied = try move.copy(trusting: trusted)
+                let copied = try move.copy(trusting: trusted, askingIfNeeded: asks)
                 // The same helper still, now that each copy names it: one changed meanwhile is said
                 // (one changed and put back in between isn't seen).
                 // (The journal stays at `copied`: the helper's `uncopy` takes away the copies it can,
@@ -109,7 +115,7 @@ public enum KeysTool {
                     }
                     switch keychain.internetPassword(server: passwordHost, account: passwordAccount, creator: creator) {
                     case .missing: break // A previous try already removed it.
-                    case .refused(let status): throw KeychainMove.Failure.refused("saved sign-in", status)
+                    case .refused(let status): throw keychain.isLocked ? KeychainMove.Failure.locked("saved sign-in") : KeychainMove.Failure.refused("saved sign-in", status)
                     case .found(let original):
                         guard original == Data(password.utf8) else { throw KeychainMove.Failure.copyMissing("saved sign-in changed") }
                         let status = keychain.deleteInternetPassword(server: passwordHost, account: passwordAccount, creator: creator, verified: Data(password.utf8))
@@ -122,12 +128,15 @@ public enum KeysTool {
                 say([:], 0)
             case ["passwords"]:
                 guard saysDownAPipe else { usage("kuvo-keys says your saved sign-ins only down a pipe to the move that runs it.") }
-                say(try savedSignIns(keychain: keychain), 0)
+                say(try savedSignIns(keychain: keychain, askingIfNeeded: asks), 0)
             default:
                 usage("Usage: kuvo-keys copy --home <box> --helper <\(BoxHelperBundle.bundleName)> | delete-originals --home <box> | passwords --home <box>")
             }
         } catch let failure as KeychainMove.Failure {
-            say(["error": failure.localizedDescription, "reason": failure.reason], 1)
+            // (`error` and `status` are for the move's log; what you're shown it words from `reason`.)
+            var answer: [String: Any] = ["error": failure.localizedDescription, "reason": failure.reason]
+            if case .refused(_, let status) = failure { answer["status"] = Int(status) }
+            say(answer, 1)
         } catch {
             say(["error": error.localizedDescription, "reason": "failed"], 1)
         }
@@ -196,20 +205,22 @@ public enum KeysTool {
     /// They're said only down a pipe to the move that runs this (which holds them in memory and
     /// gives each to the box's own server): never written to a file, where any program of yours
     /// outside the sandbox could read what the Keychain kept from all but Kuvo Code.
-    static func savedSignIns(keychain: HostKeychain) throws -> [String: Any] {
-        guard !keychain.isLocked, let found = keychain.internetPasswords(creator: creator) else {
+    static func savedSignIns(keychain: HostKeychain, askingIfNeeded: Bool = false) throws -> [String: Any] {
+        guard !keychain.isLocked else { throw KeychainMove.Failure.locked("your saved sign-ins") }
+        guard let found = keychain.internetPasswords(creator: creator) else {
             throw KeychainMove.Failure.refused("your saved sign-ins", errSecInteractionNotAllowed)
         }
         var logins: [[String: Any]] = []
         for login in found {
-            switch keychain.internetPassword(server: login.server, account: login.account, creator: creator) {
+            switch keychain.internetPassword(server: login.server, account: login.account, creator: creator, askingIfNeeded: askingIfNeeded) {
             case .found(let data):
                 var entry: [String: Any] = ["host": login.server, "account": login.account, "password": String(decoding: data, as: UTF8.self)]
                 if let modified = login.modified { entry["modified"] = Int(modified.timeIntervalSince1970 * 1000) }
                 logins.append(entry)
             // (Gone meanwhile.)
             case .missing: continue
-            case .refused(let status): throw KeychainMove.Failure.refused("\(login.account) at \(login.server)", status)
+            case .refused(let status):
+                throw keychain.isLocked ? KeychainMove.Failure.locked("your saved sign-ins") : KeychainMove.Failure.refused("\(login.account) at \(login.server)", status)
             }
         }
         return ["v": 1, "logins": logins]
@@ -229,10 +240,13 @@ public enum KeysTool {
 }
 
 extension KeychainMove.Failure {
-    /// One word for what's reading the answer (the box's move), which decides what's next by it.
+    /// One word for what's reading the answer (the box's move), which decides what's next by it:
+    /// `locked` only when the Keychain is; `not-allowed` when macOS kept an item from this program
+    /// (it would have asked, or you didn't allow it); `refused`, anything else it said.
     var reason: String {
         switch self {
-        case .refused: "refused"
+        case .locked: "locked"
+        case .refused(_, let status): [errSecInteractionNotAllowed, errSecAuthFailed, errSecUserCanceled].contains(status) ? "not-allowed" : "refused"
         case .unchanged: "unchanged"
         case .copyMissing: "copy-missing"
         case .originalsRemain: "originals-remain"

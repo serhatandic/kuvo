@@ -30,8 +30,8 @@ const foldersIn = (folder: string): string[] => listOf(folder).filter(name => { 
 /** A short run of one of the Keychain's tools: its last line of JSON, and how it ended. Run by
  * this very process, with no shell between: `kuvo-keys` works only for the process that holds the
  * move's lock. */
-function tool(program: string, args: string[]): { status: number | null; said: Record<string, unknown> | null; errors: string } {
-  const ran = spawnSync(program, args, { encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"] });
+function tool(program: string, args: string[], timeout = 180_000): { status: number | null; said: Record<string, unknown> | null; errors: string } {
+  const ran = spawnSync(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
   let said: unknown = null;
   try { said = JSON.parse((ran.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
   return { status: ran.error ? null : ran.status, said: isObject(said) ? said : null, errors: ran.error ? ran.error.message : (ran.stderr ?? "").trim().split("\n").pop() ?? "" };
@@ -46,6 +46,12 @@ function helperOf(run: RunPlan, home: string): string {
 const helperProgram = (bundle: string) => path.join(bundle, "Contents", "MacOS", HELPER_NAME);
 
 const LOCKED = "Your Keychain is locked, so Kuvo can't take this Mac's keys along. Unlock it (log out and back in, or open Keychain Access), then try again.";
+/** macOS kept an item from `kuvo-keys` (an earlier Kuvo Code signed differently made it, and it
+ * asked, or would have): you allow it when it asks. */
+const NOT_ALLOWED = "Kuvo needs your OK to take this Mac's keys along. Try again, and when macOS asks whether kuvo-keys may use your keychain, enter your Mac's password and click Always Allow.";
+const NOT_TAKEN = "Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.";
+/** How long `kuvo-keys copy` may take: macOS may ask you about each item it reads. */
+const ASKING = 600_000;
 
 /** This Mac's keys copied for the helper (`kuvo-keys copy`), and read back by it (`keys check`):
  * what an earlier box or an earlier try left under the helper's names is taken away first, once.
@@ -55,7 +61,7 @@ export function handOverKeys(run: RunPlan, home: string): void {
   if (!run.keys) return;
   const helper = helperOf(run, home);
   for (let tries = 0; ; tries++) {
-    const copied = tool(run.keys, ["copy", "--home", home, "--helper", helper]);
+    const copied = tool(run.keys, ["copy", "--home", home, "--helper", helper], ASKING);
     if (copied.status === 0) break;
     const reason = typeof copied.said?.reason === "string" ? copied.said.reason : "";
     // (An earlier box's items, or an earlier try's copies: taken away by the helper, then once more.)
@@ -63,10 +69,13 @@ export function handOverKeys(run: RunPlan, home: string): void {
       const cleared = tool(helperProgram(helper), ["keys", reason === "leftovers" ? "clear" : "uncopy", "--home", home]);
       if (cleared.status === 0) continue;
     }
-    if (reason === "refused") throw new Said(LOCKED);
-    // (What it said goes to the move's own log, for support: it may name an item.)
-    console.error(`kuvo-keys copy: ${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "it said nothing"}`);
-    throw new Said("Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.");
+    // (What it said goes to the move's own log alone, for support: it names an item, and what the
+    // Keychain said. What you're shown is in words, by its one word for why.)
+    const status = typeof copied.said?.status === "number" ? ` (OSStatus ${copied.said.status})` : "";
+    console.error(`kuvo-keys copy: ${reason || (copied.status === null ? "didn't finish" : `exit ${copied.status}`)}${status}: ${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "it said nothing"}`);
+    if (reason === "locked") throw new Said(LOCKED);
+    if (reason === "not-allowed") throw new Said(NOT_ALLOWED);
+    throw new Said(NOT_TAKEN);
   }
   const checked = tool(helperProgram(helper), ["keys", "check", "--home", home]);
   if (checked.status !== 0) {

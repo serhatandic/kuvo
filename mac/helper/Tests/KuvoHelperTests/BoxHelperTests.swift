@@ -922,6 +922,29 @@ private final class InTheTests {}
         #expect(try move.journal() == nil)
     }
 
+    /// An earlier Kuvo Code signed differently made the items (a Developer ID build, then an Apple
+    /// Development one): unlocked, macOS keeps them from `kuvo-keys` until you allow it. Said as
+    /// that (`not-allowed`, and what macOS said, for the move's log), never as a locked Keychain,
+    /// and nothing's left made. (A test's build never asks: no one is there to answer.)
+    @Test func kuvoKeysSaysItemsMacOSKeepsFromItAsNotAllowedNeverAsLocked() throws {
+        defer { cleanUp() }
+        addOriginals(madeBy: URL(filePath: "/usr/bin/true"))
+        let released = try moving()
+        #expect(!keychain.isLocked)
+        let refused = try keys(["copy", "--helper", released.path])
+        #expect(refused.status == 1, "\(refused.output) \(refused.errors)")
+        #expect(said(refused)["reason"] as? String == "not-allowed")
+        // (What macOS says for a program an item doesn't name, with no one to ask: here
+        // `errSecAuthFailed`; `errSecInteractionNotAllowed` where it would have asked.)
+        #expect([Int(errSecAuthFailed), Int(errSecInteractionNotAllowed)].contains(said(refused)["status"] as? Int ?? 0), "\(refused.output)")
+        #expect((said(refused)["error"] as? String)?.contains("locked") == false)
+        // What it made before it stopped stays journaled for the helper's `uncopy`, as any stop's does.
+        #expect(try move.journal()?.state == .copying)
+        #expect(try helper(["keys", "uncopy"]).status == 0)
+        for service in KeychainMove.services { #expect(keychain.items("\(Self.helperID).\(service)") == []) }
+        #expect(keychain.items("\(Self.app).phone-link")?.count == 3)
+    }
+
     @Test func kuvoKeysSaysTheSignInsKuvoCodeKeptBeforeTheVaultDownAPipeAndWritesThemNowhere() throws {
         defer { cleanUp() }
         // As 0.7 saved them (internet passwords marked 'KUVO'), and one of something else's.

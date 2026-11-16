@@ -7623,8 +7623,16 @@ above. Only on a Mac.
     this very process (it holds the move's lock, which `kuvo-keys` checks), then `Kuvo Helper
     keys check`. Items an earlier box left (`leftovers`) or copies an earlier try left
     (`journal`) are taken away by the helper once (`keys clear`, `keys uncopy`) and the copy
-    made again. A Keychain that won't (`refused`) stops the move here, before the long part:
-    "Your Keychain is locked…". A move that goes back takes the copies away (`keys uncopy`).
+    made again. A Keychain that won't stops the move here, before the long part, in words by
+    `kuvo-keys`'s `reason`: `locked` (only when it is) "Your Keychain is locked…"; `not-allowed`
+    (macOS kept an item from `kuvo-keys`, or you didn't allow it) "Kuvo needs your OK…"; anything
+    else, "Kuvo couldn't take this Mac's keys along…". What it said (`error`, the item, and
+    `status`, the OSStatus) goes to the move's log alone, never on screen. A `kuvo-keys` signed
+    differently from the Kuvo Code that made the items (an Apple Development build after a
+    Developer ID one: the items' list names that one's certificate) lets macOS ask you, once per
+    item it reads (here and in `passwords`), whether it may use it (Always Allow); nothing else it
+    does asks, and a locked Keychain is never asked to be unlocked. Up to ten minutes for those
+    answers. A move that goes back takes the copies away (`keys uncopy`).
     Skipped, said nowhere, where the app brings no `kuvo-keys` and isn't Kuvo Code itself (a
     copy has no keys of Kuvo Code's own).
   - `clone`, then what it holds is counted (below).

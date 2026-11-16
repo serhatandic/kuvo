@@ -41939,7 +41939,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9ba1ff00252e";
+var BRIDGE_VERSION = "14b7d21e6bc1";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -42011,8 +42011,8 @@ var foldersIn = (folder) => listOf7(folder).filter((name) => {
     return false;
   }
 });
-function tool(program, args) {
-  const ran = spawnSync11(program, args, { encoding: "utf8", timeout: 180000, stdio: ["ignore", "pipe", "pipe"] });
+function tool(program, args, timeout = 180000) {
+  const ran = spawnSync11(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((ran.stdout ?? "").trim().split(`
@@ -42027,12 +42027,15 @@ function helperOf(run, home) {
 }
 var helperProgram = (bundle) => path141.join(bundle, "Contents", "MacOS", HELPER_NAME);
 var LOCKED2 = "Your Keychain is locked, so Kuvo can't take this Mac's keys along. Unlock it (log out and back in, or open Keychain Access), then try again.";
+var NOT_ALLOWED = "Kuvo needs your OK to take this Mac's keys along. Try again, and when macOS asks whether kuvo-keys may use your keychain, enter your Mac's password and click Always Allow.";
+var NOT_TAKEN = "Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.";
+var ASKING = 600000;
 function handOverKeys(run, home) {
   if (!run.keys)
     return;
   const helper = helperOf(run, home);
   for (let tries = 0;; tries++) {
-    const copied = tool(run.keys, ["copy", "--home", home, "--helper", helper]);
+    const copied = tool(run.keys, ["copy", "--home", home, "--helper", helper], ASKING);
     if (copied.status === 0)
       break;
     const reason = typeof copied.said?.reason === "string" ? copied.said.reason : "";
@@ -42041,10 +42044,13 @@ function handOverKeys(run, home) {
       if (cleared.status === 0)
         continue;
     }
-    if (reason === "refused")
+    const status = typeof copied.said?.status === "number" ? ` (OSStatus ${copied.said.status})` : "";
+    console.error(`kuvo-keys copy: ${reason || (copied.status === null ? "didn't finish" : `exit ${copied.status}`)}${status}: ${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "it said nothing"}`);
+    if (reason === "locked")
       throw new Said(LOCKED2);
-    console.error(`kuvo-keys copy: ${typeof copied.said?.error === "string" ? copied.said.error : copied.errors || "it said nothing"}`);
-    throw new Said("Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.");
+    if (reason === "not-allowed")
+      throw new Said(NOT_ALLOWED);
+    throw new Said(NOT_TAKEN);
   }
   const checked = tool(helperProgram(helper), ["keys", "check", "--home", home]);
   if (checked.status !== 0) {
@@ -53768,14 +53774,15 @@ function freeName2(host, account, taken) {
       return `${host} ${n}`;
 }
 async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait = 30000 }) {
-  const read = spawnSync17(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 180000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const read = spawnSync17(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 600000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((read.stdout ?? "").trim().split(`
 `).pop() ?? "");
   } catch {}
   if (read.status !== 0 || !isObject(said) || !Array.isArray(said.logins)) {
-    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`})`, added: 0, short: 0, kept: 0 };
+    const status = isObject(said) && typeof said.status === "number" ? ` OSStatus ${said.status}` : "";
+    return { done: false, why: `kuvo-keys couldn't read them (${isObject(said) && typeof said.reason === "string" ? said.reason : read.status === null ? "it didn't answer" : `exit ${read.status}`}${status})`, added: 0, short: 0, kept: 0 };
   }
   const logins = said.logins.filter((each) => isObject(each) && typeof each.host === "string" && each.host.length > 0 && typeof each.account === "string" && typeof each.password === "string");
   if (!logins.length)
@@ -66115,7 +66122,7 @@ var computerFacts = {
 var computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer");
 var computerHere4 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
 var LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
-var NOT_ALLOWED = {
+var NOT_ALLOWED2 = {
   screenRecording: "Not allowed. Agents can’t look at the screen.",
   accessibility: "Not allowed. Agents can’t click or type in other apps."
 };
@@ -66193,7 +66200,7 @@ async function computerPage(context) {
       allows.push(atLogin ? row({ id: "login-items", title: "Login Items", line: `Kuvo starts when you log in to ${where}.`, kind: "status", value: "On" }) : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
     }
     for (const each of permissions.list) {
-      const words = { allowed: each.line, not: NOT_ALLOWED[each.id] ?? "Not allowed." };
+      const words = { allowed: each.line, not: NOT_ALLOWED2[each.id] ?? "Not allowed." };
       if (each.allowed === false)
         allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
       else
