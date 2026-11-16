@@ -643,9 +643,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
       const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300_000);
-      // COMPAT(0.8 beta update): an engine the keeper's stop left running though its record names it
-      // (its HOME not told, its command line unread): stopped here by that record, once its command
-      // line says it's this box's engine. Goes with `update --installer`.
+      // COMPAT(beta.30 engine-record): an engine an older keeper's stop missed, stopped by its record. Goes once no box is from before beta.31.
+      // (Its HOME not told, its command line unread: stopped here by that record, once its command
+      // line says it's this box's engine.)
       if (stop.status === 0 && previous?.pid) await stopEngine(previous.pid);
       if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) {
         stopFailed = true;
@@ -1170,8 +1170,7 @@ export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutc
   return outcome;
 }
 
-// COMPAT(0.8 beta update): `installerSteps` and `untilFree` go with `update --installer`, once no
-// Mac's box is from before `computers.update.here`.
+// COMPAT(beta.30 installer): `installerSteps` and `untilFree`, for `update --installer`. Goes once no box is from before beta.31.
 /** What the installer Kuvo Code carries says as it brings this box up to its release
  * (`kuvo-install update`, `update --installer`), for the app to show as they are. */
 const HERE = process.platform === "darwin" ? "this Mac" : "this computer";

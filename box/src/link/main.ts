@@ -115,6 +115,7 @@ import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { keepMachinesUp } from "./add/keep-up";
 import { leaveForNewCode } from "./updates/code-in-place";
+import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
@@ -1178,7 +1179,8 @@ if (main) {
     // `engine-config tools`, from the box's own start (`kuvo-launch`, a Mac's own box's too): with
     // Kuvo Code's own tools for its engine, run with this same runtime, the engine's. (Not for the
     // retired Mac app's box in its folder, whose app gives its engine its own.)
-    process.stdout.write(engineConfigContent(process.env.OPENCODE_CONFIG_CONTENT, argument === "tools" ? { runtime: process.execPath } : undefined));
+    // (Whole, as the start reads it to its end: never cut short by an exit as it goes out.)
+    sayWhole(engineConfigContent(process.env.OPENCODE_CONFIG_CONTENT, argument === "tools" ? { runtime: process.execPath } : undefined));
   }
   // A machine's start scripts' too: the PATH your login shell sets up there (`~/.local/bin`, nvm's
   // node), then the folders of the one it was run with, for the engine and what it starts, which a
@@ -1188,7 +1190,7 @@ if (main) {
   else if (mode === "login-path") {
     const found = await loginPath();
     if (found) saveLoginPath(K, found);
-    process.stdout.write(found ?? "");
+    sayWhole(found ?? "");
   }
   // A Mac's own box's start (`kuvo-launch`): your login shell's whole environment, its PATH kept as
   // `login-path` keeps it, for the engine and what it starts (launchd gives Kuvo Helper, and so the
@@ -1215,7 +1217,7 @@ if (main) {
     const from = option("--from");
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")!], blocked: null } : {};
-    // COMPAT(0.8 beta update): `--installer` goes once no Mac's box is from before `computers.update.here`.
+    // COMPAT(beta.30 installer): `update --installer`, for a box from before `computers.update.here`. Goes once no box is from before beta.31.
     // `--installer`: run by the installer Kuvo Code carries (`kuvo-install update [--now]`), for a
     // box from before it took that release by itself as soon as nothing's at work: it says how it
     // goes in lines, and without `--now` waits here for nothing to be at work first.

@@ -260,7 +260,8 @@ keep)
     else
       rm -f "$R/engine.retry"
     fi
-    # COMPAT(0.7 keeper): the watchdog an older Mac's start brings stops its engine once that Mac's
+    # COMPAT(0.7 keeper): an older Mac's day-old mark taken away before its watchdog acts. Goes 3 months after 0.8.0.
+    # The watchdog an older Mac's start brings stops its engine once that Mac's
     # mark (run/attached) is a day old. Nothing kills it by a pattern: a mark 23 hours old is taken
     # away instead, so it never does (it ends by itself once its engine isn't the one in
     # run/engine.json), its moment kept where the box counts such a Mac's visits (run/older-mac),
@@ -271,12 +272,13 @@ keep)
       fi
       rm -f "$R/attached"
     fi
-    # COMPAT(0.8 beta update): an update into this release onto a box from before it (taken by its
+    # COMPAT(beta.30 old-code): a server or link from before this release, ended for the new one. Goes once no box is from before beta.31.
+    # An update into this release onto a box from before it (taken by its
     # own updater, or by the installer an app carries), whose server (`serve`, a Mac's helper's;
     # `serve --kept`) and link (`run`) run on with the code from before and never leave for the new:
     # each, by the number it noted (run/serve.json, run/link.pid), and only while it's that program
     # and started before the new link was put there, is ended, for what keeps it running (the
-    # helper, this keeper) to start the new one. Goes once no box is from before beta.31.
+    # helper, this keeper) to start the new one.
     if [ -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; then
       # (When the link was put there: its change time, which a copy can't carry over, as it
       # carries the release's own time over, for a file a Mac's disk clones.)
@@ -449,12 +451,13 @@ rollback)
   [ "$tries" -ge 3 ] && give_up
   echo $((tries + 1)) >"$R/update-restore" 2>/dev/null
   [ "$(cat "$R/update-restore" 2>/dev/null)" = "$((tries + 1))" ] || give_up
-  # COMPAT(0.8 rollback data): a rollback an update from before rollbacks were code only kept holds
+  # COMPAT(beta.30 rollback-data): an older rollback's data moved aside, never put back. Goes once no box is from before beta.31.
+  # A rollback an update from before rollbacks were code only kept holds
   # the engine's data (updates/rollback/data), which its restore.sh would put back over everything
   # written since: moved aside first, to updates/backups (the latest only), where nothing puts it
   # back; its restore.sh then puts back code only. Unmoved, it isn't run. The keeper it puts back
   # starts the engine that ran meanwhile where that's newer than its own (an older one never opens
-  # what a newer one wrote). Goes once no box has such a rollback (each is gone when its trial ends).
+  # what a newer one wrote). (Each such rollback is gone when its trial ends.)
   b="$K/updates/rollback/data"; n="$K/updates/backups/$(date +%Y-%m-%d)-kept-for-a-rollback"
   if [ -e "$b" ]; then
     { mkdir -p "$K/updates/backups" && chmod 700 "$K/updates/backups" && rm -rf "$n" && mv "$b" "$n" && { for o in "$K/updates/backups"/* "$K/updates/backups"/.[!.]*; do [ ! -e "$o" ] || [ "$o" = "$n" ] || rm -rf "$o"; done; true; }; } || exit 1

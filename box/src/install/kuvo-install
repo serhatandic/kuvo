@@ -5,7 +5,7 @@
 #     status   what this computer holds (a verdict), and what to run next
 #     new      a new box, made in its home and started
 #     move     the old app's box and data moved into its home
-#     update   (COMPAT(0.8 beta update): goes once no Mac's box is from before computers.update.here)
+#     update   (COMPAT(beta.30 installer): for a box from before computers.update.here. Goes once no box is from before beta.31.)
 #              the box that's there brought up to this release (`kuvo-link.js update --installer`):
 #              once nothing's at work there, waiting till then, or at once with --now
 #   --app <bundle>   the app that runs it (a Mac's: its bundle says whose folder holds the old data)

@@ -11471,6 +11471,20 @@ for other services' logs.
 A new account with no conversations is empty. Places are hashed with the machine ID.
 The apps read Antigravity only from the box, with no older-box fallback (#679 updates boxes first).
 
+
+**A box from before beta.31** (whose code judges no update by the one health rule, leaves nothing
+for new code, and may keep the engine's data for a rollback: "Updates") takes this release once,
+by its own updater or by the installer an app carries. What this release does for it, and only for
+it, goes once no box is from before beta.31:
+- While an update is on trial, the keeper ends a `serve`, `serve --kept` or `run` started before
+  `bin/kuvo-link.js` was written, no update being under way, for what keeps it to start the new
+  one. <!-- compat: beta.30 old-code -->
+- `kuvo-start rollback` moves a rollback's data (`updates/rollback/data`) to `updates/backups`
+  before it runs that rollback's `restore.sh`, which would put it back. <!-- compat: beta.30 rollback-data -->
+- `kuvo-link.js update --installer` (with `installerSteps` and `untilFree`), which `kuvo-install
+  update` runs for a box from before `computers.update.here`. <!-- compat: beta.30 installer -->
+- An update stops an engine its record names that an older keeper's stop left running, by that
+  record, once its command line says it's this box's engine. <!-- compat: beta.30 engine-record -->
 ## The browser's live view
 
 Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's

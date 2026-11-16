@@ -18,7 +18,7 @@ const protocol = fs.readFileSync(path.join(repo, "protocol/PROTOCOL.md"), "utf8"
 const from = protocol.indexOf("\n## For released Macs");
 const to = protocol.indexOf("\n## ", from + 1);
 const section = protocol.slice(from, to === -1 ? undefined : to);
-const listed = [...section.matchAll(/<!-- compat: (0\.7|beta\.1) ([a-z0-9-]+) -->/g)].map(match => `${match[1]} ${match[2]}`);
+const listed = [...section.matchAll(/<!-- compat: (0\.7|beta\.1|beta\.30) ([a-z0-9-]+) -->/g)].map(match => `${match[1]} ${match[2]}`);
 
 // The code of every side, as written: not what's built from it (a bundle leaves comments out),
 // nor the tests.
@@ -65,6 +65,9 @@ const NEXT = "Goes in #717's next part.";
 const GOES = {
   "0.7": [KEPT, NEXT, "Goes 3 months after 0.8.0.", "Goes once a release with one is the newest.", "Goes on the user's word, once no 0.7 Mac is expected to update."],
   "beta.1": [KEPT, "Goes when 0.8.0 ships.", "Goes 3 months after 0.8.0."],
+  // What a box from before beta.31 needs once to take this release (its updater, its keeper, its
+  // servers from before): gone once none is.
+  "beta.30": ["Goes once no box is from before beta.31."],
 };
 const kinds = new Map(fs.readFileSync(path.join(repo, "protocol/compat-kinds.txt"), "utf8").split("\n").filter(line => line && !line.startsWith("#")).map(line => {
   const [version, item, kind] = line.split(" ");
