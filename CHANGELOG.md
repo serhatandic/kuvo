@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- In the desktop app, ⌘V in the composer attaches a copied screenshot or picture, and files copied in the Finder, as 0.7 did, instead of doing nothing or pasting their names.
+- In the desktop app, what you send shows in the conversation at once, marked Sending…, rather than a few seconds later. If it can't be sent, it stays there saying why, with **Retry** and **Edit**.
+- Updating Kuvo on your Mac, or on a computer it set up, tries again by itself when a download drops or a try fails before anything changed, rather than waiting for you to tap Try Again.
 - **Kuvo is in the menu bar** on a Mac, for as long as it runs there, with the desktop app open or not: its mark shows how many sessions are at work and a dot when something needs you. Click it to see what needs you, what's at work and your plan limits' rings, to **Open Kuvo**, or to **Stop Kuvo on this Mac** (asked first while something's at work or the app is open, whose window closes too; it starts again when you open Kuvo or next log in). The first time you quit the desktop app, a note says Kuvo keeps working and where to find it.
 - Moving from an earlier Kuvo Code no longer says your Keychain is locked when it isn't. When macOS needs your OK for Kuvo to take this Mac's keys along, it asks: enter your Mac's password and click Always Allow. If the keys still can't be taken along, Kuvo says so in plain words.
 - Moving from an earlier Kuvo Code now stops whatever of it is still running in the background first, and if something changes your sessions while they're copied, Kuvo copies them again by itself instead of stopping. It no longer stops because another program only looked at your sessions. If another app keeps using the earlier Kuvo Code's files, Kuvo names that app so you can quit it.
