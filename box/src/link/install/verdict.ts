@@ -34,11 +34,32 @@ export const MAKING = path.join("updates", "install", "making");
  * keys and link too, where its start failed after writing them), unless it runs: then it started,
  * and only the mark was left. */
 export function machineBoxThere(home: string, linux = process.platform !== "darwin"): boolean {
-  const kind = recordedKind(path.join(home, "box", "kind"));
-  if (kind === "mac" || runsAt(home) === "gone") return false;
-  if (linux && exists(path.join(home, MAKING))) return runningIn(path.join(home, "run")).length > 0;
-  if (foundAt(home, false) !== null || kind === "machine" || exists(path.join(home, "box", "keys"))) return true;
-  return linux;
+  return machineBoxIn({
+    kind: recordedKind(path.join(home, "box", "kind")), gone: () => runsAt(home) === "gone", linux,
+    making: () => exists(path.join(home, MAKING)), running: () => runningIn(path.join(home, "run")).length > 0,
+    found: () => foundAt(home, false) !== null, keys: () => exists(path.join(home, "box", "keys")),
+  });
+}
+
+/** What `machineBoxThere` is judged from, each asked only where it's needed: read here from the
+ * folders, or from another computer's probe over SSH (`add/scripts.ts`), so adding a computer
+ * judges its box as its installer will. */
+export interface MachineBoxFacts {
+  kind: "mac" | "machine" | null;
+  linux: boolean;
+  gone: () => boolean;
+  making: () => boolean;
+  running: () => boolean;
+  found: () => boolean;
+  keys: () => boolean;
+}
+
+/** The one rule for whether a machine's box is there (`machineBoxThere`). */
+export function machineBoxIn(facts: MachineBoxFacts): boolean {
+  if (facts.kind === "mac" || facts.gone()) return false;
+  if (facts.linux && facts.making()) return facts.running();
+  if (facts.found() || facts.kind === "machine" || facts.keys()) return true;
+  return facts.linux;
 }
 
 export interface Judgement {

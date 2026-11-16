@@ -22,6 +22,7 @@ import { changeKeptHosts, LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
 import { vouchedWords, vouchMoved } from "../phones";
+import { machineBoxIn } from "../install/verdict";
 import { oldAppAttached, removeHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
@@ -85,6 +86,21 @@ function probed(answer: string): Probed {
   const version = said("version");
   const id = said("id");
   return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, lines };
+}
+
+/** Whether the computer has a machine's box, or a Mac's own, by the installer's own rule
+ * (`machineBoxIn`, from the probe's lines): then its installer leaves an earlier Kuvo Code's
+ * folder as it is, so it's no reason to refuse. */
+function machineBoxProbed(probe: Probed): boolean {
+  const has = (word: string) => () => probe.lines.includes(`kuvo ${word}`);
+  const kind = probe.lines.find(line => line.startsWith("kuvo kind"))?.slice(9).trim();
+  // (A Mac's own box is ours already: its installer says `ours` and moves nothing.)
+  if (kind === "mac") return true;
+  return machineBoxIn({
+    kind: kind === "machine" ? kind : null, linux: probe.kind.system === "linux",
+    gone: has("gone"), making: has("making"), running: has("running"), keys: has("keys"),
+    found: () => foundOf(probe.lines).some(box => !box.app && (box.card !== undefined || box.link !== undefined)),
+  });
 }
 
 const megabytes = (bytes: number): string => `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
@@ -186,7 +202,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
     if (probe.updating) throw new Failed(`${name} is updating Kuvo Code itself right now. Try again in a few minutes.`);
-    if (/^app-(?:07|box)$/m.test(answer.stdout)) throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
+    if (/^app-(?:07|box)$/m.test(answer.stdout) && !machineBoxProbed(probe)) throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
     const link = readLink();
     const judged = judgeComputer(foundOf(probe.lines), oursNow(link), appsOf(probe.lines));
     if (judged.verdict === "self") throw new Failed(`That’s ${ownName()} itself. Add another computer.`, false);

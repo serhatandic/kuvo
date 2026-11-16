@@ -45,7 +45,9 @@ for a in "$HOME/Library/Application Support"/run.kuvo.code*; do [ -d "$a" ] && e
  * where it has one (`machine-id`, made as it's started: the same computer under another address
  * is told by it), and what's found there. Changes nothing. Lines: `uname -sm`'s; `glibc`/`musl`, or a Mac's
  * `tools`/`no-tools` and `macos <version>`; `kuvo version <v>`, `kuvo updating`, `kuvo engine`,
- * `kuvo id <32 hex>`; then the found lines. */
+ * `kuvo id <32 hex>`; then the found lines, an earlier Kuvo Code's (`app-07`, `app-box`), and
+ * what the installer judges a machine's box from (`kuvo kind <word>`, `kuvo gone`, `kuvo keys`,
+ * `kuvo making`, `kuvo running`). */
 export const probe = (version: string): string => String.raw`${K}
 uname -sm
 if [ "$(uname -s)" = Darwin ]; then
@@ -59,10 +61,17 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 ${FOUND}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}
-# A current Mac keeps its old folder for going back, just as the installer permits.
-if [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
-  old_app_verdict
-fi
+old_app_verdict
+# What the installer judges a machine's box there from (\`machineBoxIn\`): where one is, or it's a
+# Mac's own, an earlier Kuvo Code's folder is left as it is, not moved.
+echo "kuvo kind $(cat "$K/box/kind" 2>/dev/null | tr -cd 'a-z')"
+{ [ -e "$K/bin/kuvo-start" ] && [ ! -e "$K/run/off" ]; } || echo "kuvo gone"
+{ [ -e "$K/box/keys" ] || [ -L "$K/box/keys" ]; } && echo "kuvo keys"
+{ [ -e "$K/updates/install/making" ] || [ -L "$K/updates/install/making" ]; } && echo "kuvo making"
+for p in box.pid link.pid; do
+  n=$(tr -cd '0-9' < "$K/run/$p" 2>/dev/null)
+  [ -n "$n" ] && [ "$n" -gt 1 ] && kill -0 "$n" 2>/dev/null && { echo "kuvo running"; break; }
+done
 true`;
 
 /** Whether the computer has `files` already, each as it is here (`same`), or not (`differs`). */
