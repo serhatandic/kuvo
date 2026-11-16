@@ -22,7 +22,7 @@ use kuvo_box::areas::{Computer, Waiting};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, BoxInfo, Listing, Where};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, Theme, TypeSize,
+    ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, TypeSize,
     menu::Menu,
     theme::{radius, space},
 };
@@ -226,7 +226,9 @@ pub struct Workspace {
     welcome_why: Option<String>,
     focus_landing: bool,
     _sessions: Option<Follow<ListUpdate>>,
-    /// What macOS allows this Mac's agents, where it needs you: a heads-up over the main view.
+    /// What macOS allows this Mac's agents: a step of the first run where it needs you, and the
+    /// tile beside System Settings when it's opened from Settings › This Mac (never over the
+    /// main view).
     permissions: Entity<crate::permissions::HeadsUp>,
     tasks: Vec<Task<()>>,
     _landing: Subscription,
@@ -462,10 +464,7 @@ impl Workspace {
                 self.info = Some(info);
                 self.box_state = if self.client.gate().is_held() { BoxState::Held } else { BoxState::Connected };
                 let name = self.box_name();
-                self.permissions.update(cx, |permissions, cx| {
-                    permissions.set_box_name(name.clone());
-                    permissions.read(cx);
-                });
+                self.permissions.update(cx, |permissions, cx| permissions.read(cx));
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
                 for (_, view) in self.areas.clone() {
                     view.update(cx, |view, cx| {
@@ -571,10 +570,11 @@ impl Workspace {
         match said {
             Ok(false) => {
                 let (client, live, state, name) = (self.client.clone(), self.live, self.box_state.clone(), self.box_name());
-                let (computers, now) = (self.computers.clone(), self.now);
+                let (computers, now, permissions) = (self.computers.clone(), self.now, self.permissions.clone());
                 let run = cx.new(|cx| {
                     let mut run = FirstRun::new(client, live, state, name, cx);
                     run.set_computers(computers, cx);
+                    run.set_permissions(permissions, cx);
                     if let Some(now) = now {
                         run.set_now(now);
                     }
@@ -2412,7 +2412,7 @@ impl Render for Workspace {
             })
             .on_action(cx.listener(|_, _: &ToggleAppearance, _, cx| {
                 let next = cx.theme().appearance.toggled();
-                Theme::set_appearance(next, cx);
+                crate::yours::set_theme(next, cx);
             }))
             .flex()
             .flex_col()
@@ -2445,7 +2445,7 @@ impl Render for Workspace {
                         .children(sidebar.map(|sidebar| {
                             div().id("area-sidebar").debug_selector(|| "area-sidebar".into()).w(px(sidebar::WIDTH)).h_full().flex_none().bg(c.sidebar).border_r_1().border_color(c.border).child(sidebar)
                         }))
-                        .child(div().relative().flex_1().min_w_0().h_full().child(content).child(self.permissions.clone()))
+                        .child(div().relative().flex_1().min_w_0().h_full().child(content))
                         .children(panel),
                 ),
             )

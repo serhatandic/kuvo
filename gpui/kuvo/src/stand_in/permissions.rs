@@ -39,14 +39,17 @@ impl Permissions {
             return json!({ "applies": false, "name": null, "known": false, "screenRecording": null, "accessibility": null, "bundle": null, "list": [] });
         }
         let allowed = |allowed: bool| if self.known { json!(allowed) } else { Value::Null };
-        let each = |id: &str, name: &str, pane: &str, is: bool| {
-            json!({ "id": id, "name": name, "allowed": allowed(is), "settings": format!("x-apple.systempreferences:com.apple.preference.security?{pane}"), "byHand": true, "asks": self.known && !is && !self.later.iter().any(|later| later == id) })
+        let each = |id: &str, name: &str, line: &str, pane: &str, is: bool| {
+            json!({ "id": id, "name": name, "line": line, "allowed": allowed(is), "settings": format!("x-apple.systempreferences:com.apple.preference.security?{pane}"), "byHand": true, "asks": self.known && !is && !self.later.iter().any(|later| later == id) })
         };
         json!({
             "applies": true, "name": "Kuvo Helper", "known": self.known,
             "screenRecording": allowed(self.screen_recording), "accessibility": allowed(self.accessibility),
             "bundle": self.bundle,
-            "list": [each("screenRecording", "Screen Recording", "Privacy_ScreenCapture", self.screen_recording), each("accessibility", "Accessibility", "Privacy_Accessibility", self.accessibility)],
+            "list": [
+                each("screenRecording", "Screen Recording", "For agents that look at the screen.", "Privacy_ScreenCapture", self.screen_recording),
+                each("accessibility", "Accessibility", "For agents that click and type in other apps.", "Privacy_Accessibility", self.accessibility),
+            ],
         })
     }
 
