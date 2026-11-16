@@ -332,3 +332,21 @@ rollback; whether Update Now keeps its "stops what's running" confirm once steps
 **Docs:** kuvo-web machines and troubleshooting (updates no longer restart sessions; the backups
 folder), `uninstall.md` and `privacy.md` (`updates/backups`, `run/agents/hold`), and PROTOCOL.md
 "Updates" and "A new version while it works" at each step.
+
+## Status, 2026-11-17: steps 3, 4 and 5 built (branch kuvo/updates-p1-one-health-rule-updates-stop)
+
+- **Step 3:** `box/src/link/updates/health.ts` (`settleUpdate`, `lookAtPieces`). The judge is the
+  updater, or `update --settle`, which the keeper starts and which resumes `trial.judged`. Rollback
+  is `kuvo-start rollback`: a lock, three tries, then it gives up and starts the box as it is.
+- **Step 4:** `update()` stops nothing unless the engine changes (then `engine-stop` only).
+  `updates/code-in-place.ts`: run / serve / serve --kept leave on new code. The helper exits 75 on
+  a new bundle; a clean exit means a stop on purpose.
+- **Step 5:** `kuvo-start bridge` (kuvo-launch `KUVO_BRIDGE=1`). The bridge follows
+  `run/engine.json`. A kept bridge makes way for the keeper's new engine (`engineBehind`), and
+  `confirmUpdate` keeps the engine the bridge runs on until then.
+- **Still differs from §5:**
+  - Signal 2 checks that new processes answer, not their `BRIDGE_VERSION`; old ones are ended by
+    the keeper (`COMPAT(beta.30 old-code)`).
+  - An engine change still restarts the engine, with no hold (step 6).
+  - The engine folder kept for a bridge is pruned only at the next confirm.
+  - BusyBox `ps` has no `-p`, so old processes aren't ended there.
