@@ -11,6 +11,9 @@ pub mod code_block;
 pub mod icon;
 pub mod markdown;
 pub mod menu;
+pub mod motion;
+#[cfg(test)]
+mod motion_tests;
 pub mod output;
 pub mod row;
 pub mod selection;

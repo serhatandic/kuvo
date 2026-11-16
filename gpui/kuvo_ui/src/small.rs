@@ -6,7 +6,7 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt as _, App, ElementId, Hsla, InteractiveElement, IntoElement,
+    AnimationExt as _, App, ElementId, Hsla, InteractiveElement, IntoElement,
     ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled,
     Transformation, Window, div, percentage, prelude::FluentBuilder as _, px, svg,
 };
@@ -404,7 +404,7 @@ pub fn spinner(id: impl Into<ElementId>, size: IconSize, color: Hsla) -> impl In
         .size(size.pixels())
         .flex_none()
         .text_color(color)
-        .with_animation(id, Animation::new(Duration::from_millis(900)).repeat(), |svg, delta| {
+        .with_animation(id, crate::motion::spin_animation(), |svg, delta| {
             svg.with_transformation(Transformation::rotate(percentage(delta)))
         })
 }
@@ -439,11 +439,12 @@ impl RenderOnce for LoadingLabel {
         let started = *window.use_keyed_state((self.id.clone(), "started"), cx, |_, _| std::time::Instant::now()).read(cx);
         let color = cx.theme().colors.text_muted;
         let selector = self.id.to_string();
+        let reduce_motion = cx.reduce_motion();
         div().debug_selector(move || selector).w_full().min_h(px(if self.compact { 24. } else { 160. })).flex().items_center().justify_center()
             .when(self.fill, |d| d.flex_1().h_full().min_h_0())
             .text_ui(TypeSize::Small).text_color(color).child(self.words)
-            .with_animation(self.id, Animation::new(Duration::from_millis(1400)).repeat(), move |label, delta| {
-                let opacity = if !loading_is_visible(started.elapsed()) { 0. } else { 0.65 + 0.35 * (delta * std::f32::consts::TAU).cos().abs() };
+            .with_animation(self.id, crate::motion::pulse_animation(), move |label, delta| {
+                let opacity = if !reduce_motion && !loading_is_visible(started.elapsed()) { 0. } else { delta };
                 label.opacity(opacity)
             })
     }

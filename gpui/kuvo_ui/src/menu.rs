@@ -5,6 +5,7 @@
 //! headers, separators and disabled entries, and wrapping around), Return chooses, Escape or a
 //! click outside closes it and gives focus back to where it was.
 
+use crate::motion::{MotionExt as _, Direction};
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
@@ -572,7 +573,7 @@ impl RenderOnce for PopoverMenu {
                     .when(above, |d| d.top_0())
                     .when(self.align_right, |d| d.right_0())
                     .when(!self.align_right, |d| d.left_0())
-                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), gap)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(1))
+                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), gap)).snap_to_window_with_margin(px(8.)).child(div().id(("menu-motion", menu.entity_id().as_u64())).child(menu).animate_in(if above { Direction::FromBottom } else { Direction::FromTop }, true))).with_priority(1))
             }))
     }
 }
@@ -631,7 +632,7 @@ impl RenderOnce for ContextMenuArea {
             })
             .child(self.child)
             .children(open.zip(at).map(|(menu, at)| {
-                deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(1)
+                deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(div().id(("context-menu-motion", menu.entity_id().as_u64())).child(menu).animate_in(Direction::FromTop, true))).with_priority(1)
             }))
     }
 }

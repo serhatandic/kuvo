@@ -5,6 +5,7 @@
 //! group, folded to a line that sums it up; the end of each turn as how long it worked. What's only
 //! for the agent (the box's other notes, a switch of mode) shows nothing.
 
+use kuvo_ui::motion::{MotionExt as _};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -1377,7 +1378,7 @@ fn working(title: &str, cx: &App) -> AnyElement {
         .text_ui(TypeSize::Small)
         .text_color(c.text_faint)
         .child(div().flex().w(px(16.)).justify_center().child(spinner("working", IconSize::Nav, c.text_muted)))
-        .child(title.to_owned())
+        .child(div().id("working-label").child(title.to_owned()).pulsing())
         .into_any_element()
 }
 

@@ -3,6 +3,7 @@
 //! a grey line on the left, the control on the right), New Bot, and the sheets over them (a name,
 //! a job, a look, Delete asked first).
 
+use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
     prelude::FluentBuilder as _, px,
@@ -442,7 +443,7 @@ impl BotsView {
 
     fn sheet_content(&mut self, sheet: Sheet, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let name = self.subject().map(|(_, name, _)| name).unwrap_or_default();
+        let (subject_id, name) = self.subject().map(|(id, name, _)| (id, name)).unwrap_or_default();
         let label = |words: &'static str| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
         let (title, width, body, save, danger): (String, f32, AnyElement, &'static str, bool) = match &sheet {
             Sheet::Name => (format!("Rename {name}"), 400., div().debug_selector(|| "sheet-name-field".into()).child(self.name.clone()).into_any_element(), "Save", false),
@@ -496,6 +497,7 @@ impl BotsView {
         }));
         let enter_saves = matches!(sheet, Sheet::Look { .. });
         div()
+            .id(SharedString::from(format!("bot-sheet-{:?}-{subject_id}", std::mem::discriminant(&sheet))))
             .debug_selector(|| "bot-sheet".into())
             .track_focus(&self.sheet_focus)
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
@@ -526,6 +528,7 @@ impl BotsView {
                     .child(Button::new("sheet-cancel", "Cancel").disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx))))
                     .child(if danger { go.destructive() } else { go.primary() }),
             )
+            .animate_in(Direction::FromTop, true)
             .into_any_element()
     }
 

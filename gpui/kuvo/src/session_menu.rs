@@ -5,6 +5,7 @@
 //! a separator before destructive actions, keyboard shortcut hints `⌘R` / `⌘⌫` / `⇧⌘⌫`) and
 //! skips action IDs this client doesn't have a control for.
 
+use kuvo_ui::motion::{MotionExt as _, Direction};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 use gpui::{
@@ -356,7 +357,7 @@ pub fn row_anchored_popover(popover: AnyElement) -> AnyElement {
                     .anchor(Anchor::TopLeft)
                     .offset(point(px(0.), px(2.)))
                     .snap_to_window_with_margin(px(8.))
-                    .child(popover),
+                    .child(div().id("session-popover-motion").child(popover).animate_in(Direction::FromTop, true)),
             )
             .with_priority(1),
         )
@@ -375,7 +376,7 @@ pub fn title_anchored_popover(popover: AnyElement) -> AnyElement {
                     .anchor(Anchor::TopRight)
                     .offset(point(px(0.), space::S1))
                     .snap_to_window_with_margin(px(8.))
-                    .child(popover),
+                    .child(div().id("session-popover-motion").child(popover).animate_in(Direction::FromTop, true)),
             )
             .with_priority(1),
         )

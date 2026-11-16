@@ -3,6 +3,7 @@
 //! labels, a card of rows for each group, each row's name and line on the left and its control on
 //! the right), with what the box refused over it, a confirm, or the sign-in sheet.
 
+use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
     prelude::FluentBuilder as _, px, svg,
@@ -377,7 +378,7 @@ impl SettingsView {
                     .items_center()
                     .gap(space::S3)
                     .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().debug_selector({ let key = key.clone(); move || format!("{key}-title") }).text_ui(TypeSize::Body).medium().text_color(c.text).child(title)).when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(detail))))
-                    .children(busy.map(|words| div().debug_selector({ let key = key.clone(); move || format!("{key}-busy") }).flex().items_center().gap(space::S1_5).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy-spinner")), IconSize::Nav, c.text_muted)).child(words)))
+                    .children(busy.map(|words| div().debug_selector({ let key = key.clone(); move || format!("{key}-busy") }).flex().items_center().gap(space::S1_5).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy-spinner")), IconSize::Nav, c.text_muted)).child(div().id(SharedString::from(format!("{key}-busy-label"))).child(words).pulsing())))
                     .children(buttons);
                 div().flex().flex_col().gap(space::S3).child(header).child(parts_drawn(&key, &parts, open, expand, cx)).into_any_element()
             }
@@ -503,7 +504,7 @@ impl SettingsView {
         match control {
             Control::None => div().into_any_element(),
             Control::Text(words) => div().text_ui(TypeSize::Body).text_color(c.text_muted).child(words).into_any_element(),
-            Control::Busy(words) => div().flex().items_center().gap(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted)).child(words).into_any_element(),
+            Control::Busy(words) => div().flex().items_center().gap(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted)).child(div().id(SharedString::from(format!("{key}-busy-label"))).child(words).pulsing()).into_any_element(),
             Control::Switch { on, act } => {
                 let this = cx.entity().downgrade();
                 let switch = Switch::new(SharedString::from(format!("{key}-switch")), on).disabled(act.is_none());
@@ -943,7 +944,7 @@ impl Render for SettingsView {
                 cx.listener(|this, _: &gpui::ClickEvent, _, cx| this.confirmed(cx)),
                 cx,
             );
-            sheet(card, cx)
+            sheet_keyed(card, "settings-confirm", cx)
         });
         let folder_picker = self.folder_picker.clone().map(|picker| {
             let up = picker.folder.as_ref().and_then(|folder| folder.parent.clone().filter(|parent| *parent != folder.path)).or_else(|| picker.back.clone());
@@ -1057,10 +1058,10 @@ impl Render for SettingsView {
                         }))),
                 )
                 .into_any_element();
-            sheet(card, cx)
+            sheet_keyed(card, "settings-folder-picker", cx)
         });
-        let sign_in = self.sign_in.clone().map(|sheet_view| sheet(sheet_view.into_any_element(), cx));
-        let form = self.form().cloned().map(|form| sheet(form.into_any_element(), cx));
+        let sign_in = self.sign_in.clone().map(|sheet_view| sheet_keyed(sheet_view.clone().into_any_element(), ("sign-in", sheet_view.entity_id().as_u64()), cx));
+        let form = self.form().cloned().map(|form| sheet_keyed(form.clone().into_any_element(), ("form", form.entity_id().as_u64()), cx));
         div()
             .id("settings-page")
             .debug_selector(|| "settings-page".into())
@@ -1096,6 +1097,7 @@ pub(crate) fn confirm_card(
     let c = &cx.theme().colors;
     let card = ids.card;
     div()
+        .id(card)
         .debug_selector(move || card.into())
         .track_focus(focus)
         .on_key_down(escape)
@@ -1122,6 +1124,10 @@ pub(crate) fn dim(cx: &App) -> Hsla {
 
 /// A sheet over the page, on a dimmed backdrop that takes the clicks.
 pub(crate) fn sheet(content: AnyElement, cx: &App) -> AnyElement {
+    sheet_keyed(content, "sheet-content", cx)
+}
+
+fn sheet_keyed(content: AnyElement, id: impl Into<gpui::ElementId>, cx: &App) -> AnyElement {
     let dim = dim(cx);
     div()
         .id("settings-sheet")
@@ -1133,6 +1139,6 @@ pub(crate) fn sheet(content: AnyElement, cx: &App) -> AnyElement {
         .p(space::S6)
         .bg(dim)
         .occlude()
-        .child(content)
+        .child(div().id((id.into(), "settings-sheet-content")).child(content).animate_in(Direction::FromTop, true))
         .into_any_element()
 }
