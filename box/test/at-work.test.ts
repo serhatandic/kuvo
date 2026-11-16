@@ -78,7 +78,7 @@ const rows = [
   { service: "gemini", title: "Gemini", rings: { short: { used: "most" }, long: { window: "w", used: 0.1, level: "dire" } } },
 ]
 const bridge = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => new URL(request.url).pathname === "/api/kuvo/limits" ? Response.json({ rows }) : new Response("no", { status: 404 }) })
-const bridgeProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)", "kuvo-agents"], { stdio: "ignore" })
+const bridgeProcess = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)", "kuvo-agents"], { stdio: "ignore" })
 afterAll(() => { bridge.stop(true); bridgeProcess.kill() })
 
 test("the rings are each account's, as the bridge says them, in its order", async () => {

@@ -399,11 +399,31 @@ test("kuvo/box/at-work and kuvo/box/stop: what Kuvo Helper draws in the menu bar
 test("kuvo/box/stop: a machine's box isn't stopped so (nothing would start it again at login)", async () => {
   const where = home("machine");
   write(path.join(where.K, "bin", "kuvo-start"), `#!/bin/sh\necho "$1" >>"${where.home}/keeper-asked"\n`, 0o755);
-  const box = await served(where).catch(() => null);
-  // (A machine's box's server is kept for clients another way: `serve` as a helper starts it is a Mac's alone.)
-  if (!box) return;
+  const box = await served(where);
   assert.equal((await box.ask("kuvo/box/stop", "POST", {})).status, 409);
   assert.equal((await box.ask("kuvo/box/at-work")).body.applies, false);
   assert.equal(exists(path.join(where.home, "keeper-asked")), false);
   await box.stop();
+});
+
+test("helper start after Stop Kuvo on this Mac waits for the stopped helper to go before starting it again", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, () => {
+  const where = home("mac");
+  write(path.join(where.run, "paused"), "");
+  // launchd still has the stopped helper running for three looks, then it's gone.
+  write(path.join(where.tools, "launchctl"), `#!/bin/sh
+echo "$*" >>"${where.home}/launchctl"
+case "$1" in
+  print) n=$(cat "${where.home}/looks" 2>/dev/null || echo 0); n=$((n + 1)); echo $n >"${where.home}/looks"; [ $n -le 3 ] && echo "	pid = 4242"; exit 0 ;;
+esac
+`, 0o755);
+  helper(where, ["install", "--app", "run.kuvo.code.trial4"]);
+  fs.rmSync(path.join(where.home, "launchctl"), { force: true });
+  const started = helper(where, ["start"]);
+  assert.equal(started.status, 0, started.stderr);
+  const asked = read(path.join(where.home, "launchctl")).trim().split("\n");
+  const kick = asked.findIndex(line => line.startsWith("kickstart"));
+  assert.ok(kick > 0, asked.join("\n"));
+  // (Its own look for whether it's loaded, then the waits: kickstarted only once it's gone.)
+  assert.ok(asked.slice(0, kick).filter(line => line.startsWith("print gui")).length >= 4, asked.join("\n"));
+  assert.equal(Number(read(path.join(where.home, "looks")).trim()) >= 4, true);
 });

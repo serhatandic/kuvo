@@ -8246,7 +8246,7 @@ was named Kuvo Code Box, in no release.)
 
 #### In the menu bar
 
-`box.atWork`, #761. On a Mac whose box lives in a home of its own, quitting the app leaves Kuvo at
+`box.atWork`, #761 (in `FEATURES`, not the update gate: a client without it shows nothing of it). On a Mac whose box lives in a home of its own, quitting the app leaves Kuvo at
 work: its sessions, bots and wake-ups go on under Kuvo Helper. So Kuvo Helper, the part that always
 runs, draws Kuvo in the menu bar for as long as it runs the box (the item goes with it), from the
 box's facts alone:
@@ -8276,14 +8276,19 @@ box's facts alone:
   it's at, and stops the engine and the coding agents' bridge, as `off` does, but not for good:
   while the mark is there, `kuvo-start engine` starts nothing, and the next keeper to start takes it
   away. The helper, seeing its keeper gone with a mark made since it started, stops `serve` and exits
-  0, so launchd doesn't start it again. Kuvo starts again at the next login (launchd's `RunAtLoad`),
-  or as the app opens: the installer's `status` takes a paused box's helper as not in place, so
-  `new` starts it (`helper start`). A machine's box refuses `pause` (exit 3).
-- **Kuvo Helper's item**: Kuvo's mark, the count of sessions at work beside it, and a dot while
-  something waits on you. Its panel: Kuvo on this Mac and whether it's starting, running or
+  0, so launchd doesn't start it again. Kuvo starts again at the next login (launchd's `RunAtLoad`,
+  where Login Items has it on), or as the app opens: the installer's `status` takes a paused box's
+  helper as not in place, so `new` starts it (`helper start`, which first waits, ten seconds at
+  most, while launchd still has the stopped helper running: a kickstart then would be lost as it
+  exits). A machine's box refuses `pause` (exit 3).
+- **Kuvo Helper's item**: Kuvo's mark (the app icon's artwork in one colour, a template), the count
+  of sessions at work beside it, and a dot while anything waits on you (any of `waiting`'s counts). Its panel: Kuvo on this Mac and whether it's starting, running or
   stopping; what needs you; what's at work, with the bot each works for; each account's rings;
   **Open Kuvo** (the desktop app, opened or brought forward); **Stop Kuvo on this Mac…**, which asks
-  first while `busy`. The helper reaches the box's server as a client does (`run/serve.json`'s port,
+  first while `busy` or while the desktop app is open, which it quits too once the stop is taken
+  (its window would have nothing to reach). A stop that hasn't ended the helper 30 seconds on is
+  said not to have taken. Quit as AppKit has it (Activity Monitor, logging out) goes as SIGTERM
+  does: everything the helper started is told to stop first. The helper reaches the box's server as a client does (`run/serve.json`'s port,
   with the password it started `serve` with: a record naming another is never read from).
 - **The desktop app's first Quit**: where the nearest box says `applies`, the first ⌘Q (or closing
   the window) shows a note that Kuvo keeps working, and where it is, with Cancel and Quit. It shows

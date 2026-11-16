@@ -178,6 +178,13 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
     const loaded = run(["bootstrap", domain, path.join(tools.agents, `${LAUNCH_AGENT}.plist`)]);
     if (loaded.status !== 0) return refusedBy("load", loaded);
   }
+  // Stopped until it next starts (Stop Kuvo on this Mac): the helper that was stopped may still be
+  // going (a few seconds, its children first). A kickstart then would leave it running, and it exits
+  // a moment later, cleanly, so launchd doesn't start it again: waited for (ten seconds at most).
+  if (fs.existsSync(path.join(K, "run", "paused"))) {
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    for (let waited = 0; waited < 100 && /\bpid = \d+/.test(run(["print", `${domain}/${LAUNCH_AGENT}`]).stdout ?? ""); waited++) Atomics.wait(pause, 0, 0, 100);
+  }
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
   return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }
