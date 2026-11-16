@@ -20,6 +20,8 @@ fn menu(cx: &mut gpui::App) -> Entity<Menu> {
 /// to right-click.
 struct Host {
     rail_open: bool,
+    /// How far the first button has moved right from where it starts.
+    moved: f32,
 }
 
 /// A trigger, `w` × `h`.
@@ -33,7 +35,7 @@ impl Render for Host {
         div()
             .size_full()
             .child(ContextMenuArea::new("area", div().size_full(), |_, cx| menu(cx)).fill())
-            .child(div().absolute().left(px(100.)).top(px(40.)).child(PopoverMenu::new("button", spot(120., 30., "button"), |_, cx| menu(cx))))
+            .child(div().absolute().left(px(100. + self.moved)).top(px(40.)).child(PopoverMenu::new("button", spot(120., 30., "button"), |_, cx| menu(cx))))
             .child(div().absolute().left(px(700.)).top(px(40.)).child(PopoverMenu::new("bar-end", spot(80., 30., "bar-end"), |_, cx| menu(cx)).align_right()))
             .child(div().absolute().left(px(740.)).top(px(80.)).child(PopoverMenu::new("edge", spot(50., 30., "edge"), |_, cx| menu(cx))))
             .child(div().absolute().left(px(100.)).top(px(540.)).child(PopoverMenu::new("composer", spot(120., 30., "composer"), |_, cx| menu(cx)).above()))
@@ -56,7 +58,7 @@ fn host(cx: &mut TestAppContext) -> (Entity<Host>, &mut VisualTestContext) {
         Theme::init(Appearance::Light, cx);
         kuvo_ui::bind_keys(cx);
     });
-    let (host, cx) = cx.add_window_view(|_, _| Host { rail_open: false });
+    let (host, cx) = cx.add_window_view(|_, _| Host { rail_open: false, moved: 0. });
     cx.simulate_resize(size(px(800.), px(600.)));
     cx.run_until_parked();
     (host, cx)
@@ -162,4 +164,27 @@ fn a_right_click_menu_opens_at_the_pointer_and_flips_at_the_corner(cx: &mut Test
     let menu = bounds(cx, "menu");
     assert_eq!((menu.right(), menu.bottom()), (corner.x, corner.y), "its bottom right at the pointer: {menu:?}");
     inside_window(menu);
+}
+
+/// The trigger is measured in the frame that draws the menu: with no motion to settle, the menu is
+/// against its button on the first frame it's drawn, and when the button moves (a list scrolling
+/// under it), the menu moves with it in the next frame.
+#[gpui::test]
+fn a_menu_is_in_place_on_its_first_frame_and_follows_its_trigger(cx: &mut TestAppContext) {
+    let (host, cx) = host(cx);
+    cx.update(|_, cx| cx.set_reduce_motion(true));
+    let button = bounds(cx, "button");
+    cx.simulate_click(button.center(), Modifiers::default());
+    cx.run_until_parked();
+    let menu = bounds(cx, "menu");
+    assert_eq!(menu.origin, point(button.left(), button.bottom() + GAP), "in place at once: {menu:?} from {button:?}");
+
+    host.update(cx, |host, cx| {
+        host.moved = 50.;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let moved = bounds(cx, "button");
+    assert_eq!(moved.left(), button.left() + px(50.));
+    assert_eq!(bounds(cx, "menu").origin, point(moved.left(), moved.bottom() + GAP), "it moved with its button");
 }

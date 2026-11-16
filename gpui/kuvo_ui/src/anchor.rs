@@ -15,6 +15,9 @@
 //! The trigger is whatever element the [`Popover`] is a child of: it measures that element as it's
 //! drawn and places the popover in the same frame, so a popover follows its trigger as the window
 //! scrolls or resizes.
+//!
+//! Its entry motion moves away from the side asked for; one that flips still moves in that way
+//! (a few pixels, while it fades in), as the motion is chosen before the window has its say.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -178,7 +181,8 @@ impl RenderOnce for Popover {
         let content = div().id(self.id).child(self.content).animate_in(self.placement.motion(), true).into_any_element();
         let placed = deferred(Placed { target: self.target.clone(), placement: self.placement, content }).with_priority(self.priority);
         match self.target {
-            Target::Point(_) => div().child(placed),
+            // (Absolute, so it takes no room in what holds it.)
+            Target::Point(_) => div().absolute().child(placed),
             // Measures the trigger as it's prepainted; the popover, deferred, is placed after.
             Target::Parent(measured) => div()
                 .absolute()
