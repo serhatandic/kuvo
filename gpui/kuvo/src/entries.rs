@@ -231,7 +231,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
     match entry {
         Entry::Message(message) => message_units(message, open),
         // (As the box's copy will be: what you wrote.)
-        Entry::Outgoing { words, .. } if !words.trim().is_empty() => vec![Unit::new(&[0], words.trim(), Lead::Paragraph)],
+        Entry::Outgoing { words, .. } if !quoted(words).1.is_empty() => vec![Unit::new(&[0], quoted(words).1, Lead::Paragraph)],
         _ => Vec::new(),
     }
 }
@@ -240,7 +240,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
 pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
     match message {
         Message::User(user) => {
-            let words = user.parts().words.trim().to_owned();
+            let words = quoted(&user.parts().words).1;
             if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }
         }
         Message::Shell(run) => run.output.as_ref().map(|output| well_units(&output.output, Some(&run.command), open.contains(&Fold::Whole(run.id.clone(), 0, 0)), &[0])).unwrap_or_default(),
@@ -301,6 +301,14 @@ fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, sel:
         .into_any_element()
 }
 
+/// A message's words as what it quotes (each quote, in order) and what it says itself.
+fn quoted(words: &str) -> (Vec<String>, String) {
+    let segments = kuvo_box::quoting::segments(words);
+    let quotes = segments.iter().filter_map(|(quote, _)| quote.clone()).collect();
+    let own = segments.into_iter().map(|(_, text)| text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n");
+    (quotes, own)
+}
+
 fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     // What went with it, above it: the keyword it was sent with as typed, who wrote it.
@@ -328,7 +336,24 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     for (n, agent) in parts.agents.iter().enumerate() {
         below.push(Chip::new(("named", ix * 1000 + n), format!("&{}", agent.name)).icon(IconName::Bot).into_any_element());
     }
-    let words = parts.words.trim().to_owned();
+    // What it replies to, in its bubble above its own words.
+    let (quotes, words) = quoted(parts.words.trim());
+    let quote_blocks: Vec<AnyElement> = quotes
+        .into_iter()
+        .enumerate()
+        .map(|(n, quote)| {
+            div()
+                .debug_selector(move || format!("quoted-{ix}-{n}"))
+                .pl(space::S2)
+                .border_l_2()
+                .border_color(c.border_strong)
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .child(quote)
+                .into_any_element()
+        })
+        .collect();
+    let has_quotes = !quote_blocks.is_empty();
     div()
         .flex()
         .flex_col()
@@ -343,16 +368,20 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
                 .items_end()
                 .gap(space::S1_5)
                 .children(keyword)
-                .when(!words.is_empty(), |d| {
+                .when(!words.is_empty() || has_quotes, |d| {
                     d.child(
                         div()
                             .px(space::S4)
                             .py(px(10.))
                             .rounded(radius::CARD)
                             .bg(c.sunken)
+                            .flex()
+                            .flex_col()
+                            .gap(space::S2)
                             .text_ui(TypeSize::Body)
                             .text_color(c.text)
-                            .child(SelectableText::new(("words", ix), words).selectable(Some(sel.unit(&[0])))),
+                            .children(quote_blocks)
+                            .when(!words.is_empty(), |d| d.child(SelectableText::new(("words", ix), words).selectable(Some(sel.unit(&[0]))))),
                     )
                 }),
         )

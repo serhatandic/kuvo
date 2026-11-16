@@ -265,7 +265,10 @@ impl ConversationView {
         let selection = view.read(cx).selection.clone();
         let link = selection.link_at(window.mouse_position());
         let has_selection = !selection.is_empty();
-        let (copy_view, all_view) = (view.clone(), view.clone());
+        // (Nothing selected: the message under the pointer is what's quoted.)
+        let under = if has_selection { None } else { view.read(cx).message_at(window.mouse_position()) };
+        let quotes = has_selection || under.is_some();
+        let (copy_view, all_view, quote_view) = (view.clone(), view.clone(), view.clone());
         cx.new(|cx| {
             let mut menu = Menu::new(cx);
             if let Some(link) = link {
@@ -275,10 +278,36 @@ impl ConversationView {
                 let text = copy_view.read(cx).selected_text();
                 selection::copy_to_clipboard(text, cx);
             }))
+            .entry(MenuEntry::new(if has_selection { "Quote" } else { "Quote Message" }).disabled(!quotes).on_select(move |window, cx| {
+                let text = match under {
+                    Some(ix) => quote_view.read(cx).message_text(ix),
+                    None => quote_view.read(cx).selected_text(),
+                };
+                quote_view.update(cx, |this, cx| this.quote(&text, window, cx));
+            }))
             .entry(MenuEntry::new("Select All").shortcut(selection::SELECT_ALL_KEYS).on_select(move |window, cx| {
                 all_view.update(cx, |this, cx| this.select_all(&selection::SelectAll, window, cx));
             }))
         })
+    }
+
+    /// Replies to `text`: it goes into the composer as a quote, the keyboard there to answer it.
+    pub fn quote(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.composer.update(cx, |composer, cx| composer.quote(text, cx));
+        let focus = self.composer.focus_handle(cx);
+        window.focus(&focus, cx);
+    }
+
+    /// The message row at `point` in the window (not the way back, nor the run under way).
+    pub fn message_at(&self, point: gpui::Point<gpui::Pixels>) -> Option<usize> {
+        // (By the text drawn there, as a selection finds it.)
+        let row = self.selection.spot_at(point)?.unit.row;
+        self.entries.iter().position(|entry| entry.key() == row.as_ref() && matches!(entry, Entry::Message(_) | Entry::Outgoing { .. }) && !entries::units(entry, &self.open).is_empty())
+    }
+
+    /// Row `ix`'s words as a quote takes them: its text as copying sees it, the parts apart.
+    pub fn message_text(&self, ix: usize) -> String {
+        self.entries.get(ix).map(|entry| entries::units(entry, &self.open).into_iter().map(|unit| unit.text.to_string()).collect::<Vec<_>>().join("\n\n")).unwrap_or_default()
     }
 
     /// Why the page before couldn't be read, while that's said.
