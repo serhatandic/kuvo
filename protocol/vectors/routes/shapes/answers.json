@@ -18470,6 +18470,7 @@
       "agent?": "string",
       "toggleAutopilot?": "bool",
       "compact?": "bool",
+      "said?": "string",
       "shell?": "string",
       "command?": {
        "object": {
