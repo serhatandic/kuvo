@@ -66,6 +66,7 @@ sessions.models
 sessions.needsYou
 sessions.start.empty
 settings
+settings.flows
 setup.ready
 setup.welcomed
 sign-in.accounts.kinds

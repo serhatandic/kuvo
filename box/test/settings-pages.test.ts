@@ -68,6 +68,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["worktrees", "Worktrees", "Projects", "folder"],
     ["storage", "Storage", "System", "drive"],
     ["archived", "Archived Sessions", "System", "archive"],
+    ["mcp", "MCP Servers", "Agents & Tools", "sliders"],
   ])
   expect((await ask(handler, "GET", "kuvo/settings/general")).status).toBe(404)
   expect(json.sections[0].keywords).toContain("time zone")

@@ -1737,6 +1737,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "sessions.start.empty": ["POST", "kuvo/sessions"],
     // (This box's settings as it describes them, for any client to draw.)
     settings: ["GET", "kuvo/settings"],
+    // (Forms, their checks and the flows a box leads: MCP Servers is described with them.)
+    "settings.flows": ["GET", "kuvo/settings/mcp"],
     // (Your setup, and who's its main computer.)
     setup: ["GET", "kuvo/setup"],
     "setup.mainOnly": ["GET", "kuvo/setup"],

@@ -10,7 +10,6 @@
 // Mac's Software Update) is offered only to a client there (`fromApp`: the app beside its box,
 // over its own server), and said plainly elsewhere.
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { listRoute, LIST_ROUTE } from "../lists/sessions";
@@ -23,7 +22,10 @@ import { WORK_SETTINGS_FILE } from "../work/settings";
 import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
 import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
-import { SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
+import { actionsOf, asked, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
+import type { Refused, Section } from "./settings-kit";
+import { mcpSection } from "./settings-mcp";
+import { SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
 import { budgetConfirmation, fileSize, fileSizeUnit } from "../../shared/artifact-budget";
 import { fitsShape } from "../../shared/shape";
 import type { SettingAction, SettingCan, SettingGroup, SettingItem, SettingRow, SettingsPage, SettingsSection } from "../../shared/routes/settings-pages";
@@ -55,7 +57,7 @@ import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHe
 import { ownClock } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
-export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
+export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
 
 /** This computer's own section, titled for who asks (`computerTitle`). */
 const COMPUTER: SettingsSection = {
@@ -88,68 +90,16 @@ const SECTIONS: SettingsSection[] = [
   { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
+  mcpSection.listed,
 ];
 
-// MARK: Rows
+export { revised };
 
-/** A row's revision: a hash of what it is and what governs whether it can be changed (its value,
- * `can`, its choices' and actions' ids, a list's items' revisions), never its display words (confirmation words do count), so a computer
- * renamed or a line reworded changes none. A `secret`'s, of whether one is set (it has no value). */
-export function revised<Row extends Omit<SettingItem, "revision"> & { items?: readonly SettingItem[] }>(row: Row): Row & { revision: string } {
-  // (Whether it can be, not why not: a why names the computer.)
-  const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
-  const action = (each: SettingAction | undefined) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
-  const governs = {
-    confirmBelow: row.confirmBelow, min: row.min, max: row.max,
-    kind: row.kind, value: row.kind === "secret" ? undefined : row.value, can: can(row.can), set: row.set,
-    choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
-    start: action(row.start), section: row.section, address: row.address, name: row.name,
-    items: row.items?.map(each => each.revision), add: action((row as { add?: SettingAction }).add),
-  };
-  const revision = crypto.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
-  return { ...row, revision };
-}
-
-const item = (row: Omit<SettingItem, "revision">): SettingItem => revised(row);
-const row = (fields: Omit<SettingRow, "revision">): SettingRow => revised(fields);
-
-/** Each row on a page, a list's items too. */
-const rowsOf = (page: SettingsPage): SettingItem[] => page.groups.flatMap(group => group.rows.flatMap(each => [each, ...(each.items ?? [])]));
 
 // MARK: The routes a page is made from
 
-/** What one of the box's own routes answers, asked as this request's client asks (the same `fromApp`,
- * the same phone): its status and its JSON. */
-async function asked(context: RouteContext, answer: (context: RouteContext) => AsyncIterable<AnswerPiece>, method: string, path: string, body?: unknown): Promise<{ status: number; value: any }> {
-  const request = {
-    method, path, headers: {},
-    ...(body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) }),
-    ...(context.request.fromApp ? { fromApp: true } : {}),
-    ...(context.request.fromMac ? { fromMac: true } : {}),
-  };
-  let status = 500;
-  const chunks: Buffer[] = [];
-  for await (const piece of answer({ ...context, request, route: path.split("?")[0]! })) {
-    if ("head" in piece) status = piece.head.status;
-    if ("body" in piece) chunks.push(Buffer.from(piece.body));
-  }
-  let value: any = {};
-  try { value = JSON.parse(Buffer.concat(chunks).toString() || "{}"); } catch {}
-  return { status, value };
-}
-
 const browserAnswer = (context: RouteContext) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)!);
 
-/** Why one of them didn't answer, in words. */
-const said = (answer: { status: number; value: any }, fallback: string): string =>
-  typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback;
-
-/** A change or an action refused, in words: its status, and why; `stale` where the row changed since
- * it was read (answered with the page now). */
-type Refused = { status: number; message: string; stale?: true };
-const refusal = (answer: { status: number; value: any }): Refused | null =>
-  answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said(answer, `It couldn't be changed (${answer.status}).`) };
-const STALE: Refused = { status: 409, message: CHANGED_SINCE, stale: true };
 
 // MARK: Permissions
 
@@ -448,8 +398,6 @@ async function gitChange(context: RouteContext, at: SettingItem, value: unknown)
 // MARK: Worktrees
 
 const workAnswer = (context: RouteContext) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)!);
-const unreadPage = (id: string, title: string, answer: { status: number; value: any }): SettingsPage => ({ id, title, groups: [], notes: [{ words: said(answer, "This computer's settings couldn't be read."), tone: "warning" }] });
-const staleOrRefusal = (answer: { status: number; value: any }): Refused | null => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal(answer);
 
 async function worktreesPage(context: RouteContext): Promise<SettingsPage> {
   const config = await asked(context, settingsRoute, "GET", "kuvo/config");
@@ -796,21 +744,10 @@ async function computerAct(context: RouteContext, at: SettingItem, action: Setti
   return noActions();
 }
 
-async function noActions(): Promise<Refused | null> {
-  return { status: 404, message: "That isn't something it does." };
-}
 
 // MARK: Sections
 
-interface Section {
-  read: (context: RouteContext) => Promise<SettingsPage>;
-  change: (context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown) => Promise<Refused | null>;
-  act: (context: RouteContext, at: SettingItem, action: SettingAction) => Promise<Refused | null>;
-  /** What's looked at each second for a change another process made (cheap). */
-  look: () => string;
-}
 
-const mtime = (file: string): number => { try { return fs.statSync(file).mtimeMs; } catch { return 0; } };
 
 const PAGES: Record<string, Section> = {
   clock: { read: clockPage, change: clockChange, act: noActions, look: () => `${mtime(ZONE_FILE)} ${ownClock()}` },
@@ -827,6 +764,7 @@ const PAGES: Record<string, Section> = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  mcp: mcpSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
 
@@ -860,10 +798,26 @@ const idOf = (part: string | undefined): string | null => {
   try { return decodeURIComponent(part ?? ""); } catch { return null; }
 };
 
+/** `POST kuvo/settings/<section>/<row>/<action>/check {was?, values}`: a form's values checked as
+ * they're typed, changing nothing, in whichever process is asked (it only reads). */
+async function checked(context: RouteContext, section: Section, rowPart: string, actionPart: string): Promise<[number, unknown]> {
+  if (context.request.method.toUpperCase() !== "POST") return [405, { message: "Check it with POST." }];
+  const given = parsed(context.request.body);
+  if (!fitsShape(SETTINGS_CHECK, given)) return [400, { message: "Send its form's values as an object (values)." }];
+  const body = given as { was?: string; values: Record<string, unknown> };
+  const page = await section.read(context);
+  const at = rowsOf(page).find(each => each.id === idOf(rowPart));
+  if (!at) return [404, { message: "That isn't on this page now." }];
+  if (body.was !== undefined && at.revision !== body.was) return [409, { message: CHANGED_SINCE, page }];
+  const action = actionsOf(at).find(each => each.id === idOf(actionPart));
+  if (!action?.form) return [404, { message: "That has no form to check." }];
+  return [200, section.check ? await section.check(context, at, action, body.values) : { fields: [], ready: true }];
+}
+
 export async function* settingsPageRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, json, signal } = context;
   const method = request.method.toUpperCase();
-  const [, sectionPart, events, rowPart, actionPart] = match;
+  const [, sectionPart, events, rowPart, actionPart, checkPart] = match;
   if (sectionPart === undefined) {
     if (method !== "GET") return yield* json(405, { message: "Read them with GET." });
     return yield* json(200, { sections: SECTIONS.map(each => (each === COMPUTER ? { ...each, title: computerTitle(context) } : each)) });
@@ -880,6 +834,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   }
 
   if (method === "GET" && rowPart === undefined) return yield* json(200, await section.read(context));
+  if (checkPart !== undefined) return yield* json(...(await checked(context, section, rowPart!, actionPart!)));
   if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
     return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
   }
@@ -903,6 +858,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   if (typeof given.was !== "string") return yield* json(400, { message: "Send the row's revision as it was read (was)." });
   const changeShape = SETTINGS_PAGE_ROUTES.find(route => route.route === "PATCH kuvo/settings/:section")!.body!;
   if (rowPart === undefined && !fitsShape(changeShape, given)) return yield* json(400, { message: "Send a row, its value and revision, and confirmed only as true or false." });
+  if (rowPart !== undefined && !fitsShape(SETTINGS_ACT, given)) return yield* json(400, { message: "Send the row's revision (was), and its form's values as an object (values)." });
   // One change to a section at a time, each checked against the page as it is then: the row's own
   // revision, whether it can be changed from here, the value; then made.
   const { status, value } = await inTurn(id!, async (): Promise<{ status: number; value: unknown }> => {
@@ -912,12 +868,14 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     if (at.revision !== given.was) return { status: 409, value: { message: CHANGED_SINCE, page } };
     let done: Refused | null;
     if (rowPart !== undefined) {
-      const action = (at.actions ?? []).find(each => each.id === idOf(actionPart));
+      const action = actionsOf(at).find(each => each.id === idOf(actionPart));
       if (!action) return { status: 404, value: { message: "That isn't something it does." } };
       if (action.opens !== undefined) return { status: 400, value: { message: "That opens a page: open it in the app." } };
       const why = whyNot(action.can);
       if (why) return { status: 403, value: { message: why } };
-      done = await section.act(context, at, action);
+      const values = isObject(given.values) ? given.values : undefined;
+      if (action.form && !values) return { status: 400, value: { message: "Fill in its form (values)." } };
+      done = await section.act(context, at, action, values);
     } else {
       if (at.can === undefined) return { status: 400, value: { message: "That isn't something to change." } };
       const why = whyNot(at.can);
@@ -929,7 +887,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       done = await section.change(context, at, given.value, given.confirmed);
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
-    if (done) return { status: done.status, value: { message: done.message } };
+    if (done) return { status: done.status, value: { message: done.message, ...(done.fields ? { fields: done.fields } : {}) } };
     changed();
     return { status: 200, value: await section.read(context) };
   });

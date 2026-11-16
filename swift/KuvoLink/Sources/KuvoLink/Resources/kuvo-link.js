@@ -6989,9 +6989,9 @@ async function takeSeed(input, engine = readEngineFile) {
 init_text();
 import { spawn as spawn19 } from "node:child_process";
 import crypto67 from "node:crypto";
-import fs194 from "node:fs";
+import fs195 from "node:fs";
 import os26 from "node:os";
-import path202 from "node:path";
+import path203 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // box/src/shared/hang.ts
@@ -9388,6 +9388,7 @@ var FEATURES = [
   "sessions.start",
   "sessions.start.empty",
   "settings",
+  "settings.flows",
   "setup",
   "setup.mainOnly",
   "setup.ready",
@@ -51771,7 +51772,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f3635e8051c6";
+var BRIDGE_VERSION = "f71275ec89c1";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62090,9 +62091,7 @@ async function* settingsRoute(context) {
 }
 
 // box/src/link/areas/settings-pages.ts
-import crypto63 from "node:crypto";
-import fs191 from "node:fs";
-import path199 from "node:path";
+import path200 from "node:path";
 init_home();
 
 // box/src/link/areas/work.ts
@@ -62308,20 +62307,836 @@ async function* appIconRoute(context) {
   yield { head: { status: 200, headers: { "content-type": "image/png", "content-length": String(bytes.length) } } };
   yield { body: bytes };
 }
+// box/src/link/areas/settings-kit.ts
+import crypto63 from "node:crypto";
+import fs189 from "node:fs";
+function revised(row) {
+  const can = (value) => value === undefined ? undefined : value === true;
+  const action = (each) => each && {
+    id: each.id,
+    can: can(each.can),
+    opens: each.opens,
+    confirm: each.confirm,
+    form: each.form?.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: can(field.can) }))
+  };
+  const governs = {
+    confirmBelow: row.confirmBelow,
+    min: row.min,
+    max: row.max,
+    kind: row.kind,
+    value: row.kind === "secret" ? undefined : row.value,
+    can: can(row.can),
+    set: row.set,
+    choices: row.choices?.map((choice) => choice.id),
+    actions: row.actions?.map(action),
+    start: action(row.start),
+    section: row.section,
+    address: row.address,
+    name: row.name,
+    items: row.items?.map((each) => each.revision),
+    add: action(row.add),
+    flow: row.flow && { id: row.flow.id, state: row.flow.state, actions: row.flow.actions.map(action) }
+  };
+  const revision = crypto63.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
+  return { ...row, revision };
+}
+var item = (row) => revised(row);
+var row = (fields) => revised(fields);
+var rowsOf4 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []]));
+var actionsOf3 = (at) => [...at.actions ?? [], ...at.add ? [at.add] : [], ...at.flow?.actions ?? []];
+async function asked8(context, answer, method, path, body) {
+  const request = {
+    method,
+    path,
+    headers: {},
+    ...body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) },
+    ...context.request.fromApp ? { fromApp: true } : {},
+    ...context.request.fromMac ? { fromMac: true } : {}
+  };
+  let status = 500;
+  const chunks = [];
+  for await (const piece of answer({ ...context, request, route: path.split("?")[0] })) {
+    if ("head" in piece)
+      status = piece.head.status;
+    if ("body" in piece)
+      chunks.push(Buffer.from(piece.body));
+  }
+  let value = {};
+  try {
+    value = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+  } catch {}
+  return { status, value };
+}
+var said9 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback;
+var refusal5 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said9(answer, `It couldn't be changed (${answer.status}).`) };
+var STALE = { status: 409, message: CHANGED_SINCE, stale: true };
+var unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said9(answer, "This computer's settings couldn't be read."), tone: "warning" }] });
+var staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal5(answer);
+async function noActions() {
+  return { status: 404, message: "That isn't something it does." };
+}
+var mtime2 = (file) => {
+  try {
+    return fs189.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+};
+
+// box/src/shared/mcp-setup.ts
+function commandWords(line) {
+  const words = [];
+  let current = "";
+  let quote = null;
+  let hasWord = false, escaped = false, hadWord = false;
+  for (const character of line) {
+    if (escaped) {
+      if (character === `
+` || character === "\r") {
+        escaped = false;
+        hasWord = hadWord;
+        continue;
+      }
+      if (quote === '"' && !'"\\$`'.includes(character))
+        current += "\\";
+      current += character;
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      hadWord = hasWord;
+      escaped = true;
+      hasWord = true;
+    } else if (quote) {
+      if (character === quote)
+        quote = null;
+      else
+        current += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+      hasWord = true;
+    } else if (/\s/.test(character)) {
+      if (hasWord)
+        words.push(current);
+      current = "";
+      hasWord = false;
+    } else {
+      current += character;
+      hasWord = true;
+    }
+  }
+  if (hasWord)
+    words.push(current);
+  return words;
+}
+var quotedWord = (word) => word !== "" && !/[\s"'\\]/.test(word) ? word : `"${word.replaceAll("\\", "\\\\").replaceAll('"', "\\\"")}"`;
+var commandLine3 = (command) => Array.isArray(command) ? command.filter((word) => typeof word === "string").map(quotedWord).join(" ") : "";
+function lenientJSON(text) {
+  let out = "";
+  let inString = false;
+  for (let at = 0;at < text.length; at++) {
+    const character = text[at];
+    if (inString) {
+      out += character;
+      if (character === "\\")
+        out += text[++at] ?? "";
+      else if (character === '"')
+        inString = false;
+    } else if (character === '"') {
+      inString = true;
+      out += character;
+    } else if (character === "/" && text[at + 1] === "/") {
+      while (at < text.length && text[at] !== `
+`)
+        at++;
+    } else if (character === "/" && text[at + 1] === "*") {
+      at = text.indexOf("*/", at + 2);
+      if (at < 0)
+        return;
+      at++;
+    } else {
+      out += character;
+    }
+  }
+  try {
+    return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
+  } catch {
+    return;
+  }
+}
+var isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+function jsonObject(text) {
+  if (!text.startsWith("{") && !text.startsWith('"'))
+    return null;
+  const wrapped = text.startsWith('"') ? `{${text.endsWith(",") ? text.slice(0, -1) : text}}` : text;
+  const value = lenientJSON(wrapped);
+  return isRecord(value) ? value : null;
+}
+var asText = (value) => typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : null;
+var strings3 = (value) => {
+  const out = {};
+  if (isRecord(value))
+    for (const [key, each] of Object.entries(value)) {
+      const text = asText(each);
+      if (text !== null)
+        out[key] = text;
+    }
+  return out;
+};
+function server(entry, name) {
+  const url = entry.url ?? entry.serverUrl;
+  if (typeof url === "string" && url)
+    return { ...name ? { name } : {}, command: [], environment: {}, url, headers: strings3(entry.headers) };
+  let command;
+  if (Array.isArray(entry.command) && entry.command.every((word) => typeof word === "string"))
+    command = entry.command;
+  else if (typeof entry.command === "string" && entry.command)
+    command = [entry.command, ...Array.isArray(entry.args) ? entry.args.map(asText).filter((word) => word !== null) : []];
+  else
+    return null;
+  if (!command.length)
+    return null;
+  if (command.length === 1 && command[0].includes(" ") && entry.args === undefined)
+    command = commandWords(command[0]);
+  return { ...name ? { name } : {}, command, environment: strings3(entry.env ?? entry.environment), headers: {} };
+}
+function claudeCodeJSON(line) {
+  const words = commandWords(line).slice(3);
+  while (words[0]?.startsWith("-"))
+    words.splice(0, words[0].includes("=") || words[0] === "--client-secret" ? 1 : Math.min(2, words.length));
+  const entry = words.length >= 2 ? jsonObject(words[1]) : null;
+  return entry ? server(entry, words[0]) : null;
+}
+function claudeCode(line) {
+  const words = commandWords(line).slice(3).flatMap((word) => {
+    const equals = word.indexOf("=");
+    return word.startsWith("--") && equals > 0 ? [word.slice(0, equals), word.slice(equals + 1)] : [word];
+  });
+  const setup = { command: [], environment: {}, headers: {} };
+  let remote = false;
+  const rest = [];
+  for (let index = 0;index < words.length; index++) {
+    const word = words[index];
+    if (word === "--") {
+      setup.command = words.slice(index + 1);
+      break;
+    }
+    const value = words[index + 1];
+    if (word === "-e" || word === "--env") {
+      while (index + 1 < words.length && words[index + 1].indexOf("=") > 0) {
+        const pair = words[++index];
+        const equals = pair.indexOf("=");
+        setup.environment[pair.slice(0, equals)] = pair.slice(equals + 1);
+      }
+    } else if (word === "-H" || word === "--header") {
+      const colon = value?.indexOf(":") ?? -1;
+      if (value && colon > 0)
+        setup.headers[value.slice(0, colon).trim()] = value.slice(colon + 1).trim();
+      index++;
+    } else if (word === "-t" || word === "--transport") {
+      remote = value === "http" || value === "sse";
+      index++;
+    } else if (word === "-s" || word === "--scope") {
+      index++;
+    } else {
+      rest.push(word);
+    }
+  }
+  if (!rest[0])
+    return null;
+  setup.name = rest[0];
+  if (remote) {
+    if (!rest[1])
+      return null;
+    setup.url = rest[1];
+  } else if (!setup.command.length) {
+    setup.command = rest.slice(1);
+  }
+  return setup.command.length || setup.url ? setup : null;
+}
+function serverSetups(text) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("claude mcp add-json "))
+    return [claudeCodeJSON(trimmed)].filter((each) => each !== null);
+  if (trimmed.startsWith("claude mcp add "))
+    return [claudeCode(trimmed)].filter((each) => each !== null);
+  const object = jsonObject(trimmed);
+  if (!object)
+    return [];
+  const named = (servers) => Object.keys(servers).sort().flatMap((name) => {
+    const entry = servers[name];
+    const found = isRecord(entry) ? server(entry, name) : null;
+    return found ? [found] : [];
+  });
+  for (const key of ["mcpServers", "servers", "mcp", "context_servers"]) {
+    const servers = object[key];
+    if (isRecord(servers))
+      return named(servers);
+  }
+  const alone = server(object, undefined);
+  return alone ? [alone] : named(object);
+}
+function serverSetup(text) {
+  const found = serverSetups(text);
+  return found.length === 1 ? found[0] : null;
+}
+function webAddress(typed) {
+  const text = typed.trim();
+  if (!text || /\s/.test(text))
+    return null;
+  const schemed = text.includes("://");
+  const local = ["localhost", "127.0.0.1", "[::1]"].some((prefix) => text.toLowerCase().startsWith(prefix));
+  const full = schemed ? text : (local ? "http://" : "https://") + text;
+  let url;
+  try {
+    url = new URL(full);
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:"].includes(url.protocol) || !url.hostname)
+    return null;
+  const host = url.hostname.toLowerCase();
+  if (!schemed && !host.includes(".") && host !== "localhost" && !host.includes(":") && !host.startsWith("["))
+    return null;
+  return full;
+}
+// box/src/link/areas/settings-flows.ts
+init_home();
+import fs190 from "node:fs";
+import path197 from "node:path";
+var FLOWS_FILE = path197.join(RUN, "settings-flows.json");
+var ENDED_SHOWN = 120000;
+var flowClock = { now: () => Date.now() };
+function readAll4(file = FLOWS_FILE) {
+  try {
+    const kept = JSON.parse(fs190.readFileSync(file, "utf8"));
+    return Array.isArray(kept?.flows) ? kept.flows.filter((each) => typeof each?.section === "string" && typeof each.row === "string" && typeof each.id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function writeAll(flows, file = FLOWS_FILE) {
+  if (!flows.length) {
+    fs190.rmSync(file, { force: true });
+    return;
+  }
+  fs190.mkdirSync(path197.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs190.writeFileSync(temporary, JSON.stringify({ flows }), { mode: 384 });
+  fs190.renameSync(temporary, file);
+}
+function flowsOf(section, file = FLOWS_FILE) {
+  const now = flowClock.now();
+  const all = readAll4(file);
+  const kept = all.filter((each) => each.state === "waiting" || now - (each.ended ?? now) < ENDED_SHOWN);
+  if (kept.length !== all.length)
+    writeAll(kept, file);
+  return kept.filter((each) => each.section === section);
+}
+function keepFlow(flow, file = FLOWS_FILE) {
+  const kept = { ...flow, state: "waiting", started: flowClock.now() };
+  writeAll([...readAll4(file).filter((each) => each.section !== flow.section || each.row !== flow.row), kept], file);
+  return kept;
+}
+function endFlow(section, id, state, line, file = FLOWS_FILE) {
+  const all = readAll4(file);
+  const flow = all.find((each) => each.section === section && each.id === id);
+  if (!flow || flow.state !== "waiting")
+    return false;
+  Object.assign(flow, { state, ended: flowClock.now() }, line ? { line } : {});
+  writeAll(all, file);
+  return true;
+}
+function dropFlow(section, row, file = FLOWS_FILE) {
+  const all = readAll4(file);
+  const kept = all.filter((each) => each.section !== section || each.row !== row);
+  if (kept.length !== all.length)
+    writeAll(kept, file);
+}
+
+// box/src/link/areas/settings-mcp.ts
+var TITLE = "MCP Servers";
+var BUILT_IN = new Set(["kuvo-browser"]);
+var computerHere = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+var capitalized = (words) => words.charAt(0).toUpperCase() + words.slice(1);
+async function facts(context) {
+  const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
+  if (config.status !== 200)
+    return config;
+  let engine = null;
+  try {
+    engine = context.readEngine();
+  } catch {}
+  if (!engine?.port)
+    engine = null;
+  const listed = engine ? await call(engine, "GET", "/api/mcp", undefined, AbortSignal.timeout(5000)).catch(() => null) : null;
+  const integrations = new Map(integrationCatalog().map((each) => [each.id, each.title || each.id]));
+  return { settings: config.value, servers: Array.isArray(listed) ? listed : null, engine, integrations };
+}
+function yourServers(known) {
+  const servers = valueAt(known.settings, SERVERS2);
+  if (!isObject(servers))
+    return [];
+  return Object.entries(servers).filter((entry) => isObject(entry[1]) && !BUILT_IN.has(entry[0]) && !known.integrations.has(entry[0])).sort(([a], [b]) => a.localeCompare(b));
+}
+function badgeOf(on, server, known) {
+  if (!on)
+    return { words: "Off", tone: "quiet" };
+  if (!known.servers)
+    return;
+  switch (server?.status?.status) {
+    case "connected":
+      return { words: "Connected", tone: "good" };
+    case "pending":
+      return { words: "Connecting…", tone: "busy" };
+    case "needs_auth":
+    case "needs_client_registration":
+      return { words: "Needs sign-in", tone: "warning" };
+    case "failed":
+      return { words: "Couldn’t connect", tone: "failed" };
+    case "disabled":
+      return { words: "Off", tone: "quiet" };
+    default:
+      return { words: "Not started", tone: "quiet" };
+  }
+}
+var lineOf2 = (entry) => typeof entry.url === "string" && entry.url ? entry.url : commandLine3(entry.command) || undefined;
+var pairsOf = (value) => isObject(value) ? Object.entries(value).map(([key, each]) => ({ key, value: typeof each === "string" ? each : String(each) })) : [];
+function serverForm(context, name, entry = {}) {
+  const where = computerHere(context);
+  const remote = entry.type === "remote";
+  const customSignIn = isObject(entry.oauth);
+  const keyNote = "To keep a key out of the settings file, write {env:NAME} to use one of your environment variables.";
+  const fields = [
+    ...name === null ? [{ id: "name", title: "Name", kind: "text", value: "", placeholder: "files, or paste its setup from the README" }] : [],
+    { id: "runs", title: "Runs", kind: "choice", value: remote ? "remote" : "local", choices: [{ id: "local", title: `On ${where}` }, { id: "remote", title: "On the web" }] },
+    { id: "command", title: "Command", kind: "lines", mono: true, value: commandLine3(entry.command), placeholder: "npx -y @modelcontextprotocol/server-filesystem ~/Documents", shown: { field: "runs", is: ["local"] } },
+    { id: "cwd", title: "Working folder", kind: "folder", value: typeof entry.cwd === "string" ? entry.cwd : "", placeholder: "The project’s folder", folder: { choose: "Choose…", clear: "The project’s folder", prompt: "Choose", message: "Choose the folder the server runs in." }, shown: { field: "runs", is: ["local"] } },
+    { id: "environment", title: "Environment Variables", kind: "pairs", value: pairsOf(entry.environment), pairs: { key: "NAME", value: "Value" }, line: `Each by its name, like GITHUB_TOKEN. ${keyNote}`, shown: { field: "runs", is: ["local"] } },
+    { id: "url", title: "URL", kind: "text", value: typeof entry.url === "string" ? entry.url : "", placeholder: "https://example.com/mcp", shown: { field: "runs", is: ["remote"] } },
+    {
+      id: "oauth",
+      title: "Sign in when the server asks",
+      kind: "switch",
+      value: customSignIn || entry.oauth !== false,
+      shown: { field: "runs", is: ["remote"] },
+      line: customSignIn ? "With the sign-in set up in the settings file." : "Turn off for a server that takes an API key in a header instead.",
+      ...customSignIn ? { can: { why: "Its sign-in is set up in the settings file: change it there." } } : {}
+    },
+    { id: "headers", title: "Headers", kind: "pairs", value: pairsOf(entry.headers), pairs: { key: "Header, like Authorization", value: "Value" }, line: keyNote, shown: { field: "runs", is: ["remote"] } },
+    {
+      id: "codemode",
+      title: "Let the agent call its tools from code",
+      kind: "switch",
+      value: name === null ? false : entry.codemode !== false,
+      line: "Code Mode: the agent looks up this server's tools and combines several in one step, which keeps each message small for a server with many tools. Smaller models may not find its tools this way."
+    }
+  ];
+  return name === null ? { title: "Add Server", submit: "Add Server", fields, note: `A server on ${where} runs a command; one on the web is a URL.` } : { title: name, submit: "Save", fields };
+}
+var serverId = (typed) => typed.trim().replaceAll(" ", "-").replace(/[^\p{L}\p{N}_-]/gu, "");
+var filled = (setup, name) => ({
+  ...name && setup.name ? { name: setup.name } : {},
+  runs: setup.url ? "remote" : "local",
+  ...setup.url ? { url: setup.url, headers: Object.entries(setup.headers).map(([key, value]) => ({ key, value })) } : { command: commandLine3(setup.command), environment: Object.entries(setup.environment).map(([key, value]) => ({ key, value })) }
+});
+var text7 = (value) => typeof value === "string" ? value : "";
+var pairs = (value) => Array.isArray(value) ? value.filter(isObject).map((each) => ({ key: text7(each.key).trim(), value: text7(each.value) })) : [];
+function readForm(context, known, name, values, before = {}) {
+  const fields = [];
+  const say = (id, words, tone) => fields.push({ id, words, tone });
+  let ready = true;
+  let fill;
+  for (const at of name === null ? ["name", "command"] : ["command"]) {
+    const typed = text7(values[at]);
+    const several = serverSetups(typed);
+    if (several.length > 1) {
+      say(at, `This sets up ${several.length} servers (${several.map((each) => each.name ?? "unnamed").join(", ")}). Paste one server’s part at a time.`, "warning");
+      ready = false;
+    }
+    const setup = serverSetup(typed);
+    if (setup) {
+      fill = filled(setup, at === "name");
+      if (at === "name" && !setup.name)
+        fill.name = "";
+      values = { ...values, ...fill };
+      say(at === "name" ? setup.url ? "url" : "command" : at, "Filled in from the setup you pasted.", "good");
+    }
+  }
+  let id;
+  if (name === null) {
+    const typed = text7(values.name).trim();
+    id = serverId(typed);
+    const taken = valueAt(known.settings, [...SERVERS2, id]) !== undefined || (known.servers ?? []).some((each) => each?.name === id);
+    const why = !id ? typed ? "A name needs a letter or a number." : null : BUILT_IN.has(id) ? "Kuvo Code uses that name for its own tools." : known.integrations.has(id) ? `${known.integrations.get(id)} uses that name: add it in Integrations, or pick another name.` : taken ? `There's a server called ${id} already.` : null;
+    if (why)
+      say("name", why, "warning");
+    else if (id && id !== typed)
+      say("name", `It'll be called ${id}.`, "quiet");
+    else if (!id)
+      say("name", fill ? "Name it to add it with the setup you pasted." : "A short name without spaces. The server's tools are named after it.", "quiet");
+    if (!id || why)
+      ready = false;
+  }
+  const remote = values.runs === "remote";
+  const entry = { ...before };
+  for (const key of ["command", "cwd", "environment", "url", "headers", "oauth"])
+    delete entry[key];
+  entry.type = remote ? "remote" : "local";
+  if (remote) {
+    if (isObject(before.oauth))
+      entry.oauth = before.oauth;
+    else if (values.oauth === false)
+      entry.oauth = false;
+    const typed = text7(values.url).trim();
+    const url = webAddress(typed);
+    if (!typed) {
+      say("url", "Its address, like https://example.com/mcp.", "quiet");
+      ready = false;
+    } else if (!url) {
+      say("url", "That isn’t a web address. Give one like https://example.com/mcp.", "warning");
+      ready = false;
+    } else {
+      if (url !== typed)
+        say("url", `It'll be saved as ${url}.`, "quiet");
+      entry.url = url;
+    }
+  } else {
+    const words = commandWords(text7(values.command));
+    if (!words.length) {
+      if (!fields.some((each) => each.id === "command"))
+        say("command", "The command that starts it.", "quiet");
+      ready = false;
+    } else {
+      entry.command = words;
+      if (!fields.some((each) => each.id === "command")) {
+        const found = findProgram(`?name=${encodeURIComponent(words[0])}`).value;
+        const where = computerHere(context);
+        if (found.path)
+          say("command", `${found.name} is on ${where}.`, "good");
+        else if (found.unknown !== true && found.name)
+          say("command", `${found.name} isn’t on ${where}` + (sourceOf2(found.name) ? `. It comes with ${sourceOf2(found.name)}: install that there first.` : ". Install it there first, or use a command it has."), "warning");
+      }
+    }
+    const cwd = text7(values.cwd).trim();
+    if (cwd)
+      entry.cwd = cwd;
+  }
+  const listed = pairs(values[remote ? "headers" : "environment"]).filter((each) => each.key || each.value);
+  const kept = {};
+  for (const each of listed) {
+    const field = remote ? "headers" : "environment";
+    if (!each.key) {
+      say(field, "Give each value a name.", "warning");
+      ready = false;
+    } else if (!remote && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(each.key)) {
+      say(field, `${each.key} isn't a variable's name: letters, digits and underscores, like GITHUB_TOKEN.`, "warning");
+      ready = false;
+    } else if (each.key in kept) {
+      say(field, `${each.key} is given twice.`, "warning");
+      ready = false;
+    } else {
+      kept[each.key] = each.value;
+    }
+  }
+  if (Object.keys(kept).length)
+    entry[remote ? "headers" : "environment"] = kept;
+  entry.codemode = values.codemode === true;
+  return { fields, ready, ...fill ? { values: fill } : {}, ...ready ? { entry } : {}, ...id ? { id } : {} };
+}
+function sourceOf2(program) {
+  const base = program.split("/").pop() ?? program;
+  if (["npx", "npm", "node"].includes(base))
+    return "Node.js";
+  if (["uvx", "uv"].includes(base))
+    return "uv";
+  if (base === "docker")
+    return "Docker";
+  if (["python", "python3", "pip", "pip3"].includes(base))
+    return "Python";
+  if (["bun", "bunx"].includes(base))
+    return "Bun";
+  if (base === "deno")
+    return "Deno";
+  return null;
+}
+function flowOf(context, flow) {
+  const title = `Signing in to ${flow.row.slice("server-".length)}`;
+  if (flow.state === "done")
+    return { id: flow.id, state: "done", title, line: "Signed in. The agent can use its tools now.", actions: [{ id: "dismiss", title: "OK" }] };
+  if (flow.state === "failed")
+    return { id: flow.id, state: "failed", title, line: flow.line ?? "Signing in didn’t work.", actions: [{ id: "sign-in", title: "Try Again" }, { id: "dismiss", title: "OK" }] };
+  const opens = flow.about.url;
+  return {
+    id: flow.id,
+    state: "waiting",
+    title,
+    line: "Finish signing in on its page in your browser.",
+    ...opens ? { opens } : {},
+    ...context.request.fromApp ? {} : { code: { title: "Or paste the address the page ended on", placeholder: "http://127.0.0.1:19876/mcp/oauth/callback?code=…", action: "finish" } },
+    actions: [...opens ? [{ id: "open-sign-in", title: "Open Sign-In Page", opens }] : [], { id: "finish", title: "Finish" }, { id: "cancel", title: "Cancel" }]
+  };
+}
+async function followFlows(known) {
+  if (!known.engine)
+    return;
+  for (const flow of flowsOf("mcp").filter((each) => each.state === "waiting")) {
+    const route = `/api/integration/${encodeURIComponent(flow.about.integration ?? "")}/connect/oauth/${encodeURIComponent(flow.about.attempt ?? "")}`;
+    let said;
+    try {
+      said = await call(known.engine, "GET", route, undefined, AbortSignal.timeout(5000));
+    } catch (error) {
+      if (error.status === 404)
+        endFlow("mcp", flow.id, "failed", failureWords("expired"));
+      continue;
+    }
+    if (said?.status === "complete") {
+      if (endFlow("mcp", flow.id, "done") && flow.about.server)
+        await reconnectEverywhere(known.engine, flow.about.server).catch(() => {});
+    } else if (said?.status === "failed" || said?.status === "expired") {
+      endFlow("mcp", flow.id, "failed", failureWords(said.status, said.message));
+    }
+  }
+}
+async function mcpPage(context) {
+  const known = await facts(context);
+  if (!("settings" in known))
+    return unreadPage("mcp", TITLE, known);
+  await followFlows(known);
+  const flows = flowsOf("mcp");
+  const where = computerHere(context);
+  const items = yourServers(known).map(([name, entry]) => {
+    const on = entry.disabled !== true;
+    const server = (known.servers ?? []).find((each) => each?.name === name);
+    const status = server?.status?.status;
+    const flow = flows.find((each) => each.row === `server-${name}`);
+    const error = on && status === "failed" ? server?.status?.error?.trim() : undefined;
+    const now = [
+      ...on && !flow && (status === "needs_auth" || status === "needs_client_registration") && server?.integrationID ? [{ id: "sign-in", title: "Sign In…" }] : [],
+      ...on && status === "failed" ? [{ id: "try-again", title: "Try Again" }] : []
+    ];
+    const badge = badgeOf(on, server, known);
+    const line = lineOf2(entry);
+    const kept = item({
+      id: `server-${name}`,
+      title: name,
+      ...line ? { line } : {},
+      kind: "switch",
+      value: on,
+      can: true,
+      actions: [
+        { id: "edit", title: "Edit…", form: serverForm(context, name, entry) },
+        { id: "remove", title: "Remove…", style: "destructive", confirm: { title: `Remove ${name}?`, body: "The agent loses its tools.", button: "Remove" } }
+      ],
+      ...flow ? { flow: flowOf(context, flow) } : {}
+    });
+    return { ...kept, actions: [...now, ...kept.actions], ...badge ? { badge } : {}, ...error ? { notice: { words: error, tone: "warning" } } : {} };
+  });
+  const groups = [{
+    id: "servers",
+    title: "Servers",
+    note: `A server on ${where} runs a command; one on the web is a URL.`,
+    rows: [row({ id: "servers", title: "Servers", kind: "list", items, empty: "None yet.", add: { id: "add", title: "Add Server…", form: serverForm(context, null) } })]
+  }];
+  const popular = mcpCatalog(known.settings, CATALOG_FILE).servers.filter((each) => !known.integrations.has(each.id));
+  const accessTitles = { signIn: "Popular Servers That Need an Account", open: "No Account Needed", local: `Run on ${capitalized(where)}` };
+  const accesses = ["signIn", "open", "local"].filter((access) => popular.some((each) => each.access === access));
+  for (const access of accesses) {
+    groups.push({
+      id: `popular-${access}`,
+      title: accessTitles[access],
+      ...access === accesses[accesses.length - 1] ? { note: "Popular servers, each from the company behind it, as listed in the official MCP Registry. One that needs an account asks you to sign in once it's added." } : {},
+      rows: popular.filter((each) => each.access === access).map((each) => each.added ? row({ id: `popular-${each.id}`, title: each.title, line: each.summary, kind: "status", value: "Added" }) : row({ id: `popular-${each.id}`, title: each.title, line: each.summary, kind: "actions", actions: [{ id: "add", title: "Add" }] }))
+    });
+  }
+  const timeouts = [
+    { id: "timeout-startup", key: "startup", title: "Time to start, in milliseconds", placeholder: "30000" },
+    { id: "timeout-catalog", key: "catalog", title: "Time to list tools, in milliseconds", placeholder: "30000" },
+    { id: "timeout-execution", key: "execution", title: "Time for one tool call, in milliseconds", placeholder: "43200000" }
+  ];
+  groups.push({
+    id: "timeouts",
+    title: "Timeouts",
+    note: "For every server, unless one sets its own.",
+    rows: timeouts.map((each) => {
+      const value = valueAt(known.settings, ["mcp", "timeout", each.key]);
+      return row({ id: each.id, title: each.title, kind: "number", ...typeof value === "number" ? { value } : {}, placeholder: each.placeholder, min: 1, can: value === undefined || typeof value === "number" ? true : { why: "This is set in the settings file as something other than a number. Change it there." } });
+    })
+  });
+  const notes = known.servers ? [] : [{ words: `The engine isn’t running on ${where}, so how each server is doing isn’t known. They’re listed as the settings have them.`, tone: "warning" }];
+  return { id: "mcp", title: TITLE, groups, ...notes.length ? { notes } : {} };
+}
+var write3 = (context, path, value, was) => asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path, value, was: was ?? null }] });
+async function mcpChange(context, at, value) {
+  const read = readSettings(CONFIG_FILE);
+  if (read.problem)
+    return { status: 409, message: `The engine's settings file can't be changed from here: ${read.problem}` };
+  if (at.id.startsWith("server-")) {
+    const path = [...SERVERS2, at.id.slice("server-".length)];
+    const entry = valueAt(read.settings, path);
+    if (!isObject(entry) || entry.disabled !== true !== at.value)
+      return STALE;
+    if (value === at.value)
+      return null;
+    return staleOrRefusal(await write3(context, [...path, "disabled"], value ? null : true, entry.disabled));
+  }
+  const key = at.id.startsWith("timeout-") ? at.id.slice("timeout-".length) : null;
+  if (key && ["startup", "catalog", "execution"].includes(key)) {
+    const path = ["mcp", "timeout", key];
+    const now = valueAt(read.settings, path);
+    if (now !== at.value)
+      return STALE;
+    return staleOrRefusal(await write3(context, path, Math.floor(Number(value)), now));
+  }
+  return { status: 400, message: "That isn't something to change." };
+}
+var formRefused = (checked) => {
+  const first = checked.fields.find((each) => each.tone === "warning");
+  return { status: 400, message: first?.words ?? "Fill in what it needs first.", fields: [...checked.fields] };
+};
+async function mcpAct(context, at, action, values) {
+  const known = await facts(context);
+  if (!("settings" in known))
+    return refusal5(known) ?? { status: 503, message: said9(known, "This computer's settings couldn't be read.") };
+  if (at.id === "servers" && action.id === "add") {
+    const checked = readForm(context, known, null, values ?? {});
+    if (!checked.entry || !checked.id)
+      return formRefused(checked);
+    const written = await write3(context, [...SERVERS2, checked.id], checked.entry, null);
+    if (written.status === 409 && written.value?.message === CHANGED_SINCE)
+      return { status: 400, message: `There's a server called ${checked.id} already.`, fields: [{ id: "name", words: `There's a server called ${checked.id} already.`, tone: "warning" }] };
+    return refusal5(written);
+  }
+  if (at.id.startsWith("popular-") && action.id === "add") {
+    const added = addFromCatalog(at.id.slice("popular-".length));
+    return added.status === 200 ? null : added.status === 404 ? STALE : { status: added.status, message: added.message };
+  }
+  if (!at.id.startsWith("server-"))
+    return { status: 404, message: "That isn't something it does." };
+  const name = at.id.slice("server-".length);
+  const path = [...SERVERS2, name];
+  const entry = valueAt(known.settings, path);
+  if (!isObject(entry))
+    return STALE;
+  switch (action.id) {
+    case "edit": {
+      const checked = readForm(context, known, name, values ?? {}, entry);
+      if (!checked.entry)
+        return formRefused(checked);
+      return staleOrRefusal(await write3(context, path, checked.entry, entry));
+    }
+    case "remove":
+      dropFlow("mcp", at.id);
+      return staleOrRefusal(await write3(context, path, null, entry));
+    case "try-again":
+      if (!known.engine)
+        return { status: 503, message: `The engine isn’t running on ${computerHere(context)}. Try again once it’s started.` };
+      await reconnectEverywhere(known.engine, name);
+      return null;
+    case "sign-in":
+      return signIn(context, known, at.id, name);
+    case "finish": {
+      const pasted = text7(values?.code).trim();
+      if (!pasted)
+        return { status: 400, message: "Paste the address the sign-in page ended on." };
+      const loaded = await asked8(context, (ctx) => loadSignInReturn(ctx.request.body, ctx.signal), "POST", "kuvo/sign-in/return", { url: pasted });
+      return refusal5(loaded);
+    }
+    case "cancel":
+    case "dismiss":
+      dropFlow("mcp", at.id);
+      return null;
+  }
+  return { status: 404, message: "That isn't something it does." };
+}
+async function signIn(context, known, row, name) {
+  if (!known.engine)
+    return { status: 503, message: `The engine isn’t running on ${computerHere(context)}. Try again once it’s started.` };
+  const integration = (known.servers ?? []).find((each) => each?.name === name)?.integrationID;
+  if (!integration)
+    return { status: 409, message: `${name} doesn't ask for a sign-in now.` };
+  try {
+    const listed = await call(known.engine, "GET", "/api/integration", undefined, AbortSignal.timeout(15000));
+    const account = (Array.isArray(listed) ? listed : []).find((each) => each?.id === integration);
+    const method = account?.methods?.find((each) => each?.type === "oauth" && typeof each.id === "string");
+    if (!method)
+      return { status: 409, message: `${name}'s sign-in can't be started from here.` };
+    const started = await call(known.engine, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: method.id }, AbortSignal.timeout(30000));
+    if (!started?.attemptID)
+      return { status: 502, message: "The sign-in couldn't be started." };
+    keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...started.url ? { url: started.url } : {} } });
+    return null;
+  } catch (error) {
+    return { status: 502, message: error instanceof Error && error.message ? error.message : "The sign-in couldn't be started." };
+  }
+}
+async function mcpCheck(context, at, action, values) {
+  const known = await facts(context);
+  if (!("settings" in known))
+    return { fields: [], ready: false };
+  const name = at.id.startsWith("server-") && action.id === "edit" ? at.id.slice("server-".length) : null;
+  const before = name ? valueAt(known.settings, [...SERVERS2, name]) : undefined;
+  const { fields, ready, values: fill } = readForm(context, known, name, values, isObject(before) ? before : {});
+  return { fields, ready, ...fill ? { values: fill } : {} };
+}
+var mcpSection = {
+  listed: {
+    id: "mcp",
+    title: TITLE,
+    group: "Agents & Tools",
+    icon: "sliders",
+    line: "Programs and web services that give agents more tools.",
+    keywords: ["mcp", "servers", "tools", "add server", "sign in", "oauth", "command", "url", "timeout"]
+  },
+  read: mcpPage,
+  change: mcpChange,
+  act: mcpAct,
+  check: mcpCheck,
+  look: () => `${mtime2(CONFIG_FILE)} ${mtime2(FLOWS_FILE)} ${mtime2(CATALOG_FILE)} ${Math.floor(Date.now() / 1000)}`
+};
+
 // box/src/shared/routes/settings-pages.ts
 init_shape();
 var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
 var SETTING_CAN = oneOf(literal(true), object({ why: string }));
 var SETTING_CONFIRM = object({ title: string, body: string, button: string });
+var SETTING_CHOICE = object({ id: string, title: string, "line?": string });
+var SETTING_FOLDER = object({ choose: string, clear: string, prompt: string, message: string });
+var SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs"];
+var SETTING_FIELD = object({
+  id: string,
+  title: string,
+  kind: words(...SETTING_FIELD_KINDS),
+  "line?": string,
+  "value?": any,
+  "placeholder?": string,
+  "choices?": list(SETTING_CHOICE),
+  "mono?": bool,
+  "folder?": SETTING_FOLDER,
+  "pairs?": object({ key: string, value: string }),
+  "shown?": object({ field: string, is: list(string) }),
+  "can?": SETTING_CAN
+});
+var SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string });
 var SETTING_ACTION = object({
   id: string,
   title: string,
   "style?": words("default", "destructive"),
   "confirm?": SETTING_CONFIRM,
   "opens?": string,
-  "can?": SETTING_CAN
+  "can?": SETTING_CAN,
+  "form?": SETTING_FORM
 });
-var SETTING_CHOICE = object({ id: string, title: string, "line?": string });
+var SETTING_BADGE_TONES = ["quiet", "good", "busy", "warning", "failed"];
+var SETTING_BADGE = object({ words: string, tone: words(...SETTING_BADGE_TONES) });
+var SETTING_FLOW_STATES = ["waiting", "done", "failed"];
+var SETTING_FLOW = object({
+  id: string,
+  state: words(...SETTING_FLOW_STATES),
+  title: string,
+  line: string,
+  "opens?": string,
+  "code?": object({ title: string, placeholder: string, action: string }),
+  actions: list(SETTING_ACTION)
+});
 var SETTING_WINDOW = object({ title: string, used: number, "resets?": number });
 var ROW_FIELDS = {
   id: string,
@@ -62336,7 +63151,7 @@ var ROW_FIELDS = {
   "busy?": string,
   "choices?": list(SETTING_CHOICE),
   "lines?": object({ min: number, max: number }),
-  "folder?": object({ choose: string, clear: string, prompt: string, message: string }),
+  "folder?": SETTING_FOLDER,
   "search?": object({ placeholder: string, empty: string }),
   "unit?": object({ name: string, factor: number, decimals: number, rounding: literal("nearest") }),
   "suggestions?": list(object({ value: number, title: string })),
@@ -62350,7 +63165,10 @@ var ROW_FIELDS = {
   "section?": string,
   "address?": string,
   "start?": SETTING_ACTION,
-  "name?": string
+  "name?": string,
+  "badge?": SETTING_BADGE,
+  "notice?": object({ words: string, tone: words("quiet", "warning") }),
+  "flow?": SETTING_FLOW
 };
 var SETTING_ITEM = object(ROW_FIELDS);
 var SETTING_ROW = object({ ...ROW_FIELDS, "items?": list(SETTING_ITEM), "add?": SETTING_ACTION, "empty?": string });
@@ -62362,12 +63180,18 @@ var SETTINGS_SECTIONS = object({ sections: list(SETTINGS_SECTION) });
 var SETTINGS_STALE = object({ message: string, "page?": SETTINGS_PAGE });
 var SETTINGS_CHANGE = object({ row: string, value: any, was: string, "confirmed?": bool });
 var REFUSED4 = object({ message: string });
+var SETTING_FIELD_WORDS = object({ id: string, words: string, tone: words("quiet", "good", "warning") });
+var SETTINGS_ACT = object({ was: string, "values?": map(any) });
+var SETTINGS_CHECK = object({ "was?": string, values: map(any) });
+var SETTINGS_CHECKED = object({ fields: list(SETTING_FIELD_WORDS), ready: bool, "values?": map(any) });
+var SETTINGS_FORM_REFUSED = object({ message: string, "fields?": list(SETTING_FIELD_WORDS) });
 var SETTINGS_PAGE_ROUTES = [
   { route: "GET kuvo/settings", answers: { 200: SETTINGS_SECTIONS } },
   { route: "GET kuvo/settings/:section", answers: { 200: SETTINGS_PAGE, 404: REFUSED4 } },
   { route: "GET kuvo/settings/:section/events", answers: { 200: SETTINGS_PAGE, 404: REFUSED4 } },
   { route: "PATCH kuvo/settings/:section", body: SETTINGS_CHANGE, answers: { 200: SETTINGS_PAGE, 400: REFUSED4, 403: REFUSED4, 404: REFUSED4, 409: SETTINGS_STALE } },
-  { route: "POST kuvo/settings/:section/:row/:action", answers: { 200: SETTINGS_PAGE, 400: REFUSED4, 403: REFUSED4, 404: REFUSED4, 409: SETTINGS_STALE } }
+  { route: "POST kuvo/settings/:section/:row/:action", body: SETTINGS_ACT, answers: { 200: SETTINGS_PAGE, 400: SETTINGS_FORM_REFUSED, 403: REFUSED4, 404: REFUSED4, 409: SETTINGS_STALE } },
+  { route: "POST kuvo/settings/:section/:row/:action/check", body: SETTINGS_CHECK, answers: { 200: SETTINGS_CHECKED, 400: REFUSED4, 404: REFUSED4, 409: SETTINGS_STALE } }
 ];
 
 // box/src/shared/artifact-budget.ts
@@ -62393,8 +63217,8 @@ init_link();
 // box/src/link/permissions.ts
 init_files2();
 import { spawnSync as spawnSync19 } from "node:child_process";
-import fs189 from "node:fs";
-import path197 from "node:path";
+import fs191 from "node:fs";
+import path198 from "node:path";
 init_home();
 function runs(pid) {
   try {
@@ -62422,10 +63246,10 @@ var PERMISSIONS = [
   { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
   { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
 ];
-var LATER = () => path197.join(K, "box", "permissions-later.json");
+var LATER = () => path198.join(K, "box", "permissions-later.json");
 function putOff() {
   try {
-    const kept = parsed(fs189.readFileSync(LATER(), "utf8"));
+    const kept = parsed(fs191.readFileSync(LATER(), "utf8"));
     return new Set(isObject(kept) && Array.isArray(kept.later) ? kept.later.filter((id) => typeof id === "string") : []);
   } catch {
     return new Set;
@@ -62433,8 +63257,8 @@ function putOff() {
 }
 function keepPutOff(later) {
   if (!later.size)
-    return fs189.rmSync(LATER(), { force: true });
-  fs189.mkdirSync(path197.dirname(LATER()), { recursive: true, mode: 448 });
+    return fs191.rmSync(LATER(), { force: true });
+  fs191.mkdirSync(path198.dirname(LATER()), { recursive: true, mode: 448 });
   writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
 }
 function boxPermissions() {
@@ -62454,7 +63278,7 @@ function boxPermissions() {
     return unknown;
   let noted;
   try {
-    noted = parsed(fs189.readFileSync(path197.join(K, "run", "permissions.json"), "utf8"));
+    noted = parsed(fs191.readFileSync(path198.join(K, "run", "permissions.json"), "utf8"));
   } catch {
     return unknown;
   }
@@ -62507,13 +63331,13 @@ init_state();
 
 // box/src/link/mac/keeper-runs.ts
 init_home();
-import fs190 from "node:fs";
-import path198 from "node:path";
+import fs192 from "node:fs";
+import path199 from "node:path";
 var boxAnswers = (route) => route === "kuvo/engine/restart" && (OWN_HOME_MAC || keeperRuns2());
 function keeperRuns2() {
   let pid = 0;
   try {
-    pid = Number(JSON.parse(fs190.readFileSync(path198.join(RUN, "keeper.json"), "utf8"))?.pid);
+    pid = Number(JSON.parse(fs192.readFileSync(path199.join(RUN, "keeper.json"), "utf8"))?.pid);
   } catch {
     return false;
   }
@@ -62531,7 +63355,7 @@ function keeperRuns2() {
 init_settle();
 init_state();
 init_zone();
-var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+))?)?$/;
+var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
 var COMPUTER = {
   id: "computer",
   title: "This Computer",
@@ -62576,61 +63400,10 @@ var SECTIONS = [
   },
   { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
-  { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] }
+  { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
+  mcpSection.listed
 ];
-function revised(row) {
-  const can = (value) => value === undefined ? undefined : value === true;
-  const action = (each) => each && { id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm };
-  const governs = {
-    confirmBelow: row.confirmBelow,
-    min: row.min,
-    max: row.max,
-    kind: row.kind,
-    value: row.kind === "secret" ? undefined : row.value,
-    can: can(row.can),
-    set: row.set,
-    choices: row.choices?.map((choice) => choice.id),
-    actions: row.actions?.map(action),
-    start: action(row.start),
-    section: row.section,
-    address: row.address,
-    name: row.name,
-    items: row.items?.map((each) => each.revision),
-    add: action(row.add)
-  };
-  const revision = crypto63.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
-  return { ...row, revision };
-}
-var item = (row) => revised(row);
-var row = (fields) => revised(fields);
-var rowsOf4 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []]));
-async function asked8(context, answer, method, path, body) {
-  const request = {
-    method,
-    path,
-    headers: {},
-    ...body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) },
-    ...context.request.fromApp ? { fromApp: true } : {},
-    ...context.request.fromMac ? { fromMac: true } : {}
-  };
-  let status = 500;
-  const chunks = [];
-  for await (const piece of answer({ ...context, request, route: path.split("?")[0] })) {
-    if ("head" in piece)
-      status = piece.head.status;
-    if ("body" in piece)
-      chunks.push(Buffer.from(piece.body));
-  }
-  let value = {};
-  try {
-    value = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-  } catch {}
-  return { status, value };
-}
 var browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE));
-var said9 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback;
-var refusal5 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said9(answer, `It couldn't be changed (${answer.status}).`) };
-var STALE = { status: 409, message: CHANGED_SINCE, stale: true };
 var MODE_NAMES = { askFirst: "Ask First", acceptEdits: "Accept Edits", auto: "Auto", fullAccess: "Full Access" };
 var ACTIONS = [
   { id: "edit", title: "Edit files", line: "Changing, creating or deleting files. Plan mode doesn't, by default." },
@@ -62914,8 +63687,6 @@ async function gitChange(context, at, value) {
   return refusal5(written);
 }
 var workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE));
-var unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said9(answer, "This computer's settings couldn't be read."), tone: "warning" }] });
-var staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal5(answer);
 async function worktreesPage(context) {
   const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
   if (config.status !== 200)
@@ -62980,9 +63751,9 @@ async function worktreesChange(context, at, value) {
   if ((config.value.worktree?.directory ?? "") !== at.value)
     return STALE;
   const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
-  if (folder && !path199.isAbsolute(folder))
+  if (folder && !path200.isAbsolute(folder))
     return { status: 400, message: "Give a full path to the folder." };
-  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path199.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path200.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
 }
 async function worktreesAct(context, at, action) {
   if (action.id !== "remove" || !at.id.startsWith("tree-"))
@@ -63168,7 +63939,7 @@ var computerFacts = {
   letDevices: letDevicesConnect
 };
 var computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer");
-var computerHere = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+var computerHere2 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
 var LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
 var ALLOWS = {
   screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
@@ -63176,7 +63947,7 @@ var ALLOWS = {
 };
 async function computerPage(context) {
   const here = context.request.fromApp === true;
-  const where = computerHere(context), name = context.info.name || where;
+  const where = computerHere2(context), name = context.info.name || where;
   const kind = computerFacts.kind();
   const ownMac = kind === "ownMac" && process.platform === "darwin";
   const atLogin = ownMac ? computerFacts.atLogin() : null;
@@ -63278,16 +64049,6 @@ async function computerAct(context, at, action) {
     return refusal5(await asked8(context, updateAnswer, "POST", "kuvo/update", { now: true }));
   return noActions();
 }
-async function noActions() {
-  return { status: 404, message: "That isn't something it does." };
-}
-var mtime2 = (file) => {
-  try {
-    return fs191.statSync(file).mtimeMs;
-  } catch {
-    return 0;
-  }
-};
 var PAGES2 = {
   clock: { read: clockPage, change: clockChange, act: noActions, look: () => `${mtime2(ZONE_FILE)} ${ownClock()}` },
   permissions: {
@@ -63308,7 +64069,8 @@ var PAGES2 = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
-  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path199.join(RUN, "permissions.json"))} ${mtime2(path199.join(RUN, "update.json"))} ${mtime2(path199.join(RUN, "update.lock"))} ${mtime2(path199.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
+  mcp: mcpSection,
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path200.join(RUN, "permissions.json"))} ${mtime2(path200.join(RUN, "update.json"))} ${mtime2(path200.join(RUN, "update.lock"))} ${mtime2(path200.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
 };
 var followers2 = new Set;
 var changed5 = () => {
@@ -63347,10 +64109,28 @@ var idOf6 = (part) => {
     return null;
   }
 };
+async function checked3(context, section, rowPart, actionPart) {
+  if (context.request.method.toUpperCase() !== "POST")
+    return [405, { message: "Check it with POST." }];
+  const given = parsed(context.request.body);
+  if (!fitsShape(SETTINGS_CHECK, given))
+    return [400, { message: "Send its form's values as an object (values)." }];
+  const body = given;
+  const page = await section.read(context);
+  const at = rowsOf4(page).find((each) => each.id === idOf6(rowPart));
+  if (!at)
+    return [404, { message: "That isn't on this page now." }];
+  if (body.was !== undefined && at.revision !== body.was)
+    return [409, { message: CHANGED_SINCE, page }];
+  const action = actionsOf3(at).find((each) => each.id === idOf6(actionPart));
+  if (!action?.form)
+    return [404, { message: "That has no form to check." }];
+  return [200, section.check ? await section.check(context, at, action, body.values) : { fields: [], ready: true }];
+}
 async function* settingsPageRoute(context, match) {
   const { request, json, signal } = context;
   const method = request.method.toUpperCase();
-  const [, sectionPart, events, rowPart, actionPart] = match;
+  const [, sectionPart, events, rowPart, actionPart, checkPart] = match;
   if (sectionPart === undefined) {
     if (method !== "GET")
       return yield* json(405, { message: "Read them with GET." });
@@ -63374,6 +64154,8 @@ async function* settingsPageRoute(context, match) {
   }
   if (method === "GET" && rowPart === undefined)
     return yield* json(200, await section.read(context));
+  if (checkPart !== undefined)
+    return yield* json(...await checked3(context, section, rowPart, actionPart));
   if (rowPart !== undefined ? method !== "POST" : method !== "PATCH") {
     return yield* json(405, { message: rowPart !== undefined ? "Do it with POST." : "Read it with GET, or change a row with PATCH." });
   }
@@ -63394,6 +64176,8 @@ async function* settingsPageRoute(context, match) {
   const changeShape = SETTINGS_PAGE_ROUTES.find((route) => route.route === "PATCH kuvo/settings/:section").body;
   if (rowPart === undefined && !fitsShape(changeShape, given))
     return yield* json(400, { message: "Send a row, its value and revision, and confirmed only as true or false." });
+  if (rowPart !== undefined && !fitsShape(SETTINGS_ACT, given))
+    return yield* json(400, { message: "Send the row's revision (was), and its form's values as an object (values)." });
   const { status, value } = await inTurn4(id, async () => {
     const page = await section.read(context);
     const at = rowsOf4(page).find((each) => each.id === rowId);
@@ -63403,7 +64187,7 @@ async function* settingsPageRoute(context, match) {
       return { status: 409, value: { message: CHANGED_SINCE, page } };
     let done;
     if (rowPart !== undefined) {
-      const action = (at.actions ?? []).find((each) => each.id === idOf6(actionPart));
+      const action = actionsOf3(at).find((each) => each.id === idOf6(actionPart));
       if (!action)
         return { status: 404, value: { message: "That isn't something it does." } };
       if (action.opens !== undefined)
@@ -63411,7 +64195,10 @@ async function* settingsPageRoute(context, match) {
       const why = whyNot2(action.can);
       if (why)
         return { status: 403, value: { message: why } };
-      done = await section.act(context, at, action);
+      const values = isObject(given.values) ? given.values : undefined;
+      if (action.form && !values)
+        return { status: 400, value: { message: "Fill in its form (values)." } };
+      done = await section.act(context, at, action, values);
     } else {
       if (at.can === undefined)
         return { status: 400, value: { message: "That isn't something to change." } };
@@ -63428,7 +64215,7 @@ async function* settingsPageRoute(context, match) {
     if (done?.stale)
       return { status: 409, value: { message: done.message, page: await section.read(context) } };
     if (done)
-      return { status: done.status, value: { message: done.message } };
+      return { status: done.status, value: { message: done.message, ...done.fields ? { fields: done.fields } : {} } };
     changed5();
     return { status: 200, value: await section.read(context) };
   });
@@ -63543,7 +64330,7 @@ async function* ownMacRoute(context) {
 }
 
 // box/src/link/mac/own-machines.ts
-import fs192 from "node:fs";
+import fs193 from "node:fs";
 init_files2();
 init_home();
 init_directory();
@@ -63553,7 +64340,7 @@ init_state();
 init_machines();
 var mtime3 = (file) => {
   try {
-    return fs192.statSync(file).mtimeMs;
+    return fs193.statSync(file).mtimeMs;
   } catch {
     return 0;
   }
@@ -63780,15 +64567,15 @@ async function* forgetHost(context, id, here) {
 }
 
 // box/src/link/mac/app.ts
-import fs193 from "node:fs";
-import path200 from "node:path";
+import fs194 from "node:fs";
+import path201 from "node:path";
 init_files();
 init_home();
 init_host_interface();
-var APP_FILE = () => path200.join(RUN, "app.json");
-var OPENING_FILE = () => path200.join(RUN, "app-opening.json");
-var FAILED_FILE = () => path200.join(RUN, "app-open-failed.json");
-var UPDATING_FILE = () => path200.join(RUN, "app-updating");
+var APP_FILE = () => path201.join(RUN, "app.json");
+var OPENING_FILE = () => path201.join(RUN, "app-opening.json");
+var FAILED_FILE = () => path201.join(RUN, "app-open-failed.json");
+var UPDATING_FILE = () => path201.join(RUN, "app-updating");
 var WAIT = 30000;
 var REST = 5 * 60000;
 var UPDATING_FOR = 2 * 60000;
@@ -63800,16 +64587,16 @@ var NEEDS_APP = "This tool needs Kuvo Code open on this Mac, and it isn't open n
 var NO_OPENER = "nothing that opens it is running on this Mac";
 function readJSON3(file) {
   try {
-    return JSON.parse(fs193.readFileSync(file, "utf8"));
+    return JSON.parse(fs194.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
 }
 function bundleOf2(given) {
-  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path200.isAbsolute(given))
+  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path201.isAbsolute(given))
     return null;
   const bundle = given.replace(/\/+$/, "");
-  return bundle.endsWith(".app") && path200.normalize(bundle) === bundle ? bundle : null;
+  return bundle.endsWith(".app") && path201.normalize(bundle) === bundle ? bundle : null;
 }
 function toolsOf(given) {
   if (!isObject(given) || typeof given.url !== "string" || typeof given.token !== "string")
@@ -63858,7 +64645,7 @@ function readOpening() {
 }
 function updating2(now = Date.now()) {
   try {
-    return Math.abs(now - fs193.statSync(UPDATING_FILE()).mtimeMs) < UPDATING_FOR;
+    return Math.abs(now - fs194.statSync(UPDATING_FILE()).mtimeMs) < UPDATING_FOR;
   } catch {
     return false;
   }
@@ -63869,8 +64656,8 @@ function registerApp(given, now = Date.now()) {
   const record = { bundle: given.bundle ?? before?.bundle ?? null, tools: given.tools, host, at: now };
   writePrivate(APP_FILE(), JSON.stringify(record));
   if (record.tools) {
-    fs193.rmSync(FAILED_FILE(), { force: true });
-    fs193.rmSync(UPDATING_FILE(), { force: true });
+    fs194.rmSync(FAILED_FILE(), { force: true });
+    fs194.rmSync(UPDATING_FILE(), { force: true });
   }
   return record;
 }
@@ -63887,7 +64674,7 @@ function noteUpdating(now = Date.now()) {
   writePrivate(UPDATING_FILE(), String(now));
   const at = new Date(now);
   try {
-    fs193.utimesSync(UPDATING_FILE(), at, at);
+    fs194.utimesSync(UPDATING_FILE(), at, at);
   } catch {}
 }
 function appStatus(now = Date.now()) {
@@ -63913,7 +64700,7 @@ async function openApp(signal, ways = OPEN_WAYS) {
     let opening = readOpening();
     if (opening && stale(opening, now)) {
       if (JSON.stringify(readOpening()) === JSON.stringify(opening))
-        fs193.rmSync(OPENING_FILE(), { force: true });
+        fs194.rmSync(OPENING_FILE(), { force: true });
       opening = null;
     }
     if (!opening) {
@@ -63922,8 +64709,8 @@ async function openApp(signal, ways = OPEN_WAYS) {
         return failed.message;
       const mine = { at: now, by: process.pid };
       try {
-        fs193.mkdirSync(RUN, { recursive: true, mode: 448 });
-        fs193.writeFileSync(OPENING_FILE(), JSON.stringify(mine), { flag: "wx", mode: 384 });
+        fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
+        fs194.writeFileSync(OPENING_FILE(), JSON.stringify(mine), { flag: "wx", mode: 384 });
       } catch (error) {
         if (error?.code === "EEXIST")
           continue;
@@ -63963,7 +64750,7 @@ async function openAndWait(mine, ways) {
     return said;
   } finally {
     if (JSON.stringify(readOpening()) === JSON.stringify(mine))
-      fs193.rmSync(OPENING_FILE(), { force: true });
+      fs194.rmSync(OPENING_FILE(), { force: true });
   }
 }
 async function hostOpens(bundle) {
@@ -64015,7 +64802,7 @@ function waitUntil(ready, deadline, signal) {
     const every = setInterval(look, 1000);
     const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
     try {
-      watcher = fs193.watch(RUN, look);
+      watcher = fs194.watch(RUN, look);
       watcher.on("error", () => {});
     } catch {}
     signal?.addEventListener("abort", done, { once: true });
@@ -64685,7 +65472,7 @@ init_format();
 init_home();
 
 // box/src/link/places.ts
-import path201 from "node:path";
+import path202 from "node:path";
 init_home();
 init_machines();
 init_home();
@@ -64703,11 +65490,11 @@ function boxPlaces() {
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
-    browser: path201.join(K, "browser"),
-    trash: path201.join(K, "trash"),
-    temporary: path201.join(K, "t"),
+    browser: path202.join(K, "browser"),
+    trash: path202.join(K, "trash"),
+    temporary: path202.join(K, "t"),
     engineData: ENGINE_DATA,
-    engineConfig: ENGINE_CONFIG ?? path201.join(K, "config"),
+    engineConfig: ENGINE_CONFIG ?? path202.join(K, "config"),
     settingsFile: CONFIG_FILE,
     engineLayerFile: ENGINE_LAYER_FILE,
     defaultsPlugin: DEFAULTS_PLUGIN,
@@ -64765,9 +65552,9 @@ onLinkWritten((link) => {
   if (liveHost)
     setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map((phone) => phone.key))), 200).unref?.();
   if (needed(link))
-    fs194.writeFileSync(NEEDED_FILE, "", { mode: 384 });
+    fs195.writeFileSync(NEEDED_FILE, "", { mode: 384 });
   else
-    fs194.rmSync(NEEDED_FILE, { force: true });
+    fs195.rmSync(NEEDED_FILE, { force: true });
 });
 var liveHost = null;
 function machineWelcomed(host) {
@@ -64798,19 +65585,19 @@ function updateIsWell() {
 async function run7() {
   let old = null;
   try {
-    old = Number(fs194.readFileSync(PID_FILE, "utf8"));
+    old = Number(fs195.readFileSync(PID_FILE, "utf8"));
     if (isBridge2(old))
       process.kill(old, "SIGTERM");
   } catch {}
-  fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs195.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
-  fs194.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
-  fs194.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
+  fs195.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
+  fs195.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
-    process.env.PATH = joinPath(path202.join(K, "bin"), saved);
+    process.env.PATH = joinPath(path203.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs194.rmSync(path202.join(RUN, folder), { recursive: true, force: true });
+    fs195.rmSync(path203.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -64826,8 +65613,8 @@ async function run7() {
   });
   const cleanUp = () => {
     try {
-      if (fs194.readFileSync(PID_FILE, "utf8") === String(process.pid))
-        fs194.unlinkSync(PID_FILE);
+      if (fs195.readFileSync(PID_FILE, "utf8") === String(process.pid))
+        fs195.unlinkSync(PID_FILE);
     } catch {}
     process.exit(0);
   };
@@ -64838,7 +65625,7 @@ async function run7() {
   setInterval(() => {
     let owner = null;
     try {
-      owner = Number(fs194.readFileSync(PID_FILE, "utf8"));
+      owner = Number(fs195.readFileSync(PID_FILE, "utf8"));
     } catch {}
     const link = readLink();
     if (!needed(link)) {
@@ -64855,7 +65642,7 @@ async function run7() {
     await sleep(50);
   let held = [];
   try {
-    held = JSON.parse(fs194.readFileSync(HELD_FILE, "utf8"));
+    held = JSON.parse(fs195.readFileSync(HELD_FILE, "utf8"));
   } catch {}
   const hold = new NoticeHold({
     send: tellPhones,
@@ -64865,7 +65652,7 @@ async function run7() {
         if (entries.length)
           writePrivate(HELD_FILE, JSON.stringify(entries));
         else
-          fs194.rmSync(HELD_FILE, { force: true });
+          fs195.rmSync(HELD_FILE, { force: true });
       } catch {}
     }
   });
@@ -64937,7 +65724,7 @@ async function run7() {
     }, 50);
   };
   try {
-    fs194.mkdirSync(SENDING, { recursive: true, mode: 448 });
+    fs195.mkdirSync(SENDING, { recursive: true, mode: 448 });
   } catch {}
   let outboxWatch = watchFolders([SENDING], leftNow, { recursive: false });
   const forwardNow = () => {
@@ -64947,7 +65734,7 @@ async function run7() {
   };
   forwardsSoon.send = forwardNow;
   try {
-    fs194.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
+    fs195.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
   } catch {}
   let forwardsWatch = watchFolders([FORWARDS], forwardNow, { recursive: false });
   const heldNow = () => {
@@ -65188,11 +65975,11 @@ async function keptServe() {
     console.error(`The box's server already runs (${other.pid}).`);
     return;
   }
-  if (!fs194.existsSync(SERVE_NEEDED())) {
+  if (!fs195.existsSync(SERVE_NEEDED())) {
     console.error("No client wants the box's server here (run/serve.needed).");
     return;
   }
-  fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs195.mkdirSync(RUN, { recursive: true, mode: 448 });
   const password = crypto67.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
@@ -65205,7 +65992,7 @@ async function keptServe() {
   } catch {}
   const mine = () => {
     try {
-      return JSON.parse(fs194.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
+      return JSON.parse(fs195.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
     } catch {
       return false;
     }
@@ -65213,7 +66000,7 @@ async function keptServe() {
   const leave = () => {
     try {
       if (mine())
-        fs194.rmSync(SERVE_FILE(), { force: true });
+        fs195.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -65223,7 +66010,7 @@ async function keptServe() {
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
   setInterval(() => {
-    if (!fs194.existsSync(SERVE_NEEDED()) || !mine())
+    if (!fs195.existsSync(SERVE_NEEDED()) || !mine())
       leave();
   }, every);
 }
@@ -65242,7 +66029,7 @@ async function serve() {
     console.error('serve answers only with a password: on its stdin, {"password"}, or in OPENCODE_PASSWORD.');
     process.exit(2);
   }
-  fs194.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs195.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
   if (IS_MAC)
     addMacDefaults();
@@ -65311,7 +66098,7 @@ async function serve() {
     } catch {}
   try {
     if (APP_FOLDER)
-      writePrivate(path202.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+      writePrivate(path203.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
     else
       clearKept(K);
   } catch {}
@@ -65329,8 +66116,8 @@ async function serve() {
     if ((macLink.host?.unsent?.() ?? 0) > 0)
       console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
     try {
-      if (OWN_HOME_MAC && JSON.parse(fs194.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
-        fs194.rmSync(SERVE_FILE(), { force: true });
+      if (OWN_HOME_MAC && JSON.parse(fs195.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
+        fs195.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -65410,7 +66197,7 @@ async function setup() {
   await tellIfSharingChanged(old, link);
   let runningVersion = null;
   try {
-    runningVersion = fs194.readFileSync(VERSION_FILE, "utf8").trim();
+    runningVersion = fs195.readFileSync(VERSION_FILE, "utf8").trim();
   } catch {}
   const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   if (!isUpdating()) {
@@ -65499,7 +66286,7 @@ function selftest() {
   const ok = said.toString() === "hello" && payload.toString() === "welcome" && echoed.toString() === "ping" && mail.toString() === "mail" && responder.rs.equals(publicOf(phone)) && typeof WebSocket === "function" && typeof fetch === "function";
   return ok;
 }
-var main = process.argv[1] && fs194.realpathSync(process.argv[1]) === fs194.realpathSync(fileURLToPath4(import.meta.url));
+var main = process.argv[1] && fs195.realpathSync(process.argv[1]) === fs195.realpathSync(fileURLToPath4(import.meta.url));
 if (main) {
   const [mode, argument] = process.argv.slice(2);
   if (mode === "run")
@@ -65548,7 +66335,7 @@ if (main) {
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
     const step = (running) => noteUpdate({ running });
-    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path202.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
+    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path203.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
     if (outcome && !(offered && outcome.result === "busy"))
       noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
     if (outcome?.result === "updated") {
