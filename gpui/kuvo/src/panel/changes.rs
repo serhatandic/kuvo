@@ -716,7 +716,7 @@ impl ChangesView {
                     .pr(space::S3)
                     .border_b_1()
                     .border_color(c.border)
-                    .child(Button::icon_only("changes-back", IconName::ChevronLeft, "Back to Changes").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| this.back(window, cx))))
+                    .child(Button::icon_only("changes-back", IconName::ChevronLeft, "Back to Changes").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).on_click(cx.listener(|this, _, window, cx| this.back(window, cx))))
                     .child(div().flex().flex_col().flex_1().min_w_0().child(div().truncate().medium().child(file.name().to_owned())).child(
                         div().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(match &file.old_path {
                             Some(old) => format!("{group} · from {old}"),

@@ -120,6 +120,9 @@ struct Served {
     ticks: Mutex<Option<Receiver<String>>>,
     closed: Arc<Mutex<bool>>,
     features: Mutex<Option<Vec<String>>>,
+    /// Once set, the next "send" it's asked drops this device's relay connection as it's taken,
+    /// before its answer can go back (a network drop just then).
+    drops: Mutex<Option<(Relay, keys::Address)>>,
 }
 
 impl Served {
@@ -158,6 +161,12 @@ impl Transport for Served {
             }
             "echo" => json(200, json!({ "method": request.method, "path": request.path, "headers": request.headers, "body": request.body })),
             "big" => json(200, json!({ "text": "x".repeat(200_000) })),
+            "send" => {
+                if let Some((relay, device)) = self.drops.lock().unwrap().take() {
+                    relay.drop_device(&device);
+                }
+                json(200, json!({}))
+            }
             _ => json(404, json!({})),
         }
     }
@@ -412,4 +421,82 @@ fn the_same_goes_through_a_real_websocket() {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     assert_eq!(line, "{\"at\":0}\n");
+}
+
+#[test]
+fn a_message_whose_answer_a_dropped_connection_lost_is_sent_again_once_under_its_id_and_answered() {
+    let world = World::new();
+    let (client, linked) = world.linked(at_once());
+    linked.send(&Request::get("kuvo/info")).expect("there");
+    // The box takes it, and the connection drops before its answer comes back.
+    *world.served.drops.lock().unwrap() = Some((world.relay.clone(), client.address()));
+    let message = Request::post("send", json!({ "id": "msg_1", "words": "hi", "files": [{ "uri": "data:image/png;base64,AAAA" }] })).header("idempotency-key", "msg_1");
+    let answer = linked.send(&message).expect("answered: not said to have failed");
+    assert_eq!(answer.status, 200);
+    let sends: Vec<Request> = world.served.seen.lock().unwrap().iter().filter(|request| request.route() == "send").cloned().collect();
+    assert_eq!(sends.len(), 2, "sent again, once, under the same id (its box takes it once)");
+    assert_eq!(sends[0], sends[1]);
+
+    // What has no id of its own isn't sent twice: it says it couldn't connect.
+    *world.served.drops.lock().unwrap() = Some((world.relay.clone(), client.address()));
+    let plain = linked.send(&Request::post("send", json!({ "words": "hi" })));
+    assert_eq!(plain, Err(Error::Unreachable(words::RELAY.into())));
+    assert_eq!(world.served.seen.lock().unwrap().iter().filter(|request| request.route() == "send").count(), 3);
+}
+
+/// The stand-in relay's connection, with what the test says of whether what was handed to it is
+/// still going out, and how often the link asked.
+struct Slow {
+    relay: Relay,
+    busy: Arc<std::sync::atomic::AtomicBool>,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct SlowOut {
+    out: Box<dyn kuvo_box::link::relay::Outgoing>,
+    busy: Arc<std::sync::atomic::AtomicBool>,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl kuvo_box::link::relay::Outgoing for SlowOut {
+    fn send(&mut self, message: Vec<u8>) -> std::io::Result<()> {
+        self.out.send(message)
+    }
+    fn busy(&self) -> bool {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.busy.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl kuvo_box::link::relay::Dial for Slow {
+    fn dial(&self, url: &str) -> std::io::Result<(Box<dyn kuvo_box::link::relay::Outgoing>, Box<dyn kuvo_box::link::relay::Incoming>)> {
+        let (out, incoming) = self.relay.dial().dial(url)?;
+        Ok((Box::new(SlowOut { out, busy: self.busy.clone(), asked: self.asked.clone() }), incoming))
+    }
+}
+
+#[test]
+fn a_request_still_going_out_on_a_slow_connection_isnt_given_up_on_until_its_gone() {
+    use std::sync::atomic::Ordering;
+    let world = World::new();
+    let slow = Slow { relay: world.relay.clone(), busy: Arc::new(false.into()), asked: Arc::new(0.into()) };
+    let (busy, asked) = (slow.busy.clone(), slow.asked.clone());
+    let quick = Timing { answer_within: Duration::from_millis(5), check: Duration::from_millis(5), ..at_once() };
+    let client = LinkClient::new(RELAY_URL, world.identity.clone(), "Kuvo on MacBook", "0.8.0", Arc::new(slow), quick);
+    let linked = LinkBox::new(client, world.host.facts(), "devbox");
+    linked.send(&Request::get("kuvo/info")).expect("there");
+    // A picture going out: nothing comes back meanwhile (the box hasn't had it whole yet).
+    world.host.set_quiet(true);
+    busy.store(true, Ordering::SeqCst);
+    let (done, finished) = channel();
+    std::thread::spawn(move || done.send(linked.send(&Request::post("echo", json!({ "text": "x" })))).unwrap());
+    // Checked many times over (each check's own wait many times over), never given up on.
+    let before = asked.load(Ordering::SeqCst);
+    while asked.load(Ordering::SeqCst) < before + 20 {
+        std::thread::yield_now();
+    }
+    assert!(finished.try_recv().is_err(), "still waiting while it goes out");
+    // Gone, and still nothing back: then it's said not to answer.
+    busy.store(false, Ordering::SeqCst);
+    assert_eq!(finished.recv().unwrap(), Err(Error::Unreachable(words::TIMED_OUT.into())));
 }

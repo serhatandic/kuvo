@@ -1257,6 +1257,13 @@ the same for every client and with none connected, and keeps them in `run/queues
   as they went to the engine, go first, in that order. `POST …/queue/resume`: unpaused, and the
   next one goes now. `POST …/queue/<item>/now` (Send Now): unpaused, the item steered (one waiting
   on the box sent), and a run under way stopped to go on with it; 404 when it isn't waiting.
+  `POST …/queue/<item>/steer` (Steer, `queue.steer`): unpaused, and the item for the agent's next
+  step in the run under way, which goes on: the engine takes it then, and the coding agents' bridge
+  hands it into the turn where its agent takes one partway (Claude Code, Codex; the bridge's `PATCH
+  …/inbox/<item>` with `{delivery: "steer", into: true}`), else it goes next, once the turn ends.
+  One waiting on the box, or with nothing running, goes as Send Now sends it; 404 when it isn't
+  waiting. A message sent with `delivery: "queue"` (`kuvo/sessions/<id>/send`) while the queue is
+  paused waits on the box, as `…/queue/add`'s does, answered `{waits: true}`.
   `POST …/queue/add` (`{id?, text, files?, delivery?, from?, words?, before?}`, a prompt's body): a client's
   own message for the queue (every one sent after this run, and Undo), its files kept on the box
   as a message's are (a phone's also naming its agents and saying it's from the phone, as its

@@ -25,9 +25,9 @@ use crate::time;
 use crate::workspace::Workspace;
 
 /// How wide it is.
-pub const WIDTH: Pixels = px(60.);
+pub const WIDTH: Pixels = px(46.);
 /// Its buttons' size.
-const BUTTON: Pixels = px(40.);
+const BUTTON: Pixels = px(36.);
 /// A ring's size and stroke; an account's second ring sits just inside the first.
 const RING: Pixels = px(34.);
 const STROKE: Pixels = px(2.5);
@@ -111,8 +111,8 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
         .cursor_pointer()
         .when(selected, |t| t.bg(selected_bg))
         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
-        .child(Icon::new(icon).size(IconSize::Card).color(if selected { c.text } else { c.icon }))
-        .when(waiting > 0, |t| t.child(div().absolute().top(px(-3.)).right(px(-5.)).child(count_badge(waiting, cx))))
+        .child(Icon::new(icon).size(IconSize::Rail).color(if selected { c.text } else { c.icon }))
+        .when(waiting > 0, |t| t.child(div().absolute().top(px(-3.)).right(px(-4.)).child(count_badge(waiting, cx))))
 }
 
 // MARK: The rings

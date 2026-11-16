@@ -339,7 +339,7 @@ impl FilesView {
                     .pr(space::S3)
                     .border_b_1()
                     .border_color(c.border)
-                    .child(Button::icon_only("files-back", IconName::ChevronLeft, "Back to Files").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| this.close_file(window, cx))))
+                    .child(Button::icon_only("files-back", IconName::ChevronLeft, "Back to Files").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).on_click(cx.listener(|this, _, window, cx| this.close_file(window, cx))))
                     .child(
                         div()
                             .flex()

@@ -38,7 +38,10 @@ impl Transport for LinkBox {
             // A read whose session went under it (the box started again, the relay connection
             // dropped) is read again, once, not shown as a failure (PROTOCOL.md, "When a client
             // says a computer isn't connected"). Anything that changes something isn't sent twice.
-            Err(Error::Unreachable(why)) if request.method.eq_ignore_ascii_case("GET") && (why == words::CLOSED || why == words::RELAY) => self.whole(request),
+            // So is one sent under its own id (a message): its box takes an id once, so sent again
+            // it goes once, answered as the first went (PROTOCOL.md, "Sending again"). The answer to
+            // one that reached the box before the connection dropped isn't lost for it.
+            Err(Error::Unreachable(why)) if (request.method.eq_ignore_ascii_case("GET") || request.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("idempotency-key"))) && (why == words::CLOSED || why == words::RELAY) => self.whole(request),
             answered => answered,
         }
     }
