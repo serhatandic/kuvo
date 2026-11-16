@@ -219,6 +219,15 @@ async function threeComputers() {
   return { mac, hetzner, lokum, all }
 }
 
+/** Two computers signed in to nothing (every account signed in is listed, read or not): only what one tells the other shows. */
+async function twoUnsignedComputers() {
+  const mac = new Box("key-mac", "MacBook Pro", relay, [])
+  const hetzner = new Box("key-hetzner", "hetzner", relay, [])
+  await mac.meet([hetzner])
+  await hetzner.meet([mac])
+  return { mac, hetzner }
+}
+
 describe("plan limits across your computers", () => {
   test("an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading", async () => {
     const { mac, hetzner, lokum } = await threeComputers()
@@ -526,7 +535,8 @@ describe("plan limits across your computers", () => {
     maker.used.set("anthropic:work|org", 0.61)
     await mac.limits.tick()
     await relay.settled()
-    expect(lokum.rows()).toEqual([])
+    // (The Mac's account is listed there as signed in, before any reading: none reached it.)
+    expect(lokum.rows().map((row) => row.windows)).toEqual([[]])
     // Half a minute on, its link starts again (its bridge didn't): it asks, and the Mac answers.
     pass(30_000)
     relay.off.delete("key-lokum")
@@ -536,7 +546,7 @@ describe("plan limits across your computers", () => {
   })
 
   test("an account of a service a newer box knows and this one doesn't is listed by its name", async () => {
-    const { mac, hetzner } = await threeComputers()
+    const { mac, hetzner } = await twoUnsignedComputers()
     await peerRoutes(mac.parts, "POST", ["mail"], async () => ({
       from: hetzner.key,
       mail: { kind: "limits", at: time, accounts: [{ provider: "kimi", service: "kimi-code", identity: "abcdefabcdefabcd", windows: [{ id: "week", used: 0.25, minutes: 10_080, read: time, source: "usage" }], checked: time }] },
@@ -548,7 +558,7 @@ describe("plan limits across your computers", () => {
   })
 
   test("what a peer's account has beyond its windows (`extras`) is kept as told, and only what one is", async () => {
-    const { mac, hetzner } = await threeComputers()
+    const { mac, hetzner } = await twoUnsignedComputers()
     await peerRoutes(mac.parts, "POST", ["mail"], async () => ({
       from: hetzner.key,
       mail: {
@@ -595,8 +605,9 @@ describe("plan limits across your computers", () => {
     await ahead.meet([mac])
     await ahead.limits.tick()
     await relay.settled()
-    // Its reading is as of now here, not an hour on.
-    expect(Math.max(...mac.rows()[0]!.windows.map((window) => window.read))).toBe(time)
+    // Its reading is as of now here, not an hour on. (The Mac's own, signed in and not read yet, is a row of its own.)
+    const theirs = mac.rows().find((row) => row.boxes.some((box) => box.key === "key-ahead"))!
+    expect(Math.max(...theirs.windows.map((window) => window.read))).toBe(time)
     pass(EVERY + 3 * MINUTE)
     const before = maker.reads.length
     await mac.limits.tick()

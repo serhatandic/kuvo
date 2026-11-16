@@ -150,7 +150,8 @@ test("its bot uses what it's granted, through its box, and never sees a value", 
   const ran = await call("vault_run", { command: "echo \"using $T, ${KUVO763_FROM_LOGIN-not from your login}\"", variables: { T: "GitLab token" }, why: "To list the merge requests." });
   assert.equal(ran.isError, false, ran.content[0].text);
   assert.match(ran.content[0].text, /using \[vault: GitLab token\]/);
-  assert.match(ran.content[0].text, process.platform === "darwin" ? /, yours/ : /, not from your login/);
+  // (Your login shell runs it, `$SHELL -lc`, on Linux too: what your startup files export is there.)
+  assert.match(ran.content[0].text, /, yours/);
   assert.ok(!JSON.stringify(ran).includes(TOKEN));
   const activity = (await client("GET", "kuvo/vault/activity")).value.entries;
   assert.ok(activity.some(entry => entry.what === "used" && entry.botName === "Ship" && entry.program === "echo"));
