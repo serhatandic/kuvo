@@ -13,8 +13,9 @@
 //! - A refusal or failure is the box's own words under the row, with Try Again (Return).
 //! - Someone with an earlier Kuvo Code's sessions sees a card of its own ahead of the Welcome:
 //!   the move's steps as the box lists them, where it is, where it stopped and why in the box's
-//!   words with Try Again, then that this Mac is ready. They land in their sessions (the box
-//!   counts a moved Mac as welcomed).
+//!   words with Try Again, then that this Mac is ready, then, where this Mac's Kuvo says macOS
+//!   doesn't allow Kuvo Helper something yet, the first run's step for it. They land in their
+//!   sessions (the box counts a moved Mac as welcomed).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use kuvo_box::install::{End, Installer, MoveFacts, OnlyAttaches, Outcome, Progre
 use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, small::spinner, theme::{radius, space}};
 
 use crate::first_run::{card_alone, card_frame, heading, icon_tile, list, two_lines};
+use crate::permissions::HeadsUp;
 use crate::{Home, title_bar};
 
 /// How long, and how often, a box just made or started is waited for before the window says it
@@ -80,6 +82,9 @@ pub enum Stage {
     Stopped { line: SharedString, message: SharedString, note: Option<SharedString> },
     /// Its Kuvo answers, with something to say before the app opens (the way on is a button).
     Said { what: Said, boxes: Boxes, first: BoxClient },
+    /// After a move: what macOS doesn't allow the program this Mac's agents run under yet, each
+    /// with its own Open System Settings, before the app opens ([`crate::permissions`]).
+    Allow { boxes: Boxes, first: BoxClient },
     Open(Entity<Home>),
 }
 
@@ -164,6 +169,9 @@ pub struct Launch {
     left: Option<SharedString>,
     /// The program this Mac's agents run under, as its Kuvo names it (said once a move is done).
     helper: Option<SharedString>,
+    /// What macOS allows this Mac's agents, asked once a move is done: a step before the app
+    /// opens, where something isn't allowed yet.
+    allow: Option<(Entity<HeadsUp>, gpui::Subscription)>,
     focus: FocusHandle,
     wants_focus: bool,
     _work: Option<Task<()>>,
@@ -173,7 +181,7 @@ impl Launch {
     /// `live`: whether the app it opens follows your boxes (the app), or shows what it's handed
     /// (tests and shots).
     pub fn new(opens: Opens, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Launch {
-        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, moving: None, left: None, helper: None, focus: cx.focus_handle(), wants_focus: true, _work: None };
+        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, moving: None, left: None, helper: None, allow: None, focus: cx.focus_handle(), wants_focus: true, _work: None };
         launch.begin(window, cx);
         launch
     }
@@ -192,7 +200,7 @@ impl Launch {
 
     /// From the start (as the app opens, and Try Again): asks the installer, runs what it names.
     pub fn begin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.stage, Stage::Open(_) | Stage::Said { .. }) {
+        if matches!(self.stage, Stage::Open(_) | Stage::Said { .. } | Stage::Allow { .. }) {
             return;
         }
         self.stage = Stage::Asking;
@@ -427,24 +435,16 @@ impl Launch {
             (_, Some(moving)) if moving.finishing => Said::Moved,
             _ => return self.open(boxes, first, window, cx),
         };
-        // Whoever comes from an earlier Kuvo Code is told once what macOS will name from now on:
-        // the program their agents run under, as this Mac's Kuvo names it.
+        // Whoever comes from an earlier Kuvo Code is asked what macOS should allow the program
+        // their agents run under now, as this Mac's Kuvo says it (a step after this card), or,
+        // where nothing needs them, told once what macOS will name from now on.
         if what == Said::Moved
             && let Some(nearest) = boxes.nearest()
         {
-            let named = |nearest: &BoxClient| nearest.permissions().ok().filter(|facts| facts.applies).and_then(|facts| facts.name);
-            if self.live {
-                self._work = Some(cx.spawn(async move |this, cx| {
-                    let name = cx.background_executor().spawn(async move { named(&nearest) }).await;
-                    this.update(cx, |this, cx| {
-                        this.helper = name.map(SharedString::from);
-                        cx.notify();
-                    })
-                    .ok();
-                }));
-            } else {
-                self.helper = named(&nearest).map(SharedString::from);
-            }
+            let allow = cx.new(|cx| HeadsUp::new(nearest, self.live, window, cx));
+            let seen = cx.observe(&allow, |_, _, cx| cx.notify());
+            allow.update(cx, |allow, cx| allow.read(cx));
+            self.allow = Some((allow, seen));
         }
         self.card = true;
         self.stage = Stage::Said { what, boxes, first };
@@ -452,11 +452,35 @@ impl Launch {
         cx.notify();
     }
 
-    /// The way on from what was said: the app opens.
+    /// The way on from what was said: the permissions' step, where this Mac's Kuvo has said
+    /// something isn't allowed yet (one that hasn't answered by now is passed over: Settings › This
+    /// Mac has it); then the app opens. From that step, once nothing is asked about.
     pub fn go_on(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Stage::Said { boxes, first, .. } = self.stage.clone() {
-            self.open(boxes, first, window, cx);
+        match self.stage.clone() {
+            Stage::Said { what: Said::Moved, boxes, first } if self.asks(cx) => {
+                self.stage = Stage::Allow { boxes, first };
+                self.wants_focus = true;
+                cx.notify();
+            }
+            Stage::Said { boxes, first, .. } => self.open(boxes, first, window, cx),
+            Stage::Allow { boxes, first } if !self.asks(cx) => self.open(boxes, first, window, cx),
+            _ => {}
         }
+    }
+
+    /// Not Now on the permissions' step: what it asked about is put off (the box keeps it), and
+    /// the app opens.
+    pub fn not_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Stage::Allow { boxes, first } = self.stage.clone() else { return };
+        if let Some((allow, _)) = &self.allow {
+            allow.update(cx, |allow, cx| allow.not_now(cx));
+        }
+        self.open(boxes, first, window, cx);
+    }
+
+    /// Whether this Mac's Kuvo says macOS doesn't allow something yet that it asks about.
+    fn asks(&self, cx: &App) -> bool {
+        self.allow.as_ref().is_some_and(|(allow, _)| allow.read(cx).asks())
     }
 
     /// The app, in the window's place, the keyboard in its composer.
@@ -474,6 +498,10 @@ impl Launch {
         window.focus(&landing, cx);
         self.stage = Stage::Open(home);
         self.moving = None;
+        // (The window's own takes over from here, for Settings › This Mac.)
+        if let Some((allow, _)) = self.allow.take() {
+            allow.update(cx, |allow, cx| allow.stop_asking(cx));
+        }
         self._work = None;
         cx.notify();
     }
@@ -485,6 +513,17 @@ impl Launch {
         self.stage = stage;
         self.card = card;
         cx.notify();
+    }
+
+    /// Draws the permissions' step after a move, as this Mac's Kuvo says it (shots).
+    #[cfg(feature = "stand-in")]
+    pub fn show_allow(&mut self, boxes: Boxes, first: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(nearest) = boxes.nearest() else { return };
+        let allow = cx.new(|cx| HeadsUp::new(nearest, self.live, window, cx));
+        allow.update(cx, |allow, cx| allow.read(cx));
+        let seen = cx.observe(&allow, |_, _, cx| cx.notify());
+        self.allow = Some((allow, seen));
+        self.show(Stage::Allow { boxes, first }, true, cx);
     }
 
     /// Draws a move as it stands, with nothing run (shots).
@@ -510,7 +549,7 @@ impl Launch {
                 (title.as_ref().map_or_else(|| format!("{doing}…"), |title| format!("{doing} · {title}")).into(), true)
             }
             Stage::Stopped { line, .. } => (line.clone(), false),
-            Stage::Said { .. } => ("Ready".into(), false),
+            Stage::Said { .. } | Stage::Allow { .. } => ("Ready".into(), false),
             Stage::Asking | Stage::Starting | Stage::Open(_) => ("Starting…".into(), true),
         }
     }
@@ -714,15 +753,19 @@ impl Launch {
                 .children(done.then(|| Icon::new(IconName::Check).color(cx.theme().colors.success)))
                 .into_any_element()
         };
+        let next_words = if *what == Said::Moved && self.asks(cx) { "Continue" } else { "Open Kuvo Code" };
         let (head, mut body, next) = match what {
             Said::Moved => {
                 let mut rows = vec![row(IconName::Archive, "Moved from an earlier Kuvo Code", "Your sessions, bots and settings".into(), true, cx)];
-                // What macOS names from now on, where this Mac's Kuvo says there's such a program.
-                if let Some(helper) = &self.helper {
+                // What macOS names from now on, where this Mac's Kuvo says there's such a program
+                // and nothing's to be allowed for it now (else the next step says it).
+                let named = self.allow.as_ref().map(|(allow, _)| allow.read(cx)).filter(|allow| !allow.list().is_empty()).map(|allow| allow.program());
+                let helper = self.helper.clone().or(named).filter(|_| !self.asks(cx));
+                if let Some(helper) = &helper {
                     rows.push(div().debug_selector(|| "launch-helper".into()).child(row(IconName::Shield, "macOS may ask again", format!("For {helper}, which runs your agents now"), false, cx)).into_any_element());
                 }
                 let ready = if cfg!(target_os = "macos") { "This Mac is ready" } else { "This computer is ready" };
-                (heading(ready, None, cx), vec![list(rows, cx)], "Open Kuvo Code")
+                (heading(ready, None, cx), vec![list(rows, cx)], next_words)
             }
             Said::Left(words) => (
                 heading("Your earlier sessions stay where they are", None, cx),
@@ -767,6 +810,24 @@ impl Launch {
             vec![head, div().id("launch-body").min_h_0().flex().flex_col().gap(space::S4).overflow_y_scroll().children(body).into_any_element(), div().flex().flex_none().items_center().pt(space::S1).child(div().flex_1()).child(way_on).into_any_element()],
             cx,
         )
+    }
+
+    /// After a move, what macOS doesn't allow this Mac's agents yet: the first run's own step.
+    fn allow_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let Some(allow) = self.allow.as_ref().map(|(allow, _)| allow.clone()) else { return card_alone(Vec::new(), cx) };
+        let (title, line) = allow.read(cx).heading();
+        let asks = allow.read(cx).asks();
+        let foot = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(space::S2)
+            .pt(space::S1)
+            .child(div().flex_1())
+            .when(asks, |d| d.child(Button::new("launch-not-now", "Not Now").ghost().on_click(cx.listener(|this, _, window, cx| this.not_now(window, cx)))))
+            .child(Button::new("launch-next", "Open Kuvo Code").primary().shortcut("↵").size(ButtonSize::Medium).disabled(asks).on_click(cx.listener(|this, _, window, cx| this.go_on(window, cx))))
+            .into_any_element();
+        card_alone(vec![heading(&title, Some(&line), cx), div().id("launch-body").min_h_0().flex().flex_col().gap(space::S4).overflow_y_scroll().child(allow).into_any_element(), foot], cx)
     }
 
     /// The window's quiet middle, as it waits for a box that's here: "Starting…", or why not.
@@ -825,6 +886,7 @@ impl Render for Launch {
         }
         let frame = match (&self.stage, self.moving.clone()) {
             (Stage::Said { what, .. }, _) => self.said_card(&what.clone(), cx),
+            (Stage::Allow { .. }, _) => self.allow_card(cx),
             (_, Some(moving)) if self.card => self.move_card(&moving, cx),
             _ if self.card => self.in_card(cx),
             _ => self.quiet(cx),
@@ -840,7 +902,7 @@ impl Render for Launch {
                 }
                 match this.stage {
                     Stage::Stopped { .. } => this.begin(window, cx),
-                    Stage::Said { .. } => this.go_on(window, cx),
+                    Stage::Said { .. } | Stage::Allow { .. } => this.go_on(window, cx),
                     _ => {}
                 }
             }))

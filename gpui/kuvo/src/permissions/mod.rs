@@ -1,11 +1,15 @@
-//! What macOS allows the program this Mac's agents run under, where it needs you: a heads-up over
-//! the window's main view, and, for a permission macOS has you add by hand, a small tile beside
-//! System Settings with the program's icon to drag into the list ([`tile`]).
+//! What macOS allows the program this Mac's agents run under, where it needs you: a step of
+//! setting up (the first run, and after a move from an earlier Kuvo Code), listing each permission
+//! with its own Open System Settings, and, for a permission macOS has you add by hand, a small tile
+//! beside System Settings with the program's icon to drag into the list ([`tile`]). Nothing is
+//! brought up over the main window: Settings › This Mac shows how each stands afterwards, and
+//! opening one from there gets the same tile ([`HeadsUp::opened`]).
 //!
-//! Every fact and name is the box's (`kuvo/box/permissions`): which permission to bring up, what
-//! System Settings calls it, the address of its list there, the program's name and bundle, and
-//! "Not Now" kept so it isn't brought up at each open. This only draws them, and opens what only
-//! an app on that Mac can: System Settings, for the box on this computer alone.
+//! Every fact and name is the box's (`kuvo/box/permissions`): each permission's name and line, what
+//! System Settings calls it, the address of its list there, the program's name and bundle, whether
+//! to ask about it (`asks`), and "Not Now" kept so it isn't asked about again. This only draws
+//! them, and opens what only an app on that Mac can: System Settings, for the box on this computer
+//! alone.
 
 pub mod icns;
 #[cfg(target_os = "macos")]
@@ -15,10 +19,10 @@ pub mod tile;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Subscription, Task, Window, WindowHandle, div, px};
+use gpui::{prelude::FluentBuilder as _, AnyElement, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Subscription, Task, Window, WindowHandle, div};
 use kuvo_box::BoxClient;
 use kuvo_box::permissions::{Permission, Permissions};
-use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, StyledType, TypeSize, theme::{radius, space}};
+use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, StyledType, TypeSize, theme::space};
 
 use tile::Tile;
 
@@ -39,8 +43,6 @@ pub struct HeadsUp {
     live: bool,
     /// What the box last said.
     facts: Option<Permissions>,
-    /// The computer's name, as the window says it.
-    box_name: SharedString,
     /// Which read is the latest asked for: an older one's answer is dropped.
     asked: u64,
     /// The permission System Settings was opened for, and the tile beside it.
@@ -60,20 +62,42 @@ impl HeadsUp {
                 this.read(cx);
             }
         });
-        HeadsUp { client, live, facts: None, box_name: SharedString::default(), asked: 0, asking: None, problem: None, _follow: None, tasks: Vec::new(), _activation: activation }
+        HeadsUp { client, live, facts: None, asked: 0, asking: None, problem: None, _follow: None, tasks: Vec::new(), _activation: activation }
     }
 
-    pub fn set_box_name(&mut self, name: SharedString) {
-        self.box_name = name;
+    /// Whether this is the box on this computer, and can be asked (System Settings can't be
+    /// opened on another, and one held for its update says nothing).
+    fn reachable(&self) -> bool {
+        self.client.here() && !self.client.gate().is_held()
     }
 
-    /// The permission brought up now: the first the box says to, for the box on this computer
-    /// (System Settings can't be opened on another).
-    pub fn shown(&self) -> Option<&Permission> {
-        if !self.client.here() || self.client.gate().is_held() {
-            return None;
+    /// The permissions the box lists, where they apply to this computer.
+    pub fn list(&self) -> &[Permission] {
+        match &self.facts {
+            Some(facts) if facts.applies && self.reachable() => &facts.list,
+            _ => &[],
         }
-        self.facts.as_ref().and_then(Permissions::asked)
+    }
+
+    /// Whether the box says a permission is to be asked about now (known not to be allowed, and
+    /// not put off): what brings the step up while setting up.
+    pub fn asks(&self) -> bool {
+        self.list().iter().any(|permission| permission.asks)
+    }
+
+    /// The first permission the box says to ask about now.
+    pub fn shown(&self) -> Option<&Permission> {
+        self.list().iter().find(|permission| permission.asks)
+    }
+
+    /// The program agents run under, as the box names it.
+    pub fn program(&self) -> SharedString {
+        self.facts.as_ref().and_then(|facts| facts.name.clone()).unwrap_or_else(|| "Kuvo Helper".into()).into()
+    }
+
+    /// Whether the box has answered at all.
+    pub fn read_yet(&self) -> bool {
+        self.facts.is_some()
     }
 
     /// The permission System Settings was opened for, while its tile is up.
@@ -142,10 +166,10 @@ impl HeadsUp {
         cx.notify();
     }
 
-    /// Opens System Settings on the list for the permission shown, with the tile beside it where
-    /// macOS has you add the program by hand.
-    pub fn open_settings(&mut self, cx: &mut Context<Self>) {
-        let Some(permission) = self.shown().cloned() else { return };
+    /// Opens System Settings on the list for one permission, with the tile beside it where macOS
+    /// has you add the program by hand.
+    pub fn open_settings(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(permission) = self.list().iter().find(|permission| permission.id == id).cloned() else { return };
         // (Only an address of System Settings' own is ever opened, whatever a box says.)
         if !permission.settings.starts_with("x-apple.systempreferences:") {
             return;
@@ -159,7 +183,7 @@ impl HeadsUp {
     /// permission this Mac's Kuvo says isn't allowed, it's helped along as the heads-up's own
     /// button does, with the tile for one added by hand. Says whether it was one.
     pub fn opened(&mut self, address: &str, cx: &mut Context<Self>) -> bool {
-        if !self.client.here() || self.client.gate().is_held() {
+        if !self.reachable() {
             return false;
         }
         let Some(permission) = self.facts.as_ref().and_then(|facts| facts.list.iter().find(|permission| permission.settings == address && permission.allowed == Some(false))).cloned() else { return false };
@@ -256,82 +280,117 @@ impl HeadsUp {
         cx.notify();
     }
 
-    /// Not Now: the box keeps it, so no client brings it up again at each open.
+    /// Not Now: every one still asked about is put off, and the box keeps that, so no client asks
+    /// again until it's been allowed and taken away. Nothing waits on it: what couldn't be kept is
+    /// only asked about again the next time you set up.
     pub fn not_now(&mut self, cx: &mut Context<Self>) {
-        let Some(permission) = self.shown().cloned() else { return };
+        let ids: Vec<String> = self.list().iter().filter(|permission| permission.asks).map(|permission| permission.id.clone()).collect();
+        if ids.is_empty() {
+            return;
+        }
         self.stop_asking(cx);
         self.asked += 1;
         self.run(
-            move |client| client.permission_later(&permission.id),
+            move |client| {
+                let mut said = None;
+                for id in &ids {
+                    said = Some(client.permission_later(id));
+                }
+                said
+            },
             |this, said, cx| match said {
-                Ok(facts) => {
+                Some(Ok(facts)) => {
                     this.problem = None;
                     this.take(facts, cx);
                 }
-                Err(error) => this.problem = Some(kuvo_box::accounts::said(&error).into()),
+                Some(Err(error)) => this.problem = Some(kuvo_box::accounts::said(&error).into()),
+                None => {}
             },
             cx,
         );
     }
 
-    /// The heads-up's card, where there's a permission to bring up.
-    pub fn card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let permission = self.shown()?.clone();
+    /// One permission's row: its name, the box's line (or, while System Settings is open on a
+    /// list it's added to by hand, what to do there), and at its end Allowed, or its own Open
+    /// System Settings.
+    fn row(&self, permission: &Permission, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let program: SharedString = self.facts.as_ref().and_then(|facts| facts.name.clone()).unwrap_or_else(|| "its helper".into()).into();
-        let place = if self.box_name.is_empty() { "this Mac".into() } else { self.box_name.clone() };
-        let detail = if self.asking() == Some(permission.id.as_str()) && permission.by_hand {
-            format!("Drag {program} into the list in System Settings, then switch it on.")
-        } else {
-            format!("Agents on {place} run as {program}. Only you can allow it, in System Settings.")
+        let program = self.program();
+        let asking = self.asking() == Some(permission.id.as_str());
+        let (detail, color) = match permission.allowed {
+            Some(true) => (permission.line.clone().unwrap_or_default(), c.text_muted),
+            _ if asking && permission.by_hand => (format!("Drag {program} into the list in System Settings, then switch it on."), c.text),
+            Some(false) => (permission.line.clone().unwrap_or_else(|| "Not allowed yet.".into()), c.text_muted),
+            None => (format!("{program} hasn’t said yet."), c.text_muted),
         };
-        Some(
-            div()
-                .id("permission-heads-up")
-                .debug_selector(|| "permission-heads-up".into())
-                // (A click on it goes to nothing under it.)
-                .occlude()
-                .w_full()
-                .max_w(px(520.))
+        let icon = if permission.id == "screenRecording" { IconName::Computer } else { IconName::Return };
+        let id = permission.id.clone();
+        let end: AnyElement = match permission.allowed {
+            Some(true) => div()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("permission-{id}-allowed")
+                })
                 .flex()
-                .flex_col()
-                .gap(space::S2)
-                .p(space::S4)
-                .rounded(radius::CARD)
-                .bg(c.surface)
-                .border_1()
-                .border_color(c.border)
-                .shadow(cx.theme().elevated_shadow())
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(space::S2)
-                        .child(Icon::new(IconName::Shield).color(c.warning))
-                        .child(div().debug_selector(|| "permission-heads-up-title".into()).flex_1().min_w_0().text_ui(TypeSize::Body).medium().text_color(c.text).child(format!("Allow {} for {program}?", permission.name))),
-                )
-                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail))
-                .children(self.problem.clone().map(|why| div().debug_selector(|| "permission-heads-up-problem".into()).text_ui(TypeSize::Small).text_color(c.danger).child(why)))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(space::S2)
-                        .pt(space::S1)
-                        .child(Button::new("permission-open", "Open System Settings").primary().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))))
-                        .child(Button::new("permission-later", "Not Now").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.not_now(cx)))),
-                )
+                .flex_none()
+                .items_center()
+                .gap(space::S1_5)
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .child(Icon::new(IconName::Check).color(c.success))
+                .child("Allowed")
                 .into_any_element(),
-        )
+            _ => Button::new(SharedString::from(format!("permission-{id}-open")), "Open System Settings")
+                .size(ButtonSize::Small)
+                .when(asking, |button| button.primary())
+                .on_click(cx.listener(move |this, _, _, cx| this.open_settings(&id, cx)))
+                .into_any_element(),
+        };
+        let selector = format!("permission-{}", permission.id);
+        div()
+            .debug_selector(move || selector)
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .px(space::S4)
+            .py(space::S3)
+            .child(crate::first_run::icon_tile(icon, cx))
+            // (Its line wraps: what to do in System Settings is read whole.)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).truncate().child(permission.name.clone()))
+                    .child(div().text_ui(TypeSize::Caption).text_color(color).child(detail)),
+            )
+            .child(end)
+            .into_any_element()
+    }
+
+    /// The step's heading words: its title, and the line under it.
+    pub fn heading(&self) -> (String, String) {
+        let program = self.program();
+        // (Only ever this Mac's own: System Settings opens on no other.)
+        let place = "this Mac";
+        (format!("Let {program} work on {place}"), format!("Agents on {place} run as {program}. Only you can allow these, in System Settings. You can change them later in Settings › This Mac."))
     }
 }
 
+/// The step's body: each permission's row, and what went wrong, where something did.
 impl gpui::Render for HeadsUp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Over the main view's top, in its middle, taking no room of its own.
-        match self.card(cx) {
-            Some(card) => div().absolute().top(space::S4).left_0().right_0().flex().justify_center().px(space::S4).child(card),
-            None => div(),
-        }
+        let c = cx.theme().colors.clone();
+        let list: Vec<Permission> = self.list().to_vec();
+        let rows: Vec<AnyElement> = list.iter().map(|permission| self.row(permission, cx)).collect();
+        div()
+            .debug_selector(|| "permissions-step".into())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(space::S3)
+            .child(crate::first_run::list(rows, cx))
+            .children(self.problem.clone().map(|why| div().debug_selector(|| "permission-problem".into()).px(space::S1).text_ui(TypeSize::Small).text_color(c.danger).child(why)))
     }
 }

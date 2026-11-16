@@ -891,6 +891,26 @@ const FIRST_RUN: &[FirstRunScreen] = &[
     FirstRunScreen { slug: "first-run-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
     FirstRunScreen { slug: "first-run-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
     // The box stops answering mid-way.
+/// A stand-in helper for the tile to offer, in a folder of the pictures' own (taken away after).
+fn shots_helper() -> PathBuf {
+    std::env::temp_dir().join(format!("kuvo-shots-allow-{}", std::process::id())).join("Kuvo Helper.app")
+}
+
+/// A Mac's own Kuvo whose helper says neither permission is allowed.
+fn nothing_allowed(stand_in: &StandIn) {
+    let helper = shots_helper();
+    std::fs::create_dir_all(&helper).expect("a stand-in helper");
+    let bundle = helper.to_string_lossy().into_owned();
+    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { bundle, ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
+}
+
+fn to_allow(run: &mut FirstRun, cx: &mut Context<FirstRun>) {
+    run.go_on(cx);
+    if run.step() == Step::Agents {
+        run.go_on(cx);
+    }
+}
+
     FirstRunScreen { slug: "first-run-welcome-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Unreachable("Kuvo Code isn’t answering on this Mac.".into()), "This Mac".into(), cx), after: nothing_before },
     FirstRunScreen { slug: "first-run-agents", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: to_agents, after: nothing_before },
     FirstRunScreen { slug: "first-run-agents-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: to_agents, after: nothing_before },
@@ -926,6 +946,20 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
+    // A Mac whose Kuvo says macOS doesn't allow Kuvo Helper either yet: a step of its own after the
+    // agents; and with System Settings opened on one added by hand (its tile isn't in the picture).
+    FirstRunScreen { slug: "first-run-allow", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_allowed, then: to_allow, after: nothing_before },
+    FirstRunScreen { slug: "first-run-allow-asking", scenario: Scenario::Nothing, size: (1280., 820.), before: |stand_in| { nothing_allowed(stand_in); stand_in.set_permissions(|permissions| permissions.accessibility = true); }, then: |run, cx| {
+        to_allow(run, cx);
+        if let Some(permissions) = run.permissions().cloned() {
+            permissions.update(cx, |permissions, cx| {
+                permissions.open_settings("screenRecording", cx);
+                if let Some(tile) = permissions.tile() {
+                    tile.update(cx, |_, window, _| window.remove_window()).ok();
+                }
+            });
+        }
+    }, after: nothing_before },
             let stand_in = StandIn::first_run(Replies::Never, NOW, screen.scenario);
             (screen.before)(&stand_in);
             let client = BoxClient::new(stand_in.clone());
@@ -982,6 +1016,9 @@ fn main() -> anyhow::Result<()> {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots");
     std::fs::create_dir_all(&out)?;
     let text_system = gpui_platform::current_platform(true).text_system();
+    if let Some(made) = shots_helper().parent().filter(|made| made.exists()) {
+        std::fs::remove_dir_all(made)?;
+    }
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
@@ -1198,9 +1235,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// The app opening on a computer (`launch-*`: this Mac's row in the Welcome card as it's set up,
-/// once it's ready, and where it stopped; the quiet middle for one that isn't running), and what
-/// macOS allows Kuvo Helper (`permission-*`: the heads-up, and the tile beside a stand-in for
-/// System Settings' window). `SHOTS_HELPER_ICON`: an `.icns` for the tile's stand-in helper
+/// once it's ready, and where it stopped; the quiet middle for one that isn't running; after a move,
+/// what macOS allows Kuvo Helper, `launch-moved-allow`), and the tile beside a stand-in for System
+/// Settings' window (`permission-tile`). `SHOTS_HELPER_ICON`: an `.icns` for the tile's stand-in helper
 /// (`scripts/helper-icon.sh`'s); without it the tile draws a plain one.
 fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Path) -> anyhow::Result<()> {
     use kuvo::launch::{Launch, Moving, Opens, Said, Stage};
@@ -1243,7 +1280,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
     let dropped = "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.";
     for slug in [
         "launch-setting-up", "launch-setting-up-step", "launch-starting", "launch-done", "launch-failed", "launch-failed-narrow", "launch-not-running",
-        "launch-moving", "launch-move-getting-ready", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two",
+        "launch-moving", "launch-move-getting-ready", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two", "launch-moved-allow",
     ] {
         if !wanted(slug, "launch") {
             continue;
@@ -1266,7 +1303,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
             let window = cx.open_window(size(px(width), px(height)), |window, cx| cx.new(|cx| Launch::new(opens, false, window, cx)))?;
             let any = window.into();
             cx.run_until_parked();
-            cx.update_window(any, |root, _, cx| {
+            cx.update_window(any, |root, window, cx| {
                 let launch = root.downcast::<Launch>().expect("the launch");
                 launch.update(cx, |launch, cx| match slug {
                     "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None, at: None }, true, cx),
@@ -1288,6 +1325,13 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                     "launch-failed" | "launch-failed-narrow" => launch.show(Stage::Stopped { line: "Couldn’t set up Kuvo".into(), message: offline.into(), note: None }, true, cx),
                     "launch-done" => {
                         let home = launch.home().cloned().expect("the app, open");
+                    "launch-moved-allow" => {
+                        let stand_in = StandIn::at(Replies::Never, NOW);
+                        stand_in.set_permissions(|permissions| *permissions = Permissions { accessibility: true, ..Permissions::nothing_allowed() });
+                        let boxes = kuvo::home::stand_in_boxes(stand_in);
+                        let first = boxes.nearest().expect("the stand-in is the nearest box");
+                        launch.show_allow(boxes, first, window, cx);
+                    }
                         home.update(cx, |home, cx| {
                             home.set_now(NOW, cx);
                             home.read_at_once(cx);
@@ -1297,49 +1341,6 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                 });
             })?;
             save(cx, any, slug, appearance)?;
-        }
-    }
-    for slug in ["permission-heads-up", "permission-dragging", "permission-landing"] {
-        if !wanted(slug, "permission") {
-            continue;
-        }
-        for appearance in [Appearance::Light, Appearance::Dark] {
-            cx.update(|cx| Theme::set_appearance(appearance, cx));
-            let stand_in = StandIn::at(Replies::Never, NOW);
-            // (A helper that's there, for the drag to be offered: a folder of this picture's own.)
-            let helper = std::env::temp_dir().join(format!("kuvo-shots-heads-up-{}", std::process::id())).join("Kuvo Helper.app");
-            std::fs::create_dir_all(&helper)?;
-            let bundle = helper.to_string_lossy().into_owned();
-            stand_in.set_permissions(|permissions| *permissions = Permissions { bundle, ..Permissions::nothing_allowed() });
-            let client = BoxClient::new(stand_in);
-            let window = cx.open_window(size(px(1280.), px(820.)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
-            let any = window.into();
-            cx.update_window(any, |root, window, cx| {
-                let workspace = root.downcast::<Workspace>().expect("the workspace");
-                workspace.update(cx, |workspace, cx| {
-                    workspace.set_now(NOW, cx);
-                    workspace.read_at_once(cx);
-                    if slug != "permission-landing" {
-                        workspace.open_read_at_once("ses_signup", window, cx);
-                    }
-                    if slug == "permission-dragging" {
-                        workspace.permissions().clone().update(cx, |heads_up, cx| heads_up.open_settings(cx));
-                    }
-                });
-            })?;
-            cx.run_until_parked();
-            // (The tile's own window isn't part of this picture: `permission-tile` draws it.)
-            cx.update_window(any, |root, _, cx| {
-                let workspace = root.downcast::<Workspace>().expect("the workspace");
-                let tile = workspace.read(cx).permissions().read(cx).tile();
-                if let Some(tile) = tile {
-                    tile.update(cx, |_, window, _| window.remove_window()).ok();
-                }
-            })?;
-            save(cx, any, slug, appearance)?;
-            if let Some(made) = helper.parent() {
-                std::fs::remove_dir_all(made)?;
-            }
         }
     }
     if wanted("permission-tile", "permission") {
