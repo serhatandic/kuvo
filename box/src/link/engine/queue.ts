@@ -579,12 +579,15 @@ export async function sendNow(target: Target, session: string, item: string): Pr
 /** Steer: `item`, queued, to the agent at its next step in the run under way, without stopping it
  * (the engine takes it then; the coding agents' bridge hands it to an agent that takes one partway,
  * Claude Code's and Codex's, else it goes next, once the turn ends). One waiting on the box, or
- * with nothing running, goes as Send Now sends it. `toAgents`: `target` is the bridge. False when
- * it isn't waiting. */
+ * with nothing running, goes as Send Now sends it. A queue a Stop holds stays held. `toAgents`:
+ * `target` is the bridge. False when it isn't waiting; it throws when the inbox can't be read. */
 export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
-  const entry = (await inboxFor(target, session)).find(each => each.id === item);
+  // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
+  // the step you meant to keep going.)
+  const entry = (await inboxOf(target, session)).find(each => each.id === item);
   if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
-  changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
+  // Only this one is let go of what a Stop held: the rest wait for Resume, as 0.7's Steer left them.
+  changeQueue(session, state => ({ ...state, held: state.held.filter(id => id !== item) }));
   if (entry.delivery === "steer" && !toAgents) return true;
   try {
     await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });

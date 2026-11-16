@@ -1262,8 +1262,11 @@ the same for every client and with none connected, and keeps them in `run/queues
   hands it into the turn where its agent takes one partway (Claude Code, Codex; the bridge's `PATCH
   …/inbox/<item>` with `{delivery: "steer", into: true}`), else it goes next, once the turn ends.
   One waiting on the box, or with nothing running, goes as Send Now sends it; 404 when it isn't
-  waiting. A message sent with `delivery: "queue"` (`kuvo/sessions/<id>/send`) while the queue is
-  paused waits on the box, as `…/queue/add`'s does, answered `{waits: true}`.
+  waiting; a queue a Stop holds stays held (only that message is let go). A message sent with
+  `delivery: "queue"` (`kuvo/sessions/<id>/send`) while the queue is paused waits on the box, as
+  `…/queue/add`'s does, answered `{waits: true}`; with nothing running and nothing waiting it goes
+  at once (`queue.steer`). `delivery: "now"` (Send Now) goes as `steer`, then as `…/queue/<item>/now`
+  once the engine has it; a box from before reads it as `steer`.
   `POST …/queue/add` (`{id?, text, files?, delivery?, from?, words?, before?}`, a prompt's body): a client's
   own message for the queue (every one sent after this run, and Undo), its files kept on the box
   as a message's are (a phone's also naming its agents and saying it's from the phone, as its

@@ -19,7 +19,7 @@ import type { PromptFile } from "../server/attached";
 import { answerHeaders, modelInput } from "../server/forward";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
-import { holdQueue, keepWaiting, keepWaitingHeld, type Outgoing } from "../engine/queue";
+import { holdQueue, keepWaiting, keepWaitingHeld, sendNow, type Outgoing } from "../engine/queue";
 import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
@@ -81,6 +81,7 @@ export const isEmpty = (fields: MessageFields, files: unknown[]): boolean =>
   && !fields.notes?.included?.length && !fields.notes?.paths?.length && !fields.notes?.unsent?.length;
 
 // `kuvo/sessions/<id>/send`: `{id, words, files?, delivery?, keyword?, widget?, comments?, named?,
+// (`delivery`: `steer`, the default; `queue`, after the run; `now`, the step under way stopped for it)
 // notes?}` as a message, or with `command`, that command run with `words` as its arguments (only
 // its files' note goes with them); `{id, text, files?, delivery?}`, one sent before sent again as
 // the agent read it (Retry), its files as they went. Answered as the engine (or the coding agents'
@@ -144,7 +145,9 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
       // while, Stop meanwhile): held, waiting on the box (the engine would run all it holds with
       // the first thing to reach a stopped conversation), not set going.
       const held = heldAsItComes(session, id);
-      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || !command ? "steer" : undefined;
+      // `now` (Send Now): to go now, the step under way stopped for it once the engine has it.
+      const now = !held && !command && given.delivery === "now";
+      const delivery = held || given.delivery === "queue" ? "queue" : given.delivery === "steer" || now || !command ? "steer" : undefined;
       const body = command
         ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
         : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
@@ -162,6 +165,8 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
       };
       const made = template ? madeText(await template, message.text) : null;
       const answer = typed && !toAgents ? await sendingCommand(session, typed, made, post, each => each.status >= 200 && each.status < 300) : await post();
+      // (Taken by the agent meanwhile, it isn't waiting any more: that's as good.)
+      if (now && answer.status >= 200 && answer.status < 300) await sendNow(target, session, (body as { id: string }).id).catch(() => false);
       // (Stop hasn't paused it yet: it holds it with the rest, as it names it.)
       if (held && id && answer.status >= 200 && answer.status < 300) await holdQueue(target, session, undefined, [id]).catch(() => {});
       return answer;

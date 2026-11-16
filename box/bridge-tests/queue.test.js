@@ -24,6 +24,8 @@ const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-
 let inboxes, running, asked, prompted, unsure = false, taken = new Set(), waiting = [], latest = {}, pages = {}, viewedAt = 0, looks = 0, whenLooked = null;
 // A busy engine: the next `stalls` reads of a session get no answer until the test ends them.
 let stalls = 0, stalled = [];
+// Whether a prompt stays in its session's inbox, as one for a run under way does.
+let keeps = false;
 const heard = () => new Promise(resolve => waiting.push(resolve));
 const engine = http.createServer((request, response) => {
   let body = "";
@@ -74,6 +76,7 @@ const engine = http.createServer((request, response) => {
       // A message for the session: what it says, as it went.
       const given = JSON.parse(body);
       prompted.push({ session, ...given });
+      if (keeps) (inboxes[session] ??= []).push({ id: given.id, delivery: given.delivery });
       asked.push(`${session} prompt ${given.id}`);
       answer = {};
     } else if (rest === "/interrupt") {
@@ -104,6 +107,7 @@ beforeEach(() => {
   pages = {};
   whenLooked = null;
   stalls = 0;
+  keeps = false;
   for (const response of stalled.splice(0)) response.destroy();
   link.PLACE_TRIES.splice(0, Infinity, 10_000, 20_000);
   fs.rmSync(path.join(home, "run", "queues.json"), { force: true });
@@ -349,6 +353,25 @@ test("Steer on one waiting on the box while a run goes on sends it to the engine
   assert.equal(steered.status, 200);
   assert.equal(steered.json.paused, false);
   assert.deepEqual(prompted.map(each => [each.id, each.delivery]), [["msg_w1", "steer"]]);
+});
+
+test("Steer on one a Stop held lets only that one go: the rest still wait for Resume", async () => {
+  inboxes.ses_1 = [{ id: "msg_h1", delivery: "queue" }, { id: "msg_h2", delivery: "queue" }];
+  fs.writeFileSync(path.join(home, "run", "queues.json"), JSON.stringify({ ses_1: { paused: true, held: ["msg_h1", "msg_h2"] } }));
+  running.add("ses_1");
+  const steered = await ask("POST", "kuvo/sessions/ses_1/queue/msg_h2/steer");
+  assert.deepEqual(steered.json, { paused: true, held: ["msg_h1"] });
+  assert.deepEqual(asked, ["ses_1 msg_h2 steer"]);
+});
+
+test("Send Now from the composer: the message goes for the next step, then the step under way stops for it", async () => {
+  inboxes.ses_1 = [];
+  running.add("ses_1");
+  keeps = true;
+  const sent = await ask("POST", "kuvo/sessions/ses_1/send", { id: "msg_n1", words: "Stop and use the new copy", delivery: "now" });
+  assert.equal(sent.status, 200);
+  assert.deepEqual(prompted.map(each => [each.id, each.delivery]), [["msg_n1", "steer"]]);
+  assert.deepEqual(asked, ["ses_1 prompt msg_n1", "ses_1 resume"], "for the next step, then the step under way stopped for it");
 });
 
 test("a message sent for after this run while the queue is paused waits on the box, shown with the queue; one sent to go now goes", async () => {
