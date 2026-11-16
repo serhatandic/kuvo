@@ -314,9 +314,8 @@ public struct KeychainMove: Sendable {
         }
     }
 
-    /// A refusal as it is: the Keychain locked, or what it said.
     private func refusal(_ item: String, _ status: OSStatus) -> Failure {
-        keychain.isLocked ? .locked(item) : .refused(item, status)
+        .refusal(item, status, in: keychain)
     }
 }
 #endif

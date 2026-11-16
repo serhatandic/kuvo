@@ -48,10 +48,10 @@ const helperProgram = (bundle: string) => path.join(bundle, "Contents", "MacOS",
 const LOCKED = "Your Keychain is locked, so Kuvo can't take this Mac's keys along. Unlock it (log out and back in, or open Keychain Access), then try again.";
 /** macOS kept an item from `kuvo-keys` (an earlier Kuvo Code signed differently made it, and it
  * asked, or would have): you allow it when it asks. */
-const NOT_ALLOWED = "Kuvo needs your OK to take this Mac's keys along. Try again, and when macOS asks whether kuvo-keys may use your keychain, enter your Mac's password and click Always Allow.";
+const NOT_ALLOWED = "Kuvo needs your OK to take this Mac's keys along. Try again: macOS asks once for each key whether kuvo-keys may use it. Each time, enter your Mac's password and click Always Allow.";
 const NOT_TAKEN = "Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.";
 /** How long `kuvo-keys copy` may take: macOS may ask you about each item it reads. */
-const ASKING = 600_000;
+const ASKING = 1_800_000;
 
 /** This Mac's keys copied for the helper (`kuvo-keys copy`), and read back by it (`keys check`):
  * what an earlier box or an earlier try left under the helper's names is taken away first, once.

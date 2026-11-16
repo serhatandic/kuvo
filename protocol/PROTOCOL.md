@@ -7630,9 +7630,11 @@ above. Only on a Mac.
     `status`, the OSStatus) goes to the move's log alone, never on screen. A `kuvo-keys` signed
     differently from the Kuvo Code that made the items (an Apple Development build after a
     Developer ID one: the items' list names that one's certificate) lets macOS ask you, once per
-    item it reads (here and in `passwords`), whether it may use it (Always Allow); nothing else it
-    does asks, and a locked Keychain is never asked to be unlocked. Up to ten minutes for those
-    answers. A move that goes back takes the copies away (`keys uncopy`).
+    item it reads (here and in `passwords`), whether it may use it: only where reading it without
+    asking was refused, searching only the item's own keychain while it's unlocked, and what you
+    allowed must then hold without asking (Always Allow: what comes after, deleting the originals
+    and later runs, never asks), or it's `not-allowed`. Nothing else it does asks, and a locked
+    Keychain is never asked to be unlocked. Up to thirty minutes for those answers. A move that goes back takes the copies away (`keys uncopy`).
     Skipped, said nowhere, where the app brings no `kuvo-keys` and isn't Kuvo Code itself (a
     copy has no keys of Kuvo Code's own).
   - `clone`, then what it holds is counted (below).

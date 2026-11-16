@@ -170,7 +170,7 @@ test.if(mac)("a locked Keychain stops the move before anything's copied, saying 
 
 test.if(mac)("a Keychain that keeps this Mac's keys from Kuvo without being locked never says it's locked: you're asked for your OK, or told to try again, and only the move's log names the key and what macOS said", () => {
   for (const [file, shown, logged] of [
-    ["keychain-not-allowed", "Kuvo needs your OK to take this Mac's keys along. Try again, and when macOS asks whether kuvo-keys may use your keychain, enter your Mac's password and click Always Allow.", "kuvo-keys copy: not-allowed (OSStatus -25308): Your Keychain didn’t give out phone-link/key (OSStatus -25308)."],
+    ["keychain-not-allowed", "Kuvo needs your OK to take this Mac's keys along. Try again: macOS asks once for each key whether kuvo-keys may use it. Each time, enter your Mac's password and click Always Allow.", "kuvo-keys copy: not-allowed (OSStatus -25308): Your Keychain didn’t give out phone-link/key (OSStatus -25308)."],
     ["keychain-refuses", "Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.", "kuvo-keys copy: refused (OSStatus -25291): Your Keychain didn’t give out run.kuvo.code.vault (OSStatus -25291)."],
   ]) {
     const m = mac07(root, m => put(join(m.home, file), ""))

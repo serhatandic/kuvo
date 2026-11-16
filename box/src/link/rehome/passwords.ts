@@ -60,7 +60,7 @@ function freeName(host: string, account: string, taken: Set<string>): string {
  * with which account (its preferences). */
 export async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait = 30_000 }: { home: string; keys: string; agentSites: string[]; agentAccounts: Record<string, string>; wait?: number }): Promise<HandedOver> {
   // (macOS may ask you about each sign-in it reads: room for your answers.)
-  const read = spawnSync(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 600_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const read = spawnSync(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 1_800_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let said: unknown = null;
   try { said = JSON.parse((read.stdout ?? "").trim().split("\n").pop() ?? ""); } catch {}
   if (read.status !== 0 || !isObject(said) || !Array.isArray(said.logins)) {

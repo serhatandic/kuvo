@@ -41939,7 +41939,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "14b7d21e6bc1";
+var BRIDGE_VERSION = "ba5952303ff3";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -42027,9 +42027,9 @@ function helperOf(run, home) {
 }
 var helperProgram = (bundle) => path141.join(bundle, "Contents", "MacOS", HELPER_NAME);
 var LOCKED2 = "Your Keychain is locked, so Kuvo can't take this Mac's keys along. Unlock it (log out and back in, or open Keychain Access), then try again.";
-var NOT_ALLOWED = "Kuvo needs your OK to take this Mac's keys along. Try again, and when macOS asks whether kuvo-keys may use your keychain, enter your Mac's password and click Always Allow.";
+var NOT_ALLOWED = "Kuvo needs your OK to take this Mac's keys along. Try again: macOS asks once for each key whether kuvo-keys may use it. Each time, enter your Mac's password and click Always Allow.";
 var NOT_TAKEN = "Kuvo couldn't take this Mac's keys along, so nothing was moved. Try again.";
-var ASKING = 600000;
+var ASKING = 1800000;
 function handOverKeys(run, home) {
   if (!run.keys)
     return;
@@ -53774,7 +53774,7 @@ function freeName2(host, account, taken) {
       return `${host} ${n}`;
 }
 async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait = 30000 }) {
-  const read = spawnSync17(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 600000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const read = spawnSync17(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 1800000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((read.stdout ?? "").trim().split(`

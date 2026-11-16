@@ -115,7 +115,7 @@ public enum KeysTool {
                     }
                     switch keychain.internetPassword(server: passwordHost, account: passwordAccount, creator: creator) {
                     case .missing: break // A previous try already removed it.
-                    case .refused(let status): throw keychain.isLocked ? KeychainMove.Failure.locked("saved sign-in") : KeychainMove.Failure.refused("saved sign-in", status)
+                    case .refused(let status): throw KeychainMove.Failure.refusal("saved sign-in", status, in: keychain)
                     case .found(let original):
                         guard original == Data(password.utf8) else { throw KeychainMove.Failure.copyMissing("saved sign-in changed") }
                         let status = keychain.deleteInternetPassword(server: passwordHost, account: passwordAccount, creator: creator, verified: Data(password.utf8))
@@ -207,8 +207,10 @@ public enum KeysTool {
     /// outside the sandbox could read what the Keychain kept from all but Kuvo Code.
     static func savedSignIns(keychain: HostKeychain, askingIfNeeded: Bool = false) throws -> [String: Any] {
         guard !keychain.isLocked else { throw KeychainMove.Failure.locked("your saved sign-ins") }
-        guard let found = keychain.internetPasswords(creator: creator) else {
-            throw KeychainMove.Failure.refused("your saved sign-ins", errSecInteractionNotAllowed)
+        let found: [HostKeychain.InternetPassword]
+        switch keychain.internetPasswordsListed(creator: creator) {
+        case .success(let listed): found = listed
+        case .failure(let refusal): throw KeychainMove.Failure.refusal("your saved sign-ins", refusal.status, in: keychain)
         }
         var logins: [[String: Any]] = []
         for login in found {
@@ -219,8 +221,7 @@ public enum KeysTool {
                 logins.append(entry)
             // (Gone meanwhile.)
             case .missing: continue
-            case .refused(let status):
-                throw keychain.isLocked ? KeychainMove.Failure.locked("your saved sign-ins") : KeychainMove.Failure.refused("\(login.account) at \(login.server)", status)
+            case .refused(let status): throw KeychainMove.Failure.refusal("\(login.account) at \(login.server)", status, in: keychain)
             }
         }
         return ["v": 1, "logins": logins]
@@ -240,6 +241,11 @@ public enum KeysTool {
 }
 
 extension KeychainMove.Failure {
+    /// A refusal as it is: the Keychain locked, or what it said.
+    static func refusal(_ item: String, _ status: OSStatus, in keychain: HostKeychain) -> Self {
+        keychain.isLocked ? .locked(item) : .refused(item, status)
+    }
+
     /// One word for what's reading the answer (the box's move), which decides what's next by it:
     /// `locked` only when the Keychain is; `not-allowed` when macOS kept an item from this program
     /// (it would have asked, or you didn't allow it); `refused`, anything else it said.
