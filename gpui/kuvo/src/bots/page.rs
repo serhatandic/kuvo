@@ -240,12 +240,13 @@ impl BotsView {
             Control::NameField => div().debug_selector(|| "new-name-field".into()).w(px(260.)).child(self.new_name.clone()).into_any_element(),
             Control::Model { shown, current, new } => {
                 let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
-                let offered = self.offered_models().cloned().unwrap_or_default();
                 let client = self.client().clone();
                 crate::model_picker::setting_button(
                     key,
                     shown,
                     move |window, cx| {
+                        // (What the box last said, read as it opens rather than copied as it's drawn.)
+                        let offered = this.upgrade().and_then(|view| view.read(cx).offered_models().cloned()).unwrap_or_default();
                         let mut catalog = Catalog::new(&offered, |_| true);
                         let is_new = new.is_some();
                         if let Some((title, line)) = new.clone() {

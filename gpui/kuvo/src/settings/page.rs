@@ -518,17 +518,21 @@ impl SettingsView {
             }
             Control::Model { shown, current, unset, path, was } => {
                 let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
-                let offered = match &self.offered {
-                    Reading::Ready(offered) => offered.clone(),
-                    _ => Default::default(),
-                };
                 let client = self.client.clone();
                 crate::model_picker::setting_button(
                     key,
                     shown,
                     move |window, cx| {
+                        // (What the box last said, read as it opens rather than copied as it's drawn.)
+                        let offered = this
+                            .upgrade()
+                            .and_then(|view| match &view.read(cx).offered {
+                                Reading::Ready(offered) => Some(offered.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
                         // (The engine's models: these are the engine's own settings.)
-                        let catalog = crate::model_picker::Catalog::new(&offered, |model| model.side == kuvo_box::models::Side::Engine).with_unset(unset.clone(), "Left to it, as this says.", current.is_none());
+                        let catalog = crate::model_picker::Catalog::new(&offered, |model| model.side == kuvo_box::models::Side::Engine).with_unset(unset.clone(), "", current.is_none());
                         let (this, kept, client, current, starred, was) = (this.clone(), kept.clone(), client.clone(), current.clone(), offered.starred.clone(), was.clone());
                         cx.new(|cx| {
                             crate::model_picker::ModelPicker::new(

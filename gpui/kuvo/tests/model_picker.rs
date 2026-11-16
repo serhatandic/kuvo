@@ -58,7 +58,7 @@ fn chip(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Option<Str
 }
 
 #[gpui::test]
-fn it_opens_on_the_models_provider_and_a_pick_keeps_the_effort_the_new_one_offers(cx: &mut TestAppContext) {
+fn it_opens_on_the_models_provider_and_a_pick_puts_the_conversation_on_it(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = conversation(cx, stand_in.clone());
     assert_eq!(chip(&workspace, cx).as_deref(), Some("Claude Opus 5.5"));
@@ -70,8 +70,8 @@ fn it_opens_on_the_models_provider_and_a_pick_keeps_the_effort_the_new_one_offer
     click(cx, "model-rail-openai");
     click(cx, "model-row-openai/gpt-6");
     assert!(!shown(cx, "model-picker"), "a pick closes it");
-    // At the effort it had (high), which GPT-6 offers too.
-    assert_eq!(picked(&stand_in), vec![json!({ "providerID": "openai", "id": "gpt-6", "variant": "high" })]);
+    // At its own effort, until one's picked beside it.
+    assert_eq!(picked(&stand_in), vec![json!({ "providerID": "openai", "id": "gpt-6" })]);
     assert_eq!(chip(&workspace, cx).as_deref(), Some("GPT-6"));
 }
 
@@ -100,12 +100,12 @@ fn the_arrows_and_command_numbers_pick_from_the_list_shown_and_escape_closes(cx:
     // ⌘2: the second of Anthropic's.
     cx.simulate_keystrokes("cmd-2");
     cx.run_until_parked();
-    assert_eq!(picked(&stand_in), vec![json!({ "providerID": "anthropic", "id": "claude-sonnet-5-5", "variant": "high" })]);
+    assert_eq!(picked(&stand_in), vec![json!({ "providerID": "anthropic", "id": "claude-sonnet-5-5" })]);
     click(cx, "model-chip");
     // Opened on the one now (the second): Up goes to the first, Return picks it.
     cx.simulate_keystrokes("up enter");
     cx.run_until_parked();
-    assert_eq!(picked(&stand_in).last(), Some(&json!({ "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" })));
+    assert_eq!(picked(&stand_in).last(), Some(&json!({ "providerID": "anthropic", "id": "claude-opus-5-5" })));
     click(cx, "model-chip");
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
@@ -276,4 +276,21 @@ fn timings(cx: &mut TestAppContext) {
             say("scroll frame", scrolls);
         }
     }
+}
+
+/// Starred and unstarred quickly, before the box answers the first: the box ends as the picker
+/// shows, unstarred (the changes go one at a time, in the order made).
+#[gpui::test]
+fn a_star_set_and_taken_away_at_once_ends_as_shown(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, cx) = conversation(cx, stand_in.clone());
+    click(cx, "model-chip");
+    click(cx, "model-rail-openai");
+    let star = bounds(cx, "model-star-openai/gpt-6").expect("its star");
+    cx.simulate_click(star.center(), Modifiers::default());
+    cx.simulate_click(star.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert!(stand_in.starred().is_empty());
+    click(cx, "model-rail-starred");
+    assert!(shown(cx, "model-picker-empty"), "none starred, as the box has it");
 }

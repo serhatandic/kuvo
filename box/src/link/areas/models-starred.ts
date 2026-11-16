@@ -18,8 +18,11 @@ const MOST = 200;
 /** A starred model: its provider and its id. */
 export type Starred = { providerID: string; id: string };
 
+/** The longest id kept (a provider's or a model's). */
+const LONGEST = 300;
+
 const isStarred = (value: unknown): value is Starred =>
-  isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && typeof value.id === "string" && value.id !== "";
+  isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST;
 
 const same = (a: Starred, b: Starred) => a.providerID === b.providerID && a.id === b.id;
 

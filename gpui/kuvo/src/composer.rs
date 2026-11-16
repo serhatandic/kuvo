@@ -697,6 +697,8 @@ impl Composer {
             && *was != place
         {
             *was = place;
+            // (Its picker offers that side's models.)
+            self.catalog = None;
             self.read_models(cx);
         }
     }
@@ -1787,7 +1789,7 @@ impl Composer {
                 Some(client),
                 Rc::new(move |picked, _, cx| {
                     if let Some(picked) = picked {
-                        this.update(cx, |this, cx| this.pick_keeping_effort(picked, cx)).ok();
+                        this.update(cx, |this, cx| this.pick(picked, cx)).ok();
                     }
                 }),
                 window,
@@ -1808,21 +1810,13 @@ impl Composer {
 
     /// Opens the model picker (⇧⌘M, and shots).
     pub fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<ModelPicker>> {
-        if self.chip_label().is_none() || self.client.gate().is_held() {
+        if self.chip_label().is_none() || self.client.gate().is_held() || self.model_menu.is_open() {
             return None;
         }
         let picker = self.model_picker(window, cx);
         self.model_menu.open(picker.clone(), window, cx);
         cx.notify();
         Some(picker)
-    }
-
-    /// The model picked, at the effort it had where the new one offers it too (as 0.7 kept it).
-    fn pick_keeping_effort(&mut self, mut picked: ModelRef, cx: &mut Context<Self>) {
-        let effort = self.model().and_then(|model| model.variant);
-        let offers = self.models.offered.as_ref().and_then(|offered| offered.models.iter().find(|model| model.is(&picked))).map(|model| model.efforts.clone()).unwrap_or_default();
-        picked.variant = effort.filter(|effort| offers.contains(effort));
-        self.pick(picked, cx);
     }
 
     fn model_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

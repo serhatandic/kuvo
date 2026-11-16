@@ -300,7 +300,9 @@ pub struct ModelPicker {
     searching: Option<Task<()>>,
     cancel: Arc<AtomicBool>,
     /// Return was pressed before the search was found: what it finds first is picked.
-    pick_when_found: bool,
+    /// Return (or a ⌘ number: which row) was pressed before the search was found: that row of what
+    /// it finds is picked.
+    pick_when_found: Option<usize>,
     /// Said instead of the list: why nothing can be picked now ("Finding where this conversation
     /// runs…").
     notice: Option<SharedString>,
@@ -311,7 +313,11 @@ pub struct ModelPicker {
     height: f32,
     on_pick: OnPick,
     on_starred: Option<OnStarred>,
-    stars: Vec<Task<()>>,
+    /// Star changes waiting to go to the box, one at a time in the order made; the one on its
+    /// way; and the stars as the box last said them.
+    star_queue: std::collections::VecDeque<(Vec<Starred>, bool)>,
+    star_sending: Option<Task<()>>,
+    box_starred: Vec<Starred>,
     _field: Subscription,
 }
 
@@ -358,15 +364,18 @@ impl ModelPicker {
             scroll: UniformListScrollHandle::new(),
             searching: None,
             cancel: Arc::new(AtomicBool::new(false)),
-            pick_when_found: false,
+            pick_when_found: None,
             notice: None,
             note: None,
             problem: None,
             on_pick,
             on_starred: None,
-            stars: Vec::new(),
+            star_queue: Default::default(),
+            star_sending: None,
+            box_starred: Vec::new(),
             _field: subscription,
         };
+        picker.box_starred = picker.starred.clone().unwrap_or_default();
         picker.show_list();
         // The current one highlighted, in sight.
         let current_row = picker.rows.iter().position(|row| matches!(row, Row::Model(ix) if Some(*ix) == at));
@@ -458,6 +467,8 @@ impl ModelPicker {
         self.query = query.clone();
         self.cancel.store(true, Ordering::Relaxed);
         self.searching = None;
+        // (A Return pressed for the search before is for that one only.)
+        self.pick_when_found = None;
         if query.trim().is_empty() {
             self.show_list();
             self.selected = (!self.rows.is_empty()).then_some(0);
@@ -476,8 +487,8 @@ impl ModelPicker {
                 this.rows = found.into_iter().map(Row::Model).collect();
                 this.selected = (!this.rows.is_empty()).then_some(0);
                 this.scroll.scroll_to_item(0, ScrollStrategy::Top);
-                if std::mem::take(&mut this.pick_when_found) {
-                    this.pick_row(0, window, cx);
+                if let Some(row) = this.pick_when_found.take() {
+                    this.pick_row(row, window, cx);
                 }
                 cx.notify();
             })
@@ -515,6 +526,15 @@ impl ModelPicker {
         self.choose(all[next], cx);
     }
 
+    /// Picks row `row` of the list shown, or, while a search is on its way, of what it finds.
+    fn pick_number(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.searching.is_some() {
+            self.pick_when_found = Some(row);
+        } else {
+            self.pick_row(row, window, cx);
+        }
+    }
+
     fn pick_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(row).copied() else { return };
         let picked = match row {
@@ -529,7 +549,7 @@ impl ModelPicker {
     fn pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Return before the search has found anything: what it finds first.
         if self.searching.is_some() {
-            self.pick_when_found = true;
+            self.pick_when_found = Some(0);
             return;
         }
         if let Some(row) = self.selected {
@@ -538,21 +558,32 @@ impl ModelPicker {
     }
 
     fn toggle_star(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let (Some(starred), Some(client)) = (self.starred.as_mut(), self.client.clone()) else { return };
+        let Some(starred) = self.starred.as_mut() else { return };
         let entry = &self.catalog.entries[ix];
         let model = entry.starred();
         let on = !starred.iter().any(|each| entry.is(&each.provider_id, &each.id));
-        // Shown at once; the box's list once it's kept.
-        let before = starred.clone();
+        // (Its id as the box keeps it: one starred by another name is unstarred by that.)
+        let sent: Vec<Starred> = if on { vec![model.clone()] } else { starred.iter().filter(|each| entry.is(&each.provider_id, &each.id)).cloned().collect() };
+        // Shown at once; kept by the box in the order made.
         if on {
-            starred.push(model.clone());
+            starred.push(model);
         } else {
             starred.retain(|each| !entry.is(&each.provider_id, &each.id));
         }
-        // (Its id as the box keeps it: one starred by another name is unstarred by that.)
-        let sent: Vec<Starred> = if on { vec![model] } else { before.iter().filter(|each| entry.is(&each.provider_id, &each.id)).cloned().collect() };
         self.problem = None;
+        self.star_queue.push_back((sent, on));
         self.starred_changed(cx);
+        if self.star_sending.is_none() {
+            self.send_star(cx);
+        }
+    }
+
+    /// Sends the next star change waiting; once none waits, what the box says is shown.
+    fn send_star(&mut self, cx: &mut Context<Self>) {
+        let (Some((sent, on)), Some(client)) = (self.star_queue.pop_front(), self.client.clone()) else {
+            self.star_sending = None;
+            return;
+        };
         let task = cx.background_executor().spawn(async move {
             let mut last = Ok(Vec::new());
             for model in sent {
@@ -563,18 +594,25 @@ impl ModelPicker {
             }
             last
         });
-        self.stars.retain(|task| !task.is_ready());
-        self.stars.push(cx.spawn(async move |this, cx| {
+        self.star_sending = Some(cx.spawn(async move |this, cx| {
             let kept = task.await;
             this.update(cx, |this, cx| {
                 match kept {
-                    Ok(now) => this.starred = Some(now),
+                    Ok(now) => {
+                        this.box_starred = now;
+                        if this.star_queue.is_empty() {
+                            this.starred = Some(this.box_starred.clone());
+                        }
+                    }
+                    // What the box has, and none of the changes after this one.
                     Err(error) => {
-                        this.starred = Some(before);
+                        this.star_queue.clear();
+                        this.starred = Some(this.box_starred.clone());
                         this.problem = Some(format!("The star wasn’t kept: {error}").into());
                     }
                 }
                 this.starred_changed(cx);
+                this.send_star(cx);
             })
             .ok();
         }));
@@ -793,15 +831,15 @@ impl Render for ModelPicker {
             .on_action(cx.listener(|this, _: &PreviousRail, _, cx| this.step_rail(-1, cx)))
             .on_action(cx.listener(|this, _: &Pick, window, cx| this.pick(window, cx)))
             .on_action(cx.listener(|_, _: &Close, _, cx| cx.emit(DismissEvent)))
-            .on_action(cx.listener(|this, _: &Row1, window, cx| this.pick_row(0, window, cx)))
-            .on_action(cx.listener(|this, _: &Row2, window, cx| this.pick_row(1, window, cx)))
-            .on_action(cx.listener(|this, _: &Row3, window, cx| this.pick_row(2, window, cx)))
-            .on_action(cx.listener(|this, _: &Row4, window, cx| this.pick_row(3, window, cx)))
-            .on_action(cx.listener(|this, _: &Row5, window, cx| this.pick_row(4, window, cx)))
-            .on_action(cx.listener(|this, _: &Row6, window, cx| this.pick_row(5, window, cx)))
-            .on_action(cx.listener(|this, _: &Row7, window, cx| this.pick_row(6, window, cx)))
-            .on_action(cx.listener(|this, _: &Row8, window, cx| this.pick_row(7, window, cx)))
-            .on_action(cx.listener(|this, _: &Row9, window, cx| this.pick_row(8, window, cx)))
+            .on_action(cx.listener(|this, _: &Row1, window, cx| this.pick_number(0, window, cx)))
+            .on_action(cx.listener(|this, _: &Row2, window, cx| this.pick_number(1, window, cx)))
+            .on_action(cx.listener(|this, _: &Row3, window, cx| this.pick_number(2, window, cx)))
+            .on_action(cx.listener(|this, _: &Row4, window, cx| this.pick_number(3, window, cx)))
+            .on_action(cx.listener(|this, _: &Row5, window, cx| this.pick_number(4, window, cx)))
+            .on_action(cx.listener(|this, _: &Row6, window, cx| this.pick_number(5, window, cx)))
+            .on_action(cx.listener(|this, _: &Row7, window, cx| this.pick_number(6, window, cx)))
+            .on_action(cx.listener(|this, _: &Row8, window, cx| this.pick_number(7, window, cx)))
+            .on_action(cx.listener(|this, _: &Row9, window, cx| this.pick_number(8, window, cx)))
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
             .occlude()
             .flex()
