@@ -40,8 +40,9 @@ const older = async () => {
 
 test("Storage describes decimal units and suggestions while preserving words and confirmations", async () => {
   const page = await shown()
-  expect(page.groups[0].title).toBe("What Agents Made")
-  expect(page.groups[0].rows.map((r: any) => [r.id, r.title, r.line])).toEqual([
+  const made = page.groups.find((g: any) => g.id === "agents-made")
+  expect(made.title).toBe("What Agents Made")
+  expect(made.rows.map((r: any) => [r.id, r.title, r.line])).toEqual([
     ["copies", "Copies of what agents made", "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps."],
     ["older-budget", "Older versions keep up to", "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay."],
     ["older-copies", "Older versions", "None kept."],
@@ -96,6 +97,8 @@ test("Storage refuses an unavailable Clear with its reason and touches no settin
 })
 
 test("Storage events follow the page, old budget route and clear route", async () => {
+  // (Measured first, so the measure coming in isn't one of the changes followed.)
+  await (await import("../src/link/areas/storage-sizes")).measureSizes()
   const events = follow(handler, "kuvo/settings/storage/events")
   try {
     let page = await events.next()
@@ -113,11 +116,12 @@ test("Storage events follow the page, old budget route and clear route", async (
   } finally { events.stop() }
 })
 
-test("Storage does not invent rows when the bridge is unavailable", async () => {
+test("Storage does not invent what agents made when the bridge is unavailable, and shows the rest", async () => {
   const offline = engineHandler(noEngine as any, { name: "test" }, noEngine as any)
   const page = (await ask(offline, "GET", "kuvo/settings/storage")).json
-  expect(page.groups).toEqual([])
+  expect(page.groups.map((g: any) => g.id)).toEqual(["computer", "folders", "manage"])
   expect(page.notes[0].tone).toBe("warning")
+  expect(page.notes[0].words).toStartWith("What agents made couldn’t be read")
 })
 
 
@@ -198,4 +202,54 @@ test("New storage budgets preserve the existing binary default and use the same 
   expect(small.value / small.unit.factor).toBe(4)
   expect((await change(small, small.value)).status).toBe(200)
   expect(store.storage().budget).toBe(4_000_000)
+})
+
+test("Storage measures what Kuvo keeps: the whole as parts, Kuvo's folder, Refresh, and the pages that clear the rest", async () => {
+  const { measureSizes, SIZES_FILE } = await import("../src/link/areas/storage-sizes")
+  const { K, ENGINE_DATA } = await import("../src/link/home")
+  // (Any measure begun by an earlier read finished first, so this one starts from none.)
+  await measureSizes()
+  rmSync(SIZES_FILE, { force: true })
+  const { mkdirSync } = await import("node:fs")
+  mkdirSync(join(ENGINE_DATA, "worktree", "tree"), { recursive: true })
+  writeFileSync(join(ENGINE_DATA, "worktree", "tree", "big"), Buffer.alloc(300_000))
+  mkdirSync(join(K, "browser"), { recursive: true })
+  writeFileSync(join(K, "browser", "profile"), Buffer.alloc(100_000))
+  mkdirSync(join(K, "engine"), { recursive: true })
+  writeFileSync(join(K, "engine", "opencode"), Buffer.alloc(200_000))
+  // As it's first read: measuring, said, with no parts yet; the page follows once it's in.
+  let page = await shown()
+  let used = row(page, "used")
+  expect([used.kind, used.title, used.busy, used.parts]).toEqual(["meter", "Measuring what Kuvo keeps…", "Measuring…", undefined])
+  // (Asked as the app beside its box asks: "This Mac", or "This Computer" on Linux.)
+  const mac = process.platform === "darwin"
+  expect(page.groups[0]).toMatchObject({ id: "computer", title: mac ? "This Mac" : "This Computer", note: `What Kuvo keeps on ${mac ? "this Mac" : "this computer"}.` })
+  await measureSizes()
+  page = await shown()
+  used = row(page, "used")
+  expect(used.title).toMatch(/^[\d.]+ (KB|MB) used by Kuvo$/)
+  expect(used.busy).toBeUndefined()
+  expect(used.actions.map((a: any) => [a.id, a.title])).toEqual([["refresh", "Refresh"]])
+  const part = (id: string) => used.parts.find((p: any) => p.id === id)
+  expect(used.parts.map((p: any) => p.id)).toEqual(["sessions", "worktrees", "made", "browser", "other"])
+  expect(part("worktrees").value).toBeGreaterThanOrEqual(300_000)
+  expect(part("browser").value).toBeGreaterThanOrEqual(100_000)
+  // (Worktrees in the engine's data are counted once, as worktrees, not as sessions too.)
+  expect(part("sessions").value).toBeLessThan(300_000)
+  expect(part("other").parts.find((p: any) => p.title === "The engine").value).toBeGreaterThanOrEqual(200_000)
+  expect(used.parts.every((p: any) => typeof p.words === "string")).toBe(true)
+  // Kuvo's folder with its size; Show in Finder only to the app beside a Mac's box.
+  const { IS_MAC } = await import("../src/link/home")
+  const home = row(page, "home-folder")
+  expect([home.title, home.kind, home.value]).toEqual(["Kuvo’s folder", IS_MAC ? "actions" : "status", (await import("../src/link/areas/storage-sizes")).readSizes()!.home])
+  if (IS_MAC) expect(home.actions[0]).toMatchObject({ title: "Show in Finder", opens: `file://${encodeURI(K)}` })
+  expect(row(page, "manage-worktrees")).toMatchObject({ kind: "open", section: "worktrees" })
+  expect(row(page, "manage-archived")).toMatchObject({ kind: "open", section: "archived" })
+  // Refresh measures again: answered at once, the page saying it's measuring.
+  writeFileSync(join(K, "browser", "more"), Buffer.alloc(400_000))
+  const refreshed = await ask(handler, "POST", "kuvo/settings/storage/used/refresh", { was: used.revision })
+  expect(refreshed.status).toBe(200)
+  expect(row(refreshed.json, "used").busy).toBe("Measuring…")
+  await measureSizes()
+  expect(row(await shown(), "used").parts.find((p: any) => p.id === "browser").value).toBeGreaterThanOrEqual(500_000)
 })

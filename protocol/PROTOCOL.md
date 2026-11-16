@@ -8738,10 +8738,17 @@ so a client still on those (the phone) sees every change kept just as they keep 
   | `status` | `value`: words, or a number with `unit?: {name, factor, decimals, rounding: "nearest"}` | The words or formatted file size, on the right |
   | `actions` | `actions` | Buttons (past one, a menu) |
   | `list` | `items`: rows; `add?`: an action; `empty?`: words for none; `search?: {placeholder, empty}` | The rows in its card, or its `empty` words |
-  | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970) | Usage windows |
+  | `meter` | `windows: [{title, used, resets?}]` (`used` 0 to 1, `resets` ms since 1970); or `parts: [{id, title, value, words, parts?}]`, a whole by its parts (`value` its measure, bytes for storage; `words` "1.2 GB"; `parts` what one is made of, `{title, value, words}`), with `actions?` (Refresh) | Usage windows; or the parts as one bar in the client's own colours, a legend of each part's title and words, what each is made of behind a disclosure, and the row's title and actions over it |
   | `open` | `section` (this box's) or `address` | A row with › |
   | `steps` | `start`: an action | A flow the box leads (to come, with Accounts) |
   | `custom` | `name` | What only an installed app draws; any other client shows its `can`'s why |
+
+  How a client lays them out (the desktop app; others alike where it fits): one card per group,
+  each row its title and line on the left and its control on the right; a field is saved as you
+  press Return or leave it, never with a button of its own (its row's revision still holds: a
+  stale change is refused and said); a `text` row with `lines` alone in its group is written full
+  width under the group's title and note, its own title not repeated; a group whose one row is a
+  `meter` with `parts` is drawn on the page itself, no card; an `open` row is pressed whole.
 
   List search matches the list title or each item’s title or line, case-insensitively. A matching
   list title keeps every item. With no matches, replace `{query}` in `search.empty` with the typed query.
@@ -8881,9 +8888,10 @@ The sections now:
   site out and leaves the rest as they are then): `kuvo/browser/settings`,
   the box's browser. How the side panel's own browser keeps its data is each client's.
 
-- **Git** (`git`): Branches (`branch-prefix`, “Branch prefix”), Commit Messages
-  (`commit-instructions`, “Instructions”) and Pull Requests (`pull-request-instructions`,
-  “Instructions”), all `text` rows wrapping `kuvo/config`'s `branch_prefix`,
+- **Git** (`git`): a group with no heading (`branch-prefix`, “Branch prefix”), then Commit
+  Instructions (`commit-instructions`) and Pull Request Instructions (`pull-request-instructions`),
+  each a `text` row with `lines` alone in its group (written full width under the group's title and
+  note), all wrapping `kuvo/config`'s `branch_prefix`,
   `commit_instructions` and `pull_request_instructions`. An unset prefix shows `kuvo/`;
   empty text means no prefix. Page writes clean the prefix as git uses it and trim instructions;
   the old config route stays unchanged. Instructions are added when suggesting a commit message or
@@ -8891,9 +8899,12 @@ The sections now:
   leaving unrelated fields alone. Unavailable settings say why in `can`. Page events follow
   config changes, including the old Git settings migration route.
 
-- **Worktrees** (`worktrees`): New Projects (`projects-folder`, Folder), New Worktrees
-  (`worktrees-folder`, Folder, and the resolved places), and Worktrees (a list with Remove…,
-  confirmed with the box's words). Folder rows accept text; empty clears the choice.
+- **Worktrees** (`worktrees`): a group with no heading: `worktrees-folder` (“Worktree folder”, its
+  placeholder the default folder, `~`-shortened; empty text goes back to it), a project's place
+  only where it goes elsewhere or needs you (a folder that can't be made, one inside its
+  repository; at most five, then how many more), and `projects-folder` (“New projects folder”);
+  then Sessions’ Worktrees (`worktrees`, a list with Remove…, confirmed with the box's words).
+  Folder rows accept text; empty clears the choice.
   Project folders wrap `kuvo/work/settings`, worktree folders `kuvo/config`, and removal
   `kuvo/worktrees/remove`. Sources that cannot be read give no rows and a warning.
   Polling each second covers the settings, project and worktree records, engine lists and
@@ -8905,9 +8916,21 @@ The sections now:
   removals of one root share a turn across box processes and compare the record and git facts before removal. Absent `was`
   keeps its old behavior. A mismatch answers the same 409, mapped to a stale page.
 
-- **Storage** (`storage`): the box-backed What Agents Made group only: copies (status in bytes),
+- **Storage** (`storage`): first the computer (its group titled as `computer`'s page is, “What Kuvo
+  keeps on this Mac.”): `used`, a `meter` titled “1.2 GB used by Kuvo” with `parts` (`sessions`,
+  the engine's data, chats and attachments without worktrees; `worktrees`, the default folder and
+  one chosen, inside Kuvo's folder or not; `made`, `~/.kuvo-code/artifacts`; `browser`; `other`, the
+  rest of Kuvo's folder, its `parts` each of its folders by name), `busy` “Measuring…” while it's
+  measured, and `refresh` (measures again; answered at once, the page following). Measured with
+  `du` off the event loop as the page is first read and again once it's an hour old, kept in
+  `run/storage-sizes.json` so every process of the box shows the last one; until the first is in,
+  the row has no `parts` and says it's measuring. Storage by Folder: `home-folder` (Kuvo's folder,
+  `~`-shortened, its size as a number with `unit`) and `worktree-folder-<n>` for a chosen worktree
+  folder outside it; to the app beside a Mac's box, each with Show in Finder (`opens` its
+  `file://` address), else a `status`. Then What Agents Made: copies (status in bytes),
   older-budget (number in bytes, with decimal suggestions of 0.25, 0.5, 1, 2, 5 and 10 GB and confirmation when
-  lowering below what older copies take), and older-copies (Clear…, with confirmation).
+  lowering below what older copies take), and older-copies (Clear…, with confirmation); then
+  `manage-worktrees` and `manage-archived`, `open` rows to those sections.
   `POST kuvo/artifacts/storage {budget, was?, wasOlder?, confirmed?}` compares optional `was` with the budget
   and `wasOlder` with older copies’ bytes atomically before
   setting it. Every budget write is guarded in the store: below the current older copies’ bytes,
@@ -8917,9 +8940,9 @@ The sections now:
   clearing. Mismatches answer `409 {message: "It changed since you read it."}`. Both checks and
   writes run synchronously in the bridge's event loop. Without `was`, revision checking is omitted; the confirmation requirement still applies.
   Page writes floor byte counts as the store does. Polling each second reads the bridge again,
-  covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
-  The native Mac-only measurement, session cleanup links and log/download deletion groups have
-  no box routes and are not included here.
+  covering its settings, copies and live disk usage. An unavailable bridge gives no What Agents
+  Made rows and a warning; the rest of the page stays. Log and download deletion have no box
+  routes and are not included here.
 
 - **MCP Servers** (`mcp`, group `Agents & Tools`, the first flow section): Servers (`servers`, a
   `list` of `server-<name>`, your servers in the engine's settings' `mcp.servers`: not Kuvo's own
