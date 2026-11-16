@@ -5399,7 +5399,7 @@ async function* modelsStarredRoute({ request, json }) {
   }
   return yield* json(200, { starred: setStarred(given, given.starred) });
 }
-var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, MOST3 = 200, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && typeof value.id === "string" && value.id !== "", same2 = (a, b) => a.providerID === b.providerID && a.id === b.id;
+var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, MOST3 = 200, LONGEST = 300, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST, same2 = (a, b) => a.providerID === b.providerID && a.id === b.id;
 var init_models_starred = __esm(() => {
   init_files2();
   init_home();
@@ -42329,7 +42329,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "eb57502f75ec";
+var BRIDGE_VERSION = "155c3c747683";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -43705,14 +43705,14 @@ init_state();
 init_home();
 import fs136 from "node:fs";
 import path146 from "node:path";
-var LONGEST = 320;
+var LONGEST2 = 320;
 var MOST_HOSTS = 50;
 var THIS_COMPUTER = "this-mac.localhost";
 var cleanAddress = (given) => typeof given === "string" ? given.replace(/^[ \t]+|[ \t]+$/g, "") : "";
 function addressProblem(address) {
   if (!address)
     return "Give a host name, or user@host.";
-  if (address.length > LONGEST)
+  if (address.length > LONGEST2)
     return "That's too long for a host's name.";
   if (address.startsWith("-") || /[\s/:]/.test(address) || !/^[A-Za-z0-9._@%+=,~-]+$/.test(address) || (address.match(/@/g) ?? []).length > 1 || address.startsWith("@") || address.endsWith("@")) {
     return "Give a host name, or user@host. For a port or an IPv6 address, add a Host for the machine to ~/.ssh/config and give its name.";
@@ -44034,7 +44034,7 @@ var SIGN_REQUEST = 13;
 var SIGN_RESPONSE = 14;
 var RSA_SHA2_256 = 2;
 var RSA_SHA2_512 = 4;
-var LONGEST2 = 256 * 1024;
+var LONGEST3 = 256 * 1024;
 
 class Reader {
   data;
@@ -44245,7 +44245,7 @@ function serveAgent(socket, source) {
       held = Buffer.concat([held, chunk]);
       while (held.length >= 4) {
         const length = held.readUInt32BE(0);
-        if (length === 0 || length > LONGEST2 || waiting >= WAITING2)
+        if (length === 0 || length > LONGEST3 || waiting >= WAITING2)
           return void connection.destroy();
         if (held.length < 4 + length)
           break;
