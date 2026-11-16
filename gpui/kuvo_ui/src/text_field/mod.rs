@@ -422,6 +422,17 @@ impl TextField {
     }
 
     /// Selects a range of the text, in bytes (clamped to the text and to character bounds).
+    /// Writes `words` where you're writing (in place of what's selected), set apart from the words
+    /// beside them by a space, the caret after them: as a picture attached names itself.
+    pub fn write(&mut self, words: &str, cx: &mut Context<Self>) {
+        let range = self.selection.clone();
+        let before = self.content[..range.start].chars().next_back();
+        let after = self.content[range.end..].chars().next();
+        let lead = if before.is_some_and(|c| !c.is_whitespace()) { " " } else { "" };
+        let trail = if after.is_some_and(char::is_whitespace) { "" } else { " " };
+        self.edit(range, &format!("{lead}{words}{trail}"), EditKind::Other, cx);
+    }
+
     pub fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
         let clamp = |mut ix: usize| {
             ix = ix.min(self.content.len());

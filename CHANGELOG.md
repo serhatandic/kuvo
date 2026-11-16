@@ -9,6 +9,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Your settings now lists the keyboard shortcuts Kuvo uses, lets you choose the Side Panel’s first tab, and keeps your anonymous usage choice under Privacy. Nothing is sent yet.
 
 - In the desktop app, ⌘V in the composer attaches a copied screenshot or picture, and files copied in the Finder, as 0.7 did, instead of doing nothing or pasting their names.
+- In the desktop app, files and pictures you attach to a conversation on another computer now reach it: they go with the message, as from the iPhone, instead of as paths on your Mac that the other computer can't open. If one can't be sent, the message says so, with **Retry**. Each picture you attach is named where you're writing ([Image 1], [Image 2]…), as in 0.7, so you and the agent can say which one you mean. A picture dragged from Notes no longer makes macOS say Kuvo is accessing another app's data.
 - In the desktop app, what you send shows in the conversation at once, marked Sending…, rather than a few seconds later. If it can't be sent, it stays there saying why, with **Retry** and **Edit**.
 - Updating Kuvo on your Mac, or on a computer it set up, tries again by itself when a download drops or a try fails before anything changed, rather than waiting for you to tap Try Again.
 - Text carets blink while typing fields are focused, project folders keep open or closed folder icons in Sessions, and a title-bar button or ⌘B shows or hides the sidebar (⌘0 still works).

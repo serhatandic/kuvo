@@ -84,16 +84,56 @@ fn engine_bytes(image: &Image) -> Option<(Vec<u8>, &'static str)> {
     }
 }
 
-/// Pictures pasted more than `KEPT_FOR` ago, let go. Only this folder's own ("Pasted Image …").
+/// What was kept here more than `KEPT_FOR` ago, let go: pictures pasted, and copies of files
+/// attached from another app's data (each in a folder of its own).
 fn let_old_go(folder: &Path, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(folder) else { return };
     for entry in entries.flatten() {
-        let ours = entry.file_name().to_string_lossy().starts_with("Pasted Image ");
         let old = entry.metadata().ok().and_then(|meta| meta.modified().ok()).and_then(|at| now.duration_since(at).ok()).is_some_and(|age| age > KEPT_FOR);
-        if ours && old && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+        let Ok(kind) = entry.file_type() else { continue };
+        if !old {
+            continue;
+        }
+        if kind.is_file() && entry.file_name().to_string_lossy().starts_with("Pasted Image ") {
             let _ = std::fs::remove_file(entry.path());
+        } else if kind.is_dir() && entry.file_name().to_string_lossy().starts_with("copy-") {
+            let _ = std::fs::remove_dir_all(entry.path());
         }
     }
+}
+
+/// Whether `path` is in another app's data (`~/Library`: Notes' pictures, Mail's, Messages'),
+/// which macOS asks you about when Kuvo reads it later.
+pub fn is_another_apps(path: &Path) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else { return false };
+    path.starts_with(home.join("Library"))
+}
+
+/// A copy of `path` kept in `folder` (a folder of its own there, so it keeps its name), read now,
+/// while you hand it over. What went wrong, in plain words, where it couldn't be.
+pub fn keep_copy(path: &Path, folder: &Path, now: SystemTime) -> Result<PathBuf, String> {
+    let name = path.file_name().ok_or_else(|| "That file couldn’t be read.".to_owned())?;
+    std::fs::create_dir_all(folder).map_err(|_| "That file couldn’t be kept to attach.".to_owned())?;
+    let_old_go(folder, now);
+    let stamp = now.duration_since(SystemTime::UNIX_EPOCH).map(|since| since.as_nanos()).unwrap_or(0);
+    for n in 0.. {
+        let own = folder.join(format!("copy-{stamp}-{n}"));
+        match std::fs::create_dir(&own) {
+            Ok(()) => {
+                let copy = own.join(name);
+                return match std::fs::copy(path, &copy) {
+                    Ok(_) => Ok(copy),
+                    Err(_) => {
+                        let _ = std::fs::remove_dir_all(&own);
+                        Err("That file couldn’t be read.".to_owned())
+                    }
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("That file couldn’t be kept to attach.".to_owned()),
+        }
+    }
+    unreachable!("a free folder is always found")
 }
 
 /// `now` on this computer's clock: "2026-11-16 at 15.32.10".
@@ -178,6 +218,22 @@ mod tests {
         save(&Image::from_bytes(ImageFormat::Png, png(1, 1, false)), folder.path(), later).unwrap();
         assert!(!old.exists());
         assert!(yours.exists());
+    }
+
+    #[test]
+    fn a_file_from_another_apps_data_is_copied_once_under_its_own_name() {
+        let folder = tempfile::tempdir().unwrap();
+        let notes = tempfile::tempdir().unwrap();
+        let picture = notes.path().join("Pasted Graphic 3.png");
+        std::fs::write(&picture, b"png").unwrap();
+        let copy = keep_copy(&picture, folder.path(), SystemTime::now()).unwrap();
+        assert_eq!(copy.file_name().unwrap(), "Pasted Graphic 3.png");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"png");
+        let again = keep_copy(&picture, folder.path(), SystemTime::now()).unwrap();
+        assert_ne!(copy, again, "each in a folder of its own");
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap();
+        assert!(is_another_apps(&home.join("Library/Group Containers/group.com.apple.notes/x.png")));
+        assert!(!is_another_apps(&home.join("Desktop/x.png")));
     }
 
     #[test]

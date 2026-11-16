@@ -47,6 +47,8 @@ pub enum Block {
     Code { language: String, code: String },
     Table { header: Vec<Inline>, rows: Vec<Vec<Inline>> },
     Rule,
+    /// A picture (`![alt](url)`), on a line of its own: its owner draws it (`Markdown::pictures`).
+    Image { url: String, alt: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -93,6 +95,7 @@ pub fn parse(source: &str) -> Vec<Block> {
     let (mut bold, mut italic, mut strike) = (0, 0, 0);
     let mut link: Option<(usize, String)> = None;
     let mut code: Option<(String, String)> = None;
+    let mut image: Option<(String, String)> = None;
 
     fn flush(stack: &mut [Container], inline: &mut Option<(InlineKind, Inline)>) {
         if let Some((kind, text)) = inline.take() {
@@ -108,6 +111,28 @@ pub fn parse(source: &str) -> Vec<Block> {
     }
 
     for event in Parser::new_ext(source, options) {
+        // A picture's words are its alt text, not the paragraph's.
+        if let Some((_, alt)) = image.as_mut() {
+            match &event {
+                Event::Text(text) | Event::Code(text) => {
+                    alt.push_str(text);
+                    continue;
+                }
+                Event::End(TagEnd::Image) => {
+                    let (url, alt) = image.take().unwrap_or_default();
+                    if let Some(top) = stack.last_mut() {
+                        top.push(Block::Image { url, alt });
+                    }
+                    continue;
+                }
+                _ => continue,
+            }
+        }
+        if let Event::Start(Tag::Image { dest_url, .. }) = &event {
+            flush(&mut stack, &mut inline);
+            image = Some((dest_url.to_string(), String::new()));
+            continue;
+        }
         match event {
             Event::Start(Tag::Paragraph) => {
                 flush(&mut stack, &mut inline);
@@ -286,7 +311,11 @@ pub struct Markdown {
     id: ElementId,
     blocks: Vec<Block>,
     selectable: Option<Selectable>,
+    pictures: Option<Pictures>,
 }
+
+/// What draws a markdown's pictures, given each one's address and alt text.
+pub type Pictures = std::rc::Rc<dyn Fn(&str, &str, &App) -> AnyElement>;
 
 /// Where a markdown's text sits in its transcript's selection: the state, the row, and the path
 /// its blocks' paths go under ([`units`] gives the same paths).
@@ -312,7 +341,13 @@ impl Selectable {
 
 impl Markdown {
     pub fn new(id: impl Into<ElementId>, source: &str) -> Self {
-        Self { id: id.into(), blocks: parse(source), selectable: None }
+        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None }
+    }
+
+    /// Draws its pictures with `draw` (else each shows as its alt text).
+    pub fn pictures(mut self, draw: Pictures) -> Self {
+        self.pictures = Some(draw);
+        self
     }
 
     /// Its text selectable in a transcript.
@@ -326,7 +361,7 @@ impl RenderOnce for Markdown {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors.clone();
         let mut path = Vec::new();
-        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref() };
+        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), cx };
         blocks(&draw, &mut path, &self.blocks, TextLevel::Normal)
             .text_ui(TypeSize::Body)
             .text_color(colors.text)
@@ -338,6 +373,8 @@ struct Draw<'a> {
     id: &'a ElementId,
     c: &'a Colors,
     sel: Option<&'a Selectable>,
+    pictures: Option<&'a Pictures>,
+    cx: &'a App,
 }
 
 impl Draw<'_> {
@@ -394,10 +431,29 @@ fn collect(blocks: &[Block], path: &mut Vec<u32>, first: Lead, rest: Lead, depth
                     path.pop();
                 }
             }
-            Block::Rule => {}
+            Block::Rule | Block::Image { .. } => {}
         }
         path.pop();
     }
+}
+
+/// The pictures markdown `source` shows (`![alt](url)`), in order: their addresses.
+pub fn images(source: &str) -> Vec<String> {
+    fn walk(blocks: &[Block], out: &mut Vec<String>) {
+        for block in blocks {
+            match block {
+                Block::Image { url, .. } => out.push(url.clone()),
+                Block::Quote(inner) => walk(inner, out),
+                Block::List { items, .. } => items.iter().for_each(|item| walk(&item.blocks, out)),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if source.contains("![") {
+        walk(&parse(source), &mut out);
+    }
+    out
 }
 
 #[derive(Clone, Copy)]
@@ -471,6 +527,11 @@ fn block(d: &Draw, path: &mut Vec<u32>, block: &Block, level: TextLevel, first: 
             CodeBlock::new(element_id(id, path), code.clone()).language(language.clone()).selectable(d.unit(path)).into_any_element()
         }
         Block::Rule => div().h(px(1.)).my(space::S1).bg(c.border).into_any_element(),
+        Block::Image { url, alt } => match d.pictures {
+            Some(draw) => draw(url, alt, d.cx),
+            // (Nothing to draw it with: its words, as written.)
+            None => div().text_color(c.text_muted).child(if alt.is_empty() { url.clone() } else { alt.clone() }).into_any_element(),
+        },
         Block::Table { header, rows } => {
             // Columns share the width by how much they hold (a path column gets more than a
             // count column), within limits so none collapses.

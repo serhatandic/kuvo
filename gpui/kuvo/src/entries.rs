@@ -12,7 +12,9 @@ use gpui::{
     prelude::FluentBuilder as _, px, relative,
 };
 use kuvo_box::messages::{Content, Message, Step};
-use kuvo_box::{Conversation, Parts};
+use kuvo_box::{Conversation, Parts, pictures};
+
+use crate::pictures::Looks;
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     markdown::{self, Markdown, Selectable},
@@ -122,6 +124,11 @@ fn shows(step: &Step) -> bool {
 /// The widest a conversation's column gets: it stays readable in a wide window.
 pub const COLUMN: f32 = 720.;
 
+/// How large pictures are drawn, as 0.7 drew them: one a step brought (one alone, several), and
+/// one of yours (one alone, several).
+const MADE: ((f32, f32), (f32, f32)) = ((560., 420.), (300., 200.));
+const YOURS: ((f32, f32), (f32, f32)) = ((360., 220.), (240., 140.));
+
 /// What's opened in a conversation, each by its step's id and which of the step's blocks it is:
 /// a thinking block, a tool step showing what it printed or changed, or that output (or one of its
 /// files' changes) shown whole rather than folded.
@@ -151,6 +158,7 @@ pub fn render(
     toggle: impl Fn(Fold, &mut App) + Clone + 'static,
     own: AnyElement,
     selection: &SelectionState,
+    looks: &Looks,
     cx: &App,
 ) -> AnyElement {
     let body: AnyElement = match entry {
@@ -159,7 +167,8 @@ pub fn render(
             let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
             outgoing(ix, words, files, failed.as_deref(), sel, own, cx)
         }
-        Entry::Message(message) => message_body(ix, entry.key(), message, open, toggle, selection, cx),
+        // (What its view draws under it: the files sent with yours, while its copy has none.)
+        Entry::Message(message) => div().child(message_body(ix, entry.key(), message, open, toggle, selection, looks, cx)).child(own).into_any_element(),
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
     };
@@ -175,12 +184,22 @@ pub fn message_body(
     open: &HashSet<Fold>,
     toggle: impl Fn(Fold, &mut App) + Clone + 'static,
     selection: &SelectionState,
+    looks: &Looks,
     cx: &App,
 ) -> AnyElement {
     let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(key.to_owned()), base);
     match message {
-        Message::User(user) => user_message(ix, &user.parts(), sel(&[]), cx),
-        Message::Assistant(step) => agent_step(step, open, toggle, &sel, cx),
+        // The pictures it carried, under its words.
+        Message::User(user) => {
+            let shown = pictures::of_user(user);
+            let words = user_message(ix, &user.parts(), sel(&[]), cx);
+            if shown.is_empty() {
+                words
+            } else {
+                div().flex().flex_col().items_end().gap(space::S1_5).child(words).child(crate::pictures::pictures(&shown, YOURS.0, YOURS.1, looks, cx)).into_any_element()
+            }
+        }
+        Message::Assistant(step) => agent_step(step, open, toggle, &sel, looks, cx),
         Message::System(note) => quiet_line(note.text.lines().next().unwrap_or("").to_owned(), cx),
         Message::Shell(run) => shell_run(run, open, toggle, &sel, cx),
         Message::Other { kind, raw, .. } if kind == "compaction" => quiet_line(raw["title"].as_str().unwrap_or_default().to_owned(), cx),
@@ -298,7 +317,8 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     }
     let keyword = parts.keyword.clone().map(|keyword| Chip::new(("keyword", ix), keyword).icon(IconName::Sparkle).tone(ChipTone::Accent));
     let mut below: Vec<AnyElement> = Vec::new();
-    for (n, path) in parts.paths.iter().enumerate() {
+    // (Pictures it sent as paths show as pictures.)
+    for (n, path) in parts.paths.iter().enumerate().filter(|(_, path)| !pictures::is_picture_path(path)) {
         below.push(Chip::new(("path", ix * 1000 + n), short_path(path)).icon(IconName::File).into_any_element());
     }
     if !parts.comments.is_empty() {
@@ -340,7 +360,7 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
         .into_any_element()
 }
 
-fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
+fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, looks: &Looks, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let chevron = |opened: bool| Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint);
     let mut blocks: Vec<AnyElement> = Vec::new();
@@ -349,7 +369,12 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
         let part = n as u32;
         match content {
             Content::Text(text) if !text.trim().is_empty() => {
-                blocks.push(div().child(Markdown::new(SharedString::from(key), text).selectable(sel(&[part]))).into_any_element());
+                let mut words = Markdown::new(SharedString::from(key), text).selectable(sel(&[part]));
+                // (Pictures written in its words, drawn as the conversation reads them.)
+                if text.contains("![") {
+                    words = words.pictures(crate::pictures::words_pictures(&step.id, n, text, MADE.0, looks));
+                }
+                blocks.push(div().child(words).into_any_element());
             }
             Content::Reasoning { text, done } => {
                 let fold = Fold::Thinking(step.id.clone(), n);
@@ -388,18 +413,21 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
                 let failed = status == "failed" || status == "error";
                 let (icon, label, target) = tool_label(name, state, busy);
                 let shown = details(name, state);
+                // (What it brought back for itself: pictures inside it, once it's opened.)
+                let own = pictures::of_step_own(&format!("{}:{n}", step.id), name, state);
                 let fold = Fold::Step(step.id.clone(), n);
-                let opened = shown.is_some() && open.contains(&fold);
+                let opens = shown.is_some() || !own.is_empty();
+                let opened = opens && open.contains(&fold);
                 let mut row = step_row(SharedString::from(format!("tool-{key}")), icon, label, target, busy, failed, cx);
                 // One with something to show opens to it.
-                if let Some(shown) = &shown {
+                if opens {
                     let toggle = toggle.clone();
                     let fold = fold.clone();
                     row = row
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.8))
                         .on_click(move |_, _, cx| toggle(fold.clone(), cx))
-                        .children(shown.counts().map(|(added, removed)| counts(added, removed, cx)))
+                        .children(shown.as_ref().and_then(Details::counts).map(|(added, removed)| counts(added, removed, cx)))
                         .child(chevron(opened));
                 }
                 blocks.push(row.into_any_element());
@@ -408,6 +436,14 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
                 }
                 if let (true, Some(shown)) = (opened, shown) {
                     blocks.push(div().ml(px(22.)).child(details_view(&key, step, n, shown, open, toggle.clone(), sel)).into_any_element());
+                }
+                if opened && !own.is_empty() {
+                    blocks.push(div().ml(px(22.)).child(crate::pictures::pictures(&own, MADE.1, MADE.1, looks, cx)).into_any_element());
+                }
+                // A picture it made, showed you, or took of a page to show you: large, in the flow.
+                let made = pictures::of_step(&format!("{}:{n}", step.id), name, state);
+                if !made.is_empty() {
+                    blocks.push(crate::pictures::pictures(&made, MADE.0, MADE.1, looks, cx));
                 }
             }
             _ => {}

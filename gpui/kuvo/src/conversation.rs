@@ -2,7 +2,7 @@
 //! reading earlier messages as you scroll back to them, with the composer under it.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
@@ -24,6 +24,9 @@ use kuvo_ui::{
 
 use crate::ask_card::AskCard;
 use crate::composer::{Composer, ComposerEvent};
+use crate::pictures::{self, Looks, Read};
+use kuvo_box::messages::{Content, Message};
+use kuvo_box::pictures::Picture;
 use crate::entries::{self, COLUMN, Entry, Fold};
 use crate::work_bars::WorkBars;
 
@@ -83,6 +86,11 @@ pub struct ConversationView {
     tasks: Vec<Task<()>>,
     /// Yours on its way, drawn again as the composer says it changed.
     _outgoing: Subscription,
+    /// Its pictures as read, by where their bytes are (each read once).
+    pictures: HashMap<String, Read>,
+    /// The picture opened over it, by its id, and the keyboard for it (← →, Escape).
+    viewing: Option<String>,
+    viewer_focus: FocusHandle,
 }
 
 impl Focusable for ConversationView {
@@ -133,6 +141,9 @@ impl ConversationView {
             _queue_follow: None,
             tasks: Vec::new(),
             _outgoing: outgoing,
+            pictures: HashMap::new(),
+            viewing: None,
+            viewer_focus: cx.focus_handle(),
         };
         if live {
             let follow = Rc::new(client.follow_conversation(&session, Timing::default()));
@@ -286,7 +297,7 @@ impl ConversationView {
         self.queue = queue;
         self.queue_failed = None;
         if !held.is_empty() {
-            self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id), cx));
+            self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id).then_some(true), cx));
         }
         cx.notify();
     }
@@ -302,7 +313,7 @@ impl ConversationView {
     /// run under way, which stays last).
     fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
         let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
-        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().map(Entry::outgoing).unzip();
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().filter(|outgoing| !outgoing.arrived).map(Entry::outgoing).unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);
         (rows, revisions)
@@ -411,12 +422,24 @@ impl ConversationView {
                 self.models_changed = Some(models_changed);
                 self.earlier = conversation.earlier.clone();
                 self.read = true;
-                // Yours on their way that it has now: its copy takes their place.
-                let has: HashSet<&str> = conversation.messages.iter().map(|message| message.id()).collect();
-                self.composer.update(cx, |composer, cx| composer.arrived(|id| has.contains(id), cx));
+                // Yours on their way that it has now: its copy takes their place (keeping the files
+                // sent with it shown, where its copy came without them).
+                let has: HashMap<&str, bool> = conversation
+                    .messages
+                    .iter()
+                    .map(|message| {
+                        let carries = match message {
+                            Message::User(user) => !user.files.is_empty() || !user.parts().paths.is_empty(),
+                            _ => true,
+                        };
+                        (message.id(), carries)
+                    })
+                    .collect();
+                self.composer.update(cx, |composer, cx| composer.arrived(|id| has.get(id).copied(), cx));
                 let (rows, revisions) = entries::entries(conversation);
                 let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
                 self.show(rows, revisions);
+                self.read_pictures(cx);
                 self.composer.update(cx, |composer, cx| {
                     composer.set_running(running, cx);
                     composer.set_place(place, cx);
@@ -524,6 +547,132 @@ impl ConversationView {
         debug_assert_eq!(state.item_count(), self.entries.len());
     }
 
+    /// The pictures a row shows: a message of yours carried, a step brought to show you or wrote
+    /// in its words, and those a step opened (`open`) brought back for itself.
+    fn pictures_of(entry: &Entry, open: &HashSet<Fold>) -> Vec<Picture> {
+        match entry {
+            Entry::Message(message) => match &**message {
+                Message::User(user) => kuvo_box::pictures::of_user(user),
+                Message::Assistant(step) => step
+                    .content
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(n, content)| match content {
+                        Content::Tool { name, state, .. } => {
+                            let at = format!("{}:{n}", step.id);
+                            let mut all = kuvo_box::pictures::of_step(&at, name, state);
+                            if open.contains(&Fold::Step(step.id.clone(), n)) {
+                                all.extend(kuvo_box::pictures::of_step_own(&at, name, state));
+                            }
+                            all
+                        }
+                        Content::Text(text) => pictures::in_words(&step.id, n, text),
+                        _ => Vec::new(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Every picture it shows, in order: what one opened goes among.
+    pub fn all_pictures(&self) -> Vec<Picture> {
+        self.entries.iter().flat_map(|entry| Self::pictures_of(entry, &self.open)).collect()
+    }
+
+    /// Reads the pictures shown that aren't read yet, each once, off the UI thread: from the
+    /// message, or from the computer the conversation runs on. Their rows are drawn again as they come.
+    fn read_pictures(&mut self, cx: &mut Context<Self>) {
+        for picture in self.all_pictures() {
+            let key = picture.source.key().to_owned();
+            if self.pictures.contains_key(&key) {
+                continue;
+            }
+            self.pictures.insert(key.clone(), Read::Reading);
+            let (client, source) = (self.client.clone(), picture.source.clone());
+            let task = cx.background_executor().spawn(async move { pictures::read(&client, &source) });
+            self.tasks.retain(|task| !task.is_ready());
+            self.tasks.push(cx.spawn(async move |this, cx| {
+                let read = task.await;
+                this.update(cx, |this, cx| {
+                    this.pictures.insert(key.clone(), read);
+                    for (ix, entry) in this.entries.iter().enumerate() {
+                        if Self::pictures_of(entry, &this.open).iter().any(|picture| picture.source.key() == key) {
+                            this.list.changed(ix);
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
+    }
+
+    /// Opens picture `id` over the conversation.
+    pub fn open_picture(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewing = Some(id.to_owned());
+        window.focus(&self.viewer_focus, cx);
+        cx.notify();
+    }
+
+    /// The picture opened, if any.
+    pub fn viewing(&self) -> Option<&str> {
+        self.viewing.as_deref()
+    }
+
+    fn close_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewing = None;
+        let focus = self.composer.focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// The one before (`by` -1) or after (1) the picture opened, among the conversation's.
+    fn step_picture(&mut self, by: isize, cx: &mut Context<Self>) {
+        let all = self.all_pictures();
+        let Some(at) = self.viewing.as_ref().and_then(|id| all.iter().position(|picture| &picture.id == id)) else { return };
+        let to = at as isize + by;
+        if let Some(next) = usize::try_from(to).ok().and_then(|to| all.get(to)) {
+            self.viewing = Some(next.id.clone());
+            cx.notify();
+        }
+    }
+
+    /// The picture opened, over the whole conversation.
+    fn picture_viewer(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let all = self.all_pictures();
+        let id = self.viewing.as_ref()?;
+        let at = all.iter().position(|picture| &picture.id == id)?;
+        let picture = &all[at];
+        Some(
+            div()
+                .id("picture-viewer-layer")
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .track_focus(&self.viewer_focus)
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
+                    "escape" => this.close_picture(window, cx),
+                    "left" => this.step_picture(-1, cx),
+                    "right" => this.step_picture(1, cx),
+                    _ => {}
+                }))
+                .on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))
+                .child(pictures::viewer(picture, at, all.len(), self.pictures.get(picture.source.key()), window))
+                .child(
+                    div()
+                        .absolute()
+                        .top(space::S4)
+                        .right(space::S4)
+                        .debug_selector(|| "picture-close".into())
+                        .child(Button::new("picture-close", "Close").size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Opens or closes a thinking block or a tool step, or folds an output again.
     pub fn toggle(&mut self, fold: Fold, cx: &mut Context<Self>) {
         let step = fold.step().to_owned();
@@ -533,6 +682,8 @@ impl ConversationView {
         if let Some(ix) = self.entries.iter().position(|entry| entry.key() == step) {
             self.list.changed(ix);
         }
+        // (A step opened shows what it brought back for itself.)
+        self.read_pictures(cx);
         cx.notify();
     }
 
@@ -549,6 +700,27 @@ impl ConversationView {
     }
 
     /// The top row, while there are earlier messages: they're read as it comes into view.
+    /// Under your message whose box's copy came without the files you sent with it: their names,
+    /// until a copy with its own comes (never dropped from sight in between).
+    fn files_kept(&self, id: &str, cx: &App) -> AnyElement {
+        let composer = self.composer.read(cx);
+        let Some(kept) = composer.outgoing().iter().find(|outgoing| outgoing.arrived && outgoing.id == id) else { return div().into_any_element() };
+        let c = &cx.theme().colors;
+        let selector = format!("kept-files-{id}");
+        div()
+            .debug_selector(move || selector)
+            .pt(space::S1_5)
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .gap(space::S1)
+            .children(kept.files.iter().map(|path| {
+                let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                div().flex().items_center().gap(space::S1).px(space::S2).py(space::S0_5).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint)).child(name)
+            }))
+            .into_any_element()
+    }
+
     /// Under one of yours that couldn't go: Retry sends it again, Edit puts it back in the composer.
     fn unsent_actions(&self, id: &str, cx: &App) -> AnyElement {
         let sending = self.composer.read(cx).is_sending();
@@ -717,6 +889,10 @@ impl Render for ConversationView {
             centred(if asking { "Nothing here yet.".into() } else { "Nothing here yet. Write below to start.".into() }, false, cx)
         } else {
             let list_view = view.clone();
+            let opener = view.clone();
+            let open: std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)> = std::rc::Rc::new(move |id: &str, window: &mut Window, cx: &mut App| {
+                opener.update(cx, |this, cx| this.open_picture(id, window, cx));
+            });
             let list = chat_list(&self.list, move |ix, _window, cx| {
                 let cx: &App = cx;
                 let this = list_view.read(cx);
@@ -724,11 +900,13 @@ impl Render for ConversationView {
                 let own = match entry {
                     Entry::Earlier => this.earlier_row(&list_view, cx),
                     Entry::Outgoing { id, failed: Some(_), .. } => this.unsent_actions(id, cx),
+                    Entry::Message(message) => this.files_kept(message.id(), cx),
                     _ => div().into_any_element(),
                 };
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
-                entries::render(ix, entry, &this.open, toggle, own, &this.selection, cx)
+                let looks = Looks { read: &this.pictures, open: open.clone() };
+                entries::render(ix, entry, &this.open, toggle, own, &this.selection, &looks, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.
@@ -751,8 +929,10 @@ impl Render for ConversationView {
             _ => None,
         };
         let gone = matches!(self.problem, Some(Problem::Gone(_)));
+        let viewer = self.picture_viewer(window, cx);
         div()
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -781,6 +961,7 @@ impl Render for ConversationView {
                             .child(div().w_full().max_w(px(COLUMN)).child(if asking && !beside { self.asks.clone().into_any_element() } else { self.composer.clone().into_any_element() }))
                     }),
             )
+            .children(viewer)
     }
 }
 
