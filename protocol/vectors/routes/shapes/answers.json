@@ -6286,6 +6286,9 @@
             "literal": "work-queue.anywhere"
            },
            {
+            "literal": "work-queue.attachments"
+           },
+           {
             "literal": "work-queue.counts"
            },
            {
@@ -7010,6 +7013,9 @@
            },
            {
             "literal": "work-queue.anywhere"
+           },
+           {
+            "literal": "work-queue.attachments"
            },
            {
             "literal": "work-queue.counts"

@@ -6459,17 +6459,21 @@ from another box (an older box), and on a machine Macs share outside one setup (
 another person's computers may tell it theirs), changed there. One on its way to another computer (`handing`) is refused (400) until it's there,
 but for `DELETE`, which calls its hand-off off (a note says so) and deletes it.
 `POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
-owner?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
+owner?, files?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
 box decides whose queue it's in: `owner`'s where a client names one (the conversation whose queue
 it's looking at); else, for a bot of this box (`assignee`), that bot's; else your own (`usr_you`).
 A title is one line: line breaks become spaces, one over 800 characters is refused (400), and what's
 left is cut to 200; an empty one is refused.
 `PATCH kuvo/work-queue/items/<item>` `{title?, body?, status?, priority?, labels?, assignee?,
-due?, before?, after?, top?}` → `{item}`: only what's sent changes. `status` and `priority` by id
+due?, before?, after?, top?, files?}` → `{item}`: only what's sent changes. `status` and `priority` by id
 or name; `labels` all of them, by id or name, in place of those it had (`[]` for none; one that
 isn't a label is refused, never made); `assignee` `{kind, id}`, or null for no one; `due` a day, or
 null for none; `before`/`after` an item of the same status, `top` the top of its status. An issue's
 or a pull request's title and description are GitHub's, and so is closing it: refused (400).
+With `work-queue.attachments`, both create and edit take `files`, the composer's carried
+`{uri, name?}` files: a local `file://` URL on the box asked, or a base64 `data:` URI carrying
+bytes to another computer. The box copies them into the item's existing file storage; an edit
+appends and preserves earlier files. File limits and duplicate names follow the tools' rules.
 `DELETE kuvo/work-queue/items/<item>` and `POST …/restore`; `POST kuvo/work-queue/labels`
 `{add, color?}` (a colour the fewest labels have, unless said), `{change, name?, color?}` (a label
 by its id or name) or `{remove}` (taken off every item on this box, deleted ones too, then gone)
@@ -7326,6 +7330,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue` | `kuvo/work-queue…` and the `queue_…` tools ("The Work Queue") |
 | `work-queue.anywhere` | an item no computer told this box of is asked of each of your other computers, for a client: read, its files, and what you do to it; 503 `{message, computers}` while some couldn't say ("The Work Queue", Across your computers, Found where it's kept; #668) |
 | `work-queue.counts` | `counts` in `kuvo/work-queue` and its events with `counts=1` ("The Work Queue", #711) |
+| `work-queue.attachments` | client create/edit takes carried files and keeps their bytes with the item ("The Work Queue") |
 | `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |

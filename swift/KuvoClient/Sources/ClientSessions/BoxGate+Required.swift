@@ -85,6 +85,7 @@ extension BoxGate {
         "waiting", // #711
         "waiting.cards", // #718: what waits on you counts the cards a client used to add itself
         "work-queue.anywhere", // #668: an item from any box; no client asks each computer for one
+        "work-queue.attachments",
         "work-queue.counts", // #711
         "work-queue.edit", // #674: the Work Queue's statuses, priorities and labels in place of categories
         "work.background.items", // #764: the bars over the composer list what runs for a conversation from the box

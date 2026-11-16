@@ -111,6 +111,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before. Nor from
   // a machine Macs share outside one setup: another person's computers may tell it theirs.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE) || sharedMachine(link)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, "work-queue.attachments")) return { status: 409, refused: `${computer.name} needs an update before it can keep attached images. Update it and try again.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
