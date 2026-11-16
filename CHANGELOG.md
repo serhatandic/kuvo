@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The desktop app updates itself, as Kuvo Code 0.7 did, from the same releases, and 0.7 updates into it. **Kuvo › Check for Updates…** looks now; Settings › **Updates**, under your own settings, shows the app's version and when it last looked, with **Check Now**, and switches for checking once a day, downloading and installing new versions by themselves (they install the next time Kuvo quits) and **Get beta updates**. Your choices from 0.7 carry over. Kuvo on your Mac takes each new version from the app as before; its own version is under Settings › This Mac.
 - Settings › **MCP Servers** is in the desktop app: each server says how it's doing (Connected, Needs sign-in, Couldn’t connect) with its error under it; **Add Server…** and **Edit…** open a form that says as you type what the name will be, whether the computer has the command's program and whether a URL is one (paste a server's setup from its README into the name and the rest fills in); and **Sign In…** shows how it's going under the server until it's done. It's the same for each of your computers, picked at the top of Settings.
 - The desktop archived sidebar and Settings › Archived Sessions show the same archived sessions in the same groups and order, including archived bot sessions.
 
