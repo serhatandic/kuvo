@@ -1084,6 +1084,13 @@ and, for a machine an old list marks as another Mac's, Make This Mac Its Home, w
 `helperAtLogin` is a `launchctl` run in the box's own process (5 s at most) on each `kuvo/mac`;
 `launchctl print-disabled` and `kuvo-start restart` under Kuvo Helper weren't tried on a real Mac.
 
+## 8h. Piece 6a as built (2026-11-16): the bundle, built locally
+
+`scripts/build-desktop-app.sh` makes `build/Kuvo.app`, signed ad hoc, with the release, Kuvo
+Helper and `kuvo-keys` where piece 5 looks for them; `scripts/check-desktop-app.sh` checks it and
+dry-runs a copy. What's inside, how to build, and what piece 6's rest (the release's step) adds:
+`.claude/notes/713-p6a-bundle.md`.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**
