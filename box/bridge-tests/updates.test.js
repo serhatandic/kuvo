@@ -123,7 +123,16 @@ let served = {};
 // self-test, stop and start (each a spawnSync; 3 to 5 seconds in all at a load of 120, more at
 // times), and past the server's five-second keep-alive, the next update's request went out on the
 // connection kept from the last one as the server closed it ("fetch failed").
+// What breaks off once before it's served (`drop`: the connection cut, else that status).
+let breaksOnce = {};
 const server = http.createServer((request, response) => {
+  const breaking = breaksOnce[request.url];
+  if (breaking) {
+    delete breaksOnce[request.url];
+    if (breaking === "drop") return request.socket.destroy();
+    response.writeHead(breaking, { connection: "close" });
+    return response.end("");
+  }
   const body = served[request.url];
   response.writeHead(body ? 200 : 404, { connection: "close" });
   response.end(body ?? "");
@@ -611,6 +620,33 @@ test("`kuvo-link.js update --installer` (the installer Kuvo Code carries) waits 
   fs.rmSync(asks);
 });
 
+test("`kuvo-link.js update --installer` tries once more by itself, a little later, where a try failed before anything changed; only a second failure is said", async () => {
+  machine();
+  const { folder } = release();
+  // (Not spawnSync: the release is served from this process.)
+  const run = async () => {
+    const ran = spawn(process.execPath, [script, "update", "--installer", "--now", "--from", folder, "--key", pinned], { env: { ...process.env, KUVO_TEST_FETCH_WAIT: "20" }, stdio: ["ignore", "pipe", "inherit"] });
+    let said = "";
+    ran.stdout.setEncoding("utf8");
+    ran.stdout.on("data", chunk => { said += chunk; });
+    await new Promise(resolve => ran.once("close", resolve));
+    return said.split("\n").filter(line => line.trim()).map(line => JSON.parse(line));
+  };
+  // Its engine's download refused once (as GitHub might for a moment): the second try takes it.
+  breaksOnce = { "/engine.tgz": 404 };
+  assert.deepEqual((await run()).at(-1), { result: "updated", version: "0.10.0" });
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.10.0");
+
+  // Refused every time: said once both tries failed, and nothing changed.
+  machine();
+  release({ version: "0.11.0" });
+  delete served["/engine.tgz"];
+  const failed = (await run()).at(-1);
+  assert.equal(failed.result, "failed");
+  assert.equal(boxVersion(), "0.9.0");
+});
+
 test("an offered release that doesn't come up is taken back and goes; one the box has caught up with goes untaken", async () => {
   machine();
   assert.equal(offer(release({ breaks: true }).folder).status, 202);
@@ -682,6 +718,28 @@ test("an offered release that fails before anything changes (its engine's downlo
   assert.equal(fs.existsSync(offered), false);
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed, undefined, "forgotten once it's taken");
   assert.equal(link.confirmUpdate(), true);
+});
+
+test("a download that breaks off on the way (a dropped connection, a server failing) is tried again a moment later, and the update goes through", async t => {
+  process.env.KUVO_TEST_FETCH_WAIT = "20";
+  t.after(() => { delete process.env.KUVO_TEST_FETCH_WAIT; });
+  machine();
+  release();
+  breaksOnce = { "/boxes.json": 503, "/pack.tgz": "drop", "/engine.tgz": "drop" };
+  const outcome = await update();
+  assert.equal(outcome.result, "updated", outcome.message);
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.10.0");
+  assert.deepEqual(breaksOnce, {}, "each broke off once");
+  assert.equal(link.confirmUpdate(), true);
+
+  // What's answered for good (it isn't there) isn't asked again: it fails as it did.
+  machine();
+  release({ version: "0.11.0" });
+  delete served["/engine.tgz"];
+  const missing = await update();
+  assert.equal(missing.result, "failed");
+  assert.equal(read(engineFile).version, "1.0.0", "its engine never stopped");
 });
 
 test("a release's bundle (the box's helper) is swapped whole on a Mac, and left out on Linux", async () => {

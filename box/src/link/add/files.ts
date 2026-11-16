@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pin from "../../shared/engine-pin.json";
-import { fetched } from "../engine/client";
+import { fetchedPatiently } from "../engine/client";
 import { K } from "../home";
 
 /** A release's files that every box has, by their paths in its folder, with who may read and run
@@ -128,7 +128,7 @@ export async function engineFor(kind: Kind, fetching: () => void = () => {}, hom
   if (!data || !whole(data)) {
     fetching();
     try {
-      data = await fetched(build.url, 400_000_000, 900_000);
+      data = await fetchedPatiently(build.url, 400_000_000, 900_000);
     } catch (error) {
       throw new Error(`The engine for it couldn't be downloaded here (${error instanceof Error ? error.message : String(error)}) Check this computer's connection, then try again.`);
     }

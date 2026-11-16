@@ -8,6 +8,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Your settings now lists the keyboard shortcuts Kuvo uses, lets you choose the Side Panel’s first tab, and keeps your anonymous usage choice under Privacy. Nothing is sent yet.
 
+- In the desktop app, ⌘V in the composer attaches a copied screenshot or picture, and files copied in the Finder, as 0.7 did, instead of doing nothing or pasting their names.
+- In the desktop app, what you send shows in the conversation at once, marked Sending…, rather than a few seconds later. If it can't be sent, it stays there saying why, with **Retry** and **Edit**.
+- Updating Kuvo on your Mac, or on a computer it set up, tries again by itself when a download drops or a try fails before anything changed, rather than waiting for you to tap Try Again.
 - Text carets blink while typing fields are focused, project folders keep open or closed folder icons in Sessions, and a title-bar button or ⌘B shows or hides the sidebar (⌘0 still works).
 - The usage rings in the desktop app and in Kuvo's menu bar item now fill with what's **left** of each limit (a full ring means all of it is left), and say "62% left"; the desktop app's card and Settings › Usage say it too, with when each resets. The card opens to the right of the ring you rest on, so the rings below stay in view, and clicking on it no longer clicks what's under it.
 - A plan that has ended (a Cursor or SuperGrok subscription that isn't active) no longer shows as a ring, in the app or the menu bar; Settings › Usage lists it as "Plan ended", and agents are told it ended.

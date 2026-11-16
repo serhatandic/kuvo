@@ -2722,6 +2722,7 @@ dependencies = [
  "futures",
  "gpui",
  "gpui_platform",
+ "image",
  "kuvo",
  "kuvo_box",
  "kuvo_ui",

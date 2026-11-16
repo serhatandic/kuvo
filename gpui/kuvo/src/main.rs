@@ -39,6 +39,10 @@ fn main() {
         kuvo::confirm_you::init(cx);
         // Your settings, kept in the app's own folder (none for the made-up box: kept while it runs).
         kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
+        // Pictures pasted into a composer, kept beside your settings to attach.
+        if let Some(folder) = your_settings().and_then(|settings| settings.parent().map(|folder| folder.join("Pasted"))) {
+            cx.set_global(kuvo::pasted::PastedFolder(folder));
+        }
         // Who its notifications are from (macOS takes it from the bundle; Linux from this).
         cx.set_app_identity("run.kuvo.code", "Kuvo");
         // Its updates: Sparkle, where the bundle carries it and names a feed (`updates`). The

@@ -6735,11 +6735,29 @@ async function call(target, method, route, body, signal, folder) {
 async function fetched(url, most, timeout) {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeout), redirect: "follow" });
   if (!response.ok)
-    throw new Error(`It answered ${response.status}.`);
+    throw Object.assign(new Error(`It answered ${response.status}.`), { status: response.status });
   const data = Buffer.from(await response.arrayBuffer());
   if (data.length > most)
     throw new Error("It's larger than a release can be.");
   return data;
+}
+var FETCH_WAITS = [5000, 20000];
+var fetchWaits = () => {
+  const test = Number(process.env.KUVO_TEST_FETCH_WAIT);
+  return !REAL_BOX && test >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? FETCH_WAITS.map(() => test) : FETCH_WAITS;
+};
+async function fetchedPatiently(url, most, timeout, waits = fetchWaits()) {
+  for (let tried = 0;; tried++) {
+    try {
+      return await fetched(url, most, timeout);
+    } catch (error) {
+      const status = error?.status;
+      const lasting = typeof status === "number" ? status < 500 && status !== 408 && status !== 429 : /larger than a release/.test(String(error?.message));
+      if (lasting || tried >= waits.length)
+        throw error;
+      await sleep(waits[tried]);
+    }
+  }
 }
 
 // box/src/link/add/seed.ts
@@ -14239,7 +14257,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       released = readRelease(path40.join(from, "boxes.json"), 1e6);
     else
       try {
-        released = await fetched(url, 1e6, 30000);
+        released = await fetchedPatiently(url, 1e6, 30000);
       } catch (error) {
         if (/answered 404/.test(String(error?.message)))
           return { result: "current", version: before };
@@ -14259,7 +14277,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     stage = path40.join(UPDATES, manifest.version);
     fs37.rmSync(stage, { recursive: true, force: true });
     fs37.mkdirSync(path40.join(stage, "files"), { recursive: true, mode: 448 });
-    const pack = from ? readRelease(path40.join(from, packName(manifest)), 1e8) : await fetched(manifest.pack.url, 1e8, 300000);
+    const pack = from ? readRelease(path40.join(from, packName(manifest)), 1e8) : await fetchedPatiently(manifest.pack.url, 1e8, 300000);
     if (hexSHA256(pack) !== manifest.pack.sha256)
       throw new Error("The release's files aren't what it says.");
     fs37.writeFileSync(path40.join(stage, "pack.tgz"), pack, { mode: 384 });
@@ -14317,7 +14335,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       if (!build?.url || !/^sha512-/.test(build.integrity ?? ""))
         throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await fetched(build.url, 400000000, 900000);
+      const tarball = await fetchedPatiently(build.url, 400000000, 900000);
       if (crypto15.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
         throw new Error("The engine isn't what the release says.");
       fs37.writeFileSync(path40.join(stage, "engine.tgz"), tarball, { mode: 384 });
@@ -41978,7 +41996,7 @@ async function engineFor(kind, fetching = () => {}, home = K) {
   if (!data || !whole(data)) {
     fetching();
     try {
-      data = await fetched(build.url, 400000000, 900000);
+      data = await fetchedPatiently(build.url, 400000000, 900000);
     } catch (error) {
       throw new Error(`The engine for it couldn't be downloaded here (${error instanceof Error ? error.message : String(error)}) Check this computer's connection, then try again.`);
     }
@@ -42005,7 +42023,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "063e178e1073";
+var BRIDGE_VERSION = "661629b49f71";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -69097,8 +69115,10 @@ if (main) {
       }
     };
     let outcome;
+    let againOnce = installer, swapped = false;
     for (;; ) {
       told = false;
+      swapped = false;
       if (installer && !now && !await untilFree(from, test))
         process.exit(0);
       while (installer && now && isUpdating()) {
@@ -69106,9 +69126,17 @@ if (main) {
         if (process.ppid === 1)
           process.exit(0);
       }
-      outcome = offered ? await takeOffer({ step, ...test }) : from && !path210.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, ...test });
-      if (!(installer && !now && outcome?.result === "busy"))
-        break;
+      outcome = offered ? await takeOffer({ step, ...test }) : from && !path210.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, swapping: () => {
+        swapped = true;
+      }, ...test });
+      if (installer && !now && outcome?.result === "busy")
+        continue;
+      if (againOnce && outcome?.result === "failed" && !swapped) {
+        againOnce = false;
+        await sleep(!REAL_BOX && Number(process.env.KUVO_TEST_FETCH_WAIT) >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? Number(process.env.KUVO_TEST_FETCH_WAIT) : 15000);
+        continue;
+      }
+      break;
     }
     if (outcome && !(offered && outcome.result === "busy"))
       noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });

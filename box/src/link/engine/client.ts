@@ -5,7 +5,8 @@ import fs from "node:fs";
 import { processRuns as runs } from "../../shared/platform";
 import type { Fields } from "../../shared/json";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
-import { BRIDGE_FILE, ENGINE_FILE } from "../home";
+import { BRIDGE_FILE, ENGINE_FILE, REAL_BOX } from "../home";
+import { sleep } from "../../shared/wait";
 
 export const readEngineFile = (): EngineRecord => JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8"));
 // The coding agents' bridge beside the engine, when it runs: its port and password.
@@ -125,8 +126,33 @@ export async function call(target: Target, method: string, route: string, body?:
 // `url`'s body, at most `most` bytes, within `timeout` ms.
 export async function fetched(url: string, most: number, timeout: number): Promise<Buffer> {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeout), redirect: "follow" });
-  if (!response.ok) throw new Error(`It answered ${response.status}.`);
+  if (!response.ok) throw Object.assign(new Error(`It answered ${response.status}.`), { status: response.status });
   const data = Buffer.from(await response.arrayBuffer());
   if (data.length > most) throw new Error("It's larger than a release can be.");
   return data;
+}
+
+/** How long a download that broke off waits before it's tried again, each time (a test's folder
+ * may say shorter: `KUVO_TEST_FETCH_WAIT`, in ms). */
+const FETCH_WAITS = [5_000, 20_000];
+const fetchWaits = (): number[] => {
+  const test = Number(process.env.KUVO_TEST_FETCH_WAIT);
+  return !REAL_BOX && test >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? FETCH_WAITS.map(() => test) : FETCH_WAITS;
+};
+
+/** `fetched`, tried again a moment later where it broke off on the way (the connection dropped
+ * or timed out, the server failed or asked to wait): a release's files and engine are large, and a
+ * Wi-Fi hiccup halfway shouldn't fail an update that a tap on Try Again then does. What the server
+ * answered for good (it isn't there, it's refused, it's too large) isn't asked again. */
+export async function fetchedPatiently(url: string, most: number, timeout: number, waits: number[] = fetchWaits()): Promise<Buffer> {
+  for (let tried = 0; ; tried++) {
+    try {
+      return await fetched(url, most, timeout);
+    } catch (error) {
+      const status = (error as { status?: unknown } | null)?.status;
+      const lasting = typeof status === "number" ? status < 500 && status !== 408 && status !== 429 : /larger than a release/.test(String((error as Error | undefined)?.message));
+      if (lasting || tried >= waits.length) throw error;
+      await sleep(waits[tried]!);
+    }
+  }
 }

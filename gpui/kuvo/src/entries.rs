@@ -36,6 +36,9 @@ pub enum Entry {
     TurnEnd { id: String, outcome: String, worked: Option<f64> },
     /// A run under way, after what it has said so far.
     Working { title: String },
+    /// Yours, sent from here and on its way (`Composer::outgoing`): drawn at once as your message,
+    /// until the box's copy (by the same id) takes its place. `failed`: why it couldn't go.
+    Outgoing { id: String, words: String, files: Vec<String>, failed: Option<String> },
 }
 
 impl Entry {
@@ -45,8 +48,16 @@ impl Entry {
             Entry::Earlier => "earlier",
             Entry::Working { .. } => "working",
             Entry::Message(message) => message.id(),
-            Entry::TurnEnd { id, .. } => id,
+            Entry::TurnEnd { id, .. } | Entry::Outgoing { id, .. } => id,
         }
+    }
+
+    /// Yours on its way, as its conversation draws it, with the revision it's drawn by: above every
+    /// one the box gives, so the box's copy taking its place is always drawn again.
+    pub fn outgoing(outgoing: &crate::composer::Outgoing) -> (Entry, u64) {
+        let files = outgoing.files.iter().map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+        let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else { u64::MAX };
+        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, failed: outgoing.failed.clone() }, revision)
     }
 }
 
@@ -131,18 +142,23 @@ impl Fold {
 }
 
 /// Draws row `ix`. `open`: what's opened; `toggle` opens or closes one. Its text is selectable in
-/// `selection`, as [`units`] says.
+/// `selection`, as [`units`] says. `own`: what its view draws of it (the way back to earlier
+/// messages; Retry and Edit under one of yours that couldn't go).
 pub fn render(
     ix: usize,
     entry: &Entry,
     open: &HashSet<Fold>,
     toggle: impl Fn(Fold, &mut App) + Clone + 'static,
-    earlier: AnyElement,
+    own: AnyElement,
     selection: &SelectionState,
     cx: &App,
 ) -> AnyElement {
     let body: AnyElement = match entry {
-        Entry::Earlier => earlier,
+        Entry::Earlier => own,
+        Entry::Outgoing { words, files, failed, .. } => {
+            let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
+            outgoing(ix, words, files, failed.as_deref(), sel, own, cx)
+        }
         Entry::Message(message) => message_body(ix, entry.key(), message, open, toggle, selection, cx),
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
@@ -193,8 +209,12 @@ pub fn frame(ix: usize, key: &str, body: AnyElement, last: bool) -> AnyElement {
 /// agent's words (`[part, block…]`), its thinking (`[part, 0]`) and what an opened step printed
 /// or changed (`[part, 0 and 1]`, `[part, file, line]`). For copying, without laying anything out.
 pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
-    let Entry::Message(message) = entry else { return Vec::new() };
-    message_units(message, open)
+    match entry {
+        Entry::Message(message) => message_units(message, open),
+        // (As the box's copy will be: what you wrote.)
+        Entry::Outgoing { words, .. } if !words.trim().is_empty() => vec![Unit::new(&[0], words.trim(), Lead::Paragraph)],
+        _ => Vec::new(),
+    }
 }
 
 /// The selectable text of a message, as [`message_body`] draws it.
@@ -230,6 +250,36 @@ pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Yours on its way: your message as it will show, its files' names under it, and under them
+/// "Sending…", or why it couldn't go with `actions` (Retry, Edit) beside it.
+fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    let parts = Parts::words(words.to_owned());
+    let names = files.iter().enumerate().map(|(n, name)| Chip::new(("sending-file", ix * 1000 + n), name.clone()).icon(IconName::File).into_any_element());
+    let status = match failed {
+        None => div().debug_selector(|| "sending".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("Sending…").into_any_element(),
+        Some(why) => div()
+            .debug_selector(|| "not-sent".into())
+            .flex()
+            .flex_wrap()
+            .justify_end()
+            .items_center()
+            .gap(space::S2)
+            .child(div().text_ui(TypeSize::Caption).text_color(c.danger).child(SharedString::from(format!("Not sent. {why}"))))
+            .child(actions)
+            .into_any_element(),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .items_end()
+        .gap(space::S1_5)
+        .child(user_message(ix, &parts, sel, cx))
+        .when(!files.is_empty(), |d| d.child(div().flex().flex_wrap().justify_end().gap(space::S1).children(names)))
+        .child(status)
+        .into_any_element()
 }
 
 fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {

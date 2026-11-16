@@ -677,6 +677,11 @@ impl StandIn {
         self.state().sends_fail = true;
     }
 
+    /// From now on, messages sent go again (after `fail_sends`).
+    pub fn sends_go(&self) {
+        self.state().sends_fail = false;
+    }
+
     /// From now on, no model runs here (`kuvo/models/offered` says `starting: null`).
     pub fn nothing_runs(&self) {
         self.state().nothing_runs = true;

@@ -1209,8 +1209,13 @@ if (main) {
       if (installer && !told && running !== "checking") { told = true; console.log(JSON.stringify(installerSteps.updating)); }
     };
     let outcome: Awaited<ReturnType<typeof update>> | null;
+    // (A try the app's installer asked for that failed before anything changed, tried again once
+    // a little later: what's passing, a slow first start of the new engine, a moment's load, goes
+    // by then. Only one that fails again is said, with Try Again. One put back isn't tried again.)
+    let againOnce = installer, swapped = false;
     for (;;) {
       told = false;
+      swapped = false;
       if (installer && !now && !(await untilFree(from!, test))) process.exit(0);
       // (Update Now while the box takes it itself already: waited for, and then it's there.)
       while (installer && now && isUpdating()) {
@@ -1221,9 +1226,15 @@ if (main) {
         ? await takeOffer({ step, ...test })
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
-          : await update({ now, whileBusy: now && !args.includes("--free"), from, step, ...test });
+          : await update({ now, whileBusy: now && !args.includes("--free"), from, step, swapping: () => { swapped = true; }, ...test });
       // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
-      if (!(installer && !now && outcome?.result === "busy")) break;
+      if (installer && !now && outcome?.result === "busy") continue;
+      if (againOnce && outcome?.result === "failed" && !swapped) {
+        againOnce = false;
+        await sleep(!REAL_BOX && Number(process.env.KUVO_TEST_FETCH_WAIT) >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? Number(process.env.KUVO_TEST_FETCH_WAIT) : 15_000);
+        continue;
+      }
+      break;
     }
     // (None due, or another process took it just before this one: nothing happened to note.)
     if (outcome && !(offered && outcome.result === "busy")) noteUpdate({ running: null, ...(outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } }) });
