@@ -33068,7 +33068,6 @@ async function* linkRoute(context) {
   if (!IS_MAC || !request.fromApp)
     return yield* json(403, { message: "Only Kuvo Code on this computer can do that." });
   if (movedFromOldApp()) {
-    macLink.oldAppSeen = Date.now();
     return yield* json(410, { message: `Kuvo Code 1.0 has replaced this app on ${ownName()}. Quit it and move it to the Trash: everything it did is in Kuvo Code now.` });
   }
   return yield* macLinkRoute(route, request, signal);
@@ -42359,7 +42358,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "de0578d88364";
+var BRIDGE_VERSION = "42d2143268a5";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -44855,7 +44854,7 @@ async function hangUp(destination, way, options = []) {
 }
 async function sshConfigOf(destination) {
   const at = destination.lastIndexOf("@");
-  const plain = { host: at >= 0 ? destination.slice(at + 1) : destination, user: at >= 0 ? destination.slice(0, at) : null, port: null, keys: [] };
+  const plain = { host: at >= 0 ? destination.slice(at + 1) : destination, user: at >= 0 ? destination.slice(0, at) : null, port: null, keys: [], alias: null };
   const ran = await run4(["-G", "--", destination], { most: 1e4 }).catch(() => null);
   if (!ran || ran.status !== 0)
     return plain;
@@ -44863,11 +44862,12 @@ async function sshConfigOf(destination) {
 `).filter((line) => line.startsWith(`${name} `)).map((line) => line.slice(name.length + 1).trim()).filter(Boolean);
   const home = homeFolder();
   const keys = said("identityfile").map((file) => file.startsWith("~/") ? path150.join(home, file.slice(2)) : file).filter((file) => path150.isAbsolute(file) && fs141.existsSync(file));
-  return { host: said("hostname")[0] ?? plain.host, user: said("user")[0] ?? plain.user, port: said("port")[0] ?? null, keys };
+  return { host: said("hostname")[0] ?? plain.host, user: said("user")[0] ?? plain.user, port: said("port")[0] ?? null, keys, alias: said("hostkeyalias")[0] ?? null };
 }
 async function reachedAs(destination) {
   const config = await sshConfigOf(destination);
-  return ["-o", `HostKeyAlias=${config.host}`, ...config.port ? ["-p", config.port] : [], ...config.user ? ["-l", config.user] : [], ...config.keys.flatMap((key) => ["-i", key])];
+  const alias = config.alias ?? (config.port && config.port !== "22" ? `[${config.host}]:${config.port}` : config.host);
+  return ["-o", `HostKeyAlias=${alias}`, ...config.port ? ["-p", config.port] : [], ...config.user ? ["-l", config.user] : [], ...config.keys.flatMap((key) => ["-i", key])];
 }
 var fingerprintOf = (blob) => `SHA256:${crypto50.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
 function keysIn(text) {
@@ -45317,6 +45317,7 @@ class Reach {
   target;
   options = [];
   reached = false;
+  firstSaid = null;
   others;
   constructor(destination, name, tell, others = []) {
     this.destination = destination;
@@ -45328,6 +45329,7 @@ class Reach {
   async next(said) {
     if (this.reached || !this.others.length)
       return false;
+    this.firstSaid ??= said;
     const other = this.others.shift();
     console.error(`Kuvo couldn't reach ${this.name} at ${this.target} over SSH (${said || "no answer"}); trying ${other.address}.`);
     await hangUp(this.target, this.way, this.options).catch(() => {});
@@ -45353,6 +45355,8 @@ class Reach {
         tries--;
         continue;
       }
+      if (elsewhere && trouble.kind !== "refused")
+        throw unreached(this.name, `${this.firstSaid ?? ""} (and at its other addresses: ${lastLine(ran.stderr)})`);
       if (tries >= 3)
         throw unreached(this.name, lastLine(ran.stderr));
       if (trouble.kind === "unknownHost") {
@@ -45742,6 +45746,7 @@ init_files2();
 init_home();
 init_directory();
 init_known();
+init_main_only();
 init_state();
 var KEEP_UP_FILE = path152.join(RUN, "keep-up.json");
 var KEEP_UP_ROUND = 15 * 60000;
@@ -45896,7 +45901,7 @@ function keepingUp(computer, here, now = Date.now()) {
     if (!older || computer.reach === "away")
       return none;
     if (!can.can)
-      return { update: line("waiting", `Kuvo on ${name} needs an update`, can.message), actions: [] };
+      return IS_MAC && !mainElsewhere(readLink()) ? { update: line("waiting", `Kuvo on ${name} needs an update`, can.message), actions: [] } : none;
     return { update: line("waiting", `Kuvo on ${name} needs an update`, `${here} hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays.`), actions: [{ id: "add", label: "Set Up Over SSH…" }] };
   }
   const under = underWay2(at.destination);
@@ -45917,13 +45922,13 @@ function keepingUp(computer, here, now = Date.now()) {
   };
   const action = (label) => [{ id: "update", label, ...confirm ? { confirm } : {}, ...under ? { why: "Something else is being done with it now." } : {} }];
   const missed = (title, why) => {
-    const own = why && !why.startsWith(`Couldn’t reach ${name}`) ? sentence2(why) : "Make sure it’s on and connected, then Try Again. ";
+    const own = why && !why.startsWith("Couldn’t reach ") ? sentence2(why) : "Make sure it’s on and connected, then Try Again. ";
     return { update: line("failed", title, `${own}Kuvo also tries again by itself later.`), actions: action("Try Again") };
   };
   if (was?.failed)
-    return missed(was.failed.why?.startsWith(`Couldn’t reach ${name}`) ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
+    return missed(was.failed.why?.startsWith("Couldn’t reach ") ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
   if (was?.unreached && was.unreached >= was.checked)
-    return missed(`Couldn’t reach ${name}`, was.unreachedWhy);
+    return missed(was.unreachedWhy?.includes("couldn’t be checked") ? `Couldn’t check ${name}` : `Couldn’t reach ${name}`, was.unreachedWhy);
   if (was?.since !== undefined && working !== 0 && now - was.since >= LONG_WAIT)
     return { update: line("waiting", `Kuvo on ${name} hasn’t been free for a day`, "It updates once nothing’s at work there, or now with Update Now.", true), actions: action("Update Now") };
   if (working === 0)
@@ -46008,7 +46013,8 @@ function ownComputer() {
   };
 }
 function ownAddresses(interfaces = os19.networkInterfaces(), name = os19.hostname()) {
-  const found = Object.values(interfaces).flat().filter((each) => Boolean(each) && each.family === "IPv4" && !each.internal && !each.address.startsWith("169.254.")).map((each) => each.address);
+  const virtual = /^(docker|br-|cni|veth|virbr|vmnet|vboxnet|flannel|lxc|lxd|podman|kube|cali|weave|tun|utun|bridge)/;
+  const found = Object.entries(interfaces).filter(([name]) => !virtual.test(name)).flatMap(([, each]) => each ?? []).filter((each) => each.family === "IPv4" && !each.internal && !each.address.startsWith("169.254.")).map((each) => each.address);
   const tailnet = (address) => {
     const [a, b] = address.split(".").map(Number);
     return a === 100 && b >= 64 && b < 128;
