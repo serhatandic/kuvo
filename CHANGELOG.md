@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Opening Work Queue clears its rail badge on this device; only Needs you items updated afterward count again.
+- Opening Work Queue clears its rail badge on this device; only Needs you items updated afterward count again. Editing an item already in Needs you also makes it count again.
 
 - Your settings now lists the keyboard shortcuts Kuvo uses, lets you choose the Side Panel’s first tab, and keeps your anonymous usage choice under Privacy. Nothing is sent yet.
 

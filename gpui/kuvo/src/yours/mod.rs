@@ -509,6 +509,11 @@ mod tests {
     }
 }
 
+/// The newest local item stamp is a cutoff in the queue computer's clock, not this Mac's.
+pub fn queue_watermark(items: &[kuvo_box::work_queue::Item]) -> f64 {
+    items.iter().filter(|item| item.computer.is_none()).map(|item| item.updated.at).fold(0.0, f64::max)
+}
+
 /// No status-entry stamp is supplied by the box; updated is the closest available time.
 pub fn queue_badge(items: &[kuvo_box::work_queue::Item], opened: Option<f64>) -> usize {
     items.iter().filter(|item| item.computer.is_none() && item.status == "needs-you" && opened.is_none_or(|at| item.updated.at > at)).count()
@@ -526,9 +531,11 @@ mod queue_badge_tests {
             {"id":"a", "status":"needs-you", "updated":{"at":10}},
             {"id":"b", "status":"needs-you", "updated":{"at":20}}
         ])).unwrap();
+        assert_eq!(queue_watermark(&items), 20.);
+        assert_eq!(queue_watermark(&[]), 0.);
         let before = items.clone();
         assert_eq!(queue_badge(&items, None), 2);
-        store.change(Change::QueueOpened("one".into(), 20.));
+        store.change(Change::QueueOpened("one".into(), queue_watermark(&items)));
         let restarted = Store::read(Some(path.clone()));
         let opened = restarted.now().queue_last_opened.get("one").copied();
         assert_eq!(queue_badge(&items, opened), 0);

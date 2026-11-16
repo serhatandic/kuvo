@@ -291,6 +291,7 @@ pub struct Workspace {
     /// How many things wait on you in each area, as the box counts them (`kuvo/waiting`): followed
     /// where its box streams, else read again as its session list changes.
     waiting: Waiting,
+    queue_badge_open_pending: bool,
     queue_badge_items: Vec<kuvo_box::work_queue::Item>,
     queue_badge_task: Option<Task<()>>,
     waiting_task: Option<Task<()>>,
@@ -428,6 +429,7 @@ impl Workspace {
             in_bot_chat: false,
             groups_on_screen: false,
             waiting: Waiting::default(),
+            queue_badge_open_pending: false,
             queue_badge_items: Vec::new(),
             queue_badge_task: None,
             waiting_task: None,
@@ -454,18 +456,6 @@ impl Workspace {
             _areas: area_subscriptions,
         };
         if live {
-            // Waiting suppresses equal totals; also refresh timestamps when the total stays put.
-            let queue_client = client.clone();
-            workspace.tasks.push(cx.spawn(async move |this, cx| {
-                loop {
-                    let client = queue_client.clone();
-                    let read = cx.background_executor().spawn(async move { client.work_queue_view() }).await;
-                    if this.update(cx, |this, cx| {
-                        if let Ok(said) = read { this.queue_badge_items = said.items; cx.notify(); }
-                    }).is_err() { break; }
-                    cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
-                }
-            }));
             let connecting = client.clone();
             let task = cx.background_executor().spawn(async move { connecting.connect() });
             workspace.tasks.push(cx.spawn(async move |this, cx| {
@@ -1799,8 +1789,21 @@ impl Workspace {
         self.switching.as_ref().and_then(|switching| switching.shown.clone()).unwrap_or_else(|| "nearest".into())
     }
 
-    fn queue_opened(&self, cx: &mut App) {
-        crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), crate::time::now_ms()), cx);
+    fn queue_opened(&mut self, cx: &mut Context<Self>) {
+        let at = crate::yours::queue_watermark(&self.queue_badge_items);
+        crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+        self.queue_badge_open_pending = true;
+        self.read_queue_badge(cx);
+    }
+
+    fn take_queue_badge(&mut self, said: kuvo_box::work_queue::QueueSaid, cx: &mut Context<Self>) {
+        self.queue_badge_items = said.items;
+        if self.queue_badge_open_pending {
+            self.queue_badge_open_pending = false;
+            let at = crate::yours::queue_watermark(&self.queue_badge_items);
+            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+        }
+        cx.notify();
     }
 
     pub fn queue_badge(&self, cx: &App) -> usize {
@@ -1947,18 +1950,28 @@ impl Workspace {
         }));
     }
 
-    fn take_waiting(&mut self, read: kuvo_box::Result<Waiting>, cx: &mut Context<Self>) {
+    fn read_queue_badge(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         if !self.live {
-            if let Ok(said) = client.work_queue_view() { self.queue_badge_items = said.items; cx.notify(); }
+            match client.work_queue_view() {
+                Ok(said) => self.take_queue_badge(said, cx),
+                Err(_) => self.queue_badge_open_pending = false,
+            }
         } else {
             self.queue_badge_task = Some(cx.spawn(async move |this, cx| {
                 let read = cx.background_executor().spawn(async move { client.work_queue_view() }).await;
                 this.update(cx, |this, cx| {
-                    if let Ok(said) = read { this.queue_badge_items = said.items; cx.notify(); }
+                    match read {
+                        Ok(said) => this.take_queue_badge(said, cx),
+                        Err(_) => this.queue_badge_open_pending = false,
+                    }
                 }).ok();
             }));
         }
+    }
+
+    fn take_waiting(&mut self, read: kuvo_box::Result<Waiting>, cx: &mut Context<Self>) {
+        if read.is_ok() { self.read_queue_badge(cx); }
         // Couldn't be read now: what was said stands until it can.
         if let Ok(waiting) = read
             && self.waiting != waiting
