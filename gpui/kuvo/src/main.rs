@@ -66,6 +66,8 @@ fn main() {
         .detach();
         let bounds = Bounds::centered(None, size(px(1240.), px(820.)), cx);
         let options = WindowOptions {
+            // GPUI owns the custom title bar's hit testing, including double clicks on controls.
+            app_owns_titlebar_drag: true,
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions { title: Some("Kuvo".into()), appears_transparent: true, traffic_light_position: Some(point(px(16.), px(16.))) }),
             window_min_size: Some(size(px(720.), px(480.))),

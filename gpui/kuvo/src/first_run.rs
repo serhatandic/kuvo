@@ -1391,6 +1391,8 @@ fn framed(card: Vec<AnyElement>, dot: Option<(usize, usize)>, cx: &App) -> gpui:
         .child(div().id("first-run-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
             if event.click_count == 1 {
                 window.start_window_move();
+            } else if event.click_count == 2 {
+                window.titlebar_double_click();
             }
         }))
         .child(

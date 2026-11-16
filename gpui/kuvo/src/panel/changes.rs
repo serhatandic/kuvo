@@ -688,7 +688,7 @@ impl ChangesView {
         };
         let actions = self.actions(file, cx);
         let body: AnyElement = match &opened.diff {
-            Load::Loading => note("Reading its changes…", &c).into_any_element(),
+            Load::Loading => kuvo_ui::small::LoadingLabel::new("diff-loading", "Reading its changes…").fill().into_any_element(),
             Load::Failed(why) => note(format!("Its changes couldn’t be read: {why}"), &c).into_any_element(),
             Load::Ready(_) if opened.unshown.is_some() => note(opened.unshown.unwrap_or_default(), &c).into_any_element(),
             Load::Ready(lines) if lines.is_empty() => note("Nothing to show.", &c).into_any_element(),
@@ -726,7 +726,7 @@ impl ChangesView {
                     ))
                     .children(actions),
             )
-            .child(div().id("file-diff-scroll").flex_1().min_h_0().overflow_y_scroll().p(space::S3).child(body))
+            .child(div().id("file-diff-scroll").flex_1().min_h_0().overflow_y_scroll().p(space::S3).when(matches!(opened.diff, Load::Loading), |d| d.flex().flex_col()).child(body))
             .into_any_element()
     }
 }
@@ -844,7 +844,7 @@ impl Render for ChangesView {
             self.file_page(opened, cx)
         } else {
             match &self.files {
-                Load::Loading => empty("Reading changes…", "", None, cx),
+                Load::Loading => kuvo_ui::small::LoadingLabel::new("changes-loading", "Reading changes…").fill().into_any_element(),
                 Load::Failed(why) => empty(
                     "Couldn’t Read the Changes",
                     why.clone(),

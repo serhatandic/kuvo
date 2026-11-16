@@ -130,6 +130,7 @@ const SCREENS: &[Screen] = &[
     // The Work Queue (`kuvo/src/queue`): the queue under each scope, filtered and searched, an
     // item's page and its chips' menus, New Item with each of its menus, and the labels' sheets.
     Screen { slug: "queue", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_all) },
+    Screen { slug: "queue-loading", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_loading) },
     Screen { slug: "queue-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_status) },
     Screen { slug: "queue-label", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_label) },
     Screen { slug: "queue-done", width: 1280., height: 1100., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_done) },
@@ -461,6 +462,10 @@ fn queue_page(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<Qu
 }
 fn queue_all(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.show_area(Area::Queue, window, cx);
+}
+fn queue_loading(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.show_loading_for_shot(cx));
 }
 fn queue_status(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Queue, "status:todo", window, cx);
@@ -1443,6 +1448,11 @@ fn main() -> anyhow::Result<()> {
                     }
                 })?;
                 cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            if screen.slug == "queue-loading" {
+                std::thread::sleep(std::time::Duration::from_millis(250));
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
             }

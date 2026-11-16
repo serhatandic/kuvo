@@ -474,7 +474,7 @@ impl Focusable for BranchesView {
 impl Render for BranchesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content: AnyElement = match &self.branches {
-            Load::Loading => empty("Reading branches…", "", None, cx),
+            Load::Loading => kuvo_ui::small::LoadingLabel::new("branches-loading", "Reading branches…").fill().into_any_element(),
             Load::Failed(why) => empty(
                 "Couldn’t Read the Branches",
                 why.clone(),

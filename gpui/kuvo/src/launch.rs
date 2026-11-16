@@ -861,6 +861,8 @@ impl Launch {
             .child(div().id("launch-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
                 if event.click_count == 1 {
                     window.start_window_move();
+                } else if event.click_count == 2 {
+                    window.titlebar_double_click();
                 }
             }))
             .child(div().flex_1().flex().items_center().justify_center().px(space::S6).pb(px(96.)).child(words))

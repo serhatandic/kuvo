@@ -864,6 +864,7 @@ impl ComputersView {
                 };
                 card_row(key.clone(), first, last, cx).child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title)).child(button).into_any_element()
             }
+            Item::Note { key, words, busy: true } => kuvo_ui::small::LoadingLabel::new(gpui::SharedString::from(key), words).into_any_element(),
             Item::Note { key, words, busy } => div()
                 .debug_selector(move || key)
                 .pt(space::S2)
@@ -1271,6 +1272,12 @@ impl Render for ComputersView {
             );
             sheet(card, cx)
         });
+        let loading = self.items.iter().all(|item| matches!(item, Item::Title { .. } | Item::End | Item::Note { busy: true, .. }))
+            .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
+        let page = match loading {
+            Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("computers-loading", words)).into_any_element(),
+            None => list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full().into_any_element(),
+        };
         let selector = match self.shown {
             Shown::All => "computers-page",
             Shown::Add => "add-machine-page",
@@ -1282,7 +1289,7 @@ impl Render for ComputersView {
             .relative()
             .size_full()
             .bg(c.sidebar)
-            .child(list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full())
+            .child(page)
             .children(confirm)
     }
 }
