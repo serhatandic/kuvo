@@ -39,7 +39,7 @@ test("saved sign-ins go into the vault once this Mac's box answers: each a sign-
   write(path.join(K, "box", "kind"), "mac\n");
   write(path.join(K, "updates", "rehome", "state.json"), JSON.stringify({ state: "done", way: "move", owed: ["passwords"], from: S, to: K, app: { bundle, id: APP } }));
   write(path.join(bundle, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${APP}</string></dict></plist>\n`);
-  write(path.join(bundle, "Contents", "MacOS", "kuvo-keys"), `#!/bin/sh\nverb=$1; shift; H=""\nwhile [ $# -gt 0 ]; do case "$1" in --home) H=$2; shift 2 ;; --password) P=$2; shift 2 ;; --account) A=$2; shift 2 ;; *) shift ;; esac; done\n[ "$(cat "$H/updates/rehome/lock/pid" 2>/dev/null)" = "$PPID" ] || { echo "not the move" >&2; exit 2; }\ncase "$verb" in passwords) cat "$HOME/logins.json" ;; delete-originals) cat >/dev/null; echo "$P $A" >>"$HOME/deleted"; exit 0 ;; esac\n`, 0o755);
+  write(path.join(bundle, "Contents", "MacOS", "kuvo-keys"), `#!/bin/sh\nverb=$1; shift; H=""\nwhile [ $# -gt 0 ]; do case "$1" in --home) H=$2; shift 2 ;; --password) P=$2; shift 2 ;; --account) A=$2; shift 2 ;; *) shift ;; esac; done\n[ "$(cat "$H/updates/rehome/lock/pid" 2>/dev/null)" = "$PPID" ] || { echo "not the move" >&2; exit 2; }\ncase "$verb" in passwords) cat "$HOME/logins.json" ;; delete-originals) cat >/dev/null; [ "$P" = changed.example ] && { echo '{"reason":"copy-missing"}'; exit 1; }; echo "$P $A" >>"$HOME/deleted"; exit 0 ;; esac\n`, 0o755);
   write(path.join(home, "logins.json"), JSON.stringify({ v: 1, logins: LOGINS }));
   // What the earlier Kuvo Code let agents sign in to alone, and with which account (its preferences).
   write(path.join(home, "Library", "Preferences", `${APP}.plist`), `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>passwords.agentSignIn</key><array><string>github.com</string></array><key>passwords.agentSignInAccounts</key><dict><key>github.com</key><string>ada</string></dict></dict></plist>\n`);
@@ -103,26 +103,30 @@ test("saved sign-ins go into the vault once this Mac's box answers: each a sign-
   assert.deepEqual([...new Set(deleted())].sort(), ["example.org ", "github.com ada", "github.com grace"]);
 
   // Owed again, with sign-ins the vault can't be found to keep as they are: one whose site and
-  // account it has with another password, two in the Keychain with the same site and account, and
-  // one that wasn't UTF-8 (read with U+FFFD in its place). Each stays in the Keychain as it is, and
-  // the one after them still moves: the step is done, not tried again at every open.
+  // account it has with another password, two in the Keychain with the same site and account (the
+  // real kuvo-keys reads both by them, so both say the one password), one that wasn't UTF-8 (read
+  // with U+FFFD in its place), one whose site the vault refuses, and one that changed in the
+  // Keychain meanwhile. Each stays in the Keychain as it is, and the one after them still moves:
+  // the step is done, not tried again at every open.
   fs.rmSync(path.join(home, "deleted"));
   const UNSURE = [
     { host: "github.com", account: "ada", password: "changed-since" },
-    { host: "twice.example", account: "t", password: "first-of-two" },
-    { host: "twice.example", account: "t", password: "second-of-two" },
+    { host: "twice.example", account: "t", password: "one-of-two" },
+    { host: "twice.example", account: "t", password: "one-of-two" },
     { host: "bytes.example", account: "b", password: "not\uFFFDutf8" },
+    { host: "bad_host.example", account: "u", password: "refused-site" },
+    { host: "changed.example", account: "c", password: "changed-meanwhile" },
     { host: "later.example", account: "l", password: "after-them-all" },
   ];
   write(path.join(home, "logins.json"), JSON.stringify({ v: 1, logins: UNSURE }));
   fs.writeFileSync(state, JSON.stringify({ ...JSON.parse(fs.readFileSync(state, "utf8")), owed: ["passwords"] }));
   const third = await run();
   assert.deepEqual(third.said.status.owed, [], third.errors + errors);
-  assert.ok(third.said.status.dropped.includes("4 saved passwords stay in your Keychain, not the vault: the vault has another password for that site and account, or the Keychain more than one."), JSON.stringify(third.said.status.dropped));
+  assert.ok(third.said.status.dropped.includes("6 saved passwords stay in your Keychain: Kuvo couldn't be sure the vault would keep them exactly. Add any you use to the vault yourself."), JSON.stringify(third.said.status.dropped));
   assert.deepEqual(deleted(), ["later.example l"], "only the one the vault keeps as it is goes from the Keychain");
   const after = await ask("kuvo/vault");
   assert.deepEqual(host.vault.get(ada.id), { password: "hunter22" }, "the vault's own is left as it is");
-  assert.deepEqual(after.items.filter(item => ["twice.example", "later.example", "bytes.example"].includes(item.sites[0])).map(item => [item.name, host.vault.get(item.id).password]).sort(), [["later.example", "after-them-all"], ["twice.example", "first-of-two"]]);
+  assert.deepEqual(after.items.filter(item => !["github.com", "example.org"].includes(item.sites[0])).map(item => [item.name, host.vault.get(item.id).password]).sort(), [["changed.example", "changed-meanwhile"], ["later.example", "after-them-all"]]);
   // The vault's activity notes none of them as shown: each was checked without its value coming back.
   const activity = await ask("kuvo/vault/activity");
   assert.ok(activity.entries.some(entry => entry.what === "added"), JSON.stringify(activity));

@@ -88,16 +88,15 @@ function probed(answer: string): Probed {
   return { kind, version: /^\d+\.\d+\.\d+/.test(version) ? version : null, updating: lines.includes("kuvo updating"), engine: lines.includes("kuvo engine"), id: /^[0-9a-f]{32}$/.test(id) ? id : null, lines };
 }
 
-/** Whether the computer has a machine's box, or a Mac's own, by the installer's own rule
- * (`machineBoxIn`, from the probe's lines): then its installer leaves an earlier Kuvo Code's
- * folder as it is, so it's no reason to refuse. */
+/** Whether the computer has a machine's box, by the installer's rule for it (`machineBoxIn`,
+ * from the probe's lines): then its installer leaves an earlier Kuvo Code's folder as it is
+ * (`machine`, `two`), so that folder is no reason to refuse. (A Mac's own box the probe tells
+ * itself: it doesn't say that folder there at all, as before.) */
 function machineBoxProbed(probe: Probed): boolean {
   const has = (word: string) => () => probe.lines.includes(`kuvo ${word}`);
   const kind = probe.lines.find(line => line.startsWith("kuvo kind"))?.slice(9).trim();
-  // (A Mac's own box is ours already: its installer says `ours` and moves nothing.)
-  if (kind === "mac") return true;
   return machineBoxIn({
-    kind: kind === "machine" ? kind : null, linux: probe.kind.system === "linux",
+    kind: kind === "mac" || kind === "machine" ? kind : null, linux: probe.kind.system === "linux",
     gone: has("gone"), making: has("making"), running: has("running"), keys: has("keys"),
     found: () => foundOf(probe.lines).some(box => !box.app && (box.card !== undefined || box.link !== undefined)),
   });

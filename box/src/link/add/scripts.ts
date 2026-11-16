@@ -61,9 +61,12 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 ${FOUND}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}
-old_app_verdict
-# What the installer judges a machine's box there from (\`machineBoxIn\`): where one is, or it's a
-# Mac's own, an earlier Kuvo Code's folder is left as it is, not moved.
+# A current Mac keeps its old folder for going back, just as the installer permits.
+if [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
+  old_app_verdict
+fi
+# What the installer judges a machine's box there from (\`machineBoxIn\`): where one is, an earlier
+# Kuvo Code's folder is left as it is, not moved.
 echo "kuvo kind $(cat "$K/box/kind" 2>/dev/null | tr -cd 'a-z')"
 { [ -e "$K/bin/kuvo-start" ] && [ ! -e "$K/run/off" ]; } || echo "kuvo gone"
 { [ -e "$K/box/keys" ] || [ -L "$K/box/keys" ]; } && echo "kuvo keys"

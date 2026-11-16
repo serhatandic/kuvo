@@ -1825,8 +1825,9 @@ machines; a client that wants every computer's facts asks the box that has it as
     in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
     its `machine-id` where it has one, what Kuvo Code it has); refuses a Mac with an earlier Kuvo
     Code's data its installer would move (`app-07`, `app-box`: updated to Kuvo there first),
-    unless that Mac has a box of its own or a machine's, judged from the probe by the installer's
-    own rule (`machineBoxIn`), where its installer leaves that data as it is; puts its own release's files there, each checked by its
+    unless that Mac has a box of its own (`box/kind` says `mac`; the probe doesn't look at the
+    data then) or a machine's, judged from the probe by the rule the installer judges one by
+    (`machineBoxIn`), where its installer leaves that data as it is; puts its own release's files there, each checked by its
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
     Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
@@ -7650,10 +7651,10 @@ above. Only on a Mac.
   (`POST kuvo/vault/items/<id>/same`, which shows nothing and notes nothing in its activity)
   before `kuvo-keys delete-originals --password <site> --account <account>` removes its
   Keychain original (the verified password arrives on stdin). One the vault keeps differently
-  (it had another password for that site and account), two the Keychain has for the same site
-  and account, one not valid UTF-8 (said with U+FFFD in its place, never given to the vault),
-  and one `delete-originals` finds changed (`copy-missing`) keep their originals, are counted in
-  `dropped`, and the rest go on; a vault that can't answer the check, or a Keychain that won't
+  (it had another password for that site and account) or refuses (`400`: a site it can't keep),
+  those the Keychain has more than one of for a site and account and one not valid UTF-8 (said
+  with U+FFFD in its place; neither is given to the vault), and one `delete-originals` finds
+  changed (`copy-missing`) keep their originals, are counted in `dropped`, and the rest go on; a vault that can't answer the check, or a Keychain that won't
   remove one, leaves the step owed, verified again at the next run. Short passwords stay in
   the Keychain. Never written to a file, by either.
 - **What the move carries** (the `upgrade` step; each reads the app's folder and its

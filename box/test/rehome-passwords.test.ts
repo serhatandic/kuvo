@@ -19,15 +19,20 @@ for (const scenario of ["ok", "read-fails", "different", "delete-fails"] as cons
       if (route === "/kuvo/vault") return Response.json({ items: item ? [item] : [] });
       if (route === "/kuvo/vault/items") { made++; item = { id: "saved", kind: "login", name: "example.org", sites: ["example.org"], username: "ada" }; return Response.json({ item }); }
       if (scenario === "read-fails") return Response.json({}, { status: 503 });
-      return Response.json({ values: { password: scenario === "different" ? "other-pass" : "secret-pass" } });
+      if (route !== "/kuvo/vault/items/saved/same" || request.method !== "POST") return Response.json({}, { status: 404 });
+      const asked = await request.json() as { values: { password: string } };
+      return Response.json({ same: asked.values.password === (scenario === "different" ? "other-pass" : "secret-pass") });
     } });
     fs.mkdirSync(path.join(home, "run"));
     fs.writeFileSync(path.join(home, "run", "serve.json"), JSON.stringify({ port: server.port, password: "local" }));
     try {
       const run = () => handOverPasswords({ home, keys, agentSites: [], agentAccounts: {}, wait: 0 });
-      expect((await run()).done).toBe(scenario === "ok");
+      // (One the vault keeps differently stays in the Keychain, and the step is done; one that
+      // can't be checked or removed yet is tried again.)
+      const done = scenario === "ok" || scenario === "different";
+      expect((await run()).done).toBe(done);
       expect(fs.existsSync(original)).toBe(scenario !== "ok");
-      expect((await run()).done).toBe(scenario === "ok");
+      expect((await run()).done).toBe(done);
       expect(made).toBe(1);
       expect(fs.existsSync(original)).toBe(scenario !== "ok");
     } finally { server.stop(true); fs.rmSync(home, { recursive: true, force: true }); }

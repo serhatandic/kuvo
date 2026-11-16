@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Adding a Mac with Kuvo Code 0.7's sessions asks you to update it there first. Make This Mac Its Home and Same Computer As have been removed. Moving saved sign-ins into the vault now removes their Keychain copies after checking they arrived safely.
+- Adding a Mac with Kuvo Code 0.7's sessions asks you to update it there first, unless Kuvo is already set up on it as a machine. Make This Mac Its Home and Same Computer As have been removed. Moving saved sign-ins into the vault now removes their Keychain copies after checking they arrived safely; any it can't be sure of stay in the Keychain, and Kuvo says how many.
 
 - Settings › **MCP Servers** is in the desktop app: each server says how it's doing (Connected, Needs sign-in, Couldn’t connect) with its error under it; **Add Server…** and **Edit…** open a form that says as you type what the name will be, whether the computer has the command's program and whether a URL is one (paste a server's setup from its README into the name and the rest fills in); and **Sign In…** shows how it's going under the server until it's done. It's the same for each of your computers, picked at the top of Settings.
 - The desktop archived sidebar and Settings › Archived Sessions show the same archived sessions in the same groups and order, including archived bot sessions.

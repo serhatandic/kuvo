@@ -41748,7 +41748,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "725b40c403bb";
+var BRIDGE_VERSION = "cda0aad80e93";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -43331,9 +43331,12 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 ${FOUND}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}
-old_app_verdict
-# What the installer judges a machine's box there from (\`machineBoxIn\`): where one is, or it's a
-# Mac's own, an earlier Kuvo Code's folder is left as it is, not moved.
+# A current Mac keeps its old folder for going back, just as the installer permits.
+if [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
+  old_app_verdict
+fi
+# What the installer judges a machine's box there from (\`machineBoxIn\`): where one is, an earlier
+# Kuvo Code's folder is left as it is, not moved.
 echo "kuvo kind $(cat "$K/box/kind" 2>/dev/null | tr -cd 'a-z')"
 { [ -e "$K/bin/kuvo-start" ] && [ ! -e "$K/run/off" ]; } || echo "kuvo gone"
 { [ -e "$K/box/keys" ] || [ -L "$K/box/keys" ]; } && echo "kuvo keys"
@@ -44694,10 +44697,8 @@ function probed(answer) {
 function machineBoxProbed(probe) {
   const has = (word) => () => probe.lines.includes(`kuvo ${word}`);
   const kind = probe.lines.find((line) => line.startsWith("kuvo kind"))?.slice(9).trim();
-  if (kind === "mac")
-    return true;
   return machineBoxIn({
-    kind: kind === "machine" ? kind : null,
+    kind: kind === "mac" || kind === "machine" ? kind : null,
     linux: probe.kind.system === "linux",
     gone: has("gone"),
     making: has("making"),
@@ -53545,7 +53546,7 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
     const itemOf = (login) => items.find((item) => item.kind === "login" && Array.isArray(item.sites) && item.sites.includes(login.host) && (typeof item.username === "string" ? item.username : "") === login.account);
     const granted = new Set((Array.isArray(vault.value.grants) ? vault.value.grants : []).filter(isObject).filter((grant) => isObject(grant.who) && grant.who.everyone === true).map((grant) => grant.item));
     for (const login of logins) {
-      if (login.password.includes("�")) {
+      if (login.password.includes("�") || unsure.has(keyOf(login))) {
         kept++;
         continue;
       }
@@ -53557,6 +53558,10 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
         }
         const name = freeName2(login.host, login.account, taken);
         const made = await ask("POST", "kuvo/vault/items", { kind: "login", name, sites: [login.host], ...login.account ? { username: login.account } : {}, signInOnly: true, values: { password: login.password } });
+        if (made.status === 400) {
+          kept++;
+          continue;
+        }
         item = isObject(made.value.item) ? made.value.item : undefined;
         if (made.status !== 200 || !item || typeof item.id !== "string")
           return { done: false, why: `the vault answered ${made.status} to a sign-in`, added, short, kept };
@@ -53576,10 +53581,6 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
         if (grant.status !== 200)
           return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short, kept };
         granted.add(item.id);
-      }
-      if (unsure.has(keyOf(login))) {
-        kept++;
-        continue;
       }
       const removed = spawnSync17(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
       if (removed.status !== 0 && reasonOf(removed.stdout) === "copy-missing") {
@@ -53780,7 +53781,7 @@ async function settle5(home, options) {
       if (handed.short)
         noteRecord(home, { dropped: [...readRecord(home).dropped ?? [], `${handed.short === 1 ? "A saved password" : `${handed.short} saved passwords`} shorter than four characters ${handed.short === 1 ? "wasn't" : "weren't"} brought into the vault, which keeps none that short.`] });
       if (handed.kept)
-        noteRecord(home, { dropped: [...readRecord(home).dropped ?? [], `${handed.kept === 1 ? "A saved password stays" : `${handed.kept} saved passwords stay`} in your Keychain, not the vault: the vault has another password for that site and account, or the Keychain more than one.`] });
+        noteRecord(home, { dropped: [...readRecord(home).dropped ?? [], `${handed.kept === 1 ? "A saved password stays" : `${handed.kept} saved passwords stay`} in your Keychain: Kuvo couldn't be sure the vault would keep ${handed.kept === 1 ? "it" : "them"} exactly. Add any you use to the vault yourself.`] });
       settled2(home, "passwords");
     } else {
       console.error(`Your saved sign-ins couldn't be brought into the vault yet: ${handed.why}`);

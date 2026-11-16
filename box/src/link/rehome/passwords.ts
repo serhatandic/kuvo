@@ -23,7 +23,8 @@ interface Login { host: string; account: string; password: string }
 /** How it went: `done` once every sign-in is in the vault or said; `why` where it's to be tried
  * again; how many were added, those the vault can't keep (`short`: under its four characters), and
  * those left in the Keychain as they are (`kept`: the vault has another password for that site and
- * account, two Keychain sign-ins share them, or one's password couldn't be read exactly). */
+ * account or refuses it, two Keychain sign-ins share them, one's password couldn't be read
+ * exactly, or it changed meanwhile). */
 export interface HandedOver { done: boolean; why?: string; added: number; short: number; kept: number }
 
 /** Where the box's server answers on this Mac (`run/serve.json`), waited for a while: it starts
@@ -87,15 +88,18 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
     const itemOf = (login: Login) => items.find(item => item.kind === "login" && Array.isArray(item.sites) && item.sites.includes(login.host) && (typeof item.username === "string" ? item.username : "") === login.account);
     const granted = new Set((Array.isArray(vault.value.grants) ? vault.value.grants : []).filter(isObject).filter(grant => isObject(grant.who) && grant.who.everyone === true).map(grant => grant.item));
     for (const login of logins) {
-      // A password kuvo-keys couldn't say exactly (not valid UTF-8: read with U+FFFD in its place)
-      // isn't given to the vault, which would keep another password.
-      if (login.password.includes("\uFFFD")) { kept++; continue; }
+      // Kept in the Keychain, never given to the vault: a password kuvo-keys couldn't say exactly
+      // (not valid UTF-8: read with U+FFFD in its place), and sign-ins that share a site and
+      // account (the Keychain finds one by them, so which is which can't be told).
+      if (login.password.includes("\uFFFD") || unsure.has(keyOf(login))) { kept++; continue; }
       let item = itemOf(login);
       if (!item) {
         // (The vault keeps no value under four characters: it couldn't hide one from agents.)
         if (login.password.length < 4) { short++; continue; }
         const name = freeName(login.host, login.account, taken);
         const made = await ask("POST", "kuvo/vault/items", { kind: "login", name, sites: [login.host], ...(login.account ? { username: login.account } : {}), signInOnly: true, values: { password: login.password } });
+        // (One the vault refuses, a site it can't keep or a value too long, stays in the Keychain.)
+        if (made.status === 400) { kept++; continue; }
         item = isObject(made.value.item) ? made.value.item : undefined;
         if (made.status !== 200 || !item || typeof item.id !== "string") return { done: false, why: `the vault answered ${made.status} to a sign-in`, added, short, kept };
         added++;
@@ -116,9 +120,6 @@ export async function handOverPasswords({ home, keys, agentSites, agentAccounts,
         if (grant.status !== 200) return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short, kept };
         granted.add(item.id);
       }
-      // (The Keychain finds a sign-in by its site and account: where two share them, it's kept,
-      // not removed.)
-      if (unsure.has(keyOf(login))) { kept++; continue; }
       const removed = spawnSync(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180_000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
       // (One that's another password in the Keychain now, `copy-missing`, is kept as it is.)
       if (removed.status !== 0 && reasonOf(removed.stdout) === "copy-missing") { kept++; continue; }
