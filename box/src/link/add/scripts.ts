@@ -223,6 +223,41 @@ export const route = (version: string): string => `${K}
 ${engineOf(version)}
 ${link("box route")}`;
 
+/** What Kuvo there is, and whether anything is at work on it now, for bringing an older one up to
+ * date only while nothing is (`keep-up.ts`): its engine and its coding agents' bridge asked, as a
+ * box asks its own before it updates (`agentsWorking`: `api/session/active` of each that runs, by
+ * its record in `run`). Changes nothing (its script, in Kuvo's own `tmp`, goes as it ends). Lines:
+ * `kuvo version <v>`, then `working <n>`, or `working unknown` where one that runs didn't answer
+ * (or its engine can't run the check). Any box's, whatever its version: it reads only their files. */
+export const atWork = (version: string): string => String.raw`${K}
+echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
+${engineOf(version)}
+[ -x "$E" ] || { echo "working unknown"; exit 0; }
+mkdir -p "$K/tmp" || { echo "working unknown"; exit 0; }
+S="$K/tmp/.kuvo-at-work.$$.js"
+trap 'rm -f "$S"' EXIT
+cat >"$S" <<'KUVO_AT_WORK'
+const fs = require("fs"), path = require("path");
+(async () => {
+  let count = 0, unknown = false;
+  for (const name of ["engine.json", "bridge.json"]) {
+    let target = null;
+    try { target = JSON.parse(fs.readFileSync(path.join(process.env.KUVO_HOME, "run", name), "utf8")); } catch {}
+    if (!target || !target.port || !target.password) continue;
+    if (target.pid) { try { process.kill(target.pid, 0); } catch { continue; } }
+    try {
+      const answer = await fetch("http://127.0.0.1:" + target.port + "/api/session/active", { headers: { authorization: "Basic " + Buffer.from("opencode:" + target.password).toString("base64") }, signal: AbortSignal.timeout(10000) });
+      const data = answer.ok ? (await answer.json())?.data : undefined;
+      if (Array.isArray(data)) count += data.length;
+      else if (data && typeof data === "object") count += Object.keys(data).length;
+      else unknown = true;
+    } catch { unknown = true; }
+  }
+  console.log(unknown ? "working unknown" : "working " + count);
+})();
+KUVO_AT_WORK
+(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$S") 2>/dev/null | grep '^working ' || echo "working unknown"`;
+
 /** Takes Kuvo Code off the computer: it lets this computer (`key`) go; and unless another Mac
  * still uses it (`only: false` leaves it running for them), its own `uninstall` (nothing of it
  * runs or starts again: its launch agent and crontab line too), then the sign-ins and keys it

@@ -183,6 +183,7 @@ function stopFrom(tell: Telling): void {
 
 const SETUP_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Starting Kuvo Code there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Adding it to your computers"]] as const;
 const AGAIN_STEPS = [["checking", "Checking it"], ["files", "Copying Kuvo Code"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo Code there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Adding it to your computers"]] as const;
+const UPDATE_STEPS = [["checking", "Checking it"], ["files", "Copying the update"], ["engine", "Copying the engine"], ["starting", "Restarting Kuvo there"], ["seeding", "Copying your keys and sign-ins"], ["joining", "Reconnecting it"]] as const;
 const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and removing Kuvo Code"], ["forgetting", "Taking it off your computers"]] as const;
 
 /** The key this box is known by on the computers it starts (its engine launches' notes there):
@@ -190,7 +191,7 @@ const UNINSTALL_STEPS = [["checking", "Reaching it"], ["removing", "Stopping and
 const launcherID = (key: string): string => crypto.createHash("sha256").update(`kuvo-launcher\n${key}`).digest("hex").slice(0, 32);
 
 // Sets a computer up at `destination`, or again: everything to its box running there as one of yours.
-async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup"): Promise<void> {
+async function setUp(tell: Telling, destination: string, name: string, kind: "add" | "setup" | "update"): Promise<void> {
   const reach = new Reach(destination, name, tell);
   try {
     tell.step("checking", `Connecting to ${name}`);
@@ -201,6 +202,12 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
     if (probe.updating) throw new Failed(`${name} is updating Kuvo Code itself right now. Try again in a few minutes.`);
+    // Brought up to date: nothing to do where it's as new already (it updated itself, or another
+    // computer brought it up meanwhile).
+    if (kind === "update" && probe.version && !newerVersion(mine, probe.version)) {
+      for (const id of ["files", "engine", "starting", "seeding", "joining"]) tell.skip(id, "It’s up to date already");
+      return;
+    }
     if (/^app-(?:07|box)$/m.test(answer.stdout) && !machineBoxProbed(probe)) throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
     const link = readLink();
     const judged = judgeComputer(foundOf(probe.lines), oursNow(link), appsOf(probe.lines));
@@ -412,6 +419,49 @@ export function beginSetup(key: string): Running | Busy | null {
   return uninstalling(now) ?? now ?? begin("setup", at.destination, at.name, AGAIN_STEPS, tell => setUp(tell, at.destination, at.name, "setup"));
 }
 
+/** What Kuvo the computer `key` has, and how many conversations are at work there now (null: that
+ * couldn't be told), asked over SSH at the address this box set it up at, changing nothing: for
+ * bringing it up to date only while nothing is (`keep-up.ts`). Nobody is asked anything (a host key
+ * not known fails it). Null for a computer this box didn't set up; a `Failed` for one it couldn't reach. */
+export async function lookAtWork(key: string): Promise<{ version: string | null; working: number | null } | null> {
+  const at = sshAddressOf(key);
+  if (!at) return null;
+  const stop = new AbortController();
+  const quiet: Telling = {
+    signal: stop.signal,
+    check() { if (stop.signal.aborted) throw new Stopped(); },
+    step() {}, sent() {}, skip() {}, came() {}, rename() {},
+    ask: async () => { throw new Failed(`${at.name}’s host key isn’t one ${ownName()} knows.`); },
+  };
+  const reach = new Reach(at.destination, at.name, quiet);
+  try {
+    const answer = await reach.run(scripts.atWork(ENGINE_VERSION), { most: 60_000 });
+    if (answer.status !== 0) throw new Failed(`${at.name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
+    const said = (name: string) => answer.stdout.split("\n").map(line => line.trim()).find(line => line.startsWith(`${name} `))?.slice(name.length + 1) ?? "";
+    const version = said("kuvo version");
+    const working = said("working");
+    return { version: /^\d+\.\d+\.\d+/.test(version) ? version : null, working: /^\d+$/.test(working) ? Number(working) : null };
+  } finally {
+    await reach.close();
+  }
+}
+
+/** Begins bringing the computer `key`'s older Kuvo up to date with this box's (`computers.update`,
+ * `keep-up.ts`): Set Up Again's steps, which leave its running engine alone and its coding agents'
+ * bridge to make way when nothing runs. `auto`: begun by this box itself, with nobody there to ask,
+ * so what it would ask you (a host key, another setup's box) fails it instead, in words that say
+ * to update it from its page. */
+export function beginUpdate(key: string, auto = false): Running | Busy | null {
+  const at = sshAddressOf(key);
+  if (!at) return null;
+  const now = underWay(at.destination);
+  if (now) return uninstalling(now) ?? now;
+  return begin("update", at.destination, at.name, UPDATE_STEPS, tell => setUp(auto ? {
+    ...tell,
+    ask: async () => { throw new Failed(`${at.name} needs you to answer something before it’s updated. Choose Update Now on its page in Computers.`); },
+  } : tell, at.destination, at.name, "update"));
+}
+
 /** Begins uninstalling Kuvo Code from the computer `key` (one being uninstalled already is
  * answered as it is): what's under way there (it's being set up) is stopped first and waited for, so nothing starts it again behind the removal; then it lets
  * this computer go, stops and removes what starts it, and this box takes it off its list. */
@@ -461,7 +511,7 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
   if (!at) return [];
   const name = computer.name || "this machine";
   const busy = underWay(at.destination);
-  const why = busy ? (busy.seen.kind === "uninstall" ? "Kuvo Code is being uninstalled from it now." : "It’s being set up now.") : null;
+  const why = busy ? (busy.seen.kind === "uninstall" ? "Kuvo Code is being uninstalled from it now." : busy.seen.kind === "update" ? "It’s being updated now." : "It’s being set up now.") : null;
   return [
     { id: "setup", label: "Set Up Again", ...(why ? { why } : {}) },
     { id: "uninstall", label: "Uninstall", ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: `Uninstall Kuvo Code from ${name}?`, message: `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted.${vouchedWords(readLink(), computer.key, name)} Its sessions stay in ~/.kuvo-code on ${name}.`, label: "Uninstall" } }) },

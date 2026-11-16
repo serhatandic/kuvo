@@ -70,6 +70,7 @@ export const FEATURES = [
   "computers.manage",
   "computers.reach",
   "computers.reach-words",
+  "computers.update",
   "computers.words",
   "config",
   "config.apply",

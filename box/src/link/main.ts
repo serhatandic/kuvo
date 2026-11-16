@@ -113,6 +113,7 @@ import { keepAwakeWhileWorking } from "./work/awake";
 import { runningServe, SERVE_FILE, SERVE_NEEDED, stopKeptServe } from "./serve-kept";
 import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
+import { keepMachinesUp } from "./add/keep-up";
 import { type UpdateOptions, agentsWorking, checkDrift, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
@@ -187,6 +188,7 @@ export { KEEP_FOR, SEEN_FILE, forgetPhones, phoneSeenLately } from "./compat/lea
 export { engineConnect, engineControl, toolRun } from "./areas/engine";
 export { botPersonalities, changePersonalities, mergePersonalities, personalitiesDocument, readPersonalities } from "./personalities/library";
 export { keyFilesWait, syncKeyFiles } from "./keys";
+export { KEEP_UP_FILE, keepUpRound } from "./add/keep-up";
 export { UPDATE_KEYS, agentsWorking, boxVersion, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerUpdate, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
@@ -867,6 +869,8 @@ async function serve(): Promise<void> {
   // This Mac's link to your phones and machines, as its app last said it's wanted (kept in
   // run/mac-link.json, so it's back on the relay after a restart before the app opens), or once it says so.
   if (IS_MAC) runMacLink().catch(() => {});
+  // The machines it set up over SSH, brought up to date with it once nothing is at work there.
+  if (IS_MAC) keepMachinesUp();
   // Its agents and their letters, and its group chats' mail, for your other computers. (Not for
   // the app's route scenarios, `KUVO_TEST_NO_PEERS`, whose fixture tells its bridge who they are.)
   // Never a real box (a test's folder only).

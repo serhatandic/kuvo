@@ -2,17 +2,19 @@
 // over SSH from this box, for any client: whether it adds them and the hosts to suggest, its tries
 // as they go (their steps, questions and words, all the box's), an answer to what one asks, one
 // stopped or forgotten; and, for a computer it set up, setting it up again and uninstalling Kuvo
-// Code from it. The work is `add/flow.ts`; a client only asks and draws.
+// Code from it, or bringing its older Kuvo up to date now (`add/keep-up.ts`). The work is
+// `add/flow.ts`; a client only asks and draws.
 
 import { parsed, type Body } from "../../shared/json";
 import type { Adding } from "../../shared/routes/box";
 import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginSetup, beginUninstall, canAdd, sshAddressOf, takenAddresses } from "../add/flow";
+import { bringUp } from "../add/keep-up";
 import { allTries, answerTry, endTry, tryFollowers } from "../add/tries";
 import { followed } from "../follow";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
-export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall))$/;
+export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
 
 /** Adding computers, as this box says it now. */
 export function adding(): Adding {
@@ -38,7 +40,8 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
     const can = canAdd();
     if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
     if (!sshAddressOf(key)) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
-    const begun = action === "setup" ? beginSetup(key) : beginUninstall(key);
+    // (Update Now: this box's own, brought up as it would by itself, but now.)
+    const begun = action === "setup" ? beginSetup(key) : action === "update" ? bringUp(key, false) : beginUninstall(key);
     if (!begun) return yield* json(404, { message: "That isn’t a computer this one set up over SSH." });
     if ("busy" in begun) return yield* json(409, { message: begun.busy });
     return yield* json(202, { try: begun.seen });

@@ -76,7 +76,7 @@ function note(): void {
   for (const tell of [...tryFollowers]) tell();
 }
 
-const NAMES = { add: ["Adding", "is one of your computers", "Couldn’t add"], setup: ["Setting up", "is set up again", "Couldn’t set up"], uninstall: ["Uninstalling Kuvo Code from", "no longer has Kuvo Code running", "Couldn’t uninstall from"] } as const;
+const NAMES = { add: ["Adding", "is one of your computers", "Couldn’t add"], setup: ["Setting up", "is set up again", "Couldn’t set up"], update: ["Updating Kuvo on", "is up to date", "Couldn’t update Kuvo on"], uninstall: ["Uninstalling Kuvo Code from", "no longer has Kuvo Code running", "Couldn’t uninstall from"] } as const;
 const workingTitle = (kind: AddTry["kind"], name: string): string => `${NAMES[kind][0]} ${name}…`;
 const doneTitle = (kind: AddTry["kind"], name: string): string => `${name} ${NAMES[kind][1]}`;
 const failedTitle = (kind: AddTry["kind"], name: string): string => `${NAMES[kind][2]} ${name}`;

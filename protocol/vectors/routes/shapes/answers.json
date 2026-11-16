@@ -3723,6 +3723,9 @@
            },
            {
             "literal": "uninstall"
+           },
+           {
+            "literal": "update"
            }
           ]
          },
@@ -3888,6 +3891,9 @@
            },
            {
             "literal": "uninstall"
+           },
+           {
+            "literal": "update"
            }
           ]
          },
@@ -4047,6 +4053,9 @@
           },
           {
            "literal": "uninstall"
+          },
+          {
+           "literal": "update"
           }
          ]
         },
@@ -4205,6 +4214,9 @@
           },
           {
            "literal": "uninstall"
+          },
+          {
+           "literal": "update"
           }
          ]
         },
@@ -4401,6 +4413,9 @@
           },
           {
            "literal": "uninstall"
+          },
+          {
+           "literal": "update"
           }
          ]
         },
@@ -4559,6 +4574,170 @@
           },
           {
            "literal": "uninstall"
+          },
+          {
+           "literal": "update"
+          }
+         ]
+        },
+        "destination": "string",
+        "name": "string",
+        "state": {
+         "oneOf": [
+          {
+           "literal": "working"
+          },
+          {
+           "literal": "asking"
+          },
+          {
+           "literal": "stopping"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        },
+        "title": "string",
+        "steps": {
+         "list": {
+          "object": {
+           "id": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "now"
+             },
+             {
+              "literal": "done"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "detail?": "string",
+           "sent?": "number",
+           "total?": "number"
+          }
+         }
+        },
+        "question?": {
+         "object": {
+          "id": "string",
+          "title": "string",
+          "message": "string",
+          "at": "number",
+          "facts": {
+           "list": {
+            "object": {
+             "label": "string",
+             "value": "string",
+             "code?": "bool"
+            }
+           }
+          },
+          "answers": {
+           "list": {
+            "object": {
+             "id": "string",
+             "label": "string",
+             "kind": {
+              "oneOf": [
+               {
+                "literal": "primary"
+               },
+               {
+                "literal": "plain"
+               },
+               {
+                "literal": "danger"
+               }
+              ]
+             }
+            }
+           }
+          }
+         }
+        },
+        "failure?": {
+         "object": {
+          "title": "string",
+          "message": "string",
+          "again": "bool"
+         }
+        },
+        "computer?": {
+         "object": {
+          "key": "string",
+          "name": "string"
+         }
+        },
+        "known?": "bool"
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "primary?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/:key/update",
+   "answers": {
+    "202": {
+     "object": {
+      "try": {
+       "object": {
+        "id": "string",
+        "kind": {
+         "oneOf": [
+          {
+           "literal": "add"
+          },
+          {
+           "literal": "setup"
+          },
+          {
+           "literal": "uninstall"
+          },
+          {
+           "literal": "update"
           }
          ]
         },
@@ -4825,6 +5004,9 @@
               },
               {
                "literal": "uninstall"
+              },
+              {
+               "literal": "update"
               }
              ]
             },
@@ -4846,6 +5028,28 @@
             "literal": true
            },
            "words": "string"
+          }
+         },
+         "update?": {
+          "object": {
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "updating"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "title": "string",
+           "detail": "string",
+           "long?": {
+            "literal": true
+           }
           }
          }
         }
@@ -4986,6 +5190,9 @@
               },
               {
                "literal": "uninstall"
+              },
+              {
+               "literal": "update"
               }
              ]
             },
@@ -5007,6 +5214,28 @@
             "literal": true
            },
            "words": "string"
+          }
+         },
+         "update?": {
+          "object": {
+           "state": {
+            "oneOf": [
+             {
+              "literal": "waiting"
+             },
+             {
+              "literal": "updating"
+             },
+             {
+              "literal": "failed"
+             }
+            ]
+           },
+           "title": "string",
+           "detail": "string",
+           "long?": {
+            "literal": true
+           }
           }
          }
         }
@@ -5338,6 +5567,9 @@
            },
            {
             "literal": "computers.reach-words"
+           },
+           {
+            "literal": "computers.update"
            },
            {
             "literal": "computers.words"
@@ -6037,6 +6269,9 @@
            },
            {
             "literal": "computers.reach-words"
+           },
+           {
+            "literal": "computers.update"
            },
            {
             "literal": "computers.words"

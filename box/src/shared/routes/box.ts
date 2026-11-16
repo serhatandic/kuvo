@@ -310,8 +310,9 @@ export type Found = Infer<typeof FOUND>;
  * client shows beside it. `allow-devices` (`devices.allow`): on your setup's main computer, a
  * computer kept from adding Kuvo Code's app to your devices is let do it again. `setup` and
  * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
- * and uninstalling Kuvo Code from it. */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+ * and uninstalling Kuvo Code from it. `update` (`computers.update`): on that box, bringing a machine
+ * whose Kuvo is older than its own up to date now (asked first while something is at work there). */
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall", "update"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
@@ -327,6 +328,12 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
  * what can be done with it from here (`actions`); and `vouching` (`devices.allow`, on your setup's
  * main computer alone): it's kept from adding Kuvo Code's app to your devices, since one it added
  * was removed, in words a client shows as they are. */
+/** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):
+ * it waits for nothing to be at work there (`long`: over a day now), is updating it, or couldn't
+ * (and tries again later); in the box's words, which a client shows as they are. */
+export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true) });
+export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
+
 export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
@@ -335,6 +342,7 @@ export const LISTED_COMPUTER = object({
   via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
+  "update?": COMPUTER_UPDATE,
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
@@ -369,7 +377,7 @@ export type AddQuestion = Infer<typeof ADD_QUESTION>;
  * what it asks now, how it failed (`again`: trying again could go otherwise), and the computer it
  * came to (`known`: one that was here already, at another address). */
 export const ADD_TRY = object({
-  id: string, kind: words("add", "setup", "uninstall"), destination: string, name: string,
+  id: string, kind: words("add", "setup", "uninstall", "update"), destination: string, name: string,
   state: words("working", "asking", "stopping", "failed", "done"), title: string,
   steps: list(ADD_STEP),
   "question?": ADD_QUESTION,
@@ -394,6 +402,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/computers/add/:id", answers: { 200: NOTHING, ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/setup", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/uninstall", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/computers/:key/update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "PATCH kuvo/computers/:key", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },

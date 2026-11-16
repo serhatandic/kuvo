@@ -35,6 +35,7 @@ import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/rea
 import { ownName } from "../letters/start";
 import { forwardAct } from "../work-queue/forward";
 import { sshActions } from "../add/flow";
+import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
 import { allowVouching, vouchBlockOf } from "../phones";
 import { blockedWords } from "../peers/devices";
@@ -206,7 +207,11 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
-    return computers.map(computer => ({ ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...sshActions(computer as ListedComputer, here)] }));
+    return computers.map(computer => {
+      // (Brought up to date by this box, where it set it up and it's older: how that stands, and Update Now.)
+      const keeping = keepingUp(computer as ListedComputer, here, now);
+      return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(keeping.update ? { update: keeping.update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
+    });
   };
   // A machine Macs of different setups share lists itself alone: the others there aren't all one
   // person's computers (as `kuvo/setup` refuses there).
@@ -354,5 +359,5 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
     return () => { listFollowers.delete(listTold); tryFollowers.delete(told); };
   };
   return yield* followedLive(read, listen, signal,
-    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${oldAppAttached()}` });
+    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()}` });
 }
