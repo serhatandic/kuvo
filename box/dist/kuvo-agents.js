@@ -14994,7 +14994,6 @@ class ClaudeAgent {
   listed = [];
   program = 0;
   signOut;
-  signOutShared;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
@@ -15014,8 +15013,7 @@ class ClaudeAgent {
           this.modelList = undefined;
         }
       };
-    } else if (instance.id === "default") {
-      this.signOutShared = !instance.home;
+    } else if (instance.id === "default" && instance.home) {
       this.signOut = async () => {
         await signOutWith("Claude Code", this.executable(), ["auth", "logout"], this.env());
         this.programUpdated();
@@ -17514,6 +17512,7 @@ class CodexAgent {
   }
   signOut;
   signOutShared;
+  signOutStops = true;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
@@ -19912,7 +19911,7 @@ class CursorAgent {
     return loaded.apiKey;
   }
   async account(fresh = false) {
-    if ((this.instance.home || !process.env.CURSOR_API_KEY) && !existsSync17(this.authFile)) {
+    if ((this.instance.home || !process.env.CURSOR_API_KEY?.trim()) && !existsSync17(this.authFile)) {
       return { installed: true, signedIn: false, message: "Sign in with your Cursor account. Kuvo Code downloads Cursor's agent the first time." };
     }
     return this.known.read(fresh, async () => {
@@ -21055,10 +21054,16 @@ class GrokAgent {
     if (instance.id === "default") {
       this.signOutShared = !instance.home;
       this.signOut = async () => {
-        await signOutWith("Grok", this.executable(), ["logout"], this.env());
+        const key = Boolean(process.env.XAI_API_KEY?.trim());
+        if (key)
+          await signOutWith("Grok", this.executable(), ["logout"], this.env()).catch(() => {});
+        else
+          await signOutWith("Grok", this.executable(), ["logout"], this.env());
         this.programUpdated();
         this.known.reset();
         this.status = undefined;
+        if (key)
+          throw new Error("Grok stays signed in with XAI_API_KEY from your shell\u2019s environment. Remove it there to sign out.");
       };
     }
   }
@@ -35913,6 +35918,7 @@ async function integration(agent, fresh = false, auto) {
       install: agent.install,
       signsOut: Boolean(agent.signOut),
       signOutShared: Boolean(agent.signOut && agent.signOutShared),
+      signOutStops: Boolean(agent.signOut && agent.signOutStops),
       version: maintained?.installed,
       latestVersion: maintained?.latest,
       outdated: maintained ? isOutdated(maintained) : false,
@@ -37796,4 +37802,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 827fc1c267ad14f124e53f6ef8ecd01ba71d5d1459a1949725499088f629c301
+// Built from Packages/Box/src/agents 30708812598a1d2c451d741c6039a429c5414de60340711ce949c3b60668dc43

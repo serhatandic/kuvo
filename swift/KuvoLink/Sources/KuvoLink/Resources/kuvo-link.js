@@ -43232,7 +43232,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d4a0d29bedce";
+var BRIDGE_VERSION = "e7eb397e569c";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -59542,12 +59542,13 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     confirm: { title: `Remove ${name}?`, message: `This account is signed out and forgotten on ${computer}: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in.`, label: "Remove Account" }
   };
   const shared = meta.signOutShared === true;
+  const stays = meta.signOutStops === true ? "A turn running on it stops; your sessions stay" : "Your sessions stay";
   const signOut = {
     id: "signOut",
     label: "Sign Out",
     confirm: {
       title: `Sign out of ${name}?`,
-      message: shared ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. Your sessions stay; sign in again to use it.` : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
+      message: shared ? `${name} is signed out on ${computer}, in Terminal too, and its models leave the model picker. ${stays}; sign in again to use it.` : `${name} is signed out in Kuvo Code on ${computer}, and its models leave the model picker. ${stays}; sign in again to use it. Outside Kuvo Code, ${name} stays as it is.`,
       label: "Sign Out"
     }
   };
