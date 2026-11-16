@@ -265,7 +265,7 @@ impl FilesView {
             Row::Note { folder, depth, read } => {
                 let note = |text: String| line(format!("note-{folder}")).pl(indent(*depth) + px(18.)).text_ui(TypeSize::Caption).text_color(c.text_faint).child(text);
                 match read {
-                    Read::Loading => note("Reading…".into()).into_any_element(),
+                    Read::Loading => line(format!("note-{folder}")).pl(indent(*depth) + px(18.)).child(kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("tree-loading-{folder}")), "Reading…").compact()).into_any_element(),
                     Read::Listed(_) => note("Empty".into()).into_any_element(),
                     Read::Unreadable(Unreadable { reason, message }) => self.unreadable(folder, *depth, reason.clone().unwrap_or_else(|| message.clone()), cx),
                     Read::Failed(why) => self.unreadable(folder, *depth, why.clone(), cx),
@@ -309,7 +309,7 @@ impl FilesView {
         let name = relative.rsplit('/').next().unwrap_or(&relative).to_owned();
         let folder = relative.rsplit_once('/').map(|(folder, _)| folder.to_owned()).unwrap_or_default();
         let body: AnyElement = match shown {
-            Load::Loading => div().p(space::S4).text_color(c.text_faint).child("Reading…").into_any_element(),
+            Load::Loading => kuvo_ui::small::LoadingLabel::new("file-loading", "Reading…").fill().into_any_element(),
             Load::Failed(why) => div().p(space::S4).text_color(c.text_faint).child(format!("It couldn’t be read: {why}")).into_any_element(),
             Load::Ready(Shown::Unshown(why)) => div().p(space::S4).text_color(c.text_faint).child(why.clone()).into_any_element(),
             Load::Ready(Shown::Text { text, lines }) => {
@@ -351,7 +351,7 @@ impl FilesView {
                     )
                     .children(self.open_in(path)),
             )
-            .child(div().id("file-scroll").debug_selector(|| "file-viewer".into()).flex_1().min_h_0().overflow_y_scroll().p(space::S3).child(body))
+            .child(div().id("file-scroll").debug_selector(|| "file-viewer".into()).flex_1().min_h_0().overflow_y_scroll().p(space::S3).when(matches!(shown, Load::Loading), |d| d.flex().flex_col()).child(body))
             .into_any_element()
     }
 }

@@ -399,9 +399,56 @@ pub fn spinner(id: impl Into<ElementId>, size: IconSize, color: Hsla) -> impl In
         })
 }
 
+fn loading_is_visible(elapsed: Duration) -> bool {
+    elapsed >= Duration::from_millis(200)
+}
+
+/// Quiet progress for a region being read. Brief reads stay invisible.
+#[derive(IntoElement)]
+pub struct LoadingLabel {
+    id: ElementId,
+    words: SharedString,
+    fill: bool,
+    compact: bool,
+}
+
+impl LoadingLabel {
+    pub fn new(id: impl Into<ElementId>, words: impl Into<SharedString>) -> Self {
+        Self { id: id.into(), words: words.into(), fill: false, compact: false }
+    }
+    /// Occupy the remaining space of a column.
+    pub fn fill(mut self) -> Self { self.fill = true; self }
+
+    /// A quiet placeholder inside one list row.
+    pub fn compact(mut self) -> Self { self.compact = true; self }
+
+}
+
+impl RenderOnce for LoadingLabel {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let started = *window.use_keyed_state((self.id.clone(), "started"), cx, |_, _| std::time::Instant::now()).read(cx);
+        let color = cx.theme().colors.text_muted;
+        div().w_full().min_h(px(if self.compact { 24. } else { 160. })).flex().items_center().justify_center()
+            .when(self.fill, |d| d.flex_1().h_full().min_h_0())
+            .text_ui(TypeSize::Small).text_color(color).child(self.words)
+            .with_animation(self.id, Animation::new(Duration::from_millis(1400)).repeat(), move |label, delta| {
+                let opacity = if !loading_is_visible(started.elapsed()) { 0. } else { 0.65 + 0.35 * (delta * std::f32::consts::TAU).cos().abs() };
+                label.opacity(opacity)
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_waits_for_slow_reads() {
+        assert!(!loading_is_visible(Duration::ZERO));
+        assert!(!loading_is_visible(Duration::from_millis(199)));
+        assert!(loading_is_visible(Duration::from_millis(200)));
+        assert!(loading_is_visible(Duration::from_secs(2)));
+    }
 
     #[test]
     fn initials_take_the_first_two_words() {

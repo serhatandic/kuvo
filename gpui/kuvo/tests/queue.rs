@@ -128,7 +128,9 @@ fn the_queue_lists_the_boxs_items_under_its_statuses_with_whats_closed_folded(cx
 
     // What's closed is folded until it's opened; so is what's deleted.
     assert!(!shown(cx, "item-wqi_251") && !shown(cx, "item-wqi_248") && !shown(cx, "item-wqi_262"));
+    let folded_height = bounds(cx, "group-done").unwrap().size.height;
     click(cx, "group-done");
+    assert_eq!(bounds(cx, "group-done").unwrap().size.height, folded_height);
     assert!(shown(cx, "item-wqi_251") && shown(cx, "item-wqi_251-status-done"));
     click(cx, "group-done");
     assert!(!shown(cx, "item-wqi_251"));

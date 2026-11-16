@@ -78,6 +78,8 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
         .on_mouse_down(MouseButton::Left, |event, window, _| {
             if event.click_count == 1 {
                 window.start_window_move();
+            } else if event.click_count == 2 {
+                window.titlebar_double_click();
             }
         })
         .child(

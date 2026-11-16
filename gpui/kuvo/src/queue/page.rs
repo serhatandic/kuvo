@@ -109,7 +109,7 @@ impl QueueView {
                             .flex()
                             .items_center()
                             .gap(space::S2)
-                            .h(px(if folded { 40. } else { 28. }))
+                            .h(px(40.))
                             .px(space::S3)
                             .rounded(radius::POPOVER)
                             .cursor_pointer()
@@ -129,7 +129,8 @@ impl QueueView {
             }
             Row::Item { item, first, last, deleted, busy } => self.item_row(*item, first, last, deleted, busy, cx),
             Row::Empty(words) => div().debug_selector(|| "queue-empty".into()).h(px(160.)).flex().items_center().justify_center().text_center().text_ui(TypeSize::Body).text_color(c.text_muted).child(div().max_w(px(420.)).child(words)).into_any_element(),
-            Row::Note { key, words, busy } => div()
+            Row::Note { key, words, busy: true } => kuvo_ui::small::LoadingLabel::new(SharedString::from(key), words).into_any_element(),
+            Row::Note { key, words, busy: false } => div()
                 .debug_selector(move || key)
                 .pt(space::S3)
                 .flex()
@@ -137,7 +138,7 @@ impl QueueView {
                 .gap(space::S2)
                 .text_ui(TypeSize::Small)
                 .text_color(c.text_muted)
-                .children(busy.then(|| div().pt(px(3.)).child(spinner("queue-reading", IconSize::Nav, c.text_muted))))
+
                 .child(div().flex_1().min_w_0().child(words))
                 .into_any_element(),
             Row::Back(to) => div()
@@ -1129,7 +1130,16 @@ impl Render for QueueView {
         });
         let listing = matches!(self.shown, Shown::List(_));
         let head = listing.then(|| self.list_head(cx));
-        let page = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.row(ix, cx))).size_full();
+        let loading = match self.rows.as_slice() {
+            [Row::Note { key, words, busy: true }, Row::End] => Some((key.clone(), words.clone())),
+            _ => None,
+        };
+        let page = if let Some((key, words)) = loading {
+            div().debug_selector({ let key = key.clone(); move || key }).size_full().flex().items_center().justify_center()
+                .child(kuvo_ui::small::LoadingLabel::new(SharedString::from(key), words)).into_any_element()
+        } else {
+            list(self.list.clone(), cx.processor(|this, ix, _, cx| this.row(ix, cx))).size_full().into_any_element()
+        };
         let problem = self.problem.clone().map(|problem| {
             // (In the page's flow, above the tabs: it covers nothing.)
             column(

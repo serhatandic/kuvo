@@ -99,6 +99,7 @@ impl BotsView {
                 .child(format!("Show all {count}"))
                 .on_click(cx.listener(|this, _, _, cx| this.act(Act::ShowAll, cx)))
                 .into_any_element(),
+            Item::Note { key, words, busy: true } => kuvo_ui::small::LoadingLabel::new(gpui::SharedString::from(key), words).into_any_element(),
             Item::Note { key, words, busy } => div()
                 .debug_selector(move || key)
                 .pt(space::S2)
@@ -221,7 +222,20 @@ impl BotsView {
                 let selector = format!("{key}-value");
                 div().debug_selector(move || selector).truncate().text_ui(TypeSize::Body).text_color(c.text_muted).child(words).into_any_element()
             }
-            Control::Busy(words) => div().flex().items_center().gap(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted)).child(words).into_any_element(),
+            Control::Busy(words) => {
+                // Dependencies can arrive separately. The sessions note owns progress while
+                // present; otherwise only the first pending control says that we're reading.
+                let first = self.items.iter().find_map(|item| match item {
+                    Item::Row { row, .. } if matches!(&row.control, Control::Busy(words) if words.starts_with("Loading")) => Some(row.key.as_str()),
+                    _ => None,
+                });
+                let other_note = self.items.iter().any(|item| matches!(item, Item::Note { busy: true, .. }));
+                if words.starts_with("Loading") && (other_note || first != Some(key)) {
+                    div().h(px(24.)).into_any_element()
+                } else {
+                    kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("{key}-busy")), words).compact().into_any_element()
+                }
+            },
             Control::Button(label, act) => button(key, label, act, false, cx).into_any_element(),
             Control::Danger(label, act) => button(key, label, act, true, cx).into_any_element(),
             Control::Face(look, label, act) => div().flex().items_center().gap(space::S3).children(look.map(|look| bot_face(&look, px(28.)))).child(button(key, label, act, false, cx)).into_any_element(),
@@ -554,7 +568,12 @@ impl Render for BotsView {
         if let Some(focus) = self.wants_focus.take() {
             window.focus(&focus, cx);
         }
-        let page = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full();
+        let loading = self.items.iter().all(|item| matches!(item, Item::Title(_) | Item::End | Item::Note { busy: true, .. }))
+            .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
+        let page = match loading {
+            Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("page-loading", words)).into_any_element(),
+            None => list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full().into_any_element(),
+        };
         let problem = self.problem.clone().map(|problem| {
             div().absolute().top(space::S4).left_0().right_0().flex().justify_center().px(space::S8).child(
                 div()

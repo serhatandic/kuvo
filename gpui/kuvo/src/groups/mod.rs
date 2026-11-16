@@ -16,8 +16,8 @@ use kuvo_box::BoxClient;
 use kuvo_box::areas::Bot;
 use kuvo_box::groups::{Group, GroupChange, GroupMember, NewGroup};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextField, TypeSize,
-    small::{Checkbox, spinner},
+    ActiveTheme, Button, ButtonSize, Icon, IconName, StyledType, TextField, TypeSize,
+    small::Checkbox,
     theme::{radius, space},
 };
 
@@ -530,7 +530,7 @@ impl GroupsView {
         ]);
         let offered = self.offered();
         let bots: AnyElement = match (&self.joinable, offered.is_empty()) {
-            (Reading::NotYet, true) => div().flex().items_center().gap(space::S2).p(space::S5).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner("joinable-loading", IconSize::Nav, c.text_muted)).child("Loading the bots…").into_any_element(),
+            (Reading::NotYet, true) => kuvo_ui::small::LoadingLabel::new("joinable-loading", "Loading the bots…").into_any_element(),
             (Reading::Failed(why), true) => div().debug_selector(|| "joinable-failed".into()).p(space::S5).text_ui(TypeSize::Small).text_color(c.warning).child(format!("The bots couldn’t be read: {why}")).into_any_element(),
             (_, true) => div().debug_selector(|| "joinable-none".into()).p(space::S5).text_ui(TypeSize::Small).text_color(c.text_muted).child("There are no bots here to bring together yet. Make one with the + beside Bots.").into_any_element(),
             (_, false) => {

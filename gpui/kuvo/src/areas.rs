@@ -1037,6 +1037,7 @@ pub fn bot_face(look: &Look, size: Pixels) -> AnyElement {
 
 /// Quiet words in a sidebar's place: loading, nothing yet, or what's wrong.
 pub fn quiet(words: &str, busy: bool, cx: &App) -> AnyElement {
+    if busy { return div().into_any_element(); }
     let c = &cx.theme().colors;
     div()
         .w_full()

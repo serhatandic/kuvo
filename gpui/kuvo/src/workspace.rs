@@ -2081,7 +2081,6 @@ impl Workspace {
             Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).cloned(),
             _ => None,
         });
-        let now = self.now();
         let strip = div()
             .debug_selector(|| "bot-chat-strip".into())
             .flex()
@@ -2096,7 +2095,7 @@ impl Workspace {
             .children(listed.as_ref().map(|bot| areas::bot_face(&bot.look, px(22.))))
             .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
             .children(listed.as_ref().map(|bot| {
-                let words = areas::doing(&bot.now, now).unwrap_or_else(|| bot.job.clone());
+                let words = bot.job.clone();
                 div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)
             }));
         div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone())).into_any_element()
@@ -2708,7 +2707,7 @@ impl Render for Workspace {
             };
             let words: AnyElement = match why {
                 Some(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
-                _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(kuvo_ui::small::spinner("window-waiting-spinner", kuvo_ui::IconSize::Nav, c.text_muted)).child("Starting…").into_any_element(),
+                _ => kuvo_ui::small::LoadingLabel::new("window-starting", "Starting…").into_any_element(),
             };
             return div()
                 .debug_selector(|| "window-waiting".into())
@@ -2720,6 +2719,8 @@ impl Render for Workspace {
                 .child(div().id("window-waiting-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
                     if event.click_count == 1 {
                         window.start_window_move();
+                    } else if event.click_count == 2 {
+                        window.titlebar_double_click();
                     }
                 }))
                 .child(div().flex_1().flex().items_center().justify_center().pb(px(96.)).child(words));
