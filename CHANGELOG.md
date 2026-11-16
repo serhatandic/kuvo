@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Your Linux machines and other computers set up by your Mac get their Kuvo updates again. An earlier Kuvo Code app opened by mistake after you moved to Kuvo Code 1.0 no longer stops your Mac's Kuvo from updating them; it's told it was replaced.
+- An older computer's page in Computers shows one card: what's true now in plain words, and the button that moves it on (**Update Now**, **Try Again**, or **Set Up Over SSH…**), with how the update is going in that same card. Rows that would only say "Not said yet" are left out.
+- A computer that can't be used yet (its Kuvo is older, or it can't be reached) shows why in every area, with **Update Now** or **Try Again** and **Switch to** one of your computers that works, instead of empty lists.
+- When a machine's usual address doesn't answer (a home network's while you're away), your Mac tries its other addresses, like its Tailscale one, before saying it couldn't reach it, and says so in plain words.
 - In the desktop app, pictures you send show as small thumbnails on your message (at most 240 points on their longest side, their shape kept), from the moment you send them: while sending, waiting for the agent's next step, or if they couldn't go. Click one to open it larger, with ← and → through every picture in the conversation.
 - In the desktop app, what the agent does between its replies folds into one line ("Read 4 files, ran 2 commands, searched once"), evenly spaced; click it to see each step. The step under way shows on that line, and a step that failed shows even when it's folded. Kuvo's own tools and other MCP servers' read in plain words ("Started a session", "Linear · List issues") instead of names like `kuvo-browser_start_session`.
 - In the desktop app, a message from another agent, or news from a session it started, shows as a card from it again (who it's from, its first line, the time, and **Open** to go to that conversation), not as a bubble of yours. Click it to read all of it.

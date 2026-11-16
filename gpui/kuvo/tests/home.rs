@@ -158,12 +158,12 @@ fn on_an_older_devbox<'a>(cx: &'a mut TestAppContext, state: &'static str, worki
     stand_in.peer_box("key_devbox").expect("devbox").set_older(true);
     stand_in.bring_up_to_date("key_devbox", state, false, working);
     let (home, cx) = open(cx, stand_in.clone());
-    let sidebar_here = bounds(cx, "area-sidebar").expect("the sidebar");
+    let rail_here = bounds(cx, "rail-sessions").expect("the rail");
     click(cx, "computer-switcher");
     click(cx, "menu-item-devbox");
     assert_eq!(name(&home, cx), "devbox");
-    // The rail and the sidebar stay where they were: what it says is in the title bar.
-    assert_eq!(bounds(cx, "area-sidebar").map(|at| at.origin.y), Some(sidebar_here.origin.y));
+    // The rail stays where it was; what it says is in the title bar, and in the view in its areas.
+    assert_eq!(bounds(cx, "rail-sessions").map(|at| at.origin), Some(rail_here.origin));
     (stand_in, home, cx)
 }
 
@@ -253,7 +253,8 @@ fn an_older_machine_to_set_up_over_ssh_says_so_in_the_boxs_words_and_opens_add_a
     let (home, cx) = on_devbox_held(cx, &stand_in);
     click(cx, "update-chip");
     let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
-    assert_eq!(chip.title, "Kuvo on devbox needs an update. Set it up over SSH from Stand-in Mac to update it.");
+    assert_eq!(chip.title, "Kuvo on devbox needs an update");
+    assert_eq!(chip.detail, "Stand-in Mac hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays.");
     assert_eq!(chip.action.as_ref().map(|action| action.label.as_str()), Some("Set Up Over SSH…"));
     click(cx, "update-now");
     assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
@@ -317,4 +318,88 @@ fn this_macs_kuvo_waiting_for_its_release_says_so_in_the_chip_and_updates_now_on
     assert_eq!(kuvo::title_bar::chip_label(&chip), "Updating…");
     click(cx, "update-chip");
     assert!(shown(cx, "update-card-title") && !shown(cx, "update-now"));
+}
+
+/// An older machine's page in Computers, where the box that lists it says nothing of bringing it
+/// up (from before it did): one card, in plain words, with its way on, never a card without a
+/// button (#772: hetzner and lokum-tailscale said "older than this app" and nothing else).
+#[gpui::test]
+fn an_older_machines_page_always_has_one_card_with_its_way_on(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.lists_older("key_devbox");
+    stand_in.sets_up_again("key_devbox");
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-computers");
+    click(cx, "computer-key_devbox");
+    let page = computers_page(&home, cx);
+    assert_eq!(page.read_with(cx, |page, _| page.said("notice-update")), Some(("devbox’s Kuvo is older than this app".to_owned(), "Update Now sets Kuvo up on devbox again over SSH. What’s at work there keeps going.".to_owned())));
+    assert!(!shown(cx, "notice-older"), "one card");
+    // What it can't say isn't drawn as "Not said yet".
+    assert_eq!(page.read_with(cx, |page, _| page.said("fact-version")), Some(("Kuvo".to_owned(), "Older than this app".to_owned())));
+    assert!(page.read_with(cx, |page, _| page.said("fact-system").is_none() && page.said("fact-engine").is_none()));
+    assert!(!shown(cx, "action-setup"), "its way on is the card's button, not a row of Manage's too");
+    click(cx, "notice-update-action");
+    // Asked of the box that lists your computers.
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/setup").len(), 1);
+}
+
+/// One that box didn't set up over SSH either: the card opens Add a Machine at its address.
+#[gpui::test]
+fn an_older_machine_nothing_here_set_up_opens_add_a_machine_from_its_card(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.lists_older("key_devbox");
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-computers");
+    click(cx, "computer-key_devbox");
+    let page = computers_page(&home, cx);
+    assert!(page.read_with(cx, |page, _| page.said("notice-update")).is_some_and(|(title, _)| title == "devbox’s Kuvo is older than this app"));
+    click(cx, "notice-update-action");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
+    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
+    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty(), "nothing added until you say");
+}
+
+/// A computer that can't be used shows one view, in every area, with what moves it on and another
+/// of yours to switch to: never areas that open empty.
+#[gpui::test]
+fn a_computer_that_cant_be_used_shows_one_view_with_update_now_and_switch_to(cx: &mut TestAppContext) {
+    let (stand_in, home, cx) = on_an_older_devbox(cx, "waiting", 0);
+    assert!(shown(cx, "blocked-held"));
+    assert!(!shown(cx, "area-sidebar"), "no empty sidebar beside it");
+    let blocked = workspace(&home, cx).read_with(cx, |workspace, _| workspace.blocked()).expect("the view");
+    assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("devbox’s Kuvo is older than this app", "Kuvo on devbox updates in a moment."));
+    assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));
+    click(cx, "rail-bots");
+    assert!(shown(cx, "blocked-held"), "the same view in Bots");
+    // Update Now, from the view, asks the box that lists your computers.
+    click(cx, "blocked-action");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/update").len(), 1);
+    // Switch to another of yours that works.
+    click(cx, "blocked-switch");
+    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
+    assert!(!shown(cx, "blocked-held"));
+}
+
+/// A computer that stops answering while the window shows it: why, in plain words (never the
+/// connection's own error), Try Again, and another of yours to switch to.
+#[gpui::test]
+fn a_computer_out_of_reach_says_so_with_try_again(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    let (home, cx) = open(cx, stand_in.clone());
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    devbox.set_down(true);
+    workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.reach_again(window, cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "blocked-unreached"));
+    let blocked = workspace(&home, cx).read_with(cx, |workspace, _| workspace.blocked()).expect("the view");
+    assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("Can’t reach devbox", "Make sure it’s on and connected, then Try Again."));
+    assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Try Again"));
+    assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));
+    // Back: Try Again reaches it, and its sessions show.
+    devbox.set_down(false);
+    click(cx, "blocked-action");
+    assert!(!shown(cx, "blocked-unreached"));
+    assert!(shown(cx, "session-project-ses_releases"));
 }

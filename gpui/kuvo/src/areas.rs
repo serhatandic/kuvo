@@ -82,6 +82,12 @@ pub enum Go {
     AddMachine,
     /// A row in Settings opened this address (it's open already).
     Opened(String),
+    /// The box that lists your computers did something: its list read again.
+    ReadList,
+    /// Update Now for this Mac's own Kuvo (`now`, else once its work ends).
+    UpdateOwnBox { now: bool },
+    /// Add a Machine on the box that lists your computers, at this address.
+    AddAt(Option<String>),
 }
 
 /// One area's sidebar.
@@ -223,6 +229,9 @@ impl AreaView {
                     }
                     ComputersEvent::Sessions => cx.emit(Go::Sessions),
                     ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
+                    ComputersEvent::ListerChanged => cx.emit(Go::ReadList),
+                    ComputersEvent::UpdateOwnBox { now } => cx.emit(Go::UpdateOwnBox { now: *now }),
+                    ComputersEvent::AddAt(address) => cx.emit(Go::AddAt(address.clone())),
                 })]
             })
             .unwrap_or_default();

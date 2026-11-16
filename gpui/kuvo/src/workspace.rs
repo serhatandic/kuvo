@@ -231,6 +231,8 @@ pub struct Workspace {
     own_update: Option<OwnUpdate>,
     /// The title bar's update chip's card.
     update_card: UpdateCard,
+    /// Its box is being reached again, on your word (Try Again).
+    reaching_again: bool,
     /// Whether it follows the box (the app), or shows what it's handed (tests and shots).
     live: bool,
     info: Option<BoxInfo>,
@@ -360,6 +362,9 @@ impl Workspace {
                         this.read_computers(cx);
                     }
                 }
+                Go::ReadList => cx.emit(Switch::ReadList),
+                Go::UpdateOwnBox { now } => cx.emit(Switch::UpdateOwnBox { now: *now }),
+                Go::AddAt(address) => cx.emit(Switch::ShowComputer { key: String::new(), add_at: Some(address.clone().unwrap_or_default()) }),
                 // System Settings opened from Settings › This Mac: a permission added by hand
                 // gets the tile beside it, as from the heads-up.
                 Go::Opened(address) => {
@@ -436,6 +441,7 @@ impl Workspace {
             waiting_again: false,
             computers: Reading::NotYet,
             computers_task: None,
+            reaching_again: false,
             _waiting_follow: None,
             _computers_follow: None,
             folded: false,
@@ -852,8 +858,41 @@ impl Workspace {
         }
         let row = self.switching.as_ref().and_then(|switching| switching.shown.as_deref().and_then(|shown| switching.rows.iter().find(|row| row.key() == shown)));
         if let Some(row) = row
-            && let Some(update) = &row.computer.update
+            && row.computer.update.is_some()
         {
+            return self.offer_for(row, &row.computer.name);
+        }
+        let name = self.info.as_ref().map(|_| self.box_name().to_string());
+        let (title, detail) = held_words(name.as_deref(), self.client.here());
+        // This Mac's own box: how its update goes, where this app brings it.
+        if self.client.here() {
+            let key = row.map(|row| row.key().to_owned());
+            return Some(self.own_update_chip().unwrap_or(HeldUpdate { key, title, detail, updating: false, attention: false, action: None, does: None, own: false }));
+        }
+        let Some(row) = row else {
+            return Some(HeldUpdate { key: None, title, detail, updating: false, attention: false, action: None, does: None, own: false });
+        };
+        let computer = name.unwrap_or_else(|| row.computer.name.clone());
+        self.offer_for(row, &computer)
+    }
+
+    /// What brings the computer `key` (another of your computers, as the box that lists them names
+    /// it) up to date from here, while its Kuvo is older than this app's or is being updated: the
+    /// box's words and action where that box brings it up (`computers.update`), else what this app
+    /// can do. None for one as new, or this Mac's own (its chip is `own_update_chip`'s). A computer's
+    /// page in Computers draws it where the box the window shows can't bring that computer up itself.
+    pub fn update_offer(&self, key: &str) -> Option<HeldUpdate> {
+        let row = self.switching.as_ref()?.rows.iter().find(|row| row.key() == key && !row.computer.here)?;
+        if row.computer.update.is_none() && !row.computer.is_older() {
+            return None;
+        }
+        self.offer_for(row, &row.computer.name)
+    }
+
+    /// What brings `row`'s computer (named `computer`) up to date from here, as the chip and a
+    /// computer's page offer it.
+    fn offer_for(&self, row: &kuvo_box::boxes::Row, computer: &str) -> Option<HeldUpdate> {
+        if let Some(update) = &row.computer.update {
             let updating = update.is_updating();
             // (Brought up by the box that lists it, or set up over SSH from there: `add`.)
             let action = (!updating).then(|| row.computer.actions.iter().find(|action| action.id == "update" || action.id == "add").cloned()).flatten();
@@ -869,23 +908,13 @@ impl Workspace {
                 own: false,
             });
         }
-        let name = self.info.as_ref().map(|_| self.box_name().to_string());
-        let (title, detail) = held_words(name.as_deref(), self.client.here());
-        let key = row.map(|row| row.key().to_owned());
-        let own = self.own_update_chip();
-        // This Mac's own box: how its update goes, where this app brings it.
-        if self.client.here() {
-            return Some(own.unwrap_or(HeldUpdate { key, title, detail, updating: false, attention: false, action: None, does: None, own: false }));
-        }
-        let (Some(row), Some(key)) = (row, key) else {
-            return Some(HeldUpdate { key: None, title, detail, updating: false, attention: false, action: None, does: None, own: false });
-        };
-        let computer = name.clone().unwrap_or_else(|| row.computer.name.clone());
+        let (title, detail) = held_words(Some(computer), false);
+        let key = row.key().to_owned();
         // COMPAT(0.8 beta update): what's offered where the box that lists your computers is from
         // before it said how each older one is brought up (`computers.update`): goes once no box is
         // from before `computers.update.here`.
         // This Mac's own Kuvo first, while its update is under way or waits.
-        if let Some(own) = own {
+        if let Some(own) = self.own_update_chip() {
             return Some(HeldUpdate { key: Some(key), detail: format!("Then {computer} can be brought up to date from here."), ..own });
         }
         // Set up again over SSH, by the box that set it up: that brings it up to that box's Kuvo.
@@ -963,8 +992,23 @@ impl Workspace {
     pub fn set_own_update(&mut self, own: Option<OwnUpdate>, cx: &mut Context<Self>) {
         if self.own_update != own {
             self.own_update = own;
+            self.sync_offers(cx);
             cx.notify();
         }
+    }
+
+    /// Hands the Computers area what brings each of your other computers up to date from here
+    /// (`update_offer`), and the box that does it.
+    fn sync_offers(&self, cx: &mut Context<Self>) {
+        let Some(page) = self.area_view(Area::Computers).and_then(|view| view.read(cx).computers_page().cloned()) else { return };
+        let offers: HashMap<String, HeldUpdate> = self
+            .switching
+            .iter()
+            .flat_map(|switching| switching.rows.iter())
+            .filter_map(|row| self.update_offer(row.key()).map(|offer| (row.key().to_owned(), offer)))
+            .collect();
+        let lister = self.lister.clone();
+        page.update(cx, |page, cx| page.set_offers(offers, lister, cx));
     }
 
     pub fn own_update(&self) -> Option<&OwnUpdate> {
@@ -1096,6 +1140,93 @@ impl Workspace {
             let result = cx.background_executor().spawn(async move { work(&lister) }).await;
             this.update(cx, |this, cx| done(this, result, cx)).ok();
         }));
+    }
+
+    /// What the window shows in place of its areas while the computer it shows can't be used: its
+    /// Kuvo is older than this app (with what brings it up, as the update chip offers it), or it
+    /// can't be reached (Try Again). With another of your computers that works, to switch to.
+    /// None while it can be used.
+    pub fn blocked(&self) -> Option<crate::blocked::Blocked> {
+        use crate::blocked::{Blocked, BlockedDo, unreached_words};
+        let name = self.info.as_ref().map(|_| self.box_name().to_string()).or_else(|| self.shown_row().map(|row| row.computer.name.clone())).unwrap_or_else(|| "this computer".into());
+        let error = self.update_card.error.clone();
+        let (kind, title, detail, busy, attention, action) = if let Some(held) = self.held_update() {
+            let action = held.action.as_ref().filter(|action| action.why.is_none() && held.does.is_some()).map(|action| (action.label.clone(), BlockedDo::Update));
+            // (Why it can't be used first, then how its update stands, where the box says more.)
+            let (older, _) = held_words(Some(&name), self.client.here());
+            let (title, detail) = if held.title == older || held.own {
+                (held.title, held.detail)
+            } else {
+                let line = if held.title.ends_with(['.', '…']) { held.title } else { format!("{}.", held.title) };
+                (older, if held.detail.is_empty() { line } else { format!("{line} {}", held.detail) })
+            };
+            ("held", title, detail, held.updating || self.update_card.sending, held.attention, action)
+        } else if let BoxState::Unreachable(_) = &self.box_state
+            && !self.client.here()
+        {
+            // (Another of your computers: this Mac's own box not answering is the launch's to say.)
+            // (In the box's words where the list says why it's away; never the error's own.)
+            let away = self.shown_row().and_then(|row| row.computer.notice.clone());
+            let (title, detail) = away.map(|notice| (notice.title, notice.detail)).unwrap_or_else(|| unreached_words(&name));
+            ("unreached", title, detail, false, true, Some(("Try Again".to_owned(), BlockedDo::TryAgain)))
+        } else if self.box_state == BoxState::Connecting && self.reaching_again && !self.client.here() {
+            let (title, _) = unreached_words(&name);
+            ("unreached", title, format!("Reaching {name}…"), true, false, None)
+        } else {
+            return None;
+        };
+        // Another of yours that works now: this Mac's own first, then the first answering.
+        let shown = self.switching.as_ref().and_then(|switching| switching.shown.clone());
+        let switch_to = self.switching.as_ref().and_then(|switching| {
+            let works = |row: &&kuvo_box::boxes::Row| Some(row.key()) != shown.as_deref() && !row.computer.is_older() && matches!(row.reach, kuvo_box::boxes::Reach::Nearest | kuvo_box::boxes::Reach::Connected);
+            let rows = &switching.rows;
+            rows.iter().find(|row| works(row) && matches!(row.reach, kuvo_box::boxes::Reach::Nearest)).or_else(|| rows.iter().find(works)).map(|row| (row.key().to_owned(), row.computer.name.clone()))
+        });
+        Some(Blocked { kind, title, detail, busy, attention, action, switch_to, error })
+    }
+
+    /// The computer this window shows, as your computers' list has it.
+    fn shown_row(&self) -> Option<&kuvo_box::boxes::Row> {
+        let switching = self.switching.as_ref()?;
+        let shown = switching.shown.as_deref()?;
+        switching.rows.iter().find(|row| row.key() == shown)
+    }
+
+    /// Update Now from the window's "can't be used" view: as the update chip does it, its card
+    /// open for what it asks first.
+    pub fn blocked_update(&mut self, cx: &mut Context<Self>) {
+        if !self.update_card.open {
+            self.update_card = UpdateCard { open: true, ..UpdateCard::default() };
+        }
+        self.update_now(false, cx);
+    }
+
+    /// Reaches the box this window shows again (it couldn't be reached): asked once more, as at the
+    /// window's start.
+    pub fn reach_again(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.box_state = BoxState::Connecting;
+        self.reaching_again = true;
+        cx.notify();
+        let client = self.client.clone();
+        if !self.live {
+            let result = client.connect();
+            self.reaching_again = false;
+            return self.connected(result, cx);
+        }
+        let task = cx.background_executor().spawn(async move { client.connect() });
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.reaching_again = false;
+                this.connected(result, cx);
+            })
+            .ok();
+        }));
+    }
+
+    /// Shows another of your computers in this window, as the title bar's computer menu does.
+    pub fn switch_to(&mut self, key: &str, cx: &mut Context<Self>) {
+        cx.emit(Switch::To(key.to_owned()));
     }
 
     pub fn now(&self) -> f64 {
@@ -1760,6 +1891,8 @@ impl Workspace {
             self.switching = switching;
             cx.notify();
         }
+        // (The box that lists them may have changed with them, `set_lister`: handed on each time.)
+        self.sync_offers(cx);
     }
 
     /// Your computers, as the box lists them.
@@ -2766,8 +2899,11 @@ impl Render for Workspace {
                 (BoxState::Unreachable(why), _) => Some(why.clone()),
                 (_, why) => why.clone(),
             };
-            let words: AnyElement = match why {
-                Some(why) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
+            // (One that can't be reached says so, with Try Again and another computer to switch to.)
+            let blocked = self.blocked();
+            let words: AnyElement = match (blocked, why) {
+                (Some(blocked), _) => crate::blocked::render(&blocked, cx),
+                (None, Some(why)) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
                 _ => kuvo_ui::small::LoadingLabel::new("window-starting", "Starting…").into_any_element(),
             };
             return div()
@@ -2806,10 +2942,11 @@ impl Render for Workspace {
             }
         }
         let sessions = self.area == Area::Sessions;
-        let held_content = self.client.gate().is_held()
-            && (self.area != Area::Sessions && self.area != Area::Settings || self.area == Area::Sessions && matches!(self.open, Open::Conversation { .. }));
-        let content: AnyElement = if held_content {
-            div().debug_selector(|| "held-area".into()).size_full().into_any_element()
+        // A computer that can't be used shows why, and what moves it on, in every area but
+        // Settings, never areas that open empty.
+        let blocked = (self.area != Area::Settings).then(|| self.blocked()).flatten();
+        let content: AnyElement = if let Some(blocked) = &blocked {
+            div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::render(blocked, cx)).into_any_element()
         } else { match (&self.open, self.area_view(self.area)) {
             (_, Some(view)) if !sessions => match (self.bot_chat(), view.read(cx).settings(), view.read(cx).main()) {
                 (Some((bot, chat)), _, _) => self.bot_chat_view(bot, chat, cx),
@@ -2821,7 +2958,7 @@ impl Render for Workspace {
             _ => landing::render(self, window, cx),
         } };
         let area_view = (!sessions).then(|| self.area_view(self.area).cloned()).flatten();
-        let sidebar: Option<AnyElement> = self.sidebar_shown().then(|| match area_view {
+        let sidebar: Option<AnyElement> = (self.sidebar_shown() && blocked.is_none()).then(|| match area_view {
             Some(view) => view.into_any_element(),
             None => sidebar::render(self, window, cx),
         });
