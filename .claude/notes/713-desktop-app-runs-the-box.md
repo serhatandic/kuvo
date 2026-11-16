@@ -1091,6 +1091,346 @@ Helper and `kuvo-keys` where piece 5 looks for them; `scripts/check-desktop-app.
 dry-runs a copy. What's inside, how to build, and what piece 6's rest (the release's step) adds:
 `.claude/notes/713-p6a-bundle.md`.
 
+## 8i. Piece 4b design (2026-11-16): putting `two` together
+
+Design only, against main at `c15dd6c4d`. Nothing here is built. Today `--run` refuses `two` before
+anything is stopped (`rehome/run.ts:262`), `install --status` names no verb for it
+(`install/verdict.ts:93`), and the app shows its card and opens what's there (§8f, piece 7). So
+nothing is lost while this waits: `K` runs with its data, and `S` stays on disk as it was.
+
+### What `two` is, read from the code (corrects the brief)
+
+**No released Kuvo Code could set a Mac up as a machine.**
+
+- 0.6.0 through 0.8.0-beta.1 refuse anything but Linux with glibc:
+  `guard parts.first == "Linux"` (`v0.7.2:Packages/OpenCodeKit/Sources/OpenCodeKit/Engine/RemoteEngine.swift:228`;
+  the same at `v0.6.6:202` and `v0.8.0-beta.1:238`).
+- A Mac became a possible machine on 2026-11-07 (`c0b7b1bcc`, unreleased Swift on main), and in
+  the box's own add (#636, `add/flow.ts:74-83`, a launch agent at `add/scripts.ts:145`).
+
+So **a 0.7-era `K` (engine 2.0.32, no bridge, 0.7's keeper) can't exist.** `K` is always a
+box-era machine. It has:
+
+- `bin/box-version` and `kuvo-start` with `stop` and `off` (`box/src/keeper/kuvo-start:312,330`);
+- its link with its keys in `run/link.json` (`state.ts:171-175`);
+- its settings in `box/opencode.json` (`kuvo-launch:146`);
+- its integrations' keys as files in `box/keys` (`home.ts:137`);
+- a vault of encrypted files, locked after each restart until a client unlocks it
+  (`vault/store.ts:1-6`);
+- a keeper that, as a machine, holds the Mac awake whenever it's on power
+  (`kuvo-start:125-140`);
+- its own signed updates (`updates/update.ts:375`).
+
+**It can arise two ways:**
+
+1. On your own Macs, from unreleased builds.
+2. After 0.8 ships, from a box's add. The add judges a Mac with only an old app's folder `free`
+   (`setup/judge.ts:214-225`: no box is found there, and `appsOf` changes only `joins`). So it adds
+   that Mac **with no question** and seeds nothing (`add/flow.ts:261`). That Mac's 0.7 app keeps
+   running its own engine in `S` beside the new box until it updates. That makes two Kuvos on one
+   computer, which the add itself creates.
+
+**Hence the user's call 1 below:** stop the add from making `two` at all. The merge is then for
+Macs that ran unreleased builds.
+
+### The six questions of §8e, answered
+
+1. **Stopping `K`.**
+   - **Answer:** first bring `K` to the release this Mac carries (question 2). Then hold it whole
+     with a new keeper verb, `kuvo-start hold`. That's `off`'s order (link, server, keeper, then
+     engine and bridge), but it writes `run/held` with the merge's pid instead of `run/off`.
+   - **The hold is soft until the swap and hard from then on:**
+     - `kuvo-start`'s `box` verb (`kuvo-start:117`), at login or from the link, starts nothing
+       while `run/held` names a live process.
+     - Before the swap it removes a hold whose holder is gone, and starts.
+     - From the swap on, `run/held-forward` stops it until the merge finishes.
+   - **`K` starts again whatever happens:** in the merge's `finally`, and as an owed `start`
+     (as piece 4 does).
+   - **Rejected:**
+     - `stop`: it leaves the keeper and the link up, writing in `run` while we clone.
+     - `off`: it reads as removed (`runsAt` says `gone`, `judge.ts:259-263`). Then
+       `machineBoxThere` is false, the verdict becomes `app-07`, and piece 4's `install` step
+       would set `K` aside in its trash (`move.ts:477-502`).
+     - Reading `K` while it runs: its database's log and its files change under the clone.
+2. **`K`'s version.**
+   - **Answer:** the merge runs only when `K` is at exactly the release this Mac carries (the same
+     `box-version` and engine pin, so the same schema, `database.ts:19`).
+     - **Older:** `K` is updated first by its own signed update, offered this release
+       (`update.ts:775` `offerUpdate`, then `update`), with `K` running. That waits for agents to
+       finish (`agentsWorking`), and rolls itself back if it's cut short.
+     - **Newer:** refused, asking to update Kuvo Code here first.
+     - **Updates held back** (`updatesBlocked`, `update.ts:182-186`: another Mac's older Kuvo
+       Code): refused in words, naming that Mac.
+   - **Rejected:**
+     - Migrating `K`'s database in staging while its engine stays old: its own engine then can't
+       read it.
+     - Merging into a newer `K`: this release's merge doesn't know that schema.
+3. **Two engine databases into one.**
+   - **How:** `S`'s database is migrated (piece 4's `database` step) and rewritten for `K`'s paths,
+     including the renames that clashes make (below). `K`'s clone is checkpointed. Then, on `K`'s
+     clone: `ATTACH` `S`'s, `BEGIN IMMEDIATE`, one rule per table, `PRAGMA foreign_key_check` (no
+     broken links that weren't there before), `COMMIT`, `integrity_check`.
+   - **Rules for the pinned schema's 24 tables** (`fixtures/rehome/engine-2.2.6.sql`):
+     - **Rows with IDs of their own** (`session_v2`, `session_message`, `session_part`,
+       `session_inbox`, `instruction_entry`, `instruction_state`, `blob_ref`, `permission`,
+       `workspace`, `schedule`, `job`, `event`): added. The same key with the same content is one
+       row; the same key with other content stops the merge.
+     - **Content-addressed** (`blob`, `instruction_blob`, by hash): added where missing, and
+       checked to be equal where both have them.
+     - **`project`:**
+       - **The same ID** (one git repository's root commit, or one folder outside git): one
+         project. `K`'s row stays, with `S`'s values filling only what's empty.
+       - **The same folder under two IDs:** `K`'s ID, with `S`'s rows pointed at it, as
+         `rewriteDatabase` repoints IDs (`database.ts:146-159`).
+       - **`project_directory` and `worktree`:** joined by their key, `K`'s row kept.
+     - **`event_sequence`:**
+       - **A session's:** added.
+       - **A shared project's:** `K`'s kept. `S`'s events on it stop the merge until the spike
+         (piece A) says what they are (the recorded 2.2.6 database holds none).
+     - **Sign-ins:** a `credential` for the same integration and label, a `control_account` or
+       `account` for the same email and URL. The newer by `time_updated` is kept in use. The
+       other is kept aside: inactive (`active = 0`) where the table allows it, else in the merge's
+       aside file (`0600`). Said.
+     - **`account_state`, `kv`, `migration`:** `K`'s. Any `kv` key of `S`'s that differs is
+       listed for the spike, and stops the merge until it's ruled on.
+   - **The check is exact:** for each table, `S`'s rows are added + taken as the same + kept aside
+     + stopped. A row that doesn't add up stops the merge.
+   - **Rejected:**
+     - Bringing `S`'s sessions in through the engine's API: there's none that keeps IDs, times
+       and parts.
+     - Two databases side by side: the engine opens only `opencode.db` (`migrate.ts:37-39`).
+     - `INSERT OR REPLACE`: it overwrites.
+4. **Keys.** This needs question 6's answer: `K` becomes this Mac's own, which keeps its keys in
+   the Keychain, trusting Kuvo Helper.
+   - **`S`'s Keychain items:** handed over as piece 4 does (`kuvo-keys copy`), but never this Mac's
+     link identity. `K`'s is the one your setup knows, so `copy` gets `--except link`.
+   - **`K`'s key files** (`box/keys/*`, the link's keys in `run/link.json`): taken into the
+     Keychain by a new helper verb, `keys adopt`, journaled and undone by `keys uncopy`. The files
+     go only once the helper reads them back.
+   - **The same key in both:** the newer (the item's modification date against the file's) is
+     used. The other is kept as an item named `<name>.from-earlier`, said.
+   - **`K`'s vault values** are encrypted with a key only clients unlock, so they can't be read at
+     merge time. They're moved into the Keychain the first time a client unlocks it
+     (`owed: vault`); until then those items say they're locked.
+   - **0.7's saved sign-ins:** `owed: passwords`, as built.
+   - **Rejected:**
+     - A `kuvo-keys` verb piping Keychain secrets into files: it widens §8a.1, and leaves secrets
+       in files on a Mac.
+     - Refusing whenever `S` has a key: that's nearly every 0.7 Mac with an integration.
+5. **Settings.**
+   - **Answer:**
+     - `K`'s engine settings stay `K`'s.
+     - `S`'s are added key by key where `K` has none: providers, integrations' servers, agents,
+       instructions.
+     - On a clash `K`'s value stays. `S`'s goes in `updates/rehome/merge/aside/settings.json`,
+       named in what's said.
+     - A single value (the default model) is `K`'s.
+     - Keep This Mac Awake, the usage panel and `welcomed` come from `S`: they were this Mac's
+       own, and a machine has none.
+     - Settings › Git: `S`'s only where `K` has none (`moveGitSettings` as built).
+   - **Rejected:**
+     - `S` winning: it changes how the other Mac's sessions there run.
+     - Asking clash by clash: the merge runs detached, with nobody to answer.
+     - Dropping `S`'s settings: this Mac's providers would be lost.
+6. **Whose it is after: this Mac's own, still in the other Mac's setup.**
+   - **Answer:**
+     - Its kind becomes `mac`, started by Kuvo Helper, keys in the Keychain.
+     - It keeps its link identity, so it stays a member of the setup it follows: the other Mac
+       reaches it as the same computer, now a Mac with Kuvo of its own rather than a machine it
+       keeps (`setup.role` stays `member`, checked by a test).
+     - The machine's launch agent and crontab line go (`owed: machine-start`).
+     - Its settings move from `box/opencode.json` to `config/opencode`.
+   - **This conversion ("adopt") is a piece of its own.** It also serves `machine` (a Mac set up
+     as a machine, nothing in `S`), if you want that one made this Mac's own too.
+   - **Rejected:**
+     - **Staying a machine.** On a Mac someone uses, its keeper holds the Mac awake whenever it's
+       on power. macOS asks about each program by its own name. Its vault locks at each restart
+       until another device unlocks it. The desktop app treats it as someone else's machine
+       (`place.rs` takes only `mac`). The other Mac's Set Up Again can rewrite it.
+     - **Leaving the other Mac's setup:** that Mac loses the computer, and joining setups back is
+       #183's phase 7, not built.
+
+### The steps (`rehome --run` on `two`; one journal, `updates/rehome`, under the move's lock)
+
+**Order.** `plan` → `update` → `hold` → `keys` → `clone` → `upgrade` → `database` → `merge` →
+`rewrite` → `check` → `swap` → `adopt` → `start` → `done`. Each runs as piece 4's steps do (stop
+points, journaled acts).
+
+1. **`plan`** (changes nothing):
+   - checks: one APFS disk; room for both databases ×1.1; the release and its engine; `S`'s
+     database not held (`lsof`); `S`'s schema one the move takes; `K`'s version (question 2); `K`
+     not mid-update (`run/.updating`);
+   - asks `K` whether agents are at work: if so, it waits, said (call 4).
+   - For `app-box`, the old keeper is stopped first (`stopOldKeeper`, as built).
+2. **`update`:** `K` brought to this release by its own update (question 2), `K` still running.
+   Safe if killed: the update's own rollback. Checked: `K` answers at the new version.
+3. **`hold`:** `kuvo-start hold`. Checked: nothing runs from `K/run` (`runningIn`), and
+   `run/held` names this process.
+4. **`keys`:** `S`'s items copied for the helper, without the link's (question 4). Undone by
+   `keys uncopy` if the merge goes back.
+5. **`clone`:**
+   - `S` into staging, as piece 4 does.
+   - `K` whole (everything but `bin`, `engine`, `updates` and `trash`) into
+     `staging/k`, with `cp -c`.
+   - Counts of both noted.
+   - `K`'s live folders aren't touched until `swap`.
+6. **`upgrade`, `database`:** piece 4's, on `S`'s staged copy alone.
+7. **`merge`:** the database (question 3), then the folders, entry by entry, into `staging/k`.
+   The rule for each:
+
+   | Entry | Rule |
+   | --- | --- |
+   | `bots/<id>` (`bot_` and random, `bots/make.ts:42`), `wakes/<session>`, `attachments/<session>` | added by ID; the same ID with other bytes stops it |
+   | a bot's or a group chat's name, a personality's name | the same name gets ` 2` (what names it follows) |
+   | `chats/<name>`, `groups/<id>` | the same folder name gets ` 2`; the path map sends `S`'s to it, so `rewrite` points sessions there |
+   | `agents/<agent>/accounts/<id>` | the same account (agent and sign-in): newer kept, the other `<id>.from-earlier`, said |
+   | `integrations/<name>` (servers' sign-ins) | the same: newer by its files' times, the other `.from-earlier` |
+   | `box/projects.json`, `box/worktrees.json`, `bots.json`, letters, personalities | joined by folder or ID, `K`'s entry kept where both |
+   | `data/opencode/snapshot/<project>/<hash>` | git objects joined: each pack or loose object `K` lacks copied in (named by content, so never overwritten) |
+   | `data/opencode/` other entries (`shell`, `storage`, `tool-output`) | added by name; the same name with other bytes stops it |
+   | `config/opencode` | question 5 |
+   | `run/link.json`, `box/keys`, `box/vault`, `box/kind`, the card, `machine-id`, `state`, `cache`, `search` | `K`'s; `S`'s `search` and `cache` dropped (rebuilt) |
+   | `machines.json`, `phone-link.json` from `S`'s machines | not taken: a member doesn't add machines (`setup/main-only.ts`). Said, naming each, with what to do |
+   | anything else in both, with other bytes | stops it, naming the entry |
+
+8. **`rewrite`:** piece 4's, on `S`'s part only, with the map from 7.
+9. **`check`:**
+   - the database's exact accounting and integrity, no new broken links;
+   - each count (sessions, messages, projects, bots, wake-ups, worktrees, vault items, accounts,
+     group chats) is `K`'s + `S`'s − what was taken as the same, never fewer;
+   - `S` unchanged since `clone`;
+   - nothing runs from `K/run`.
+10. **`swap`:**
+    - `run/held-forward` written first.
+    - Then for each top-level entry of `K` that changed: `K/<entry>` is renamed to
+      `updates/rehome/kept/<date>/<entry>`, and `staging/k/<entry>` to `K/<entry>`. Each rename
+      is journaled.
+    - **This goes back, unlike piece 4's `clear`.** Nothing else writes in `K` while it's held, so
+      until `done` a failure renames `K`'s own back. Kept 30 days (call 6).
+11. **`adopt`** (question 6), journaled:
+    - the helper's `keys adopt`;
+    - the settings moved;
+    - `box/kind` written `mac`, last.
+12. **`start`:**
+    - `run/held-forward` and `run/held` removed;
+    - `helper start`, settled as piece 4 does;
+    - owed: `machine-start` (the machine's launch agent and crontab line), `vault`, `passwords`,
+      `keychain`.
+
+**Safe if killed.**
+
+- Before `swap`, `K` is as it was: its hold is soft, and starts again as soon as the holder is
+  gone.
+- In or after `swap`, `K` stays held until the next `install --status` (the app's open) finishes
+  or undoes the merge.
+- `S` is never written.
+
+### What the other Mac sees and does
+
+- **Before:** nothing changes. The update in step 2 is `K`'s own, as any update is.
+- **During** (minutes): `K` reads "Can't be reached" in its Computers (`reach: away`,
+  PROTOCOL.md "Computer display words"). Its sessions on this Mac can't be opened, and what it
+  sends is kept for later.
+- **After:**
+  - it's reached again, and what was kept goes at once (`peers/mail.ts:137`);
+  - the same computer and key, its card saying `kind: mac`, `app: true`. Its list shows this
+    Mac's projects and sessions under this Mac's name, as any member's.
+- **Box change on its side:** Set Up Again and Uninstall over SSH are refused for a computer whose
+  card says it's a Mac with Kuvo of its own: "<name> runs Kuvo itself now. Remove it from your
+  computers instead." Otherwise they would put a machine's start back on it, or uninstall its
+  helper. Its `machines.json` record stays, as an address.
+- **Nothing to do there.** Agents at work on `K` hold step 1 back (call 4).
+
+### Words (drafts, the user's: call 8)
+
+**Steps** (`progress.title`):
+
+1. "Checking this Mac"
+2. "Updating Kuvo on <name>"
+3. "Pausing Kuvo on <name>"
+4. "Taking this Mac's keys along"
+5. "Copying your sessions"
+6. "Bringing your earlier settings along"
+7. "Bringing your sessions up to date"
+8. "Putting your sessions together"
+9. "Checking nothing's missing"
+10. "Putting everything in place"
+11. "Making Kuvo on <name> this Mac's own"
+12. "Starting Kuvo on <name> again"
+
+**Done:** "This Mac is ready. Your sessions from the earlier Kuvo Code are with Kuvo on <name>'s
+own." Then the `dropped` and kept-aside lines:
+
+- "Two sign-ins to Claude (you@example.com) were on this Mac. The newer one is in use; the other
+  is kept aside."
+- "Your Notes chat was here twice, so the earlier one is now Notes 2."
+- "3 passwords in Kuvo on <name>'s vault come along once you unlock it from <Mac> or your iPhone."
+
+**Refusals.** Each one says that nothing was changed and that Kuvo on <name> is running again, and
+offers Try Again:
+
+- "Kuvo on <name> is newer than this Kuvo Code. Update Kuvo Code, then try again."
+- "Kuvo on <name> can't update yet: <Mac> still has an older Kuvo Code. Update it there, then try
+  again."
+- "Kuvo on <name> is working in 2 sessions. Your sessions are put together once they're done."
+- "Your earlier sessions and Kuvo on <name> both have <the chat “Notes”, a session “Fix login”,
+  the file data/…> with different contents, so nothing was put together. Send
+  ~/.kuvo-code/updates/rehome/run.log to Kuvo's support."
+- Piece 4's refusals, as they are (room, disk, `S` held open, schema, engine, release).
+
+**The `two` card** (piece 7) becomes the move's card. Its steps come from the box, so no new
+screen is needed (call 8: confirm that, or have drafts made).
+
+### Pieces, in order (sized from history: a piece with review ≈ 1–2 h wall)
+
+| # | Piece | Where | Tests | h |
+| --- | --- | --- | --- | --- |
+| P | **Prevention** (call 1): the add asks about or refuses a Mac with an earlier Kuvo Code's data and no box | box `add/flow.ts`, `setup/judge.ts` | `computers-add.test.js`: a probe with an `app` line | 1 |
+| A | **Spike**: what 2.2.6 keeps in `kv`, `event` on a project, `credential.active`, `account_state`, snapshots' refs. Two real databases merged by hand in a scratch folder, then the real engine started on the result and its sessions opened. Written result | box test folder | a written result | 1–1.5 |
+| B | **Fixtures and `K` held**: a K-world made by the real add scripts in a test home (`scripts.start`, at this release and at an older one) with a 0.7.2 `S` (`rehome-run-world.ts`) and every clash above; `kuvo-start hold`, `run/held`/`held-forward` in `box`, `K` updated by its own update first | keeper, box | bridge: hold, a killed holder releases, held-forward stays, the update before; Linux for the keeper part | 2 |
+| C | **The database merge** (`rehome/merge-database.ts`) | box | per rule and per refusal; exact accounting; the real 2.2.6 engine on the merged database (`KUVO_TEST_ENGINE`) | 2 |
+| D | **The folders' merge** (`rehome/merge-files.ts`), with the path map for renamed chats | box | per entry rule, snapshots' objects, an unknown clash stops it | 2 |
+| E | **The run**: the steps in `run.ts`, `two` given verb `move` in `verdict.ts`, the swap going back, counts, words | box | `rehome-run.test.ts`: a stop at each step, then run again; `S` byte for byte; `K` back byte for byte after every failure | 2 |
+| F | **Adopt** (machine → this Mac's own): `kuvo-keys copy --except link`; the helper's `keys adopt`; settings to `config`; `kind`; `owed: machine-start`, `vault` (the store converts at the first unlock) | `mac/helper` (Swift), box | helper tests with a test keychain; box: setup role kept, vault converted on unlock, launch agent and crontab stand-ins | 2–3 |
+| G | **The other Mac's side**: Set Up Again and Uninstall refused for a Mac with Kuvo of its own; the phone's `kuvo/machines` lists it as a computer | box | `computers-add.test.js` | 1 |
+| H | **Rehearsal and docs**: a real 0.7.2 `S` with `K` added by a real box from another Mac, there and back; `troubleshooting.md`, `machines.md`, the changelog | all | the checklist | 1.5 |
+
+- **Order:** P, then A. Then B, C, D (C and D alongside), then E. F after E, needed before
+  shipping. G with F. H last.
+- **Total:** about 14–17 h, plus the rehearsal account's time. Review: high risk (data, another
+  computer), so the lead's separate review comes after E and after F.
+
+### The user's calls (with what I recommend)
+
+1. **Stop the add from making `two`.** Today a box adds a Mac that has only an earlier Kuvo Code's
+   data with no question (above).
+   - *Recommend:* refuse it in words, "<name> has sessions from an earlier Kuvo Code. Update Kuvo
+     Code on <name> first.", and make that a 0.8 gate.
+   - It's a refusal, so it's yours.
+2. **Then whether the merge gates 0.8.** With 1, only Macs that ran unreleased builds can be `two`,
+   and until the merge they lose nothing (`K` runs, `S` kept).
+   - *Recommend:* build it right after P, but don't hold 0.8 for it, unless you know of a Mac
+     outside your own that's `two`.
+3. **Whose box after** (question 6).
+   - *Recommend:* this Mac's own, still a member of the other Mac's setup.
+   - The other way, staying a machine, is cheaper by piece F but worse for the person at this Mac.
+4. **Agents at work on `K` when the merge would stop it.**
+   - *Recommend:* wait until they're done, as updates do, and say so.
+   - The other way is a "Stop Them and Continue" button.
+5. **A settings clash.**
+   - *Recommend:* `K`'s wins, and this Mac's is kept aside and named.
+   - The other way is this Mac's winning.
+6. **How long what's kept is kept.**
+   - *Recommend:* `K`'s replaced folders 30 days, then deleted.
+   - Sign-ins kept aside (secrets on disk): 30 days too, said in the done screen.
+7. **The computer's name after.**
+   - *Recommend:* the name your setup knows it by (`K`'s), which you can rename.
+   - The other way is this Mac's own name.
+8. **The words above**, and whether `two`'s card simply becomes the move's card (no new drafts).
+9. **`S`'s machines on a Mac that's a member.**
+   - *Recommend:* say each by name, with "add it again from <main Mac>".
+   - Not taken into `K`'s list, which a member can't keep.
+
 ## 9. Questions only the user can answer
 
 1. **Who keeps this Mac's box?**
