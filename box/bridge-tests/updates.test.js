@@ -148,13 +148,14 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 atEnd(() => server.close());
 const base = `http://127.0.0.1:${server.address().port}`;
 
-function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, tamper = false, key = privateKey, bundle = null, extra = null, link = false } = {}) {
+function release({ version = "0.10.0", engine: engineVersion = "1.1.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, linkBreaks = false, tamper = false, key = privateKey, bundle = null, extra = null, link = false } = {}) {
   const files = path.join(scratch, `files-${crypto.randomUUID()}`);
   write(path.join(files, "bin", "box-version"), version);
-  write(path.join(files, "bin", "kuvo-start"), keeper("1.1.0", breaks), 0o700);
-  write(path.join(files, "bin", "kuvo-link.js"), fs.readFileSync(script, "utf8"), 0o600);
+  write(path.join(files, "bin", "kuvo-start"), keeper(engineVersion, breaks), 0o700);
+  // (One that `linkBreaks` passes its self-test, and answers nothing else.)
+  write(path.join(files, "bin", "kuvo-link.js"), linkBreaks ? 'if (process.argv.includes("selftest")) console.log("ok"); else process.exit(1);\n' : fs.readFileSync(script, "utf8"), 0o600);
   write(path.join(files, "bin", "kuvo-wake"), "# the new wake-ups\n", 0o755);
-  const box = { version, engine: "1.1.0", files: {} };
+  const box = { version, engine: engineVersion, files: {} };
   for (const file of ["bin/box-version", "bin/kuvo-start", "bin/kuvo-link.js", "bin/kuvo-wake"]) box.files[file] = sha256(fs.readFileSync(path.join(files, file)));
   if (bundle) {
     const listed = box.bundles = { "bin/Kuvo Helper.app": {} };
@@ -169,13 +170,13 @@ function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_
   const pack = path.join(scratch, `pack-${crypto.randomUUID()}.tgz`);
   spawnSync("tar", ["czf", pack, "-C", files, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   const engine = path.join(scratch, `engine-${crypto.randomUUID()}`);
-  write(path.join(engine, "package", "bin", "opencode"), engineBinary("1.1.0", engineBreaks), 0o755);
+  write(path.join(engine, "package", "bin", "opencode"), engineBinary(engineVersion, engineBreaks), 0o755);
   const engineTar = path.join(scratch, `engine-${crypto.randomUUID()}.tgz`);
   spawnSync("tar", ["czf", engineTar, "-C", engine, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   const packData = fs.readFileSync(pack), engineData = fs.readFileSync(engineTar);
   const integrity = "sha512-" + crypto.createHash("sha512").update(engineData).digest("base64");
   const manifest = Buffer.from(JSON.stringify({
-    kuvo: "box/1", version, released: released.toISOString(), engine: "1.1.0",
+    kuvo: "box/1", version, released: released.toISOString(), engine: engineVersion,
     // Each system's own build, and the other's isn't there: a box takes the one for its system.
     ...Object.fromEntries(["linux", "darwin"].map(system => {
       const url = (system === "darwin") === (process.platform === "darwin") ? `${base}/engine.tgz` : `${base}/another-systems-engine.tgz`;
@@ -199,7 +200,7 @@ const update = (options = {}) => link.update({ now: true, keys: [pinned], url: `
 // The update on trial judged by the one health rule (updates/health.ts), its looks the real ones,
 // its clock the test's: a look a second, all holding three seconds of it.
 let ticks = 0, looks = 0;
-const settle = (options = {}) => link.settleUpdate({ clock: () => ticks, every: 1000, window: 3000, wait: async () => { ticks += 1000; }, ...options, look: async (...args) => { looks++; return (options.look ?? link.lookAtPieces)(...args); } });
+const settle = (options = {}) => link.settleUpdate({ clock: () => ticks, every: 1000, window: 3000, failingFor: 2000, wait: async () => { ticks += 1000; }, ...options, look: async (...args) => { looks++; return (options.look ?? link.lookAtPieces)(...args); } });
 // A judge of its own (\`update --settle\`), as the keeper starts it, and the update command's: quick here.
 process.env.KUVO_TEST_HEALTH_WINDOW = "600";
 process.env.KUVO_TEST_HEALTH_EVERY = "150";
@@ -872,6 +873,16 @@ test("Update Now takes the offered release whatever is at work, and this box's o
   assert.equal(link.offerWaits(), false);
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), { actions: [] });
   assert.equal(await settle(), "well");
+
+  // One that keeps the engine running stops nothing: it's taken in a moment, whatever is at work,
+  // and Update Now asks nothing.
+  assert.equal(offer(release({ version: "0.11.0", engine: "1.1.0" }).folder).status, 202);
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), {
+    update: { state: "waiting", title: "Kuvo on Studio Mac updates in a moment.", detail: "" },
+    actions: [{ id: "update-here", label: "Update Now" }],
+  });
+  assert.deepEqual(await take(), { result: "updated", version: "0.11.0" }, "by itself, with something at work");
+  assert.equal(await settle(), "well");
 });
 
 test("`kuvo-link.js update --installer` (the installer Kuvo Code carries) waits for nothing to be at work, saying so once, then updates; with --now it doesn't wait", async t => {
@@ -1125,12 +1136,13 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   assert.deepEqual(fs.readdirSync(path.join(home, "bin")).filter(name => name.includes(".app")), ["Kuvo Helper.app"]);
 
   // A new bundle where there was none goes again, as it came. (Each offered again a day after the
-  // one before didn't come up.)
+  // one before didn't come up. Its engine the one running now, which nothing restarts: its new link
+  // that answers nothing is what's unwell.)
   let day = 0;
   const later = () => ({ clock: (at => () => at)(Date.now() + ++day * 86_400_001) });
   fs.rmSync(bundle, { recursive: true });
   let when = later();
-  assert.equal(offer(release({ breaks: true, bundle: helper }).folder, when).status, 202);
+  assert.equal(offer(release({ linkBreaks: true, bundle: helper }).folder, when).status, 202);
   assert.equal((await take(when)).result, "updated");
   assert.equal(await settle(), "unwell");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs again, under the old code (a rollback puts back code only)");

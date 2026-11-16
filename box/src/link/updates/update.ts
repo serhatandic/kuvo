@@ -265,13 +265,17 @@ function takeUpdateLock(): boolean {
 }
 
 // Keeps what's there now of each of a release's files, with `restore.sh`, which puts them back: run
-// by the update when the new version doesn't come up, or by the keeper once the update's trial runs
-// out (not while an update runs). Each step checked: one that fails leaves what was kept, for the
-// next try. Code only: the engine's data is never put back (what was written since would be lost).
+// by the update when its swap fails midway, or once its judge finds it unwell (`kuvo-start
+// rollback`; not while an update runs). Each step checked: one that fails leaves what was kept, for
+// the next try. Code only: the engine's data is never put back (what was written since would be
+// lost), and nothing at work is stopped: each piece takes the code put back as it takes new code.
 // With a newer engine (`engine`, the release's), once that engine was put in place and started
 // (`ENGINE_STARTED`, which the update notes as it starts it), the engine stays the new one, as the
 // older engine may not read what the newer wrote: the keeper put back starts it (its `V=`). Before
-// that, the older engine never ran on anything newer, and goes back with the rest.
+// that, the older engine never ran on anything newer, and goes back with the rest: the newer one
+// stopped first, the older started after. A keeper put back from before the keeper kept the coding
+// agents' bridge itself (one without `bridge)`) stops the engine and its bridge and starts them
+// again, as it always did: that bridge only ever starts with its engine.
 function keepForRollback(files: string[], engine: string | null, bundles: ReadonlySet<string> = new Set()): void {
   fs.rmSync(ROLLBACK, { recursive: true, force: true });
   fs.mkdirSync(path.join(ROLLBACK, "files"), { recursive: true, mode: 0o700 });
@@ -280,7 +284,8 @@ function keepForRollback(files: string[], engine: string | null, bundles: Readon
     `K=${quote(K)}; B=${quote(ROLLBACK)}`,
     `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
     `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
-    `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1 || exit 1`,
+    `halt=; if ! grep -q '^bridge)' "$B/files/bin/kuvo-start" 2>/dev/null; then halt=stop; elif ${engine ? `[ ! -f "$B/engine-started" ]` : "false"}; then halt=engine-stop; grep -q '^engine-stop)' "$K/bin/kuvo-start" 2>/dev/null || halt=stop; fi`,
+    `if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" "$halt" >/dev/null 2>&1 || exit 1; fi`,
   ];
   for (const file of files) {
     const from = path.join(K, file);
@@ -309,7 +314,7 @@ function keepForRollback(files: string[], engine: string | null, bundles: Readon
       lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
     }
   }
-  lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
+  lines.push(`if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" start >/dev/null 2>&1; else sh "$K/bin/kuvo-start" box >/dev/null 2>&1; fi`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
   writePrivate(path.join(ROLLBACK, "restore.sh"), lines.join("\n") + "\n");
 }
 
@@ -529,8 +534,10 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const behind = engineBehind(manifest.engine);
     if (behind) return { result: "blocked", message: behind };
     if (!now && !from && clock() - (Date.parse(manifest.released!) || clock()) < RELEASE_AGE) return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
-    // (Now, on your word, whatever is at work: a client asks you first, saying what stops.)
-    if (!whileBusy && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    // Only a release with another engine waits for nothing to be at work (that engine is started in
+    // the one running's place); or now, on your word: a client asks you first, saying what stops.
+    const engineChanges = runningEngineVersion() !== manifest.engine;
+    if (!whileBusy && engineChanges && await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
     step("downloading");
     stage = path.join(UPDATES, manifest.version);
@@ -607,10 +614,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
     if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
-    // Stopped, for sure, before anything's copied; what's there kept; then the new in its place,
-    // one file at a time, and started again.
+    // What's there kept; then the new in its place, one file at a time.
     step("installing");
     let previous: Partial<EngineRecord> = {};
     try { previous = readEngineFile(); } catch {}
@@ -618,25 +624,31 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (home) keeperEnv = { HOME: home };
     const otherEngine = previous?.version !== manifest.engine;
     if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
-    // What's there kept, and how to put it back, before the engine stops: a stop the update
-    // doesn't get past (the machine going down) is put back too, its engine started again.
+    // What's there kept, and how to put it back, before anything changes: a swap the update doesn't
+    // get past (the machine going down) is put back too.
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
     fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
     trial = true;
-    stopped = true;
-    const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], keeperEnv, 300_000);
-    // COMPAT(0.8 beta update): an engine the keeper's stop left running though its record names it
-    // (its HOME not told, its command line unread): stopped here by that record, once its command
-    // line says it's this box's engine. Goes with `update --installer`.
-    if (stop.status === 0 && previous?.pid) await stopEngine(previous.pid);
-    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) {
-      stopFailed = true;
-      throw new Error(`Kuvo's engine on ${HERE} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
+    // Nothing at work is stopped: each piece takes the new code as it takes any (PROTOCOL.md,
+    // "Updates"). Only another engine than the one running is: that one alone, its coding agents'
+    // bridge running on, and only once nothing works there or on your word (above).
+    if (otherEngine) {
+      stopped = true;
+      const halt = /^engine-stop\)/m.test(textOf(path.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
+      const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300_000);
+      // COMPAT(0.8 beta update): an engine the keeper's stop left running though its record names it
+      // (its HOME not told, its command line unread): stopped here by that record, once its command
+      // line says it's this box's engine. Goes with `update --installer`.
+      if (stop.status === 0 && previous?.pid) await stopEngine(previous.pid);
+      if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) {
+        stopFailed = true;
+        throw new Error(`Kuvo's engine on ${HERE} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
+      }
+      // (A copy of its data, never put back by anything: for you to restore by hand, as a last resort.)
+      dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     }
-    // (A copy of its data, never put back by anything: for you to restore by hand, as a last resort.)
-    if (otherEngine) dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     swapped = true;
     swapping();
     if (staged) {
@@ -656,7 +668,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     // (A newer engine about to run on the data: from here, a rollback keeps it.)
     if (newerEngine) writePrivate(ENGINE_STARTED, manifest.engine);
-    ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
+    // The engine started again where it was stopped; otherwise only its keeper, should it have gone
+    // (it starts itself again on the new code, as `serve`, `run` and the bridge each do).
+    ran("sh", [path.join(K, "bin", "kuvo-start"), otherEngine ? "start" : "box"], keeperEnv);
     step("starting");
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
     // (Not its bundles: the helper's own keeper may put its own back, which is never drift.)
@@ -721,6 +735,21 @@ function readRelease(file: string, limit: number): Buffer {
     if (stat.isFile() && stat.size <= limit) return fs.readFileSync(file);
   } catch {}
   throw new Error("That release can't be read.");
+}
+
+// The version of the engine running here, as its record says (null: none noted).
+function runningEngineVersion(): string | null {
+  try { return readEngineFile()?.version ?? null; } catch { return null; }
+}
+
+/** Whether taking the release offered from a folder here would start another engine than the one
+ * running (the one kind of update that waits for nothing to be at work); false where it can't be told. */
+export function offerChangesEngine(): boolean {
+  try {
+    const given = JSON.parse(fs.readFileSync(path.join(OFFERED, "boxes.json"), "utf8"));
+    const engine = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.engine;
+    return typeof engine === "string" && engine !== runningEngineVersion();
+  } catch { return false; }
 }
 
 // Why a release with engine `engine` isn't taken: the engine running here is newer (it may have
@@ -1082,7 +1111,8 @@ export async function offerDue({ blocked = updatesBlocked(), clock = Date.now, n
   }
   if (blocked || !before || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, "stopped"))) return false;
   if (now) return true;
-  return !updateStarted && !offerRests(offered, clock()) && !(await boxBusy());
+  // (Only one with another engine waits for nothing to be at work.)
+  return !updateStarted && !offerRests(offered, clock()) && !(offerChangesEngine() && await boxBusy());
 }
 
 /** The release offered from a folder here, taken when it's due (`offerDue`), as `update --offered`
@@ -1118,7 +1148,7 @@ export const installerSteps = {
 } as const;
 
 /** Waits until nothing is at work here before the release in `from` is taken (`update --installer`
- * without `--now`), saying once that it waits. True to go on: nothing at work, or nothing to wait
+ * without `--now`) when it starts another engine, saying once that it waits. True to go on: nothing at work, or nothing to wait
  * for (this box has that version already, or can't update, which the update then says). False once
  * the app that asked is gone (this process left to another): it's taken by the box itself then. */
 export async function untilFree(from: string, { keys = UPDATE_KEYS, blocked }: Pick<UpdateOptions, "keys" | "blocked"> = {}): Promise<boolean> {
@@ -1137,7 +1167,8 @@ export async function untilFree(from: string, { keys = UPDATE_KEYS, blocked }: P
     const ahead = !!before && (newerVersion(version, before) || (sameVersion(version, before) && differs!.differs));
     if (!before || !ahead || (blocked === undefined ? updatesBlocked() : blocked)) return true;
     // (The box taking it itself meanwhile: waited for, and then it's there.)
-    if (!isUpdating() && !(await boxBusy())) return true;
+    // (Only a release with another engine waits for nothing to be at work: the rest stop nothing.)
+    if (!isUpdating() && (manifest.engine === runningEngineVersion() || !(await boxBusy()))) return true;
     if (!said) { console.log(JSON.stringify(installerSteps.waiting)); said = true; }
     await sleep(every);
     if (process.ppid !== parent) return false;

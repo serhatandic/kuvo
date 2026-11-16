@@ -4,6 +4,7 @@
 #   kuvo-start           keeps the box running (starts its keeper, once)
 #   kuvo-start start     starts the engine, after a stop
 #   kuvo-start stop      stops the engine until it's started again
+#   kuvo-start engine-stop  the same, its coding agents' bridge left running (an update's new engine)
 #   kuvo-start restart   starts the engine over
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
 K="$HOME/.kuvo-code"; R="$K/run"
@@ -118,6 +119,10 @@ halt() {
   a=$(cat "$R/agents.pid" 2>/dev/null)
   if is "$a" kuvo-agents; then kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null; fi
   rm -f "$R/agents.pid"
+  halt_engine
+}
+# The engine alone (under the lock).
+halt_engine() {
   p=$(engine)
   if is "$p" "$K/engine/"; then
     kill "$p"; n=0
@@ -313,7 +318,8 @@ keep)
         exec "$S" "$K/bin/kuvo-wake" fire "$K/bots" "$R/engine.json") >/dev/null 2>&1 </dev/null &
       waking=$!
     fi
-    sleep 15
+    # (A test's keeper goes round as often as it says.)
+    sleep "${KUVO_TEST_KEEP_ROUND:-15}"
   done
   ;;
 engine)
@@ -362,6 +368,15 @@ stop)
   trap 'exit 1' HUP INT TERM
   touch "$R/stopped"
   halt
+  ;;
+engine-stop)
+  # As `stop`, but the engine alone: an update that brings another engine stops only it, and starts
+  # the new one (`start`); the coding agents' bridge, and their turns, run on.
+  lock || { echo "A start of the engine is under way there." >&2; exit 4; }
+  trap 'trap "" HUP INT TERM; unlock' EXIT
+  trap 'exit 1' HUP INT TERM
+  touch "$R/stopped"
+  halt_engine
   ;;
 restart)
   rm -f "$R/stopped"

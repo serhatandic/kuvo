@@ -25,8 +25,11 @@ export const helperProgram = (): string => path.join(helperBundle(), "Contents",
 const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 /** The launch agent's file: the helper, with this box's folder, at login; started again should it
- * end any other way than cleanly (it does when the box was turned off), and named under Kuvo Code
- * (`app`'s bundle ID) in Login Items while the app's there. */
+ * end any other way than cleanly, and named under Kuvo Code (`app`'s bundle ID) in Login Items while
+ * the app's there. The helper exits cleanly only when it's stopped on purpose (the box turned off,
+ * Stop Kuvo on this Mac, launchd or you quitting it, another copy running, a refusal only you can
+ * clear); a new build of it put in its place (an update) has it exit otherwise (75), and a crash
+ * does, so launchd always starts it again then. */
 export function helperPlist(app: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

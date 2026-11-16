@@ -110,11 +110,11 @@ import { serveBox } from "./server/serve";
 import { macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
 import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
-import { runningServe, SERVE_FILE, SERVE_NEEDED, stopKeptServe } from "./serve-kept";
+import { runningServe, SERVE_FILE, SERVE_NEEDED } from "./serve-kept";
 import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { keepMachinesUp } from "./add/keep-up";
-import { serveCheck, servedFiles, servedLink } from "./updates/serve-current";
+import { leaveForNewCode } from "./updates/code-in-place";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
@@ -191,7 +191,7 @@ export { engineConnect, engineControl, toolRun } from "./areas/engine";
 export { botPersonalities, changePersonalities, mergePersonalities, personalitiesDocument, readPersonalities } from "./personalities/library";
 export { keyFilesWait, syncKeyFiles } from "./keys";
 export { KEEP_UP_FILE, keepUpRound, keepingSelfUp } from "./add/keep-up";
-export { serveCheck, servedFiles } from "./updates/serve-current";
+export { codeCheck, codeInPlace } from "./updates/code-in-place";
 export { HEALTH, lookAtPieces, settleUpdate } from "./updates/health";
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
@@ -379,6 +379,8 @@ async function run(): Promise<void> {
   };
   process.on("SIGTERM", cleanUp);
   process.on("SIGINT", cleanUp);
+  // New code put in place (an update): it goes, for the keeper to start it again on it.
+  leaveForNewCode(fileURLToPath(import.meta.url), cleanUp);
 
   keepBridgeAnswering();
   // Stops when nothing's paired any more, or when another bridge took over; up while the engine
@@ -780,6 +782,8 @@ async function keptServe(): Promise<void> {
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
+  // New code put in place (an update): it goes, for the keeper to start it again on it.
+  leaveForNewCode(fileURLToPath(import.meta.url), leave);
   writePrivate(SERVE_FILE(), JSON.stringify({ pid: process.pid, port, password, kept: true }));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   // Not wanted any more, or another took its place (two started at once: the last one stays). (A
@@ -806,11 +810,6 @@ async function serve(): Promise<void> {
     process.exit(2);
   }
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
-  // The box's files it runs on, as it starts: an update that changes them under it is seen (below).
-  const started = servedFiles();
-  // It goes for the new ones only where its helper starts it again (`kuvo-start serve`, from the
-  // box's own `bin/kuvo-link.js`): never an app's own box, which its app starts.
-  const leaves = !APP_FOLDER && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(servedLink());
   // (Sessions' turns' lock folders left by a box cut off: `engine/notes.ts`.)
   clearNotesLocks();
   // This Mac's settings with what its engine starts with, before a client reads them.
@@ -918,25 +917,14 @@ async function serve(): Promise<void> {
     try { if (OWN_HOME_MAC && JSON.parse(fs.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
     process.exit(0);
   };
-  // The box's files changed under it (an update put new ones there, and is done): it goes, as its
-  // app gone does, for its helper to start the new ones. An update to the version it runs, on trial
-  // and up, said to be well once it's up and answering (its first look, then each while one's open),
-  // so the keeper doesn't take it back: on a Mac nothing else says so (no relay welcomes a machine's
-  // bridge here). And the copy of the engine's data an update kept, gone after its 30 days (a Mac
-  // runs no bridge whose rounds would). As soon as it answers, then every 30 seconds. (A test's box
-  // looks as often as it says.)
-  const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30_000;
-  let leaving = false;
-  const look = (): void => {
-    if (leaving) return;
-    try { dropOldBackups(); } catch {}
-    if (serveCheck(started, { leaves }) !== "leave") return;
-    leaving = true;
-    console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
-    void leave();
-  };
-  look();
-  setInterval(look, every).unref?.();
+  // The box's files changed under it (an update put new ones there): it goes, as its app gone does,
+  // for its helper to start the new ones (only where its helper starts it, from the box's own files).
+  leaveForNewCode(fileURLToPath(import.meta.url), () => void leave());
+  // The copy of the engine's data an update kept, gone after its 30 days (a Mac runs no link whose
+  // rounds would): as it starts, then every half hour.
+  const dropBackups = () => { try { dropOldBackups(); } catch {} };
+  dropBackups();
+  setInterval(dropBackups, 1_800_000).unref?.();
   process.stdin.on("end", leave);
   process.stdin.on("close", leave);
   process.stdin.resume();
@@ -1220,8 +1208,8 @@ if (main) {
     // `update --offered` (the one Kuvo Code here offered, `kuvo/box/update`, when it's due: nothing
     // to do otherwise; with `--now`, on your word, whatever is at work); `--night <night>`: the
     // night's, which it notes once it went; and for a test's folder only, `--url <boxes.json> --key <public key>` (or
-    // `--key` alone, with `--from` or `--offered`). Once it's updated, the running bridge goes, for
-    // the keeper to start the new one.
+    // `--key` alone, with `--from` or `--offered`). Once it's updated, it stays to judge it
+    // (updates/health.ts); nothing is stopped: each piece takes the new code by itself.
     const args = process.argv.slice(3);
     const option = (name: string): string | undefined => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
     const from = option("--from");
@@ -1275,12 +1263,6 @@ if (main) {
     // last update is still on trial, when it's tried again that night.)
     const night = option("--night");
     if (night && outcome && !passingOutcome(outcome)) noteUpdate({ night });
-    if (outcome?.result === "updated") {
-      const pid = runningBridge();
-      if (pid) process.kill(pid, "SIGTERM");
-      // And the server kept for clients, which the keeper starts again, new (serve-kept.ts).
-      stopKeptServe();
-    }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
     // Judged here, by the one health rule (updates/health.ts), this process staying until it's well

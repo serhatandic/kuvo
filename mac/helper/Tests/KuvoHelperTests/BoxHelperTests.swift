@@ -689,6 +689,29 @@ private final class InTheTests {}
         #expect(!text(run.appending(path: "box.pid")).isEmpty, "its keeper runs again")
     }
 
+    /// An update puts a new build of the helper in its place (the bundle swapped whole): it goes,
+    /// stopping what it started as any exit does, and with the status its launch agent has launchd
+    /// start it again for (any but a clean exit, which is for Stop Kuvo and the box turned off,
+    /// above, alone): so it never stays gone after an update.
+    @Test func aNewBuildPutInItsPlaceHasItGoForLaunchdToStartTheNewOne() throws {
+        try standIns()
+        let helper = try keeping(["--test-look-every", "0.2"])
+        defer { cleanUp([helper]) }
+        until { !text(home.appending(path: "serve.stdin")).isEmpty && !text(run.appending(path: "box.pid")).isEmpty }
+        // The new build beside it, then renamed into its place, as an update swaps a bundle.
+        let fresh = URL(filePath: helperInApp.path + ".new")
+        try FileManager.default.copyItem(at: helperInApp, to: fresh)
+        let plist = fresh.appending(path: "Contents/Info.plist")
+        try write(plist, text(plist) + "\n")
+        #expect(rename(helperInApp.path, helperInApp.path + ".old") == 0)
+        #expect(rename(fresh.path, helperInApp.path) == 0)
+        until { !helper.isRunning }
+        #expect(helper.ended.value == BoxHelper.renewed)
+        #expect(BoxHelper.renewed != 0, "launchd starts it again")
+        #expect(text(home.appending(path: "serve.log")) == "closed\n")
+        #expect(text(home.appending(path: "keep.log")).contains("term"))
+    }
+
     /// As its own build runs (AppKit's run loop, for its menu bar item): SIGTERM still stops what it
     /// started before it goes, never an exit that leaves the box running.
     @Test func underAppKitsRunLoopItStillStopsWhatItStartedAsItGoes() throws {

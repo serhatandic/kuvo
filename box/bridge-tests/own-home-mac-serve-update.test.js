@@ -51,7 +51,7 @@ const running = new Set();
 atEnd(() => { for (const child of running) child.kill(); });
 async function serve(every = 100) {
   const child = spawn(process.execPath, [path.join(K, "bin", "kuvo-link.js"), "serve"], {
-    env: { ...process.env, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_SERVE_EVERY: String(every), KUVO_TEST_NO_PEERS: "1" },
+    env: { ...process.env, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_CODE_EVERY: String(every), KUVO_TEST_NO_PEERS: "1" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   running.add(child);
@@ -92,7 +92,7 @@ test("a Mac's box's server never says an update is well (its judge does, by the 
 test("a server whose files an update changed goes, once no update is under way, for its helper to start the new ones", { timeout: 60_000 }, async () => {
   const started = { version: "0.10.0", link: "abc" };
   const after = { version: "0.11.0", link: "def" };
-  const check = options => link.serveCheck(started, { updating: () => false, now: () => after, ...options });
+  const check = options => link.codeCheck(started, { updating: () => false, now: () => after, ...options });
   assert.equal(check(), "leave");
   // Not while an update changes them (it may yet put them back), nor for a file missing a moment.
   assert.equal(check({ updating: () => true }), "stay");

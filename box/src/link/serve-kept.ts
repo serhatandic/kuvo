@@ -35,13 +35,6 @@ export function runningServe(): ServeRecord | null {
   return null;
 }
 
-/** The kept server, stopped (after an update, for the keeper to start the new one): only one this
- * keeper keeps, never a Mac's own. */
-export function stopKeptServe() {
-  const running = runningServe();
-  if (running?.kept && running.pid !== process.pid) try { process.kill(running.pid, "SIGTERM"); } catch {}
-}
-
 /** `kuvo/box/serve`: whether a client wants the box's server kept running here (`GET`, for any client), and asking
  * for it or letting it go (`POST {needed}`, from Kuvo Code itself). Asked for, the keeper's started
  * should it have gone; it starts the server within its next round (15 s at most). A Mac's own box

@@ -14335,7 +14335,8 @@ function keepForRollback(files, engine, bundles = new Set) {
     `K=${quote(K)}; B=${quote(ROLLBACK)}`,
     `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
     `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
-    `sh "$K/bin/kuvo-start" stop >/dev/null 2>&1 || exit 1`
+    `halt=; if ! grep -q '^bridge)' "$B/files/bin/kuvo-start" 2>/dev/null; then halt=stop; elif ${engine ? `[ ! -f "$B/engine-started" ]` : "false"}; then halt=engine-stop; grep -q '^engine-stop)' "$K/bin/kuvo-start" 2>/dev/null || halt=stop; fi`,
+    `if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" "$halt" >/dev/null 2>&1 || exit 1; fi`
   ];
   for (const file of files) {
     const from = path40.join(K, file);
@@ -14363,7 +14364,7 @@ function keepForRollback(files, engine, bundles = new Set) {
       lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
     }
   }
-  lines.push(`sh "$K/bin/kuvo-start" start >/dev/null 2>&1`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
+  lines.push(`if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" start >/dev/null 2>&1; else sh "$K/bin/kuvo-start" box >/dev/null 2>&1; fi`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
   writePrivate(path40.join(ROLLBACK, "restore.sh"), lines.join(`
 `) + `
 `);
@@ -14531,7 +14532,8 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       return { result: "blocked", message: behind };
     if (!now && !from && clock() - (Date.parse(manifest.released) || clock()) < RELEASE_AGE)
       return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
-    if (!whileBusy && await boxBusy())
+    const engineChanges = runningEngineVersion() !== manifest.engine;
+    if (!whileBusy && engineChanges && await boxBusy())
       return { result: "busy", message: "Something is running there now." };
     step("downloading");
     stage = path40.join(UPDATES, manifest.version);
@@ -14617,7 +14619,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       throw new Error("The new link doesn't work with it here.");
     if (ran("sh", ["-n", path40.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
       throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && await boxBusy())
+    if (!whileBusy && engineChanges && await boxBusy())
       return { result: "busy", message: "Something is running there now." };
     step("installing");
     let previous = {};
@@ -14635,16 +14637,18 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
     fs37.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
     trial = true;
-    stopped = true;
-    const stop = ran("sh", [path40.join(K, "bin", "kuvo-start"), "stop"], keeperEnv, 300000);
-    if (stop.status === 0 && previous?.pid)
-      await stopEngine(previous.pid);
-    if (stop.status !== 0 || previous?.pid && alive(previous.pid)) {
-      stopFailed = true;
-      throw new Error(`Kuvo's engine on ${HERE2} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
-    }
-    if (otherEngine)
+    if (otherEngine) {
+      stopped = true;
+      const halt = /^engine-stop\)/m.test(textOf(path40.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
+      const stop = ran("sh", [path40.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300000);
+      if (stop.status === 0 && previous?.pid)
+        await stopEngine(previous.pid);
+      if (stop.status !== 0 || previous?.pid && alive(previous.pid)) {
+        stopFailed = true;
+        throw new Error(`Kuvo's engine on ${HERE2} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
+      }
       dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
+    }
     swapped = true;
     swapping();
     if (staged) {
@@ -14664,7 +14668,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     }
     if (newerEngine)
       writePrivate(ENGINE_STARTED, manifest.engine);
-    ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
+    ran("sh", [path40.join(K, "bin", "kuvo-start"), otherEngine ? "start" : "box"], keeperEnv);
     step("starting");
     writePrivate(path40.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: Date.now(), ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
@@ -14718,6 +14722,22 @@ function readRelease(file, limit) {
       return fs37.readFileSync(file);
   } catch {}
   throw new Error("That release can't be read.");
+}
+function runningEngineVersion() {
+  try {
+    return readEngineFile()?.version ?? null;
+  } catch {
+    return null;
+  }
+}
+function offerChangesEngine() {
+  try {
+    const given = JSON.parse(fs37.readFileSync(path40.join(OFFERED, "boxes.json"), "utf8"));
+    const engine = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.engine;
+    return typeof engine === "string" && engine !== runningEngineVersion();
+  } catch {
+    return false;
+  }
 }
 function engineBehind(engine) {
   let running = null;
@@ -15028,7 +15048,7 @@ async function offerDue({ blocked = updatesBlocked(), clock = Date.now, now = fa
     return false;
   if (now)
     return true;
-  return !updateStarted && !offerRests(offered, clock()) && !await boxBusy();
+  return !updateStarted && !offerRests(offered, clock()) && !(offerChangesEngine() && await boxBusy());
 }
 async function takeOffer(options = {}) {
   if (!await offerDue(options))
@@ -15078,7 +15098,7 @@ async function untilFree(from, { keys = UPDATE_KEYS, blocked } = {}) {
     const ahead = !!before && (newerVersion(version, before) || sameVersion(version, before) && differs.differs);
     if (!before || !ahead || (blocked === undefined ? updatesBlocked() : blocked))
       return true;
-    if (!isUpdating() && !await boxBusy())
+    if (!isUpdating() && (manifest.engine === runningEngineVersion() || !await boxBusy()))
       return true;
     if (!said) {
       console.log(JSON.stringify(installerSteps.waiting));
@@ -43002,7 +43022,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c25d8d596457";
+var BRIDGE_VERSION = "02a139eadb79";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -46395,10 +46415,8 @@ init_state();
 var KEEP_UP_FILE = path154.join(RUN, "keep-up.json");
 var KEEP_UP_ROUND = 15 * 60000;
 var CURRENT_FOR = 86400000;
-var LONG_WAIT = 86400000;
 var RETRY = 3600000;
 var REST = 86400000;
-var MOST_BETWEEN_LOOKS = 2 * 3600000;
 function readKept9() {
   try {
     const kept = JSON.parse(fs145.readFileSync(KEEP_UP_FILE, "utf8"));
@@ -46485,13 +46503,6 @@ async function keepUpRound(clock = Date.now) {
         continue;
       if (was && was.mine === mine && !was.older && now - was.checked < CURRENT_FOR)
         continue;
-      if (said?.version && typeof said.working === "number" && said.working > 0) {
-        const working = said.working;
-        changeKept2(peer.key, (before) => ({ ...before ?? {}, older: true, mine, checked: now, since: before?.since ?? now, working }));
-        continue;
-      }
-      if (was?.busyLooks && now - was.checked < Math.min(MOST_BETWEEN_LOOKS, KEEP_UP_ROUND * 2 ** (was.busyLooks - 1)) - 60000)
-        continue;
       let looked;
       try {
         looked = await lookAtWork2(peer.key);
@@ -46507,12 +46518,7 @@ async function keepUpRound(clock = Date.now) {
         changeKept2(peer.key, () => ({ older: false, mine, checked: now }));
         continue;
       }
-      if (looked.working !== 0) {
-        const working = looked.working;
-        changeKept2(peer.key, (before) => ({ ...before ?? {}, older: true, mine, checked: now, since: before?.since ?? now, working, busyLooks: (before?.busyLooks ?? 0) + 1, unreached: undefined, unreachedWhy: undefined, failed: undefined }));
-        continue;
-      }
-      changeKept2(peer.key, (before) => ({ ...before ?? {}, older: true, mine, checked: now, working: 0, since: undefined, busyLooks: undefined, unreached: undefined, unreachedWhy: undefined, failed: undefined }));
+      changeKept2(peer.key, (before) => ({ ...before ?? {}, older: true, mine, checked: now, working: looked.working, since: undefined, busyLooks: undefined, unreached: undefined, unreachedWhy: undefined, failed: undefined }));
       bringUp(peer.key, true, clock);
     }
   } finally {
@@ -46556,15 +46562,7 @@ function keepingUp(computer, here, now = Date.now()) {
   const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected" ? looked !== false : looked === true;
   if (!older || computer.reach === "away")
     return none;
-  const said = computer.version && typeof computer.working === "number" ? computer.working : null;
-  const found = was?.working === undefined ? null : was.working;
-  const working = said === null ? found : found === null ? said > 0 ? said : null : Math.max(said, found);
-  const confirm = working === 0 ? undefined : {
-    title: `Update Kuvo on ${name} now?`,
-    message: working ? `${sessions(working)} at work on ${name}. ${working === 1 ? "It keeps" : "They keep"} going, but ${name} may be out of reach for a moment as Kuvo there restarts.` : `Something may be at work on ${name}. It keeps going, but ${name} may be out of reach for a moment as Kuvo there restarts.`,
-    label: "Update Now"
-  };
-  const action = (label) => [{ id: "update", label, ...confirm ? { confirm } : {}, ...under ? { why: "Something else is being done with it now." } : {} }];
+  const action = (label) => [{ id: "update", label, ...under ? { why: "Something else is being done with it now." } : {} }];
   const missed = (title, why) => {
     const own = why && !why.startsWith("Couldn’t reach ") ? sentence2(why) : "Make sure it’s on and connected, then Try Again. ";
     return { update: line("failed", title, `${own}Kuvo also tries again by itself later.`), actions: action("Try Again") };
@@ -46573,11 +46571,7 @@ function keepingUp(computer, here, now = Date.now()) {
     return missed(was.failed.why?.startsWith("Couldn’t reach ") ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
   if (was?.unreached && was.unreached >= was.checked)
     return missed(was.unreachedWhy?.includes("couldn’t be checked") ? `Couldn’t check ${name}` : `Couldn’t reach ${name}`, was.unreachedWhy);
-  if (was?.since !== undefined && working !== 0 && now - was.since >= LONG_WAIT)
-    return { update: line("waiting", `Kuvo on ${name} hasn’t been free for a day`, "It updates once nothing’s at work there, or now with Update Now.", true), actions: action("Update Now") };
-  if (working === 0)
-    return { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: action("Update Now") };
-  return { update: line("waiting", `Kuvo on ${name} updates once nothing’s at work there`, "Or now with Update Now: what’s at work there keeps going."), actions: action("Update Now") };
+  return { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: action("Update Now") };
 }
 var sentence2 = (words) => words.trim() ? `${words.trim()}${/[.!?…]$/.test(words.trim()) ? "" : "."} ` : "";
 function keepingSelfUp(name, working, blocked) {
@@ -46592,14 +46586,17 @@ function keepingSelfUp(name, working, blocked) {
     return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
   if (status.blocked || offerHeld())
     return none;
+  const engine = offerChangesEngine();
   const at = working ?? 0;
   const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
-  const actions = [{ id: "update-here", label: "Update Now", confirm }];
+  const actions = [{ id: "update-here", label: "Update Now", ...engine ? { confirm } : {} }];
   if (status.offerFailed && status.offerFailed.version === status.offered) {
     if (offerFailedAgain(status.offered))
       return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
     return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions };
   }
+  if (!engine)
+    return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions };
   return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions };
 }
 
@@ -54694,13 +54691,6 @@ function runningServe() {
     }
   } catch {}
   return null;
-}
-function stopKeptServe() {
-  const running = runningServe();
-  if (running?.kept && running.pid !== process.pid)
-    try {
-      process.kill(running.pid, "SIGTERM");
-    } catch {}
 }
 async function* serveRoute({ request, json }) {
   const method = request.method.toUpperCase();
@@ -70071,24 +70061,40 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os25.
 // box/src/link/main.ts
 init_state();
 
-// box/src/link/updates/serve-current.ts
+// box/src/link/updates/code-in-place.ts
 init_home();
 import crypto68 from "node:crypto";
 import fs202 from "node:fs";
 import path213 from "node:path";
-var servedLink = (root = K) => path213.join(root, "bin", "kuvo-link.js");
-function servedFiles(root = K) {
+var boxLink = (root = K) => path213.join(root, "bin", "kuvo-link.js");
+function codeInPlace(root = K) {
   let link = null;
   try {
-    link = crypto68.createHash("sha256").update(fs202.readFileSync(servedLink(root))).digest("hex");
+    link = crypto68.createHash("sha256").update(fs202.readFileSync(boxLink(root))).digest("hex");
   } catch {}
   return { version: boxVersion(), link };
 }
-function serveCheck(started, { leaves = true, updating = isUpdating, now = servedFiles } = {}) {
-  if (updating() || !leaves)
+var AT_LOAD = codeInPlace();
+function codeCheck(started, { leaves = true, updating = isUpdating, now = codeInPlace } = {}) {
+  if (!leaves || updating())
     return "stay";
   const files = now();
   return files.version && files.link && (files.version !== started.version || files.link !== started.link) ? "leave" : "stay";
+}
+var runsBoxCode = (script) => !APP_FOLDER && path213.resolve(script) === path213.resolve(boxLink());
+function leaveForNewCode(script, leave) {
+  if (!runsBoxCode(script))
+    return;
+  const started = AT_LOAD;
+  const every = !REAL_BOX && Number(process.env.KUVO_TEST_CODE_EVERY) > 0 ? Number(process.env.KUVO_TEST_CODE_EVERY) : 30000;
+  const timer = setInterval(() => {
+    if (codeCheck(started) !== "leave")
+      return;
+    clearInterval(timer);
+    console.error("Kuvo's files changed under it (an update): it goes, to start again on the new ones.");
+    leave();
+  }, every);
+  timer.unref?.();
 }
 
 // box/src/link/updates/health.ts
@@ -70219,7 +70225,7 @@ async function lookAtPieces(trial, since, last = {}) {
   const bridgeWanted = fs203.existsSync(path214.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && !!engine?.agentsPort;
   let bridgeOK = !bridgeWanted;
   if (bridgePid)
-    bridgeOK = !!bridge.port && !!bridge.password && await answers2(bridge, "api/info");
+    bridgeOK = !!bridge.port && !!bridge.password && await answers2(bridge, "api/session/active");
   return {
     info: { ok: infoOK },
     serve: { ok: serveOK, pid: servePid },
@@ -70235,7 +70241,7 @@ function rollBackCode() {
   const ran = spawnSync20("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
   return ran.status === 0 && !updateOnTrial();
 }
-async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
+async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
   if (!updateOnTrial() || isUpdating() || judging2())
     return "none";
   const opened = updateState().trial;
@@ -70275,7 +70281,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
         } else {
           judged.fails[piece] = (judged.fails[piece] ?? 0) + 1;
           judged.failing[piece] ??= now;
-          if (judged.fails[piece] >= HEALTH.fails && now - judged.failing[piece] >= Math.min(HEALTH.failingFor, 2 * every * HEALTH.fails))
+          if (judged.fails[piece] >= HEALTH.fails && now - judged.failing[piece] >= failingFor)
             unwell = piece;
         }
         if (pid) {
@@ -70542,6 +70548,7 @@ async function run7() {
   };
   process.on("SIGTERM", cleanUp);
   process.on("SIGINT", cleanUp);
+  leaveForNewCode(fileURLToPath4(import.meta.url), cleanUp);
   keepBridgeAnswering();
   let current = null;
   setInterval(() => {
@@ -70933,6 +70940,7 @@ async function keptServe() {
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
+  leaveForNewCode(fileURLToPath4(import.meta.url), leave);
   writePrivate(SERVE_FILE(), JSON.stringify({ pid: process.pid, port, password, kept: true }));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
@@ -70957,8 +70965,6 @@ async function serve() {
     process.exit(2);
   }
   fs204.mkdirSync(RUN, { recursive: true, mode: 448 });
-  const started = servedFiles();
-  const leaves = !APP_FOLDER && path216.resolve(fileURLToPath4(import.meta.url)) === path216.resolve(servedLink());
   clearNotesLocks();
   if (IS_MAC)
     addMacDefaults();
@@ -71052,22 +71058,14 @@ async function serve() {
     } catch {}
     process.exit(0);
   };
-  const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
-  let leaving = false;
-  const look = () => {
-    if (leaving)
-      return;
+  leaveForNewCode(fileURLToPath4(import.meta.url), () => void leave());
+  const dropBackups = () => {
     try {
       dropOldBackups();
     } catch {}
-    if (serveCheck(started, { leaves }) !== "leave")
-      return;
-    leaving = true;
-    console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
-    leave();
   };
-  look();
-  setInterval(look, every).unref?.();
+  dropBackups();
+  setInterval(dropBackups, 1800000).unref?.();
   process.stdin.on("end", leave);
   process.stdin.on("close", leave);
   process.stdin.resume();
@@ -71327,12 +71325,6 @@ if (main) {
     const night = option("--night");
     if (night && outcome && !passingOutcome(outcome))
       noteUpdate({ night });
-    if (outcome?.result === "updated") {
-      const pid = runningBridge();
-      if (pid)
-        process.kill(pid, "SIGTERM");
-      stopKeptServe();
-    }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current")
       process.exitCode = 1;
@@ -71499,6 +71491,8 @@ export {
   checkDrift,
   checksOf,
   claimNumbers,
+  codeCheck,
+  codeInPlace,
   composeAgents,
   composeLetter,
   computerOf,
@@ -71784,8 +71778,6 @@ export {
   sendToPhones,
   sendWakes,
   serveBox,
-  serveCheck,
-  servedFiles,
   setBoxKey,
   setMacPeers,
   setZone,

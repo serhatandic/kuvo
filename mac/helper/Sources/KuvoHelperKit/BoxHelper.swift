@@ -2,6 +2,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import CryptoKit
 import Darwin
 import Foundation
 import os
@@ -58,6 +59,34 @@ public final class BoxHelper {
     private var looking: Task<Void, Never>?
     /// How it goes once everything it started has stopped (a test's only says so).
     var exits: (Int32) -> Void = { Darwin.exit($0) }
+    /// Its bundle as it started (`seal(of:)`): a new one put in its place (an update) is seen.
+    private let sealAtStart = BoxHelper.seal(of: Bundle.main.bundleURL)
+
+    /// How it exits for launchd to start it again (its launch agent's `KeepAlive` starts it again
+    /// after any exit but a clean one, `SuccessfulExit` false): a new bundle in its place. A clean
+    /// exit (0) is for a stop on purpose only: the box turned off or stopped until it next starts,
+    /// launchd or you quitting it, another copy running, or a refusal only you can clear.
+    nonisolated static let renewed: Int32 = 75
+
+    /// What tells one build of its bundle from another: its program, its Info.plist and its seal
+    /// (`_CodeSignature/CodeResources`, which names every other file's hash), hashed together; nil
+    /// while one is missing (a bundle being swapped in).
+    nonisolated static func seal(of bundle: URL) -> Data? {
+        var hash = SHA256()
+        for part in ["Contents/MacOS/\(BoxHelperBundle.name)", "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"] {
+            guard let data = try? Data(contentsOf: bundle.appending(path: part)) else { return nil }
+            hash.update(data: data)
+        }
+        return Data(hash.finalize())
+    }
+
+    /// Whether a new build of its bundle is in place now, no update being under way (one under way
+    /// may yet put the one before back).
+    var renewedInPlace: Bool {
+        guard !FileManager.default.fileExists(atPath: run.appending(path: ".updating").path(percentEncoded: false)),
+              let now = Self.seal(of: Bundle.main.bundleURL), let sealAtStart else { return false }
+        return now != sealAtStart
+    }
 
     init(home: URL, host: BoxHelperHost, environment: [String: String]) {
         self.home = home
@@ -87,6 +116,7 @@ public final class BoxHelper {
         // Tests alone: AppKit's run loop, as its own build runs, with no item in your menu bar.
         let appLoop = words.contains("--test-app-loop")
         words.removeAll { $0 == "--test-app-loop" }
+        if let every = option("--test-look-every").flatMap(Double.init), every > 0 { lookEvery = every }
         #endif
         let appBundle = option("--app")
         var keychain = HostKeychain()
@@ -478,6 +508,9 @@ public final class BoxHelper {
         }
     }
 
+    /// How often it looks (a test's build as often as it says: `--test-look-every <seconds>`).
+    nonisolated(unsafe) static var lookEvery: Double = 10
+
     /// Every ten seconds: macOS asking you something noted for the box, and `serve` started again
     /// once the vault's file key it lacked can be read; every minute, what macOS allows it (which
     /// the box also asks for as a client asks: `BoxHelperHost`'s `/permissions`).
@@ -494,7 +527,13 @@ public final class BoxHelper {
                 serve.terminate()
             }
             if goes, keeper?.isRunning != true { return finish(0) }
-            try? await Task.sleep(for: .seconds(10))
+            // A new build of it put in its place (an update): it goes, what it started with it (the
+            // engine and the coding agents' bridge run on, detached), for launchd to start the new.
+            if renewedInPlace {
+                log.notice("A new Kuvo Helper is in place: this one goes, for launchd to start it")
+                return finish(Self.renewed)
+            }
+            try? await Task.sleep(for: .seconds(Self.lookEvery))
         }
     }
 

@@ -152,7 +152,7 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   const bridgePid = bridge?.pid && runs(bridge.pid, "kuvo-agents") ? bridge.pid : null;
   const bridgeWanted = fs.existsSync(path.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && !!engine?.agentsPort;
   let bridgeOK = !bridgeWanted;
-  if (bridgePid) bridgeOK = !!bridge!.port && !!bridge!.password && (await answers(bridge!, "api/info"));
+  if (bridgePid) bridgeOK = !!bridge!.port && !!bridge!.password && (await answers(bridge!, "api/session/active"));
 
   return {
     info: { ok: infoOK },
@@ -170,6 +170,8 @@ export interface SettleOptions {
   clock?: () => number;
   every?: number;
   window?: number;
+  /** How long a piece must have failed (with three looks in a row) to be unwell. */
+  failingFor?: number;
   wait?: (ms: number) => Promise<unknown>;
   look?: (trial: UpdateTrial, since: number) => Promise<Record<Piece, PieceLook>>;
   rollBack?: () => boolean;
@@ -189,7 +191,7 @@ export function rollBackCode(): boolean {
 }
 
 /** Judges the update on trial (one judge at a time) until it's well or unwell, by the one rule. */
-export async function settleUpdate({ clock = () => performance.now(), every = HEALTH.every, window = HEALTH.window, wait = sleep, look, rollBack = rollBackCode, well = () => {} }: SettleOptions = {}): Promise<Settled> {
+export async function settleUpdate({ clock = () => performance.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} }: SettleOptions = {}): Promise<Settled> {
   if (!updateOnTrial() || isUpdating() || judging()) return "none";
   // The trial, as the update that opened it noted it (one from before this rule notes no features,
   // nor when it swapped: its start then).
@@ -228,7 +230,7 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
         } else {
           judged.fails[piece] = (judged.fails[piece] ?? 0) + 1;
           judged.failing[piece] ??= now;
-          if (judged.fails[piece]! >= HEALTH.fails && now - judged.failing[piece]! >= Math.min(HEALTH.failingFor, 2 * every * HEALTH.fails)) unwell = piece;
+          if (judged.fails[piece]! >= HEALTH.fails && now - judged.failing[piece]! >= failingFor) unwell = piece;
         }
         if (pid) {
           const seen = judged.pids[piece] ?? [];

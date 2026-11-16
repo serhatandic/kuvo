@@ -497,7 +497,7 @@ test("setting a computer up again finds its files in place and leaves its runnin
   assert.equal(link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine").key, peer.key, "the same computer, once");
 });
 
-test("a machine whose Kuvo is older is brought up to date by this box once nothing is at work there, never while something is; Update Now asks first", async () => {
+test("a machine whose Kuvo is older is brought up to date by this box whatever is at work there, its running engine left alone; Update Now asks nothing", async () => {
   const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
   const versionFile = path.join(remote, "bin", "box-version");
   const engine = read(path.join(remote, "run", "engine.json")).pid;
@@ -521,34 +521,14 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
   assert.match(missed.update.detail, /^studio didn’t accept Studio’s SSH keys\..* Kuvo also tries again by itself later\.$/);
   assert.deepEqual(missed.actions.find(each => each.id === "update")?.label, "Try Again", "a way on, never a card alone");
   assert.equal(read(link.KEEP_UP_FILE)[peer.key].failed, undefined);
+  // Two sessions at work there: the round brings it up all the same (nothing there stops), its
+  // running engine left alone.
   const busy = path.join(there, "busy");
   fs.writeFileSync(busy, "");
-  try {
-    await link.keepUpRound();
-    assert.equal(link.allTries().some(each => each.kind === "update"), false, "nothing begun while something is at work there");
-    assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "0.9.0");
-    let it = await listed();
-    assert.deepEqual(it.update, { state: "waiting", title: "Kuvo on studio updates once nothing’s at work there", detail: "Or now with Update Now: what’s at work there keeps going." });
-    const updateNow = it.actions.find(each => each.id === "update");
-    assert.deepEqual(updateNow, { id: "update", label: "Update Now", confirm: { title: "Update Kuvo on studio now?", message: "2 sessions are at work on studio. They keep going, but studio may be out of reach for a moment as Kuvo there restarts.", label: "Update Now" } });
-    // Still at work a day on: it says so, and Update Now is what's left to you.
-    const kept = read(link.KEEP_UP_FILE);
-    kept[peer.key].since -= 25 * 3600_000;
-    kept[peer.key].checked -= 25 * 3600_000;
-    fs.writeFileSync(link.KEEP_UP_FILE, JSON.stringify(kept));
-    await link.keepUpRound();
-    it = await listed();
-    assert.deepEqual(it.update, { state: "waiting", long: true, title: "Kuvo on studio hasn’t been free for a day", detail: "It updates once nothing’s at work there, or now with Update Now." });
-    assert.ok(it.actions.some(each => each.id === "update" && each.confirm));
-    assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "0.9.0", "never while something is at work there");
-  } finally {
-    fs.rmSync(busy, { force: true });
-  }
-  // Nothing at work: brought up to date by itself (once its last look's wait is over), its running
-  // engine left alone.
-  await link.keepUpRound(() => Date.now() + 3 * 3600_000);
+  atEnd(() => fs.rmSync(busy, { force: true }));
+  await link.keepUpRound();
   const begun = link.allTries().find(each => each.kind === "update" && each.state === "working");
-  assert.ok(begun, "begun once nothing is at work there");
+  assert.ok(begun, "begun with something at work there");
   assert.equal(begun.title, "Updating Kuvo on studio…");
   assert.deepEqual((await listed()).update, { state: "updating", title: "Updating Kuvo on studio…", detail: "" });
   const done = await over(begun.id);
@@ -556,6 +536,7 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
   assert.equal(done.title, "studio is up to date");
   assert.equal(fs.readFileSync(versionFile, "utf8").trim(), "1.0.0");
   assert.equal(read(path.join(remote, "run", "engine.json")).pid, engine, "the engine at work wasn't started over");
+  fs.rmSync(busy, { force: true });
   const after = await listed();
   assert.equal(after.update, undefined);
   assert.equal(after.actions.some(each => each.id === "update"), false);
