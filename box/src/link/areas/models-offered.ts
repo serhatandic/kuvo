@@ -3,6 +3,7 @@
 // (work/model-rule.ts), so every client's picker offers the same, and a new session starts by the
 // same rule whoever starts it, in a project's folder by what its own settings add too.
 
+import { sessionHere, Unreached } from "./glance";
 import fs from "node:fs";
 import path from "node:path";
 import type { Target } from "../../shared/records";
@@ -49,15 +50,35 @@ function isKnown(folder: string): boolean {
 }
 
 export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, json } = context;
+  const { request, readEngine, bridge, json, signal } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   const folder = await folderIn(request.path);
   if (!targetsOf({ readEngine, bridge }).length) return yield* json(503, { message: "The engine isn't running." });
   let engine: Target | null = null;
   try { engine = readEngine(); } catch {}
   const agents = bridge();
-  const lists = await listsHere(engine, agents, folder);
-  return yield* json(200, offeredAnswer(lists, wantedIn(request.path), starredModels()));
+  const session = new URLSearchParams(request.path.split("?")[1] ?? "").get("session")?.trim();
+  let place: Awaited<ReturnType<typeof sessionHere>> = null;
+  if (session) {
+    try {
+      place = await sessionHere([engine, agents].filter((target): target is Target => target !== null), session, signal);
+    } catch (error) {
+      if (error instanceof Unreached) return yield* json(503, { message: error.message });
+      throw error;
+    }
+    if (!place) return yield* json(404, { message: "This conversation is no longer available." });
+  }
+  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder);
+  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  if (!place) return yield* json(200, answer);
+  const bot = typeof place.data.metadata?.kuvo?.bot === "string";
+  const side = agents && place.target.port === agents.port ? "agents" : "engine";
+  return yield* json(200, {
+    ...answer,
+    scoped: true,
+    models: bot || side === "agents" ? answer.models : answer.models.filter(model => model.side === side),
+    ...(!bot && side === "engine" ? { note: "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}),
+  });
 }
 
 /** Each provider of `models`, named as its side lists its account (`label`: the account's own, a

@@ -4,7 +4,9 @@
 
 import "./safety"
 import { expect, test } from "bun:test"
-import { offeredAnswer } from "../src/link/areas/models-offered"
+import { offeredAnswer, modelsOfferedRoute } from "../src/link/areas/models-offered"
+import { forgetModelLists, noteModelsEvent } from "../src/link/work/model-rule"
+import type { RouteContext } from "../src/link/server/context"
 import type { Listed, Lists } from "../src/link/work/model-rule"
 
 const listed = (providerID: string, id: string, name: string, efforts: string[]): Listed => ({
@@ -91,4 +93,59 @@ test("each provider is named as its side lists it, a coding agent's second accou
 test("a provider its side doesn't name is named by its id", () => {
   const answer = offeredAnswer(lists, null)
   expect(answer.providers?.find(each => each.id === "anthropic")).toEqual({ id: "anthropic", name: "anthropic" })
+})
+
+// Exercise the actual box route and its cached engine reads: the engine provider is independent
+// of the coding agents, including when a bot is currently using a coding agent's model.
+test("the route offers an API-key provider and refreshes its models when credentials change", async () => {
+  let connected = false
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const route = new URL(request.url).pathname
+      if (route.startsWith("/api/session/")) return Response.json({ data: { id: route.split("/").at(-1), metadata: route.endsWith("bot-session") ? { kuvo: { bot: "test-bot" } } : {} } })
+      const data = route === "/api/provider" ? [{ id: "anthropic" }, ...(connected ? [{ id: "opencode-go" }] : [])]
+        : route === "/api/model" ? [listed("anthropic", "opus", "Opus", []), listed("opencode-go", "glm-5", "GLM 5", [])]
+        : route === "/api/integration" ? [
+            { id: "anthropic", name: "Anthropic", methods: [{ type: "key" }], connections: [{}] },
+            { id: "opencode-go", name: "OpenCode Go", methods: [{ type: "key" }], connections: connected ? [{}] : [] },
+          ]
+        : null
+      return Response.json({ data })
+    },
+  })
+  const target = { port: server.port!, password: "test", pid: process.pid }
+  const read = async (session?: string) => {
+    let answer: any
+    const context = {
+      request: { method: "GET", path: `kuvo/models/offered${session ? `?session=${session}` : ""}`, headers: {} },
+      readEngine: () => target,
+      bridge: () => null,
+      json: (status: number, value: unknown) => { expect(status).toBe(200); answer = value; return [] },
+    } as unknown as RouteContext
+    for await (const _ of modelsOfferedRoute(context)) {}
+    return answer
+  }
+  forgetModelLists()
+  try {
+    expect((await read()).models.map((model: any) => model.providerID)).toEqual(["anthropic"])
+    connected = true
+    noteModelsEvent({ type: "credential.updated" })
+    const answer = await read()
+    expect(answer.models.map((model: any) => [model.providerID, model.side])).toEqual([["anthropic", "engine"], ["opencode-go", "engine"]])
+    const scoped = await read("bot-session")
+    expect(scoped.scoped).toBe(true)
+    expect(scoped.models).toEqual(answer.models)
+    expect(scoped.note).toBeUndefined()
+    const coding = await read("coding-session")
+    expect(coding.scoped).toBe(true)
+    expect(coding.note).toContain("This conversation uses provider models")
+    expect(answer.providers).toContainEqual({ id: "opencode-go", name: "OpenCode Go" })
+    connected = false
+    noteModelsEvent({ type: "credential.switched" })
+    expect((await read()).models.map((model: any) => model.providerID)).toEqual(["anthropic"])
+  } finally {
+    server.stop(true)
+    forgetModelLists()
+  }
 })

@@ -98,7 +98,7 @@ function keptOr<T>(key: string, read: () => Promise<T | null>, whole: (value: T)
 
 /** The events after which what's kept is read again: accounts, models, settings or Custom Auto's
  * lists changed on the engine or the bridge. */
-const CHANGES = new Set(["integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
+const CHANGES = new Set(["credential.updated", "credential.switched", "integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 
 /** Told each event of the engine's and the bridge's (engine/watch.ts). */
 export function noteModelsEvent(event: { type?: string }): void {

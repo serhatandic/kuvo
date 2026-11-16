@@ -243,6 +243,8 @@ export const MODELS_OFFERED = object({
   "providers?": list(object({ id: string, name: string, "label?": string })),
   "starred?": list(STARRED),
   "listing?": list(string),
+  "scoped?": bool,
+  "note?": string,
   "starting?": nullable(MODEL_REF),
 });
 /** Your starred models, as `kuvo/models/starred` keeps them (`models.starred`). */
@@ -357,7 +359,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },
-  { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED } },
+  { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/models/starred", answers: { 200: MODELS_STARRED } },
   { route: "POST kuvo/models/starred", answers: { 200: MODELS_STARRED, 400: REFUSED } },
   { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },

@@ -14583,6 +14583,8 @@
       "listing?": {
        "list": "string"
       },
+      "scoped?": "bool",
+      "note?": "string",
       "starting?": {
        "oneOf": [
         {
@@ -14595,6 +14597,11 @@
         "null"
        ]
       }
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
      }
     },
     "503": {

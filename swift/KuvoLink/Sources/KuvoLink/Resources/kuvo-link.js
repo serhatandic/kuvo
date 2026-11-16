@@ -1861,6 +1861,8 @@ var init_sessions = __esm(() => {
     "providers?": list(object({ id: string, name: string, "label?": string })),
     "starred?": list(STARRED),
     "listing?": list(string),
+    "scoped?": bool,
+    "note?": string,
     "starting?": nullable(MODEL_REF)
   });
   MODELS_STARRED = object({ starred: list(STARRED) });
@@ -1930,7 +1932,7 @@ var init_sessions = __esm(() => {
     { route: "GET kuvo/waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
     { route: "GET kuvo/waiting/events", answers: { 200: WAITING_ON_YOU, 405: REFUSED2 } },
     { route: "GET kuvo/sessions/models", answers: { 200: SESSION_MODELS, 400: REFUSED2, 503: REFUSED2 } },
-    { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 503: REFUSED2 } },
+    { route: "GET kuvo/models/offered", answers: { 200: MODELS_OFFERED, 404: REFUSED2, 503: REFUSED2 } },
     { route: "GET kuvo/models/starred", answers: { 200: MODELS_STARRED } },
     { route: "POST kuvo/models/starred", answers: { 200: MODELS_STARRED, 400: REFUSED2 } },
     { route: "GET kuvo/sessions/:id/queue", answers: { 200: QUEUE_READ } },
@@ -25850,7 +25852,7 @@ function keptOr(key, read, whole) {
     kept5.delete(kept5.keys().next().value);
   return lists;
 }
-var CHANGES = new Set(["integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
+var CHANGES = new Set(["credential.updated", "credential.switched", "integration.updated", "model.updated", "provider.updated", "config.updated", "global.disposed", "kuvo.auto.updated"]);
 function noteModelsEvent(event) {
   if (event.type && CHANGES.has(event.type))
     kept5.clear();
@@ -42885,7 +42887,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9b80cf60f103";
+var BRIDGE_VERSION = "241ec62b2797";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62897,7 +62899,7 @@ function isKnown(folder) {
   return list ? Object.values(list.sessions).some((each) => same(each.facts.directory)) : false;
 }
 async function* modelsOfferedRoute(context) {
-  const { request, readEngine, bridge, json } = context;
+  const { request, readEngine, bridge, json, signal } = context;
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
   const folder = await folderIn(request.path);
@@ -62908,8 +62910,31 @@ async function* modelsOfferedRoute(context) {
     engine = readEngine();
   } catch {}
   const agents = bridge();
-  const lists = await listsHere(engine, agents, folder);
-  return yield* json(200, offeredAnswer(lists, wantedIn(request.path), starredModels()));
+  const session = new URLSearchParams(request.path.split("?")[1] ?? "").get("session")?.trim();
+  let place = null;
+  if (session) {
+    try {
+      place = await sessionHere([engine, agents].filter((target) => target !== null), session, signal);
+    } catch (error) {
+      if (error instanceof Unreached)
+        return yield* json(503, { message: error.message });
+      throw error;
+    }
+    if (!place)
+      return yield* json(404, { message: "This conversation is no longer available." });
+  }
+  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder);
+  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  if (!place)
+    return yield* json(200, answer);
+  const bot = typeof place.data.metadata?.kuvo?.bot === "string";
+  const side = agents && place.target.port === agents.port ? "agents" : "engine";
+  return yield* json(200, {
+    ...answer,
+    scoped: true,
+    models: bot || side === "agents" ? answer.models : answer.models.filter((model) => model.side === side),
+    ...!bot && side === "engine" ? { note: "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}
+  });
 }
 function providersOf(models, lists) {
   const out = [];
