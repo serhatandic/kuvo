@@ -380,6 +380,64 @@ test("a rollback begun that didn't get it all back is carried on by the next jud
   engines.add(read(engineFile).pid);
 });
 
+test("an updater cut off with the engine stopped for a new one is never judged: put back, and the old engine started again on the data as it was", async () => {
+  machine();
+  release();
+  assert.equal((await update()).result, "updated");
+  // As if it had been cut off after it stopped the engine and swapped some files: the new engine
+  // never started.
+  stopEngine();
+  const state = read(path.join(home, "run", "update.json"));
+  write(path.join(home, "run", "update.json"), JSON.stringify({ ...state, trial: { ...state.trial, engineStopped: true } }));
+  fs.rmSync(path.join(home, "updates", "rollback", "engine-started"), { force: true });
+  fs.writeFileSync(path.join(home, "run", "stopped"), "");
+  looks = 0;
+  assert.equal(await settle(), "unwell");
+  assert.equal(looks, 0, "never judged");
+  assert.equal(boxVersion(), "0.9.0");
+  await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.0.0", "the old engine runs again");
+  engines.add(read(engineFile).pid);
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+});
+
+test("a bridge that won't take the new build (it doesn't run here) isn't well", async t => {
+  machine();
+  release();
+  assert.equal((await update()).result, "updated");
+  engines.add(read(engineFile).pid);
+  // The engine's launch started a bridge beside it, which answers.
+  const bridge = http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end("{}"); });
+  await new Promise(resolve => bridge.listen(0, "127.0.0.1", resolve));
+  atEnd(() => bridge.close());
+  write(engineFile, JSON.stringify({ ...read(engineFile), agentsPort: bridge.address().port }));
+  write(path.join(home, "bin", "kuvo-agents.js"), "// the bridge\n");
+  const pid = await runningAs("kuvo-agents", t);
+  const record = { pid, port: bridge.address().port, password: "pw", build: "a".repeat(64) };
+  write(path.join(home, "run", "bridge.json"), JSON.stringify(record));
+  const trial = read(path.join(home, "run", "update.json")).trial;
+  assert.equal((await link.lookAtPieces(trial, trial.swapped)).bridge.ok, true, "making way, or quiet: well");
+  write(path.join(home, "run", "bridge.json"), JSON.stringify({ ...record, renewal: { since: Date.now(), holding: false, waits: "restart" } }));
+  assert.equal((await link.lookAtPieces(trial, trial.swapped)).bridge.ok, false, "never taking it: not well");
+  assert.equal(await settle(), "unwell");
+  assert.equal(boxVersion(), "0.9.0");
+  await waitFor(() => fs.existsSync(engineFile), "an engine runs again");
+  engines.add(read(engineFile).pid);
+});
+
+test("a rollback that gave up with some of each version's files left says so, once, wherever it's looked at", () => {
+  machine();
+  write(path.join(home, "run", "update.json"), JSON.stringify({ trial: { from: "0.9.0", to: "0.10.0", at: Date.now() } }));
+  fs.mkdirSync(path.join(home, "updates", "rollback", "files"), { recursive: true });
+  link.updateStatus();
+  const state = read(path.join(home, "run", "update.json"));
+  assert.equal(state.trial, undefined);
+  assert.equal(state.last.result, "failed");
+  assert.equal(state.last.message, "0.10.0 didn't run well here, and not all of it could go back to 0.9.0: Kuvo updates again later. Your conversations stay as they are.");
+  assert.equal(state.offerFailed.takenBack, false);
+  fs.rmSync(path.join(home, "updates", "rollback"), { recursive: true });
+});
+
 test("an agent's browser waiting on you (a sign-in) holds an update the box begins itself: nothing is stopped or swapped", async t => {
   machine();
   release();

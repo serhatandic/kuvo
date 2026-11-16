@@ -211,6 +211,8 @@ test("a rollback that can't put it all back (a disk full) is tried three times, 
     assert.notEqual(rollback(), 0, `try ${tries} fails`);
     assert.equal(exists(path.join(R, "update-trial")), true, "still on trial, to try again");
   }
+  // (Off, so the start it gives up with starts no keeper that would outlive the test.)
+  write(path.join(R, "off"), "");
   assert.equal(rollback(), 2, "it gives up");
   assert.equal(fs.readFileSync(path.join(folder, "tries"), "utf8"), "tried\ntried\ntried\n");
   assert.equal(exists(path.join(R, "update-trial")), false, "the trial ends");
@@ -218,3 +220,27 @@ test("a rollback that can't put it all back (a disk full) is tried three times, 
   assert.equal(exists(path.join(R, "update-restore")), false);
   assert.equal(exists(path.join(R, ".rolling-back")), false, "its lock let go");
 });
+
+test("one rollback at a time: a second, while the first runs, leaves without touching anything", async () => {
+  const where = home();
+  const { K, R, env, folder } = where;
+  write(path.join(R, "update-trial"), "0.10.0");
+  write(path.join(K, "updates", "rollback", "restore.sh"), `#!/bin/sh\necho ran >>'${folder}/ran'\nrm -f '${R}/update-trial'\n`, 0o700);
+  // The first, under way (a process running the keeper's script holds its lock).
+  const first = spawn("sh", ["-c", "while :; do sleep 1; done", "kuvo-start"], { stdio: "ignore" });
+  atEnd(() => { try { first.kill("SIGKILL"); } catch {} });
+  fs.mkdirSync(path.join(R, ".rolling-back"));
+  write(path.join(R, ".rolling-back", "pid"), String(first.pid));
+  const rollback = () => spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "rollback"], { env, encoding: "utf8" }).status;
+  assert.equal(rollback(), 1, "the second leaves");
+  assert.equal(exists(path.join(folder, "ran")), false, "nothing put back twice");
+  assert.equal(exists(path.join(R, "update-restore")), false, "nor counted");
+  assert.equal(fs.readFileSync(path.join(R, ".rolling-back", "pid"), "utf8").trim(), String(first.pid), "the first's lock as it was");
+  // The first gone (cut off): its lock is taken over, and it's put back.
+  first.kill("SIGKILL");
+  await new Promise(resolve => first.once("exit", resolve));
+  assert.equal(rollback(), 0);
+  assert.equal(fs.readFileSync(path.join(folder, "ran"), "utf8"), "ran\n");
+  assert.equal(exists(path.join(R, "update-trial")), false);
+});
+

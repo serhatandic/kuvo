@@ -36554,7 +36554,7 @@ class Renewal {
     this.options.hold(false);
   }
   quiet() {
-    if (this.checked.get(this.newer ?? "") === "checking")
+    if (this.checked.get(this.newerInPlace() ?? "") === "checking")
       return false;
     const work = this.options.work();
     return !work.turns && (this.holding || !work.other);
@@ -37760,4 +37760,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents ff8fa67221384f9f5ad4c71b8c9653ff47dde175ed670a708644ae645e2ed6d4
+// Built from Packages/Box/src/agents 1ecfb5bd94d493478d04cb12102528b148945254d373e380198770cf94000978

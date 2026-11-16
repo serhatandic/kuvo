@@ -277,7 +277,7 @@ keep)
     # each, by the number it noted (run/serve.json, run/link.pid), and only while it's that program
     # and started before the new link was put there, is ended, for what keeps it running (the
     # helper, this keeper) to start the new one. Goes once no box is from before beta.31.
-    if [ -f "$R/update-trial" ]; then
+    if [ -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; then
       # (When the link was put there: its change time, which a copy can't carry over, as it
       # carries the release's own time over, for a file a Mac's disk clones.)
       m=$(stat -c %Z "$K/bin/kuvo-link.js" 2>/dev/null || stat -f %c "$K/bin/kuvo-link.js" 2>/dev/null)
@@ -421,22 +421,34 @@ rollback)
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
   [ -f "$R/update-trial" ] || exit 0
   [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
-  # One at a time (a judge and the keeper at once, say): a second goes, unless the first's gone.
-  if ! mkdir "$R/.rolling-back" 2>/dev/null; then
-    is "$(cat "$R/.rolling-back/pid" 2>/dev/null)" kuvo-start && exit 1
-    rm -rf "$R/.rolling-back"; mkdir "$R/.rolling-back" 2>/dev/null || exit 1
-  fi
-  echo $$ >"$R/.rolling-back/pid"
-  trap 'rm -rf "$R/.rolling-back"' EXIT
-  # Three tries that couldn't put it all back (a disk full, say), and it gives up: the trial ends,
-  # and the box starts as it is, never left stopped.
-  tries=$(cat "$R/update-restore" 2>/dev/null || echo 0)
-  if [ "$tries" -ge 3 ]; then
+  # Giving up: the trial ends, and the box starts as it is, never left stopped (what was put back
+  # and what wasn't is told by whoever looks next: `updates/rollback` stays where it wasn't all).
+  give_up() {
     rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries" "$R/stopped"
     sh "$K/bin/kuvo-start" start >/dev/null 2>&1
     exit 2
+  }
+  # One at a time (a judge and the keeper at once, say): a second goes, unless the first's gone (a
+  # lock with no number yet, a moment old, is still being taken). One that can't even be taken (a
+  # disk full) gives up.
+  if ! mkdir "$R/.rolling-back" 2>/dev/null; then
+    h=$(cat "$R/.rolling-back/pid" 2>/dev/null)
+    is "$h" kuvo-start && exit 1
+    [ -z "$h" ] && [ -n "$(find "$R/.rolling-back" -maxdepth 0 -mmin -1 2>/dev/null)" ] && exit 1
+    rm -rf "$R/.rolling-back"; mkdir "$R/.rolling-back" 2>/dev/null || give_up
   fi
-  echo $((tries + 1)) >"$R/update-restore"
+  echo $$ >"$R/.rolling-back/pid"
+  trap '[ "$(cat "$R/.rolling-back/pid" 2>/dev/null)" = "$$" ] && rm -rf "$R/.rolling-back"' EXIT
+  # Three tries that couldn't put it all back (a disk full, say), and it gives up. A count that
+  # can't be read or written back is taken as the last.
+  tries=0
+  if [ -e "$R/update-restore" ]; then
+    tries=$(cat "$R/update-restore" 2>/dev/null)
+    case $tries in '' | *[!0-9]*) give_up ;; esac
+  fi
+  [ "$tries" -ge 3 ] && give_up
+  echo $((tries + 1)) >"$R/update-restore" 2>/dev/null
+  [ "$(cat "$R/update-restore" 2>/dev/null)" = "$((tries + 1))" ] || give_up
   # COMPAT(0.8 rollback data): a rollback an update from before rollbacks were code only kept holds
   # the engine's data (updates/rollback/data), which its restore.sh would put back over everything
   # written since: moved aside first, to updates/backups (the latest only), where nothing puts it

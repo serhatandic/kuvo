@@ -14635,6 +14635,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
+    fs37.rmSync(path40.join(RUN, "update-restore"), { force: true });
     fs37.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 384 });
     trial = true;
     if (otherEngine) {
@@ -14730,7 +14731,7 @@ function bridgeEngine() {
     const bridge = readBridgeFile();
     if (!bridge?.pid || !processRuns(bridge.pid, "kuvo-agents"))
       return null;
-    return /\/engine\/([^/\s]+)\/opencode(\s|$)/.exec(commandLineOf(bridge.pid) ?? "")?.[1] ?? null;
+    return /\/engine\/([^/\s]+)\/[^/\s]+(\s|$)/.exec(commandLineOf(bridge.pid) ?? "")?.[1] ?? null;
   } catch {
     return null;
   }
@@ -14878,7 +14879,19 @@ function checkDrift(now = Date.now()) {
 function updateNight(date = new Date, zone = yourZone()) {
   return nightOf(date, zone);
 }
+function noteTrialEnded(reason = "") {
+  const { trial } = updateState();
+  if (!trial || updateOnTrial() || isUpdating())
+    return;
+  const back = !fs37.existsSync(ROLLBACK);
+  const from = trial.from || "what it had";
+  const message = back ? `${trial.to} didn't run well here${reason}, so it went back to ${from}. Your conversations stay as they are.` : `${trial.to} didn't run well here${reason}, and not all of it could go back to ${from}: Kuvo updates again later. Your conversations stay as they are.`;
+  noteUpdate({ trial: null, last: { at: Date.now(), result: "failed", message, from: trial.from, to: trial.to }, offerFailed: { version: trial.to, at: Date.now(), takenBack: back, message } });
+}
 function updateStatus() {
+  try {
+    noteTrialEnded();
+  } catch {}
   const state = updateState();
   const offered = offeredVersion();
   let engine = null;
@@ -43035,7 +43048,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3d3e86bc6d75";
+var BRIDGE_VERSION = "821c8b21c7ce";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -70263,6 +70276,7 @@ function rollBackCode() {
   return ran.status === 0 && !updateOnTrial();
 }
 async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
+  noteTrialEnded();
   if (!updateOnTrial() || isUpdating() || judging2() || stoppedOnPurpose())
     return "none";
   const opened = updateState().trial;
@@ -70285,9 +70299,13 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
     }
   }
   if (trial.engineStopped) {
-    spawnSync20("sh", [path214.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
-    delete trial.engineStopped;
-    noteUpdate({ trial });
+    try {
+      return putBack3(trial, to, null, rollBack);
+    } finally {
+      if (!updateOnTrial())
+        spawnSync20("sh", [path214.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
+      dropJudgeMark();
+    }
   }
   const lastLook = {};
   const looking = look ?? ((open, swapped) => lookAtPieces(open, swapped, lastLook));
@@ -70352,10 +70370,13 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
 }
 var PIECE_WORDS = { info: "Kuvo didn't answer", serve: "its server for your devices didn't run", run: "its link to your phone and computers didn't run", engine: "its engine didn't run", bridge: "its coding agents didn't run" };
 function putBack3(trial, to, why, rollBack) {
-  const back = rollBack();
+  rollBack();
   const reason = why ? ` (${PIECE_WORDS[why]})` : "";
-  const message = back ? `${to} didn't run well here${reason}, so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.` : `${to} didn't run well here${reason}, and couldn't go back to ${trial.from || "what it had"}${updateOnTrial() ? ": it tries again in a moment." : ", so it stays on it."}`;
-  noteUpdate({ ...updateOnTrial() ? {} : { trial: null }, last: { at: Date.now(), result: "failed", message, from: trial.from, to }, offerFailed: { version: to, at: Date.now(), takenBack: true, message } });
+  if (updateOnTrial()) {
+    const message = `${to} didn't run well here${reason}, and going back to ${trial.from || "what it had"} didn't finish: it tries again in a moment.`;
+    noteUpdate({ trial, last: { at: Date.now(), result: "failed", message, from: trial.from, to } });
+  } else
+    noteTrialEnded(reason);
   return "unwell";
 }
 var stoppedOnPurpose = () => fs203.existsSync(path214.join(RUN, "paused")) || fs203.existsSync(path214.join(RUN, "off"));

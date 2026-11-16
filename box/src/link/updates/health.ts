@@ -28,7 +28,7 @@ import { sleep } from "../../shared/wait";
 import { asked } from "../engine/client";
 import { writePrivate } from "../files";
 import { BRIDGE_FILE, ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, PID_FILE, REAL_BOX, RUN } from "../home";
-import { boxVersion, confirmUpdate, isUpdating, newEngineUnused, noteUpdate, updateOnTrial, updateState, type UpdateTrial } from "./update";
+import { boxVersion, confirmUpdate, isUpdating, newEngineUnused, noteTrialEnded, noteUpdate, updateOnTrial, updateState, type UpdateTrial } from "./update";
 
 /** The pieces judged. */
 export type Piece = "info" | "serve" | "run" | "engine" | "bridge";
@@ -197,6 +197,8 @@ export function rollBackCode(): boolean {
 
 /** Judges the update on trial (one judge at a time) until it's well or unwell, by the one rule. */
 export async function settleUpdate({ clock = () => performance.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} }: SettleOptions = {}): Promise<Settled> {
+  // (A trial ended meanwhile by something else, a keeper giving up say: how it went noted first.)
+  noteTrialEnded();
   if (!updateOnTrial() || isUpdating() || judging() || stoppedOnPurpose()) return "none";
   // The trial, as the update that opened it noted it (one from before this rule notes no features,
   // nor when it swapped: its start then).
@@ -213,11 +215,17 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
   if (fs.existsSync(path.join(RUN, "update-restore"))) {
     try { return putBack(trial, to, null, rollBack); } finally { dropJudgeMark(); }
   }
-  // Its updater cut off after it stopped the engine for a new one, before it started it: started.
+  // Its updater cut off after it stopped the engine for a new one, its files maybe half swapped:
+  // never judged (a new engine started on them would write what the old can't read), put back,
+  // and the engine started again.
   if (trial.engineStopped) {
-    spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600_000 });
-    delete trial.engineStopped;
-    noteUpdate({ trial });
+    try {
+      return putBack(trial, to, null, rollBack);
+    } finally {
+      // (Only once it's all put back: a new engine never starts on files half restored.)
+      if (!updateOnTrial()) spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600_000 });
+      dropJudgeMark();
+    }
   }
   const lastLook: { engineLog?: number } = {};
   const looking = look ?? ((open: UpdateTrial, swapped: number) => lookAtPieces(open, swapped, lastLook));
@@ -281,14 +289,14 @@ export async function settleUpdate({ clock = () => performance.now(), every = HE
 const PIECE_WORDS: Record<Piece, string> = { info: "Kuvo didn't answer", serve: "its server for your devices didn't run", run: "its link to your phone and computers didn't run", engine: "its engine didn't run", bridge: "its coding agents didn't run" };
 
 // The code from before put back (`rollBack`), and how that went noted: unwell for `why` (none: a
-// rollback begun before, carried on).
+// rollback begun before, carried on, or an update cut off).
 function putBack(trial: UpdateTrial, to: string, why: Piece | null, rollBack: () => boolean): Settled {
-  const back = rollBack();
+  rollBack();
   const reason = why ? ` (${PIECE_WORDS[why]})` : "";
-  const message = back
-    ? `${to} didn't run well here${reason}, so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.`
-    : `${to} didn't run well here${reason}, and couldn't go back to ${trial.from || "what it had"}${updateOnTrial() ? ": it tries again in a moment." : ", so it stays on it."}`;
-  noteUpdate({ ...(updateOnTrial() ? {} : { trial: null }), last: { at: Date.now(), result: "failed", message, from: trial.from, to }, offerFailed: { version: to, at: Date.now(), takenBack: true, message } });
+  if (updateOnTrial()) {
+    const message = `${to} didn't run well here${reason}, and going back to ${trial.from || "what it had"} didn't finish: it tries again in a moment.`;
+    noteUpdate({ trial, last: { at: Date.now(), result: "failed", message, from: trial.from, to } });
+  } else noteTrialEnded(reason);
   return "unwell";
 }
 

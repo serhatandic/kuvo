@@ -631,6 +631,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock() }, running: null });
+    // (A rollback's count from a trial an older Kuvo ended: never this one's.)
+    fs.rmSync(path.join(RUN, "update-restore"), { force: true });
     fs.writeFileSync(UPDATE_TRIAL, manifest.version, { mode: 0o600 });
     trial = true;
     // Nothing at work is stopped: each piece takes the new code as it takes any (PROTOCOL.md,
@@ -746,7 +748,8 @@ function bridgeEngine(): string | null {
   try {
     const bridge = readBridgeFile();
     if (!bridge?.pid || !runs(bridge.pid, "kuvo-agents")) return null;
-    return /\/engine\/([^/\s]+)\/opencode(\s|$)/.exec(commandLineOf(bridge.pid) ?? "")?.[1] ?? null;
+    // (Its runtime, `<box>/engine/<version>/…`: the engine's own program.)
+    return /\/engine\/([^/\s]+)\/[^/\s]+(\s|$)/.exec(commandLineOf(bridge.pid) ?? "")?.[1] ?? null;
   } catch { return null; }
 }
 
@@ -908,7 +911,23 @@ export function updateNight(date = new Date(), zone: string | undefined = yourZo
 // What `kuvo/update` says: whether updates are set up, this version and the newest heard of, how
 // the last went, whether one runs now, why not, when it can't, and a release offered from a folder
 // here that waits for a quiet moment.
+/** A trial that ended without being said well (put back, or a rollback that gave up), noted as it
+ * went, once: all put back (`updates/rollback` gone with the trial), or some of each version's files
+ * left, which the next update puts right. `reason`: why, in words, where known. */
+export function noteTrialEnded(reason = ""): void {
+  const { trial } = updateState();
+  if (!trial || updateOnTrial() || isUpdating()) return;
+  const back = !fs.existsSync(ROLLBACK);
+  const from = trial.from || "what it had";
+  const message = back
+    ? `${trial.to} didn't run well here${reason}, so it went back to ${from}. Your conversations stay as they are.`
+    : `${trial.to} didn't run well here${reason}, and not all of it could go back to ${from}: Kuvo updates again later. Your conversations stay as they are.`;
+  noteUpdate({ trial: null, last: { at: Date.now(), result: "failed", message, from: trial.from, to: trial.to }, offerFailed: { version: trial.to, at: Date.now(), takenBack: back, message } });
+}
+
 export function updateStatus(): UpdateStatus {
+  // (A trial something else ended meanwhile, a keeper giving up say: how it went noted.)
+  try { noteTrialEnded(); } catch {}
   const state = updateState();
   const offered = offeredVersion();
   let engine: string | null = null;

@@ -229,7 +229,8 @@ export class Renewal {
   }
 
   private quiet(): boolean {
-    if (this.checked.get(this.newer ?? "") === "checking") return false
+    // (The build, or engine, it's to make way for: never before its check there has answered.)
+    if (this.checked.get(this.newerInPlace() ?? "") === "checking") return false
     const work = this.options.work()
     return !work.turns && (this.holding || !work.other)
   }

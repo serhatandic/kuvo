@@ -104,6 +104,8 @@ esac
     await gone;
   });
   const before = await until(() => { const said = readJSON(path.join(RUN, "engine.json")); return said?.pid && runs(said.pid) && said.agentsPort ? said : null; }, "the engine from before, with its bridge");
+  const linkPid = () => { try { return Number(fs.readFileSync(path.join(RUN, "link.pid"), "utf8")) || 0; } catch { return 0; } };
+  const oldLink = await until(() => (runs(linkPid()) ? linkPid() : 0), "the link from before");
 
   // This release, packed as the release workflow does, for the same engine.
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
@@ -141,4 +143,7 @@ esac
   assert.ok(runs(bridge), "the bridge runs");
   assert.match(spawnSync("ps", ["-ww", "-o", "command=", "-p", String(bridge)], { encoding: "utf8" }).stdout, /kuvo-agents\.js/);
   assert.equal(Number(fs.readFileSync(path.join(RUN, "box.pid"), "utf8")), keeper.pid, "the same keeper, on this release's script");
+  // The link from before (which never leaves for new code by itself) replaced by this release's.
+  assert.equal(runs(oldLink), false, "the link from before went");
+  await until(() => linkPid() && linkPid() !== oldLink && runs(linkPid()), "this release's link to run");
 });
