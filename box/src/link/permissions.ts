@@ -111,24 +111,31 @@ export function boxPermissions(): BoxPermissions {
   return said(allowed);
 }
 
-/** The helper asked to note what macOS allows it now (its host's `permissions`), before the note is
- * read: its own look is every ten seconds, and a client asks as you come back from System Settings.
- * Where it can't be asked (no helper answering, one from before it could), the note is as it was. */
-async function askedAfresh(): Promise<void> {
-  if (process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac") return;
-  const host = appHost();
-  if (!host) return;
-  try { await askHost(host, "permissions", {}, true); } catch { /* the note as it was */ }
+/** How long a client's ask waits for the helper to look again: past that, the note as it is. */
+const FRESH_WITHIN = 2_000;
+
+/** As `boxPermissions`, the helper asked first to note what macOS allows it now (its host's
+ * `permissions`): its own look is only every minute, and a client asks as you come back from
+ * System Settings. Where it can't be asked (no helper answering, one from before it could), or
+ * doesn't answer within two seconds, the note as it is. */
+export async function freshBoxPermissions(): Promise<BoxPermissions> {
+  const host = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac" ? appHost() : null;
+  if (host) {
+    let waited: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      askHost(host, "permissions", {}, true).catch(() => null),
+      new Promise(resolve => { waited = setTimeout(resolve, FRESH_WITHIN); }),
+    ]);
+    clearTimeout(waited);
+  }
+  return boxPermissions();
 }
 
 /** `GET`: the facts, as the helper sees them now. `POST {later: "<id>"}`: that one put off ("Not
  * Now"), then the facts. Nothing here grants anything: only you do, in System Settings. */
 export async function* permissionsRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
-  if (method === "GET") {
-    await askedAfresh();
-    return yield* json(200, boxPermissions());
-  }
+  if (method === "GET") return yield* json(200, await freshBoxPermissions());
   if (method !== "POST") return yield* json(405, {});
   let asked: unknown;
   try { asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8")); } catch { asked = null; }

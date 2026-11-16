@@ -246,7 +246,7 @@ public final class BoxHelperHost {
             return await openApp(URL(filePath: bundle))
         case "/permissions":
             // What macOS allows it, noted afresh in `run/permissions.json` before this answers, for
-            // the box to say as a client asks (the helper's own look is every ten seconds).
+            // the box to say as a client asks (the helper's own look is every minute).
             await permissionsNow?()
             return .json([:])
         case "/trash":

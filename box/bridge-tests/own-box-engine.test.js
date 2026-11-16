@@ -82,7 +82,10 @@ const there = file => new Promise(resolve => {
 async function keptFirstRound(where) {
   const keeper = spawn("sh", [path.join(where.K, "bin", "kuvo-start"), "keep"], { cwd: where.K, env: where.env, detached: true, stdio: "ignore" });
   keeper.unref();
-  await there(path.join(where.home, "rounds"));
+  // (A keeper that ends before its first round fails the test, rather than leave it waiting.)
+  const ended = new Promise((resolve, reject) => keeper.once("exit", code => reject(new Error(`the keeper ended before its first round (${code})`))));
+  ended.catch(() => {}); // (Its end as the test stops it is no failure.)
+  await Promise.race([there(path.join(where.home, "rounds")), ended]);
   return keeper;
 }
 

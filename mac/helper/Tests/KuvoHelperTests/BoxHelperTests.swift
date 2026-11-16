@@ -721,9 +721,9 @@ private final class InTheTests {}
         #expect(json(facts)["accessibility"] as? Bool == false)
         #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier), "still the helper's own word, which the box checks")
         #expect(helper.isRunning, "never started again for it")
-        // And its own look, every ten seconds, takes it away again as it's switched off.
+        // Switched off again: said as it's next asked.
         try write(said, "")
-        until { json(facts)["screenRecording"] as? Bool == false }
+        #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:]).status == 200)
         #expect(json(facts)["screenRecording"] as? Bool == false)
         // Only for the box: nothing without its password.
         #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:], authorized: false).status == 401)

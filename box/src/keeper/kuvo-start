@@ -24,7 +24,8 @@ own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
 # its keeper notes the same from what its helper gives it. Without it, no engine would start.
 launch_noted() {
   if [ -f "$R/launch.env" ] || ! own_mac; then return 0; fi
-  (umask 077; { env | grep -E '^(PATH|SHELL|LANG|LC_[A-Z_]+)='; printf '%s\n' 'OPENCODE_CLIENT=desktop'; } >"$R/launch.env.new" && mv -f "$R/launch.env.new" "$R/launch.env")
+  # (Each writer's own file, whole, renamed into place: a keeper and a restart at once never mix.)
+  (umask 077; { env | grep -E '^(PATH|SHELL|LANG|LC_[A-Z_]+)='; printf '%s\n' 'OPENCODE_CLIENT=desktop'; } >"$R/launch.env.$$" && mv -f "$R/launch.env.$$" "$R/launch.env") || rm -f "$R/launch.env.$$"
 }
 # What it runs gets the box's own folders, as the engine does, and how Kuvo Code last
 # started it (in a subshell).
