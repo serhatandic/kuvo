@@ -33,6 +33,7 @@ import { groupRoutes } from "./groups/routes"
 import type { GroupRunner } from "./groups/runner"
 import type { GroupStore } from "./groups/store"
 import { shell, shellOutput, shells, stopShell } from "./shells"
+import { signIns } from "./sign-ins"
 import type { Integration, Model } from "./wire"
 
 export interface Context {
@@ -141,6 +142,8 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
     agent.account(fresh).catch((error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
     maintainedSoon(agent, fresh),
   ])
+  // (The rings follow what Accounts shows: sign-ins.ts.)
+  signIns.record(agent.providerID, account)
   const before = lastSeen.get(agent.providerID)
   // Who's signed in, as last said (one not said yet, or not now, is no other account).
   const label = account.signedIn ? (account.label ?? before?.label) : undefined
@@ -264,7 +267,7 @@ export function handler(context: Context) {
             const created = Date.now()
             // Long enough for a download first (Antigravity's agent) on a slow connection.
             const expires = created + 30 * 60_000
-            const stop = watchSignIn(attempt, expires, () => void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {}))
+            const stop = watchSignIn(attempt, expires, () => void signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {}))
             attempts.set(id, { agent, attempt, created, expires, stop })
             return located({ attemptID: id, url: attempt.url, instructions: attempt.instructions, mode: attempt.mode, acceptsCode: attempt.acceptsCode || undefined, userCode: attempt.userCode, time: { created, expires } })
           }
@@ -295,7 +298,7 @@ export function handler(context: Context) {
           const { key } = await body()
           if (!agent.signInWithKey) return error(400, `${agent.name} doesn't take a key here.`)
           await agent.signInWithKey(String(key ?? "").trim())
-          void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {})
+          void signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {})
           return json({})
         }
         // Its program installed with its maker's installer (the command `metadata.install` shows),
@@ -315,6 +318,8 @@ export function handler(context: Context) {
         if (b === "disconnect" && method === "POST") {
           if (!agent.signOut) return error(400, `Sign out of ${agent.name} where you signed in.`)
           await agent.signOut()
+          // Gone from the rings at once, with what was read of it (sign-ins.ts).
+          await signIns.ask(agent)
           return json({})
         }
       }

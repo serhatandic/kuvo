@@ -142,7 +142,8 @@ describe("Claude on a Mac", () => {
     const told: any[] = []
     const stop = subscribe((each) => each.type === "kuvo.limits.updated" && told.push(each.data))
     await limits.refresh()
-    expect((await route(limits)).accounts).toEqual([])
+    // Signed in, each has its row before any turn told its limits: nothing read yet, no windows.
+    expect((await route(limits)).accounts.map((each) => [each.provider, each.windows])).toEqual([["claude-code", []], ["claude-code@1f2e3d4c", []]])
 
     clock.pass(60_000)
     for (const window of heardWindows(event(0.42, 0.18, 0.07))) own.limits.heard!(window)
@@ -665,7 +666,9 @@ describe("who each account is, the same from every computer", () => {
     signedInAs(join(hetzner, "claude", "home"), "token-linux", account, organization)
     anthropic.answers.set("token-linux", usage(29, 70))
     ClaudeAgent.keychain = false
-    const linux = new Limits(() => agentAccounts([new TestClaude(hetzner, { id: "default", home: join(hetzner, "claude", "home") })]), undefined, clock.now)
+    // (Made once, as the bridge keeps its agents: this test makes the Macs' after it.)
+    const linuxClaude = new TestClaude(hetzner, { id: "default", home: join(hetzner, "claude", "home") })
+    const linux = new Limits(() => agentAccounts([linuxClaude]), undefined, clock.now)
     await linux.tick()
 
     ClaudeAgent.keychain = true

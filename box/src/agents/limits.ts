@@ -502,11 +502,13 @@ export class Limits {
   list(borrowed = true): AccountLimits[] {
     const listed: AccountLimits[] = []
     for (const account of this.accounts()) {
-      const entry = this.entries.get(account.provider)
-      if (!entry || entry.problem?.kind === "none") continue
-      // Nothing read yet, and nothing heard: not one to show until it's tried (one signed in to
-      // another account since says so), or read on another of your computers in its place.
-      if (!entry.checked && !entry.windows.length && !entry.problem && !entry.elsewhere) continue
+      // Every account signed in here is listed (what lists them says which are: Accounts' word for
+      // the coding agents'), read or not yet: nothing read is no windows, never another's.
+      const entry = this.entries.get(account.provider) ?? { windows: [], next: 0 }
+      if (entry.problem?.kind === "none") continue
+      // One only its turns tell of, with no plan sign-in now (a Mac's Claude with an Anthropic
+      // Console account): no plan limits to tell.
+      if (!account.limits.read && account.limits.signIn && account.limits.signIn() === undefined) continue
       const problem = entry.problem ? { kind: entry.problem.kind, message: entry.problem.message, ...(entry.problem.until ? { until: entry.problem.until } : {}) } : undefined
       // COMPAT(0.7 limits-own-numbers): a skipped account's own row carries the peer's newer numbers, for clients from before rows. Goes in #717's next part.
       const peer = borrowed && entry.elsewhere && entry.identity ? this.peers?.freshest(account.service, entry.identity) : undefined
@@ -583,10 +585,12 @@ export class Limits {
    * Reads this account again now, here, as its maker allows (a reset was spent: what it refilled
    * shows at once), and waits for that round.
    */
-  readAgain(provider: string): Promise<void> {
+  async readAgain(provider: string): Promise<void> {
+    // (Just signed in: listed once what lists the accounts says so, at the round's start.)
+    if (!this.account(provider)) await this.tick()
     let entry = this.entries.get(provider)
     if (!entry) {
-      if (!this.account(provider)) return Promise.resolve()
+      if (!this.account(provider)) return
       entry = { windows: [], next: 0 }
       this.entries.set(provider, entry)
     }

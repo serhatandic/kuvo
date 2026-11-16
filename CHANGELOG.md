@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The usage rings beside the sidebar and in the menu bar now show exactly the accounts signed in on that computer, as Settings › Accounts lists them. Signing out of one removes its ring at once, a signed-in Claude Code always has its ring (empty until Claude's next reply tells its limits on a Mac), and an account signed in only on another of your computers shows under that computer, not here.
 - A machine you set up from more than one of your Macs (or first from Kuvo Code 0.7) is no longer listed under "Shared Machines" as someone else's: it's one of your computers on each of those Macs, under **Computers** with what runs there, and its bots, wake-ups and time zone work with your other computers again. It sorts itself out once the machine updates; there's nothing to do.
 - In the desktop Work Queue, paste or drop images into a new item or its description while editing. Images stay with the item, including on another computer, and open from thumbnails in the image viewer.
 
