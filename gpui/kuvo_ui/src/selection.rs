@@ -21,14 +21,16 @@ use gpui::{
     AnyElement, App, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Element, ElementId, FocusHandle,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, InteractiveText, IntoElement,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
-    StyledText, TextLayout, TextRun, Window, actions, point, px, quad, size,
+    StyledText, TextLayout, TextRun, Window, point, px, quad, size,
 };
 use smallvec::SmallVec;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme::ActiveTheme;
 
-actions!(selection, [Copy, SelectAll]);
+/// The same Copy and Select All as a text field's, so the menu bar's Edit items reach a
+/// transcript's selection as they reach a field.
+pub use crate::text_field::{Copy, SelectAll};
 
 /// The key context of a selectable transcript, for its ⌘C and ⌘A.
 pub const CONTEXT: &str = "KuvoSelection";

@@ -27,7 +27,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
+use crate::area::{Area, Back, Forward, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
 use crate::areas::{AreaView, Go, Picked, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
@@ -39,7 +39,7 @@ use crate::session_menu::{
 };
 use crate::sidebar::{FocusSearch, Line};
 use crate::panel::{self, Place, SidePanel, Tab};
-use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, areas, landing, sidebar, time, title_bar};
+use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
 
 /// How long typing pauses before the box is asked to search conversations.
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
@@ -1434,6 +1434,12 @@ impl Workspace {
             self.show_area(area, window, cx);
             return;
         }
+        self.toggle_sidebar(window, cx);
+    }
+
+    /// Folds the open area's sidebar away, or brings it back (its rail button pressed again, or
+    /// View › Show Sidebar).
+    pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // (The window as it is now, should it have changed since it was last drawn.)
         self.narrow = window.viewport_size().width < NARROW;
         if self.narrow {
@@ -2361,6 +2367,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &RenameSession, window, cx| this.run_shortcut("rename", window, cx)))
             .on_action(cx.listener(|this, _: &ArchiveSession, window, cx| this.run_shortcut("archive", window, cx)))
             .on_action(cx.listener(|this, _: &DeleteSession, window, cx| this.run_shortcut("delete", window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, window, cx| {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);
@@ -2388,7 +2395,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &Forward, window, cx| this.go_forward(window, cx)))
-            .on_action(|_: &OpenHelp, _, cx| cx.open_url(crate::area::HELP))
             // A drag of the panel's edge, wherever the pointer goes meanwhile.
             .when(self.resizing.is_some(), |d| {
                 d.cursor_col_resize()
