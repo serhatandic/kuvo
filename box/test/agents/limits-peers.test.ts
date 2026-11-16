@@ -536,7 +536,7 @@ describe("plan limits across your computers", () => {
     await mac.limits.tick()
     await relay.settled()
     // (The Mac's account is listed there as signed in, before any reading: none reached it.)
-    expect(lokum.rows().map((row) => row.windows)).toEqual([[]])
+    expect(lokum.rows().map((row) => ({ id: row.id, boxes: row.boxes.map((box) => box.key), windows: row.windows }))).toEqual([{ id: "key-mac/claude-code", boxes: ["key-mac"], windows: [] }])
     // Half a minute on, its link starts again (its bridge didn't): it asks, and the Mac answers.
     pass(30_000)
     relay.off.delete("key-lokum")

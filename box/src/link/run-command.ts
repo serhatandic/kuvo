@@ -71,7 +71,8 @@ let loginReading: Promise<void> | null = null;
  * waiting `wait` for that at most (a slow `.zshrc` is read on, for the next; meanwhile the last
  * one). Not on Linux, where a box is started over SSH or at boot, and where a `.bashrc` that starts
  * an `ssh-agent` would leave one more running with each read (agents/proc.ts's `refreshLoginPath`):
- * there, the environment the box started with, as before. Never what `NOT_FROM_LOGIN` names.
+ * there, the environment the box started with, as before (the command's own shell, `-lc` in
+ * `runCommand`, still reads your startup files on both). Never what `NOT_FROM_LOGIN` names.
  */
 export async function askedEnv(from: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform, now = Date.now(), wait = 1_000): Promise<Record<string, string>> {
   const env = commandEnv(from);
