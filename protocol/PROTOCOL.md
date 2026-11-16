@@ -1573,7 +1573,8 @@ sessions").
   computer; never on a `subagent`). Since `bots.state`: `thinking?` (`true`: while it's at work,
   its model has been reasoning a while, debounced as "What a bot is doing now" says), `blocked?`
   (`"error"` or `"limit"`: it stopped on one and you haven't read the turn it ended, or it has been
-  retrying one a while), `unread?` (when its turn you haven't read ended, ms: its `time.idle` while
+  retrying one a while), `retrying?` (`true`: it's `blocked` by a retry, while it's at work),
+  `unread?` (when its turn you haven't read ended, ms: its `time.idle` while
   that's later than `time.viewed`, "What's been read"; an agent's work the box reads for you isn't
   unread while the box judges whether that turn is news to you). The box hears these as they stream
   and reads no session for them.
@@ -2029,38 +2030,50 @@ the same number and counts nothing.
   1. `needsYou`: one of its sessions waits on you (`asking` > 0);
   2. `blocked`: one is blocked: its run stopped on an error or a limit (`session.execution.failed`;
      a limit when its `error.type` is `provider.quota` or `provider.rate-limit`, or a coding agent's
-     `limit`) until it runs again
-     or you've read the turn it ended, or it has been retrying for 10 seconds with no step begun
-     since (`session.retry.scheduled`, until `session.step.started` or the run ends);
+     `limit`) until it runs again, you've read the turn it ended, or you've seen the bot since that
+     turn ended (Seen, below); or it has been retrying for 10 seconds with no step begun since
+     (`session.retry.scheduled`, until `session.step.started` or the run ends), whether or not
+     you've seen the bot;
   3. `thinking`: every one at work is thinking: its model has been reasoning for 2 seconds on end
      (`session.reasoning.started`, until `session.reasoning.ended`, `session.text.started`,
      `session.tool.input.started`, `session.tool.called` or the run's end), and it stays thinking
      for 1.5 seconds after (reasoning again meanwhile, it never stopped), so a face doesn't flicker;
   4. `working`: one is at work;
   5. `done`: one, neither at work, waiting nor blocked, has a turn you haven't read (`unread` in
-     the session list): until you've seen it, on any client;
+     the session list) that ended after you last saw the bot (Seen, below), on any client;
   6. `asleep`: its wake-ups are paused, or its next one (`wakes`) is more than 12 hours away;
   7. `idle`.
   `since` (ms): when it came to be in that state, as this box saw it (a box just started says when
   it started, for the state each bot was in then); for `done`, when the newest turn you haven't
-  read ended. The box
+  read (and that ended after you last saw the bot) ended. The box
   says it again as the state changes, a moment after the list settles (a run's end and the reads
   that follow it are one change), and as a bot's next wake-up comes within 12 hours with nothing
   else changing. The rule is the box's (`box/src/link/lists/rule.ts`, held to
   `protocol/vectors/bot-states.json`); no client works it out. **Offline is the client's own**: a
   box can't say it can't be reached, so a client draws a bot offline while the bot's computer's
   `reach` is `away` ("Computers"), or while it can't reach its own box, keeping the counts for the
-  words under its name. A client may hold a state on screen a little longer as it draws it (Done's
+  words under its name. Under the name of a bot that's `blocked`, a client says what blocked it:
+  "Hit a usage limit" (`blockedBy` `"limit"`) or "Stopped on an error" (`"error"`), in place of the
+  counts' words. A client may hold a state on screen a little longer as it draws it (Done's
   celebration), never decide one.
 - **Seen** (`bots.state`): `POST kuvo/bots/<id>/seen` (`{}`), as a client shows you a bot (its
-  conversation opened, its row looked at): each of its sessions `now` counts that has a turn you
-  haven't read, and is neither at work nor waiting on you, read up to where it ended, as `POST
-  api/session/<id>/view` reads one (the coding agents' through their bridge). So it's no longer
-  `done`, nor `blocked` by a stop you've now seen, on every client: each hears `session.viewed`,
-  and the bot's line in `kuvo/bots/events`. Answers `200 {}`; `404 {"message"}` for a bot that
-  doesn't live here (ask the box it lives on), `502 {"message"}` where one of them couldn't be read
-  just now (the rest were: ask again), `503` while the engine can't be read, `405` for anything but
-  `POST`.
+  conversation opened, its row looked at). The box keeps when you last saw each of its bots (its
+  own clock, ms; across its restarts; one that no longer lives here is let go as it next keeps
+  one), never past the end of a turn of its work it's still judging (READ_RULE: you couldn't have
+  seen that one yet, so if it's news to you, it counts). What it does:
+  - The bot is no longer `done` for a turn that ended by then, nor `blocked` by a hard stop that
+    did, on every client (each hears the bot's line in `kuvo/bots/events`). A turn that ends later
+    makes it `done` (or a later stop `blocked`) again; a retry under way blocks it all the same.
+  - Its own conversation is read up to where its last turn ended, as a client reads the
+    conversation it shows (`POST api/session/<id>/view`, the coding agents' through their bridge;
+    each hears `session.viewed`).
+  What it doesn't: read the sessions working for it. What the box left unread there as news to you
+  (READ_RULE: a turn that failed, one answering what you wrote in it) keeps its new mark on every
+  client until you open that session; only the bot stops saying `done` for it.
+  Answers `200 {}`; `404 {"message"}` for a bot that doesn't live here (ask the box it lives on),
+  `502 {"message"}` where its conversation couldn't be read just now (the bot is seen all the same:
+  ask again), `503` while the engine can't be read (seen all the same), `500 {"message"}` where the
+  box couldn't keep it, `405` for anything but `POST`.
 
 ### A session's actions
 
@@ -3629,8 +3642,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   something new up to now; it answers `{"read"}`, how many. Each client hears of each as above
   (`session.viewed`, `kuvo/groups/events`). What waits on your answer isn't read away: an ask
   still waits on you. A client that marks all read on every computer (the phone's Inbox) asks
-  each box once. A bot's sessions are read together with `POST kuvo/bots/<id>/seen` ("What a bot
-  is doing now").
+  each box once. Seeing a bot (`POST kuvo/bots/<id>/seen`, "What a bot is doing now") reads only
+  its own conversation, never the sessions working for it.
 - **A message while a command runs**: yours is read at once. A message sent to steer
   (`delivery: "steer"`) waits for the agent's next step, and an agent waiting on a command or a
   subagent it started in the foreground takes none until that ends. So for your own message, each
@@ -7108,7 +7121,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `bots.job` | a bot's job as its box's record: `jobDetails` in `kuvo/bots`, `job` in `PATCH kuvo/bots/<id>` |
 | `bots.make` | `kuvo/bots/templates` and `POST kuvo/bots` |
 | `bots.now` | `now` on each bot in `kuvo/bots` and `kuvo/bots/events`: its sessions at work and waiting on you ("What waits on you", #711) |
-| `bots.state` | `state`, `since`, `thinking`, `blocked` and `blockedBy` in each bot's `now`, and `POST kuvo/bots/<id>/seen`; `thinking`, `blocked` and `unread` in the session list's facts; the shapes `loaf`, `capsule` and `dome` ("What waits on you": "The one state a bot is in") |
+| `bots.state` | `state`, `since`, `thinking`, `blocked` and `blockedBy` in each bot's `now`, and `POST kuvo/bots/<id>/seen`; `thinking`, `blocked`, `retrying` and `unread` in the session list's facts; the shapes `loaf`, `capsule` and `dome` ("What waits on you": "The one state a bot is in") |
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |

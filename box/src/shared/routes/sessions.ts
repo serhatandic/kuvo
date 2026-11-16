@@ -258,8 +258,9 @@ export const SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subag
  * it's pinned, archived, running, since when it's waited on you (ms), and whether this copy isn't
  * its own (it moved, or is on its way here). `thinking`: its model has been reasoning a while
  * (debounced, `bots.state`); `blocked`: it stopped on an error or a limit you haven't seen, or has
- * been retrying one a while; `unread`: when its turn you haven't read ended (ms, its `time.idle`
- * while that's later than `time.viewed`). Each flag left out where it isn't. */
+ * been retrying one a while (`retrying`, while it's at work); `unread`: when its turn you haven't
+ * read ended (ms, its `time.idle` while that's later than `time.viewed`). Each flag left out where
+ * it isn't. */
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
   "project?": string,
@@ -276,6 +277,7 @@ export const SESSION_FACTS = object({
   "bot?": string,
   "thinking?": literal(true),
   "blocked?": words("error", "limit"),
+  "retrying?": literal(true),
   "unread?": number,
 });
 

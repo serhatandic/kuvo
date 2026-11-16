@@ -11,8 +11,9 @@ import { listBots } from "../bots/list";
 import { makeBot, startingModelHere } from "../bots/make";
 import { freshenBots, settleBot } from "../bots/tell";
 import { followed, followersOf } from "../follow";
-import { listNow, noteViewed } from "../lists/sessions";
+import { judgedTurns, listNow, noteViewed } from "../lists/sessions";
 import { afterListSettles, keepOnly, nextTurn, nowOf, statesNow } from "../bots/now";
+import { noteSeen, SEEN_FOLDER, seenFollowers } from "../bots/seen";
 import { call } from "../engine/client";
 import { botsNowHere } from "./waiting";
 import { BOTS } from "../home";
@@ -105,7 +106,7 @@ function botsSaid(machine?: string) {
 }
 
 // Its bots followed: a line now, and again as they change (made, changed, deleted, a wake-up
-// added or sent, what one is doing), as a client shows them.
+// added or sent, what one is doing, one seen), as a client shows them.
 export async function* botEventsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, info, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
@@ -138,47 +139,54 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
     return bots;
   };
   try {
-    return yield* followed(said, followersOf(botFollowers, nowChanged), signal, { folders: [BOTS, HELD] });
+    // (And as a bot is seen, here or in another process: its done or blocked may be over.)
+    return yield* followed(said, followersOf(botFollowers, nowChanged, seenFollowers), signal, { folders: [BOTS, HELD, SEEN_FOLDER] });
   } finally {
     stopFollowing();
     clearTimeout(turning);
   }
 }
 
-// `POST kuvo/bots/<id>/seen`: what the bot did that you haven't read read, as a client shows it to
-// you (its conversation opened, its row looked at): each of its sessions (its conversation, and
-// those working for it, as its `now` counts them) with a turn you haven't read, neither at work nor
-// waiting on you, read up to where it ended, as `POST api/session/<id>/view` reads one. So it's no
-// longer done, nor blocked by a stop you've now seen, on every client (each hears `session.viewed`).
+// `POST kuvo/bots/<id>/seen`: you've seen the bot, as a client shows it to you (its conversation
+// opened, its row looked at). The box keeps when (`bots/seen.ts`): what its sessions did until then
+// is no longer done, nor a hard stop blocked, on every client (each hears the bot's line in
+// `kuvo/bots/events`). And its own conversation is read up to where its last turn ended, as a
+// client reads the conversation it shows (`POST api/session/<id>/view`; each hears
+// `session.viewed`). Its work's sessions are left as they are: what READ_RULE left unread there is
+// news to you, and stays new until you open it.
 export async function* botSeenRoute(context: RouteContext, seen: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, readEngine, bridge, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   let id: string;
   try { id = decodeURIComponent(seen[1]!); } catch { return yield* json(404, { message: "That bot isn’t there any more." }); }
-  if (!botHere(id)) return yield* json(404, { message: "That bot isn’t there any more." });
+  const bot = botHere(id);
+  if (!bot) return yield* json(404, { message: "That bot isn’t there any more." });
+  try {
+    // (Not past a turn of its work the box is still judging: you couldn't have seen it, and if it's
+    // news to you, the bot is done or blocked for it.)
+    noteSeen(id, Math.min(Date.now(), ...judgedTurns(id).map(end => end - 1)));
+  } catch {
+    return yield* json(500, { message: "It couldn’t be marked as seen just now. Try again in a moment." });
+  }
   const list = await listNow({ readEngine, bridge }, signal ?? undefined);
   if (!list) return yield* json(503, { message: "The engine isn’t running." });
-  let engine: Target | null = null;
-  try { engine = readEngine(); } catch {}
-  const places: Record<string, Target | null> = { engine, bridge: bridge() };
-  const unread = Object.entries(list.sessions).filter(([, { facts }]) =>
-    facts.bot === id && !facts.archived && !facts.away && !facts.running && facts.asked === undefined && facts.unread !== undefined);
-  const read = await Promise.all(unread.map(async ([session, { facts, place = "engine" }]) => {
-    const target = places[place];
-    // (Where it lives isn't running (the coding agents' bridge): nothing to read it on now, and
-    // nothing to ask again for.)
-    if (!target) return true;
-    try {
-      await call(target, "POST", `/api/session/${encodeURIComponent(session)}/view`, { idle: facts.unread }, AbortSignal.timeout(10_000));
-      // (Taken in here at once: its `session.viewed` says the same a moment later.)
-      noteViewed(place, session, facts.unread!);
-      return true;
-    } catch {
-      return false;
-    }
-  }));
-  // (One that couldn't be read: said, for a client to ask again.)
-  if (read.includes(false)) return yield* json(502, { message: "Some of what it did couldn’t be marked as seen just now. Try again in a moment." });
+  const own = list.sessions[bot.session];
+  const unread = own?.facts.unread;
+  // (Nothing new in it, or not this box's own copy: nothing to read.)
+  if (!own || unread === undefined || own.facts.away) return yield* json(200, {});
+  const place = own.place ?? "engine";
+  let target: Target | null = null;
+  try { target = place === "bridge" ? bridge() : readEngine(); } catch {}
+  // (Where it lives isn't running (the coding agents' bridge): nothing to read it on now.)
+  if (!target) return yield* json(200, {});
+  try {
+    await call(target, "POST", `/api/session/${encodeURIComponent(bot.session)}/view`, { idle: unread }, AbortSignal.timeout(10_000));
+  } catch {
+    // (Said, for a client to ask again: the bot is seen all the same.)
+    return yield* json(502, { message: "Its conversation couldn’t be marked as read just now. Try again in a moment." });
+  }
+  // (Taken in here at once: its `session.viewed` says the same a moment later.)
+  noteViewed(place, bot.session, unread);
   return yield* json(200, {});
 }
 

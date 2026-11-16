@@ -1,12 +1,15 @@
 {
  "about": [
-  "Which state a bot is in (PROTOCOL.md, \"What a bot is doing now\", `bots.state`): the box's rule, `botState` and `botNow` in box/src/link/lists/rule.ts,",
-  "which box/test/bot-states.test.ts holds to these. `counts` is what its sessions come to (`expect.bots` in session-lists.json: at work, waiting",
-  "on you, thinking, blocked, and `unseen`, when the newest turn you haven't read ended), `rest` its `paused` and next wake-up (`wakes`, seconds), `at`",
-  "now (ms) and `before` what the box last said of it. `expect.now` is its `now` in `kuvo/bots`: the first state that holds of needsYou, blocked,",
-  "thinking (every one at work thinks), working, done, asleep (paused, or its next wake-up more than 12 hours away) and idle, and since when (`at`",
-  "for a state new since `before`, `before`'s for the same, and for done when the turn ended). `expect.turns`: when its state changes with nothing",
-  "else changing (its next wake-up comes within 12 hours, ms), else null. A client adds `offline` itself; it works none of this out."
+  "Which state a bot is in (PROTOCOL.md, \"What a bot is doing now\", `bots.state`): the box's rule, `botsNow`, `botState` and `botNow` in",
+  "box/src/link/lists/rule.ts, which box/test/bot-states.test.ts holds to these. `counts` is what its sessions come to (`expect.bots` in",
+  "session-lists.json: at work, waiting on you, thinking, blocked, and `unseen`, when the newest turn you haven't read ended); or, in its place,",
+  "`sessions` (the bot's sessions' facts, as the session list says them) and `seen` (when you last saw each bot, ms, `POST kuvo/bots/<id>/seen`),",
+  "which `botsNow` makes them from for `bot`: a turn that ended then or before isn't unseen, and a hard stop it ended on doesn't block (a retry",
+  "under way, at work, still does). `rest` is its `paused` and next wake-up (`wakes`, seconds), `at` now (ms) and `before` what the box last said",
+  "of it. `expect.now` is its `now` in `kuvo/bots`: the first state that holds of needsYou, blocked, thinking (every one at work thinks), working,",
+  "done, asleep (paused, or its next wake-up more than 12 hours away) and idle, and since when (`at` for a state new since `before`, `before`'s for",
+  "the same, and for done when the turn ended). `expect.turns`: when its state changes with nothing else changing (its next wake-up comes within",
+  "12 hours, ms), else null. A client adds `offline` itself; it works none of this out."
  ],
  "cases": [
   {
@@ -438,6 +441,360 @@
      "working": 1,
      "asking": 0,
      "state": "working",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "seen after its turn ended: not done, nor its work's turn left unread before",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_conv": {
+     "kind": "bot",
+     "directory": "/bots/bot_ada",
+     "created": 100,
+     "bot": "bot_ada",
+     "updated": 900,
+     "unread": 900
+    },
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 920,
+     "unread": 920
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 920,
+     "state": "idle",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a turn that ended after you last saw it: done, since it ended",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_conv": {
+     "kind": "bot",
+     "directory": "/bots/bot_ada",
+     "created": 100,
+     "bot": "bot_ada",
+     "updated": 900
+    },
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 1000,
+     "unread": 1000
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "state": "done",
+     "since": 1000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "an older turn left unread and a newer one since you saw it: done, since the newer ended",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_old": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 900,
+     "unread": 900
+    },
+    "ses_new": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 1000,
+     "unread": 1000
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "state": "done",
+     "since": 1000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a turn that ended as you saw it: not done",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 950,
+     "unread": 950
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 950,
+     "state": "idle",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a stop you've seen since doesn't block it",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 900,
+     "unread": 900,
+     "blocked": "error"
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 900,
+     "state": "idle",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a stop after you last saw it blocks it",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 1000,
+     "unread": 1000,
+     "blocked": "limit"
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 1000,
+     "blocked": 1,
+     "blockedBy": "limit",
+     "state": "blocked",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a retry under way blocks it, however lately you saw it",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 1000,
+     "unread": 900,
+     "running": true,
+     "blocked": "limit",
+     "retrying": true
+    }
+   },
+   "seen": {
+    "bot_ada": 1500
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "blocked": 1,
+     "blockedBy": "limit",
+     "state": "blocked",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "a stop you've seen in a session still at work on what it left running: working, not blocked",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 900,
+     "running": true,
+     "blocked": "limit",
+     "unread": 900
+    }
+   },
+   "seen": {
+    "bot_ada": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 1,
+     "asking": 0,
+     "state": "working",
+     "since": 1800000000000
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "another bot seen leaves this one done",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 900,
+     "unread": 900
+    }
+   },
+   "seen": {
+    "bot_bea": 950
+   },
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 900,
+     "state": "done",
+     "since": 900
+    },
+    "turns": null
+   }
+  },
+  {
+   "name": "never seen: every turn you haven't read counts",
+   "bot": "bot_ada",
+   "sessions": {
+    "ses_work": {
+     "kind": "project",
+     "project": "/work",
+     "directory": "/work",
+     "created": 800,
+     "bot": "bot_ada",
+     "updated": 900,
+     "unread": 900,
+     "blocked": "error"
+    }
+   },
+   "seen": {},
+   "rest": {
+    "paused": false
+   },
+   "at": 1800000000000,
+   "expect": {
+    "now": {
+     "working": 0,
+     "asking": 0,
+     "finished": 900,
+     "blocked": 1,
+     "blockedBy": "error",
+     "state": "blocked",
      "since": 1800000000000
     },
     "turns": null

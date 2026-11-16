@@ -512,17 +512,20 @@ const deleted = new Map<string, Set<string>>();
 let eventCount = 0;
 
 /** One session of `name`'s read again: as it is now, or gone; unless another event came for it
- * since (a later read answers for that), or it was deleted. */
-async function readOne(name: string, target: Target, id: string): Promise<void> {
+ * since (a later read answers for that), or it was deleted. Whether it was taken in as read now. */
+async function readOne(name: string, target: Target, id: string): Promise<boolean> {
   const key = `${name} ${id}`;
   const at = asked.get(key);
   const current = () => asked.get(key) === at && !deleted.get(name)?.has(id);
   try {
     const session = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, AbortSignal.timeout(10_000));
     const place = places.get(name);
-    if (current() && place && isObject(session) && session.id === id) place.sessions.set(id, withViewed(session as unknown as EngineSession, place.sessions.get(id)));
+    if (!current() || !place || !isObject(session) || session.id !== id) return false;
+    place.sessions.set(id, withViewed(session as unknown as EngineSession, place.sessions.get(id)));
+    return true;
   } catch (error) {
     if (current() && (error as { status?: number }).status === 404) places.get(name)?.sessions.delete(id);
+    return false;
   }
 }
 
@@ -549,7 +552,8 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type) && !RELOADS.has(event.type)) return;
   // (Read whole now: it's read again once that's in.)
   reading.get(name)?.add(id);
-  asked.set(`${name} ${id}`, ++eventCount);
+  const mine = ++eventCount;
+  asked.set(`${name} ${id}`, mine);
   if (event.type === "session.deleted") {
     deleted.set(name, (deleted.get(name) ?? new Set()).add(id));
     if (deleted.get(name)!.size > 5000) deleted.get(name)!.clear();
@@ -565,7 +569,13 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   else if (ENDS.has(event.type)) place.running.delete(id);
   scheduleWorkOut();
   // As it is now: its folder, title, notes and times.
-  await readOne(name, target, id);
+  const stop = moments.stopped.get(id);
+  const landed = await readOne(name, target, id);
+  // (A stop heard before this read: the turn it ended is the one read, its end as the run's end
+  // left it (as READ_RULE reads it too), unless another event came since. Known, it's let go once
+  // it can no longer block: `letGoOfStops`.)
+  const read = places.get(name)?.sessions.get(id);
+  if (landed && stop && asked.get(`${name} ${id}`) === mine && moments.stopped.get(id) === stop && read) moments.pin(id, Number(read.time?.idle));
   scheduleWorkOut();
 }
 
@@ -579,11 +589,46 @@ export function noteViewed(name: string, id: string, idle: number): void {
   scheduleWorkOut();
 }
 
-/** Those `list` has stopped on an error or a limit (blocked, and not at work: one at work is
- * retrying), each with what stopped it and the turn it stopped (one run again since, unheard, isn't
+/** When the turns of `bot`'s sessions the box is judging now ended (ms): none of them is unread yet,
+ * as the box hasn't said whether it's news to you (READ_RULE). The long-running process's; none
+ * elsewhere. */
+export function judgedTurns(bot: string): number[] {
+  if (!keeping || !latest) return [];
+  const ends: number[] = [];
+  for (const place of places.values()) {
+    for (const session of place.sessions.values()) {
+      if (!isJudged(session.id) || latest.sessions[session.id]?.facts.bot !== bot) continue;
+      const idle = Number(session.time?.idle) || 0;
+      if (idle > (Number(session.time?.viewed) || 0)) ends.push(idle);
+    }
+  }
+  return ends;
+}
+
+/** Those `list` has stopped on an error or a limit (blocked by a turn you haven't read, not a
+ * retry), each with what stopped it and the turn it stopped (one run again since, unheard, isn't
  * blocked by it). */
 const wasStopped = (list: Kept | null): [string, Stopped][] =>
-  Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => (facts.blocked && !facts.running ? [[id, { by: facts.blocked, ...(facts.unread !== undefined ? { idle: facts.unread } : {}) }] as [string, Stopped]] : []));
+  Object.entries(list?.sessions ?? {}).flatMap(([id, { facts }]) => (facts.blocked && !facts.retrying && facts.unread !== undefined ? [[id, { by: facts.blocked, idle: facts.unread }] as [string, Stopped]] : []));
+
+/** The hard stops that can no longer block their sessions let go, so they don't only grow: each
+ * whose turn (`idle`, where known) has been read past, or that a later turn has ended since, and
+ * each whose session neither the engine nor the bridge has, both read whole (gone unheard). (One
+ * whose turn isn't known, its read not in yet, is kept: it goes as it runs again or is deleted.) */
+function letGoOfStops(): void {
+  const whole = places.has("engine") && places.has("bridge");
+  for (const [id, stop] of [...moments.stopped]) {
+    let session: EngineSession | undefined;
+    for (const place of places.values()) if ((session = place.sessions.get(id))) break;
+    if (!session) {
+      if (whole) moments.forget(id);
+      continue;
+    }
+    if (stop.idle === undefined) continue;
+    // (A later turn only: a read begun before it failed, landing late, says an earlier one.)
+    if ((Number(session.time?.viewed) || 0) >= stop.idle || (Number(session.time?.idle) || 0) > stop.idle) moments.forget(id);
+  }
+}
 
 let workOutTimer: ReturnType<typeof setTimeout> | undefined;
 /** Worked out again in a moment: a few changes at once are one. */
@@ -619,6 +664,7 @@ export function workOut(now = Date.now()): void {
   clearTimeout(workOutTimer);
   workOutTimer = undefined;
   if (!places.has("engine")) return;
+  letGoOfStops();
   const sessions: EngineSession[] = [];
   const placeOf: Record<string, string> = {};
   const running = new Set<string>();

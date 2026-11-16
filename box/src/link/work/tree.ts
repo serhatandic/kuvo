@@ -237,22 +237,34 @@ export async function keepWorkRead(target: Target, session: string | Listed["dat
   const id = typeof session === "string" ? session : session?.id;
   if (typeof id !== "string") return;
   judging.set(id, (judging.get(id) ?? 0) + 1);
-  try {
-    // (Half a minute at most: an engine that never answers doesn't hide its turn for good.)
-    const timed = signal ? AbortSignal.any([signal, AbortSignal.timeout(JUDGED_FOR)]) : AbortSignal.timeout(JUDGED_FOR);
-    return await judgeWork(target, session, timed);
-  } finally {
+  let over = false;
+  const judged = () => {
+    if (over) return;
+    over = true;
     const left = (judging.get(id) ?? 1) - 1;
     if (left > 0) judging.set(id, left);
     else judging.delete(id);
     for (const tell of [...judgingFollowers]) try { tell(); } catch {}
+  };
+  // (Half a minute at most as judged: an engine slow to answer doesn't hide its turn for long. The
+  // judgement goes on, and reads it for you once it's done, if that's what it comes to; five
+  // minutes at most, so an engine that never answers doesn't hold one for good.)
+  const shown = setTimeout(judged, JUDGED_FOR);
+  shown.unref?.();
+  const atMost = signal ? AbortSignal.any([signal, AbortSignal.timeout(JUDGED_AT_MOST)]) : AbortSignal.timeout(JUDGED_AT_MOST);
+  try {
+    return await judgeWork(target, session, atMost);
+  } finally {
+    clearTimeout(shown);
+    judged();
   }
 }
 
 /** The sessions whose work the box is judging now (`keepWorkRead`), each by how many judgings of it
- * are under way; told as one ends. */
+ * are under way (for half a minute at most each); told as one ends. */
 const judging = new Map<string, number>();
-const JUDGED_FOR = 30_000;
+export const JUDGED_FOR = 30_000;
+const JUDGED_AT_MOST = 5 * 60_000;
 export const judgingFollowers = new Set<() => void>();
 export const isJudged = (session: string): boolean => judging.has(session);
 

@@ -8,6 +8,7 @@ import { botNow, botStateTurns, type BotCounts, type BotRest } from "../lists/ru
 import { listFollowers } from "../lists/sessions";
 import { botsNowHere } from "../areas/waiting";
 import { listBots } from "./list";
+import { followSeen } from "./seen";
 import type { BotNow, BotState } from "../../shared/routes/sessions";
 
 /** How long the list stays as it is before a bot's state is noted from it (and at most how long
@@ -73,13 +74,16 @@ export function afterListSettles(then: () => void): () => void {
   };
 }
 
-/** Each bot's state noted as the session list changes (the box's long-running process), from its
- * start: its bots read once now, so `since` is when each changed, whether or not a client has asked
- * yet. How to stop. */
+/** Each bot's state noted as the session list changes and as a bot is seen (the box's long-running
+ * process), from its start: its bots read once now, so `since` is when each changed, whether or not
+ * a client has asked yet. How to stop. */
 export function followBotStates(): () => void {
   try {
     const counts = botsNowHere(), at = Date.now();
     for (const bot of listBots()) nowOf(bot.id, counts[bot.id], bot, at);
   } catch {}
-  return afterListSettles(() => { statesNow(); });
+  const note = () => { try { statesNow(); } catch {} };
+  const stopList = afterListSettles(note);
+  const stopSeen = followSeen(note);
+  return () => { stopList(); stopSeen(); };
 }

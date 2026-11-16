@@ -64,6 +64,19 @@ export class Moments {
     for (const [id, stop] of stopped) this.stopped.set(id, stop);
   }
 
+  /** `id`'s stop, where it doesn't say yet, known to have ended the turn that ended at `idle` (ms):
+   * as the session was read after its run failed. (What it says stays the same: told no change.) */
+  pin(id: string, idle: number): void {
+    const stop = this.stopped.get(id);
+    if (stop && stop.idle === undefined && Number.isFinite(idle) && idle > 0) this.stopped.set(id, { ...stop, idle });
+  }
+
+  /** `id`'s stop let go where it can no longer block it (read past, or a later turn since): told no
+   * change, as what's listed stays the same. */
+  forget(id: string): void {
+    this.stopped.delete(id);
+  }
+
   /** Everything let go, its timers too. */
   clear(): void {
     for (const timer of [...this.reasoning.values(), ...this.stopping.values(), ...[...this.retries.values()].map(each => each.timer)]) if (timer) clearTimeout(timer);

@@ -130,5 +130,5 @@ export const BOT_ROUTES: RouteShape[] = [
   { route: "PATCH kuvo/bots/:id", answers: { 200: CHANGED, 202: HELD } },
   { route: "DELETE kuvo/bots/:id", answers: { 200: NOTHING, 202: HELD } },
   { route: "POST kuvo/bots/:id/arrived", answers: { 200: CHANGED } },
-  { route: "POST kuvo/bots/:id/seen", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 502: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/bots/:id/seen", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } },
 ];

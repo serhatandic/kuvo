@@ -7,6 +7,7 @@ import { botsNow, waitingSessions, type BotCounts } from "../lists/rule";
 import { keepsList, keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import path from "node:path";
 import { botFollowers, botHere } from "../bots/here";
+import { readSeen } from "../bots/seen";
 import { followed, followersOf } from "../follow";
 import { allItems, queueFollowers, WORK_QUEUE, type Item } from "../work-queue/store";
 import { isClosed, NEEDS_YOU } from "../work-queue/statuses";
@@ -18,9 +19,10 @@ export const WAITING_ROUTE = /^kuvo\/waiting(\/events)?$/;
 const factsOf = (list: Kept | null): Record<string, SessionFacts> => Object.fromEntries(Object.entries(list?.sessions ?? {}).map(([id, entry]) => [id, entry.facts]));
 
 /** What each bot here is doing now, by its id, as the session list has it (one with no session of
- * its own listed: nothing): what its sessions come to, which its state is worked out from. */
-export function botsNowHere(list: Kept | null = keptList()): Record<string, BotCounts> {
-  return botsNow(factsOf(list));
+ * its own listed: nothing), and as you last saw each: what its sessions come to, which its state is
+ * worked out from. */
+export function botsNowHere(list: Kept | null = keptList(), seen: ReadonlyMap<string, number> = readSeen()): Record<string, BotCounts> {
+  return botsNow(factsOf(list), seen);
 }
 
 /** What waits on you, as `list` has it: of the bots, only those that live here (a session here may

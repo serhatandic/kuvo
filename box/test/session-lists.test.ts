@@ -70,6 +70,7 @@ mkdirSync(join(home, "box"), { recursive: true })
 mkdirSync(work, { recursive: true })
 writeFileSync(join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: work, folders: [], name: "Work" }] }))
 const sessions = new Map<string, any>()
+const messages = new Map<string, any[]>()
 const active = new Set<string>()
 const add = (id: string, directory: string, updated: number, extra: Record<string, unknown> = {}) => sessions.set(id, { id, location: { directory }, time: { created: updated, updated }, ...extra })
 let listReads = 0
@@ -105,6 +106,10 @@ const engine = Bun.serve({
       return Response.json({ data: page, cursor: { next: from + page.length < all.length ? String(from + page.length) : null } })
     }
     if (url.pathname === "/api/session/active") return Response.json({ data: Object.fromEntries([...active].map(id => [id, { type: "busy" }])) })
+    // A session's messages, newest first, one page; and nothing it asks.
+    const said = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/)
+    if (said) return Response.json({ data: messages.get(said[1]!) ?? [], cursor: null })
+    if (/^\/api\/session\/[^/]+\/(permission|form)$/.test(url.pathname)) return Response.json({ data: [] })
     // Read up to where it ended (`time.viewed`), as the engine keeps the later.
     const viewed = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/)
     if (viewed && request.method === "POST" && sessions.has(viewed[1]!)) {
@@ -1064,23 +1069,27 @@ test("a run that fails blocks its bot until it runs again or you've seen it (a l
       await listPlaceHeard("engine", target)
       expect(await nowOfBot("bot_fails")).toMatchObject({ blocked: 1, blockedBy: "error", state: "blocked" })
 
-      // Seen, on any client: each of its turns you haven't read read up to where it ended, so it's
-      // neither blocked nor done.
+      // Seen, on any client: neither blocked nor done, and a client following the bots hears it. Its
+      // own conversation is read, as a client reads the one it shows; its work's turn, left unread
+      // for you, stays new until you open it.
       views.length = 0
       expect(await post("kuvo/bots/bot_fails/seen")).toEqual({ status: 200, body: {} })
-      expect(views.sort()).toEqual([["ses_fails", 900], ["ses_fails_w", 710]])
+      const seenAt = Date.now()
+      expect(views).toEqual([["ses_fails", 900]])
       workOut()
       expect(keptList()!.sessions.ses_fails!.facts).not.toHaveProperty("blocked")
       expect(keptList()!.sessions.ses_fails!.facts).not.toHaveProperty("unread")
+      expect(keptList()!.sessions.ses_fails_w!.facts.unread).toBe(710)
+      expect(sessions.get("ses_fails_w").time.viewed).toBeUndefined()
       expect(await nowOfBot("bot_fails")).toEqual({ working: 0, asking: 0, finished: 900, state: "idle", since: expect.any(Number) })
       await followed.until(now => now?.state === "idle")
 
-      // Its run over, unread: done, since it ended; read on another client (`session.viewed`): idle.
+      // Its run over since, unread: done, since it ended; read on another client (`session.viewed`): idle.
       active.add("ses_fails")
       await hear("session.execution.started")
-      await ends("session.execution.succeeded", 1000)
-      expect(await nowOfBot("bot_fails")).toEqual({ working: 0, asking: 0, finished: 1000, state: "done", since: 1000 })
-      await hear("session.viewed", { idle: 1000 })
+      await ends("session.execution.succeeded", seenAt + 1000)
+      expect(await nowOfBot("bot_fails")).toEqual({ working: 0, asking: 0, finished: seenAt + 1000, state: "done", since: seenAt + 1000 })
+      await hear("session.viewed", { idle: seenAt + 1000 })
       workOut()
       expect(await nowOfBot("bot_fails")).toMatchObject({ state: "idle" })
 
@@ -1204,6 +1213,166 @@ test("work the box reads for you doesn't make its bot done while the box judges 
   } finally {
     stop()
     for (const id of ["ses_leads", "ses_led"]) { sessions.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+/** A turn of a bot's work, newest first, as the engine pages it: its end at `ended` (how it went),
+ * begun by its lead's message, after a turn that ended at `before`. */
+const workTurn = (ended: number, before: number, outcome = "succeeded") => [
+  { type: "idle", outcome, time: { created: ended } },
+  { type: "assistant", content: [{ type: "text", text: "Done." }], time: { created: ended - 1 } },
+  { type: "user", text: "[Work from Ada] Look into it.", time: { created: before + 1 } },
+  { type: "idle", outcome: "succeeded", time: { created: before } },
+]
+
+test("a slow judgement shows the work's turn as unread after half a minute, and still reads it for you once it's done", async () => {
+  const { keepWorkRead, JUDGED_FOR } = await import("../src/link/work/tree")
+  const folder = await aBot("bot_slow", "ses_slow")
+  add("ses_slow", folder, 700, { time: { created: 700, updated: 700, idle: 690, viewed: 690 } })
+  add("ses_slowled", work, 710, { time: { created: 705, updated: 710, idle: 600, viewed: 600 }, metadata: { kuvo: { startedBy: "ses_slow", by: { bot: "bot_slow", name: "Ada" }, depth: 1 } } })
+  active.add("ses_slowled")
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", target)
+    // Its turn ends with nothing that's news to you; the engine is slow to say so.
+    Object.assign(sessions.get("ses_slowled").time, { updated: 800, idle: 800 })
+    messages.set("ses_slowled", workTurn(800, 600))
+    active.delete("ses_slowled")
+    views.length = 0
+    jest.useFakeTimers()
+    const held = holdRead("ses_slowled")
+    const judged = keepWorkRead(target, "ses_slowled")
+    await held.asked
+    await noteListEvent("engine", target, { type: "session.execution.succeeded", data: { sessionID: "ses_slowled" } })
+    workOut()
+    expect(keptList()!.sessions.ses_slowled!.facts.unread).toBeUndefined()
+    // Half a minute on, unanswered: a turn you haven't read, so its bot is done.
+    clock.advanceTimersByTime(JUDGED_FOR)
+    workOut()
+    expect(keptList()!.sessions.ses_slowled!.facts.unread).toBe(800)
+    expect((await nowOfBot("bot_slow")).state).toBe("done")
+    // The engine answers: judged not news, it's read for you, and on every client (`session.viewed`).
+    jest.useRealTimers()
+    held.letGo()
+    await judged
+    expect(views).toEqual([["ses_slowled", 800]])
+    await noteListEvent("engine", target, { type: "session.viewed", data: { sessionID: "ses_slowled", idle: 800 } })
+    workOut()
+    expect(keptList()!.sessions.ses_slowled!.facts.unread).toBeUndefined()
+    expect((await nowOfBot("bot_slow")).state).toBe("idle")
+  } finally {
+    jest.useRealTimers()
+    stop()
+    for (const id of ["ses_slow", "ses_slowled"]) { sessions.delete(id); messages.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a stop you've read past doesn't block its session again when it runs and ends unheard", async () => {
+  const folder = await aBot("bot_reruns", "ses_reruns")
+  add("ses_reruns", folder, 700, { time: { created: 700, updated: 700, idle: 600, viewed: 600 } })
+  active.add("ses_reruns")
+  const stop = keepList()
+  const hear = hearing("ses_reruns")
+  const facts = () => keptList()!.sessions.ses_reruns!.facts
+  try {
+    await listPlaceHeard("engine", target)
+    Object.assign(sessions.get("ses_reruns").time, { updated: 800, idle: 800 })
+    active.delete("ses_reruns")
+    await hear("session.execution.failed", { error: { type: "provider.overloaded" } })
+    workOut()
+    expect(facts()).toMatchObject({ blocked: "error", unread: 800 })
+    // Read on a client: not blocked.
+    sessions.get("ses_reruns").time.viewed = 800
+    await hear("session.viewed", { idle: 800 })
+    workOut()
+    expect(facts().blocked).toBeUndefined()
+    // It runs again and ends, its start and end unheard (its events dropped a while): a turn you
+    // haven't read, not the stop you read.
+    Object.assign(sessions.get("ses_reruns").time, { updated: 900, idle: 900 })
+    await hear("session.updated")
+    workOut()
+    expect(facts().unread).toBe(900)
+    expect(facts().blocked).toBeUndefined()
+    expect((await nowOfBot("bot_reruns")).state).toBe("done")
+  } finally {
+    stop()
+    sessions.delete("ses_reruns")
+    active.delete("ses_reruns")
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("seeing a bot leaves the work READ_RULE kept new for you unread on every client, and a newer finish is done again", async () => {
+  const { keepWorkRead } = await import("../src/link/work/tree")
+  const folder = await aBot("bot_news", "ses_news")
+  add("ses_news", folder, 700, { time: { created: 700, updated: 700, idle: 690, viewed: 690 } })
+  add("ses_newsled", work, 710, { time: { created: 705, updated: 800, idle: 800, viewed: 600 }, metadata: { kuvo: { startedBy: "ses_news", by: { bot: "bot_news", name: "Ada" }, depth: 1 } } })
+  // Its turn failed: news to you, so the box leaves it unread.
+  messages.set("ses_newsled", workTurn(800, 600, "failed"))
+  const stop = keepList()
+  const followed = following("kuvo/bots/events", line => line.bots.find((bot: any) => bot.id === "bot_news")?.now)
+  try {
+    await listPlaceHeard("engine", target)
+    views.length = 0
+    await keepWorkRead(target, "ses_newsled")
+    workOut()
+    expect(views).toEqual([])
+    expect(await nowOfBot("bot_news")).toMatchObject({ state: "done", since: 800 })
+
+    // Seen: the bot isn't done on any client, and the work's session is still new.
+    expect(await post("kuvo/bots/bot_news/seen")).toEqual({ status: 200, body: {} })
+    const seenAt = Date.now()
+    await followed.until(now => now?.state === "idle")
+    workOut()
+    expect(views).toEqual([])
+    expect(keptList()!.sessions.ses_newsled!.facts.unread).toBe(800)
+    expect(await nowOfBot("bot_news")).toMatchObject({ state: "idle" })
+
+    // It works again and finishes after you saw the bot: done, since then.
+    Object.assign(sessions.get("ses_newsled").time, { updated: seenAt + 500, idle: seenAt + 500 })
+    await noteListEvent("engine", target, { type: "session.execution.succeeded", data: { sessionID: "ses_newsled" } })
+    workOut()
+    expect(await nowOfBot("bot_news")).toMatchObject({ state: "done", since: seenAt + 500 })
+  } finally {
+    await followed.end()
+    stop()
+    for (const id of ["ses_news", "ses_newsled"]) { sessions.delete(id); messages.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a bot seen while the box still judges its work's turn is blocked by it once that turn proves news to you", async () => {
+  const { keepWorkRead } = await import("../src/link/work/tree")
+  const folder = await aBot("bot_judged", "ses_judged")
+  add("ses_judged", folder, 700, { time: { created: 700, updated: 700, idle: 690, viewed: 690 } })
+  add("ses_judgedled", work, 710, { time: { created: 705, updated: 710, idle: 600, viewed: 600 }, metadata: { kuvo: { startedBy: "ses_judged", by: { bot: "bot_judged", name: "Ada" }, depth: 1 } } })
+  active.add("ses_judgedled")
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", target)
+    // Its turn fails; the box looks at whether that's news to you, and you open the bot meanwhile.
+    const ended = Date.now()
+    Object.assign(sessions.get("ses_judgedled").time, { updated: ended, idle: ended })
+    messages.set("ses_judgedled", workTurn(ended, 600, "failed"))
+    active.delete("ses_judgedled")
+    const held = holdRead("ses_judgedled")
+    const judged = keepWorkRead(target, "ses_judgedled")
+    await held.asked
+    await noteListEvent("engine", target, { type: "session.execution.failed", data: { sessionID: "ses_judgedled", error: { type: "provider.overloaded" } } })
+    workOut()
+    expect(keptList()!.sessions.ses_judgedled!.facts.unread).toBeUndefined()
+    expect(await post("kuvo/bots/bot_judged/seen")).toEqual({ status: 200, body: {} })
+    // News to you (it failed): left unread, and the bot says so, though you saw it as it was judged.
+    held.letGo()
+    await judged
+    workOut()
+    expect(keptList()!.sessions.ses_judgedled!.facts).toMatchObject({ unread: ended, blocked: "error" })
+    expect(await nowOfBot("bot_judged")).toMatchObject({ state: "blocked", blockedBy: "error" })
+  } finally {
+    stop()
+    for (const id of ["ses_judged", "ses_judgedled"]) { sessions.delete(id); messages.delete(id); active.delete(id) }
     rmSync(folder, { recursive: true, force: true })
   }
 })
