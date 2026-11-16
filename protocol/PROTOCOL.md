@@ -2298,11 +2298,13 @@ client shows it from the same routes.
   doesn't show as the bot's yet.
 - **`GET kuvo/work?bot=<id>`** → `{bot, sessions: [{session, title, folder, project?, startedBy,
   depth, model?, mode?, account?, state, asks?, started, tokens, cost?, lastReply?}], answered: [answer with
-  its session], today: {started, working, tokens, cost?}, limits}`: its sessions the latest first,
+  its session], today: {started, answered, working, tokens, cost?}, limits}`: its sessions the latest first,
   archived ones left out. 400 without `bot`, 404 for no such bot here, 503 with no engine. Each
   `state` is as of the read; `lastReply` is what it said last, and for one `stopped` or `failed`
   only what it said in that turn, never an earlier turn's reply (one stopped at rest has none). `today.working` stays, since clients until 0.7.2 need it to read the
   report, but no client shows it (see At work).
+  `today.answered` (#764): how many asks it answered for its sessions since midnight on this computer, as
+  the bar over its composer says ("answered 1 ask").
   `account` (bridge 0.9.209) is `{name, label?, title}`, the account it runs on as Settings › Accounts
   lists it where it runs (`api/integration` there, as last checked, never `fresh`): `name` its
   provider's ("Claude Code", "GitHub Copilot", "Anthropic"); `label` the name you gave a coding

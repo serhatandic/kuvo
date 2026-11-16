@@ -104,7 +104,7 @@ export const WORK = object({
   bot: string,
   sessions: list(WORK_SESSION),
   answered: list(ANSWER),
-  today: object({ started: number, working: number, tokens: number, "cost?": number }),
+  today: object({ started: number, "answered?": number, working: number, tokens: number, "cost?": number }),
   limits: nullable(LIMITS),
   "asks?": list(WORK_ASK),
   "projects?": list(PROJECT),

@@ -1602,7 +1602,7 @@ var init_work = __esm(() => {
     bot: string,
     sessions: list(WORK_SESSION),
     answered: list(ANSWER),
-    today: object({ started: number, working: number, tokens: number, "cost?": number }),
+    today: object({ started: number, "answered?": number, working: number, tokens: number, "cost?": number }),
     limits: nullable(LIMITS),
     "asks?": list(WORK_ASK),
     "projects?": list(PROJECT)
@@ -41765,7 +41765,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0e477b646397";
+var BRIDGE_VERSION = "34e5d9c520f4";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62222,7 +62222,8 @@ async function botWork(bot, context) {
   for (let at = 0;at < shown.length; at += 8) {
     sessions.push(...await Promise.all(shown.slice(at, at + 8).map((each) => describeWork(each, working, { replies: true, signal: signal ?? undefined }))));
   }
-  const answered = work.flatMap((each) => answersOn(each.data.metadata).map((answer) => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at).slice(0, 100);
+  const allAnswered = work.flatMap((each) => answersOn(each.data.metadata).map((answer) => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at);
+  const answered = allAnswered.slice(0, 100);
   const accounts = await asked;
   const midnight = startOfDay(Date.now());
   const today = work.filter((each) => (each.data.time?.created ?? 0) >= midnight);
@@ -62237,6 +62238,7 @@ async function botWork(bot, context) {
     answered,
     today: {
       started: today.length,
+      answered: allAnswered.filter((answer) => answer.at >= midnight).length,
       working: sessions.filter((each) => each.state === "working" || each.state === "asking").length,
       tokens: today.reduce((sum, each) => sum + (each.data.tokens?.input ?? 0) + (each.data.tokens?.output ?? 0) + (each.data.tokens?.reasoning ?? 0), 0),
       ...cost > 0 ? { cost } : {}

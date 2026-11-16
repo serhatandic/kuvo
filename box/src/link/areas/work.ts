@@ -56,7 +56,8 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
   for (let at = 0; at < shown.length; at += 8) {
     sessions.push(...await Promise.all(shown.slice(at, at + 8).map(each => describeWork(each, working, { replies: true, signal: signal ?? undefined }))));
   }
-  const answered: WorkAnswer[] = work.flatMap(each => answersOn(each.data.metadata).map(answer => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at).slice(0, 100);
+  const allAnswered: WorkAnswer[] = work.flatMap(each => answersOn(each.data.metadata).map(answer => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at);
+  const answered = allAnswered.slice(0, 100);
   const accounts = await asked;
   const midnight = startOfDay(Date.now());
   const today = work.filter(each => (each.data.time?.created ?? 0) >= midnight);
@@ -72,6 +73,8 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
     answered,
     today: {
       started: today.length,
+      // (The asks it answered since midnight here, as the bar over its composer says them.)
+      answered: allAnswered.filter(answer => answer.at >= midnight).length,
       working: sessions.filter(each => each.state === "working" || each.state === "asking").length,
       tokens: today.reduce((sum, each) => sum + (each.data.tokens?.input ?? 0) + (each.data.tokens?.output ?? 0) + (each.data.tokens?.reasoning ?? 0), 0),
       ...(cost > 0 ? { cost } : {}),
