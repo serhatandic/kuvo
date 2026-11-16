@@ -2937,6 +2937,25 @@ function keptHosts() {
     return error.code === "ENOENT" ? undefined : null;
   }
 }
+function changeKeptHosts(change) {
+  fs102.mkdirSync(path106.dirname(PHONE_LINK_FILE), { recursive: true });
+  return locked(PHONE_LINK_FILE + ".lock", () => {
+    let whole = {};
+    try {
+      const read = JSON.parse(fs102.readFileSync(PHONE_LINK_FILE, "utf8"));
+      if (!isObject(read))
+        return false;
+      whole = read;
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        return false;
+    }
+    const next = change(isObject(whole.machines) ? whole.machines : {});
+    if (next)
+      writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
+    return true;
+  });
+}
 function savedMachines(kept = keptHosts()) {
   let text;
   try {
@@ -3063,6 +3082,7 @@ var LIST_FILE, PHONE_LINK_FILE, HEARD_LATELY, TIMING, macName2 = () => macLink.c
   signal?.addEventListener("abort", finish, { once: true });
 }), OWN_ANSWERS, isMachinesRoute = (route) => /^kuvo\/(machines|hosts)(\/|$)/.test(route);
 var init_machines = __esm(() => {
+  init_files2();
   init_home();
   init_directory();
   init_known();
@@ -17309,6 +17329,8 @@ var signInReturn = (url) => {
 
 // box/src/link/areas/engine.ts
 init_home();
+init_text();
+init_state();
 
 // box/src/link/compat/leave-running.ts
 init_home();
@@ -17368,13 +17390,14 @@ var engineDown = () => {
 var ENGINE_UP_WHILE = ["checking", "downloading", "downloading the engine", "checking it"];
 async function engineControl(command) {
   const start = path54.join(K, "bin", "kuvo-start");
+  const name = plainName(IS_MAC ? macLink.config?.name : readLink()?.name);
   if (!fs51.existsSync(start))
-    return { status: 409, message: "Kuvo Code hasn't set this machine up yet." };
+    return { status: 409, message: `Kuvo Code hasn't set ${name || HERE} up yet.` };
   if (!IS_MAC && ![path54.join(K, "bin", "kuvo-launch"), path54.join(RUN, "launch.env")].every((file) => fs51.existsSync(file))) {
     return { status: 409, message: "Start it once from Kuvo Code on your Mac." };
   }
   if (isUpdating() && !ENGINE_UP_WHILE.includes(updateState().running)) {
-    return { status: 409, message: "This machine is updating. Its engine starts again once that's done." };
+    return { status: 409, message: `${name || (IS_MAC ? "This Mac" : "This machine")} is updating. Its engine starts again once that's done.` };
   }
   const environment = { ...process.env };
   delete environment.BUN_BE_BUN;
@@ -43256,20 +43279,8 @@ function savedMachines2() {
 }
 var takenAddresses = () => (savedMachines2() ?? []).flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]);
 function keepHost(id, host) {
-  let kept = {};
-  try {
-    const read = JSON.parse(fs131.readFileSync(PHONE_LINK_FILE, "utf8"));
-    if (!isObject(read))
-      throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
-    kept = read;
-  } catch (error) {
-    if (error instanceof Failed)
-      throw error;
-    if (error.code !== "ENOENT")
-      throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
-  }
-  const machines = isObject(kept.machines) ? kept.machines : {};
-  writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...kept, machines: { ...machines, [id]: { ...host, anotherMac: false, peers: true } } }, null, 2));
+  if (!changeKeptHosts((machines) => ({ ...machines, [id]: { ...host, anotherMac: false, peers: true } })))
+    throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
 }
 function canAdd() {
   const link = readLink();
@@ -51321,7 +51332,7 @@ init_files2();
 
 // box/src/link/helper.ts
 init_home();
-import { spawnSync as spawnSync11 } from "node:child_process";
+import { execFile as execFile13, spawnSync as spawnSync11 } from "node:child_process";
 import fs153 from "node:fs";
 import path160 from "node:path";
 
@@ -51599,6 +51610,23 @@ function helperStatus() {
   return { helper: fs153.existsSync(helperProgram()), agent, loaded };
 }
 function helperAtLogin() {
+  const asking = loginItemsAsk();
+  if (!asking)
+    return null;
+  const asked = spawnSync11(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  if (asked.error || asked.status !== 0)
+    return null;
+  return !SWITCHED_OFF.test(asked.stdout ?? "");
+}
+function helperAtLoginLater() {
+  const asking = loginItemsAsk();
+  if (!asking)
+    return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile13(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
+  });
+}
+function loginItemsAsk() {
   const tools = launchTools();
   if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac")
     return null;
@@ -51606,12 +51634,7 @@ function helperAtLogin() {
   try {
     agent = fs153.readFileSync(path160.join(tools.agents, `${LAUNCH_AGENT}.plist`), "utf8").includes(`<string>${xml(helperProgram())}</string>`);
   } catch {}
-  if (!agent)
-    return null;
-  const asked = spawnSync11(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-  if (asked.error || asked.status !== 0)
-    return null;
-  return !SWITCHED_OFF.test(asked.stdout ?? "");
+  return agent ? { launchctl: tools.launchctl, args: ["print-disabled", `gui/${process.getuid?.() ?? 0}`] } : null;
 }
 var SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`);
 function installHelperAgent({ load, app }) {
@@ -51721,7 +51744,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "18aef2cf1e0c";
+var BRIDGE_VERSION = "bca0d6567762";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63400,19 +63423,31 @@ async function* movePlacesRoute(context) {
 init_machines();
 // box/src/link/mac/own-mac.ts
 var backgroundWork = (atLogin) => atLogin === true ? "on" : atLogin === false ? "needsApproval" : "off";
+var STANDS_FOR = 30000;
 var lastSaid = null;
-function atLoginNow() {
-  const said = helperAtLogin();
-  if (said !== null)
-    lastSaid = said;
-  return said ?? lastSaid;
+var saidAt2 = -Infinity;
+var asking2 = null;
+function atLoginNow(now = Date.now()) {
+  if (now - saidAt2 < STANDS_FOR)
+    return Promise.resolve(lastSaid);
+  asking2 ??= helperAtLoginLater().then((said) => {
+    if (said !== null)
+      lastSaid = said;
+    saidAt2 = Date.now();
+    asking2 = null;
+    return lastSaid;
+  });
+  return asking2;
+}
+function forgetLoginItems() {
+  saidAt2 = -Infinity;
 }
 async function* ownMacRoute(context) {
   const { request, json } = context;
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "PATCH")
     return yield* json(405, {});
-  const state = backgroundWork(atLoginNow());
+  const state = backgroundWork(await atLoginNow());
   if (method === "PATCH") {
     const given = parsed(request.body);
     const body = isObject(given) ? given : {};
@@ -63644,31 +63679,26 @@ async function* forgetHost(context, id, here) {
   const saved = savedMachines(kept);
   if (kept === null || !saved)
     return yield* json(503, { message: UNREADABLE });
-  const host = kept?.[id];
+  const host = kept && Object.hasOwn(kept, id) ? kept[id] : undefined;
   if (!host)
     return yield* json(404, {});
   if (saved.some((each) => each.destination === id))
     return yield* json(409, { message: `It’s one of ${here}’s machines: remove it first.` });
   if (oldAppAttached())
     return yield* json(409, { message: oldAppWords(here, typeof host.name === "string" ? host.name : id) });
-  let whole;
-  try {
-    const text = JSON.parse(fs193.readFileSync(PHONE_LINK_FILE, "utf8"));
-    if (!isObject(text) || !isObject(text.machines))
-      throw new Error("not a record");
-    whole = text;
-  } catch {
-    return yield* json(503, { message: UNREADABLE });
-  }
-  const { [id]: _gone, ...rest } = whole.machines;
-  const stillNamed = typeof host.key === "string" && !Object.values(rest).some((each) => isObject(each) && each.key === host.key) && peersOf(readLink()).some((peer) => peer.key === host.key);
+  const stillNamed = typeof host.key === "string" && !Object.entries(kept ?? {}).some(([other, each]) => other !== id && each.key === host.key) && peersOf(readLink()).some((peer) => peer.key === host.key);
   if (stillNamed) {
     const gone = await removed(context, host.key);
     if (statusOf(gone) !== 200 && statusOf(gone) !== 404)
       return yield* gone;
   }
-  writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: rest }, null, 2));
-  return yield* json(200, {});
+  const done = changeKeptHosts((machines) => {
+    if (!Object.hasOwn(machines, id))
+      return null;
+    const { [id]: _gone, ...rest } = machines;
+    return rest;
+  });
+  return yield* done ? json(200, {}) : json(503, { message: UNREADABLE });
 }
 
 // box/src/link/mac/app.ts
@@ -65645,6 +65675,7 @@ export {
   forgetAsksOn,
   forgetEverythingSent,
   forgetHeldSends,
+  forgetLoginItems,
   forgetModelLists,
   forgetModelNames,
   forgetMovesInMemory,

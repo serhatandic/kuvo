@@ -263,6 +263,7 @@ export { RELEASE_FILES } from "./add/files";
 export { engineHandler } from "./server/router";
 export { connectOnce, fromRelay, nextTry } from "./relay/connection";
 export { MAC_APP_ROUTES, macAppAnswers, macFront, runMacLink } from "./mac/relay";
+export { forgetLoginItems } from "./mac/own-mac";
 export { keepKeeper } from "./keeper";
 export { serveBox } from "./server/serve";
 

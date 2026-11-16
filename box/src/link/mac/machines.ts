@@ -10,6 +10,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isObject } from "../../shared/json";
+import { locked, writePrivate } from "../files";
 import { APP_FOLDER, K } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
@@ -54,6 +56,27 @@ export function keptHosts(): Record<string, KeptHost> | null | undefined {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : null;
   }
+}
+
+/** Changes what's kept of your machines' bridges (`phone-link.json`'s `machines`), the one way it's
+ * written here: read and written under its lock, so an add's and a Forget's changes (this
+ * process's, or a command's beside it) never lose each other's. `change` gives the machines to
+ * keep, or null to leave it. False when the record is there and won't read: never written over. */
+export function changeKeptHosts(change: (machines: Record<string, unknown>) => Record<string, unknown> | null): boolean {
+  fs.mkdirSync(path.dirname(PHONE_LINK_FILE), { recursive: true });
+  return locked(PHONE_LINK_FILE + ".lock", () => {
+    let whole: Record<string, unknown> = {};
+    try {
+      const read: unknown = JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8"));
+      if (!isObject(read)) return false;
+      whole = read;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    const next = change(isObject(whole.machines) ? whole.machines : {});
+    if (next) writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: next }, null, 2));
+    return true;
+  });
 }
 
 // Its machines as the app keeps them, or null when that can't be told, which isn't the same as none:

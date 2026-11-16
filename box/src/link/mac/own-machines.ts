@@ -10,7 +10,7 @@
 // draws `kuvo/computers` and `kuvo/computers/add` instead.
 
 import fs from "node:fs";
-import { isObject, parsed, type Body } from "../../shared/json";
+import { parsed, type Body } from "../../shared/json";
 import type { MacMachines } from "../../shared/routes/mac";
 import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginUninstall, canAdd, takenAddresses } from "../add/flow";
@@ -29,7 +29,7 @@ import { PEER_REACH, readReach } from "../peers/reach";
 import type { AnswerPiece, AnyPiece, RouteContext } from "../server/context";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
-import { hostsWithoutApp, keptHosts, LIST_FILE, PHONE_LINK_FILE, savedMachines, UNREADABLE } from "./machines";
+import { changeKeptHosts, hostsWithoutApp, keptHosts, LIST_FILE, savedMachines, UNREADABLE } from "./machines";
 
 type Machine = MacMachines["machines"][number];
 
@@ -236,26 +236,22 @@ async function* forgetHost(context: RouteContext, id: string, here: string): Asy
   const kept = keptHosts();
   const saved = savedMachines(kept);
   if (kept === null || !saved) return yield* json(503, { message: UNREADABLE });
-  const host = kept?.[id];
+  // (Its own entry: never what every object has, `constructor`.)
+  const host = kept && Object.hasOwn(kept, id) ? kept[id] : undefined;
   if (!host) return yield* json(404, {});
   if (saved.some(each => each.destination === id)) return yield* json(409, { message: `It’s one of ${here}’s machines: remove it first.` });
   if (oldAppAttached()) return yield* json(409, { message: oldAppWords(here, typeof host.name === "string" ? host.name : id) });
-  let whole: Record<string, unknown>;
-  try {
-    const text: unknown = JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8"));
-    if (!isObject(text) || !isObject(text.machines)) throw new Error("not a record");
-    whole = text;
-  } catch {
-    return yield* json(503, { message: UNREADABLE });
-  }
-  const { [id]: _gone, ...rest } = whole.machines as Record<string, unknown>;
   // (Unless it's still one of this Mac's under another name.)
-  const stillNamed = typeof host.key === "string" && !Object.values(rest).some(each => isObject(each) && each.key === host.key)
+  const stillNamed = typeof host.key === "string" && !Object.entries(kept ?? {}).some(([other, each]) => other !== id && each.key === host.key)
     && peersOf(readLink()).some(peer => peer.key === host.key);
   if (stillNamed) {
     const gone = await removed(context, host.key as string);
     if (statusOf(gone) !== 200 && statusOf(gone) !== 404) return yield* gone;
   }
-  writePrivate(PHONE_LINK_FILE, JSON.stringify({ ...whole, machines: rest }, null, 2));
-  return yield* json(200, {});
+  const done = changeKeptHosts(machines => {
+    if (!Object.hasOwn(machines, id)) return null;
+    const { [id]: _gone, ...rest } = machines;
+    return rest;
+  });
+  return yield* done ? json(200, {}) : json(503, { message: UNREADABLE });
 }

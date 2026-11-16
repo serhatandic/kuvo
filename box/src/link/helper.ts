@@ -10,7 +10,7 @@
 // (`box/kind` says `mac`) in the real `~/.kuvo-code`: a test's home names stand-ins for `launchctl`
 // (KUVO_TEST_UNINSTALL_TOOLS, as `uninstall` does), else nothing outside the folder is touched.
 
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { APP_FOLDER, K, recordedKind } from "./home";
@@ -72,15 +72,31 @@ export function helperStatus() {
  * where that can't be asked (not a Mac's own box in the real home, its launch agent not in place,
  * or launchd didn't say). */
 export function helperAtLogin(): boolean | null {
+  const asking = loginItemsAsk();
+  if (!asking) return null;
+  const asked = spawnSync(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
+  if (asked.error || asked.status !== 0) return null;
+  return !SWITCHED_OFF.test(asked.stdout ?? "");
+}
+
+/** The same (`helperAtLogin`), asked without holding up this process meanwhile: for what a client
+ * can ask again and again (`kuvo/mac`). */
+export function helperAtLoginLater(): Promise<boolean | null> {
+  const asking = loginItemsAsk();
+  if (!asking) return Promise.resolve(null);
+  return new Promise(resolve => {
+    execFile(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5_000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
+  });
+}
+
+// What asks launchd which login items are switched off; null where there's nothing to ask about.
+function loginItemsAsk(): { launchctl: string; args: string[] } | null {
   const tools = launchTools();
   if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac") return null;
   // (With no launch agent of its helper's in place there's nothing for Login Items to switch.)
   let agent = false;
   try { agent = fs.readFileSync(path.join(tools.agents, `${LAUNCH_AGENT}.plist`), "utf8").includes(`<string>${xml(helperProgram())}</string>`); } catch {}
-  if (!agent) return null;
-  const asked = spawnSync(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] });
-  if (asked.error || asked.status !== 0) return null;
-  return !SWITCHED_OFF.test(asked.stdout ?? "");
+  return agent ? { launchctl: tools.launchctl, args: ["print-disabled", `gui/${process.getuid?.() ?? 0}`] } : null;
 }
 const SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`);
 

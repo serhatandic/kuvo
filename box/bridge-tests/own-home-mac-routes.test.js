@@ -38,7 +38,8 @@ write(helperProgram, "#!/bin/sh\nexit 0\n", 0o755);
 write(path.join(home, "Library", "LaunchAgents", "run.kuvo.code.machine.plist"), `<plist><array><string>${helperProgram}</string></array></plist>`);
 const tools = path.join(home, "tools");
 const switchedOff = path.join(home, "switched-off");
-write(path.join(tools, "launchctl"), `#!/bin/sh\ncase "$1" in print-disabled) if [ -f '${switchedOff}' ]; then echo '"run.kuvo.code.machine" => disabled'; else echo '"run.kuvo.code.machine" => enabled'; fi ;; esac\n`, 0o755);
+const launchctlRuns = path.join(home, "launchctl-runs");
+write(path.join(tools, "launchctl"), `#!/bin/sh\necho "$1" >>'${launchctlRuns}'\ncase "$1" in print-disabled) if [ -f '${switchedOff}' ]; then echo '"run.kuvo.code.machine" => disabled'; else echo '"run.kuvo.code.machine" => enabled'; fi ;; esac\n`, 0o755);
 
 const listen = async server => {
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -186,14 +187,26 @@ test("While Agents Work: a phone reads and changes it on the box, which keeps th
   const refused = await phone("PATCH", "kuvo/mac", { backgroundWork: false, keepsAwake: false });
   assert.deepEqual([refused.status, refused.json], [400, { message: "Background work is turned off in Login Items & Extensions, on the Mac." }]);
   assert.equal((await phone("GET", "kuvo/mac")).json.keepsAwake, true, "refused, so nothing of it was kept");
-  // You switched Kuvo Helper off in Login Items: it waits for you there, and a phone can't turn it on.
+  // However often a phone asks, Login Items was asked of macOS once: what it said stands a while,
+  // and several asking at once share the one ask.
+  const runs = () => fs.readFileSync(launchctlRuns, "utf8").split("\n").filter(Boolean).length;
+  assert.equal(runs(), 1);
+  link.forgetLoginItems();
+  const many = await Promise.all(Array.from({ length: 6 }, () => ask("GET", "kuvo/mac")));
+  assert.deepEqual(many.map(each => each.json.backgroundWork), Array(6).fill("on"));
+  assert.equal(runs(), 2);
+  // You switched Kuvo Helper off in Login Items: said once it's asked again. It waits for you
+  // there, and a phone can't turn it on.
   fs.writeFileSync(switchedOff, "");
+  assert.equal((await phone("GET", "kuvo/mac")).json.backgroundWork, "on", "what it said a moment ago stands");
+  link.forgetLoginItems();
   try {
     assert.deepEqual((await phone("GET", "kuvo/mac")).json, { backgroundWork: "needsApproval", openAtLogin: false, keepsAwake: true, awakeNow: false });
     const waits = await phone("PATCH", "kuvo/mac", { openAtLogin: true });
     assert.deepEqual([waits.status, waits.json.backgroundWork], [200, "needsApproval"]);
   } finally {
     fs.rmSync(switchedOff);
+    link.forgetLoginItems();
   }
 });
 
@@ -202,6 +215,17 @@ test("Restart Engine from a phone: the box asks its own keeper, with no app", as
   assert.deepEqual([restart.status, restart.json], [202, {}]);
   await link.toolRun();
   assert.equal(fs.readFileSync(asked, "utf8"), "restart\n");
+  // While it updates, it says so by this Mac's name, and nothing is asked of its keeper.
+  // (An update as it's just begun: its lock made, its files being swapped.)
+  fs.mkdirSync(path.join(K, "run", ".updating"));
+  write(path.join(K, "run", "update.json"), JSON.stringify({ running: "installing" }));
+  try {
+    const updating = await phone("POST", "kuvo/engine/restart");
+    assert.deepEqual([updating.status, updating.json], [409, { message: `${link.macLink.config.name} is updating. Its engine starts again once that's done.` }]);
+  } finally {
+    fs.rmSync(path.join(K, "run", "update.json"));
+    fs.rmSync(path.join(K, "run", ".updating"), { recursive: true });
+  }
   // (Start is a machine's alone: a Mac never had a Stop to undo.)
   assert.equal((await phone("POST", "kuvo/engine/start")).status, 404);
   assert.equal((await phone("POST", "kuvo/engine/stop")).status, 404);
@@ -263,7 +287,10 @@ test("its machines: a phone reads the list in the box's own words, follows it, a
   const still = await phone("DELETE", "kuvo/hosts/studio");
   assert.equal(still.status, 409);
   assert.equal(still.json.message, `It’s one of ${link.macLink.config.name}’s machines: remove it first.`);
+  // (Only one it keeps by that name: never what every object has.)
+  for (const id of ["constructor", "__proto__", "toString"]) assert.equal((await phone("DELETE", `kuvo/hosts/${id}`)).status, 404, id);
   assert.deepEqual([(await phone("DELETE", "kuvo/hosts/attic")).status, (await phone("DELETE", "kuvo/hosts/attic")).status], [200, 404]);
+  assert.equal(fs.existsSync(path.join(K, "phone-link.json.lock")), false, "its lock is let go");
   assert.deepEqual(Object.keys(readJSON(path.join(K, "phone-link.json")).machines), ["studio"]);
   assert.equal(fs.statSync(path.join(K, "phone-link.json")).mode & 0o777, 0o600);
   assert.deepEqual((await phone("GET", "kuvo/hosts")).json.hosts.map(each => each.machine), ["studio"]);

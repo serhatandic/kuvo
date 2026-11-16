@@ -5,7 +5,7 @@
 // the Mac awake itself by its own setting (`work/awake.ts`, `kuvo/work/settings`).
 
 import { isObject, parsed } from "../../shared/json";
-import { HELPER_NAME, helperAtLogin } from "../helper";
+import { HELPER_NAME, helperAtLoginLater } from "../helper";
 import { ownName } from "../letters/start";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { awakeForWork } from "../work/awake";
@@ -16,21 +16,37 @@ import { KEEPS_AWAKE_REFUSED, keepsAwakeSetting, setKeepsAwake } from "../work/s
  * Mac); `off` where no helper keeps this box at login (a test's or a demo's copy). */
 export const backgroundWork = (atLogin: boolean | null): "on" | "needsApproval" | "off" => (atLogin === true ? "on" : atLogin === false ? "needsApproval" : "off");
 
-// What Login Items last said. `helperAtLogin` can't say both where no helper keeps this box and
-// where launchd didn't answer in time: one that has said once isn't taken for "no helper" then.
+/** How long what Login Items said stands before it's asked again: a client may read `kuvo/mac` as
+ * often as it likes, and `launchctl` is run once for all of them in that time. */
+const STANDS_FOR = 30_000;
+
+// What Login Items last said, when, and the ask under way (one at a time). `helperAtLogin` can't
+// tell no helper from a launchd that didn't answer in time: one that has said once isn't taken for
+// "no helper" then.
 let lastSaid: boolean | null = null;
-function atLoginNow(): boolean | null {
-  const said = helperAtLogin();
-  if (said !== null) lastSaid = said;
-  return said ?? lastSaid;
+let saidAt = -Infinity;
+let asking: Promise<boolean | null> | null = null;
+function atLoginNow(now = Date.now()): Promise<boolean | null> {
+  if (now - saidAt < STANDS_FOR) return Promise.resolve(lastSaid);
+  asking ??= helperAtLoginLater().then(said => {
+    if (said !== null) lastSaid = said;
+    saidAt = Date.now();
+    asking = null;
+    return lastSaid;
+  });
+  return asking;
+}
+
+/** A test's: what Login Items said is asked anew (as after `STANDS_FOR`). */
+export function forgetLoginItems(): void {
+  saidAt = -Infinity;
 }
 
 export async function* ownMacRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "PATCH") return yield* json(405, {});
-  // (Asked once for a request: it's `launchctl`, and nothing here changes what it says.)
-  const state = backgroundWork(atLoginNow());
+  const state = backgroundWork(await atLoginNow());
   if (method === "PATCH") {
     const given = parsed(request.body);
     const body = isObject(given) ? given : {};

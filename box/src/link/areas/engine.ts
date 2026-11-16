@@ -14,7 +14,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type { EngineRecord, Target } from "../../shared/records";
 import { canonicalPath, signInReturn, socketAllowed } from "../server/paths";
-import { IS_MAC, K, RUN } from "../home";
+import { HERE, IS_MAC, K, RUN } from "../home";
+import { plainName } from "../../shared/text";
+import { macLink, readLink } from "../state";
 import { phoneHere } from "../compat/leave-running";
 import { readEngineFile } from "../engine/client";
 import { isUpdating, updateState } from "../updates/update";
@@ -57,7 +59,9 @@ const ENGINE_UP_WHILE: UpdateStep[] = ["checking", "downloading", "downloading t
 // come up as `kuvo/info` says (`running`, `started`).
 export async function engineControl(command: "start" | "restart"): Promise<EngineControlOutcome> {
   const start = path.join(K, "bin", "kuvo-start");
-  if (!fs.existsSync(start)) return { status: 409, message: "Kuvo Code hasn't set this machine up yet." };
+  // (By this computer's name, where it has one: a Mac's own engine is restarted this way too.)
+  const name = plainName(IS_MAC ? macLink.config?.name : readLink()?.name);
+  if (!fs.existsSync(start)) return { status: 409, message: `Kuvo Code hasn't set ${name || HERE} up yet.` };
   // Started from a Mac once, which keeps how (`run/launch.env`) and what starts it (`bin/kuvo-launch`).
   // (A Mac's own `kuvo-start` asks its keeper, which knows how: PROTOCOL.md, "The keeper".)
   if (!IS_MAC && ![path.join(K, "bin", "kuvo-launch"), path.join(RUN, "launch.env")].every(file => fs.existsSync(file))) {
@@ -66,7 +70,7 @@ export async function engineControl(command: "start" | "restart"): Promise<Engin
   // An update stops the engine on purpose while it swaps its files, and starts it once that's done.
   // (While it checks for one or downloads it, the engine runs as ever.)
   if (isUpdating() && !ENGINE_UP_WHILE.includes(updateState().running as UpdateStep)) {
-    return { status: 409, message: "This machine is updating. Its engine starts again once that's done." };
+    return { status: 409, message: `${name || (IS_MAC ? "This Mac" : "This machine")} is updating. Its engine starts again once that's done.` };
   }
   // Not with what runs this bridge (the engine's runtime as Bun), which would make `opencode
   // serve` a script to look for.
