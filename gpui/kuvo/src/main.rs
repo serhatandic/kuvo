@@ -189,7 +189,7 @@ fn your_settings() -> Option<PathBuf> {
 /// neither, why the window has nothing to show.
 fn your_boxes(root: &str, app_id: &str) -> Result<(Boxes, BoxClient), String> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let found = kuvo_box::place::this_mac_of(&home, root, app_id).ok_or_else(|| "Kuvo Code isn't set up on this Mac.".to_owned()).and_then(|found| kuvo_box::place::server(&found, "this Mac").map_err(|error| error.to_string()));
+    let found = kuvo_box::place::this_mac_of(&home, root, app_id).ok_or_else(|| "Kuvo isn't set up on this Mac.".to_owned()).and_then(|found| kuvo_box::place::server(&found, "this Mac").map_err(|error| error.to_string()));
     #[cfg(target_os = "macos")]
     let keeper: Arc<dyn kuvo_box::link::Keeper> = Arc::new(kuvo::keeper::Keychain::new(format!("{app_id}.desktop")));
     #[cfg(not(target_os = "macos"))]
@@ -201,7 +201,7 @@ fn your_boxes(root: &str, app_id: &str) -> Result<(Boxes, BoxClient), String> {
     let boxes = kuvo::keeper::boxes(&home, root, nearest, keeper, Arc::new(WebSocketDial));
     // The nearest box; with none here, the first of your computers the last run kept.
     let first = boxes.nearest().or_else(|| boxes.rows().iter().find(|row| row.usable()).and_then(|row| boxes.client(row.key())));
-    first.map(|first| (boxes, first)).ok_or_else(|| missing.unwrap_or_else(|| "Kuvo Code isn't set up on this Mac.".to_owned()))
+    first.map(|first| (boxes, first)).ok_or_else(|| missing.unwrap_or_else(|| "Kuvo isn't set up on this Mac.".to_owned()))
 }
 
 /// The made-up box; with `--first-run <nothing|crowded|running>`, one whose first run hasn't been

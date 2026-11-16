@@ -41939,7 +41939,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ba5952303ff3";
+var BRIDGE_VERSION = "d8423196c784";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -42093,7 +42093,9 @@ function heldOpen(folder) {
 }
 function heldRefusal(appFolder) {
   const held = heldOpen(path141.join(appFolder, "opencode", "data", "opencode"));
-  return held.length ? `Your sessions are still open in another program on this Mac (${held.join(", ")}). Quit Kuvo Code wherever it's open, then try again.` : null;
+  if (held.length)
+    console.error(`The earlier Kuvo Code's database is open for writing in: ${held.join(", ")}`);
+  return held.length ? "Your sessions are still open in another program on this Mac. Quit Kuvo Code wherever it's open, then try again." : null;
 }
 function beforeForward(_run, appFolder) {
   const held = heldRefusal(appFolder);
@@ -42236,7 +42238,7 @@ function releaseRefusal(release) {
   if (!release || !fileAt(path142.join(release, "bin", "kuvo-start")) || !fileAt(path142.join(release, "bin", "kuvo-link.js")) || !fileAt(path142.join(release, ENGINE_PLUGIN)))
     return "Kuvo's own files to put in its new home weren't given.";
   if (!fileAt(path142.join(release, RELEASE_HELPER)))
-    return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home.";
+    return "Kuvo Helper isn't in this copy of Kuvo, so nothing would start Kuvo on this Mac in its own home.";
   return null;
 }
 var NOT_MOVED = "Kuvo on this Mac hasn't moved: there's nothing to move back.";
@@ -42254,7 +42256,7 @@ var inside5 = (file, folder) => file !== folder && file.startsWith(folder + "/")
 function stopPoint(point) {
   if (!IN_TEST_FOLDER)
     return;
-  if (process.env.KUVO_TEST_REHOME_WRITE_AT === point && process.env.KUVO_TEST_REHOME_WRITE_FILE) {
+  if (process.env.KUVO_TEST_REHOME_WRITE_AT === point && process.env.KUVO_TEST_REHOME_WRITE_FILE && !(process.env.KUVO_TEST_REHOME_WRITE_ONCE && fs133.existsSync(process.env.KUVO_TEST_REHOME_WRITE_FILE))) {
     fs133.mkdirSync(path142.dirname(process.env.KUVO_TEST_REHOME_WRITE_FILE), { recursive: true });
     fs133.writeFileSync(process.env.KUVO_TEST_REHOME_WRITE_FILE, process.env.KUVO_TEST_REHOME_WRITE_TEXT ?? "");
   }
@@ -42476,9 +42478,11 @@ var keptLike = (journal) => (folder) => {
   const was = path142.join(journal.keptBefore, path142.relative(journal.to, folder));
   return exists6(was) ? was : null;
 };
-function changedSince(files, since, run) {
+function changedSince(files, since, run, by = "ctimeMs") {
   const walk = (file) => {
     if (path142.dirname(file) === run && PROCESS_RECORD.test(path142.basename(file)))
+      return null;
+    if (by === "mtimeMs" && file.endsWith(".db-shm"))
       return null;
     let kind;
     try {
@@ -42486,7 +42490,7 @@ function changedSince(files, since, run) {
     } catch {
       return null;
     }
-    if (kind.ctimeMs >= since && file !== run)
+    if (kind[by] >= since && file !== run)
       return file;
     if (!kind.isDirectory())
       return null;
@@ -42503,6 +42507,20 @@ function changedSince(files, since, run) {
       return found;
   }
   return null;
+}
+
+class ChangedMeanwhile extends Said {
+  file;
+  constructor(file) {
+    super("Something kept changing your sessions while Kuvo copied them, so nothing was moved. Quit Kuvo Code wherever it's open, then try again.");
+    this.file = file;
+  }
+}
+var lastChanged = null;
+function takeLastChanged() {
+  const file = lastChanged;
+  lastChanged = null;
+  return file;
 }
 function freeName(file) {
   const extension = path142.extname(file), base = file.slice(0, file.length - extension.length);
@@ -42744,9 +42762,11 @@ async function carryOn2(journal, rewriter) {
         throw new Error(`${written} changed as it moved, so it went back.`);
       if (journal.run) {
         const sources = journal.placements.filter((each) => !each.installed).map((each) => each.from);
-        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path142.join(journal.from, "box", "run")) : null;
-        if (changed)
-          throw new Said(`Something changed in ${changed} while your sessions were being copied. Close what's using that folder (Kuvo Code, an editor, a terminal), then try again.`);
+        const changed = journal.clonedAt ? changedSince(sources, journal.clonedAt, path142.join(journal.from, "box", "run"), "mtimeMs") : null;
+        if (changed) {
+          console.error(`Changed in the earlier Kuvo Code's folder while it was copied: ${changed}`);
+          throw new ChangedMeanwhile(changed);
+        }
         beforeForward(journal.run, journal.from);
       }
     }
@@ -42815,6 +42835,7 @@ function failed2(journal, error, now = Date.now()) {
       console.error(`This Mac's keys couldn't be taken back: ${problem.message}`);
     }
   const raw = error instanceof Error ? error.message : String(error);
+  lastChanged = error instanceof ChangedMeanwhile ? error.file : null;
   const plain = !journal.run || error instanceof Said;
   if (!plain)
     console.error(`The move stopped at ${step}: ${raw}`);
@@ -53399,11 +53420,11 @@ var EXIT = { done: 0, nothing: 0, refused: 1, failed: 1, waits: 4 };
 var NOT_NEW = {
   "app-07": "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
   "app-box": "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
-  moving: "Kuvo Code is moving your sessions to their new place on this Mac: that's finished first.",
-  stuck: "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
+  moving: "Kuvo is moving your sessions to their new place on this Mac: that's finished first.",
+  stuck: "Kuvo was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
   waits: "Another move is under way.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
-  machine: "This computer is set up as one of your machines already: Kuvo Code uses what's here.",
+  machine: "This computer is set up as one of your machines already: Kuvo uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are."
 };
 function bundleID(bundle) {
@@ -53422,7 +53443,7 @@ function bundleID(bundle) {
 }
 var sha2563 = (file) => crypto60.createHash("sha256").update(fs166.readFileSync(file)).digest("hex");
 function checkedRelease(release) {
-  const damaged = new Said("This copy of Kuvo Code is damaged. Download it again, then try again.");
+  const damaged = new Said("This copy of Kuvo is damaged. Download it again, then try again.");
   let box;
   try {
     box = JSON.parse(fs166.readFileSync(path176.join(release, "box.json"), "utf8"));
@@ -53465,11 +53486,11 @@ async function installCommand(args) {
   const judged = () => judgeInstall(home, appFolder, { helperInPlace: () => mac && launchTools() ? helperRuns() : null });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
+      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo again." });
       return EXIT.refused;
     }
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo Code itself sets up ~/.kuvo-code only." });
+      say({ result: "refused", message: real ? "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo itself sets up ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -53518,7 +53539,7 @@ function tidyStaging(home, { verdict, verb }, release) {
 }
 var NOT_MOVED2 = {
   fresh: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
-  machine: "This Mac is set up as one of your machines already: Kuvo Code uses what's here.",
+  machine: "This Mac is set up as one of your machines already: Kuvo uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
   waits: "Another move is under way."
@@ -53660,14 +53681,14 @@ async function newMachine({ home, release, engine }, judged) {
   const refusal = () => {
     const now = judged();
     if (now.verdict === "fresh")
-      return runningIn(path176.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped." } : null;
+      return runningIn(path176.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo is installed there once that's stopped." } : null;
     return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "Kuvo on this computer is moving: that's finished first." };
   };
   const before = refusal();
   if (before)
     return before;
   if (path176.basename(home) !== ".kuvo-code")
-    return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code is always in ~/.kuvo-code." };
+    return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path176.join(engine, engineVersion, "opencode");
   if (!fs166.existsSync(staged))
@@ -53716,7 +53737,7 @@ async function newMachine({ home, release, engine }, judged) {
     });
     const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
     if (!started)
-      return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split(`
+      return { result: "failed", verdict: judged().verdict, started, message: `Kuvo is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split(`
 `).pop() || "it said nothing"}. Try again.`, ...setAside };
     clearStaging2(home);
     return { result: "done", verdict: judged().verdict, started, ...setAside };
@@ -53880,10 +53901,10 @@ var sizeOf2 = (file) => {
   }
 };
 var NO_ENGINE2 = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
-var DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
+var DAMAGED = "This copy of Kuvo is damaged. Download it again, then try again.";
 var TWO = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
 var STUCK = "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.";
-var NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
+var NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo again to try again.";
 function schemaRefusal2(appFolder, home) {
   const databases = databasesIn(path178.join(appFolder, "opencode", "data", "opencode"));
   if (!databases.length)
@@ -53901,7 +53922,7 @@ function schemaRefusal2(appFolder, home) {
           fs168.copyFileSync(database + suffix, copy + suffix, fs168.constants.COPYFILE_FICLONE);
       const mark = schemaMark(copy);
       if (!takenSchema(mark))
-        return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed. Update Kuvo Code if a newer version is out, then try again.`;
+        return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed. Update Kuvo if a newer version is out, then try again.`;
     }
     return null;
   } catch (error) {
@@ -53913,7 +53934,7 @@ function schemaRefusal2(appFolder, home) {
 function runRefusal({ appFolder, home }, plan, pinned) {
   const real = located(home) === located(path178.join(accountHome(), ".kuvo-code"));
   if (real !== (plan.id === "run.kuvo.code"))
-    return real ? "Only Kuvo Code itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo Code itself moves into ~/.kuvo-code only.";
+    return real ? "Only Kuvo itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo itself moves into ~/.kuvo-code only.";
   if (pinned === null || releaseRefusal(plan.release))
     return exists9(plan.release) ? DAMAGED : NO_RELEASE;
   if (!exists9(path178.join(plan.engine, pinned, "opencode")))
@@ -53936,6 +53957,134 @@ function runRefusal({ appFolder, home }, plan, pinned) {
   if (free !== null && free < needed)
     return `There isn't enough room on this Mac to move your sessions. Free up ${Math.ceil(needed / 1e6)} MB, then try again.`;
   return heldRefusal(appFolder) ?? schemaRefusal2(appFolder, home);
+}
+var ROUNDS = 3;
+function ancestors() {
+  const own = new Set([process.pid]);
+  let pid = process.ppid;
+  for (let depth = 0;pid > 1 && depth < 32 && !own.has(pid); depth++) {
+    own.add(pid);
+    const asked = spawnSync18("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    pid = Number((asked.stdout ?? "").trim());
+    if (!Number.isInteger(pid))
+      break;
+  }
+  return own;
+}
+function bundleSays(bundle, key) {
+  const asked = spawnSync18("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", path178.join(bundle, "Contents", "Info.plist")], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const said = (asked.stdout ?? "").trim();
+  return asked.status === 0 && said ? said : null;
+}
+function touching(appFolder, app) {
+  if (process.platform !== "darwin" || typeof process.getuid !== "function")
+    return [];
+  const folders = [...new Set([appFolder, located(appFolder)])];
+  const under = (file) => folders.some((folder) => file === folder || file.startsWith(folder + "/"));
+  const asked = spawnSync18("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  const own = ancestors(), mover = located(app.bundle);
+  const bundles = new Map;
+  const bundleOf = (program) => {
+    const at = program.indexOf(".app/");
+    if (at < 0)
+      return null;
+    const bundle = program.slice(0, at + 4);
+    if (!bundles.has(bundle))
+      bundles.set(bundle, { id: bundleSays(bundle, "CFBundleIdentifier"), name: bundleSays(bundle, "CFBundleDisplayName") ?? bundleSays(bundle, "CFBundleName") });
+    return { bundle, ...bundles.get(bundle) };
+  };
+  const found = [];
+  let each = null, fd = "", access = "";
+  for (const line of (asked.stdout ?? "").split(`
+`)) {
+    const value = line.slice(1);
+    switch (line[0]) {
+      case "p":
+        each = own.has(Number(value)) ? null : { pid: Number(value), command: "", program: "", old: false, files: [], writes: false, name: "" };
+        if (each)
+          found.push(each);
+        break;
+      case "c":
+        if (each)
+          each.command = value;
+        break;
+      case "f":
+        fd = value;
+        access = "";
+        break;
+      case "a":
+        access = value;
+        break;
+      case "n":
+        if (!each)
+          break;
+        if (fd === "txt" && !each.program)
+          each.program = value;
+        if (under(value) && fd !== "txt") {
+          each.files.push(value);
+          if (/[wu]/.test(access))
+            each.writes = true;
+        }
+        break;
+    }
+  }
+  return found.flatMap((each) => {
+    const bundle = each.program ? bundleOf(each.program) : null;
+    each.old = under(each.program) || bundle !== null && bundle.id === app.id && located(bundle.bundle) !== mover;
+    each.name = bundle?.name ?? each.command;
+    return each.old || each.files.length ? [each] : [];
+  });
+}
+var alive3 = (pid) => {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error.code !== "EPERM")
+      return false;
+  }
+  const asked = spawnSync18("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  return asked.status === 0 && !(asked.stdout ?? "").trim().startsWith("Z");
+};
+async function stopOldSetup(appFolder, app, { asked = 15000, made = 5000 } = {}) {
+  let found = touching(appFolder, app);
+  if (found.some((each) => each.old)) {
+    const tools = launchTools();
+    if (tools)
+      spawnSync18(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, stdio: "ignore" });
+    const old = found.filter((each) => each.old);
+    console.error(`Stopping what still runs of the earlier Kuvo Code: ${old.map((each) => `${each.pid} ${each.program || each.command}`).join(", ")}`);
+    const waitFor = async (limit) => {
+      for (const began = Date.now();Date.now() - began < limit && old.some((each) => alive3(each.pid)); )
+        await sleep(100);
+    };
+    for (const each of old)
+      try {
+        process.kill(each.pid, "SIGTERM");
+      } catch {}
+    await waitFor(asked);
+    for (const each of old)
+      if (alive3(each.pid))
+        try {
+          process.kill(each.pid, "SIGKILL");
+        } catch {}
+    await waitFor(made);
+    found = touching(appFolder, app);
+    const left = found.filter((each) => each.old);
+    if (left.length) {
+      console.error(`Still running of the earlier Kuvo Code: ${left.map((each) => `${each.pid} ${each.program || each.command}`).join(", ")}`);
+      return "An earlier Kuvo Code is still running in the background on this Mac and didn't stop. Restart this Mac, then try again.";
+    }
+  }
+  const writers = found.filter((each) => each.writes);
+  if (!writers.length)
+    return null;
+  console.error(`Writing in the earlier Kuvo Code's folder: ${writers.map((each) => `${each.pid} ${each.program || each.command}: ${each.files.slice(0, 3).join(", ")}`).join("; ")}`);
+  return stillUsing(writers);
+}
+function stillUsing(writers) {
+  const names = [...new Set(writers.map((each) => each.name).filter(Boolean))];
+  const named = names.length === 1 ? names[0] : names.length === 2 ? `${names[0]} and ${names[1]}` : names.length ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : "Another app";
+  return `${named} ${names.length > 1 ? "are" : "is"} still using your earlier Kuvo Code's files. Quit ${names.length > 1 ? "them" : "it"}, then try again.`;
 }
 async function stopOldKeeper(appFolder) {
   const run = path178.join(appFolder, "box", "run");
@@ -54099,37 +54248,59 @@ async function rehomeRun(folders, options) {
       source: appBoxThere(appFolder) ? "app-box" : "app-07",
       keys: exists9(keys) ? keys : null
     };
+    const refuse = (refusal) => {
+      noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: Date.now(), step: "plan", message: refusal }, asked: null });
+      return { result: "refused", message: refusal, status: rehomeStatus(home) };
+    };
     if (plan.source === "app-box")
       await stopOldKeeper(appFolder);
-    const now = Date.now();
+    const app = { id: options.id, bundle: options.bundle };
+    const stopped = await stopOldSetup(appFolder, app);
+    if (stopped)
+      return refuse(stopped);
     let pinned = null;
     try {
       pinned = checkedRelease(plan.release).engine;
     } catch {}
     const refusal = runRefusal(folders, plan, pinned);
-    if (refusal) {
-      noteRecord(home, { state: "failed", way: "move", tries: (readRecord(home).tries ?? 0) + 1, nextTry: null, failed: { at: now, step: "plan", message: refusal }, asked: null });
-      return { result: "refused", message: refusal, status: rehomeStatus(home) };
-    }
+    if (refusal)
+      return refuse(refusal);
     if (located(plan.engine) === located(path178.join(home, "updates", "install", "engine"))) {
       for (const name of fs168.readdirSync(plan.engine))
         if (name !== pinned)
           fs168.rmSync(path178.join(plan.engine, name), { recursive: true, force: true });
     }
-    const outcome = await run3({
-      v: 1,
-      way: "move",
-      began: now,
-      step: "plan",
-      from: appFolder,
-      to: home,
-      ...planMove(folders, plan.release, { engine: plan.engine, whole: true }),
-      kept: path178.join(rehomeFolder(home), "kept", stamp3(now)),
-      run: plan
-    }, RUN_REWRITER);
-    if (outcome.result === "stuck")
-      return { ...outcome, message: STUCK };
-    return outcome.result === "done" ? settle5(home, options) : outcome;
+    for (let round = 1;; round++) {
+      const now = Date.now();
+      const outcome = await run3({
+        v: 1,
+        way: "move",
+        began: now,
+        step: "plan",
+        from: appFolder,
+        to: home,
+        ...planMove(folders, plan.release, { engine: plan.engine, whole: true }),
+        kept: path178.join(rehomeFolder(home), "kept", stamp3(now)),
+        run: plan
+      }, RUN_REWRITER);
+      if (outcome.result === "stuck")
+        return { ...outcome, message: STUCK };
+      if (outcome.result === "done")
+        return settle5(home, options);
+      const changed = takeLastChanged();
+      if (!changed || round >= ROUNDS)
+        return outcome;
+      notePhase(home, "plan");
+      const writers = touching(appFolder, app).filter((each) => !each.old && each.files.some((file) => file === changed || file.startsWith(changed + "/")));
+      if (writers.length) {
+        console.error(`Using what changed (${changed}): ${writers.map((each) => `${each.pid} ${each.program || each.command}`).join(", ")}`);
+        return refuse(stillUsing(writers));
+      }
+      const again = await stopOldSetup(appFolder, app);
+      if (again)
+        return refuse(again);
+      console.error(`Running the move again (${round + 1} of ${ROUNDS}): ${changed} changed while it was copied.`);
+    }
   }
 }
 
@@ -54178,7 +54349,7 @@ async function rehomeCommand(root, args) {
     }
     const asked = process.env.KUVO_HOME ? path179.resolve(process.env.KUVO_HOME) : null;
     if (located(home) === located(path179.join(accountHome(), ".kuvo-code")) && asked && located(asked) !== located(home) && path179.basename(path179.dirname(asked)) !== "run.kuvo.code") {
-      const why = "Only Kuvo Code itself moves its data in ~/.kuvo-code.";
+      const why = "Only Kuvo itself moves its data in ~/.kuvo-code.";
       say(args.includes("--ready") ? { ready: false, how: null, why, status: rehomeStatus(home) } : { result: "refused", message: why, status: rehomeStatus(home) });
       return args.includes("--ready") ? 0 : EXIT2.refused;
     }

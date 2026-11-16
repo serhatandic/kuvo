@@ -610,7 +610,7 @@ impl Launch {
     /// The first run's card, its row for this computer saying how setting up goes.
     fn in_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let c = cx.theme().colors.clone();
-        let mut card = vec![heading("Welcome to Kuvo Code", None, cx), list(vec![self.row(cx)], cx)];
+        let mut card = vec![heading("Welcome to Kuvo", None, cx), list(vec![self.row(cx)], cx)];
         let stopped = matches!(self.stage, Stage::Stopped { .. });
         if let Stage::Stopped { message, note, .. } = &self.stage {
             card.push(
@@ -681,7 +681,7 @@ impl Launch {
         };
         let head = match &stopped {
             Some((line, ..)) => heading(line, None, cx),
-            None => heading("Moving to the new Kuvo Code", Some(&format!("Your sessions, bots and settings move to their new place on {HERE_IN_WORDS}.")), cx),
+            None => heading("Moving to the new Kuvo", Some(&format!("Your sessions, bots and settings move to their new place on {HERE_IN_WORDS}.")), cx),
         };
         // Why it stopped stays in view above the steps, however short the window (they scroll).
         let mut card = vec![head];
@@ -753,7 +753,7 @@ impl Launch {
                 .children(done.then(|| Icon::new(IconName::Check).color(cx.theme().colors.success)))
                 .into_any_element()
         };
-        let next_words = if *what == Said::Moved && self.asks(cx) { "Continue" } else { "Open Kuvo Code" };
+        let next_words = if *what == Said::Moved && self.asks(cx) { "Continue" } else { "Open Kuvo" };
         let (head, mut body, next) = match what {
             Said::Moved => {
                 let mut rows = vec![row(IconName::Archive, "Moved from an earlier Kuvo Code", "Your sessions, bots and settings".into(), true, cx)];
@@ -825,7 +825,7 @@ impl Launch {
             .pt(space::S1)
             .child(div().flex_1())
             .when(asks, |d| d.child(Button::new("launch-not-now", "Not Now").ghost().on_click(cx.listener(|this, _, window, cx| this.not_now(window, cx)))))
-            .child(Button::new("launch-next", "Open Kuvo Code").primary().shortcut("↵").size(ButtonSize::Medium).disabled(asks).on_click(cx.listener(|this, _, window, cx| this.go_on(window, cx))))
+            .child(Button::new("launch-next", "Open Kuvo").primary().shortcut("↵").size(ButtonSize::Medium).disabled(asks).on_click(cx.listener(|this, _, window, cx| this.go_on(window, cx))))
             .into_any_element();
         card_alone(vec![heading(&title, Some(&line), cx), div().id("launch-body").min_h_0().flex().flex_col().gap(space::S4).overflow_y_scroll().child(allow).into_any_element(), foot], cx)
     }

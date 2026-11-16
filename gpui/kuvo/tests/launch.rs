@@ -116,7 +116,7 @@ fn verbs(bundle: &Bundle) -> Vec<String> {
 }
 
 /// What reaching this computer's Kuvo says when it isn't answering (`kuvo_box::place`'s words).
-const NOT_RUNNING: &str = "Kuvo Code on this Mac isn't running.";
+const NOT_RUNNING: &str = "Kuvo on this Mac isn't running.";
 /// How long these tests' window waits on something else at work before it says so.
 const WAITS: Duration = Duration::from_secs(20);
 const FRESH: &str = r#"{"verdict":"fresh","verb":"new","status":{}}"#;
@@ -328,7 +328,7 @@ fn a_move_that_stops_says_where_and_why_in_the_box_s_words_and_tries_again_from_
 fn a_move_that_stopped_part_way_says_it_couldnt_finish(cx: &mut TestAppContext) {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = carried(made.path());
-    let why = "Kuvo Code was moving your sessions to their new place on this Mac. Try again to finish.";
+    let why = "Kuvo was moving your sessions to their new place on this Mac. Try again to finish.";
     bundle.says("status", None, 0, &[&format!(r#"{{"verdict":"stuck","verb":"move","status":{{{STEPS}}}}}"#)]);
     bundle.says("move", None, 1, &[&format!(r#"{{"result":"failed","message":"{why}","verdict":"stuck","status":{{"failed":{{"at":1,"step":"clear","message":"{why}"}},{STEPS}}}}}"#)]);
     let here = Here::default();

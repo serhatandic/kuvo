@@ -75,7 +75,7 @@ impl std::fmt::Debug for ServeRecord {
 }
 
 /// What "isn't running" says, for this Mac.
-const NOT_RUNNING: &str = "Kuvo Code on this Mac isn't running.";
+const NOT_RUNNING: &str = "Kuvo on this Mac isn't running.";
 
 /// The record in `folder`, checked: a whole one, naming a process that runs as the box's server.
 pub fn serve_record(folder: &Path, runs_serve: impl Fn(i64) -> bool) -> Result<ServeRecord> {

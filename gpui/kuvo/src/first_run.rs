@@ -908,7 +908,7 @@ impl FirstRun {
                     .into_any_element(),
             );
         }
-        vec![heading("Welcome to Kuvo Code", None, cx), self.body(vec![list(rows, cx)]), self.foot(false, "Get Started", cx)]
+        vec![heading("Welcome to Kuvo", None, cx), self.body(vec![list(rows, cx)]), self.foot(false, "Get Started", cx)]
     }
 
     // MARK: Agents and plans
@@ -1286,7 +1286,7 @@ impl FirstRun {
         let c = cx.theme().colors.clone();
         let (title, next) = held_words(Some(self.box_name.as_ref()), self.client.here());
         vec![
-            heading("Welcome to Kuvo Code", None, cx),
+            heading("Welcome to Kuvo", None, cx),
             div()
                 .debug_selector(|| "first-run-held".into())
                 .flex()

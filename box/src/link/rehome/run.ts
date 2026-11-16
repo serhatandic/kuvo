@@ -53,11 +53,11 @@ export interface RunOutcome extends RehomeOutcome {
 }
 
 const NO_ENGINE = "Kuvo's engine couldn't be downloaded. Check that this Mac is online, then try again.";
-const DAMAGED = "This copy of Kuvo Code is damaged. Download it again, then try again.";
+const DAMAGED = "This copy of Kuvo is damaged. Download it again, then try again.";
 const TWO = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
 /** A move past the point it goes back from that can't be carried on, or whose record can't be read. */
 export const STUCK = "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.";
-const NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo Code again to try again.";
+const NO_RELEASE = "Kuvo's own files weren't unpacked. Open Kuvo again to try again.";
 
 /** Why an engine database in the earlier Kuvo Code's folder can't be brought along, or null: its
  * schema read from a clone of it (its log and index with it), in the move's own folder. */
@@ -73,7 +73,7 @@ function schemaRefusal(appFolder: string, home: string): string | null {
       const copy = path.join(scratch, path.basename(database));
       for (const suffix of ["", "-wal", "-shm"]) if (exists(database + suffix)) fs.copyFileSync(database + suffix, copy + suffix, fs.constants.COPYFILE_FICLONE);
       const mark = schemaMark(copy);
-      if (!takenSchema(mark)) return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed. Update Kuvo Code if a newer version is out, then try again.`;
+      if (!takenSchema(mark)) return `Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (${mark}). Nothing was changed. Update Kuvo if a newer version is out, then try again.`;
     }
     return null;
   } catch (error) {
@@ -87,7 +87,7 @@ function schemaRefusal(appFolder: string, home: string): string | null {
  * say what to do. */
 function runRefusal({ appFolder, home }: Folders, plan: RunPlan, pinned: string | null): string | null {
   const real = located(home) === located(path.join(accountHome(), ".kuvo-code"));
-  if (real !== (plan.id === "run.kuvo.code")) return real ? "Only Kuvo Code itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo Code itself moves into ~/.kuvo-code only.";
+  if (real !== (plan.id === "run.kuvo.code")) return real ? "Only Kuvo itself moves into ~/.kuvo-code: a copy moves into a home of its own." : "Kuvo itself moves into ~/.kuvo-code only.";
   // (The release whole, every file as it says, with its helper; and its engine, fetched.)
   if (pinned === null || releaseRefusal(plan.release)) return exists(plan.release) ? DAMAGED : NO_RELEASE;
   if (!exists(path.join(plan.engine, pinned, "opencode"))) return NO_ENGINE;

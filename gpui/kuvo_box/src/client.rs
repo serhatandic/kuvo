@@ -137,7 +137,7 @@ impl BoxClient {
     /// This Mac's own box, as found under `home` (the user's home folder): its server, by its record.
     /// [`Error::NotRunning`] when Kuvo Code isn't running here.
     pub fn this_mac(home: &Path) -> Result<BoxClient> {
-        let found = place::this_mac(home).ok_or_else(|| Error::NotRunning("Kuvo Code isn't set up on this Mac.".into()))?;
+        let found = place::this_mac(home).ok_or_else(|| Error::NotRunning("Kuvo isn't set up on this Mac.".into()))?;
         Ok(BoxClient::new(place::server(&found, "this Mac")?))
     }
 

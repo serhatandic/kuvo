@@ -64,7 +64,7 @@ const ENGINE_PLUGIN = path.join("config", "opencode", "plugins", "kuvo-code.js")
 export function releaseRefusal(release: string | null): string | null {
   const fileAt = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
   if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js")) || !fileAt(path.join(release, ENGINE_PLUGIN))) return "Kuvo's own files to put in its new home weren't given.";
-  if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home.";
+  if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo, so nothing would start Kuvo on this Mac in its own home.";
   return null;
 }
 

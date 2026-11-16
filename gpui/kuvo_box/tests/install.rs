@@ -135,8 +135,8 @@ fn what_the_box_refuses_or_fails_is_said_in_its_words() {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = bundle(made.path());
     // The shell's own part failing at `status`, with no verdict: nothing else is run.
-    bundle.says("status", None, 1, &[r#"{"result":"failed","message":"This copy of Kuvo Code is damaged. Download it again, then try again."}"#]);
-    assert_eq!(set_up(&installer).0, Outcome::new(End::Stopped, None, None, Some("This copy of Kuvo Code is damaged. Download it again, then try again.".into())));
+    bundle.says("status", None, 1, &[r#"{"result":"failed","message":"This copy of Kuvo is damaged. Download it again, then try again."}"#]);
+    assert_eq!(set_up(&installer).0, Outcome::new(End::Stopped, None, None, Some("This copy of Kuvo is damaged. Download it again, then try again.".into())));
     assert_eq!(asked(&bundle).len(), 1);
     // `new` failing part way, after a step.
     bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":"new","status":{}}"#]);

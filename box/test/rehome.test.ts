@@ -560,7 +560,7 @@ test.if(mac)("a Mac whose app's box ran in its folder, or a box already in ~/.ku
   expect(existsSync(noEngine.K)).toBe(false)
   // A release without the helper that would start it there: never made.
   const noHelper = newMac(w => rmSync(join(w.release, "bin", "Kuvo Helper.app"), { recursive: true }))
-  expect(rehome(noHelper, ["--new", "--release", noHelper.release]).said).toMatchObject({ result: "refused", message: "Kuvo Helper isn't in this copy of Kuvo Code, so nothing would start Kuvo on this Mac in its own home." })
+  expect(rehome(noHelper, ["--new", "--release", noHelper.release]).said).toMatchObject({ result: "refused", message: "Kuvo Helper isn't in this copy of Kuvo, so nothing would start Kuvo on this Mac in its own home." })
   expect(existsSync(noHelper.K)).toBe(false)
 }, 60_000)
 

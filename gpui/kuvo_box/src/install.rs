@@ -282,9 +282,9 @@ impl Installer {
         };
         let root = match (carried.id == REAL_APP, demo_root) {
             (true, None) => REAL_ROOT.to_owned(),
-            (true, Some(_)) => return Err(OnlyAttaches("Kuvo Code itself sets up in ~/.kuvo-code only.".into())),
+            (true, Some(_)) => return Err(OnlyAttaches("Kuvo itself sets up in ~/.kuvo-code only.".into())),
             (false, Some(root)) if own_root(root, home) => root.to_owned(),
-            (false, _) => return Err(OnlyAttaches("This copy of Kuvo doesn’t set up a computer: only Kuvo Code itself does, or a copy given a folder of its own.".into())),
+            (false, _) => return Err(OnlyAttaches("This copy of Kuvo doesn’t set up a computer: only Kuvo itself does, or a copy given a folder of its own.".into())),
         };
         Ok(Installer { carried, root, shell: PathBuf::from("/bin/sh") })
     }

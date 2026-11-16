@@ -1075,7 +1075,7 @@ const FIRST_RUN: &[FirstRunScreen] = &[
     FirstRunScreen { slug: "first-run-starting", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
     FirstRunScreen { slug: "first-run-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: nothing_then, after: nothing_before },
     // The box stops answering mid-way.
-    FirstRunScreen { slug: "first-run-welcome-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Unreachable("Kuvo Code isn’t answering on this Mac.".into()), "This Mac".into(), cx), after: nothing_before },
+    FirstRunScreen { slug: "first-run-welcome-unreachable", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| run.set_box(BoxState::Unreachable("Kuvo isn’t answering on this Mac.".into()), "This Mac".into(), cx), after: nothing_before },
     FirstRunScreen { slug: "first-run-agents", scenario: Scenario::Crowded, size: (1280., 900.), before: nothing_before, then: to_agents, after: nothing_before },
     FirstRunScreen { slug: "first-run-agents-nothing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: to_agents, after: nothing_before },
     FirstRunScreen { slug: "first-run-agents-installing", scenario: Scenario::Nothing, size: (1280., 820.), before: nothing_before, then: |run, cx| { to_agents(run, cx); run.show_installing("agent-claude-code", cx); }, after: nothing_before },
@@ -1136,7 +1136,7 @@ fn first_run_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path
                     if matches!(screen.slug, "first-run-starting" | "first-run-unreachable") {
                         workspace.await_box(cx);
                         if screen.slug == "first-run-unreachable" {
-                            workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo Code isn’t answering on this Mac.".into())), cx);
+                            workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo isn’t answering on this Mac.".into())), cx);
                         }
                         return;
                     }
@@ -1490,7 +1490,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
     .into_iter()
     .map(|(step, title)| (step.to_owned(), title.into()))
     .collect();
-    let stuck = "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way. Try again to finish.";
+    let stuck = "Kuvo was moving your sessions to their new place on this Mac and stopped part way. Try again to finish.";
     let two = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
     let dropped = "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.";
     for slug in [
@@ -1510,7 +1510,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                     let first = boxes.nearest().expect("the stand-in is the nearest box");
                     Ok((boxes, first))
                 }
-                None => Err("Kuvo Code isn’t set up on this Mac.".into()),
+                None => Err("Kuvo isn’t set up on this Mac.".into()),
             });
             let opens = Opens { waits_within: kuvo::launch::WAITS_WITHIN, installer: Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into())), attach };
             let (width, height) = if slug.ends_with("-narrow") { (720., 620.) } else { (1280., 820.) };

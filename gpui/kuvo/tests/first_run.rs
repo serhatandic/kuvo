@@ -363,7 +363,7 @@ fn until_the_box_has_said_the_window_waits_rather_than_show_the_app_and_take_it_
     // Being reached: neither the app nor the welcome yet.
     assert!(shown(cx, "window-waiting") && !shown(cx, "rail-settings") && !shown(cx, "first-run"));
     // It can't be reached: said, still without the app a first run would then take away.
-    workspace.update_in(cx, |workspace, _, cx| workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo Code isn’t answering on this Mac.".into())), cx));
+    workspace.update_in(cx, |workspace, _, cx| workspace.connected(Err(kuvo_box::Error::NotRunning("Kuvo isn’t answering on this Mac.".into())), cx));
     cx.run_until_parked();
     assert!(shown(cx, "window-waiting-why") && !shown(cx, "rail-settings") && !shown(cx, "first-run"));
     // Reached: it says the first run hasn't been had, and the welcome is what shows.

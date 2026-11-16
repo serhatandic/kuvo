@@ -227,7 +227,7 @@ test.if(mac)("sessions last used by an engine nobody tried are refused before an
   })
   const before = snapshot(m.S)
   const refused = run(m)
-  expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (51 20270101000000_later). Nothing was changed. Update Kuvo Code if a newer version is out, then try again." })
+  expect(refused.said).toMatchObject({ result: "refused", message: "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along (51 20270101000000_later). Nothing was changed. Update Kuvo if a newer version is out, then try again." })
   expect(snapshot(m.S)).toEqual(before)
   expect(existsSync(join(m.K, "updates", "rehome", "plan-database"))).toBe(false)
 }, LIMIT)

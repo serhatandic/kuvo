@@ -51,11 +51,11 @@ const EXIT: Record<Answer["result"], number> = { done: 0, nothing: 0, refused: 1
 const NOT_NEW: Record<Exclude<InstallVerdict, "fresh" | "ours">, string> = {
   "app-07": "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
   "app-box": "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
-  moving: "Kuvo Code is moving your sessions to their new place on this Mac: that's finished first.",
-  stuck: "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
+  moving: "Kuvo is moving your sessions to their new place on this Mac: that's finished first.",
+  stuck: "Kuvo was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
   waits: "Another move is under way.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
-  machine: "This computer is set up as one of your machines already: Kuvo Code uses what's here.",
+  machine: "This computer is set up as one of your machines already: Kuvo uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.",
 };
 
@@ -79,7 +79,7 @@ const sha256 = (file: string): string => crypto.createHash("sha256").update(fs.r
 /** The release the installer unpacked, checked against its own `box.json`: its version, its
  * engine's, and every file it names there as it says. Throws in words. */
 export function checkedRelease(release: string): { version: string; engine: string; files: Record<string, string> } {
-  const damaged = new Said("This copy of Kuvo Code is damaged. Download it again, then try again.");
+  const damaged = new Said("This copy of Kuvo is damaged. Download it again, then try again.");
   let box: unknown;
   try { box = JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8")); } catch { throw damaged; }
   if (!isObject(box) || typeof box.version !== "string" || typeof box.engine !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) || !isObject(box.files)) throw damaged;
@@ -115,13 +115,13 @@ export async function installCommand(args: string[]): Promise<number> {
   const judged = (): Judgement => judgeInstall(home, appFolder, { helperInPlace: () => (mac && launchTools() ? helperRuns() : null) });
   try {
     if (mac && !app) {
-      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
+      say({ result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo again." });
       return EXIT.refused;
     }
     // (A copy of the app, a demo's or a test's, never judges or makes the real one's box, nor the
     // real app a copy's: each has its own folder and its own home. Nothing's said of what's there.)
     if (mac && real !== (app === REAL_APP)) {
-      say({ result: "refused", message: real ? "Only Kuvo Code itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo Code itself sets up ~/.kuvo-code only." });
+      say({ result: "refused", message: real ? "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo itself sets up ~/.kuvo-code only." });
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
@@ -186,7 +186,7 @@ function tidyStaging(home: string, { verdict, verb }: Judgement, release: string
 /** Why each verdict has nothing to move, in words an app shows as they are. */
 const NOT_MOVED: Partial<Record<InstallVerdict, string>> = {
   fresh: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
-  machine: "This Mac is set up as one of your machines already: Kuvo Code uses what's here.",
+  machine: "This Mac is set up as one of your machines already: Kuvo uses what's here.",
   two: "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.",
   back: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
   waits: "Another move is under way.",
@@ -310,12 +310,12 @@ async function newMachine({ home, release, engine }: { home: string; release: st
   const refusal = (): Answer | null => {
     const now = judged();
     // (As a Mac's new box: nothing is made, or set aside, under something that still runs there.)
-    if (now.verdict === "fresh") return runningIn(path.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped." } : null;
+    if (now.verdict === "fresh") return runningIn(path.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo is installed there once that's stopped." } : null;
     return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "Kuvo on this computer is moving: that's finished first." };
   };
   const before = refusal();
   if (before) return before;
-  if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo Code is always in ~/.kuvo-code." };
+  if (path.basename(home) !== ".kuvo-code") return { result: "refused", verdict: "fresh", message: "On Linux, Kuvo is always in ~/.kuvo-code." };
   const { version, engine: engineVersion, files } = checkedRelease(release);
   const staged = path.join(engine, engineVersion, "opencode");
   if (!fs.existsSync(staged)) throw new Said(NO_ENGINE("this computer"));
@@ -366,7 +366,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
     const started = ran.status === 0 && /^started$/m.test(ran.stdout ?? "");
     // (Not started: its mark stays, so whatever the start left, keys or a link too, it's `fresh`
     // still, and made again by trying again.)
-    if (!started) return { result: "failed", verdict: judged().verdict, started, message: `Kuvo Code is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}. Try again.`, ...setAside };
+    if (!started) return { result: "failed", verdict: judged().verdict, started, message: `Kuvo is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}. Try again.`, ...setAside };
     clearStaging(home);
     return { result: "done", verdict: judged().verdict, started, ...setAside };
   } finally {
