@@ -5746,6 +5746,9 @@
             "literal": "messages.tool-titles"
            },
            {
+            "literal": "messages.wake-cards"
+           },
+           {
             "literal": "models.offered"
            },
            {
@@ -6464,6 +6467,9 @@
            },
            {
             "literal": "messages.tool-titles"
+           },
+           {
+            "literal": "messages.wake-cards"
            },
            {
             "literal": "models.offered"
