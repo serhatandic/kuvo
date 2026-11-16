@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Opening Work Queue clears its rail badge on this device; only Needs you items updated afterward count again. Editing an item already in Needs you also makes it count again.
+
 - Your settings now lists the keyboard shortcuts Kuvo uses, lets you choose the Side Panel’s first tab, and keeps your anonymous usage choice under Privacy. Nothing is sent yet.
 
 - In the desktop app, ⌘V in the composer attaches a copied screenshot or picture, and files copied in the Finder, as 0.7 did, instead of doing nothing or pasting their names.
