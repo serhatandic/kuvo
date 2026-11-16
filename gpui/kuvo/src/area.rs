@@ -20,7 +20,7 @@ pub enum Area {
 }
 
 impl Area {
-    pub const ALL: [Area; 5] = [Area::Sessions, Area::Bots, Area::Queue, Area::Computers, Area::Settings];
+    pub const ALL: [Area; 5] = [Area::Bots, Area::Sessions, Area::Queue, Area::Computers, Area::Settings];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -45,8 +45,8 @@ impl Area {
     /// Its key, as its tooltip shows it.
     pub fn keys(self) -> &'static str {
         match self {
-            Area::Sessions => "⌃1",
-            Area::Bots => "⌃2",
+            Area::Sessions => "⌃2",
+            Area::Bots => "⌃1",
             Area::Queue => "⌃3",
             Area::Computers => "⌃4",
             Area::Settings => "⌃5",
@@ -68,8 +68,8 @@ impl Area {
 pub fn bind_keys(cx: &mut App) {
     let workspace = Some("Workspace");
     cx.bind_keys([
-        KeyBinding::new("ctrl-1", ShowSessions, workspace),
-        KeyBinding::new("ctrl-2", ShowBots, workspace),
+        KeyBinding::new("ctrl-1", ShowBots, workspace),
+        KeyBinding::new("ctrl-2", ShowSessions, workspace),
         KeyBinding::new("ctrl-3", ShowQueue, workspace),
         KeyBinding::new("ctrl-4", ShowComputers, workspace),
         KeyBinding::new("ctrl-5", ShowSettings, workspace),

@@ -2,7 +2,7 @@
 // sign-in, answered for outside agents. Anything else is "not here", which the app takes as it
 // takes an engine without that feature.
 
-import { kinds, type AgentKind } from "./accounts"
+import { kinds, parseProvider, type AgentKind } from "./accounts"
 import type { Account, Agent, SignInAttempt } from "./agent"
 import type { Auto, AutoList } from "./auto"
 import type { EngineLink } from "./engine"
@@ -271,6 +271,9 @@ export function handler(context: Context) {
             const status = expired ? { status: "expired" } : pending.attempt.status()
             if (expired) pending.attempt.cancel()
             if (status.status !== "pending") attempts.delete(d!)
+            if (status.status === "complete") {
+              void context.limits?.readAgain(pending.agent.providerID).then(() => context.usage?.refresh()).catch(() => {})
+            }
             return located(status)
           }
           if (method === "POST" && e === "complete") {
@@ -289,6 +292,8 @@ export function handler(context: Context) {
           const { key } = await body()
           if (!agent.signInWithKey) return error(400, `${agent.name} doesn't take a key here.`)
           await agent.signInWithKey(String(key ?? "").trim())
+          await context.limits?.readAgain(agent.providerID)
+          await context.usage?.refresh()
           return json({})
         }
         // Its program installed with its maker's installer (the command `metadata.install` shows),
@@ -481,7 +486,8 @@ export function handler(context: Context) {
       // Your accounts with the agents: adding one (it then signs in as any does), naming one, removing one.
       if (area === "kuvo" && a === "accounts") {
         if (method === "POST" && !b) {
-          const { agent, label } = await body()
+          const { agent: givenAgent, provider, label } = await body()
+          const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined)
           if (!kinds.includes(agent)) return error(400, "That isn't one of the coding agents.")
           const record = roster.accounts.add(agent as AgentKind, label)
           roster.sync()

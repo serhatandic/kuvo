@@ -172,6 +172,7 @@ export function accountState(account: ListedAccount, offered: OfferedMethods, { 
   if (agents) {
     if (installs) actions.push({ id: "install", label: "Install" });
     else if (signsIn) actions.push(said.length || state === "ended" ? { id: "signInAgain", label: words.again, ...here } : { id: "signIn", label: words.first, ...here });
+    if (!installs && signsIn && ["claude", "codex", "cursor", "grok", "antigravity"].includes(text(meta.agent))) actions.push({ id: "addAnother", label: words.another, ...here });
     // Its program's update, on the agent's own sign-in (one program serves every account with it),
     // where the installer that owns it can update it and it isn't updating now.
     const latest = text(meta.latestVersion);

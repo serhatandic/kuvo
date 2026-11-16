@@ -41746,7 +41746,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "334571f78fa0";
+var BRIDGE_VERSION = "4b001961671a";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -55760,6 +55760,8 @@ function accountState(account, offered, { agents = false, ended, computer }) {
       actions.push({ id: "install", label: "Install" });
     else if (signsIn)
       actions.push(said.length || state === "ended" ? { id: "signInAgain", label: words.again, ...here } : { id: "signIn", label: words.first, ...here });
+    if (!installs && signsIn && ["claude", "codex", "cursor", "grok", "antigravity"].includes(text5(meta.agent)))
+      actions.push({ id: "addAnother", label: words.another, ...here });
     const latest = text5(meta.latestVersion);
     const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
@@ -55914,7 +55916,7 @@ async function* accountsRoute2(context, query) {
     const accounts = (Array.isArray(listed) ? listed : []).filter((each) => typeof each?.id === "string");
     const agents = query.get("agents") === "1";
     const ended = agents ? new Map : readEndedSignIns();
-    const computer = plainName(context.info.name) || "this computer";
+    const computer = context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : plainName(context.info.name) || "this computer";
     return yield* json(200, {
       accounts: accounts.map((account) => {
         const service = serviceOf(account, agents);

@@ -101,6 +101,7 @@ pub fn icon_named(name: &str) -> IconName {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
     SignIn { side: Side, account: String, name: String, sheet_title: String },
+    AddAgent { account: String, name: String, sheet_title: String },
     Install { account: String, name: String },
     /// Disconnect, asked first in the box's words where it says to.
     Disconnect { account: String, confirm: Option<Confirm> },
@@ -397,6 +398,8 @@ pub(super) fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
     let (account, name) = (entry.integration.id.clone(), entry.integration.name.clone());
     Some(match action.id.as_str() {
         "signIn" | "signInAgain" => Act::SignIn { side: entry.side, account, name, sheet_title: action.sheet_title.clone()? },
+        "addAnother" if entry.side == Side::Agents => Act::AddAgent { account, name, sheet_title: action.sheet_title.clone()? },
+        "addAnother" => Act::SignIn { side: entry.side, account, name, sheet_title: action.sheet_title.clone()? },
         "install" => Act::Install { account, name },
         "disconnect" => Act::Disconnect { account, confirm: action.confirm.clone() },
         "signOut" => Act::SignOut { account },

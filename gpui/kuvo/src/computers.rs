@@ -419,7 +419,6 @@ impl ComputersView {
                 if !hosts.is_empty() {
                     items.push(Item::Hosts(hosts));
                 }
-                items.push(Item::Note { key: "add-how".into(), words: format!("{this} connects with its SSH keys and agent, never a password, and installs Kuvo Code in ~/.kuvo-code there."), busy: false });
             }
             if let Some(problem) = &self.add_problem {
                 items.push(Item::Notice { key: "add-problem".into(), tone: Tone::Attention, title: "That can’t be added".into(), words: problem.clone() });

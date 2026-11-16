@@ -96,3 +96,8 @@ test("Accounts' list says which are providers and their marks; a sign-in started
     engine.stop(true)
   }
 })
+
+ test.each(["claude", "codex", "cursor", "grok", "antigravity"])("%s offers another account without replacing its sign-in", agent => {
+ const said = accountState({ id: agent, name: agent, metadata: { agent }, connections: [] }, { methods: [{ id: "oauth", type: "oauth", label: "Sign In" }], environment: [], hint: "" }, { agents: true, computer: "this Mac" });
+ expect(said.actions.find(action => action.id === "addAnother")?.label).toBe("Add Another Account");
+ });

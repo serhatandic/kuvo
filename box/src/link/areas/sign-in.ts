@@ -229,7 +229,7 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
     const agents = query.get("agents") === "1";
     // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
     const ended = agents ? new Map<string, string>() : readEndedSignIns();
-    const computer = plainName(context.info.name) || "this computer";
+    const computer = context.request.fromApp === true ? (process.platform === "darwin" ? "this Mac" : "this computer") : plainName(context.info.name) || "this computer";
     return yield* json(200, {
       accounts: accounts.map(account => {
         const service = serviceOf(account, agents);

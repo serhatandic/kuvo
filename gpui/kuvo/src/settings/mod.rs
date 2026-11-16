@@ -1215,6 +1215,17 @@ impl SettingsView {
                 cx.emit(Pick { place, record: true });
             }
             Act::SignIn { side, account, name, sheet_title } => self.open_sign_in_titled(side, &account, &name, sheet_title, cx),
+            Act::AddAgent { account, name, sheet_title } => {
+                let key = format!("account-{account}");
+                self.set_busy(&key, "Adding…");
+                self.run(key.clone(), move |client| client.add_agent_account(&account), move |this, result, cx| {
+                    this.done(&key);
+                    match result {
+                        Ok(account) => this.open_sign_in_titled(AccountSide::Agents, &account, &name, sheet_title, cx),
+                        Err(error) => this.problem = Some(said(&error)),
+                    }
+                }, cx);
+            }
             Act::Install { account, name } => {
                 let key = format!("account-{account}");
                 self.set_busy(&key, "Installing…");

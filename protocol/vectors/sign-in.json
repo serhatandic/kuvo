@@ -1249,6 +1249,11 @@
      "id": "signIn",
      "label": "Sign In",
      "sheetTitle": "Sign In to Antigravity"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Antigravity"
     }
    ],
    "connections": []
@@ -1308,6 +1313,11 @@
      "id": "signIn",
      "label": "Sign In",
      "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": []
@@ -1360,6 +1370,12 @@
      "label": "Sign In",
      "here": true,
      "sheetTitle": "Sign In to Codex"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Codex",
+     "here": true
     }
    ],
    "connections": []
@@ -1428,6 +1444,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code"
     }
    ],
@@ -1502,6 +1523,11 @@
      "id": "signInAgain",
      "label": "Sign In Again",
      "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1567,6 +1593,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Cursor"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Cursor"
     },
     {
@@ -1647,6 +1678,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code"
     },
     {
@@ -1732,6 +1768,11 @@
      "id": "signInAgain",
      "label": "Sign In Again",
      "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1807,6 +1848,11 @@
      "id": "signInAgain",
      "label": "Sign In Again",
      "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": [
@@ -1874,6 +1920,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code · Work"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
@@ -1948,6 +1999,11 @@
      "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code · Work"
+    },
+    {
      "id": "rename",
      "label": "Rename"
     },
@@ -2019,6 +2075,11 @@
      "id": "signInAgain",
      "label": "Sign In Again",
      "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Claude Code"
     }
    ],
    "connections": []
@@ -2077,6 +2138,11 @@
     {
      "id": "signIn",
      "label": "Sign In",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code"
     }
    ],
@@ -2146,6 +2212,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code"
     }
    ],
@@ -3439,6 +3510,12 @@
      "label": "Sign In Again",
      "here": true,
      "sheetTitle": "Sign In to Codex"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
+     "sheetTitle": "Sign In to Codex",
+     "here": true
     }
    ],
    "connections": [
@@ -3495,6 +3572,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code · Work"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
@@ -3571,6 +3653,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Cursor · Work"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Cursor · Work"
     },
     {
@@ -3652,6 +3739,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Codex"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Codex"
     }
    ],
@@ -3851,6 +3943,11 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
+     "sheetTitle": "Sign In to Claude Code"
+    },
+    {
+     "id": "addAnother",
+     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code"
     }
    ],

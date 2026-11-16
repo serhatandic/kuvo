@@ -10780,9 +10780,13 @@ class Limits {
   }
   forced = new Set;
   readAgain(provider) {
-    const entry = this.entries.get(provider);
-    if (!entry)
-      return Promise.resolve();
+    let entry = this.entries.get(provider);
+    if (!entry) {
+      if (!this.account(provider))
+        return Promise.resolve();
+      entry = { windows: [], next: 0 };
+      this.entries.set(provider, entry);
+    }
     entry.next = 0;
     entry.elsewhere = undefined;
     this.forced.add(provider);
@@ -35059,6 +35063,9 @@ function handler(context) {
               pending.attempt.cancel();
             if (status.status !== "pending")
               attempts.delete(d);
+            if (status.status === "complete") {
+              context.limits?.readAgain(pending.agent.providerID).then(() => context.usage?.refresh()).catch(() => {});
+            }
             return located(status);
           }
           if (method === "POST" && e === "complete") {
@@ -35079,6 +35086,8 @@ function handler(context) {
           if (!agent.signInWithKey)
             return error2(400, `${agent.name} doesn't take a key here.`);
           await agent.signInWithKey(String(key ?? "").trim());
+          await context.limits?.readAgain(agent.providerID);
+          await context.usage?.refresh();
           return json15({});
         }
         if (b === "install" && method === "POST") {
@@ -35270,7 +35279,8 @@ function handler(context) {
       }
       if (area === "kuvo" && a === "accounts") {
         if (method === "POST" && !b) {
-          const { agent, label } = await body();
+          const { agent: givenAgent, provider, label } = await body();
+          const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined);
           if (!kinds.includes(agent))
             return error2(400, "That isn't one of the coding agents.");
           const record = roster.accounts.add(agent, label);
@@ -36816,4 +36826,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents d89b5128767e659434b56af5a991e6458f9c8f2d208a7a8cc22a6e9400506af0
+// Built from Packages/Box/src/agents 6b61593f32b896f26933459d9f6ed713d55169d630a1adcc33f39840ad0b21e0

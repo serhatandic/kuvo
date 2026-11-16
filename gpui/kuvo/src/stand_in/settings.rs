@@ -756,6 +756,9 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         } else if signs_in {
             actions.push(if !said.is_empty() || state == "ended" { sign_in("signInAgain", again) } else { sign_in("signIn", first) });
         }
+        if !installs && signs_in && matches!(meta["agent"].as_str(), Some("claude" | "codex" | "cursor" | "grok" | "antigravity")) {
+            actions.push(sign_in("addAnother", another));
+        }
         let latest = text(&meta["latestVersion"]);
         if !added && !installs && meta["outdated"] == true && meta["updates"] == true && !latest.is_empty() && meta["programUpdate"]["state"] != "updating" {
             actions.push(json!({ "id": "update", "label": format!("Update to {latest}") }));
