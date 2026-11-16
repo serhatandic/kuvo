@@ -264,6 +264,27 @@ impl Backoff {
     }
 }
 
+/// A passing drop, taken quietly: once a follow has come through, the first failure to reach its
+/// box after it (the link dropped, a session ended under it) is tried again at once, unsaid; only
+/// one that fails again is said (PROTOCOL.md, "When a client says a computer isn't connected").
+#[derive(Default)]
+struct Quiet {
+    came: bool,
+}
+
+impl Quiet {
+    /// It came through.
+    fn came(&mut self) {
+        self.came = true;
+    }
+    /// Whether this failure is the one taken quietly (then tried again at once).
+    fn takes(&mut self, error: &Error) -> bool {
+        let quiet = self.came && matches!(error, Error::Unreachable(_));
+        self.came = false;
+        quiet
+    }
+}
+
 /// Hands on the latest update, in place of one not taken yet.
 struct Latest<T> {
     sender: async_channel::Sender<T>,
@@ -345,6 +366,7 @@ impl BoxClient {
 fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate>, stop: Arc<Stop>) {
     let mut listing = Listing::new();
     let mut backoff = Backoff::new(timing);
+    let mut quiet = Quiet::default();
     while !stop.is_stopped() {
         let streams = client.streams();
         let path = if streams { sessions::events_route(listing.at()) } else { sessions::route(listing.at()) };
@@ -364,6 +386,9 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
                 if stop.is_stopped() {
                     return;
                 }
+                if quiet.takes(&error) {
+                    continue;
+                }
                 latest.put(ListUpdate::Failed(error));
                 if backoff.wait(&stop) {
                     return;
@@ -380,11 +405,13 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
             }
             continue;
         }
+        let mut again_now = false;
         loop {
             match lines::next_line(&mut *stream.reader) {
                 Ok(Some(text)) => match serde_json::from_str::<Line>(&text) {
                     Ok(line) => {
                         backoff.reset();
+                        quiet.came();
                         if listing.take(line) {
                             latest.put(ListUpdate::Listing(listing.clone()));
                         }
@@ -393,8 +420,12 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
                 },
                 Ok(None) => break,
                 Err(error) => {
+                    let error = Error::Unreachable(format!("The session list stopped coming ({}).", error.kind()));
                     if !stop.is_stopped() {
-                        latest.put(ListUpdate::Failed(Error::Unreachable(format!("The session list stopped coming ({}).", error.kind()))));
+                        again_now = quiet.takes(&error);
+                        if !again_now {
+                            latest.put(ListUpdate::Failed(error));
+                        }
                     }
                     break;
                 }
@@ -402,7 +433,10 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
         }
         stop.release();
         // A stream that ended is opened again from where it was; a box that answers once is read
-        // again in a while.
+        // again in a while. One that dropped quietly, at once.
+        if again_now {
+            continue;
+        }
         let stopped = if streams { backoff.wait(&stop) } else { stop.wait(timing.lists_again) };
         if stopped {
             return;
@@ -564,6 +598,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
 /// over to the reader for good: true then, false once it's ended.
 fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Latest<ConversationUpdate>, stop: &Stop, shown: &Mutex<Shown>, wants: &Wants) -> bool {
     let mut backoff = Backoff::new(timing);
+    let mut quiet = Quiet::default();
     while !stop.is_stopped() {
         if !client.streams() {
             wants.read_every(Some(timing.conversation_again));
@@ -588,6 +623,9 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                 if stop.is_stopped() {
                     return false;
                 }
+                if quiet.takes(&error) {
+                    continue;
+                }
                 // Read on the timer meanwhile.
                 wants.read_every(Some(timing.conversation_again));
                 latest.put(ConversationUpdate::Failed(error));
@@ -600,11 +638,13 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
         // Read once it's listening, so nothing from before is missed; as asked from now on.
         wants.read_every(None);
         wants.again();
+        let mut again_now = false;
         loop {
             match lines::next_event(&mut *stream.reader) {
                 Ok(Some(data)) => {
                     let Ok(event) = serde_json::from_str::<Value>(&data) else { continue };
                     backoff.reset();
+                    quiet.came();
                     let applied = {
                         let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         let applied = now.conversation.apply(&event);
@@ -624,14 +664,22 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                 }
                 Ok(None) => break,
                 Err(error) => {
+                    let error = Error::Unreachable(format!("The conversation stopped coming ({}).", error.kind()));
                     if !stop.is_stopped() {
-                        latest.put(ConversationUpdate::Failed(Error::Unreachable(format!("The conversation stopped coming ({}).", error.kind()))));
+                        again_now = quiet.takes(&error);
+                        if !again_now {
+                            latest.put(ConversationUpdate::Failed(error));
+                        }
                     }
                     break;
                 }
             }
         }
         stop.release();
+        // Dropped once: opened again at once, unsaid (read again as it opens).
+        if again_now {
+            continue;
+        }
         // Dropped: read on the timer until it's open again.
         wants.read_every(Some(timing.conversation_again));
         if stop.is_stopped() || backoff.wait(stop) {
@@ -663,6 +711,7 @@ pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'stati
     let client = client.clone();
     spawn(name, move |latest, stop| {
         let mut backoff = Backoff::new(timing);
+        let mut quiet = Quiet::default();
         while !stop.is_stopped() {
             let streams = client.streams();
             let path = if streams { events.clone() } else { once.clone() };
@@ -672,6 +721,9 @@ pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'stati
                     stop.release();
                     if stop.is_stopped() {
                         return;
+                    }
+                    if quiet.takes(&error) {
+                        continue;
                     }
                     latest.put(Followed::Failed(error));
                     if backoff.wait(&stop) {
@@ -689,25 +741,34 @@ pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'stati
                 }
                 continue;
             }
+            let mut again_now = false;
             loop {
                 match lines::next_line(&mut *stream.reader) {
                     Ok(Some(text)) => match serde_json::from_str::<T>(&text) {
                         Ok(now) => {
                             backoff.reset();
+                            quiet.came();
                             latest.put(Followed::Now(fill(now)));
                         }
                         Err(error) => latest.put(Followed::Failed(Error::BadAnswer(format!("What the box said couldn't be read: {error}")))),
                     },
                     Ok(None) => break,
                     Err(error) => {
+                        let error = Error::Unreachable(format!("It stopped coming ({}).", error.kind()));
                         if !stop.is_stopped() {
-                            latest.put(Followed::Failed(Error::Unreachable(format!("It stopped coming ({}).", error.kind()))));
+                            again_now = quiet.takes(&error);
+                            if !again_now {
+                                latest.put(Followed::Failed(error));
+                            }
                         }
                         break;
                     }
                 }
             }
             stop.release();
+            if again_now {
+                continue;
+            }
             let stopped = if streams { backoff.wait(&stop) } else { stop.wait(timing.conversation_again) };
             if stopped {
                 return;

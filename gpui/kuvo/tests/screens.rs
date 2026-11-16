@@ -1409,11 +1409,17 @@ fn what_you_send_shows_at_once_and_the_boxs_copy_takes_its_place(cx: &mut TestAp
     assert_eq!(now.last(), Some(&id));
     assert!(matches!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Outgoing { words, failed: None, .. }) if words == "Something with lentils?"));
     assert!(bounds(cx, "sending").is_some(), "it says it's on its way");
+    // Its state on a line of its own under the bubble, never over its words; the bubble as it
+    // will be once sent (its words wrapping where they will then).
+    let bubble = format!("bubble-{}", now.len() - 1);
+    let sending_bubble = bounds(cx, &bubble).expect("its bubble");
+    assert!(bounds(cx, "sending").unwrap().top() >= sending_bubble.bottom(), "Sending… is under the bubble, not in it");
 
     // The box's copy comes (the same id): it takes the row's place, once.
     let conversation = read_now(&client, "ses_recipes").unwrap();
     view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation), cx));
     cx.run_until_parked();
+    assert_eq!(bounds(cx, &bubble).map(|sent| sent.size), Some(sending_bubble.size), "the bubble doesn't change shape as it's sent");
     let after = rows(cx);
     assert_eq!(after.iter().filter(|key| **key == id).count(), 1, "no copy twice");
     assert!(matches!(view.read_with(cx, |view, _| view.entries().iter().find(|entry| entry.key() == id).cloned()), Some(Entry::Message(_))));
