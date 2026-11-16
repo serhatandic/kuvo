@@ -282,6 +282,13 @@ function client(hello) {
 // Mail to this Mac's box sealed with `key`, as a box holding that key mails another (PROTOCOL.md, "Mail").
 const mailToMac = (key, payload) => relay.device().send(macAddress, link.frame(link.Frame.mail, 0, link.sealOneWay(Buffer.from(JSON.stringify(payload)), key, link.publicOf(macKey)).message));
 const vouch = (item, id = `wqa_${crypto.randomBytes(16).toString("base64url")}`) => ({ id, area: "devices", method: "POST", item, body: { name: "Someone's laptop", kind: "desktop" }, at: Date.now() });
+// The member has heard, in the main computer's phones document, that the device `key` was removed
+// there. Until it has, it answers its own app from the list it has (devices.ts, "Let in already"),
+// with the pairing it knew, as it would in the moment before any removal reaches it.
+const memberHeardRemoved = key => eventually(() => {
+  const there = labLink();
+  return !!there && (there.removed ?? []).some(each => each.key === key) && !(there.phones ?? []).some(each => each.key === key);
+});
 // What this Mac's box answered the ask `id` of the box holding `key`, at `address` on the relay.
 const actedFor = (id, key, address) => eventually(() => {
   for (const each of relay.delivered) {
@@ -478,6 +485,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   assert.equal((await saidOf())[0]?.words, "Second screen was removed from your devices. lab can't add Kuvo Code's app again until you allow it.");
   // The other one it vouched for is gone with it, for good; a new key is kept out.
   assert.deepEqual([await second.open(main), await third.open(main)], [{ refused: true }, { refused: true }]);
+  await memberHeardRemoved(third.public);
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", more), removed);
   const fresh = (name, key = link.publicOf(link.newKey()).toString("base64url")) => ({ key, name, kind: "desktop" });
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", fresh("Another")), keptOut("Second screen"));
@@ -488,6 +496,7 @@ test("the desktop app on a member's computer is paired through its own box and r
   for (const each of [fourth, fifth]) assert.equal((await labApp("POST", "kuvo/devices/pair", fresh(each === fourth ? "Fourth screen" : "Fifth screen", each.public))).status, 200);
   assert.deepEqual(await ask("POST", "kuvo/phones/remove", { phones: [{ key: fourth.public }] }), { status: 200, json: {} });
   assert.deepEqual([await fourth.open(main), await fifth.open(main)], [{ refused: true }, { refused: true }]);
+  await memberHeardRemoved(fifth.public);
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", fresh("Fifth screen", fifth.public)), removed);
   assert.deepEqual(await labApp("POST", "kuvo/devices/pair", fresh("Another")), keptOut("Fourth screen"));
   assert.deepEqual(link.readLink().vouchBlocked.map(each => [each.key, each.device]), [[lab.key, "Fourth screen"]], "one entry a computer");
