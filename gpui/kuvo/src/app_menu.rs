@@ -34,7 +34,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &Minimize, cx| on_active_window(cx, |window| window.minimize_window()));
     cx.on_action(|_: &Zoom, cx| on_active_window(cx, |window| window.zoom_window()));
     cx.on_action(|_: &BringAllToFront, cx| bring_all_to_front(cx));
-    // Help, from any window (the one setting up Kuvo too).
+    // Help, from a window without the workspace too (the one setting up Kuvo).
     cx.on_action(|_: &OpenHelp, cx| cx.open_url(crate::area::HELP));
     cx.set_menus(menus());
 }

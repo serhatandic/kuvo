@@ -27,7 +27,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use crate::area::{Area, Back, Forward, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
+use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage};
 use crate::areas::{AreaView, Go, Picked, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
@@ -2395,6 +2395,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &Forward, window, cx| this.go_forward(window, cx)))
+            .on_action(|_: &OpenHelp, _, cx| cx.open_url(crate::area::HELP))
             // A drag of the panel's edge, wherever the pointer goes meanwhile.
             .when(self.resizing.is_some(), |d| {
                 d.cursor_col_resize()

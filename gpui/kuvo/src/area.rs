@@ -71,6 +71,8 @@ pub fn bind_keys(cx: &mut App) {
         // Settings… and Accounts…, as on the Mac (ahead of ⌃5: the menu shows an action's first key).
         KeyBinding::new("cmd-,", ShowSettings, workspace),
         KeyBinding::new("cmd-shift-k", ShowAccounts, workspace),
+        // The Mac app's Show Work Queue (ahead of ⌃3, for the same reason).
+        KeyBinding::new("cmd-alt-u", ShowQueue, workspace),
         KeyBinding::new("ctrl-1", ShowSessions, workspace),
         KeyBinding::new("ctrl-2", ShowBots, workspace),
         KeyBinding::new("ctrl-3", ShowQueue, workspace),

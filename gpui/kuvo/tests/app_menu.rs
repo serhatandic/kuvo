@@ -88,13 +88,20 @@ fn choose(cx: &mut VisualTestContext, menu: &str, name: &str) {
     cx.run_until_parked();
 }
 
-/// The key the Mac shows beside an item: the first bound to its action that applies in the
-/// app's window, else the first bound at all.
+/// The key the Mac shows beside an item, by GPUI's own rule (`gpui_macos` `create_menu_item`,
+/// mirrored here as GPUI has no way to ask it): the first bound to its action that applies in a
+/// Workspace, Pane and Editor context, else the first bound at all.
 fn shown_key(cx: &mut TestAppContext, menu: &str, name: &str) -> Option<String> {
     let action = action(menu, name);
     cx.update(|cx| {
         let mut window = KeyContext::new_with_defaults(OperatingSystem::Mac);
         window.add("Workspace");
+        let mut pane = KeyContext::new_with_defaults(OperatingSystem::Mac);
+        pane.add("Pane");
+        let mut editor = KeyContext::new_with_defaults(OperatingSystem::Mac);
+        editor.add("Editor");
+        pane.extend(&editor);
+        window.extend(&pane);
         let keymap = cx.key_bindings();
         let keymap = keymap.borrow();
         let applies = keymap.bindings_for_action(action.as_ref()).find(|binding| binding.predicate().is_none_or(|predicate| predicate.eval(&[window.clone()])));
@@ -173,7 +180,7 @@ fn each_item_shows_the_mac_apps_key(cx: &mut TestAppContext) {
         ("View", "Show Panel", "cmd-alt-0"),
         ("View", "Show Changes", "cmd-alt-i"),
         ("View", "Show Files", "cmd-alt-f"),
-        ("View", "Work Queue", "ctrl-3"),
+        ("View", "Work Queue", "cmd-alt-u"),
         ("View", "Back", "cmd-["),
         ("Window", "Minimize", "cmd-m"),
     ] {
