@@ -21,7 +21,7 @@ pub mod sign_in;
 
 use std::collections::HashMap;
 
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, px};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, Window, px};
 use kuvo_box::BoxClient;
 use kuvo_box::accounts::{Accounts, Side as AccountSide, said};
 use kuvo_box::areas::{Account, Computer};
@@ -178,6 +178,10 @@ pub struct SettingsView {
     /// The fields of rows that take typing, by row key, made once and kept; and the revision
     /// each last showed its row's value at.
     fields: HashMap<String, (Entity<TextField>, Option<String>, Subscription)>,
+    /// Hearing each of those fields left (it's saved then), by row key.
+    blurs: HashMap<String, Subscription>,
+    /// The rows whose breakdown is open, by key.
+    expanded: Vec<String>,
     /// What the box last refused, shown over the page until it's closed or the page changes.
     problem: Option<String>,
     confirm: Option<Confirm>,
@@ -294,6 +298,8 @@ impl SettingsView {
             busy: Vec::new(),
             replacing: Vec::new(),
             fields: HashMap::new(),
+            blurs: HashMap::new(),
+            expanded: Vec::new(),
             problem: None,
             confirm: None,
             folder_picker: None,
@@ -618,7 +624,7 @@ impl SettingsView {
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
-                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters }),
+                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters, expanded: &self.expanded }),
                 Some(Reading::Failed(why)) => vec![Block::Note { key: "note-page".into(), words: format!("{} couldn’t be read: {why}", entry.title), busy: false, warning: true }],
                 _ => vec![rows::note("note-page", format!("Reading {}…", entry.title), true)],
             },
@@ -857,24 +863,27 @@ impl SettingsView {
                             this.list_filters.insert(key.clone(), field.read(cx).text().to_owned());
                             this.rebuild(cx);
                         }
-                        if let TextFieldEvent::Submit(_) = event {
-                            let save = this.items.iter().find_map(|item| match item {
-                                Item::Row { row, .. } if row.key == key => match &row.control {
-                                    Control::Field { save, .. } => Some(save.clone()),
-                                    _ => None,
-                                },
-                                _ => None,
-                            });
-                            if let Some(save) = save {
-                                this.act(save, cx);
+                        match event {
+                            TextFieldEvent::Submit(_) => this.save_field(&key, false, cx),
+                            // Escape puts back what the box has (a search's is left to it).
+                            TextFieldEvent::Cancel => {
+                                if let Some(value) = this.field_row_value(&key) {
+                                    field.update(cx, |field, cx| field.set_text(value, cx));
+                                } else if this.is_secret(&key) {
+                                    field.update(cx, |field, cx| field.set_text("", cx));
+                                }
                             }
+                            TextFieldEvent::Changed => {}
                         }
                     });
+                    // (A field made again is heard again: the last one's listener goes with it.)
+                    self.blurs.remove(&row.key);
                     self.fields.insert(row.key.clone(), (field, Some(revision.clone()), subscription));
                 }
             }
         }
         self.fields.retain(|key, _| kept.contains(key));
+        self.blurs.retain(|key, _| kept.contains(key));
         // The fields an address is pasted back in, under a flow that has one.
         let mut codes = Vec::new();
         for item in items {
@@ -892,6 +901,74 @@ impl SettingsView {
             }
         }
         self.codes.retain(|key, _| codes.contains(key));
+    }
+
+    /// Hears each field that takes typing being left, once (it needs the window, which only
+    /// drawing has): it's saved then.
+    pub(crate) fn hear_blurs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let unheard: Vec<(String, gpui::FocusHandle)> = self.fields.iter().filter(|(key, _)| !self.blurs.contains_key(*key)).map(|(key, (field, _, _))| (key.clone(), field.focus_handle(cx))).collect();
+        for (key, handle) in unheard {
+            let left = key.clone();
+            let subscription = cx.on_blur(&handle, window, move |this, _, cx| this.save_field(&left, true, cx));
+            self.blurs.insert(key, subscription);
+        }
+    }
+
+    /// A field's row's value as it's drawn (for tests).
+    pub fn row_value(&self, key: &str) -> Option<String> {
+        self.field_row_value(key)
+    }
+
+    fn is_secret(&self, key: &str) -> bool {
+        self.items.iter().any(|item| matches!(item, Item::Row { row, .. } if row.key == key && matches!(row.control, Control::Field { masked: true, .. })))
+    }
+
+    /// The value a field's row has now, as its field shows it (none for a search, or a secret,
+    /// which shows none).
+    fn field_row_value(&self, key: &str) -> Option<String> {
+        self.items.iter().find_map(|item| match item {
+            Item::Row { row, .. } if row.key == key => match &row.control {
+                Control::Field { save: Act::Filter, .. } | Control::Field { masked: true, .. } => None,
+                Control::Field { value, .. } => Some(value.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    /// A field's text saved as its row's value: on Return, or as it's left (`left`), where it
+    /// says something other than the row does (left empty, a secret sends nothing). The row's
+    /// revision as read goes with it, so a change made elsewhere meanwhile is still refused.
+    fn save_field(&mut self, key: &str, left: bool, cx: &mut Context<Self>) {
+        // (Left for its own folder picker: what's picked there is what's sent.)
+        if left && self.folder_picker.is_some() {
+            return;
+        }
+        let Some((save, value, masked)) = self.items.iter().find_map(|item| match item {
+            Item::Row { row, .. } if row.key == key => match &row.control {
+                Control::Field { save, value, masked, .. } => Some((save.clone(), value.clone(), *masked)),
+                _ => None,
+            },
+            _ => None,
+        }) else {
+            return;
+        };
+        let Act::Save { at, number } = &save else { return };
+        let Some(text) = self.fields.get(key).map(|(field, _, _)| field.read(cx).text().to_owned()) else { return };
+        // Nothing to save where it says what the row does (a secret, where nothing's typed); and a
+        // change already on its way isn't sent twice.
+        // A secret is sent only with Return: one left half typed, or on the way to Cancel, isn't.
+        let same = if masked {
+            left || text.is_empty()
+        } else if *number {
+            at.field_value(&text, true).is_some_and(|typed| at.original.as_ref().is_some_and(|was| was.as_f64() == typed.as_f64()))
+        } else {
+            at.field_value(&text, false) == Some(Value::String(if at.multiline { value.clone() } else { value.trim().to_owned() }))
+        };
+        if same || self.busy.iter().any(|(busy, _)| busy == key) {
+            return;
+        }
+        self.act(save, cx);
     }
 
     /// The field an address is pasted back in under a row's flow.
@@ -1228,9 +1305,20 @@ impl SettingsView {
                 self.browse_folder(path, cx);
             }
             Act::Replacing { row, on } => {
+                // (What was typed to replace it goes with Cancel: it's never kept or sent.)
+                if !on && let Some((field, _, _)) = self.fields.get(&described::key(&row)) {
+                    field.update(cx, |field, cx| field.set_text("", cx));
+                }
                 self.replacing.retain(|id| *id != row);
                 if on {
                     self.replacing.push(row);
+                }
+            }
+            Act::Expand(key) => {
+                if self.expanded.contains(&key) {
+                    self.expanded.retain(|open| *open != key);
+                } else {
+                    self.expanded.push(key);
                 }
             }
             Act::Section(id) => cx.emit(Pick { place: box_key(self.computer.as_deref().unwrap_or_default(), &id), record: true }),

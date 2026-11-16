@@ -7398,6 +7398,7 @@
           ]
          },
          "name": "string",
+         "line": "string",
          "allowed": {
           "oneOf": [
            "bool",
@@ -7459,6 +7460,7 @@
           ]
          },
          "name": "string",
+         "line": "string",
          "allowed": {
           "oneOf": [
            "bool",
@@ -15278,6 +15280,25 @@
               }
              }
             },
+            "parts?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "value": "number",
+               "words": "string",
+               "parts?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "value": "number",
+                  "words": "string"
+                 }
+                }
+               }
+              }
+             }
+            },
             "section?": "string",
             "address?": "string",
             "start?": {
@@ -15865,6 +15886,25 @@
                   "title": "string",
                   "used": "number",
                   "resets?": "number"
+                 }
+                }
+               },
+               "parts?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "value": "number",
+                  "words": "string",
+                  "parts?": {
+                   "list": {
+                    "object": {
+                     "title": "string",
+                     "value": "number",
+                     "words": "string"
+                    }
+                   }
+                  }
                  }
                 }
                },
@@ -16629,6 +16669,25 @@
               }
              }
             },
+            "parts?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "value": "number",
+               "words": "string",
+               "parts?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "value": "number",
+                  "words": "string"
+                 }
+                }
+               }
+              }
+             }
+            },
             "section?": "string",
             "address?": "string",
             "start?": {
@@ -17216,6 +17275,25 @@
                   "title": "string",
                   "used": "number",
                   "resets?": "number"
+                 }
+                }
+               },
+               "parts?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "value": "number",
+                  "words": "string",
+                  "parts?": {
+                   "list": {
+                    "object": {
+                     "title": "string",
+                     "value": "number",
+                     "words": "string"
+                    }
+                   }
+                  }
                  }
                 }
                },
@@ -17988,6 +18066,25 @@
               }
              }
             },
+            "parts?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "value": "number",
+               "words": "string",
+               "parts?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "value": "number",
+                  "words": "string"
+                 }
+                }
+               }
+              }
+             }
+            },
             "section?": "string",
             "address?": "string",
             "start?": {
@@ -18575,6 +18672,25 @@
                   "title": "string",
                   "used": "number",
                   "resets?": "number"
+                 }
+                }
+               },
+               "parts?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "value": "number",
+                  "words": "string",
+                  "parts?": {
+                   "list": {
+                    "object": {
+                     "title": "string",
+                     "value": "number",
+                     "words": "string"
+                    }
+                   }
+                  }
                  }
                 }
                },
@@ -19347,6 +19463,25 @@
                 }
                }
               },
+              "parts?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "value": "number",
+                 "words": "string",
+                 "parts?": {
+                  "list": {
+                   "object": {
+                    "title": "string",
+                    "value": "number",
+                    "words": "string"
+                   }
+                  }
+                 }
+                }
+               }
+              },
               "section?": "string",
               "address?": "string",
               "start?": {
@@ -19934,6 +20069,25 @@
                     "title": "string",
                     "used": "number",
                     "resets?": "number"
+                   }
+                  }
+                 },
+                 "parts?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "value": "number",
+                    "words": "string",
+                    "parts?": {
+                     "list": {
+                      "object": {
+                       "title": "string",
+                       "value": "number",
+                       "words": "string"
+                      }
+                     }
+                    }
                    }
                   }
                  },
@@ -20703,6 +20857,25 @@
               }
              }
             },
+            "parts?": {
+             "list": {
+              "object": {
+               "id": "string",
+               "title": "string",
+               "value": "number",
+               "words": "string",
+               "parts?": {
+                "list": {
+                 "object": {
+                  "title": "string",
+                  "value": "number",
+                  "words": "string"
+                 }
+                }
+               }
+              }
+             }
+            },
             "section?": "string",
             "address?": "string",
             "start?": {
@@ -21290,6 +21463,25 @@
                   "title": "string",
                   "used": "number",
                   "resets?": "number"
+                 }
+                }
+               },
+               "parts?": {
+                "list": {
+                 "object": {
+                  "id": "string",
+                  "title": "string",
+                  "value": "number",
+                  "words": "string",
+                  "parts?": {
+                   "list": {
+                    "object": {
+                     "title": "string",
+                     "value": "number",
+                     "words": "string"
+                    }
+                   }
+                  }
                  }
                 }
                },
@@ -22083,6 +22275,25 @@
                 }
                }
               },
+              "parts?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "value": "number",
+                 "words": "string",
+                 "parts?": {
+                  "list": {
+                   "object": {
+                    "title": "string",
+                    "value": "number",
+                    "words": "string"
+                   }
+                  }
+                 }
+                }
+               }
+              },
               "section?": "string",
               "address?": "string",
               "start?": {
@@ -22670,6 +22881,25 @@
                     "title": "string",
                     "used": "number",
                     "resets?": "number"
+                   }
+                  }
+                 },
+                 "parts?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "value": "number",
+                    "words": "string",
+                    "parts?": {
+                     "list": {
+                      "object": {
+                       "title": "string",
+                       "value": "number",
+                       "words": "string"
+                      }
+                     }
+                    }
                    }
                   }
                  },
@@ -23481,6 +23711,25 @@
                 }
                }
               },
+              "parts?": {
+               "list": {
+                "object": {
+                 "id": "string",
+                 "title": "string",
+                 "value": "number",
+                 "words": "string",
+                 "parts?": {
+                  "list": {
+                   "object": {
+                    "title": "string",
+                    "value": "number",
+                    "words": "string"
+                   }
+                  }
+                 }
+                }
+               }
+              },
               "section?": "string",
               "address?": "string",
               "start?": {
@@ -24068,6 +24317,25 @@
                     "title": "string",
                     "used": "number",
                     "resets?": "number"
+                   }
+                  }
+                 },
+                 "parts?": {
+                  "list": {
+                   "object": {
+                    "id": "string",
+                    "title": "string",
+                    "value": "number",
+                    "words": "string",
+                    "parts?": {
+                     "list": {
+                      "object": {
+                       "title": "string",
+                       "value": "number",
+                       "words": "string"
+                      }
+                     }
+                    }
                    }
                   }
                  },

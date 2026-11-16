@@ -133,6 +133,8 @@ pub enum Act {
     Open(String),
     /// Opens another section of the computer shown.
     Section(String),
+    /// Opens or closes what a row keeps folded (a meter's breakdown), by its key.
+    Expand(String),
     /// Goes to a place in Settings (`mod.rs`, its keys): another section, or the other side.
     Go(String),
     /// What a described row offers that asks for values first: its form, as a sheet.
@@ -228,8 +230,17 @@ pub enum Control {
     Menu { shown: Option<String>, choices: Vec<(String, Option<String>, Option<Act>, bool)> },
     /// Buttons, in order.
     Buttons(Vec<Push>),
-    /// A field (kept by the view under the row's key), and the buttons beside it.
-    Field { unit: Option<String>, lines: Option<(usize, usize)>, masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push> },
+    /// A field (kept by the view under the row's key), saved as Return is pressed or it's left
+    /// (`save`), never with a button of its own; in it, where the row has them, a folder to
+    /// choose (`browse`) and common values to pick (`picks`); a change on its way (`busy`) is a
+    /// spinner in it, the field kept; and buttons beside it (`more`: a secret's Cancel).
+    Field { unit: Option<String>, lines: Option<(usize, usize)>, masked: bool, value: String, placeholder: String, revision: String, save: Act, more: Vec<Push>, browse: Option<Act>, picks: Vec<Push>, busy: Option<String> },
+    /// A short choice of two or three, side by side: each one's words, what picking it does
+    /// (none where it can't be picked from here), and whether it's it.
+    Segments(Vec<(String, Option<Act>, bool)>),
+    /// A whole by its parts, as one bar with a legend: the row's actions (Refresh) over it, a
+    /// change on its way, and whether its breakdown is open (`open`, toggled by `expand`).
+    Parts { parts: Vec<Part>, actions: Vec<Push>, busy: Option<String>, open: bool, expand: Act },
     /// It opens something: a section, a page.
     Opens(Act),
     /// A change on its way.
@@ -239,6 +250,27 @@ pub enum Control {
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
     Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
+}
+
+/// One part of a whole, as drawn: its name, its words, its share of the whole (0 to 1), and what
+/// it's made of (each one's name and words).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Part {
+    pub title: String,
+    pub words: String,
+    pub share: f32,
+    pub parts: Vec<(String, String)>,
+}
+
+/// Where a row's control goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// Its name and line on the left, the control on the right, in its group's card.
+    #[default]
+    Beside,
+    /// On the page itself, full width, no card: a group's one multi-line field (under the group's
+    /// title and words), or a whole by its parts.
+    Bare,
 }
 
 /// A flow the box leads for a row, as drawn under it.
@@ -285,11 +317,14 @@ pub struct Row {
     /// One more line under it, set apart.
     pub notice: Option<(String, Tone)>,
     pub flow: Option<FlowDrawn>,
+    pub layout: Layout,
+    /// Words before its control (an `actions` row's size), quieter.
+    pub aside: Option<String>,
 }
 
 impl Row {
     pub fn new(key: impl Into<String>, title: impl Into<String>, detail: impl Into<String>, control: Control) -> Row {
-        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control, badge: None, notice: None, flow: None }
+        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control, badge: None, notice: None, flow: None, layout: Layout::Beside, aside: None }
     }
 
     fn leading(mut self, leading: Leading) -> Row {
