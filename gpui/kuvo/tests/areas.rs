@@ -375,6 +375,17 @@ fn a_plan_that_ended_has_no_ring(cx: &mut TestAppContext) {
     assert!(second.contains(&personal.center()), "Cursor's ended plan isn't drawn in its place");
 }
 
+/// The rail's rings are this computer's: an account signed in only on another computer (its row's
+/// `boxes` never `here`) has no ring here, and the next account takes its place.
+#[gpui::test]
+fn an_account_signed_in_only_elsewhere_has_no_ring_here(cx: &mut TestAppContext) {
+    let (_workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    assert!(bounds(cx, "ring-zai-arc-0").is_none(), "Z.ai is signed in on mini-local only");
+    let second = bounds(cx, "ring-1").expect("a second ring");
+    let personal = bounds(cx, "ring-claude-Personal-arc-0").expect("Claude · Personal's ring");
+    assert!(second.contains(&personal.center()), "the next account of this computer's takes its place");
+}
+
 /// Resting on a ring opens its card to the ring's right, centred on it, leaving the rings below
 /// in view; the card takes the clicks on it, so what's under it isn't reached; moving onto it
 /// keeps it open, and off both closes it.

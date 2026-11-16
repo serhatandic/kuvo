@@ -550,7 +550,8 @@ fn accounts(now: f64) -> Vec<Value> {
             (None, Some(_)) => Some("long"),
             _ => None,
         };
-        let mut row = json!({ "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE });
+        // (Signed in on this computer, as its box says: `boxes`, `here`.)
+        let mut row = json!({ "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE, "boxes": [{ "key": "here-key", "name": "This Mac", "here": true }] });
         if let Some(bar) = bar {
             row["bar"] = json!(bar);
         }
@@ -567,6 +568,12 @@ fn accounts(now: f64) -> Vec<Value> {
             ended["ended"] = json!(true);
             ended["problem"] = json!({ "kind": "ended", "message": "Its Cursor plan isn't active now." });
             ended
+        },
+        // Signed in only on another computer (its `boxes` don't say `here`): listed in Usage, no ring here.
+        {
+            let mut elsewhere = row("zai", "Z.ai · mini-local", None, "", "Coding Pro", vec![window("five_hour", "Session", 0.3, 2.0 * HOUR, Some(300), None, None)]);
+            elsewhere["boxes"] = json!([{ "key": "mini-key", "name": "mini-local" }]);
+            elsewhere
         },
         row("claude", "Claude · Personal", Some("claude"), "Personal", "Pro", vec![window("five_hour", "Session", 0.18, 4.1 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.22, 2.0 * DAY, Some(10080), None, None)]),
         row("codex", "Codex", Some("codex"), "", "Pro", vec![window("primary", "Session", 0.74, 52.0 * MINUTE, Some(300), None, None), window("secondary", "Weekly", 0.41, 5.0 * DAY, Some(10080), None, None)]),

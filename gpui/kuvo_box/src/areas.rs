@@ -544,6 +544,20 @@ pub struct Account {
     /// accounts are listed it says its plan ended.
     #[serde(default)]
     pub ended: bool,
+    /// The computers it's signed in on, as the box says (`boxes`).
+    #[serde(default, deserialize_with = "readable")]
+    pub boxes: Vec<RowBox>,
+}
+
+/// A computer an account is signed in on, as a row says it: `here`, the computer whose box answered.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RowBox {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub here: bool,
 }
 
 /// A list's items this can read: one it can't is left out, not all of them (KuvoClient's `Readable`).
@@ -564,6 +578,11 @@ impl Account {
     /// empty, in its place, as the box says it (PROTOCOL.md, "Rings and levels").
     pub fn rings(&self) -> Vec<(f32, Level)> {
         [&self.rings.short, &self.rings.long].into_iter().flatten().map(|ring| (ring.used, ring.level)).collect()
+    }
+
+    /// Signed in on the computer whose box answered (one of its `boxes` is `here`).
+    pub fn here(&self) -> bool {
+        self.boxes.iter().any(|each| each.here)
     }
 }
 

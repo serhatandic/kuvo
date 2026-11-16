@@ -192,9 +192,10 @@ impl Rings {
         self.now.unwrap_or_else(time::now_ms)
     }
 
-    /// The accounts drawn as rings: a plan that ended has none (the box says so, `ended`).
+    /// The accounts drawn as rings: those signed in on this computer, as its box says (`boxes`,
+    /// `here`: what its Accounts shows), and never a plan that ended (`ended`).
     fn ringed(&self) -> Vec<&Account> {
-        self.accounts.iter().flatten().filter(|account| !account.ended).collect()
+        self.accounts.iter().flatten().filter(|account| account.here() && !account.ended).collect()
     }
 
     /// The pointer came onto a ring, or left it: its card opens once it rests there (at once
