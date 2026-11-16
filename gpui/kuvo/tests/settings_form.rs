@@ -153,8 +153,8 @@ fn checks_get_dots_and_a_files_size_and_the_action_gets_what_was_typed(cx: &mut 
     cx.simulate_input("abc123");
     sheet.update(cx, |sheet, cx| sheet.chose_file("key", "id.pem", b"PRIVATE".to_vec(), cx));
     // More than four choices: a menu (further down the sheet, scrolled to as you would).
-    assert!(!shown(cx, "settings-form-model-b"));
     scroll_fields(cx);
+    assert!(!shown(cx, "settings-form-model-b"));
     click(cx, "settings-form-model-menu");
     click(cx, "menu-item-Epsilon");
     assert_eq!(value(&sheet, cx, "model"), json!("e"));

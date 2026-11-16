@@ -1680,7 +1680,8 @@ fn a_kept_value_shows_after_its_you_and_goes_with_the_sheet(cx: &mut TestAppCont
 }
 
 /// Where this app can't make sure it's you, taking access away is still done here, asking nothing;
-/// letting something use it more isn't sent.
+/// and should it be offered more (the stand-in's page is the one an app that asks gets; the box
+/// itself offers such an app no more), the app sends nothing and says so.
 #[gpui::test]
 fn who_can_use_it_is_only_taken_away_where_this_app_cant_make_sure_its_you(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -1697,13 +1698,14 @@ fn who_can_use_it_is_only_taken_away_where_this_app_cant_make_sure_its_you(cx: &
     let sent = stand_in.with_vault(|vault| vault.sent.clone());
     assert_eq!((sent.len(), sent[0].1.as_str(), sent[0].2["bot-bot_scout"].clone()), (1, "who", json!("no")));
     assert!(!shown(cx, "settings-form"), "done: the sheet closes");
-    // Letting another bot use it: nothing's sent, and the sheet stays open.
+    // Letting another bot use it: nothing's sent, the sheet stays open, and says why.
     click(cx, &format!("row-{github}-menu"));
     click(cx, "menu-item-Who Can Use It…");
     click(cx, "settings-form-add-bot-bot_ranger");
     click(cx, "settings-form-submit");
     assert_eq!(vault_sent(&stand_in).len(), 1);
     assert!(shown(cx, "settings-form"));
+    assert_eq!(view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).refused().map(str::to_owned))).as_deref(), Some("It wasn’t confirmed, so nothing was done."));
 }
 
 /// On a Mac: taking access away asks nothing; letting a bot use it asks Touch ID or the Mac's
