@@ -20,7 +20,7 @@ use kuvo_ui::{
 use super::rows::{Act, Control, FlowDrawn, Layout, Leading, Meter, Part, Push, Row, Tone};
 use kuvo_box::settings_pages::{BadgeTone, FlowState};
 use super::{AddMachine, Drawn, Item, PAGE_WIDTH, Pick, SettingsView, Side, Standing, box_key, yours_key};
-use crate::areas::computer_line;
+use crate::areas::{Reading, computer_line};
 use crate::time;
 
 /// How wide the computer picker and its menu are: the sidebar's, inside its padding.
@@ -515,6 +515,52 @@ impl SettingsView {
                         .into_any_element(),
                     None => switch.into_any_element(),
                 }
+            }
+            Control::Model { shown, current, unset, path, was } => {
+                let (this, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
+                let client = self.client.clone();
+                crate::model_picker::setting_button(
+                    key,
+                    shown,
+                    move |window, cx| {
+                        // (What the box last said, read as it opens rather than copied as it's drawn.)
+                        let offered = this
+                            .upgrade()
+                            .and_then(|view| match &view.read(cx).offered {
+                                Reading::Ready(offered) => Some(offered.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        // (The engine's models: these are the engine's own settings.)
+                        let catalog = crate::model_picker::Catalog::new(&offered, |model| model.side == kuvo_box::models::Side::Engine).with_unset(unset.clone(), "", current.is_none());
+                        let (this, kept, client, current, starred, was) = (this.clone(), kept.clone(), client.clone(), current.clone(), offered.starred.clone(), was.clone());
+                        cx.new(|cx| {
+                            crate::model_picker::ModelPicker::new(
+                                std::sync::Arc::new(catalog),
+                                starred,
+                                current,
+                                client,
+                                std::rc::Rc::new(move |picked: Option<kuvo_box::typed::ModelRef>, _, cx| {
+                                    let model = picked.map(|picked| format!("{}/{}", picked.provider_id, picked.id));
+                                    if model != was {
+                                        this.update(cx, |this, cx| this.act(Act::SetModel { path, model, was: was.clone() }, cx)).ok();
+                                    }
+                                }),
+                                window,
+                                cx,
+                            )
+                            .on_starred(std::rc::Rc::new(move |starred, cx| {
+                                kept.update(cx, |this, _| {
+                                    if let Reading::Ready(offered) = &mut this.offered {
+                                        offered.starred = Some(starred);
+                                    }
+                                })
+                                .ok();
+                            }))
+                        })
+                    },
+                    cx,
+                )
             }
             Control::Buttons(buttons) => div().flex().gap(space::S2).children(self.buttons(key, buttons, cx)).into_any_element(),
             Control::Field { more, lines, unit, save, browse, picks, busy, .. } => {

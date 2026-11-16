@@ -244,8 +244,10 @@ fn personality_and_model_are_picked_from_what_the_box_offers(cx: &mut TestAppCon
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "personality": null })));
     assert_eq!(page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.personality.clone())), None);
 
+    // From the model picker: OpenAI's models, then GPT-6.
     click(cx, "bot-model-menu");
-    click(cx, "menu-item-GPT-6");
+    click(cx, "model-rail-openai");
+    click(cx, "model-row-openai/gpt-6");
     assert_eq!(bodies(&stand_in, "PATCH", "kuvo/bots/bot_mira").last(), Some(&json!({ "model": { "providerID": "openai", "id": "gpt-6" } })));
     assert_eq!(page.read_with(cx, |page, _| page.bot().and_then(|bot| bot.model.as_ref().map(|model| model.id.clone()))), Some("gpt-6".into()));
 }
@@ -361,7 +363,8 @@ fn a_blank_bot_sends_what_was_chosen_and_cancel_makes_none(cx: &mut TestAppConte
     click(cx, "new-personality-menu");
     click(cx, "menu-item-Mentor");
     click(cx, "new-model-menu");
-    click(cx, "menu-item-GPT-6");
+    click(cx, "model-rail-openai");
+    click(cx, "model-row-openai/gpt-6");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     click(cx, "new-create");
@@ -448,7 +451,8 @@ fn its_effort_is_picked_from_its_models_own_and_sent_alone(cx: &mut TestAppConte
     assert_eq!(variant(cx), None);
     // A model with no efforts of its own has no Effort row.
     click(cx, "bot-model-menu");
-    click(cx, "menu-item-Gemini 3 Pro");
+    click(cx, "model-rail-google");
+    click(cx, "model-row-google/gemini-3-pro");
     assert!(!shown(cx, "bot-effort-menu") && shown(cx, "bot-model-menu"));
 }
 

@@ -5,11 +5,13 @@
 //   runs): Kuvo Code's own tools in the words kept beside each one's definition, another MCP
 //   server's as "<server> · <tool>";
 // - a note of the box's telling a lead of its sessions gets `metadata.kuvo.news`, each session's
-//   news as its card shows it.
+//   news as its card shows it;
+// - a wake-up's message (a wake-up's or a watch's) gets `metadata.kuvo.wake`: its card's `summary`
+//   (the one its agent gave it, else its note's first sentence) and its `note` whole.
 // Pure data: the same on a Mac's box and a machine's.
 
 import { isObject } from "./json";
-import { boxNoteOf } from "./queues";
+import { boxNoteOf, wakeMarkOf } from "./queues";
 
 /** How a tool's call is told: its MCP `title` (a short imperative name, sent in `tools/list`), and
  * what a step of it says done and while it runs. `target` names an input field to put in them where
@@ -192,9 +194,38 @@ export function sessionNews(text: string): SessionNews[] | null {
   });
 }
 
+// MARK: Wake-ups
+
+/** How a wake-up's (or a watch's) message opens, as `kuvo-wake` and the box write it. */
+export const WAKE_OPENING = "[Wake-up] ";
+
+/** What a wake-up's card shows: its summary, and the note it opens to. */
+export interface WakeCard {
+  summary: string;
+  note: string;
+}
+
+/** The first sentence of `note`'s first line (Markdown's `*` and `` ` `` out of it, and a heading's,
+ * quote's or list item's marks at its start, but not underscores, which names and addresses have),
+ * or that line whole when it has no sentence's end: a `.`, `!`, `?` or `…` with a space or the
+ * line's end after it (not in 1.2 or a site's name). */
+export function firstSentence(note: string): string {
+  const line = note.split(/\r?\n/).find(each => each.trim()) ?? "";
+  const plain = line.replace(/[*`]+/g, "").replace(/^[\s#>-]+/, "").trim();
+  const end = /[.!?…](?=\s|$)/.exec(plain);
+  return end ? plain.slice(0, end.index + 1) : plain;
+}
+
+/** The card a message with `text` and `metadata` is, if it's a wake-up's; null for any other. */
+export function wakeCard(text: string, metadata: unknown): WakeCard | null {
+  if (!text.startsWith(WAKE_OPENING)) return null;
+  const note = text.slice(WAKE_OPENING.length).trim();
+  return { summary: wakeMarkOf(metadata)?.kuvo.wake.summary || firstSentence(note) || "Wake-up", note };
+}
+
 // MARK: Pages
 
-/** A message with the box's words: its tool steps', or its news. */
+/** A message with the box's words: its tool steps', its news, or its wake-up's card. */
 export function messageWords(message: unknown, known: KnownTools): unknown {
   if (!isObject(message)) return message;
   if (message.type === "assistant" && Array.isArray(message.content)) {
@@ -214,6 +245,13 @@ export function messageWords(message: unknown, known: KnownTools): unknown {
     const metadata = isObject(message.metadata) ? message.metadata : {};
     const kuvo = isObject(metadata.kuvo) ? metadata.kuvo : {};
     return { ...message, metadata: { ...metadata, kuvo: { ...kuvo, news } } };
+  }
+  if (message.type === "user" && typeof message.text === "string") {
+    const wake = wakeCard(message.text, message.metadata);
+    if (!wake) return message;
+    const metadata = isObject(message.metadata) ? message.metadata : {};
+    const kuvo = isObject(metadata.kuvo) ? metadata.kuvo : {};
+    return { ...message, metadata: { ...metadata, kuvo: { ...kuvo, wake } } };
   }
   return message;
 }

@@ -42,7 +42,7 @@
               "actions": [
                 {
                   "id": "edit",
-                  "title": "Edit\u2026",
+                  "title": "Edit…",
                   "form": {
                     "title": "Features",
                     "submit": "Save",
@@ -86,7 +86,7 @@
               "actions": [
                 {
                   "id": "edit",
-                  "title": "Edit\u2026",
+                  "title": "Edit…",
                   "form": {
                     "title": "Bugs",
                     "submit": "Save",
@@ -148,11 +148,19 @@
                   "choices": [
                     {
                       "id": "[\"codex-cli\",\"fast\"]",
-                      "title": "Fast (codex-cli)"
+                      "title": "Fast (codex-cli)",
+                      "model": {
+                        "providerID": "codex-cli",
+                        "id": "fast"
+                      }
                     },
                     {
                       "id": "[\"codex-cli\",\"other\"]",
-                      "title": "Other (codex-cli)"
+                      "title": "Other (codex-cli)",
+                      "model": {
+                        "providerID": "codex-cli",
+                        "id": "other"
+                      }
                     }
                   ]
                 },
@@ -196,11 +204,19 @@
                         "choices": [
                           {
                             "id": "[\"codex-cli\",\"fast\"]",
-                            "title": "Fast (codex-cli)"
+                            "title": "Fast (codex-cli)",
+                            "model": {
+                              "providerID": "codex-cli",
+                              "id": "fast"
+                            }
                           },
                           {
                             "id": "[\"codex-cli\",\"other\"]",
-                            "title": "Other (codex-cli)"
+                            "title": "Other (codex-cli)",
+                            "model": {
+                              "providerID": "codex-cli",
+                              "id": "other"
+                            }
                           }
                         ]
                       },
@@ -257,11 +273,19 @@
                   "choices": [
                     {
                       "id": "[\"codex-cli\",\"fast\"]",
-                      "title": "Fast (codex-cli)"
+                      "title": "Fast (codex-cli)",
+                      "model": {
+                        "providerID": "codex-cli",
+                        "id": "fast"
+                      }
                     },
                     {
                       "id": "[\"codex-cli\",\"other\"]",
-                      "title": "Other (codex-cli)"
+                      "title": "Other (codex-cli)",
+                      "model": {
+                        "providerID": "codex-cli",
+                        "id": "other"
+                      }
                     }
                   ]
                 },

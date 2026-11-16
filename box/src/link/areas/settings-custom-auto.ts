@@ -31,8 +31,8 @@ function nameForm(list?: AutoList): SettingForm {
 interface Model { providerID: string; id: string; name: string; efforts: string[] }
 const modelKey = (entry: AutoEntry) => JSON.stringify([entry.providerID, entry.modelID]);
 function entryForm(models: Model[], entry?: AutoEntry): SettingForm {
-  const choices = models.map(model => ({ id: JSON.stringify([model.providerID, model.id]), title: `${model.name} (${model.providerID})` }));
-  if (entry && !choices.some(choice => choice.id === modelKey(entry))) choices.push({ id: modelKey(entry), title: `${entry.modelID} (${entry.providerID})` });
+  const choices = models.map(model => ({ id: JSON.stringify([model.providerID, model.id]), title: `${model.name} (${model.providerID})`, model: { providerID: model.providerID, id: model.id } }));
+  if (entry && !choices.some(choice => choice.id === modelKey(entry))) choices.push({ id: modelKey(entry), title: `${entry.modelID} (${entry.providerID})`, model: { providerID: entry.providerID, id: entry.modelID } });
 
   return { title: entry ? "Change the model or its effort" : "Add Model", submit: entry ? "Save" : "Add Model", fields: [
     { id: "model", title: "Model", kind: "choice", value: entry ? modelKey(entry) : choices[0]?.id ?? "", choices },

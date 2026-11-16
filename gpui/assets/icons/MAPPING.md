@@ -5,6 +5,7 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. S
 
 | Ours | Lucide |
 | --- | --- |
+| alarm | alarm-clock |
 | archive | archive |
 | arrow-down | arrow-down |
 | arrow-left | arrow-left |
@@ -65,3 +66,5 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. S
 | user | user |
 | warning | triangle-alert |
 | sidebar-left (alias of sidebar) | panel-left |
+
+Star is drawn by hand on the 16-unit grid (a five-pointed star, Lucide's stroke and joins), not converted; StarFilled is its filled variant, as Stop is square's.

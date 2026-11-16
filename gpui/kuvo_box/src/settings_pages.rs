@@ -470,6 +470,9 @@ pub struct Choice {
     /// first.
     #[serde(default)]
     pub verified: bool,
+    /// The model it is, where it's one: a client draws its model picker for the field.
+    #[serde(default)]
+    pub model: Option<crate::models::Starred>,
 }
 
 /// One of a `meter` row's windows.

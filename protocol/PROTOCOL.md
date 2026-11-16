@@ -2223,7 +2223,8 @@ the same, and a new conversation, a new bot and a lead's session started from an
 start on a model by the same rule.
 
 - `GET kuvo/models/offered[?folder=<path>][&provider=<id>&model=<id>&variant=<effort>]` → `{"models":
-  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?}], "known": {"engine", "agents"}, "listing"?: [<account id>],
+  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?}], "providers": [{id, name, label?}],
+  "starred": [{providerID, id}], "known": {"engine", "agents"}, "listing"?: [<account id>],
   "starting"?: {providerID, id, variant?} | null}`. `405` for anything but `GET`; `503` with
   neither the engine nor the coding agents' bridge running.
 - `folder` (`models.offered.folder`): a project's folder, or a conversation's, as a full path: the
@@ -2250,6 +2251,18 @@ start on a model by the same rule.
   prices, which run signed out. Never a coding agent's, one that costs nothing only with its
   account (Copilot's included models), nor a provider of your own (one listing no prices reads as
   costing nothing, though it may be a paid gateway).
+- `providers` (`models.offered.providers`): each provider of `models`, in the order its models
+  come, named as its side names its account (`label`: the account's own, a coding agent's second
+  sign-in, "Work"); Custom Auto's lists as "Custom Auto"; one its side doesn't name, by its id. A
+  picker names where each model is from by them, and draws the providers' marks by `id`.
+- `starred` (`models.starred`): your starred models, in the order you starred them, kept by the box
+  (`box/models.json`) so every client's picker shows the same stars. Those that don't run there now
+  are listed too: a client shows only those in `models`, matching one by its id or an alias. `GET
+  kuvo/models/starred` → `{"starred": [{providerID, id}]}`; `POST kuvo/models/starred` with
+  `{providerID, id, starred: true|false}` stars it (at the end, or where it was) or takes its star
+  away, and answers the same; `400` for anything else sent, `405` for another method. A box without
+  `models.starred` keeps none: a client shows no stars there. Moving from the earlier Mac app brings
+  its starred models along (its `favoriteModels` preference).
 - `known`: whether the engine's models, and the coding agents' with Custom Auto's lists, could be
   said. One that couldn't (not answering, an engine that hasn't loaded yet, or the bridge not
   running: starting, or started again) has none in `models`, rather than none at all: a client
@@ -2531,7 +2544,13 @@ client shows it from the same routes.
     left running ended, its own wake-up) is told only if it has something to say: 200 characters or
     more, and not the same again. The exception is what follows a finish told before the work was
     over, told however short, unless its own wake-up began it. The same failure again in a turn
-    that began on its own is told once. Oversight's `finished` mark goes with the telling.
+    that began on its own is told once. Oversight's `finished` mark goes with the telling. Never
+    told (#768): a turn you started by writing to the session yourself (every message that began
+    it is yours, none a letter from its lead), finished or failed, after its first report, as its
+    answer is yours; and a reply that says what the session already sent its lead in that turn
+    with `send_message` (the same words, or 200 characters or more of them), which the box notes
+    in `run/work/sent.json` as the tool runs: its lead had that report, so only Oversight's
+    `finished` mark goes.
   - **Stopping**: `stop_session`, Stop on a session someone started, and `stop-all` end its turn,
     what it left running, and its wake-ups and watches, and mark it in `run/work/stopped.json`.
     `stop-all` takes those waiting on a timer of their own too, and holds what waits only where a
@@ -5149,7 +5168,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   summary, at most two lines, and opens to the note; without one (one from before, or none given),
   the note's first sentence: its first line, Markdown's `*` and `` ` `` and leading `#`, `>` and
   `-` taken out, up to the first `.`, `!`, `?` or `…` with a space or the line's end after it
-  (KuvoClient's `WakeMessage`). `GET kuvo/wakes` lists every session with a wake-up or a
+  (KuvoClient's `WakeMessage`). Each page of messages a box forwards marks such a message for the
+  client (`messages.wake-cards`), with or without a summary given: `metadata.kuvo.wake` is
+  `{summary, note}`, `summary` as above (the one given, else the note's first sentence) and `note`
+  the whole note without `[Wake-up] `; a client draws it as a card of its own (an alarm clock,
+  "Woke up", the summary, opening to the note), reading no text. An older box's page has no `note`:
+  draw the message as it was. `GET kuvo/wakes` lists every session with a wake-up or a
   watch at once, for the marks beside them in a list: `{"sessions": [{session, next, watching,
   wakes, watches, paused}]}` (`next`, the soonest, in seconds since 1970, left out when it has
   none; `wakes`, `watches` and `paused` as `GET kuvo/wakes/<session>` says them, so a client reads
@@ -7165,6 +7189,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `messages.session-news` | `metadata.kuvo.news` on a note telling a lead of its sessions, in every message page ("Messages in a session", "Its sessions' news") |
 | `messages.tool-titles` | `title` and `doing` on every tool step that isn't the engine's own, in every message page ("Tool steps") |
+| `messages.wake-cards` | `metadata.kuvo.wake` `{summary, note}` on every wake-up's (and watch's) message, in every message page ("Wake-ups"); a lead isn't told again what a session sent it, nor of a turn you had with it (#768, "Work") |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
 | `models.offered.folder` | `kuvo/models/offered?folder=<path>`: what's offered in a project's folder, its own settings' models too ("The models offered") |
 | `models.offered.free` | `free` on each model in `kuvo/models/offered` that needs no account ("The models offered", #733) |

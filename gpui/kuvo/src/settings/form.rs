@@ -642,6 +642,57 @@ impl FormSheet {
                     }))
                     .into_any_element()
             }
+            // Models: the model picker, its choices the box's (one that isn't a model, ahead of them).
+            FieldKind::Choice if !disabled && field.choices.iter().any(|choice| choice.model.is_some()) => {
+                let chosen = values.get(&id).and_then(Value::as_str).unwrap_or_default().to_owned();
+                let shown = field.choices.iter().find(|choice| choice.id == chosen).map(|choice| choice.title.clone()).unwrap_or_else(|| chosen.clone());
+                let (choices, this) = (field.choices.clone(), cx.entity().downgrade());
+                let control = crate::model_picker::setting_button(
+                    &format!("settings-form-{id}"),
+                    shown,
+                    move |window, cx| {
+                        let offered = kuvo_box::models::Offered {
+                            models: choices
+                                .iter()
+                                .filter_map(|choice| {
+                                    let model = choice.model.as_ref()?;
+                                    Some(kuvo_box::models::OfferedModel { provider_id: model.provider_id.clone(), id: model.id.clone(), name: choice.title.clone(), side: kuvo_box::models::Side::Engine, efforts: Vec::new(), aliases: Vec::new(), retiring: false, hidden: false, free: false })
+                                })
+                                .collect(),
+                            ..Default::default()
+                        };
+                        let mut catalog = crate::model_picker::Catalog::new(&offered, |_| true);
+                        let unset = choices.iter().find(|choice| choice.model.is_none());
+                        if let Some(unset) = unset {
+                            catalog = catalog.with_unset(unset.title.clone(), unset.line.clone().unwrap_or_default(), unset.id == chosen);
+                        }
+                        let current = choices.iter().find(|choice| choice.id == chosen).and_then(|choice| choice.model.clone()).map(|model| kuvo_box::typed::ModelRef { provider_id: model.provider_id, id: model.id, variant: None });
+                        let (choices, this, id) = (choices.clone(), this.clone(), id.clone());
+                        cx.new(|cx| {
+                            crate::model_picker::ModelPicker::new(
+                                std::sync::Arc::new(catalog),
+                                None,
+                                current,
+                                None,
+                                std::rc::Rc::new(move |picked: Option<kuvo_box::typed::ModelRef>, _, cx| {
+                                    let choice = choices.iter().find(|choice| match (&choice.model, &picked) {
+                                        (Some(model), Some(picked)) => model.provider_id == picked.provider_id && model.id == picked.id,
+                                        (None, None) => true,
+                                        _ => false,
+                                    });
+                                    if let Some(pick) = choice.map(|choice| choice.id.clone()) {
+                                        this.update(cx, |this, cx| this.pick(&id, Value::String(pick), cx)).ok();
+                                    }
+                                }),
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    cx,
+                );
+                div().flex().child(control).into_any_element()
+            }
             // More choices than fit side by side (a model): a menu, as a choice row's.
             // (And any whose choices have lines, which a segment can't show.)
             FieldKind::Choice if field.choices.len() > MOST_SEGMENTS || field.choices.iter().any(|choice| choice.line.is_some()) => {

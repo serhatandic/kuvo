@@ -56,6 +56,11 @@ aren't, and models.dev has none for Cursor or Antigravity. The engine (opencode)
 single binary, with no provider marks to take. None comes from Zed. Each mark is its owner's trademark, shown only to name its
 service.
 
+**Providers' marks** (`assets/marks/providers/<provider>.svg`, the model picker's): models.dev's
+provider logos (MIT, Copyright (c) 2025 models.dev), unchanged, as Kuvo Code already ships them in
+`swift/KuvoClient/Sources/ClientDesign/Resources/Marks.xcassets` (their entry in
+`THIRD_PARTY_LICENSES.txt`). Each is its owner's trademark, shown only to name its provider.
+
 **Adapted code:** parts of `kuvo_ui/src/text_field/` are adapted from GPUI's
 `examples/input.rs` (Copyright 2022 - 2025 Zed Industries, Inc., Apache-2.0), modified; the
 files say so. The license text is `Licenses/gpui.txt`, and GPUI has its entry in the repo's

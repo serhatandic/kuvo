@@ -356,12 +356,18 @@ impl Render for Menu {
     }
 }
 
+/// What a popover can show: a [`Menu`], or a view of its own (a picker) that takes the keyboard
+/// while it's open and says when it's done with [`DismissEvent`].
+pub trait ManagedView: Focusable + EventEmitter<DismissEvent> + Render {}
+impl<T: Focusable + EventEmitter<DismissEvent> + Render> ManagedView for T {}
+
 /// Opens a menu from code (a shortcut, or the gallery's shot) and tells whether one is open.
 #[derive(Clone, Default)]
 pub struct PopoverMenuHandle(Rc<RefCell<Option<OpenMenu>>>);
 
 struct OpenMenu {
-    menu: Entity<Menu>,
+    view: AnyView,
+    focus: FocusHandle,
     /// What had focus before any menu opened here; it gets focus back when the menu closes.
     return_to: Option<FocusHandle>,
     _dismissed: Subscription,
@@ -373,18 +379,23 @@ impl PopoverMenuHandle {
     }
 
     pub fn menu(&self) -> Option<Entity<Menu>> {
-        self.0.borrow().as_ref().map(|open| open.menu.clone())
+        self.0.borrow().as_ref().and_then(|open| open.view.clone().downcast::<Menu>().ok())
+    }
+
+    /// What's open, a menu or a view of its own.
+    pub fn view(&self) -> Option<AnyView> {
+        self.0.borrow().as_ref().map(|open| open.view.clone())
     }
 
     /// Shows `menu`, giving it the keyboard. When it closes, focus goes back to what had it
     /// before: if that was another menu (a second right-click, or one dropdown opened while
     /// another was open), to what that menu was going to give focus back to.
-    pub fn open(&self, menu: Entity<Menu>, window: &mut Window, cx: &mut App) {
+    pub fn open<V: ManagedView>(&self, menu: Entity<V>, window: &mut Window, cx: &mut App) {
         let replaced = self.0.borrow_mut().take();
         let focused = window.focused(cx);
         let return_to = match replaced {
             Some(open) => {
-                OpenMenus::remove(&open.menu.focus_handle(cx), cx);
+                OpenMenus::remove(&open.focus, cx);
                 open.return_to
             }
             None => OpenMenus::return_target(focused, cx),
@@ -407,7 +418,7 @@ impl PopoverMenuHandle {
                 window.refresh();
             })
         };
-        *self.0.borrow_mut() = Some(OpenMenu { menu, return_to, _dismissed: dismissed });
+        *self.0.borrow_mut() = Some(OpenMenu { view: menu.into(), focus: menu_focus.clone(), return_to, _dismissed: dismissed });
         // The menu is painted through `deferred`, so its element only exists after the next
         // frame; focusing it before then would land nowhere.
         window.defer(cx, move |window, cx| window.focus(&menu_focus, cx));
@@ -418,7 +429,7 @@ impl PopoverMenuHandle {
     pub fn close(&self, window: &mut Window, cx: &mut App) {
         let open = self.0.borrow_mut().take();
         if let Some(open) = open {
-            let menu_focus = open.menu.focus_handle(cx);
+            let menu_focus = open.focus.clone();
             OpenMenus::remove(&menu_focus, cx);
             if menu_focus.contains_focused(window, cx)
                 && let Some(target) = &open.return_to {
@@ -462,15 +473,19 @@ impl OpenMenus {
 }
 
 type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Entity<Menu>>;
+/// Makes what a popover shows and opens it with the handle.
+type Opener = Rc<dyn Fn(&PopoverMenuHandle, &mut Window, &mut App)>;
 
 /// A dropdown: a trigger (usually a button) and the menu it opens below itself.
 #[derive(IntoElement)]
 pub struct PopoverMenu {
     id: ElementId,
     trigger: AnyElement,
-    menu: MenuBuilder,
+    menu: Opener,
     handle: Option<PopoverMenuHandle>,
     align_right: bool,
+    above: bool,
+    centered: bool,
 }
 
 impl PopoverMenu {
@@ -479,7 +494,28 @@ impl PopoverMenu {
         trigger: impl IntoElement,
         menu: impl Fn(&mut Window, &mut App) -> Entity<Menu> + 'static,
     ) -> Self {
-        Self { id: id.into(), trigger: trigger.into_any_element(), menu: Rc::new(menu), handle: None, align_right: false }
+        Self::view(id, trigger, menu)
+    }
+
+    /// A popover of a view of its own (a picker), made only as it opens.
+    pub fn view<V: ManagedView>(id: impl Into<ElementId>, trigger: impl IntoElement, view: impl Fn(&mut Window, &mut App) -> Entity<V> + 'static) -> Self {
+        let menu: Opener = Rc::new(move |handle, window, cx| {
+            let view = view(window, cx);
+            handle.open(view, window, cx);
+        });
+        Self { id: id.into(), trigger: trigger.into_any_element(), menu, handle: None, align_right: false, above: false, centered: false }
+    }
+
+    /// Opens above the trigger (a composer's, at the window's foot).
+    pub fn above(mut self) -> Self {
+        self.above = true;
+        self
+    }
+
+    /// Centred on the row it's in, rather than at its top (a toolbar's controls of other heights).
+    pub fn centered(mut self) -> Self {
+        self.centered = true;
+        self
     }
 
     pub fn with_handle(mut self, handle: PopoverMenuHandle) -> Self {
@@ -499,16 +535,23 @@ impl RenderOnce for PopoverMenu {
         let handle = self.handle.unwrap_or_else(|| {
             window.use_keyed_state(self.id.clone(), cx, |_, _| PopoverMenuHandle::default()).read(cx).clone()
         });
-        let open = handle.menu();
+        let open = handle.view();
         let builder = self.menu.clone();
         let toggle = handle.clone();
-        let anchor = if self.align_right { gpui::Anchor::TopRight } else { gpui::Anchor::TopLeft };
+        let anchor = match (self.above, self.align_right) {
+            (false, false) => gpui::Anchor::TopLeft,
+            (false, true) => gpui::Anchor::TopRight,
+            (true, false) => gpui::Anchor::BottomLeft,
+            (true, true) => gpui::Anchor::BottomRight,
+        };
+        let (above, gap) = (self.above, if self.above { -space::S1 } else { space::S1 });
         div()
             .id(self.id)
             .relative()
             .flex()
             .flex_none()
-            .self_start()
+            .when(!self.centered, |d| d.self_start())
+            .when(self.centered, |d| d.self_center())
             // A press on the trigger while the menu is open closes it, rather than closing on
             // the press and opening again on the release.
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -518,18 +561,18 @@ impl RenderOnce for PopoverMenu {
                     toggle.close(window, cx);
                     cx.stop_propagation();
                 } else {
-                    let menu = builder(window, cx);
-                    toggle.open(menu, window, cx);
+                    builder(&toggle, window, cx);
                 }
             })
             .child(self.trigger)
             .children(open.map(|menu| {
                 div()
                     .absolute()
-                    .top_full()
+                    .when(!above, |d| d.top_full())
+                    .when(above, |d| d.top_0())
                     .when(self.align_right, |d| d.right_0())
                     .when(!self.align_right, |d| d.left_0())
-                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), space::S1)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(1))
+                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), gap)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(1))
             }))
     }
 }
@@ -575,7 +618,7 @@ impl RenderOnce for ContextMenuArea {
         let builder = self.menu.clone();
         let opener = (state.0.clone(), handle.clone());
         let at = *state.0.borrow();
-        let open = handle.menu();
+        let open = handle.view();
         div()
             .id(self.id)
             .when(self.fill, |d| d.size_full())

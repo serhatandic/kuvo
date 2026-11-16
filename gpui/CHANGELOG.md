@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- In the desktop app, the bar over a bot's composer no longer shows how many tokens the day has used ("4 sessions at work · answered 1 ask"); that will live in Insights.
 - Quotes work as in 0.7: each part you add to the chat has its own answer under it (click a quote to answer it), so you can comment on each one, and your own words go after them.
 
 - While the agent works, Return adds your message to its task (it reads it at its next step) and ⌘Return queues it for when it's done, as in 0.7; the menu beside Send has both, and Send Now, which stops its current step and gives it your message. Each waiting message has Steer, Send or Send Now, and a right-click menu; a stopped queue says so, with Resume. Every device shows the same queue.

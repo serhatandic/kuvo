@@ -21,6 +21,7 @@ pub mod first_run;
 pub mod groups;
 pub mod home;
 pub mod keeper;
+pub mod model_picker;
 mod landing;
 pub mod launch;
 pub mod notifications;
@@ -55,6 +56,7 @@ actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ToggleSidebar, 
 pub fn bind_keys(cx: &mut App) {
     kuvo_ui::bind_keys(cx);
     composer::bind_keys(cx);
+    model_picker::bind_keys(cx);
     sidebar::bind_keys(cx);
     session_menu::bind_keys(cx);
     area::bind_keys(cx);

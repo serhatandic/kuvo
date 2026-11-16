@@ -64,7 +64,33 @@ fn send_menu_open(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
     composer.update(cx, |composer, cx| composer.open_send_menu(window, cx));
 }
 
+/// The model picker open from the composer's chip (#775): on the model's provider, a search typed,
+/// and another provider picked in the rail.
+fn model_picker(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) -> Option<gpui::Entity<kuvo::model_picker::ModelPicker>> {
+    let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+    composer.update(cx, |composer, cx| composer.open_model_picker(window, cx))
+}
+fn model_picker_open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    model_picker(workspace, window, cx);
+}
+fn model_picker_search(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = model_picker(workspace, window, cx) {
+        picker.update(cx, |picker, cx| picker.type_search("son", cx));
+    }
+}
+fn model_picker_provider(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = model_picker(workspace, window, cx) {
+        picker.update(cx, |picker, cx| picker.show_rail("openai", cx));
+    }
+}
+
 const SCREENS: &[Screen] = &[
+    // The model picker (#775): open on the conversation's provider, searching, another provider;
+    // and the composer's row with a message written (the paperclip, the picks and Send on one line).
+    Screen { slug: "model-picker", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_open) },
+    Screen { slug: "model-picker-search", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_search) },
+    Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
+    Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "compaction-running", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -1329,6 +1355,11 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug.starts_with("settings-skills") {
                 stand_in.add_settings_section(kuvo::stand_in::settings::skills::section(), kuvo::stand_in::settings::skills::page());
+            }
+            if screen.slug.starts_with("model-picker") {
+                // A star, and more providers' models, as a box with several accounts has.
+                stand_in.set_starred(vec![("openai", "gpt-6")]);
+                stand_in.more_models(24);
             }
             if screen.slug.starts_with("settings-mcp") {
                 stand_in.show_mcp();

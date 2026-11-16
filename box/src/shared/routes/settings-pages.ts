@@ -18,7 +18,9 @@ export const SETTING_CONFIRM = object({ title: string, body: string, button: str
 
 /** One of a `choice` row's choices (and a form's `choice` field's). `verified` (a form's): picking
  * it lets something use what's yours more, so a client makes sure it's you first. */
-export const SETTING_CHOICE = object({ id: string, title: string, "line?": string, "verified?": bool });
+/** A choice of a form's field: `model`, where it's a model (an engine's, `provider/model` in its
+ * settings), so a client draws its model picker for the field. */
+export const SETTING_CHOICE = object({ id: string, title: string, "line?": string, "verified?": bool, "model?": object({ providerID: string, id: string }) });
 
 /** A folder picker’s words, including how to clear the choice. */
 export const SETTING_FOLDER = object({ choose: string, clear: string, prompt: string, message: string });

@@ -105,7 +105,7 @@ async function facts(context: RouteContext): Promise<Facts | { status: number; v
   return {
     settings: config.value, engine,
     agents: Array.isArray(listed) ? (listed as unknown[]).filter(isObject) as EngineAgent[] : null,
-    models: models ? models.map(each => ({ id: `${each.providerID}/${each.id}`, title: each.name, line: each.providerID })) : null,
+    models: models ? models.map(each => ({ id: `${each.providerID}/${each.id}`, title: each.name, line: each.providerID, model: { providerID: each.providerID, id: each.id } })) : null,
   };
 }
 

@@ -109,6 +109,12 @@ struct State {
     model_states: HashMap<String, Value>,
     /// The coding agents' bridge can't say its models now (it's starting again).
     agents_unknown: bool,
+    /// Your starred models, as `kuvo/models/starred` keeps them.
+    starred: Vec<Value>,
+    /// More models besides, from other providers (a box with hundreds: shots and timings).
+    more_models: usize,
+    /// It keeps no stars (a box before `models.starred`).
+    no_stars: bool,
     /// Its sessions' models can't be read now (`503`).
     models_fail: bool,
     /// What each conversation waits on you for, as the box words it (`kuvo/sessions/<id>/asks`).
@@ -739,6 +745,26 @@ impl StandIn {
         self.state().models_fail = !readable;
     }
 
+    /// Your starred models, from now on.
+    pub fn set_starred(&self, starred: Vec<(&str, &str)>) {
+        self.state().starred = starred.into_iter().map(|(provider, id)| json!({ "providerID": provider, "id": id })).collect();
+    }
+
+    /// Your starred models, as it keeps them now.
+    pub fn starred(&self) -> Vec<(String, String)> {
+        self.state().starred.iter().map(|each| (each["providerID"].as_str().unwrap_or_default().to_owned(), each["id"].as_str().unwrap_or_default().to_owned())).collect()
+    }
+
+    /// `count` more models besides, from other providers (a box with hundreds).
+    pub fn more_models(&self, count: usize) {
+        self.state().more_models = count;
+    }
+
+    /// It keeps no stars, as a box before `models.starred`.
+    pub fn keeps_no_stars(&self) {
+        self.state().no_stars = true;
+    }
+
     /// Whether the coding agents' bridge can say its models (`known.agents`).
     pub fn agents_known(&self, known: bool) {
         self.state().agents_unknown = !known;
@@ -1039,6 +1065,9 @@ fn signup(now: f64) -> Vec<Value> {
         json!({ "type": "user", "id": "msg_s3b", "time": { "created": t + 90_000.0 }, "text": "[Session finished] \"Write a test for a taken email\" in website (address ses_sub3), after 2 min:\nAdded signup.taken.test.ts; it fails on main and passes with the fix.", "metadata": { "kuvo": {
             "note": { "from": "Its sessions", "line": "“Write a test for a taken email” finished" },
             "news": [{ "session": "ses_sub3", "title": "Write a test for a taken email", "status": "finished", "said": "Added signup.taken.test.ts; it fails on main and passes with the fix." }] } } }),
+        // A wake-up of its own, as its box marks it on the page.
+        json!({ "type": "user", "id": "msg_s3c", "time": { "created": t + 100_000.0 }, "text": "[Wake-up] Check the preview deploy: open its URL, sign up with a taken email, and say whether the form keeps what was typed.\n\nIf it's still building, schedule another wake-up in 10 minutes.", "metadata": { "kuvo": {
+            "wake": { "summary": "Check the preview deploy", "note": "Check the preview deploy: open its URL, sign up with a taken email, and say whether the form keeps what was typed.\n\nIf it's still building, schedule another wake-up in 10 minutes." } } } }),
         user("msg_s4", t + 120_000.0, "Keep what they typed, and say which field is wrong", Some("/plan")),
         json!({ "type": "assistant", "id": "msg_s5", "time": { "created": t + 121_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "content": [
             // Kuvo Code's own tool, by the title its box gives it.
@@ -1464,6 +1493,20 @@ fn models() -> Vec<(Value, Vec<&'static str>)> {
     ]
 }
 
+/// The providers' names, as the box names them.
+const PROVIDERS: &[(&str, &str)] = &[("anthropic", "Anthropic"), ("openai", "OpenAI"), ("google", "Google"), ("opencode", "OpenCode Zen"), ("openrouter", "OpenRouter"), ("deepseek", "DeepSeek"), ("mistral", "Mistral"), ("groq", "Groq"), ("claude-code", "Claude Code")];
+
+/// `count` more models, spread over other providers (made up).
+fn more_models(count: usize) -> Vec<(Value, Vec<&'static str>)> {
+    let providers = [("openrouter", "OpenRouter"), ("deepseek", "DeepSeek"), ("mistral", "Mistral"), ("groq", "Groq")];
+    (0..count)
+        .map(|ix| {
+            let (provider, maker) = providers[ix % providers.len()];
+            (json!({ "providerID": provider, "id": format!("model-{ix}"), "name": format!("{maker} Model {ix}") }), vec![])
+        })
+        .collect()
+}
+
 /// The coding agents' models, as their bridge lists them.
 fn agents_models() -> Vec<(Value, Vec<&'static str>)> {
     vec![(json!({ "providerID": "claude-code", "id": "opus", "name": "Claude Code · Opus", "aliases": ["default"] }), vec!["low", "medium", "high"])]
@@ -1723,10 +1766,30 @@ impl StandIn {
                 if state.first_run.free {
                     listed.extend(first_run::free_models().into_iter().map(|model| with("engine", model)));
                 }
+                listed.extend(more_models(state.more_models).into_iter().map(|model| with("engine", model)));
                 if !state.agents_unknown {
                     listed.extend(agents_models().into_iter().map(|model| with("agents", model)));
                 }
-                answer(200, json!({ "models": listed, "known": { "engine": true, "agents": !state.agents_unknown }, "starting": { "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" } }))
+                let mut said = json!({ "models": listed, "known": { "engine": true, "agents": !state.agents_unknown }, "starting": { "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" } });
+                if !state.no_stars {
+                    said["starred"] = json!(state.starred);
+                    said["providers"] = json!(PROVIDERS.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>());
+                }
+                answer(200, said)
+            }
+            ("POST", ["kuvo", "models", "starred"]) if !state.no_stars => {
+                let body = request.body.clone().unwrap_or_default();
+                let (Some(provider), Some(id), Some(starred)) = (body["providerID"].as_str(), body["id"].as_str(), body["starred"].as_bool()) else {
+                    return answer(400, json!({ "message": "Say which model (providerID, id) and whether it's starred (starred, true or false)." }));
+                };
+                let model = json!({ "providerID": provider, "id": id });
+                let had = state.starred.contains(&model);
+                if starred && !had {
+                    state.starred.push(model);
+                } else if !starred {
+                    state.starred.retain(|each| *each != model);
+                }
+                answer(200, json!({ "starred": state.starred }))
             }
             ("POST", ["kuvo", "messages", "parts"]) => {
                 let texts = request.body.as_ref().and_then(|body| body["texts"].as_array().cloned()).unwrap_or_default();
