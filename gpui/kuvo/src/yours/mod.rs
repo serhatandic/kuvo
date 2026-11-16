@@ -160,6 +160,7 @@ pub struct Panel {
 /// All of your settings, a field a page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Yours {
+    pub queue_last_opened: std::collections::BTreeMap<String, f64>,
     pub appearance: Appearance,
     pub general: General,
     pub panel: Panel,
@@ -181,6 +182,7 @@ pub enum Change {
     Dock(bool),
     ShareAnonymousUsage(bool),
     QuitNoteSeen,
+    QueueOpened(String, f64),
 }
 
 impl Change {
@@ -194,6 +196,7 @@ impl Change {
             Change::Sound(on) => yours.notifications.sound = on,
             Change::Dock(on) => yours.notifications.dock = on,
             Change::ShareAnonymousUsage(on) => yours.privacy.share_anonymous_usage = on,
+            Change::QueueOpened(computer, at) => { yours.queue_last_opened.insert(computer, at); }
             Change::QuitNoteSeen => yours.quit_note_seen = true,
         }
     }
@@ -226,7 +229,7 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
+        let now = Yours { queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
         Store { path, now, file, problem: None }
     }
 
@@ -264,6 +267,7 @@ impl Store {
                 }
             }
         }
+        self.file.insert("queueLastOpened".into(), serde_json::to_value(&self.now.queue_last_opened).unwrap());
         if self.now.quit_note_seen {
             self.file.insert(QUIT_NOTE_SEEN.into(), Value::Bool(true));
         }
@@ -502,5 +506,36 @@ mod tests {
         store.change(Change::Sound(false));
         assert!(store.problem().is_some());
         assert!(!store.now().notifications.sound);
+    }
+}
+
+/// No status-entry stamp is supplied by the box; updated is the closest available time.
+pub fn queue_badge(items: &[kuvo_box::work_queue::Item], opened: Option<f64>) -> usize {
+    items.iter().filter(|item| item.computer.is_none() && item.status == "needs-you" && opened.is_none_or(|at| item.updated.at > at)).count()
+}
+
+#[cfg(test)]
+mod queue_badge_tests {
+    use super::*;
+
+    #[test]
+    fn opening_clears_only_the_badge_and_persists_per_computer() {
+        let path = std::env::temp_dir().join(format!("kuvo-queue-opened-{}.json", std::process::id()));
+        let mut store = Store::read(Some(path.clone()));
+        let mut items: Vec<kuvo_box::work_queue::Item> = serde_json::from_value(serde_json::json!([
+            {"id":"a", "status":"needs-you", "updated":{"at":10}},
+            {"id":"b", "status":"needs-you", "updated":{"at":20}}
+        ])).unwrap();
+        let before = items.clone();
+        assert_eq!(queue_badge(&items, None), 2);
+        store.change(Change::QueueOpened("one".into(), 20.));
+        let restarted = Store::read(Some(path.clone()));
+        let opened = restarted.now().queue_last_opened.get("one").copied();
+        assert_eq!(queue_badge(&items, opened), 0);
+        assert_eq!(items, before);
+        assert_eq!(queue_badge(&items, restarted.now().queue_last_opened.get("two").copied()), 2);
+        items[0].updated.at = 21.;
+        assert_eq!(queue_badge(&items, opened), 1);
+        std::fs::remove_file(path).unwrap();
     }
 }
