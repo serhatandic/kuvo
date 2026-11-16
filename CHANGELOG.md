@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The desktop app's composer has the mode menu (**Ask First**, **Accept Edits**, **Auto**, **Full Access**; Full Access asks once on each computer the first time you pick it) and, for a new session in a project, **Local** or **Worktree**. Over the composer, bars list what runs that the conversation doesn't show as it happens: a bot's sessions at work (with how many asks it answered and the tokens used today, and **All**), the subagents at work and the commands left running in the background, each with **Open** or **Output** and **Stop**. They go once nothing runs.
+
 - Adding a Mac with Kuvo Code 0.7's sessions asks you to update it there first, unless Kuvo is already set up on it as a machine. Make This Mac Its Home and Same Computer As have been removed. Moving saved sign-ins into the vault now removes their Keychain copies after checking they arrived safely; any it can't be sure of stay in the Keychain, and Kuvo says how many.
 
 - Settings › **MCP Servers** is in the desktop app: each server says how it's doing (Connected, Needs sign-in, Couldn’t connect) with its error under it; **Add Server…** and **Edit…** open a form that says as you type what the name will be, whether the computer has the command's program and whether a URL is one (paste a server's setup from its README into the name and the rest fills in); and **Sign In…** shows how it's going under the server until it's done. It's the same for each of your computers, picked at the top of Settings.
