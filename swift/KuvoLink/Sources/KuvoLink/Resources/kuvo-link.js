@@ -14393,6 +14393,17 @@ function keepData(name) {
       fs37.copyFileSync(path40.join(folder, each), path40.join(partial, each));
   }
   fs37.renameSync(partial, path40.join(BACKUPS, name));
+  return dataNow();
+}
+function dataNow() {
+  return ["opencode.db", "opencode.db-wal"].map((each) => {
+    try {
+      const stat = fs37.statSync(path40.join(K, "data", "opencode", each));
+      return `${stat.size}:${stat.mtimeMs}`;
+    } catch {
+      return "-";
+    }
+  }).join(" ");
 }
 function roomForData() {
   let size = 0;
@@ -14404,7 +14415,7 @@ function roomForData() {
 `).pop()?.trim().split(/\s+/)[3];
   return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200000000;
 }
-async function cameUp(version, withAgents, timeout = 120000, readEngine = readEngineFile, readBridge = readBridgeFile) {
+async function cameUp(version, withAgents, timeout = 120000, answered = () => {}, readEngine = readEngineFile, readBridge = readBridgeFile) {
   const began = Date.now();
   while (Date.now() - began < timeout) {
     await sleep(Math.min(2000, timeout / 10));
@@ -14416,6 +14427,7 @@ async function cameUp(version, withAgents, timeout = 120000, readEngine = readEn
       continue;
     if (!await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))
       continue;
+    answered();
     if (!withAgents)
       return true;
     let bridge = null;
@@ -14493,6 +14505,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   if (!takeUpdateLock())
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
+  let dataKept = null, newAnswered = false;
   let keeperEnv = {};
   let checkedEngine = null;
   let fetching = false;
@@ -14644,7 +14657,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       throw new Error(`Kuvo's engine on ${HERE2} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
     }
     if (otherEngine)
-      keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
+      dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     swapped = true;
     swapping();
     if (staged) {
@@ -14666,7 +14679,9 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       writePrivate(ENGINE_STARTED, manifest.engine);
     ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
-    if (!await cameUp(manifest.engine, withAgents, upWithin))
+    if (!await cameUp(manifest.engine, withAgents, upWithin, () => {
+      newAnswered = true;
+    }))
       throw new Error("The new version didn't come up.");
     writePrivate(path40.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
@@ -14683,6 +14698,8 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (stage)
       fs37.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
+      if (!newAnswered && dataKept !== null && dataNow() === dataKept)
+        fs37.rmSync(ENGINE_STARTED, { force: true });
       ran("sh", [path40.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600000);
     } else {
       if (trial) {
@@ -43002,7 +43019,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d5d7951e6b95";
+var BRIDGE_VERSION = "b6feecef6ce0";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -70739,9 +70756,12 @@ async function serve() {
   };
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
   let leaving = false;
-  setInterval(() => {
+  const look = () => {
     if (leaving)
       return;
+    try {
+      dropOldBackups();
+    } catch {}
     const check = serveCheck(started, { leaves });
     if (check === "confirm")
       updateIsWell();
@@ -70750,7 +70770,9 @@ async function serve() {
     leaving = true;
     console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
     leave();
-  }, every).unref?.();
+  };
+  look();
+  setInterval(look, every).unref?.();
   process.stdin.on("end", leave);
   process.stdin.on("close", leave);
   process.stdin.resume();
