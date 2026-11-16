@@ -93,6 +93,9 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
     /// Every computer it's on hasn't been heard from for a while: its numbers are as last told,
     /// never live.
     public var away = false
+    /// Its plan isn't active now, as its box says (`ended` on its row, its `problem` `ended`): no
+    /// ring or bar is drawn for it; it's listed only where accounts are, as a plan that ended.
+    public var ended = false
     /// The two circles a client draws for the account, as its box picks them (a row's alone,
     /// `limits.rings`): the shortest window under a day and the longest of a day or more. Nil
     /// outside a row; none in it for a plan with no windows.
@@ -358,6 +361,7 @@ public struct LimitsAccount: Decodable, Hashable, Sendable, Identifiable {
         rowID = try? container.decodeIfPresent(String.self, forKey: .id)
         boxes = (try? container.decodeIfPresent(Readable<Computer>.self, forKey: .boxes))?.items ?? []
         away = (try? container.decodeIfPresent(Bool.self, forKey: .away)) ?? false
+        ended = (try? container.decodeIfPresent(Bool.self, forKey: .ended)) ?? false
         rings = try? container.decodeIfPresent(Rings.self, forKey: .rings)
         rowLevel = try? container.decodeIfPresent(LimitsLevel.self, forKey: .level)
         barSpan = try? container.decodeIfPresent(String.self, forKey: .bar)

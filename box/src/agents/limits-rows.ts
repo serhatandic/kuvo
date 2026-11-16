@@ -81,6 +81,12 @@ export interface LimitRow extends AccountLimits {
   boxes: LimitRowBox[]
   /** Every computer it's on is away: its numbers are as of their `read`, not live. */
   away?: true
+  /**
+   * Its plan isn't active now, as its maker says on every computer that read it (`problem.kind`
+   * `ended`): no window, no ring. A client lists it where it lists accounts, saying so, and draws
+   * no ring or bar for it.
+   */
+  ended?: true
 }
 
 /**
@@ -120,6 +126,7 @@ export function limitRows(boxes: LimitsBox[], now: number): LimitRow[] {
       })),
     }
     if (members.every((member) => member.box.away)) row.away = true
+    if (row.problem?.kind === "ended") row.ended = true
     withResetsOn(row, members)
     return row
   })

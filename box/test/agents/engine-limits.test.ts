@@ -174,6 +174,22 @@ test("SuperGrok's weekly pool, as the Grok CLI reads it", async () => {
   expect(reads[0]!.headers.get("x-xai-token-auth")).toBe("xai-grok-cli")
 })
 
+test("a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring", async () => {
+  let at = NOW
+  let active = true
+  answers["/grok"] = () => Response.json({ config: active ? { currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-05T00:00:00Z", end: "2026-11-12T00:00:00Z" }, creditUsagePercent: 40 } : { isUnifiedBillingUser: true } })
+  const engine = new EngineAccounts(async () => ({ data: [credential("xai", { type: "oauth", access: "xai-token", expires: NOW + 30 * 24 * 3_600_000 })] }))
+  const limits = new Limits(() => engine.accounts(), undefined, () => at, () => engine.refresh())
+  await limits.tick()
+  expect(limits.rows()[0]!.rings.long?.used).toBe(0.4)
+  // The plan ends; xAI answers with no period to count.
+  active = false
+  at += 11 * 60_000
+  await limits.tick()
+  const [row] = ((await (await limitsRoutes(limits, "GET", [])).json()) as any).data.rows
+  expect([row.ended, row.problem.kind, row.windows, row.rings]).toEqual([true, "ended", [], {}])
+})
+
 test("the Grok agent's own sign-in, in its folder, reads the same pool", async () => {
   const { GrokAgent } = await import("../../src/agents/agents/grok")
   const { agentAccounts } = await import("../../src/agents/limits")

@@ -24,7 +24,12 @@ export interface CursorMapped {
 }
 
 /** Why Cursor's answer couldn't be read as a plan (`CursorUsageError`). */
-export class CursorPlanError extends Error {}
+export class CursorPlanError extends Error {
+  /** Cursor says the account has no plan now (its subscription ended, or it never had one). */
+  constructor(message: string, readonly ended = false) {
+    super(message)
+  }
+}
 
 const ORG = new Set(["enterprise", "team"])
 const text = (value: unknown) => (typeof value === "string" ? value : undefined)
@@ -138,7 +143,7 @@ function creditsLine(creditGrants: Record<string, any> | undefined, stripeBalanc
 export function mapUsage(usage: Record<string, any>, planName: string | undefined, creditGrants: Record<string, any> | undefined, stripeBalanceCents: number): CursorMapped {
   const facts = planFacts(usage)
   const planUsage = object(usage.planUsage)
-  if (!facts.isEnabled || !planUsage) throw new CursorPlanError("No active Cursor subscription.")
+  if (!facts.isEnabled || !planUsage) throw new CursorPlanError("No active Cursor subscription.", true)
   const normalizedPlan = planName?.trim().toLowerCase() ?? ""
   if (!facts.hasLimit && !facts.hasTotalUsagePercent && !facts.hasModelPools) throw new CursorPlanError("Total usage limit missing from API response.")
   const lines: CursorLine[] = []
@@ -503,7 +508,8 @@ export async function readCursorPlan(client: CursorClient, now: () => number = D
     await grokBot(mapped.lines)
     return { mapped, ...(identity ? { identity } : {}) }
   } catch (error) {
-    if (error instanceof CursorPlanError) throw new LimitsProblem("failed", error.message)
+    // (A plan that ended isn't a reading that failed: nothing of it is kept, nor drawn as a ring.)
+    if (error instanceof CursorPlanError) throw new LimitsProblem(error.ended ? "ended" : "failed", error.ended ? "Its Cursor plan isn't active now." : error.message)
     throw error
   }
 }

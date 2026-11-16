@@ -157,9 +157,11 @@ export interface LimitReading {
  * - `expired`: its sign-in lapsed or was turned away, and its agent renews it the next time it runs;
  * - `unreadable`: its sign-in can run the agent but not read the plan's limits;
  * - `failed`: anything else (the network, its maker answering something else);
+ * - `ended`: its maker says the account has no plan now (a subscription that ended): listed, with
+ *   nothing of its windows, so a client shows it as such and draws no ring for it;
  * - `none`: the account has no plan limits to read (signed out, or an API key): it isn't listed.
  */
-export type LimitsProblemKind = "rate-limited" | "expired" | "unreadable" | "failed" | "none"
+export type LimitsProblemKind = "rate-limited" | "expired" | "unreadable" | "failed" | "ended" | "none"
 
 export class LimitsProblem extends Error {
   constructor(
@@ -792,6 +794,16 @@ export class Limits {
           entry.extras = undefined
           entry.next = at + NOTHING_AGAIN
           break
+        case "ended":
+          // No plan now: nothing of what was read before is current (its windows, balance, extras),
+          // the plan's name kept to say which ended; asked again now and then, should it start again.
+          entry.windows = []
+          entry.partialMissing = undefined
+          entry.balance = undefined
+          entry.extras = undefined
+          entry.failures = 0
+          entry.next = at + Math.max(source.every, NOTHING_AGAIN)
+          break
         case "expired":
         case "unreadable":
           // Its maker isn't asked again until the sign-in changes (looked at each round, here only).
@@ -872,8 +884,9 @@ export class Limits {
         this.entries.set(provider, entry)
       }
       this.switched(entry, source)
-      // (One that's never read has nothing a turn doesn't make current: whatever it said goes.)
-      if (entry.problem?.kind === "none" || !source.read) entry.problem = undefined
+      // (One that's never read has nothing a turn doesn't make current: whatever it said goes.
+      // Nor one whose plan had ended: a turn ran on it, so it has one again.)
+      if (entry.problem?.kind === "none" || entry.problem?.kind === "ended" || !source.read) entry.problem = undefined
       const before = entry.windows.find((each) => each.id === window.id)
       const heard: LimitWindow = {
         ...before,
