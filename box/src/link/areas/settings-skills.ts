@@ -84,6 +84,7 @@ async function page(context: RouteContext): Promise<SettingsPage> {
   });
   const trash = await asked(context, skillsRoute, "GET", "kuvo/skill-trash");
   const places = valueAt(known.config, ["skills"]);
+  if (places !== undefined && !Array.isArray(places)) return unreadPage("skills", "Skills", { status: 409, value: { message: "Other Places is set as something other than a list. Change it in the settings file." } });
   return { id: "skills", title: "Skills", groups: [
     { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
     ...(trash.status === 200 && trash.value.entries.length ? [{ id: "deleted-skills", title: "Recently Deleted", note: DELETION, rows: [row({ id: "deleted", title: "Recently Deleted", kind: "list", items: trash.value.entries.map((each: any) => item({ id: `trash-${each.id}`, title: each.name, line: each.description, kind: "actions", actions: [{ id: "restore", title: "Restore" }] })) })] }] : []),
@@ -95,8 +96,21 @@ async function page(context: RouteContext): Promise<SettingsPage> {
   ] };
 }
 const writeConfig = (context: RouteContext, key: string, value: unknown, was: unknown) => asked(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: [key], value, was: was ?? null }] });
+/** Repository names and GitHub links use the same install route as the later Marketplace. */
+export function skillInstall(values: Record<string, unknown>) {
+  const typed = typeof values.repository === "string" ? values.repository.trim() : "";
+  const parts = typed.replace(/^(?:https?:\/\/)?github\.com\//i, "").replace(/\/$/, "").split("/");
+  const repository = parts.slice(0, 2).join("/").replace(/\.git$/, "");
+  const folder = typeof values.path === "string" ? values.path.trim() : "";
+
+  const fields: Array<SettingsChecked["fields"][number]> = [];
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || (parts.length > 2 && !["tree", "blob"].includes(parts[2]!))) fields.push({ id: "repository", words: "Give a GitHub link or a repository like owner/skills.", tone: "warning" });
+  if (["tree", "blob"].includes(parts[2] ?? "")) fields.push({ id: "repository", words: "Use the repository’s main link and give the skill’s folder separately. Links to a branch or file aren’t supported here.", tone: "warning" });
+  if (typeof values.path !== "string") fields.push({ id: "path", words: "Give the skill’s folder as text, or leave it empty for the repository itself.", tone: "warning" });
+  return { repository, path: folder, fields, ready: fields.length === 0 };
+}
 async function checked(context: RouteContext, at: SettingItem, action: SettingAction, values: Record<string, unknown>): Promise<SettingsChecked> {
-  if (at.id === "install") return { ready: typeof values.repository === "string" && /^[^/]+\/[^/]+$/.test(values.repository.trim()) && typeof values.path === "string", fields: [] };
+  if (at.id === "install") { const { ready, fields } = skillInstall(values); return { ready, fields }; }
   if (at.id === "places") return { ready: typeof values.place === "string" && !!values.place.trim(), fields: [] };
   const known = await facts(context);
   if (known.problem) return { ready: false, fields: [] };
@@ -119,8 +133,9 @@ export const skillsSection: Section & { listed: SettingsSection } = {
     const known = await facts(context);
     if (known.problem) return refusal(known.problem);
     if (at.id === "install") {
-      if (typeof values.repository !== "string" || typeof values.path !== "string") return { status: 400, message: "Give the repository and skill’s folder." };
-      return refusal(await asked(context, skillsRoute, "POST", "kuvo/skill-library/install", { repository: values.repository.trim(), path: values.path.trim() }));
+      const install = skillInstall(values);
+      if (!install.ready) return { status: 400, message: install.fields[0]!.words, fields: install.fields };
+      return refusal(await asked(context, skillsRoute, "POST", "kuvo/skill-library/install", { repository: install.repository, path: install.path }));
     }
     if (at.id.startsWith("trash-")) return refusal(await asked(context, skillsRoute, "POST", `kuvo/skill-trash/${encodeURIComponent(at.id.slice(6))}/restore`));
     if (at.id === "places" || at.id.startsWith("place-")) {

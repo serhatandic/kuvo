@@ -299,7 +299,9 @@ export function skillAbout(markdown: unknown): SkillAbout {
       while (index + 1 < lines.length && lines[index + 1].startsWith(" ")) parts.push(lines[++index].trim());
       value = parts.join(" ");
     }
-    value = value.replace(/^["']+|["']+$/g, "");
+    if (value.startsWith('"') && value.endsWith('"')) {
+      try { value = JSON.parse(value); } catch { value = value.slice(1, -1); }
+    } else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1).replaceAll("''", "'");
     if (key === "name") about.name = value;
     if (key === "description") about.description = value;
   }

@@ -13,8 +13,8 @@ let auto: Auto
 let down = false
 const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(request) {
   const url = new URL(request.url), parts = url.pathname.split("/"), id = parts[4]
-  if (url.pathname === "/api/model") return Response.json({ data: [{ id: "fast", name: "Fast", providerID: "codex-cli", variants: [{ id: "high" }] }] })
-  if (url.pathname === "/api/integration") return Response.json({ data: [] })
+  if (url.pathname === "/api/model") return Response.json({ data: [{ id: "fast", name: "Fast", providerID: "codex-cli", variants: [{ id: "high" }] }, { id: "other", name: "Other", providerID: "codex-cli", variants: [] }] })
+  if (url.pathname === "/api/integration") return Response.json({ data: [{ id: "codex-cli", connections: [{}], metadata: { installed: true, modelsComplete: true } }] })
   if (!url.pathname.startsWith("/api/kuvo/auto")) return Response.json({ data: [] })
   if (request.method === "GET") return Response.json({ data: { lists: auto.all(), limits: auto.limits() } })
   if (request.method === "GET") { if (new URL(request.url).pathname === "/api/kuvo/auto") return Response.json({data:{lists:auto.all(),limits:[]}}); return Response.json({data:[]}) }
@@ -86,4 +86,18 @@ test("external changes and every mutation route update the events page", async (
    auto.change("second", auto.all()[1]!.revision, {name:"Outside"})
    expect(rowOf(await external,"list-second").title).toBe("Outside")
  } finally { stream.stop() }
+})
+
+test("model efforts are conditional and unsupported efforts never write", async () => {
+ const row = rowOf(await page(), "models-first"), form = actionOf(row, "add-model").form
+ const unsupported = form.fields.find((field:any) => field.shown?.is.includes(JSON.stringify(["codex-cli","other"])))
+ expect(unsupported.choices).toEqual([{id:"",title:"Default"}])
+ const before = auto.all()
+ const values = {model:JSON.stringify(["codex-cli","other"]),[unsupported.id]:"high"}
+ const checked = await ask(handler,"POST","kuvo/settings/custom-auto/models-first/add-model/check",{values})
+ const refused = await act(row,"add-model",values)
+ expect(checked.json.ready).toBe(false)
+ expect(refused.status).toBe(400)
+ expect(refused.json.fields).toEqual(checked.json.fields)
+ expect(auto.all()).toEqual(before)
 })

@@ -11,6 +11,9 @@
 use std::collections::BTreeMap;
 
 pub mod mcp;
+pub mod commands;
+pub mod skills;
+pub mod custom_auto;
 mod pages;
 
 use serde_json::{Map, Value, json};

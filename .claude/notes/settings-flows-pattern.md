@@ -116,3 +116,14 @@ fixed pages); a declarative way to keep status actions out of the revision; the 
 locked between the box's processes (a double reconnect at worst); a check reads the page and the
 facts twice; the notice isn't selectable; the segmented pick isn't reachable by keyboard; brand marks
 on popular servers; the engine lists no server's tools.
+
+## Repeated sections (2026-11-16)
+Skills, Commands and Custom Auto repeat the list/forms pattern, using existing kinds only.
+Custom Auto is the ordered model fallback lists (`api/kuvo/auto`), not Permissions' allow/deny.
+Its effort choices use `shown` for the selected model; no new kind was needed.
+Skills installs through the reusable `kuvo/skill-library/install` route, accepting a repository
+name or its main GitHub URL plus the skill's folder. Branch/file-qualified links are refused
+explicitly rather than silently installing from another ref. Repo browsing and file previews
+belong to Marketplace Skills (#750), by Foreman's decision; do not extend Settings for them.
+The retired Swift application stays read-only. The desktop draws each page generically; fixed
+stand-in descriptions exercise the existing list/form renderer without duplicating section logic.

@@ -57,6 +57,8 @@ function readForm(known: Facts, name: string | null, values: Record<string, unkn
   if (typeof values.subagent !== "boolean") warn("subagent", "Send true or false.");
   const choices = form(known, name, before).fields.find(each => each.id === "agent")!.choices!;
   if (typeof values.agent === "string" && !choices.some(each => each.id === values.agent)) warn("agent", "Pick one of its choices.");
+  const models = form(known, name, before).fields.find(each => each.id === "model")!.choices!;
+  if (typeof values.model === "string" && !models.some(each => each.id === values.model)) warn("model", "Pick one of its choices.");
   const entry: Record<string, unknown> = { ...before, template: text(values.template) };
   for (const key of ["description", "agent", "model"]) {
     const value = text(values[key]).trim();

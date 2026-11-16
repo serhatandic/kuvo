@@ -82,3 +82,27 @@ test("events follow authored files, permissions and other places", async () => {
     expect(next.find((row: any) => row.id === "place-0").title).toBe("/example")
   } finally { lines.stop() }
 })
+
+test("GitHub install links share check and submit parsing", async () => {
+  const { skillInstall } = await import("../src/link/areas/settings-skills")
+  expect(skillInstall({ repository: "https://github.com/acme/skills", path: "skills/release" })).toMatchObject({ ready: true, repository: "acme/skills", path: "skills/release" })
+  expect(skillInstall({ repository: "https://example.com/acme/skills", path: "" }).ready).toBe(false)
+  expect(skillInstall({ repository: "https://github.com/acme/skills/tree/reviewed/release", path: "" }).ready).toBe(false)
+  const values = { repository: "not-a-repository", path: "" }
+  const at = rows(await page()).find((row: any) => row.id === "install")
+  const checked = await ask(handler, "POST", "kuvo/settings/skills/install/install/check", { values })
+  const refused = await ask(handler, "POST", "kuvo/settings/skills/install/install", { was: at.actions[0].form.revision, values })
+  expect(refused.status).toBe(400)
+  expect(refused.json.fields).toEqual(checked.json.fields)
+})
+test("quoted descriptions round trip and malformed Other Places stays untouched", async () => {
+  const { skillAbout } = await import("../src/link/areas/skills")
+  const description = 'Use "foo" with C:\\scripts and apostrophes'
+  expect(skillAbout(skillDocument("quoted", description, "Text")).description).toBe(description)
+  writeFileSync(CONFIG_FILE, JSON.stringify({ skills: "handwritten" }))
+  const before = readFileSync(CONFIG_FILE, "utf8")
+  const shown = await page()
+  expect(shown.groups).toEqual([])
+  expect(shown.notes[0].tone).toBe("warning")
+  expect(readFileSync(CONFIG_FILE, "utf8")).toBe(before)
+})

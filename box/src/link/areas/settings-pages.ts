@@ -24,6 +24,9 @@ import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
 import { actionsOf, asked, expectedRevision, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Refused, Section } from "./settings-kit";
+import { skillsSection } from "./settings-skills";
+import { customAutoSection } from "./settings-custom-auto";
+import { commandsSection } from "./settings-commands";
 import { mcpSection } from "./settings-mcp";
 import { SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
 import { budgetConfirmation, fileSize, fileSizeUnit } from "../../shared/artifact-budget";
@@ -92,6 +95,9 @@ const SECTIONS: SettingsSection[] = [
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
   mcpSection.listed,
+  commandsSection.listed,
+  customAutoSection.listed,
+  skillsSection.listed,
 ];
 
 export { revised };
@@ -767,6 +773,9 @@ const PAGES: Record<string, Section> = {
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
   mcp: mcpSection,
+  commands: commandsSection,
+  "custom-auto": customAutoSection,
+  skills: skillsSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
 

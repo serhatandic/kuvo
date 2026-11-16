@@ -27,11 +27,15 @@ const modelKey = (entry: AutoEntry) => JSON.stringify([entry.providerID, entry.m
 function entryForm(models: Model[], entry?: AutoEntry): SettingForm {
   const choices = models.map(model => ({ id: JSON.stringify([model.providerID, model.id]), title: `${model.name} (${model.providerID})` }));
   if (entry && !choices.some(choice => choice.id === modelKey(entry))) choices.push({ id: modelKey(entry), title: `${entry.modelID} (${entry.providerID})` });
-  const efforts = [...new Set(models.flatMap(model => model.efforts))];
-  if (entry?.variant && !efforts.includes(entry.variant)) efforts.push(entry.variant);
+
   return { title: entry ? "Change the model or its effort" : "Add Model", submit: entry ? "Save" : "Add Model", fields: [
     { id: "model", title: "Model", kind: "choice", value: entry ? modelKey(entry) : choices[0]?.id ?? "", choices },
-    { id: "variant", title: "Effort", kind: "choice", value: entry?.variant ?? "", choices: [{ id: "", title: "Default" }, ...efforts.map(id => ({ id, title: id }))] },
+    ...choices.map((choice, index) => {
+      const model = models.find(model => JSON.stringify([model.providerID, model.id]) === choice.id);
+      const efforts = [...(model?.efforts ?? [])];
+      if (entry && choice.id === modelKey(entry) && entry.variant && !efforts.includes(entry.variant)) efforts.push(entry.variant);
+      return { id: `effort-${index}`, title: "Effort", kind: "choice" as const, value: entry && choice.id === modelKey(entry) ? entry.variant ?? "" : "", choices: [{ id: "", title: "Default" }, ...efforts.map(id => ({ id, title: id }))], shown: { field: "model", is: [choice.id] } };
+    }),
   ] };
 }
 const rowId = (id: string) => `list-${id}`;
@@ -59,18 +63,24 @@ async function page(context: RouteContext): Promise<SettingsPage> {
     ...(known.limits.length ? [{ id: "auto-limits", title: "Held back at a limit", rows: [row({ id: "limits", title: "Held back at a limit", line: "If a limit has reset sooner than its agent said, Custom Auto can try them all again.", kind: "actions", actions: [{ id: "clear", title: "Try All Again" }] })] }] : []),
   ] };
 }
-function readForm(values: Record<string, unknown>, model: boolean): SettingsChecked {
-  const keys = model ? ["model", "variant"] : ["name"];
+function readForm(values: Record<string, unknown>, model: boolean, form?: SettingForm): SettingsChecked {
+  const keys = model ? ["model"] : ["name"];
   const fields = keys.flatMap(id => typeof values[id] !== "string" || (id !== "variant" && !(values[id] as string).trim()) ? [{ id, words: id === "name" ? "Send a name." : `Give the ${id === "providerID" ? "provider" : id === "modelID" ? "model" : "effort"} as text.`, tone: "warning" as const }] : []);
   if (model && typeof values.model === "string") {
     try { const ref = JSON.parse(values.model); if (!Array.isArray(ref) || ref.length !== 2 || ref.some(value => typeof value !== "string" || !value.trim())) throw new Error(); }
     catch { fields.push({ id: "model", words: "Choose a model.", tone: "warning" }); }
   }
+  if (model && form) {
+    const models = form.fields.find(field => field.id === "model")?.choices ?? [];
+    if (!models.some(choice => choice.id === values.model)) fields.push({ id: "model", words: "Choose one of the offered models.", tone: "warning" });
+    const effort = form.fields.find(field => field.shown?.is.includes(String(values.model)));
+    if (effort && !effort.choices?.some(choice => choice.id === (values[effort.id] ?? values.variant ?? ""))) fields.push({ id: effort.id, words: "Choose an effort this model supports.", tone: "warning" });
+  }
   return { fields, ready: fields.length === 0 };
 }
 const written = (answer: {status: number; value: any}) => answer.status === 409 ? STALE : refusal(answer);
 async function act(context: RouteContext, at: SettingItem, action: SettingAction, values: Record<string, unknown> = {}): Promise<Refused | null> {
-  const checked = action.form ? readForm(values, action.id.includes("model")) : null;
+  const checked = action.form ? readForm(values, action.id.includes("model"), action.form) : null;
   if (checked && !checked.ready) return { status: 400, message: checked.fields[0]!.words, fields: [...checked.fields] };
   const known = await facts(context);
   if (!known.lists) return refusal(known.answer);
@@ -93,7 +103,9 @@ async function act(context: RouteContext, at: SettingItem, action: SettingAction
   const index = entries.findIndex((_, index) => entryId(list.id, index) === at.id);
   if (action.id === "add-model" || action.id === "edit-model") {
     const [providerID, modelID] = JSON.parse(values.model as string) as [string, string];
-    const entry = { providerID, modelID, ...((values.variant as string).trim() ? { variant: (values.variant as string).trim() } : {}) };
+    const field = action.form?.fields.find(field => field.shown?.is.includes(String(values.model)));
+    const variant = String((field ? values[field.id] : undefined) ?? values.variant ?? "").trim();
+    const entry = { providerID, modelID, ...(variant ? { variant } : {}) };
     if (action.id === "add-model") entries.push(entry); else entries[index] = entry;
   } else if (action.id === "remove-model") entries.splice(index, 1);
   else {
@@ -105,6 +117,6 @@ async function act(context: RouteContext, at: SettingItem, action: SettingAction
 }
 export const customAutoSection: Section & { listed: SettingsSection } = {
   listed: { id: "custom-auto", title: "Custom Auto", group: "Models", icon: "sliders", line: "Your lists of models to go through in order when one reaches a usage limit.", keywords: ["auto", "models", "fallback", "limits", "effort"] },
-  read: page, change: noActions, act, check: async (_context, _at, action, values) => readForm(values, action.id.includes("model")),
+  read: page, change: noActions, act, check: async (_context, _at, action, values) => readForm(values, action.id.includes("model"), action.form),
   look: () => String(Math.floor(Date.now() / 1000)),
 };
