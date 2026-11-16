@@ -41746,7 +41746,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "812a6a9f309e";
+var BRIDGE_VERSION = "aeda9d99e178";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63305,10 +63305,13 @@ function ownRules(entry) {
   const permissions = entry?.permissions;
   if (permissions !== undefined && !Array.isArray(permissions))
     return { rules: [], editable: false, list: false };
-  const rules = (permissions ?? []).filter((each) => !isChoice(each));
+  const all = permissions ?? [];
+  const firstRule = all.findIndex((each) => !isChoice(each));
+  const choicesFirst = firstRule < 0 || all.slice(firstRule).every((each) => !isChoice(each));
+  const rules = all.filter((each) => !isChoice(each));
   const rank = (rule) => isRule2(rule) ? RULE_FIELDS.findIndex((field) => field.effect === rule.effect) : -1;
-  const editable = rules.every((rule, at) => rank(rule) >= 0 && (at === 0 || rank(rules[at - 1]) <= rank(rule)));
-  return { rules, editable, list: true };
+  const ordered = rules.every((rule, at) => rank(rule) >= 0 && (at === 0 || rank(rules[at - 1]) <= rank(rule)));
+  return { rules, editable: choicesFirst && ordered, list: true };
 }
 var rulesText = (rules, effect) => rules.filter(isRule2).filter((rule) => rule.effect === effect).map((rule) => `${titleOf2(rule.action)}: ${rule.resource}`).join(`
 `);
@@ -63343,7 +63346,7 @@ function agentForm(context, known, id) {
   const permissions = entry?.permissions;
   const { rules, editable, list } = ownRules(entry);
   const own = Array.isArray(permissions) ? permissions : [];
-  const notList = { why: "Its permissions in the settings file aren't a list of rules: change them there." };
+  const locked = !list ? { why: "Its permissions in the settings file aren't a list of rules: change them there." } : editable ? undefined : { why: "Its permissions are in an order only the settings file keeps: change them there." };
   const model = text8(entry?.model);
   const models = [
     { id: "", title: "Default", line: "A mode uses the session's model; a subagent the one Settings › Models gives subagents." },
@@ -63384,7 +63387,7 @@ function agentForm(context, known, id) {
           ...chosen && !EFFECTS.some((effect) => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []
         ],
         ...at === 0 ? { line: "Default does what Settings › Permissions says. A choice here wins over it for this agent." } : {},
-        ...list ? {} : { can: notList }
+        ...locked ? { can: locked } : {}
       };
     }),
     ...RULE_FIELDS.map((field, at) => ({
@@ -63396,7 +63399,7 @@ function agentForm(context, known, id) {
       placeholder: at === 0 ? RULE_EXAMPLE : at === 1 ? "Run commands: git push *" : "Edit files: *.pem",
       ...at === 0 ? { line: "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything." } : {},
       ...at === RULE_FIELDS.length - 1 ? { line: "Never Allowed wins over Asks First, which wins over Allowed Without Asking." } : {},
-      ...!list ? { can: notList } : editable ? {} : { can: { why: "Its rules are in an order only the settings file keeps: change them there." } }
+      ...locked ? { can: locked } : {}
     }))
   ];
   return id === null ? { title: "New Agent", submit: "Create Agent", fields, note: `On ${computerHere2(context)}, for every project.` } : { title: nameOf6(known, id), submit: "Save", fields };
@@ -63408,7 +63411,7 @@ function readForm2(known, id, values) {
   let ready = true;
   const agents = agentsIn(known.settings);
   if (!agents)
-    return { fields: [{ id: "name", words: "The engine's agents in its settings file aren't a list Kuvo can change: change them there.", tone: "warning" }], ready: false };
+    return { fields: [{ id: "name", words: "The engine's agents in its settings file aren't in a form Kuvo can change: change them there.", tone: "warning" }], ready: false };
   let target = id;
   if (id === null) {
     const typed = text8(values.name).trim();
@@ -63417,6 +63420,12 @@ function readForm2(known, id, values) {
     const taken = Object.keys(agents).some((each) => each.toLowerCase() === lower) || isBuiltIn(lower) || (known.agents ?? []).some((each) => each.id?.toLowerCase() === lower || each.name?.toLowerCase() === lower);
     if (!made) {
       say("name", typed ? "A name needs a letter or a number." : "How it shows in the composer, and how other agents ask for it.", typed ? "warning" : "quiet");
+      ready = false;
+    } else if (made.length > 64) {
+      say("name", "A name of 64 characters at most.", "warning");
+      ready = false;
+    } else if (made in Object.prototype) {
+      say("name", "Pick another name.", "warning");
       ready = false;
     } else if (taken) {
       say("name", `There's an agent called ${made} already.`, "warning");
@@ -63440,10 +63449,10 @@ function readForm2(known, id, values) {
     say("model", `${model} isn't a model here.`, "warning");
     ready = false;
   }
-  const { rules: kept, editable, list } = ownRules(before);
+  const { rules: kept, editable } = ownRules(before);
   const own = Array.isArray(before?.permissions) ? before.permissions : [];
   let permissions = before?.permissions;
-  if (list) {
+  if (editable) {
     const choices = [];
     for (const action of ACTIONS) {
       const picked = values[`may-${action.id}`];
@@ -63458,18 +63467,15 @@ function readForm2(known, id, values) {
         continue;
       choices.push({ action: action.id, resource: "*", effect: picked });
     }
-    let rules = kept;
-    if (editable) {
-      const named = [...new Set([...OTHER_ACTIONS, ...kept.filter(isRule2).map((rule) => rule.action)])];
-      rules = RULE_FIELDS.flatMap((field) => {
-        const read = parseRules(text8(values[field.id]), field.effect, named);
-        if (read.why) {
-          say(field.id, read.why, "warning");
-          ready = false;
-        }
-        return read.rules;
-      });
-    }
+    const named = [...new Set([...OTHER_ACTIONS, ...kept.filter(isRule2).map((rule) => rule.action)])];
+    const rules = RULE_FIELDS.flatMap((field) => {
+      const read = parseRules(text8(values[field.id]), field.effect, named);
+      if (read.why) {
+        say(field.id, read.why, "warning");
+        ready = false;
+      }
+      return read.rules;
+    });
     const made = [...choices, ...rules];
     permissions = made.length ? made : undefined;
   }
@@ -63482,7 +63488,7 @@ function readForm2(known, id, values) {
   for (const [key, value] of [["description", text8(values.description).trim()], ["model", model], ["system", text8(values.system).trim()]]) {
     if (value)
       entry[key] = value;
-    else
+    else if (typeof before?.[key] === "string")
       delete entry[key];
   }
   if (id !== null && values.on === false)
@@ -63507,7 +63513,7 @@ async function agentsPage(context) {
     return unreadPage("agents", TITLE2, known);
   const agents = agentsIn(known.settings);
   const where = computerHere2(context);
-  const notList = { why: "The engine's agents in its settings file aren't a list Kuvo can change: change them there." };
+  const notList = { why: "The engine's agents in its settings file aren't in a form Kuvo can change: change them there." };
   const items = listedAgents2(known).map((id) => {
     const entry = entryOf2(known, id);
     const builtIn = isBuiltIn(id);
@@ -63562,7 +63568,7 @@ async function agentsPage(context) {
   }
   const notes = [
     ...agents ? [] : [{ words: notList.why, tone: "warning" }],
-    ...known.agents ? [] : [{ words: `The engine isn’t running on ${where}, so the models to pick from and what each agent may do by default aren’t known. The agents are listed as the settings have them.`, tone: "warning" }]
+    ...known.agents ? [] : [{ words: `The engine on ${where} isn’t answering, so the models to pick from and what each agent may do by default aren’t known. The agents are listed as the settings have them.`, tone: "warning" }]
   ];
   return { id: "agents", title: TITLE2, groups, ...notes.length ? { notes } : {} };
 }
@@ -63580,7 +63586,8 @@ async function agentsChange(context, at, value) {
     return STALE;
   if (value === at.value)
     return null;
-  const changes = [{ path: ["agents", id, "disabled"], value: value ? null : true, was: entry?.disabled ?? null }];
+  const keeps = !isBuiltIn(id) && entry !== undefined && Object.keys(entry).length === 1;
+  const changes = [{ path: ["agents", id, "disabled"], value: value ? keeps ? false : null : true, was: entry?.disabled ?? null }];
   if (value === false && known.settings.default_agent === id)
     changes.push({ path: ["default_agent"], value: null, was: id });
   return staleOrRefusal(await write4(context, changes));

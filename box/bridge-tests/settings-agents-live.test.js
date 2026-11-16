@@ -93,7 +93,7 @@ test("a machine's Agents settings are listed, added, turned off and on, reset an
 
   let shown = page();
   assert.deepEqual(rowOf(shown, "agents").items.map(each => each.title), ["Build", "Plan", "General", "Explore"]);
-  if (!engine) assert.match(shown.notes[0].words, /The engine isn’t running/);
+  if (!engine) assert.match(shown.notes[0].words, /isn’t answering/);
 
   // New Agent…, checked as it's typed, then made.
   const list = rowOf(shown, "agents");

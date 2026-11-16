@@ -106,7 +106,7 @@ test("with its engine down, the agents are still listed from the settings, and t
   engineRuns = false
   const shown = await page(false)
   expect(rowOf(shown, "agents").items.map((each: any) => each.id)).toEqual(["agent-build", "agent-plan", "agent-general", "agent-explore", "agent-reviewer"])
-  expect(shown.notes[0]).toMatchObject({ tone: "warning", words: expect.stringContaining("The engine isn’t running on lokum") })
+  expect(shown.notes[0]).toMatchObject({ tone: "warning", words: expect.stringContaining("The engine on lokum isn’t answering") })
   // Its model is kept as the settings name it.
   const title = fieldOf(rowOf(shown, "agent-reviewer"), "edit", "model")
   expect(title.choices.map((each: any) => each.id)).toEqual([""])
@@ -210,12 +210,44 @@ test("Edit… saves what's changed, keeps what it doesn't show, writes nothing f
   expect(config().agents.plan).toBeUndefined()
 })
 
-test("rules kept in an order the form can't show are left as they are, and said so", async () => {
-  write(CONFIG_FILE, { agents: { odd: { mode: "subagent", permissions: [{ action: "shell", resource: "rm *", effect: "deny" }, { action: "shell", resource: "rm -i *", effect: "allow" }] } } })
+test("permissions kept in an order the form can't show are left exactly as they are, and said so", async () => {
+  const why = "Its permissions are in an order only the settings file keeps: change them there."
+  // A rule allowing after one denying, and a choice for every command after a rule for some: each
+  // rewritten in the form's order would allow or deny something else.
+  const lists = {
+    odd: [{ action: "shell", resource: "rm *", effect: "deny" }, { action: "shell", resource: "rm -i *", effect: "allow" }],
+    late: [{ action: "shell", resource: "git *", effect: "allow" }, { action: "shell", resource: "*", effect: "deny" }],
+  }
+  write(CONFIG_FILE, { agents: { odd: { mode: "subagent", permissions: lists.odd }, late: { mode: "subagent", permissions: lists.late } } })
+  for (const id of ["odd", "late"] as const) {
+    const agent = rowOf(await page(), `agent-${id}`)
+    expect(fieldOf(agent, "edit", "allowed")).toMatchObject({ value: "", can: { why } })
+    expect(fieldOf(agent, "edit", "may-shell").can).toEqual({ why })
+    expect((await submit(agent, "edit", { ...formValues(agent, "edit"), description: "Careful" })).status).toBe(200)
+    expect(config().agents[id]).toEqual({ mode: "subagent", description: "Careful", permissions: lists[id] })
+  }
+})
+
+test("what the form can't show is kept: a model written as an object, and one of yours that's only turned off", async () => {
+  write(CONFIG_FILE, { agents: { odd: { mode: "subagent", model: { providerID: "lab", modelID: "big" } }, bare: { disabled: true } } })
   const odd = rowOf(await page(), "agent-odd")
-  expect(fieldOf(odd, "edit", "allowed")).toMatchObject({ value: "", can: { why: "Its rules are in an order only the settings file keeps: change them there." } })
-  expect((await submit(odd, "edit", { ...formValues(odd, "edit"), description: "Careful", "may-shell": "ask" })).status).toBe(200)
-  expect(config().agents.odd.permissions).toEqual([{ action: "shell", resource: "*", effect: "ask" }, { action: "shell", resource: "rm *", effect: "deny" }, { action: "shell", resource: "rm -i *", effect: "allow" }])
+  expect((await submit(odd, "edit", formValues(odd, "edit"))).status).toBe(200)
+  expect(config().agents.odd.model).toEqual({ providerID: "lab", modelID: "big" })
+  // Turned on, it's still there.
+  const shown = (await change(rowOf(await page(), "agent-bare"), true)).json
+  expect(config().agents.bare).toEqual({ disabled: false })
+  expect(rowOf(shown, "agent-bare").value).toBe(true)
+})
+
+test("a name the settings can't keep an agent by is refused", async () => {
+  const agents = rowOf(await page(), "agents")
+  for (const name of ["__proto__", "toString", "x".repeat(65)]) {
+    const checked = (await check(agents, "add", { ...formValues(agents, "add"), name })).json
+    expect(checked.ready).toBe(false)
+  }
+  const before = readFileSync(CONFIG_FILE, "utf8")
+  expect((await submit(agents, "add", { ...formValues(agents, "add"), name: "__proto__" })).status).toBe(400)
+  expect(readFileSync(CONFIG_FILE, "utf8")).toBe(before)
 })
 
 test("Reset to Built-In and Delete take the agent's settings out, and a deleted one stops being where sessions start", async () => {
@@ -249,6 +281,6 @@ test("a settings file whose agents aren't an object is left alone, and the page 
   write(CONFIG_FILE, { agents: ["not", "an", "object"] })
   const shown = await page()
   expect(rowOf(shown, "agents").add).toBeUndefined()
-  expect(rowOf(shown, "agent-build").can).toEqual({ why: expect.stringContaining("aren't a list Kuvo can change") })
+  expect(rowOf(shown, "agent-build").can).toEqual({ why: expect.stringContaining("aren't in a form Kuvo can change") })
   expect(shown.notes[0].tone).toBe("warning")
 })

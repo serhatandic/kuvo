@@ -8973,14 +8973,17 @@ The sections now:
   its title, "Run commands", or the engine's name, "shell", either case). A submit writes the
   agent's entry through `kuvo/config` with the entry as read (`was`): the choices first, then the
   rules allowed, asked, never (so Never Allowed wins), and what the form doesn't show (`steps`,
-  `temperature`) stays. Rules written by hand in another order, or permissions that aren't a list,
-  are shown as `can: {why}` and kept as they are. A built-in one left as it's built in has no
+  `temperature`, a value of a kind the form doesn't show, like a `model` object) stays. Permissions
+  in another order (a choice after a rule, or a rule allowing after one asking or denying), or that
+  aren't a list, are shown as `can: {why}` on the `may-*` and rules fields and kept exactly as they
+  are. A name of more than 64 characters, or one every object has (`__proto__`, `toString`), is
+  refused. One of yours turned on whose entry has nothing else is kept as `disabled: false`. A built-in one left as it's built in has no
   entry. An agent turned off, made a subagent only, or deleted that `default_agent` names stops
   being it, in the same write. Then From Claude Code (`claude-code`, only while there are any):
   `kuvo/claude-code`'s agents, each `claude-<id>` with `import` (written at `agents.<id>` as a
   subagent with its description and instructions) or "Imported". Its events follow the settings
-  file and ~/.claude/agents, and read the engine every ten seconds. With the engine down, the
-  agents are listed from the settings and the page's note says the models and defaults aren't
+  file and ~/.claude/agents, and read the engine every ten seconds. With the engine not answering,
+  the agents are listed from the settings and the page's note says the models and defaults aren't
   known.
 
 - **Archived Sessions** (`archived`): archived sessions grouped by project, from

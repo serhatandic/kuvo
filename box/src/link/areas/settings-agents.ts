@@ -136,6 +136,9 @@ const modeOf = (known: Facts, id: string, entry?: Record<string, unknown>): stri
 /** The built-in agents' own rules for the kinds of action with a choice, where they differ from the
  * engine's default, as engine 2.2.6 lists them (`api/agent`): Plan doesn't edit, General and Explore
  * hand no work on, and Explore only reads, searches and runs commands. */
+// (Settings › Permissions' rules come after these in what the engine has for each agent, so its
+// choice wins: checked against 2.2.6, `api/agent`. The engine's own list can't stand in for this
+// table: it says nothing of working outside the project, which asks by another rule.)
 const BUILT_IN_RULES: Record<string, Record<string, string>> = {
   plan: { edit: "deny" },
   general: { subagent: "deny" },
@@ -153,15 +156,20 @@ function inherited(known: Facts, id: string, action: string): string {
 
 const titleOf = (action: string) => ACTIONS.find(each => each.id === action)?.title ?? action;
 
-/** An agent's own rules (not the choices), and whether the form can show them as its three fields:
- * each a rule with an effect it knows, already in the order the fields write them. */
+/** An agent's own rules (not the choices), and whether the form can show its permissions as it
+ * writes them: the choices first, then each rule with an effect it knows, allowed, asked, never.
+ * Any other order is kept as it is (a choice after a rule, or a rule allowing after one denying,
+ * would mean something else rewritten), and the form says so. */
 function ownRules(entry: Record<string, unknown> | undefined): { rules: unknown[]; editable: boolean; list: boolean } {
   const permissions = entry?.permissions;
   if (permissions !== undefined && !Array.isArray(permissions)) return { rules: [], editable: false, list: false };
-  const rules = (permissions ?? []).filter(each => !isChoice(each));
+  const all = permissions ?? [];
+  const firstRule = all.findIndex(each => !isChoice(each));
+  const choicesFirst = firstRule < 0 || all.slice(firstRule).every(each => !isChoice(each));
+  const rules = all.filter(each => !isChoice(each));
   const rank = (rule: unknown) => (isRule(rule) ? RULE_FIELDS.findIndex(field => field.effect === rule.effect) : -1);
-  const editable = rules.every((rule, at) => rank(rule) >= 0 && (at === 0 || rank(rules[at - 1]) <= rank(rule)));
-  return { rules, editable, list: true };
+  const ordered = rules.every((rule, at) => rank(rule) >= 0 && (at === 0 || rank(rules[at - 1]) <= rank(rule)));
+  return { rules, editable: choicesFirst && ordered, list: true };
 }
 
 const rulesText = (rules: unknown[], effect: string) =>
@@ -199,7 +207,8 @@ function agentForm(context: RouteContext, known: Facts, id: string | null): Sett
   const permissions = entry?.permissions;
   const { rules, editable, list } = ownRules(entry);
   const own = Array.isArray(permissions) ? permissions : [];
-  const notList = { why: "Its permissions in the settings file aren't a list of rules: change them there." };
+  const locked = !list ? { why: "Its permissions in the settings file aren't a list of rules: change them there." }
+    : editable ? undefined : { why: "Its permissions are in an order only the settings file keeps: change them there." };
   const model = text(entry?.model);
   const models: { id: string; title: string; line?: string }[] = [
     { id: "", title: "Default", line: "A mode uses the session's model; a subagent the one Settings › Models gives subagents." },
@@ -234,7 +243,7 @@ function agentForm(context: RouteContext, known: Facts, id: string | null): Sett
           ...(chosen && !EFFECTS.some(effect => effect.id === chosen) ? [{ id: chosen, title: "Set by a Newer Engine" }] : []),
         ],
         ...(at === 0 ? { line: "Default does what Settings › Permissions says. A choice here wins over it for this agent." } : {}),
-        ...(list ? {} : { can: notList }),
+        ...(locked ? { can: locked } : {}),
       };
     }),
     ...RULE_FIELDS.map((field, at): SettingField => ({
@@ -242,7 +251,7 @@ function agentForm(context: RouteContext, known: Facts, id: string | null): Sett
       placeholder: at === 0 ? RULE_EXAMPLE : at === 1 ? "Run commands: git push *" : "Edit files: *.pem",
       ...(at === 0 ? { line: "For particular commands, files or sites, one a line: what it's for, then a pattern. * matches anything." } : {}),
       ...(at === RULE_FIELDS.length - 1 ? { line: "Never Allowed wins over Asks First, which wins over Allowed Without Asking." } : {}),
-      ...(!list ? { can: notList } : editable ? {} : { can: { why: "Its rules are in an order only the settings file keeps: change them there." } }),
+      ...(locked ? { can: locked } : {}),
     })),
   ];
   return id === null
@@ -254,17 +263,18 @@ function agentForm(context: RouteContext, known: Facts, id: string | null): Sett
  * hyphens and underscores (the engine takes it as it is, as a mode and a subagent). */
 const agentId = (typed: string): string => typed.replace(/[^\p{L}\p{N}_ -]/gu, "").split(" ").filter(Boolean).join(" ");
 
-/** The form's values read: each field's words, whether it can be saved, and the changes it makes
- * to the engine's settings (each from what was there), with the new agent's id. */
 /** One change to the engine's settings, from what was there. */
 type Change = { path: string[]; value: unknown; was: unknown };
+
+/** The form's values read: each field's words, whether it can be saved, and the changes it makes
+ * to the engine's settings (each from what was there), with the new agent's id. */
 
 function readForm(known: Facts, id: string | null, values: Record<string, unknown>): SettingsChecked & { changes?: Change[]; id?: string } {
   const fields: SettingFieldWords[] = [];
   const say = (field: string, words: string, tone: SettingFieldWords["tone"]) => fields.push({ id: field, words, tone });
   let ready = true;
   const agents = agentsIn(known.settings);
-  if (!agents) return { fields: [{ id: "name", words: "The engine's agents in its settings file aren't a list Kuvo can change: change them there.", tone: "warning" }], ready: false };
+  if (!agents) return { fields: [{ id: "name", words: "The engine's agents in its settings file aren't in a form Kuvo can change: change them there.", tone: "warning" }], ready: false };
 
   let target = id;
   if (id === null) {
@@ -275,6 +285,13 @@ function readForm(known: Facts, id: string | null, values: Record<string, unknow
       || (known.agents ?? []).some(each => each.id?.toLowerCase() === lower || each.name?.toLowerCase() === lower);
     if (!made) {
       say("name", typed ? "A name needs a letter or a number." : "How it shows in the composer, and how other agents ask for it.", typed ? "warning" : "quiet");
+      ready = false;
+    } else if (made.length > 64) {
+      say("name", "A name of 64 characters at most.", "warning");
+      ready = false;
+    } else if (made in Object.prototype) {
+      // (A name every object has: the settings can't keep an agent by it.)
+      say("name", "Pick another name.", "warning");
       ready = false;
     } else if (taken) {
       say("name", `There's an agent called ${made} already.`, "warning");
@@ -301,10 +318,11 @@ function readForm(known: Facts, id: string | null, values: Record<string, unknow
   }
 
   // Its permissions: a choice for each kind of action at the front, then the rules, by what they do.
-  const { rules: kept, editable, list } = ownRules(before);
+  const { rules: kept, editable } = ownRules(before);
   const own = Array.isArray(before?.permissions) ? before!.permissions as unknown[] : [];
+  // (Permissions the form can't show as it writes them are kept as they are.)
   let permissions: unknown = before?.permissions;
-  if (list) {
+  if (editable) {
     const choices: Rule[] = [];
     for (const action of ACTIONS) {
       const picked = values[`may-${action.id}`];
@@ -319,18 +337,15 @@ function readForm(known: Facts, id: string | null, values: Record<string, unknow
       if (picked === from && chosen !== picked) continue;
       choices.push({ action: action.id, resource: "*", effect: picked });
     }
-    let rules: unknown[] = kept;
-    if (editable) {
-      const named = [...new Set([...OTHER_ACTIONS, ...kept.filter(isRule).map(rule => rule.action)])];
-      rules = RULE_FIELDS.flatMap(field => {
-        const read = parseRules(text(values[field.id]), field.effect, named);
-        if (read.why) {
-          say(field.id, read.why, "warning");
-          ready = false;
-        }
-        return read.rules;
-      });
-    }
+    const named = [...new Set([...OTHER_ACTIONS, ...kept.filter(isRule).map(rule => rule.action)])];
+    const rules = RULE_FIELDS.flatMap(field => {
+      const read = parseRules(text(values[field.id]), field.effect, named);
+      if (read.why) {
+        say(field.id, read.why, "warning");
+        ready = false;
+      }
+      return read.rules;
+    });
     const made = [...choices, ...rules];
     permissions = made.length ? made : undefined;
   }
@@ -340,7 +355,9 @@ function readForm(known: Facts, id: string | null, values: Record<string, unknow
   // (A built-in one used as it's built in has nothing written for it.)
   if (builtIn && mode === BUILT_IN_MODES[target!] && before?.mode === undefined) delete entry.mode; else entry.mode = mode;
   for (const [key, value] of [["description", text(values.description).trim()], ["model", model], ["system", text(values.system).trim()]] as const) {
-    if (value) entry[key] = value; else delete entry[key];
+    // (One written by hand as something the form can't show, a model as an object say, opens empty
+    // and is kept unless something's put in its place.)
+    if (value) entry[key] = value; else if (typeof before?.[key] === "string") delete entry[key];
   }
   if (id !== null && values.on === false) entry.disabled = true; else delete entry.disabled;
   if (permissions === undefined) delete entry.permissions; else entry.permissions = permissions;
@@ -360,7 +377,7 @@ async function agentsPage(context: RouteContext): Promise<SettingsPage> {
   if (!("settings" in known)) return unreadPage("agents", TITLE, known);
   const agents = agentsIn(known.settings);
   const where = computerHere(context);
-  const notList = { why: "The engine's agents in its settings file aren't a list Kuvo can change: change them there." };
+  const notList = { why: "The engine's agents in its settings file aren't in a form Kuvo can change: change them there." };
 
   const items: SettingItem[] = listedAgents(known).map(id => {
     const entry = entryOf(known, id);
@@ -410,7 +427,7 @@ async function agentsPage(context: RouteContext): Promise<SettingsPage> {
 
   const notes = [
     ...(agents ? [] : [{ words: notList.why, tone: "warning" as const }]),
-    ...(known.agents ? [] : [{ words: `The engine isn’t running on ${where}, so the models to pick from and what each agent may do by default aren’t known. The agents are listed as the settings have them.`, tone: "warning" as const }]),
+    ...(known.agents ? [] : [{ words: `The engine on ${where} isn’t answering, so the models to pick from and what each agent may do by default aren’t known. The agents are listed as the settings have them.`, tone: "warning" as const }]),
   ];
   return { id: "agents", title: TITLE, groups, ...(notes.length ? { notes } : {}) };
 }
@@ -431,7 +448,9 @@ async function agentsChange(context: RouteContext, at: SettingItem, value: unkno
   const entry = entryOf(known, id);
   if ((entry?.disabled !== true) !== at.value) return STALE;
   if (value === at.value) return null;
-  const changes: Change[] = [{ path: ["agents", id, "disabled"], value: value ? null : true, was: entry?.disabled ?? null }];
+  // (Turned on, one of yours with nothing else written keeps its entry, which is the agent.)
+  const keeps = !isBuiltIn(id) && entry !== undefined && Object.keys(entry).length === 1;
+  const changes: Change[] = [{ path: ["agents", id, "disabled"], value: value ? (keeps ? false : null) : true, was: entry?.disabled ?? null }];
   if (value === false && known.settings.default_agent === id) changes.push({ path: ["default_agent"], value: null, was: id });
   return staleOrRefusal(await write(context, changes));
 }
