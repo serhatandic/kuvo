@@ -721,8 +721,8 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet" })
   expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs when nothing’s at work, or now." })
   // Work under way is said before it's stopped.
-  expect(rowOf(shown, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work there now: what they’re doing stops. A newer version, if there is one, installs now." } })
-  expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work there now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
+  expect(rowOf(shown, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
+  expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
 
   // From your phone the same page names the Mac, and what opens only on it says so instead.
   const away = await fromAway("kuvo/settings/computer")

@@ -7633,8 +7633,9 @@ decides nothing itself.
   The script checks this first, from the bundle's ID, before it writes anything: either mismatch,
   or no app, is `{"result": "refused", "message"}` (exit 1) with nothing made, not even the
   folder. (The link checks it again.) Linux has no bundle to tell a copy by.
-- It prints JSON lines: `{"step": "checking" | "engine"}` while it works (the pack being checked
-  and unpacked; the engine being fetched), then one answer, last. Exit 0; 1 refused or failed,
+- It prints JSON lines: `{"step": "checking" | "engine", "title"}` while it works (the pack being checked
+  and unpacked, "Getting ready"; the engine being fetched, "Downloading the engine": `title` is
+  words an app shows as they are), then one answer, last. Exit 0; 1 refused or failed,
   with `message` in words to show as they are; 4 when another move holds the lock (`result`
   `"waits"`). Exit 2 when it isn't asked as above: a usage line on standard error and no JSON
   line (an app's mistake, never a user's). What the shell's part refuses or fails itself (the

@@ -11,18 +11,22 @@
 //! - A new Mac sees the Welcome card, its row saying it's being set up, then the same card's
 //!   "Ready" from the first run itself.
 //! - A refusal or failure is the box's own words under the row, with Try Again (Return).
+//! - Someone with an earlier Kuvo Code's sessions sees a card of its own ahead of the Welcome:
+//!   the move's steps as the box lists them, where it is, where it stopped and why in the box's
+//!   words with Try Again, then that this Mac is ready. They land in their sessions (the box
+//!   counts a moved Mac as welcomed).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Render, SharedString, Styled, Task, Window, div, px};
+use gpui::{AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px};
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::Boxes;
-use kuvo_box::install::{End, Installer, OnlyAttaches, Outcome, Progress, Verb};
-use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, small::spinner, theme::space};
+use kuvo_box::install::{End, Installer, MoveFacts, OnlyAttaches, Outcome, Progress, Step, Verb};
+use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize, small::spinner, theme::{radius, space}};
 
-use crate::first_run::{card_frame, heading, icon_tile, list, two_lines};
+use crate::first_run::{card_alone, card_frame, heading, icon_tile, list, two_lines};
 use crate::{Home, title_bar};
 
 /// How long, and how often, a box just made or started is waited for before the window says it
@@ -41,6 +45,8 @@ pub const WAITS_WITHIN: Duration = Duration::from_secs(30 * 60);
 pub const HERE: &str = if cfg!(target_os = "macos") { "This Mac" } else { "This computer" };
 
 const HERE_IN_WORDS: &str = if cfg!(target_os = "macos") { "this Mac" } else { "this computer" };
+
+const SETTING_UP: &str = if cfg!(target_os = "macos") { "Setting up Kuvo on this Mac…" } else { "Setting up Kuvo on this computer…" };
 
 const NOT_ANSWERING: &str = if cfg!(target_os = "macos") { "Kuvo on this Mac isn’t answering." } else { "Kuvo on this computer isn’t answering." };
 
@@ -72,7 +78,72 @@ pub enum Stage {
     /// It went no further: `line` says what, `message` why, in the box's words where it gave
     /// any; `note` a second, quieter line.
     Stopped { line: SharedString, message: SharedString, note: Option<SharedString> },
+    /// Its Kuvo answers, with something to say before the app opens (the way on is a button).
+    Said { what: Said, boxes: Boxes, first: BoxClient },
     Open(Entity<Home>),
+}
+
+/// What's said before the app opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Said {
+    /// An earlier Kuvo Code's sessions were moved.
+    Moved,
+    /// What the box says of what's here that it left as it is (a Mac with two setups), in its words.
+    Left(SharedString),
+}
+
+/// A move from an earlier Kuvo Code, as the box has said it so far.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Moving {
+    /// Every step in order, in the box's words (none where it lists none: only the one it's at
+    /// is drawn then).
+    pub steps: Vec<(String, SharedString)>,
+    /// The step it's at, from 1, of how many, and the box's words for it.
+    pub at: Option<u32>,
+    pub of: Option<u32>,
+    pub title: Option<SharedString>,
+    /// Past its last step: Kuvo is being started.
+    pub finishing: bool,
+    /// The step it stopped at, from 1.
+    pub stopped_at: Option<u32>,
+    /// It stopped after the point it only goes forward from: trying again finishes it.
+    pub stuck: bool,
+    /// What it didn't carry over, each in the box's words.
+    pub dropped: Vec<SharedString>,
+}
+
+impl Moving {
+    pub fn listing(facts: &MoveFacts) -> Moving {
+        Moving { steps: facts.steps.iter().map(|(step, title)| (step.clone(), title.clone().into())).collect(), ..Moving::default() }
+    }
+
+    fn take(&mut self, step: &Step) {
+        self.at = step.index.or(self.at);
+        self.of = step.of.or(self.of);
+        self.title = step.title.clone().map(SharedString::from);
+        self.finishing = step.step == "done";
+    }
+
+    /// How a step in the list stands (`place` from 1).
+    fn state_of(&self, place: u32) -> StepState {
+        if let Some(stopped) = self.stopped_at {
+            return if place < stopped { StepState::Done } else if place == stopped { StepState::Stopped } else { StepState::Ahead };
+        }
+        match self.at {
+            _ if self.finishing => StepState::Done,
+            Some(at) if place < at => StepState::Done,
+            Some(at) if place == at => StepState::Now,
+            _ => StepState::Ahead,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepState {
+    Done,
+    Now,
+    Stopped,
+    Ahead,
 }
 
 pub struct Launch {
@@ -89,6 +160,12 @@ pub struct Launch {
     setting_up: bool,
     /// How long something else has been waited for (`waits`), since the start or Try Again.
     waited: Duration,
+    /// A move from an earlier Kuvo Code under way or just done, drawn in a card of its own.
+    moving: Option<Moving>,
+    /// What the box said of what's here that it left as it is: said once its Kuvo answers.
+    left: Option<SharedString>,
+    /// The program this Mac's agents run under, as its Kuvo names it (said once a move is done).
+    helper: Option<SharedString>,
     focus: FocusHandle,
     wants_focus: bool,
     _work: Option<Task<()>>,
@@ -98,7 +175,7 @@ impl Launch {
     /// `live`: whether the app it opens follows your boxes (the app), or shows what it's handed
     /// (tests and shots).
     pub fn new(opens: Opens, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Launch {
-        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, focus: cx.focus_handle(), wants_focus: true, _work: None };
+        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, moving: None, left: None, helper: None, focus: cx.focus_handle(), wants_focus: true, _work: None };
         launch.begin(window, cx);
         launch
     }
@@ -117,11 +194,18 @@ impl Launch {
 
     /// From the start (as the app opens, and Try Again): asks the installer, runs what it names.
     pub fn begin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.stage, Stage::Open(_)) {
+        if matches!(self.stage, Stage::Open(_) | Stage::Said { .. }) {
             return;
         }
         self.stage = Stage::Asking;
-        self.card = false;
+        // (A move tried again keeps its card and its list while the box is asked: only where it
+        // stopped is forgotten.)
+        self.card = self.moving.is_some();
+        if let Some(moving) = &mut self.moving {
+            *moving = Moving { steps: std::mem::take(&mut moving.steps), ..Moving::default() };
+            self.stage = Stage::SettingUp { verb: Verb::Move, title: None, at: None };
+        }
+        self.left = None;
         self.setting_up = false;
         self.waited = Duration::ZERO;
         cx.notify();
@@ -155,14 +239,20 @@ impl Launch {
     pub fn progress(&mut self, progress: Progress, cx: &mut Context<Self>) {
         match progress {
             Progress::Asking => {}
-            Progress::Running { verb, verdict } => {
+            Progress::Running { verb, verdict, moved } => {
                 // A Mac whose Kuvo is here and only needs starting again stays quiet: nothing is
                 // being set up for whoever sees it.
                 self.card = verdict.as_deref() != Some("ours");
                 self.stage = Stage::SettingUp { verb, title: None, at: None };
+                self.moving = (self.card && verb == Verb::Move).then(|| Moving::listing(&moved));
             }
             Progress::Step(step) => match &mut self.stage {
+                // (A move's card already up, the box asked again: its steps aren't a move's.)
+                Stage::SettingUp { verb: Verb::Move, .. } if self.moving.is_some() && step.index.is_none() => {}
                 Stage::SettingUp { title, at, .. } => {
+                    if let Some(moving) = &mut self.moving {
+                        moving.take(&step);
+                    }
                     *title = step.title.map(SharedString::from);
                     *at = step.index.zip(step.of);
                 }
@@ -176,15 +266,42 @@ impl Launch {
     /// How the installer's run ended.
     fn ended(&mut self, outcome: Outcome, window: &mut Window, cx: &mut Context<Self>) {
         let said = outcome.message.clone().map(SharedString::from);
+        // What a move watched here didn't carry over, as the box says it now.
+        if let Some(moving) = &mut self.moving {
+            if moving.steps.is_empty() {
+                moving.steps = Moving::listing(&outcome.moved).steps;
+            }
+            if !outcome.moved.dropped.is_empty() {
+                moving.dropped = outcome.moved.dropped.iter().cloned().map(SharedString::from).collect();
+            }
+        }
+        // (The box asked again as a move is tried again, and there's no move to run after all.)
+        if !matches!(outcome.end, End::Waits | End::Stopped | End::Started) && !(outcome.end == End::Attach && outcome.verdict.as_deref() == Some("ours")) {
+            self.moving = None;
+            self.card = false;
+        }
         match outcome.end {
             // This Mac's own Kuvo is here and kept running: it's up, or will be in a moment.
             End::Attach if outcome.verdict.as_deref() == Some("ours") => {
+                // (A move watched from here, finished by the box's own run: said as done.)
+                if let Some(moving) = &mut self.moving {
+                    moving.finishing = true;
+                }
                 self.stage = Stage::Starting;
                 cx.notify();
                 self.await_box(HERE_WITHIN, window, cx);
             }
-            End::Attach => self.attach(None, said, None, window, cx),
+            // What's here is left as it is, and the box says so in words (a Mac with two setups):
+            // said once its Kuvo answers, before the app opens.
+            End::Attach => {
+                self.left = said.clone().filter(|_| outcome.verdict.as_deref() == Some("two"));
+                self.attach(None, said, None, window, cx)
+            }
             End::Started => {
+                match &mut self.moving {
+                    Some(moving) if outcome.ran == Some(Verb::Move) => moving.finishing = true,
+                    _ => self.moving = None,
+                }
                 self.stage = Stage::Starting;
                 cx.notify();
                 self.await_box(STARTS_WITHIN, window, cx);
@@ -202,6 +319,9 @@ impl Launch {
                 match outcome.progress {
                     Some(step) => {
                         self.card = true;
+                        let mut moving = Moving::listing(&outcome.moved);
+                        moving.take(&step);
+                        self.moving = Some(moving);
                         self.stage = Stage::SettingUp { verb: Verb::Move, title: step.title.map(SharedString::from), at: step.index.zip(step.of) };
                     }
                     // (No move's step to draw: the quiet line, which claims no more than that.)
@@ -225,7 +345,18 @@ impl Launch {
                 self.stop(line.into(), said.unwrap_or_else(|| format!("It’s taking longer than expected on {HERE_IN_WORDS}. It goes on by itself: try again in a while.").into()), None, cx);
             }
             // (A move that stopped leaves nothing running where no earlier box answers: said.)
-            End::Stopped if outcome.ran == Some(Verb::Move) => self.attach(Some("Couldn’t move your sessions".into()), said, Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx),
+            End::Stopped if outcome.ran == Some(Verb::Move) => {
+                // Where it stopped, as the box says (else the step it was last at); and whether
+                // it stopped where it only goes forward from, which trying again finishes.
+                let stuck = outcome.verdict.as_deref() == Some("stuck");
+                if let Some(moving) = &mut self.moving {
+                    moving.stopped_at = outcome.moved.stopped_at.as_deref().and_then(|step| outcome.moved.place_of(step)).or(moving.at);
+                    moving.stuck = stuck;
+                    moving.finishing = false;
+                }
+                let line = if stuck { "Couldn’t finish moving" } else { "Couldn’t move your sessions" };
+                self.attach(Some(line.into()), said, Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx)
+            }
             End::Stopped => self.attach(Some("Couldn’t set up Kuvo".into()), said, None, window, cx),
             End::Broken => self.attach(Some("Couldn’t set up Kuvo".into()), Some(format!("Kuvo couldn’t be set up on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), None, window, cx),
         }
@@ -242,7 +373,12 @@ impl Launch {
                 // (What stopped setting up here isn't passed over for another computer's
                 // sessions: it's said, with Try Again.)
                 Ok((boxes, _)) if line.is_some() && boxes.nearest().is_none() => this.stop(line.unwrap_or_default(), message.unwrap_or_else(|| NOT_ANSWERING.into()), note, cx),
-                Ok((boxes, first)) => this.open(boxes, first, window, cx),
+                // (An earlier build's Kuvo still answers while its move can't be made: it's used.)
+                Ok((boxes, first)) if line.is_some() => {
+                    this.moving = None;
+                    this.open(boxes, first, window, cx)
+                }
+                Ok((boxes, first)) => this.reached(boxes, first, window, cx),
                 Err(why) => this.stop(line.unwrap_or_else(|| "Kuvo isn’t running".into()), message.unwrap_or_else(|| why.into()), note, cx),
             })
             .ok();
@@ -261,7 +397,7 @@ impl Launch {
                 if here || waited >= within {
                     let wait_more = Some("It may still be starting. Try again in a moment.".into());
                     this.update_in(cx, |this, window, cx| match reached {
-                        Ok((boxes, first)) if here => this.open(boxes, first, window, cx),
+                        Ok((boxes, first)) if here => this.reached(boxes, first, window, cx),
                         Ok(_) => this.stop("Kuvo didn’t start".into(), NOT_ANSWERING.into(), wait_more, cx),
                         Err(why) => this.stop("Kuvo didn’t start".into(), why.into(), Some("It may still be starting. Try again in a moment.".into()), cx),
                     })
@@ -280,6 +416,46 @@ impl Launch {
         cx.notify();
     }
 
+    /// Its Kuvo answers: the app opens, after what's to be said first (a move that's done here;
+    /// what the box left as it is), with a button to go on.
+    fn reached(&mut self, boxes: Boxes, first: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
+        let what = match (self.left.take(), &self.moving) {
+            (Some(words), _) if boxes.nearest().is_some() => Said::Left(words),
+            (_, Some(moving)) if moving.finishing => Said::Moved,
+            _ => return self.open(boxes, first, window, cx),
+        };
+        // Whoever comes from an earlier Kuvo Code is told once what macOS will name from now on:
+        // the program their agents run under, as this Mac's Kuvo names it.
+        if what == Said::Moved
+            && let Some(nearest) = boxes.nearest()
+        {
+            let named = |nearest: &BoxClient| nearest.permissions().ok().filter(|facts| facts.applies).and_then(|facts| facts.name);
+            if self.live {
+                self._work = Some(cx.spawn(async move |this, cx| {
+                    let name = cx.background_executor().spawn(async move { named(&nearest) }).await;
+                    this.update(cx, |this, cx| {
+                        this.helper = name.map(SharedString::from);
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            } else {
+                self.helper = named(&nearest).map(SharedString::from);
+            }
+        }
+        self.card = true;
+        self.stage = Stage::Said { what, boxes, first };
+        self.wants_focus = true;
+        cx.notify();
+    }
+
+    /// The way on from what was said: the app opens.
+    pub fn go_on(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Stage::Said { boxes, first, .. } = self.stage.clone() {
+            self.open(boxes, first, window, cx);
+        }
+    }
+
     /// The app, in the window's place, the keyboard in its composer.
     fn open(&mut self, boxes: Boxes, first: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live;
@@ -294,6 +470,7 @@ impl Launch {
         let landing = home.read(cx).workspace().read(cx).landing().focus_handle(cx);
         window.focus(&landing, cx);
         self.stage = Stage::Open(home);
+        self.moving = None;
         self._work = None;
         cx.notify();
     }
@@ -307,16 +484,30 @@ impl Launch {
         cx.notify();
     }
 
+    /// Draws a move as it stands, with nothing run (shots).
+    #[cfg(feature = "stand-in")]
+    pub fn show_move(&mut self, stage: Stage, moving: Moving, helper: Option<&str>, cx: &mut Context<Self>) {
+        self.moving = Some(moving);
+        self.helper = helper.map(|helper| SharedString::from(helper.to_owned()));
+        self.show(stage, true, cx);
+    }
+
+    /// The move drawn, as the box has said it.
+    pub fn moving(&self) -> Option<&Moving> {
+        self.moving.as_ref()
+    }
+
     // MARK: Drawing
 
     /// What this computer's row says now, and whether it's still at work.
     pub fn line(&self) -> (SharedString, bool) {
         match &self.stage {
             Stage::SettingUp { verb, title, .. } => {
-                let doing = if *verb == Verb::Move { "Moving your sessions" } else { "Setting up Kuvo" };
+                let doing = if *verb == Verb::Move { "Moving your sessions" } else { "Setting up" };
                 (title.as_ref().map_or_else(|| format!("{doing}…"), |title| format!("{doing} · {title}")).into(), true)
             }
             Stage::Stopped { line, .. } => (line.clone(), false),
+            Stage::Said { .. } => ("Ready".into(), false),
             Stage::Asking | Stage::Starting | Stage::Open(_) => ("Starting…".into(), true),
         }
     }
@@ -331,7 +522,7 @@ impl Launch {
 
     /// What the window's quiet middle says while it waits.
     pub fn waiting_words(&self) -> &'static str {
-        if self.setting_up && matches!(self.stage, Stage::Asking) { "Setting up Kuvo…" } else { "Starting…" }
+        if self.setting_up && matches!(self.stage, Stage::Asking) { SETTING_UP } else { "Starting…" }
     }
 
     /// How far a move is, where the box says: its step, of how many.
@@ -397,6 +588,174 @@ impl Launch {
         card_frame(card, 0, cx)
     }
 
+    // MARK: A move's own card
+
+    /// One of a move's steps: how it stands, and the box's words for it.
+    fn step_row(&self, place: u32, title: SharedString, state: StepState, cx: &App) -> AnyElement {
+        let c = &cx.theme().colors;
+        let mark: AnyElement = match state {
+            StepState::Done => Icon::new(IconName::Check).color(c.success).into_any_element(),
+            StepState::Now => spinner(("launch-step", place as usize), IconSize::Nav, c.text_muted).into_any_element(),
+            StepState::Stopped => Icon::new(IconName::Warning).color(c.danger).into_any_element(),
+            StepState::Ahead => div().size(px(5.)).rounded(radius::PILL).bg(c.border_strong).into_any_element(),
+        };
+        let selector = format!("launch-step-{place}-{}", match state { StepState::Done => "done", StepState::Now => "now", StepState::Stopped => "stopped", StepState::Ahead => "ahead" });
+        div()
+            .debug_selector(move || selector)
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .px(space::S4)
+            .py(space::S2)
+            .child(div().flex().flex_none().items_center().justify_center().size(px(16.)).child(mark))
+            .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).when_else(state == StepState::Ahead, |d| d.text_color(c.text_faint), |d| d.medium().text_color(c.text)).child(title))
+            .children((state == StepState::Stopped).then(|| div().flex_none().text_ui(TypeSize::Caption).text_color(c.danger).child("Stopped here")))
+            .into_any_element()
+    }
+
+    /// The move's steps as the box lists them; from a box that lists none, the one it's at.
+    fn steps(&self, moving: &Moving, cx: &App) -> AnyElement {
+        let c = &cx.theme().colors;
+        if moving.steps.is_empty() {
+            let title = moving.title.clone().unwrap_or_else(|| "Moving your sessions".into());
+            let state = if moving.stopped_at.is_some() { StepState::Stopped } else if moving.finishing { StepState::Done } else { StepState::Now };
+            let count = moving.at.zip(moving.of).filter(|(_, of)| *of > 0).map(|(at, of)| format!("Step {at} of {of}"));
+            return list(
+                vec![div().flex().items_center().child(div().flex_1().min_w_0().child(self.step_row(moving.at.unwrap_or(1), title, state, cx))).children(count.filter(|_| state == StepState::Now).map(|count| div().flex_none().pr(space::S4).text_ui(TypeSize::Caption).text_color(c.text_faint).child(count))).into_any_element()],
+                cx,
+            );
+        }
+        let rows = moving.steps.iter().enumerate().map(|(ix, (_, title))| self.step_row(ix as u32 + 1, title.clone(), moving.state_of(ix as u32 + 1), cx)).collect();
+        div().debug_selector(|| "launch-steps".into()).child(list(rows, cx)).into_any_element()
+    }
+
+    /// A card of its own for a move from an earlier Kuvo Code: its steps, where it is, and where
+    /// and why it stopped, with Try Again.
+    fn move_card(&self, moving: &Moving, cx: &mut Context<Self>) -> gpui::Div {
+        let c = cx.theme().colors.clone();
+        let stopped = match &self.stage {
+            Stage::Stopped { line, message, note } => Some((line.clone(), message.clone(), note.clone())),
+            _ => None,
+        };
+        let head = match &stopped {
+            Some((line, ..)) => heading(line, None, cx),
+            None => heading("Moving to the new Kuvo Code", Some(&format!("Your sessions, bots and settings move to their new place on {HERE_IN_WORDS}.")), cx),
+        };
+        // Why it stopped stays in view above the steps, however short the window (they scroll).
+        let mut card = vec![head];
+        if let Some((_, message, _)) = &stopped {
+            card.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(space::S3)
+                    .p(space::S4)
+                    .rounded(radius::POPOVER)
+                    .border_1()
+                    .border_color(c.border)
+                    .bg(c.card)
+                    .child(Icon::new(IconName::Warning).color(c.danger))
+                    .child(div().debug_selector(|| "launch-message".into()).flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(message.clone()))
+                    .into_any_element(),
+            );
+        }
+        // Where it's past its steps: Kuvo being started, in the box's words.
+        let starting = (stopped.is_none() && (moving.finishing || matches!(self.stage, Stage::Starting))).then(|| moving.title.clone().filter(|_| moving.finishing).unwrap_or_else(|| "Starting…".into()));
+        let foot = match &stopped {
+            Some((_, _, note)) => div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(space::S3)
+                .pt(space::S1)
+                .child(div().debug_selector(|| "launch-note".into()).flex_1().min_w_0().text_ui(TypeSize::Caption).text_color(c.text_faint).children(note.clone()))
+                .child(self.try_again(cx)),
+            None => div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(space::S2)
+                .text_ui(TypeSize::Caption)
+                .text_color(c.text_faint)
+                .children(starting.clone().map(|_| spinner("launch-starting", IconSize::Nav, c.text_muted)))
+                .child(div().debug_selector(|| "launch-note".into()).child(starting.unwrap_or_else(|| format!("This takes a few minutes. Nothing runs on {HERE_IN_WORDS} until it’s done.").into()))),
+        };
+        card.push(div().id("launch-body").min_h_0().flex().flex_col().overflow_y_scroll().child(self.steps(moving, cx)).into_any_element());
+        card.push(foot.into_any_element());
+        card_alone(card, cx)
+    }
+
+    /// What's said before the app opens, with the way on: a move that's done, or what the box
+    /// left as it is.
+    fn said_card(&self, what: &Said, cx: &mut Context<Self>) -> gpui::Div {
+        let c = cx.theme().colors.clone();
+        let row = |icon: IconName, title: &str, detail: String, done: bool, cx: &App| {
+            div()
+                .flex()
+                .items_center()
+                .gap(space::S3)
+                .px(space::S4)
+                .py(space::S3)
+                .child(icon_tile(icon, cx))
+                .child(two_lines(title.to_owned(), detail, cx.theme().colors.text_muted, cx))
+                .children(done.then(|| Icon::new(IconName::Check).color(cx.theme().colors.success)))
+                .into_any_element()
+        };
+        let (head, mut body, next) = match what {
+            Said::Moved => {
+                let mut rows = vec![row(IconName::Archive, "Moved from an earlier Kuvo Code", "Your sessions, bots and settings".into(), true, cx)];
+                // What macOS names from now on, where this Mac's Kuvo says there's such a program.
+                if let Some(helper) = &self.helper {
+                    rows.push(div().debug_selector(|| "launch-helper".into()).child(row(IconName::Shield, "macOS may ask again", format!("For {helper}, which runs your agents now"), false, cx)).into_any_element());
+                }
+                let ready = if cfg!(target_os = "macos") { "This Mac is ready" } else { "This computer is ready" };
+                (heading(ready, None, cx), vec![list(rows, cx)], "Open Kuvo Code")
+            }
+            Said::Left(words) => (
+                heading("Your earlier sessions stay where they are", None, cx),
+                vec![
+                    div()
+                        .flex()
+                        .flex_none()
+                        .gap(space::S3)
+                        .p(space::S4)
+                        .rounded(radius::POPOVER)
+                        .border_1()
+                        .border_color(c.border)
+                        .bg(c.card)
+                        .child(Icon::new(IconName::Info).color(c.text_muted))
+                        .child(div().debug_selector(|| "launch-message".into()).flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(words.clone()))
+                        .into_any_element(),
+                ],
+                "Continue",
+            ),
+        };
+        // What the move didn't carry over, each in the box's words, said this once.
+        let dropped = match (what, &self.moving) {
+            (Said::Moved, Some(moving)) => moving.dropped.clone(),
+            _ => Vec::new(),
+        };
+        if !dropped.is_empty() {
+            body.push(
+                div()
+                    .debug_selector(|| "launch-dropped".into())
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .gap(space::S2)
+                    .px(space::S1)
+                    .child(div().text_ui(TypeSize::Caption).medium().text_color(c.text_faint).child("Not brought along"))
+                    .children(dropped.into_iter().map(|words| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)))
+                    .into_any_element(),
+            );
+        }
+        let way_on = Button::new("launch-next", next).primary().shortcut("↵").size(ButtonSize::Medium).on_click(cx.listener(|this, _, window, cx| this.go_on(window, cx)));
+        card_alone(
+            vec![head, div().id("launch-body").min_h_0().flex().flex_col().gap(space::S4).overflow_y_scroll().children(body).into_any_element(), div().flex().flex_none().items_center().pt(space::S1).child(div().flex_1()).child(way_on).into_any_element()],
+            cx,
+        )
+    }
+
     /// The window's quiet middle, as it waits for a box that's here: "Starting…", or why not.
     fn quiet(&self, cx: &mut Context<Self>) -> gpui::Div {
         let c = cx.theme().colors.clone();
@@ -451,15 +810,25 @@ impl Render for Launch {
         if std::mem::take(&mut self.wants_focus) {
             window.focus(&self.focus, cx);
         }
-        let frame = if self.card { self.in_card(cx) } else { self.quiet(cx) };
+        let frame = match (&self.stage, self.moving.clone()) {
+            (Stage::Said { what, .. }, _) => self.said_card(&what.clone(), cx),
+            (_, Some(moving)) if self.card => self.move_card(&moving, cx),
+            _ if self.card => self.in_card(cx),
+            _ => self.quiet(cx),
+        };
         frame
             .id("launch")
             .debug_selector(|| "launch".into())
             .track_focus(&self.focus)
             // Return tries again, where that's the way on.
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "enter" && !event.keystroke.modifiers.modified() && matches!(this.stage, Stage::Stopped { .. }) {
-                    this.begin(window, cx);
+                if event.keystroke.key != "enter" || event.keystroke.modifiers.modified() {
+                    return;
+                }
+                match this.stage {
+                    Stage::Stopped { .. } => this.begin(window, cx),
+                    Stage::Said { .. } => this.go_on(window, cx),
+                    _ => {}
                 }
             }))
             .into_any_element()

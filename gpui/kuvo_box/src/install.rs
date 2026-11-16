@@ -183,12 +183,11 @@ pub enum Ran {
 pub enum Progress {
     /// Asking what this computer holds.
     Asking,
-    /// Running what `status` named, for a computer that holds `verdict`.
-    Running { verb: Verb, verdict: Option<String> },
-    /// A step of it, in the box's words where it sends any (a move's steps: `title`, and where it
-    /// is among them, `index` of `of`).
-    // BOX-NEEDED: the installer's own first steps (`checking`, `engine`) have no words, so the
-    // window says only that it's setting up. `{"step", "title"}` would be drawn as it is.
+    /// Running what `status` named, for a computer that holds `verdict`; `moved`: what the box
+    /// says of a move ahead of it (its steps, to list).
+    Running { verb: Verb, verdict: Option<String>, moved: MoveFacts },
+    /// A step of it, in the box's words (`title`), and for a move's where it is among them
+    /// (`index` of `of`).
     Step(Step),
 }
 
@@ -207,6 +206,31 @@ impl Step {
     fn said(said: &Value) -> Option<Step> {
         let count = |name: &str| said.get(name).and_then(Value::as_u64).and_then(|count| u32::try_from(count).ok());
         Some(Step { step: said.get("step")?.as_str()?.to_owned(), title: said.get("title").and_then(Value::as_str).map(str::to_owned), index: count("index"), of: count("of") })
+    }
+}
+
+/// What the box says of a move besides where it is (`kuvo/box/rehome`'s answer, as the installer
+/// hands it on in `status`): every step in order, in its words; the step it stopped at; and what
+/// it didn't carry over, each in words to show once.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MoveFacts {
+    /// Each step's name and its words, in order (none from a box that doesn't list them).
+    pub steps: Vec<(String, String)>,
+    pub stopped_at: Option<String>,
+    pub dropped: Vec<String>,
+}
+
+impl MoveFacts {
+    fn said(status: &Value) -> MoveFacts {
+        let word = |value: &Value, name: &str| value.get(name).and_then(Value::as_str).map(str::to_owned);
+        let steps = status.get("steps").and_then(Value::as_array).map(|steps| steps.iter().filter_map(|step| word(step, "step").zip(word(step, "title"))).collect()).unwrap_or_default();
+        let dropped = status.get("dropped").and_then(Value::as_array).map(|dropped| dropped.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+        MoveFacts { steps, stopped_at: status.get("failed").and_then(|failed| word(failed, "step")), dropped }
+    }
+
+    /// Where a step is among the steps listed, from 1.
+    pub fn place_of(&self, step: &str) -> Option<u32> {
+        self.steps.iter().position(|(name, _)| name == step).and_then(|at| u32::try_from(at + 1).ok())
     }
 }
 
@@ -238,12 +262,13 @@ pub struct Outcome {
     /// Where a move stands that's still at work in a process of its own (`status.progress`): one
     /// an app that quit left running, to draw while it's waited for.
     pub progress: Option<Step>,
+    pub moved: MoveFacts,
 }
 
 impl Outcome {
     /// An outcome with no move still at work behind it.
     pub fn new(end: End, verdict: Option<String>, ran: Option<Verb>, message: Option<String>) -> Outcome {
-        Outcome { end, verdict, ran, message, progress: None }
+        Outcome { end, verdict, ran, message, progress: None, moved: MoveFacts::default() }
     }
 }
 
@@ -348,34 +373,40 @@ impl Installer {
         on(Progress::Asking);
         let (exit, status) = match self.run(Verb::Status, on) {
             Ran::Answered { exit, answer } => (exit, answer),
-            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: None, ran: None, message: Some(why), progress: None },
+            Ran::Broken(why) => return Outcome::new(End::Broken, None, None, Some(why)),
         };
+        let before = MoveFacts::said(&status.status);
         if let Some(end) = stopped(exit, &status) {
-            return Outcome { end, verdict: status.verdict, ran: None, message: status.message, progress: None };
+            return Outcome { end, verdict: status.verdict, ran: None, message: status.message, progress: None, moved: before };
         }
         let verb = match status.verb.as_deref() {
             None => {
                 let waits = status.verdict.as_deref() == Some("waits");
                 let progress = waits.then(|| status.status.get("progress").and_then(Step::said)).flatten();
-                return Outcome { end: if waits { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, message: status.message, progress };
+                return Outcome { end: if waits { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, message: status.message, progress, moved: before };
             }
             Some("new") => Verb::New,
             Some("move") => Verb::Move,
             // (A release newer than this app would name only what this app carries: its own.)
-            Some(other) => return Outcome { end: End::Broken, verdict: status.verdict, ran: None, message: Some(format!("Its installer asked for “{other}”, which this app doesn’t know.")), progress: None },
+            Some(other) => return Outcome::new(End::Broken, status.verdict, None, Some(format!("Its installer asked for “{other}”, which this app doesn’t know."))),
         };
-        on(Progress::Running { verb, verdict: status.verdict.clone() });
+        on(Progress::Running { verb, verdict: status.verdict.clone(), moved: before.clone() });
         let (exit, answer) = match self.run(verb, on) {
             Ran::Answered { exit, answer } => (exit, answer),
-            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: status.verdict, ran: Some(verb), message: Some(why), progress: None },
+            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: status.verdict, ran: Some(verb), message: Some(why), progress: None, moved: before },
         };
+        // (What it says now, its steps as they were listed where it lists none this time.)
+        let mut moved = MoveFacts::said(&answer.status);
+        if moved.steps.is_empty() {
+            moved.steps = before.steps;
+        }
         let verdict = answer.verdict.clone().or(status.verdict);
         let end = match stopped(exit, &answer) {
             Some(end) => end,
             None if answer.started == Some(false) => End::NotStarted,
             None => End::Started,
         };
-        Outcome { end, verdict, ran: Some(verb), message: answer.message, progress: None }
+        Outcome { end, verdict, ran: Some(verb), message: answer.message, progress: None, moved }
     }
 }
 

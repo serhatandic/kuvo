@@ -114,6 +114,8 @@ test("status on a new computer: the pack checked and unpacked, the release's eng
   const first = install(where, "status");
   assert.equal(first.status, 0, first.stderr + JSON.stringify(first.lines));
   assert.deepEqual(first.steps, ["checking", "engine"]);
+  // (Each in words an app shows as they are.)
+  assert.deepEqual(first.lines.filter(line => line.step).map(line => line.title), ["Getting ready", "Downloading the engine"]);
   assert.equal(first.said.verdict, "fresh");
   assert.equal(first.said.verb, "new");
   assert.equal(first.said.status.state, null, "no move here");

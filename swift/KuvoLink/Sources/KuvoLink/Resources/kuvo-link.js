@@ -51699,7 +51699,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b10dca069aea";
+var BRIDGE_VERSION = "2e884b0dec29";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63052,7 +63052,7 @@ async function computerPage(context) {
   const atLogin = ownMac ? computerFacts.atLogin() : null;
   const working = await computerFacts.working().catch(() => null);
   const opensHere = (id, title, address) => here ? { id, title, opens: address } : { id, title, can: { why: `Open it on ${name} itself.` } };
-  const stops = working === true ? "Agents are at work there now: what they’re doing stops." : working === false ? "Nothing is at work there now." : "What agents are doing there now stops.";
+  const stops = working === true ? `Agents are at work on ${where} now: what they’re doing stops.` : working === false ? `Nothing is at work on ${where} now.` : `What agents are doing on ${where} now stops.`;
   const restarts = computerFacts.restarts();
   const rows = [row({
     id: "state",

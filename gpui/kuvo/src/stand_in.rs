@@ -294,6 +294,16 @@ impl StandIn {
     }
 
     /// What it says macOS allows the program it runs under, from now on.
+    /// How its computer stands, changed (`kuvo/settings/computer`).
+    pub fn set_computer(&self, change: impl FnOnce(&mut settings::Computer)) {
+        change(&mut self.state().settings.computer);
+    }
+
+    /// How its computer stands now.
+    pub fn computer(&self) -> settings::Computer {
+        self.state().settings.computer.clone()
+    }
+
     pub fn set_permissions(&self, change: impl FnOnce(&mut permissions::Permissions)) {
         change(&mut self.state().permissions);
     }
@@ -1381,6 +1391,8 @@ impl StandIn {
             return answer(status, value);
         }
         let (name, here) = (state.name(), !state.elsewhere);
+        // (Its own page says what macOS allows its helper, as its permissions' route does.)
+        state.settings.computer.permissions = state.permissions.clone();
         if let Some((status, value)) = state.settings.answer(method, route, &|name| query(path, name).map(decoded), &body, &name, here) {
             return answer(status, value);
         }

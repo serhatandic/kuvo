@@ -32,7 +32,8 @@ refuse() {
     printf '{"result":"refused","message":"%s"}\n' "$1"
     exit 1
 }
-step() { printf '{"step":"%s"}\n' "$1"; }
+# (Each with words an app shows as they are, as the move's steps have them.)
+step() { printf '{"step":"%s","title":"%s"}\n' "$1" "$2"; }
 
 VERB=${1:-}
 case "$VERB" in status | new | move) shift ;; *) usage ;; esac
@@ -136,7 +137,7 @@ rm -rf "$I/release.new"
 # each unpack their own, and the first in place stays.
 whole() { [ -f "$R/.whole" ] && [ "$(cat "$R/.whole" 2>/dev/null)" = "$PACK_SUM" ]; }
 if ! whole; then
-    step checking
+    step checking "Getting ready"
     [ "$(sum_of "$PACK")" = "$PACK_SUM" ] || fail "$DAMAGED"
     N="$R.new.$$"
     rm -rf "$N"
@@ -186,7 +187,7 @@ take_engine() {
         esac
         want=$(decoded "$INTEGRITY" | od -An -v -tx1 | tr -d ' \n')
         [ ${#want} -eq 128 ] || { WHY=$DAMAGED; return 1; }
-        step engine
+        step engine "Downloading the engine"
         WHY="The engine couldn't be downloaded. Check that $HERE is online, then try again."
         if command -v curl >/dev/null 2>&1; then
             curl -fsSL --proto "$PROTO" --retry 2 --connect-timeout 30 --max-time 900 -o "$S/engine.tgz" "$URL" 2>/dev/null || return 1

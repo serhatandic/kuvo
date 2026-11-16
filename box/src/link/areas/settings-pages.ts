@@ -708,7 +708,7 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   const working = await computerFacts.working().catch(() => null);
   /** What opens only on this computer: given to the app beside its box, said to any other. */
   const opensHere = (id: string, title: string, address: string): SettingAction => (here ? { id, title, opens: address } : { id, title, can: { why: `Open it on ${name} itself.` } });
-  const stops = working === true ? "Agents are at work there now: what they’re doing stops." : working === false ? "Nothing is at work there now." : "What agents are doing there now stops.";
+  const stops = working === true ? `Agents are at work on ${where} now: what they’re doing stops.` : working === false ? `Nothing is at work on ${where} now.` : `What agents are doing on ${where} now stops.`;
 
   // How it stands, and Restart.
   const restarts = computerFacts.restarts();
