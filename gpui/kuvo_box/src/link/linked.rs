@@ -2,13 +2,16 @@
 //! [`crate::BoxClient`] on top asks both the same way.
 
 use std::io::BufReader;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use super::client::{LinkClient, words};
 use super::keys::Host;
 use super::log;
 use crate::error::{Error, Result};
 use crate::transport::{Closer, Request, Response, Stream, Transport};
+
+/// What a message taken back by Stop before it went says.
+pub const STOPPED: &str = "Stopped.";
 
 /// One box, by its key and where it is on the relay.
 pub struct LinkBox {
@@ -38,18 +41,29 @@ impl LinkBox {
     /// "Sending again"): at once, then after 1, 2, 4 and 8 s (8 s from then on), or as soon as a
     /// relay connection is made, for up to 2 minutes from when it first failed; its box takes an id
     /// once, so however often it goes it goes once, answered as the first went. One that never
-    /// went to a box that isn't on the relay, or one the box turned away, isn't sent again.
-    fn repeated(&self, request: &Request) -> Result<Response> {
+    /// went to a box that isn't on the relay, or one the box turned away, isn't sent again; nor is
+    /// one Stop took back before it ever went.
+    fn repeated(&self, request: &Request, key: &str) -> Result<Response> {
+        self.client.repeating(key, true);
+        let sent = self.repeating(request, key);
+        self.client.repeating(key, false);
+        sent
+    }
+
+    fn repeating(&self, request: &Request, key: &str) -> Result<Response> {
         let timing = self.client.timing();
-        let mut failed: Option<(Instant, u32)> = None;
+        // Since it first failed, and how many tries: timed by the wall clock, which goes on while
+        // the computer sleeps, so one whose two minutes passed meanwhile fails rather than going late.
+        let mut failed: Option<(SystemTime, u32)> = None;
         let mut went = false;
+        let past = |since: SystemTime| SystemTime::now().duration_since(since).unwrap_or_default();
         loop {
             // (A relay connection made after this, the relay's back: what waits goes then.)
             let connections = self.client.connections();
             match self.whole(request, failed.is_some()) {
                 Ok(response) => {
                     if let Some((since, tries)) = failed {
-                        log::note(format!("{}: {} {} got there on try {}, {:.1} s after it first failed", self.label, request.method, request.route(), tries + 1, since.elapsed().as_secs_f64()));
+                        log::note(format!("{}: {} {} got there on try {}, {:.1} s after it first failed", self.label, request.method, request.route(), tries + 1, past(since).as_secs_f64()));
                     }
                     return Ok(response);
                 }
@@ -65,17 +79,27 @@ impl LinkBox {
                         }
                         return Err(error);
                     }
-                    let (since, tries) = failed.map_or((Instant::now(), 1), |(since, tries)| (since, tries + 1));
+                    let (since, tries) = failed.map_or((SystemTime::now(), 1), |(since, tries)| (since, tries + 1));
                     failed = Some((since, tries));
-                    let until = since + timing.repeat_for;
-                    if Instant::now() >= until {
-                        log::note(format!("{}: {} {} not sent after {tries} tries in {:.0} s: {error}", self.label, request.method, request.route(), since.elapsed().as_secs_f64()));
+                    let wait = if tries == 1 { Duration::ZERO } else { timing.repeat_first.saturating_mul(1 << (tries - 2).min(8)).min(timing.repeat_most) };
+                    let left = timing.repeat_for.saturating_sub(past(since));
+                    if left.is_zero() {
+                        log::note(format!("{}: {} {} not sent after {tries} tries in {:.0} s: {error}", self.label, request.method, request.route(), past(since).as_secs_f64()));
                         return Err(error);
                     }
-                    let wait = if tries == 1 { Duration::ZERO } else { timing.repeat_first.saturating_mul(1 << (tries - 2).min(8)).min(timing.repeat_most) };
                     log::note(format!("{}: {} {} didn’t get there ({error}); sent again {}", self.label, request.method, request.route(), if wait.is_zero() { "now".to_owned() } else { format!("in {wait:?}, or once the relay’s back") }));
                     if !wait.is_zero() {
-                        self.client.wait_for_relay(connections, (Instant::now() + wait).min(until));
+                        self.client.wait_for_relay(connections, Instant::now() + wait.min(left), key);
+                    }
+                    // Taken back before it ever went (Stop), or its time's up meanwhile (the
+                    // computer slept): not sent.
+                    if !went && self.client.is_taken_back(key) {
+                        log::note(format!("{}: {} {} taken back by Stop", self.label, request.method, request.route()));
+                        return Err(Error::Unreachable(STOPPED.into()));
+                    }
+                    if past(since) >= timing.repeat_for {
+                        log::note(format!("{}: {} {} not sent after {tries} tries in {:.0} s: {error}", self.label, request.method, request.route(), past(since).as_secs_f64()));
+                        return Err(error);
                     }
                 }
             }
@@ -85,8 +109,8 @@ impl LinkBox {
 
 impl Transport for LinkBox {
     fn send(&self, request: &Request) -> Result<Response> {
-        if request.headers.iter().any(|(name, value)| name.eq_ignore_ascii_case("idempotency-key") && !value.is_empty()) {
-            return self.repeated(request);
+        if let Some((_, key)) = request.headers.iter().find(|(name, value)| name.eq_ignore_ascii_case("idempotency-key") && !value.is_empty()) {
+            return self.repeated(request, key);
         }
         match self.whole(request, false) {
             // A read whose session went under it (the box started again, the relay connection
@@ -104,7 +128,7 @@ impl Transport for LinkBox {
         let closer = Closer::new(move || handle.cancel());
         if !hold(closer.clone()) {
             closer.close();
-            return Err(Error::Unreachable("Stopped.".into()));
+            return Err(Error::Unreachable(STOPPED.into()));
         }
         let (status, content_type) = answer.head()?;
         Ok(Stream { status, content_type, reader: Box::new(BufReader::new(answer.reader())), closer })
@@ -120,5 +144,9 @@ impl Transport for LinkBox {
 
     fn describe(&self) -> String {
         self.label.clone()
+    }
+
+    fn take_back(&self, keys: &[String]) {
+        self.client.take_back(keys);
     }
 }

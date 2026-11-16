@@ -151,6 +151,9 @@ struct State {
     ended: HashMap<Address, (u64, Error)>,
     /// Bytes handed to relay connections so far.
     handed: u64,
+    /// The messages being sent again, by id, and those of them Stop took back.
+    repeating: std::collections::HashSet<String>,
+    taken_back: std::collections::HashSet<String>,
 }
 
 struct Inner {
@@ -198,7 +201,7 @@ impl LinkClient {
                 app: app.into(),
                 dial,
                 timing,
-                state: Mutex::new(State { connection: Connection::Down, connections: 0, failed: None, sessions: HashMap::new(), tokens: 0, over: HashMap::new(), ended: HashMap::new(), handed: 0 }),
+                state: Mutex::new(State { connection: Connection::Down, connections: 0, failed: None, sessions: HashMap::new(), tokens: 0, over: HashMap::new(), ended: HashMap::new(), handed: 0, repeating: Default::default(), taken_back: Default::default() }),
                 changed: Condvar::new(),
             }),
         }
@@ -275,12 +278,43 @@ impl LinkClient {
         self.state().connections
     }
 
-    /// Waits until a relay connection after the `after`th is up, or `until`: whether one is.
-    pub fn wait_for_relay(&self, after: u64, until: Instant) -> bool {
+    /// A message under `key` is being sent again (`true`), or isn't any more: while it is, Stop
+    /// can take it back ([`LinkClient::take_back`]).
+    pub fn repeating(&self, key: &str, now: bool) {
+        let mut state = self.state();
+        if now {
+            state.repeating.insert(key.to_owned());
+        } else {
+            state.repeating.remove(key);
+            state.taken_back.remove(key);
+        }
+    }
+
+    /// Stop: the messages under `keys` being sent again are taken back.
+    pub fn take_back(&self, keys: &[String]) {
+        let mut state = self.state();
+        for key in keys {
+            if state.repeating.contains(key) {
+                state.taken_back.insert(key.clone());
+            }
+        }
+        self.inner.changed.notify_all();
+    }
+
+    pub fn is_taken_back(&self, key: &str) -> bool {
+        self.state().taken_back.contains(key)
+    }
+
+    /// Waits until a relay connection after the `after`th is up, the message under `key` is taken
+    /// back, or `until`: whether the relay's up.
+    pub fn wait_for_relay(&self, after: u64, until: Instant, key: &str) -> bool {
         let mut state = self.state();
         loop {
             if state.connections > after && matches!(state.connection, Connection::Up { .. }) {
                 return true;
+            }
+            if state.taken_back.contains(key) {
+                return false;
             }
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {

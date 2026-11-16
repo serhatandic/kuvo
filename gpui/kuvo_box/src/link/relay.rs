@@ -43,7 +43,9 @@ pub const PING_EVERY: Duration = Duration::from_secs(25);
 pub const PONG_WITHIN: Duration = Duration::from_secs(10);
 /// How long a ping may wait behind what's being sent before it, the connection making no way.
 pub const STALL_WITHIN: Duration = Duration::from_secs(120);
-/// How much a client's socket holds that hasn't gone yet: a pong waits behind it.
+/// How much a client's socket holds that hasn't gone yet: a pong waits behind it. It also bounds
+/// what's in flight a round trip: 2.5 MB/s at 100 ms, more than the relay passes a device (about
+/// 1.3 MB/s, measured); on Linux the system's `wmem_max` may cap it lower.
 pub const SEND_BUFFER: usize = 256 * 1024;
 /// How fast a slow connection sends, in bytes a second: a pong has a second more for each of
 /// these on their way ahead of its ping (KuvoLink's `Link.slowUpload`).
@@ -253,7 +255,7 @@ mod unix {
         let wake = Arc::new(Wake::new()?);
         if pings {
             // What the system takes ahead of a pong kept to a few seconds' sending on a slow
-            // connection (a Mac's grows to 4 MB), still enough for a fast one (#144).
+            // connection (a Mac's grows to 4 MB), still enough for a fast one (`SEND_BUFFER`, #144).
             let size: libc::c_int = SEND_BUFFER as libc::c_int;
             // SAFETY: an int option, its size given, on a descriptor the caller owns.
             unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF, (&size as *const libc::c_int).cast(), std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
