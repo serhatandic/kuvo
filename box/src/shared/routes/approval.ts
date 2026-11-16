@@ -16,20 +16,25 @@ export const UNAVAILABLE = object({ reason: REASON, why: string });
  * that's less), whether it plans (Plan mode, beside this), and each one it can be set to: one that
  * can't be picked says why (`unavailable`: Full Access), one that would ask first for now says why
  * (`held`: Auto without the sandbox). */
+const OPTION = object({ approval: APPROVAL, "unavailable?": UNAVAILABLE, "held?": UNAVAILABLE });
+
 export const SESSION_APPROVAL = object({
   approval: APPROVAL, effective: APPROVAL, stored: bool, "held?": UNAVAILABLE, plan: bool,
-  options: list(object({ approval: APPROVAL, "unavailable?": UNAVAILABLE, "held?": UNAVAILABLE })),
+  options: list(OPTION),
 });
 
 /** This computer's: whether you confirmed Full Access here (`fullAccess`: a client asks you the
  * first time you pick it, then sets it), the one a new conversation starts with (`default`: Auto
  * the first time, then the last one picked here), and whether Auto runs for the engine's
  * conversations and the coding agents' (why it asks first for now, where it doesn't: `held`).
+ * `options` (#764): each one a new conversation can start in, on the engine and on the coding
+ * agents, as a conversation's own `options` say them.
  * `otherComputers`: whether your other computers may start work here (`PATCH {otherComputers}`;
  * off on the Mac with the app until you say, on for a machine; none from a box before it). */
 export const APPROVAL_HERE = object({
   fullAccess: bool, default: APPROVAL,
   auto: object({ engine: object({ "held?": UNAVAILABLE }), agents: object({ "held?": UNAVAILABLE }) }),
+  "options?": object({ engine: list(OPTION), agents: list(OPTION) }),
   "otherComputers?": bool,
 });
 

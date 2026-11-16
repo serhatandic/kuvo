@@ -25,6 +25,7 @@ use kuvo_ui::{
 use crate::ask_card::AskCard;
 use crate::composer::Composer;
 use crate::entries::{self, COLUMN, Entry, Fold};
+use crate::work_bars::WorkBars;
 
 /// What's wrong, said over the conversation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +59,8 @@ pub struct ConversationView {
     composer: Entity<Composer>,
     /// What it waits on you for, in the composer's place while anything does.
     asks: Entity<AskCard>,
+    /// What runs for it that it doesn't show as it happens, in bars over the composer.
+    bars: Entity<WorkBars>,
     follow: Option<Rc<Follow<ConversationUpdate>>>,
     _follow_task: Option<Task<()>>,
     _asks_follow: Option<Follow<Followed<Asks>>>,
@@ -105,6 +108,7 @@ impl ConversationView {
             asked_earlier: Rc::default(),
             open: HashSet::new(),
             asks: cx.new(|cx| AskCard::new(client.clone(), session.clone(), cx)),
+            bars: cx.new(|cx| WorkBars::new(client.clone(), session.clone(), live, cx)),
             composer,
             follow: None,
             _follow_task: None,
@@ -180,6 +184,11 @@ impl ConversationView {
 
     pub fn composer(&self) -> &Entity<Composer> {
         &self.composer
+    }
+
+    /// The bars over its composer.
+    pub fn bars(&self) -> &Entity<WorkBars> {
+        &self.bars
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -340,6 +349,7 @@ impl ConversationView {
     pub fn take_asks(&mut self, asks: Asks, cx: &mut Context<Self>) {
         self.asks_failed = None;
         self.asks.update(cx, |card, cx| card.take(asks, cx));
+        self.bars.update(cx, |bars, cx| bars.asks_changed(cx));
         cx.notify();
     }
 
@@ -617,6 +627,9 @@ pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box:
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.keep_focus(window, cx);
+        // A bot's sessions' rows name their models as the composer's box offers them.
+        let names = self.composer.read(cx).menu_models().into_iter().map(|model| (model.id, model.name)).collect();
+        self.bars.update(cx, |bars, cx| bars.set_names(names, cx));
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let view = cx.entity();
@@ -679,6 +692,7 @@ impl Render for ConversationView {
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
                         div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
                     }))
+                    .when(!gone, |d| d.child(self.bars.clone()))
                     .when(!gone, |d| d.children(self.queue_view(cx)))
                     // What it waits on you for takes the composer's place, as on the Mac and the phone.
                     // One this app can't answer sits over the composer, which stays usable.

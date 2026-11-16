@@ -734,6 +734,7 @@ test("a client sees a bot's work: its sessions, the answers it gave and today's 
   assert.deepEqual(work.body.sessions.map(each => [each.session, each.title, each.state, each.project, each.depth]), [[session, "Haptics", "working", "Tidepool", 1]]);
   assert.deepEqual(work.body.answered.map(each => [each.session, each.ask, each.decision]), [[session, "per_1", "allow"]]);
   assert.equal(work.body.today.started, 1);
+  assert.equal(work.body.today.answered, 1, "the ask it answered today, as the bar over its composer says it");
   assert.deepEqual(work.body.limits, { atOnce: 3 });
 });
 

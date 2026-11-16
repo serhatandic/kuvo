@@ -186,7 +186,11 @@ impl Bots {
             ("GET", ["kuvo", "work"]) => match query("bot") {
                 None => (400, json!({ "message": "Say whose work: bot=<id>." })),
                 Some(bot) if !self.bots.iter().any(|each| each["id"] == json!(bot)) => (404, json!({ "message": "There’s no such bot here." })),
-                Some(bot) => (200, json!({ "bot": bot, "sessions": work(&bot, now), "answered": [], "today": { "started": 0, "working": 0, "tokens": 0 }, "limits": null })),
+                Some(bot) => {
+                    let sessions = work(&bot, now);
+                    let today = if bot == "bot_mira" { json!({ "started": sessions.len(), "answered": 1, "working": 2, "tokens": 2_200_000 }) } else { json!({ "started": 0, "answered": 0, "working": 0, "tokens": 0 }) };
+                    (200, json!({ "bot": bot, "sessions": sessions, "answered": [], "today": today, "limits": null }))
+                }
             },
             _ => return None,
         })
@@ -427,7 +431,11 @@ fn templates(projects: &[(String, String)]) -> Value {
 /// A bot's sessions, the latest first: the stand-in's own project sessions, working for it.
 fn work(bot: &str, now: f64) -> Vec<Value> {
     let session = |id: &str, title: &str, project: &str, state: &str, ago: f64| {
-        json!({ "session": id, "title": title, "folder": format!("{HOME}/Projects/{project}"), "project": format!("{HOME}/Projects/{project}"), "startedBy": bot, "depth": 1, "state": state, "started": now - ago, "tokens": 48_210 })
+        let mut session = json!({ "session": id, "title": title, "folder": format!("{HOME}/Projects/{project}"), "project": format!("{HOME}/Projects/{project}"), "startedBy": bot, "depth": 1, "state": state, "started": now - ago, "tokens": 48_210, "model": { "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" }, "account": { "name": "Claude Code", "title": "Claude" } });
+        if state == "asking" {
+            session["asks"] = json!("Wants to run a command: npm run migrate");
+        }
+        session
     };
     match bot {
         "bot_mira" => vec![

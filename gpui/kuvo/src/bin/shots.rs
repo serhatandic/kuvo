@@ -251,6 +251,20 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "session-menu-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_pinned) },
     Screen { slug: "session-menu-archived", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(session_menu_archived) },
     Screen { slug: "session-menu-held", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // The bars over the composer (#764): one command left running and one subagent at work; many,
+    // one waiting on you; folded; a command's Output; a bot's sessions at work; narrow.
+    Screen { slug: "bars-one", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "bars-many", width: 1280., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "bars-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bars_folded) },
+    Screen { slug: "bars-output", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bars_output) },
+    Screen { slug: "bars-bot", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
+    Screen { slug: "bars-narrow", width: 760., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // The mode menu and Full Access the first time; a new session's Local or Worktree.
+    Screen { slug: "mode-chip-held", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "mode-menu", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "mode-full-access", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(full_access_question) },
+    Screen { slug: "landing-worktree", width: 1280., height: 820., session: None, typed: Some("Make the footer links work on mobile"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
+    Screen { slug: "landing-worktree-menu", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
 ];
 
 /// An area's row, picked: what its page shows.
@@ -322,6 +336,33 @@ fn group_new_refused(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 /// A bot with nothing under way and no sessions.
 fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_release", window, cx);
+}
+/// The bars, the command's folded into its line.
+fn bars_folded(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.read(cx).bars().clone().update(cx, |bars, cx| bars.toggle(kuvo::work_bars::Bar::Background, cx));
+    }
+}
+/// The command's Output, open.
+fn bars_output(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.read(cx).bars().clone().update(cx, |bars, cx| bars.toggle_output("sh_dev", cx));
+    }
+}
+/// Full Access picked the first time on this computer: asked in the composer.
+fn full_access_question(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.read(cx).composer().clone().update(cx, |composer, cx| composer.pick_approval(kuvo_box::approval::Approval::FullAccess, cx));
+    }
+}
+/// A new session in the website project, set to start in a worktree of its own.
+fn landing_worktree(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.new_session(None, window, cx);
+    workspace.pick_place(kuvo_box::models::StartIn::Project("/Users/sam/Projects/website".into()), cx);
+    workspace.landing().clone().update(cx, |composer, cx| {
+        composer.read_at_once(cx);
+        composer.set_worktree(true, cx);
+    });
 }
 fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     workspace.show_area(Area::Bots, window, cx);
@@ -1163,6 +1204,17 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "session-menu-held" {
                 stand_in.hold_session("ses_dark", Some("Moving to Studio…"));
             }
+            if screen.slug.starts_with("bars-") && screen.slug != "bars-bot" {
+                let many = screen.slug == "bars-many";
+                let command = |id: &str, words: &str, ago: f64| serde_json::json!({ "id": id, "command": words, "started": NOW - ago, "folder": "/Users/sam/Projects/website" });
+                let subagent = |id: &str, title: &str, asking: bool| serde_json::json!({ "session": id, "since": NOW - 40_000.0, "title": title, "asking": asking });
+                let commands = if many { vec![command("sh_dev", "npm run dev", 754_000.0), command("sh_test", "npx vitest --watch", 212_000.0), command("sh_tail", "tail -f logs/signup.log", 61_000.0)] } else { vec![command("sh_dev", "npm run dev", 95_000.0)] };
+                let subagents = if many { vec![subagent("ses_sub", "Check the other forms", false), subagent("ses_sub2", "Find where the email check runs", true), subagent("ses_sub3", "Write a test for a taken email", false)] } else { vec![subagent("ses_sub", "Check the other forms", false)] };
+                stand_in.set_background("ses_signup", serde_json::json!({ "commands": commands, "subagents": subagents }), &[("sh_dev", "> website@2.4.0 dev\n> vite\n\n  VITE v6.0.3  ready in 412 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: use --host to expose")]);
+            }
+            if screen.slug == "mode-chip-held" {
+                stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
+            }
             let client = BoxClient::new(stand_in);
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();
@@ -1236,6 +1288,22 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            // A composer's menu opened with a press on its chip, through the window.
+            if let Some(at) = match screen.slug {
+                "mode-menu" => Some(gpui::point(px(526.), px(767.))),
+                "landing-worktree-menu" => Some(gpui::point(px(835.), px(412.))),
+                _ => None,
+            } {
+                use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+                cx.update_window(any, |_, window, cx| {
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+                    mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                    mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: at, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             // A right-click on the selection, a row's session menu, or a drag that's under way, through the window.
             if screen.slug == "select-menu" || screen.slug.starts_with("select-drag-") || screen.slug == "session-menu-row-menu" || screen.slug == "session-menu-held" {
                 use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};

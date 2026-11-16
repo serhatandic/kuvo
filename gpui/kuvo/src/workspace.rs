@@ -452,6 +452,7 @@ impl Workspace {
                 view.take_asks(asks, cx);
                 view.take_queue(queue, cx);
                 view.composer().clone().update(cx, |composer, cx| composer.read_at_once(cx));
+                view.bars().clone().update(cx, |bars, cx| bars.read_at_once(cx));
             });
         }
     }
@@ -464,6 +465,10 @@ impl Workspace {
                 self.info = Some(info);
                 self.box_state = if self.client.gate().is_held() { BoxState::Held } else { BoxState::Connected };
                 let name = self.box_name();
+                let asked = self.computer_asked();
+                for composer in self.composers.values().map(|(composer, _)| composer.clone()).chain([self.landing.clone()]).collect::<Vec<_>>() {
+                    composer.update(cx, |composer, cx| composer.set_computer(asked.clone(), cx));
+                }
                 self.permissions.update(cx, |permissions, cx| permissions.read(cx));
                 let kind = self.info.as_ref().map(|info| info.kind.clone()).unwrap_or_default();
                 for (_, view) in self.areas.clone() {
@@ -637,6 +642,14 @@ impl Workspace {
                     self.landing_place = Some(place.clone());
                     self.landing.update(cx, |composer, cx| composer.set_start(place, cx));
                 }
+                // The conversation open is a bot's, as the list says now (it may not have known it
+                // as the conversation opened): its sessions' bar follows the bot's work.
+                if let Open::Conversation { view, session } = &self.open {
+                    let bot = self.listing.facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
+                    if bot.is_some() {
+                        view.read(cx).bars().clone().update(cx, |bars, cx| bars.set_bot(bot, cx));
+                    }
+                }
                 // Sessions started here are in the list now: what their box said of them goes.
                 let listing = &self.listing;
                 self.started.retain(|session, _| listing.facts(session).is_none());
@@ -701,6 +714,14 @@ impl Workspace {
 
     pub fn box_state(&self) -> &BoxState {
         &self.box_state
+    }
+
+    /// The computer as a question names it: "this Mac", or its name.
+    fn computer_asked(&self) -> SharedString {
+        match &self.info {
+            Some(info) if !info.is_mac() || !self.client.here() => info.name.clone().into(),
+            _ => "this Mac".into(),
+        }
     }
 
     /// The box's name as the sidebar's foot says it: "This Mac" for this Mac's own.
@@ -808,10 +829,28 @@ impl Workspace {
         // Only the composer on screen asks again for what the box couldn't say.
         self.show_composer(Some(&composer), cx);
         let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer, live, cx));
+        // (A bot's own conversation, as the session lists say: its sessions show over its composer.)
+        let bot = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
+        self.wire_bars(&view, bot, cx);
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.place_panel(cx);
         cx.notify();
+    }
+
+    /// The bars over a conversation's composer: the bot it is (its sessions' bar), and how a row
+    /// opens its conversation (here, in Sessions).
+    fn wire_bars(&self, view: &Entity<ConversationView>, bot: Option<String>, cx: &mut Context<Self>) {
+        let workspace = cx.entity().downgrade();
+        let opener: crate::work_bars::Opener = std::rc::Rc::new(move |session: &str, window: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| workspace.open_session_now(session, window, cx)).ok();
+        });
+        let now = self.now;
+        view.read(cx).bars().clone().update(cx, |bars, cx| {
+            bars.set_opener(opener);
+            bars.set_now(now);
+            bars.set_bot(bot, cx);
+        });
     }
 
     /// Opens a session's conversation, read as the window reads (in tests and shots, at once).
@@ -845,6 +884,7 @@ impl Workspace {
         if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
             let (client, live) = (self.client.clone(), self.live);
             let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
+            self.wire_bars(&view, Some(bot.to_owned()), cx);
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.read_conversation_at_once(&view, session, cx);
@@ -930,7 +970,11 @@ impl Workspace {
         let composer = cx.new(|cx| Composer::in_folder(client, Target::Session { id: session.to_owned(), place: Where::Engine }, folder, live, cx));
         let subscription = cx.subscribe_in(&composer, window, |this, _, event: &ComposerEvent, window, cx| this.composer_event(event, window, cx));
         // Not on screen until its conversation opens.
-        composer.update(cx, |composer, cx| composer.set_shown(false, cx));
+        let asked = self.computer_asked();
+        composer.update(cx, |composer, cx| {
+            composer.set_shown(false, cx);
+            composer.set_computer(asked, cx);
+        });
         self.composers.insert(session.to_owned(), (composer.clone(), subscription));
         composer
     }
@@ -957,7 +1001,13 @@ impl Workspace {
         self.show_composer(Some(&landing), cx);
         // What's offered may have changed since it was last open (an account signed in elsewhere),
         // or (another project) a new one there starts on another: read again, once.
-        landing.update(cx, |composer, cx| composer.read_models(cx));
+        // (And this computer's mode for a new one: the last picked, Full Access confirmed since.)
+        landing.update(cx, |composer, cx| {
+            composer.read_models(cx);
+            if composer.reads() {
+                composer.read_approval(cx);
+            }
+        });
         self.open = Open::Landing;
         self.place_panel(cx);
         window.focus(&self.landing.focus_handle(cx), cx);

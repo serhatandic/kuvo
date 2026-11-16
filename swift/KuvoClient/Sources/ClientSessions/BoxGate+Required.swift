@@ -85,5 +85,6 @@ extension BoxGate {
         "work-queue.anywhere", // #668: an item from any box; no client asks each computer for one
         "work-queue.counts", // #711
         "work-queue.edit", // #674: the Work Queue's statuses, priorities and labels in place of categories
+        "work.background.items", // #764: the bars over the composer list what runs for a conversation from the box
     ]
 }

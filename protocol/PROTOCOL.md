@@ -2298,11 +2298,13 @@ client shows it from the same routes.
   doesn't show as the bot's yet.
 - **`GET kuvo/work?bot=<id>`** → `{bot, sessions: [{session, title, folder, project?, startedBy,
   depth, model?, mode?, account?, state, asks?, started, tokens, cost?, lastReply?}], answered: [answer with
-  its session], today: {started, working, tokens, cost?}, limits}`: its sessions the latest first,
+  its session], today: {started, answered, working, tokens, cost?}, limits}`: its sessions the latest first,
   archived ones left out. 400 without `bot`, 404 for no such bot here, 503 with no engine. Each
   `state` is as of the read; `lastReply` is what it said last, and for one `stopped` or `failed`
   only what it said in that turn, never an earlier turn's reply (one stopped at rest has none). `today.working` stays, since clients until 0.7.2 need it to read the
   report, but no client shows it (see At work).
+  `today.answered` (#764): how many asks it answered for its sessions since midnight on this computer, as
+  the bar over its composer says ("answered 1 ask").
   `account` (bridge 0.9.209) is `{name, label?, title}`, the account it runs on as Settings › Accounts
   lists it where it runs (`api/integration` there, as last checked, never `fresh`): `name` its
   provider's ("Claude Code", "GitHub Copilot", "Anthropic"); `label` the name you gave a coding
@@ -2356,6 +2358,15 @@ client shows it from the same routes.
     `subagents`: subagents at work under it, a review's parts and other hidden runs left out.
     `tasks`: anything else its agent keeps going. A client shows a session at work when its own turn
     runs or it's listed here. Kept in `run/work/background.json`, per place (engine, bridge).
+  - **`GET kuvo/work/background/<session>`** (`work.background.items`) → `{commands: [{id, command,
+    started, folder?, ports?, agents?}], subagents: [{session, since, title?, asking?}]}`: each one,
+    for the bars over a client's composer, the oldest first; both empty for a session with nothing.
+    Every command it left running however long it has run (`agents`: a coding agent's, whose output is
+    `kuvo/agents/api/shell/<id>/output`; else the engine's `api/shell/<id>/output` in `folder`), stopped
+    with `POST kuvo/shell/<id>/stop`; each subagent with its title and whether it waits on you, as the
+    session lists say. **`GET kuvo/work/background/<session>/events`** (ndjson) is the same now and at
+    each change, a command past the counts' limit included (one that ends then goes); a client reads
+    it again too as what the conversation asks changes.
   - **Counting at work**: `kuvo/work`'s `state` and `today.working`, a bot's limits,
     `list_sessions` and every client's At work all go by the same fact. One running 6 hours (a dev server) stops counting, though
     it may still run, and a client's list of commands still shows it. A goal's Mac stays awake for it
@@ -7052,6 +7063,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
+| `work.background.items` | `GET kuvo/work/background/<session>`: each command a conversation left running and each subagent at work under it, for the bars over a client's composer (#764) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
 | `work.elsewhere.start` | (in a peer's agents' mail) it takes starts, reads of its models and projects, and a bot's `stop_work` from your other computers, while its switch lets them ("Peers", Starts) |
 | `work.goals` | a bot's goal ("Work", Goals): `kuvo/work/goals…`, and its tools (bridge 0.9.122) |
@@ -9474,6 +9486,8 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   isn't one of them, 409 `{message, reason}` for Full Access where it can't be picked
   (`fullAccessOff`), 502 where the engine didn't take it.
 - `GET kuvo/approval`: this computer's `{fullAccess, default, auto: {engine, agents}, otherComputers?}`
+  (#764: and `options: {engine, agents}`, each mode a new conversation can start in there, as a
+  conversation's own `options` say them, which a new conversation's mode menu shows as they are)
   (`otherComputers`: whether your other computers may start work here, "Peers",
   Starts; `PATCH {otherComputers}` sets it alone): whether you
   confirmed Full Access here (`box/approval.json`), the one a new conversation starts with

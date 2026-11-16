@@ -1778,6 +1778,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work-queue.elsewhere": ["POST", "kuvo/work-queue/refs"],
     // (What you do to an item another computer keeps, done there: on the item's routes.)
     "work-queue.forward": ["GET", "kuvo/work-queue/items/1"],
+    "work.background.items": ["GET", "kuvo/work/background/ses_none"],
     // (A lead's call for the sessions it started here (list, stop, summarize, answer), on the agents' tools.)
     "work.elsewhere": ["POST", "kuvo/agent-tools"],
     // (Starts, and reads of its models and projects, from a lead on another computer, on the agents' tools.)

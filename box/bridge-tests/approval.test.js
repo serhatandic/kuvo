@@ -266,6 +266,9 @@ test("rules a client changed on its own are never made again behind its back", a
 
 test("Full Access only once it's switched on for this computer, for a bot's conversation too", async () => {
   assert.equal((await route("GET", "kuvo/approval")).body.fullAccess, false);
+  // A new conversation's mode menu offers what the box says can be had here, as a conversation's does.
+  const unconfirmed = (body, side) => body.options[side].find(each => each.approval === "fullAccess").unavailable?.reason;
+  assert.equal(unconfirmed((await route("GET", "kuvo/approval")).body, "engine"), "fullAccessOff");
   const off = await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "fullAccess" });
   assert.equal(off.status, 409);
   assert.equal(off.body.reason, "fullAccessOff");
@@ -273,6 +276,8 @@ test("Full Access only once it's switched on for this computer, for a bot's conv
   const here = await route("PATCH", "kuvo/approval", { fullAccess: true });
   assert.equal(here.status, 200);
   assert.equal(here.body.fullAccess, true);
+  assert.equal(unconfirmed(here.body, "engine"), undefined, "confirmed: a new one can start in it");
+  assert.equal(unconfirmed(here.body, "agents"), undefined);
   assert.equal(here.body.auto.engine.held.reason, "sandbox");
   const set = await route("PUT", "kuvo/sessions/ses_careful/approval", { approval: "fullAccess" });
   assert.equal(set.status, 200);

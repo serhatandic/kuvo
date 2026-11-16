@@ -25,6 +25,7 @@ pub mod git;
 pub mod groups;
 pub mod queue;
 pub mod settings;
+pub mod work_bars;
 
 use kuvo_box::Result;
 use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
@@ -138,6 +139,10 @@ struct State {
     kept_worktree_changes: HashSet<String>,
     /// Sessions with a manual compaction queued to run when the current turn ends.
     pending_compacts: HashSet<String>,
+    /// Its modes, and what runs for each conversation besides its turn.
+    work_bars: work_bars::WorkBars,
+    /// How each new session was asked to start: in a worktree, and its mode.
+    starts: Vec<Value>,
 }
 
 pub const NAME: &str = "Stand-in Mac";
@@ -570,6 +575,52 @@ impl StandIn {
         state.list_changed();
     }
 
+    /// What runs for `session` besides its turn from now on (`{commands, subagents}`, as
+    /// `kuvo/work/background/<session>` answers), and what each command printed; its followers hear it.
+    pub fn set_background(&self, session: &str, background: Value, printed: &[(&str, &str)]) {
+        let mut state = self.state();
+        for (id, text) in printed {
+            state.work_bars.printed.insert((*id).to_owned(), (*text).to_owned());
+        }
+        state.work_bars.background.insert(session.to_owned(), background);
+        state.work_bars.changed();
+    }
+
+    /// A bot's work changed (`kuvo/work/events`): its clients read it again.
+    pub fn bot_work_changed(&self, bot: &str) {
+        let mut state = self.state();
+        state.at += 1;
+        let at = state.at as f64;
+        state.work_bars.work_changed(bot, at);
+    }
+
+    /// Whether Full Access was confirmed here, and why Auto asks first for now (none: it runs).
+    pub fn set_approvals(&self, full_access: bool, auto_held: Option<&str>) {
+        let mut state = self.state();
+        state.settings.approval["fullAccess"] = json!(full_access);
+        state.settings.approval["auto"]["engine"]["held"] = auto_held.map_or(Value::Null, |why| json!({ "reason": "sandbox", "why": why }));
+    }
+
+    /// `session`'s mode on the box, as last set.
+    pub fn approval_of(&self, session: &str) -> Option<String> {
+        self.state().work_bars.approvals.get(session).cloned()
+    }
+
+    /// Whether Full Access is confirmed here now.
+    pub fn full_access(&self) -> bool {
+        self.state().settings.approval["fullAccess"] == json!(true)
+    }
+
+    /// The commands stopped, in order.
+    pub fn stopped_commands(&self) -> Vec<String> {
+        self.state().work_bars.stopped.clone()
+    }
+
+    /// How each new session was asked to start (`{session, worktree, approval}`), in order.
+    pub fn starts(&self) -> Vec<Value> {
+        self.state().starts.clone()
+    }
+
     /// From now on, a message sent is answered as by an engine that isn't answering.
     pub fn fail_sends(&self) {
         self.state().sends_fail = true;
@@ -989,13 +1040,13 @@ impl State {
     /// nowhere), and goes with its bot.
     fn sync_bots(&mut self) {
         let now = self.made.unwrap_or_else(now_ms);
-        let theirs: Vec<(String, String, String)> = self.bots.bots.iter().filter_map(|bot| Some((bot["session"].as_str()?.to_owned(), bot["name"].as_str()?.to_owned(), bot["folder"].as_str()?.to_owned()))).collect();
+        let theirs: Vec<(String, String, String, String)> = self.bots.bots.iter().filter_map(|bot| Some((bot["session"].as_str()?.to_owned(), bot["name"].as_str()?.to_owned(), bot["folder"].as_str()?.to_owned(), bot["id"].as_str()?.to_owned()))).collect();
         let before = self.sessions.len();
-        self.sessions.retain(|id, facts| facts["kind"] != json!("bot") || theirs.iter().any(|(session, _, _)| session == id));
+        self.sessions.retain(|id, facts| facts["kind"] != json!("bot") || theirs.iter().any(|(session, ..)| session == id));
         let mut changed = self.sessions.len() != before;
-        for (session, name, folder) in theirs {
+        for (session, name, folder, bot) in theirs {
             if !self.sessions.contains_key(&session) {
-                self.sessions.insert(session.clone(), json!({ "kind": "bot", "directory": folder, "title": name, "created": now, "updated": now }));
+                self.sessions.insert(session.clone(), json!({ "kind": "bot", "directory": folder, "title": name, "created": now, "updated": now, "bot": bot }));
                 self.models.insert(session.clone(), json!({ "providerID": "anthropic", "id": "claude-opus-5-5", "variant": "high" }));
                 self.messages.insert(session.clone(), bots::conversation(&session, now).unwrap_or_default());
                 changed = true;
@@ -1430,6 +1481,14 @@ impl StandIn {
         if let Some((status, value)) = state.settings.answer(method, route, &|name| query(path, name).map(decoded), &body, &name, here) {
             return answer(status, value);
         }
+        let folder = request.headers.iter().find(|(name, _)| name == "x-opencode-directory").map(|(_, value)| decoded(value));
+        let bars = {
+            let state = &mut *state;
+            state.work_bars.answer(method, route, &body, folder.as_deref(), &mut state.settings.approval)
+        };
+        if let Some((status, value)) = bars {
+            return answer(status, value);
+        }
         match (method, segments.as_slice()) {
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
@@ -1508,10 +1567,22 @@ impl StandIn {
                 let body = request.body.clone().unwrap_or(Value::Null);
                 let id = state.id("ses_new");
                 let now = now_ms();
-                let (kind, folder, project) = match body["project"].as_str() {
+                let (kind, mut folder, project) = match body["project"].as_str() {
                     Some(project) => ("project", project.to_owned(), Some(project.to_owned())),
                     None => ("chat", format!("{HOME}/.kuvo-code/chats"), None),
                 };
+                // (A worktree of its own, as the box makes one, on a branch of its own.)
+                let worktree = body["worktree"] == json!(true) && project.is_some();
+                if worktree {
+                    folder = format!("{HOME}/.kuvo-code/worktrees/{}", id.trim_start_matches("ses_"));
+                }
+                if let Some(approval) = body["approval"].as_str() {
+                    if approval == "fullAccess" && state.settings.approval["fullAccess"] != json!(true) {
+                        return answer(409, json!({ "message": "Full Access isn’t on for this computer.", "reason": "fullAccessOff" }));
+                    }
+                    state.work_bars.approvals.insert(id.clone(), approval.to_owned());
+                }
+                state.starts.push(json!({ "session": id, "worktree": worktree, "approval": body["approval"] }));
                 let mut facts = json!({ "kind": kind, "directory": folder, "created": now, "updated": now });
                 if let Some(project) = &project {
                     facts["project"] = json!(project);
@@ -2125,6 +2196,57 @@ impl Transport for StandIn {
                 let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.waits.remove(&id);
                 state.computers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        if let ["kuvo", "work", "background", session, "events"] = route.split('/').collect::<Vec<_>>().as_slice() {
+            let session = decoded(session);
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let id = state.next;
+                state.next += 1;
+                let _ = sender.send(state.work_bars.of(&session).to_string());
+                state.work_bars.session_followers.insert(id, (session, sender));
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.work_bars.session_followers.remove(&id);
+            });
+            if !hold(closer.clone()) {
+                closer.close();
+            }
+            return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
+        }
+        if matches!(route, "kuvo/work/background/events" | "kuvo/work/events") {
+            let background = route == "kuvo/work/background/events";
+            let (sender, receiver) = channel();
+            let id = {
+                let mut state = self.state();
+                state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
+                let id = state.next;
+                state.next += 1;
+                let bars = &mut state.work_bars;
+                if background {
+                    let _ = sender.send(bars.counts().to_string());
+                    bars.followers.insert(id, sender);
+                } else {
+                    let _ = sender.send(json!({ "changed": bars.work_changed }).to_string());
+                    bars.work_followers.insert(id, sender);
+                }
+                id
+            };
+            let inner = self.inner.clone();
+            let closer = Closer::new(move || {
+                let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.work_bars.followers.remove(&id);
+                state.work_bars.work_followers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

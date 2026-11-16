@@ -14,7 +14,8 @@ use gpui::{
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartIn, effort_title};
+use kuvo_box::approval::{Approval, Here, Picked, Shown};
+use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartIn, effort_title};
 use kuvo_box::typed::{self, Answer, ModelRef, Offers};
 use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
@@ -157,6 +158,19 @@ pub struct Composer {
     members: Vec<GroupMember>,
     /// What the empty field says.
     placeholder: SharedString,
+    /// The conversation's mode as its box shows it (a new one's: as this computer's would be).
+    approval: Option<Shown>,
+    /// This computer's modes, for a new conversation: the one it starts with, unless one's picked.
+    here: Option<Here>,
+    picked_approval: Option<Approval>,
+    /// Which pick of the mode is the latest: an older one's answer coming back late is left.
+    approval_picks: u64,
+    /// Full Access picked where it isn't confirmed on this computer yet: asked here first.
+    confirming_full_access: bool,
+    /// A new conversation in a project starts in a worktree of its own.
+    worktree: bool,
+    /// The computer it's on, as the Full Access question names it.
+    computer: SharedString,
     tasks: Vec<Task<()>>,
     _field: Subscription,
 }
@@ -234,6 +248,13 @@ impl Composer {
             named: Vec::new(),
             members: Vec::new(),
             placeholder,
+            approval: None,
+            here: None,
+            picked_approval: None,
+            approval_picks: 0,
+            confirming_full_access: false,
+            worktree: false,
+            computer: "this computer".into(),
             tasks: Vec::new(),
             _field: subscription,
         };
@@ -241,6 +262,10 @@ impl Composer {
         if read && !matches!(composer.target, Target::Group { .. }) {
             composer.read_models(cx);
             composer.read_offers(cx);
+            // (A conversation's mode is read as it's shown: `set_shown`.)
+            if matches!(composer.target, Target::New(_)) {
+                composer.read_approval(cx);
+            }
         }
         composer
     }
@@ -397,8 +422,14 @@ impl Composer {
         self.shown = shown;
         if !shown {
             self.retrying = None;
-        } else if self.unsaid && self.live {
-            self.read_models(cx);
+        } else {
+            if self.unsaid && self.live {
+                self.read_models(cx);
+            }
+            // (Its mode may have changed elsewhere meanwhile: on the phone, or by its bot.)
+            if self.live && matches!(self.target, Target::Session { .. }) {
+                self.read_approval(cx);
+            }
         }
     }
 
@@ -532,6 +563,11 @@ impl Composer {
     pub fn read_at_once(&mut self, cx: &mut Context<Self>) {
         let (offered, said_all, state) = models_of(&self.client, &self.target, self.picked.as_ref(), self.offered_in().as_deref(), self.models.offered.as_ref());
         self.took_models(offered, said_all, state, cx);
+        match &self.target {
+            Target::Session { id, .. } => self.approval = self.client.session_approval(id).ok(),
+            Target::New(_) => self.here = self.client.approval_here().ok(),
+            Target::Group { .. } => {}
+        }
         if let Target::Session { id, .. } = &self.target
             && let Ok(offers) = self.client.typed_offers(id)
         {
@@ -609,6 +645,157 @@ impl Composer {
         }
     }
 
+    /// The computer it's on, by name, for the Full Access question ("This Mac", a machine's name).
+    pub fn set_computer(&mut self, name: SharedString, cx: &mut Context<Self>) {
+        if self.computer != name {
+            self.computer = name;
+            cx.notify();
+        }
+    }
+
+    /// Whether it reads the box by itself (the app), rather than showing what it's handed.
+    pub fn reads(&self) -> bool {
+        self.live
+    }
+
+    /// Reads the mode: the conversation's, or for a new one, this computer's.
+    pub fn read_approval(&mut self, cx: &mut Context<Self>) {
+        match self.target.clone() {
+            Target::Group { .. } => {}
+            Target::Session { id, .. } => {
+                let (client, picks) = (self.client.clone(), self.approval_picks);
+                self.spawn(cx, move || client.session_approval(&id), move |this, read, cx| {
+                    // (A pick since says newer than this read.)
+                    if let (Ok(shown), true) = (read, this.approval_picks == picks) {
+                        this.approval = Some(shown);
+                        cx.notify();
+                    }
+                });
+            }
+            Target::New(_) => {
+                let client = self.client.clone();
+                self.spawn(cx, move || client.approval_here(), |this, read, cx| {
+                    if let Ok(here) = read {
+                        this.here = Some(here);
+                        cx.notify();
+                    }
+                });
+            }
+        }
+    }
+
+    /// The mode as the menu shows it: the conversation's as its box says, or the one a new
+    /// conversation will start with.
+    pub fn approval(&self) -> Option<Shown> {
+        match &self.target {
+            Target::Session { .. } => self.approval.clone(),
+            Target::New(_) => self.here.as_ref().map(|here| here.shown(self.picked_approval.clone().unwrap_or_else(|| here.default.clone()))),
+            Target::Group { .. } => None,
+        }
+    }
+
+    /// Whether Full Access waits for you to confirm it on this computer.
+    pub fn is_confirming_full_access(&self) -> bool {
+        self.confirming_full_access
+    }
+
+    /// Picks the mode: set on the box at once for a conversation (its box's answer shows), kept for
+    /// a new one until it starts. Full Access not confirmed on this computer yet asks first.
+    pub fn pick_approval(&mut self, approval: Approval, cx: &mut Context<Self>) {
+        let Some(shown) = self.approval() else { return };
+        match shown.choice(&approval).and_then(|choice| choice.unavailable.as_ref()).map(|why| why.reason.as_str()) {
+            None => {}
+            Some("fullAccessOff") => {
+                self.confirming_full_access = true;
+                cx.notify();
+                return;
+            }
+            // Not to be had here, as its box says: shown, not picked.
+            Some(_) => return,
+        }
+        self.confirming_full_access = false;
+        match self.target.clone() {
+            Target::Group { .. } => {}
+            Target::New(_) => {
+                self.picked_approval = Some(approval);
+                cx.notify();
+            }
+            Target::Session { id, .. } => {
+                self.approval_picks += 1;
+                let pick = self.approval_picks;
+                let before = self.approval.clone();
+                if let Some(shown) = self.approval.as_mut() {
+                    shown.approval = approval.clone();
+                }
+                cx.notify();
+                let client = self.client.clone();
+                self.spawn(cx, move || client.set_session_approval(&id, &approval), move |this, result, cx| {
+                    if this.approval_picks != pick {
+                        return;
+                    }
+                    match result {
+                        Ok(Picked::Set(shown)) => this.approval = Some(shown),
+                        Ok(Picked::ConfirmFirst) => {
+                            this.approval = before;
+                            this.confirming_full_access = true;
+                        }
+                        Err(error) => {
+                            this.approval = before;
+                            this.set_note(Note { text: format!("The mode wasn’t changed: {}", kuvo_box::accounts::said(&error)).into(), warning: true }, cx);
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    /// You confirmed Full Access on this computer: it's switched on there, then picked.
+    pub fn confirm_full_access(&mut self, cx: &mut Context<Self>) {
+        self.confirming_full_access = false;
+        cx.notify();
+        let client = self.client.clone();
+        self.spawn(cx, move || client.allow_full_access(), |this, result, cx| {
+            match result {
+                Ok(()) => {
+                    if let Some(here) = this.here.as_mut() {
+                        here.full_access = true;
+                    }
+                    if let Some(choice) = this.approval.as_mut().and_then(|shown| shown.options.iter_mut().find(|choice| choice.approval == Approval::FullAccess)) {
+                        choice.unavailable = None;
+                    }
+                    this.pick_approval(Approval::FullAccess, cx);
+                }
+                Err(error) => this.set_note(Note { text: format!("Full Access wasn’t switched on: {}", kuvo_box::accounts::said(&error)).into(), warning: true }, cx),
+            }
+            cx.notify();
+        });
+    }
+
+    /// Full Access left as it was.
+    pub fn cancel_full_access(&mut self, cx: &mut Context<Self>) {
+        self.confirming_full_access = false;
+        cx.notify();
+    }
+
+    /// Whether a new conversation in a project starts in a worktree of its own (Local: no).
+    pub fn set_worktree(&mut self, worktree: bool, cx: &mut Context<Self>) {
+        if self.worktree != worktree {
+            self.worktree = worktree;
+            cx.notify();
+        }
+    }
+
+    /// Whether Local or Worktree is offered: a new conversation in a project.
+    pub fn offers_worktree(&self) -> bool {
+        matches!(self.target, Target::New(StartIn::Project(_)))
+    }
+
+    /// Whether what's sent starts in a worktree of its own.
+    pub fn starts_in_worktree(&self) -> bool {
+        self.worktree && self.offers_worktree()
+    }
+
     /// Sends what's written (or, in a new conversation, starts it on the box and sends it there).
     pub fn send(&mut self, cx: &mut Context<Self>) {
         if self.client.gate().is_held() { return; }
@@ -678,10 +865,11 @@ impl Composer {
             }
             Target::New(place) => {
                 let model = self.picked.clone();
+                let how = StartHow { worktree: self.starts_in_worktree(), approval: self.picked_approval.clone() };
                 self.spawn(
                     cx,
                     move || {
-                        let started = client.start_session(&place, model.as_ref())?;
+                        let started = client.start_session(&place, model.as_ref(), &how)?;
                         let sent = client.send_draft(&started.session, &draft, None).map_err(|error| error.to_string());
                         Ok::<_, kuvo_box::Error>((started, sent))
                     },
@@ -691,14 +879,18 @@ impl Composer {
                             // Started: what was written, its attached files, and what the box said
                             // of it go with the conversation; this composer is left empty for the
                             // next one.
-                            Ok((started, sent)) => cx.emit(ComposerEvent::Started {
+                            Ok((started, sent)) => {
+                                // (The box keeps the mode picked as the next one's to start in.)
+                                this.picked_approval = None;
+                                cx.emit(ComposerEvent::Started {
                                 session: started.session,
                                 folder: started.folder,
                                 project: started.project,
                                 written: text.clone(),
                                 files,
                                 sent,
-                            }),
+                            })
+                            }
                             Err(error) => {
                                 this.attach(files, cx);
                                 this.put_back(&text, Some(error.to_string()), cx)
@@ -1119,6 +1311,133 @@ impl Composer {
         )
     }
 
+    /// "Auto ⌄": how much the agent does on its own, and the menu of the four; a dot while it does
+    /// less than picked for now (Auto without the sandbox), as its box says.
+    fn mode_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let shown = self.approval()?;
+        let c = cx.theme().colors.clone();
+        let holding = shown.holding().cloned();
+        let tip: SharedString = match &holding {
+            Some(why) => format!("{} asks first for now. {}", shown.approval.title(), why.why).into(),
+            None => format!("{}: {}", shown.approval.title(), lowercased_first(shown.approval.detail())).into(),
+        };
+        let trigger = div()
+            .debug_selector(|| "mode-chip".into())
+            .relative()
+            .child(
+                Button::new("mode-chip", shown.approval.title().to_owned())
+                    .disabled(self.client.gate().is_held())
+                    .ghost()
+                    .size(ButtonSize::Small)
+                    .icon(approval_icon(&shown.approval))
+                    .icon_after(IconName::ChevronDown)
+                    .tooltip(tip),
+            )
+            .children(holding.is_some().then(|| div().absolute().top(px(5.)).right(px(5.)).size(px(6.)).rounded_full().bg(c.warning)));
+        let this = cx.entity().downgrade();
+        Some(
+            PopoverMenu::new("mode-menu", trigger, move |_, cx| {
+                let (shown, this) = (shown.clone(), this.clone());
+                cx.new(|cx| {
+                    let mut menu = Menu::new(cx).width(px(280.));
+                    for approval in Approval::ALL {
+                        let choice = shown.choice(&approval);
+                        // Not to be had here, as its box says (Full Access unconfirmed still can: it asks first).
+                        let refused = choice.and_then(|choice| choice.unavailable.as_ref()).filter(|why| why.reason != "fullAccessOff");
+                        let held = if approval == shown.approval { shown.holding() } else { choice.and_then(|choice| choice.held.as_ref()) };
+                        let detail = match (refused, held) {
+                            (Some(why), _) => why.why.clone(),
+                            (None, Some(why)) => format!("Asks first for now. {}", why.why),
+                            (None, None) => approval.detail().to_owned(),
+                        };
+                        let this = this.clone();
+                        let picked = approval.clone();
+                        menu = menu.entry(
+                            MenuEntry::new(approval.title().to_owned())
+                                .icon(approval_icon(&approval))
+                                .detail(detail)
+                                .checked(approval == shown.approval)
+                                .disabled(refused.is_some())
+                                .on_select(move |_, cx| {
+                                    this.update(cx, |this, cx| this.pick_approval(picked.clone(), cx)).ok();
+                                }),
+                        );
+                    }
+                    menu
+                })
+            })
+            .into_any_element(),
+        )
+    }
+
+    /// "Local ⌄" or "Worktree ⌄", for a new conversation in a project: whether it works in the
+    /// project's folder or in a worktree of its own, on a branch of its own.
+    fn worktree_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.offers_worktree() {
+            return None;
+        }
+        let worktree = self.worktree;
+        let trigger = div().debug_selector(|| "worktree-chip".into()).child(
+            Button::new("worktree-chip", if worktree { "Worktree" } else { "Local" })
+                .disabled(self.client.gate().is_held())
+                .ghost()
+                .size(ButtonSize::Small)
+                .icon(if worktree { IconName::Branch } else { IconName::Folder })
+                .icon_after(IconName::ChevronDown)
+                .tooltip("Where the session works: in the project’s folder, or in a worktree of its own"),
+        );
+        let this = cx.entity().downgrade();
+        Some(
+            PopoverMenu::new("worktree-menu", trigger, move |_, cx| {
+                let this = this.clone();
+                cx.new(|cx| {
+                    let (local, apart) = (this.clone(), this.clone());
+                    Menu::new(cx)
+                        .width(px(280.))
+                        .entry(MenuEntry::new("Local").icon(IconName::Folder).detail("Works in the project’s folder").checked(!worktree).on_select(move |_, cx| {
+                            local.update(cx, |this, cx| this.set_worktree(false, cx)).ok();
+                        }))
+                        .entry(MenuEntry::new("Worktree").icon(IconName::Branch).detail("Works in a copy on a branch of its own").checked(worktree).on_select(move |_, cx| {
+                            apart.update(cx, |this, cx| this.set_worktree(true, cx)).ok();
+                        }))
+                })
+            })
+            .into_any_element(),
+        )
+    }
+
+    /// Full Access, the first time it's picked on this computer: asked here, in the composer.
+    fn full_access_question(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.confirming_full_access {
+            return None;
+        }
+        let c = cx.theme().colors.clone();
+        Some(
+            div()
+                .debug_selector(|| "full-access-question".into())
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .p(space::S3)
+                .mr(space::S1)
+                .rounded(radius::CARD - px(4.))
+                .bg(c.sunken)
+                .border_1()
+                .border_color(c.border)
+                .child(div().flex().items_center().gap(space::S2).text_ui(TypeSize::Body).medium().text_color(c.text).child(Icon::new(IconName::Bolt).size(IconSize::Nav).color(c.warning)).child(format!("Allow Full Access on {}?", self.computer)))
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("A conversation in Full Access runs every command without the sandbox and never asks you, so a mistake can reach anything you can: your keys, other projects, your accounts."))
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(space::S2)
+                        .child(div().debug_selector(|| "full-access-cancel".into()).child(Button::new("full-access-cancel", "Cancel").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.cancel_full_access(cx)))))
+                        .child(div().debug_selector(|| "full-access-allow".into()).child(Button::new("full-access-allow", "Allow Full Access").destructive().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.confirm_full_access(cx))))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn effort_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let model = self.model()?;
         let efforts = self.efforts();
@@ -1147,6 +1466,21 @@ impl Composer {
             .into_any_element(),
         )
     }
+}
+
+/// A mode's icon, as the Mac's menu shows it (a hand, a pencil, a shield, a bolt).
+fn approval_icon(approval: &Approval) -> IconName {
+    match approval {
+        Approval::AskFirst => IconName::Hand,
+        Approval::AcceptEdits => IconName::Pencil,
+        Approval::FullAccess => IconName::Bolt,
+        Approval::Auto | Approval::Other(_) => IconName::Shield,
+    }
+}
+
+fn lowercased_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|first| first.to_lowercase().collect::<String>() + chars.as_str()).unwrap_or_default()
 }
 
 /// What a read says of a conversation's model.
@@ -1369,6 +1703,7 @@ impl Render for Composer {
             .border_color(c.border_strong)
             .shadow(theme.card_shadow())
             .when(!offers.is_empty(), |d| d.child(self.slash_list(&offers, cx)))
+            .children(self.full_access_question(cx))
             .children(self.attachments(cx))
             .children(keyword.map(|chip| div().flex().child(chip)))
             .child(div().pt(space::S1).pr(space::S1).child(self.field.clone()))
@@ -1380,8 +1715,10 @@ impl Render for Composer {
                     .ml(-space::S2)
                     .when(!group, |d| d.child(Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
                     .when(group, |d| d.children(self.member_faces(cx)))
+                    .children(self.mode_chip(cx))
                     .children(self.model_chip(cx))
                     .children(self.effort_chip(cx))
+                    .children(self.worktree_chip(cx))
                     .child(div().flex_1())
                     .child(send),
             );

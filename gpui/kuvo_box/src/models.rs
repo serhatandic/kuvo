@@ -224,6 +224,14 @@ pub enum StartIn {
     Chat,
 }
 
+/// How a new conversation starts, as its composer picked: in a worktree of its own, and in which mode
+/// (none: this computer's default).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StartHow {
+    pub worktree: bool,
+    pub approval: Option<crate::approval::Approval>,
+}
+
 /// What a new conversation is, as the box made it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Started {
@@ -288,14 +296,21 @@ impl BoxClient {
     }
 
     /// Starts an empty conversation (`sessions.start.empty`) in `place`, on `model` where one's
-    /// named, for the user's own first message.
-    pub fn start_session(&self, place: &StartIn, model: Option<&ModelRef>) -> Result<Started> {
+    /// named, for the user's own first message: as `how` says, in a worktree of its own (a
+    /// project's: the box makes it, on a branch of its own) and in the mode picked.
+    pub fn start_session(&self, place: &StartIn, model: Option<&ModelRef>, how: &StartHow) -> Result<Started> {
         let mut body = match place {
             StartIn::Project(project) => json!({ "project": project }),
             StartIn::Chat => json!({ "chat": true }),
         };
         if let Some(model) = model {
             body["model"] = json!(model);
+        }
+        if how.worktree && matches!(place, StartIn::Project(_)) {
+            body["worktree"] = json!(true);
+        }
+        if let Some(approval) = &how.approval {
+            body["approval"] = json!(approval.name());
         }
         decode(&self.send(&Request::post("kuvo/sessions", body))?)
     }

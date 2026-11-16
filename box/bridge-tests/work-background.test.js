@@ -652,6 +652,48 @@ test("your own conversation with a command running counts as at work too; every 
   assert.deepEqual((await route("GET", "kuvo/work/background")).body.sessions, {});
 });
 
+test("the bars over a conversation's composer read each command it left running and each subagent at work, from the box", async () => {
+  const time = clock();
+  const watch = watcher(time);
+  await watch.caughtUp;
+  asked();
+  state.active.add("ses_helper").add("ses_part");
+  await watch(startJob("sh_3", "npm run dev", Date.now() - 5 * SECONDS, "ses_tests", tidepool));
+  // (The helper as the session lists have it: titled, and waiting on you.)
+  const lists = path.join(home, "run", "lists");
+  fs.mkdirSync(lists, { recursive: true });
+  const facts = { kind: "subagent", directory: tidepool, title: "Look for the flaky test", created: 1, updated: 2, parent: "ses_tests", asked: 3 };
+  fs.writeFileSync(path.join(lists, "sessions.json"), JSON.stringify({ epoch: "e", seq: 1, floor: 0, sessions: { ses_helper: { seq: 1, facts } }, gone: {}, projects: {} }));
+  const { status, body } = await route("GET", "kuvo/work/background/ses_tests");
+  assert.equal(status, 200);
+  assert.deepEqual(body.commands.map(each => [each.id, each.command, each.folder, each.agents]), [["sh_3", "npm run dev", tidepool, undefined]]);
+  assert.deepEqual(body.subagents.map(each => [each.session, each.title, each.asking]), [["ses_helper", "Look for the flaky test", true]], "the helper, and not the review's part");
+  fs.rmSync(lists, { recursive: true, force: true });
+  await watch(exited("sh_3", tidepool));
+  state.active.delete("ses_helper");
+  await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_helper" } });
+  assert.deepEqual((await route("GET", "kuvo/work/background/ses_tests")).body, { commands: [], subagents: [] }, "nothing left: both empty, so its bars go");
+});
+
+test("a command running past the counts' limit still shows in its conversation's bar, and its follow says so from its first line", async () => {
+  const time = clock();
+  const watch = watcher(time);
+  await watch.caughtUp;
+  state.messages.ses_mine = [];
+  await watch(startJob("sh_old", "npm run dev", Date.now() - 7 * 60 * MINUTES, "ses_mine", otherFolder));
+  assert.equal((await route("GET", "kuvo/work/background")).body.sessions.ses_mine, undefined, "no longer counted as at work");
+  // (The first line of its follow, then let go.)
+  let status, line;
+  for await (const part of handle({ method: "GET", path: "kuvo/work/background/ses_mine/events", headers: {}, body: Buffer.alloc(0) }, {}, undefined)) {
+    if (part.head) status = part.head.status;
+    if (part.body) { line = JSON.parse(part.body.toString().split("\n")[0]); break; }
+  }
+  assert.equal(status, 200);
+  assert.deepEqual(line.commands.map(each => each.id), ["sh_old"], "still listed, however long it has run");
+  await watch(exited("sh_old", otherFolder));
+  assert.deepEqual((await route("GET", "kuvo/work/background/ses_mine")).body.commands, [], "and gone once it ends");
+});
+
 test("a place that can't say what it left running still tells: a turn's end is its finish, once", async () => {
   const time = clock();
   // (As the coding agents' lanes with nothing to report: its answer has no background at all.)

@@ -95,6 +95,22 @@ export function readBackground(file = WORK_BACKGROUND, now = Date.now()): Backgr
   return sessions;
 }
 
+/** What runs for `session` besides its turn, each one, as the bars over a client's composer list
+ * it (`kuvo/work/background/<session>`): every command it left running (a coding agent's marked
+ * `agents`, read and stopped through their bridge), however long it has run, and each subagent at
+ * work under it, from every place it runs. */
+export function readSessionBackground(session: string, file = WORK_BACKGROUND): { commands: (BackgroundCommand & { agents?: true })[]; subagents: BackgroundHelper[] } {
+  const commands: (BackgroundCommand & { agents?: true })[] = [];
+  const subagents: BackgroundHelper[] = [];
+  for (const [place, kept] of Object.entries(readKept(file))) {
+    const work = kept.sessions?.[session];
+    if (!work) continue;
+    for (const command of work.commands ?? []) commands.push({ ...command, ...(place === "bridge" ? { agents: true as const } : {}) });
+    subagents.push(...(work.subagents ?? []));
+  }
+  return { commands: commands.sort((a, b) => a.started - b.started), subagents: subagents.sort((a, b) => a.since - b.since) };
+}
+
 /** The sessions at work now on `targets`, their own turns and what they left running alike: what
  * every count of sessions at work goes by. */
 export async function atWorkNow(targets: Target[], signal?: AbortSignal, file = WORK_BACKGROUND): Promise<Set<string>> {
