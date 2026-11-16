@@ -753,6 +753,17 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   expect(rowOf(shown, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
   expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
 
+  // The release Kuvo Code here carries, offered and waiting for work to end: Update Now takes it now.
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true })
+  const offered = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
+  expect(offered).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs once nothing’s at work, or now.", kind: "actions" })
+  expect(offered.actions[0]).toMatchObject({ id: "update", title: "Update Now", confirm: { button: "Update Now" } })
+  // Not even on your word while its engine is stopped on purpose: said, with nothing to press.
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerHeld: () => "Its engine is stopped: start it to update it." })
+  const held = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
+  expect(held).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "Its engine is stopped: start it to update it.", kind: "status" })
+  expect(held.actions).toBeUndefined()
+
   // From your phone the same page names the Mac, and what opens only on it says so instead.
   const away = await fromAway("kuvo/settings/computer")
   expect(away.title).toBe("devbox")

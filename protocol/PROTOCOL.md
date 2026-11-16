@@ -1669,12 +1669,25 @@ machines; a client that wants every computer's facts asks the box that has it as
     `rename`, never the box itself). `allow-devices` (`devices.allow`), last, with its `confirm`:
     only on a computer that carries `vouching`, below. `update` (`computers.update`, below: Update
     Now, with its `confirm` while something may be at work there) on a machine this box keeps up to
-    date. A client draws the ids it has a control for.
+    date. `update-here` (`computers.update.here`: Update Now, `POST kuvo/update {now: true}` of this
+    box, with its `confirm` while sessions are at work) on this box's own row while a release Kuvo
+    Code here offered waits. `add` (`computers.update.here`), "Set Up Over SSH…", on an older machine
+    (by its version, or heard from and saying none) that this box could add but didn't set up over
+    SSH, so it can't bring it up: no route of its own, a client opens Add a Machine with the
+    machine's `id` (its address) typed in, for you to add it again from here. A client draws the
+    ids it has a control for.
   - `update?` (`computers.update`): `{state, title, detail, long?}` on a machine whose Kuvo this box
     brings up to its own (Keeping them up to date, below): `waiting` for nothing to be at work there
     (`long: true` once that's been over a day), `updating`, or `failed` (tried again by itself
     later); `title` and `detail` the box's words, which a client shows as they are. Left out where
-    there's nothing to bring up, and on every other box.
+    there's nothing to bring up, and on every other box. On this box's own row
+    (`computers.update.here`): how its own update to a release Kuvo Code here offered stands,
+    "Kuvo on <name> updates once your sessions there finish." / "… updates as soon as nothing’s at
+    work there." (`waiting`; `update-here` always asks first), "Updating Kuvo on <name>…" (`updating`), "… couldn’t be updated. It tries again
+    later." (`failed`); left out while none waits, or while it can't update (blocked, its engine
+    stopped on purpose, an update on trial). On an older machine this box could add but didn't set
+    up over SSH (`add`, above): "Kuvo on <name> needs an update. Set it up over SSH from <this box>
+    to update it." (`waiting`).
   - `vouching?` (`devices.allow`, #742): `{"blocked": true, "words": "<Device> was removed from
     your devices. <Computer> can't add Kuvo Code's app again until you allow it."}` on a computer
     whose box is kept from vouching for Kuvo Code's desktop app ("Paired phones",
@@ -1887,7 +1900,8 @@ machines; a client that wants every computer's facts asks the box that has it as
   release, so this is how such a one is brought up. Every 15 minutes (`run/keep-up.json` keeps what
   it found of each, by key), for each machine it set up (`kind: "machine"`, not `apart`, not
   `away`) whose version, as it said it with its agents, is older than this box's (or that says
-  none: then `bin/box-version` there tells), it waits while the machine says it has sessions at
+  none: then `bin/box-version` there tells; until a look says otherwise, one heard from that says
+  none counts as older, being from before boxes said it), it waits while the machine says it has sessions at
   work; otherwise it looks over SSH, changing nothing, at what's at work there (its engine's and
   its coding agents' bridge's `api/session/active`, each whose record names a process of that
   program, as a box asks its own before updating itself). Found at work, or where that can't be
@@ -2844,8 +2858,8 @@ did: the box keeps working as itself ("For released Macs").
     offered already; 422 when it can't be read, isn't a release, isn't signed with a pinned key, or
     its pack isn't what it says. Other methods answer 405.
   - It's taken the update way, in a process of its own (`kuvo-link.js update --offered`, as Update
-    Now's), at once if nothing runs, else at the first round (every ten minutes) nothing does,
-    whatever its age and the hour (the Kuvo Code it came with is there already). It waits, untouched,
+    Now's), at once if nothing runs, else as soon as nothing does (looked at every 20 seconds while
+    one waits, and at each ten-minute round), whatever its age and the hour (the Kuvo Code it came with is there already). It waits, untouched,
     while the box is blocked, its engine is stopped on purpose, an update runs or is on trial, or
     something runs. Taken, or no longer newer than the box, the offer goes. One that fails goes too,
     and its version rests a day (`offerFailed` in `run/update.json`; offered again sooner, it's
@@ -2857,13 +2871,17 @@ did: the box keeps working as itself ("For released Macs").
   - Its engine, when the box doesn't have it yet, still comes from the manifest's URL.
 - **When**: the night's window, 02:00 to 05:00 in your time zone ("Your time zone"), once a night, always (there's no
   switch: a machine keeps up with the Macs and phones that use it), for a release at least three
-  days old. Or now (Update Now), whatever its age.
+  days old. Or now (Update Now, `POST kuvo/update {now: true}`), whatever its age, and whatever is
+  at work there (a client asks first, saying what stops: the engine restarts). Where a release
+  Kuvo Code here offered waits, newer than the box, Update Now takes that one
+  (`computers.update.here`), however it rested after failing; `409` with words to show where it
+  can't even so (its engine stopped on purpose, its last update not yet said to be well).
 - **Never**:
   - in another folder than `~/.kuvo-code`;
   - while its engine is stopped on purpose (`run/stopped`), or its version (`bin/box-version`)
     isn't known;
   - to a version that isn't newer;
-  - while a conversation works there or a browser ask waits;
+  - while a conversation works there or a browser ask waits, but on your word (Update Now);
   - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`;
   - while a Mac with Kuvo Code 0.7 or before connected in the last 30 days, since the box was last
     marked ("For released Macs").
@@ -2917,7 +2935,8 @@ did: the box keeps working as itself ("For released Macs").
     taken.
   - `POST {now: true}` starts one: 202 with the status, or 409 `{message}` when it's not set up,
     is blocked, or is updating already. Other methods answer 405: there's nothing to turn off.
-  - A Mac does the same over SSH with `kuvo-link.js box update-status` and `update-now`.
+  - A Mac does the same over SSH with `kuvo-link.js box update-status` and `update-now` (which,
+    with nobody asked first, never goes ahead while something is at work there).
 - `kuvo-link.js update [--now] [--from <folder>]` updates from a shell, `--from` from a release in a
   folder there (a full path), taken at once, whatever its age. `update --offered` takes the release
   offered with `kuvo/box/update` when it's due, and does nothing otherwise. Only in a test's folder,
@@ -6970,6 +6989,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `computers.facts` | `features`, `working` (left out where never said) and `atWork` on each of `kuvo/computers`' computers ("Computers", #735) |
 | `computers.manage` | `actions` on each of `kuvo/computers`' computers, `PATCH` and `DELETE kuvo/computers/<key>` (done by the box that writes the machine's record, or handed to it) and `POST kuvo/computers/<key>/connect` ("Computers", Managing them, #735) |
 | `computers.reach` | `address` and `relay` on each of your own computers in `kuvo/computers` ("Computers", #742) |
+| `computers.update.here` | The box takes a release Kuvo Code here offered as soon as nothing's at work, Update Now (`POST kuvo/update {now}`) takes it now whatever is at work, and its own row in `kuvo/computers` says how that stands (`update`, `update-here`); `kuvo-install update` ("Updates", "Computers", "Installing this computer's box") |
 | `config` | `kuvo/config` |
 | `config.apply` | `POST kuvo/config/apply` |
 | `devices.allow` | Removing a desktop app a computer's box vouched for keeps that box from vouching (`409`, `reason: "blocked"`), and the main computer says so on it in `kuvo/computers` (`vouching`, the `allow-devices` action) and takes `POST kuvo/computers/<key>/allow-devices` from its own clients ("Paired phones", "Computers", #742) |
@@ -7813,7 +7833,7 @@ An app that carries the box's release ("Updates": `boxes.json` and the pack, in 
 computer holds before it starts or attaches to anything. The app runs it and draws its lines; it
 decides nothing itself.
 
-`sh <folder>/kuvo-install status|new|move [--app <bundle>] [--root <name>]`
+`sh <folder>/kuvo-install status|new|move|update [--now] [--app <bundle>] [--root <name>]`
 
 - `--app`: the app's bundle (a full path), on a Mac: its bundle ID names the folder an earlier
   Kuvo Code kept its data in (`~/Library/Application Support/<ID>`, `S` below). Linux has none.
@@ -7856,6 +7876,21 @@ decides nothing itself.
    downloaded.
 4. `kuvo-link.js install --<verb> --root <name> --release <folder> --engine <folder> [--app
    <bundle>]` from that release, on that engine, with `KUVO_HOME` the box's home.
+
+**`update [--now]`** (`computers.update.here`): the box that's there brought up to the release
+the app carries, by that release's own update (`kuvo-link.js update --installer --from <folder>
+[--now]`, on the box's own engine as `status` runs: the update fetches a new engine itself). It's
+how an app brings this computer's box up when that box is from before it took an offered release
+as soon as nothing's at work (it lacks `computers.update.here`). Refused with no box there. Without
+`--now` it waits, in that process, until nothing is at work there (as "Updates" counts it, looked
+at every 15 seconds), saying so: `{"step": "waiting", "title", "confirm": {title, message,
+label}}` (the words for an app's chip, and what Update Now asks first), and checks again as it
+updates, waiting again where work began meanwhile; it ends quietly once the app that ran it is
+gone (the box takes the offered release itself then). With `--now`, an update the box is making
+already is waited for first. With `--now` it doesn't
+wait. Then `{"step": "updating", "title"}`, and last the update's answer (`{"result": "updated" |
+"current" | "blocked" | "busy" | "off" | "failed", "message"?}`, exit 0 for `updated` and
+`current`, else 1). Updated, the running bridge goes for the keeper to start the new one.
 
 It writes only in `K/updates/install`, which goes once a box is made from it. Beside a box
 that's there already (`ours`, `machine`, `two`, nothing to run), the engine it fetched goes once

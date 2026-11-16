@@ -28,7 +28,7 @@ import { readAsks } from "../areas/asks";
 import { asked, fetched, readBridgeFile, readEngineFile } from "../engine/client";
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, textOf, writePrivate } from "../files";
-import { K, OWN_RUNTIME, RUN, SCRIPT, UPDATES, homeFolder } from "../home";
+import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder } from "../home";
 import { yourZone } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
@@ -190,7 +190,7 @@ export function updatesBlocked(link: LinkState | null = readLink(), now = Date.n
 
 // Whether something runs on the box: a conversation working (the engine's, the coding agents'),
 // or an agent's browser waiting on you.
-async function boxBusy(readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
+export async function boxBusy(readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
   return await agentsWorking(readEngine, readBridge) === true || readAsks().length > 0;
 }
 
@@ -223,6 +223,8 @@ function ran(command: string, args: string[], env: Record<string, string> = {}, 
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 
+
+const UPDATING_ALREADY = "It's updating already.";
 
 // An update under way, by its process (`run/.updating/pid`): one at a time, and one whose process
 // went isn't one.
@@ -356,6 +358,9 @@ export interface UpdateOptions {
   swapping?: () => void;
   /** Told the version of the release it takes, once it's checked its signature. */
   taking?: (version: string) => void;
+  /** Goes ahead whatever is at work (the default with `now`, Update Now, which a client asks
+   * first); false: `now` only for a release's age. */
+  whileBusy?: boolean;
 }
 
 /** A release's `box.json`, in its pack: its version, its engine's, each file's SHA-256, and its
@@ -372,14 +377,14 @@ interface BoxFiles {
 // "failed", version?, message?}`; once "updated", the bridge goes for the keeper to start the new
 // one. `from`: a release in a folder here, taken whatever its age (the Kuvo Code it came with is
 // here already). `keys` and `url`: a test's (a test's folder only).
-export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120_000, swapping = () => {}, taking = () => {} }: UpdateOptions = {}): Promise<UpdateOutcome> {
+export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120_000, swapping = () => {}, taking = () => {}, whileBusy = now }: UpdateOptions = {}): Promise<UpdateOutcome> {
   if (!keys.length) return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked) return { result: "blocked", message: blocked };
   // COMPAT(0.7 engine-stop): no update while an older Mac's Stop holds the engine down. Goes on the user's word, once no Mac from before 1.0 connects.
   if (fs.existsSync(path.join(RUN, "stopped"))) return { result: "blocked", message: "Its engine is stopped: start it to update it." };
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
-  if (!takeUpdateLock()) return { result: "busy", message: "It's updating already." };
+  if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
   try {
     step("checking");
@@ -399,7 +404,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (!from) noteUpdate({ latest: manifest.version, checked: clock() });
     if (!newerVersion(manifest.version, before)) return { result: "current", version: before };
     if (!now && !from && clock() - (Date.parse(manifest.released!) || clock()) < RELEASE_AGE) return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
-    if (await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    // (Now, on your word, whatever is at work: a client asks you first, saying what stops.)
+    if (!whileBusy && await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
     step("downloading");
     stage = path.join(UPDATES, manifest.version);
@@ -474,7 +480,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
     if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!now && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
     // Stopped, for sure, before anything's copied; what's there kept; then the new in its place,
     // one file at a time, and started again.
@@ -708,10 +714,15 @@ export function updateStatus(): UpdateStatus {
 // An update run by the bridge (a phone's or a Mac's Update Now, or the night's): one at a time;
 // once it's "updated", the bridge goes, for the keeper to start the new one.
 let updating: Promise<UpdateOutcome | null> | null = null;
-export function startUpdate(options: UpdateOptions = {}): Promise<UpdateOutcome | null> | null {
+export function startUpdate(options: UpdateOptions & { offered?: boolean } = {}): Promise<UpdateOutcome | null> | null {
   if (updating || isUpdating()) return null;
-  updating = update({ ...options, step: running => noteUpdate({ running }) })
+  const { offered, ...rest } = options;
+  const step = (running: UpdateStep) => noteUpdate({ running });
+  // (The release Kuvo Code here offered, where it's the newer: taken now, as `takeOffer` takes it.)
+  updating = (offered ? takeOffer({ ...rest, step }) : update({ ...rest, step }))
     .then(outcome => {
+      // (Another process updating it already, as the offered release's take: that one says how it goes.)
+      if (!outcome || (outcome.result === "busy" && outcome.message === UPDATING_ALREADY)) return outcome;
       noteUpdate({ running: null, ...(outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } }) });
       if (outcome.result === "updated") setTimeout(() => process.exit(0), 1000);
       return outcome;
@@ -731,7 +742,12 @@ export async function* updateRoute(context: RouteContext): AsyncGenerator<Answer
     if (!UPDATE_KEYS.length) return yield* json(409, { message: "Updates aren't set up for this machine yet." });
     const blocked = updatesBlocked();
     if (blocked) return yield* json(409, { message: blocked });
-    return yield* (startUpdate({ now: true }) ? json(202, updateStatus()) : json(409, { message: "It's updating already." }));
+    // A release Kuvo Code here offered, newer than this box, is what Update Now takes, whatever is
+    // at work (the client asked first); else the newest from GitHub.
+    const offered = offerWaits();
+    const held = offered ? offerHeld() : null;
+    if (held) return yield* json(409, { message: held });
+    return yield* (startUpdate({ now: true, offered }) ? json(202, updateStatus()) : json(409, { message: UPDATING_ALREADY }));
   }
   return yield* json(405, {});
 }
@@ -747,6 +763,20 @@ export function offeredVersion(): string | null {
 }
 
 const dropOffer = (): void => fs.rmSync(OFFERED, { recursive: true, force: true });
+
+/** Why the release Kuvo Code here offered can't be taken even on your word now, in words to show
+ * as they are: its engine stopped on purpose, or its last update not yet said to be well. */
+export function offerHeld(): string | null {
+  if (fs.existsSync(path.join(RUN, "stopped"))) return "Its engine is stopped: start it to update it.";
+  if (updateOnTrial()) return "It’s finishing its last update. Try again in a moment.";
+  return null;
+}
+
+/** Whether a release Kuvo Code here offered waits to be taken: newer than this box. */
+export function offerWaits(): boolean {
+  const offered = offeredVersion(), version = boxVersion();
+  return !!offered && !!version && newerVersion(offered, version);
+}
 
 /** What offering a release says: 202 and its version, or why not (400 not asked right, 409 not
  * now or not newer, 422 not a release this box takes). */
@@ -778,7 +808,7 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
   if (blocked) return { status: 409, message: blocked };
   const before = boxVersion();
   if (!before) return { status: 409, message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
-  if (updating || isUpdating()) return { status: 409, message: "It's updating already." };
+  if (updating || isUpdating()) return { status: 409, message: UPDATING_ALREADY };
   let boxes: Buffer, manifest: BoxRelease, name: string;
   try {
     boxes = readRelease(path.join(from, "boxes.json"), 1_000_000);
@@ -802,7 +832,7 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
   }
   if (hexSHA256(pack) !== manifest.pack.sha256) return { status: 422, message: "The release's files aren't what it says." };
   // Kept whole or not at all, and never while a take could be reading it.
-  if (!takeUpdateLock()) return { status: 409, message: "It's updating already." };
+  if (!takeUpdateLock()) return { status: 409, message: UPDATING_ALREADY };
   const partial = `${OFFERED}.partial`;
   try {
     fs.rmSync(partial, { recursive: true, force: true });
@@ -822,9 +852,9 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
 
 /** Whether the release offered from a folder here is to be taken now: newer than the box, not
  * resting after a failure, and nothing in the way (an update under way or on trial, a block, a
- * stopped engine, something running). One the box has caught up with goes. `blocked` and `clock`:
- * a test's. */
-export async function offerDue({ blocked = updatesBlocked(), clock = Date.now }: Pick<UpdateOptions, "blocked" | "clock"> = {}): Promise<boolean> {
+ * stopped engine, something running). `now` (Update Now, on your word): whatever is at work, and
+ * though it rests. One the box has caught up with goes. `blocked` and `clock`: a test's. */
+export async function offerDue({ blocked = updatesBlocked(), clock = Date.now, now = false }: Pick<UpdateOptions, "blocked" | "clock" | "now"> = {}): Promise<boolean> {
   const offered = offeredVersion(), before = boxVersion();
   // (None, or one being written: nothing to do yet.)
   if (!offered) return false;
@@ -833,7 +863,9 @@ export async function offerDue({ blocked = updatesBlocked(), clock = Date.now }:
     if (!isUpdating()) dropOffer();
     return false;
   }
-  return !blocked && !!before && !updating && !isUpdating() && !updateOnTrial() && !fs.existsSync(path.join(RUN, "stopped")) && !offerRests(offered, clock()) && !(await boxBusy());
+  if (blocked || !before || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, "stopped"))) return false;
+  if (now) return true;
+  return !updating && !offerRests(offered, clock()) && !(await boxBusy());
 }
 
 /** The release offered from a folder here, taken when it's due (`offerDue`), as `update --offered`
@@ -855,11 +887,48 @@ export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutc
   return outcome;
 }
 
+// COMPAT(0.8 beta update): `installerSteps` and `untilFree` go with `update --installer`, once no
+// Mac's box is from before `computers.update.here`.
+/** What the installer Kuvo Code carries says as it brings this box up to its release
+ * (`kuvo-install update`, `update --installer`), for the app to show as they are. */
+const HERE = process.platform === "darwin" ? "this Mac" : "this computer";
+export const installerSteps = {
+  waiting: {
+    step: "waiting", title: `Kuvo on ${HERE} updates once your sessions finish.`,
+    confirm: { title: `Update Kuvo on ${HERE} now?`, message: `What your sessions on ${HERE} are doing stops as Kuvo restarts. It’s back in a moment.`, label: "Update Now" },
+  },
+  updating: { step: "updating", title: `Updating Kuvo on ${HERE}…` },
+} as const;
+
+/** Waits until nothing is at work here before the release in `from` is taken (`update --installer`
+ * without `--now`), saying once that it waits. True to go on: nothing at work, or nothing to wait
+ * for (this box has that version already, or can't update, which the update then says). False once
+ * the app that asked is gone (this process left to another): it's taken by the box itself then. */
+export async function untilFree(from: string, { keys = UPDATE_KEYS, blocked }: Pick<UpdateOptions, "keys" | "blocked"> = {}): Promise<boolean> {
+  const every = !REAL_BOX && Number(process.env.KUVO_TEST_UNTIL_FREE_EVERY) > 0 ? Number(process.env.KUVO_TEST_UNTIL_FREE_EVERY) : 15_000;
+  let version: string;
+  try { version = verifyBoxes(readRelease(path.join(from, "boxes.json"), 1_000_000).toString("utf8"), keys).version; } catch { return true; }
+  const parent = process.ppid;
+  let said = false;
+  for (;;) {
+    const before = boxVersion();
+    if (!before || !newerVersion(version, before) || (blocked === undefined ? updatesBlocked() : blocked)) return true;
+    // (The box taking it itself meanwhile: waited for, and then it's there.)
+    if (!isUpdating() && !(await boxBusy())) return true;
+    if (!said) { console.log(JSON.stringify(installerSteps.waiting)); said = true; }
+    await sleep(every);
+    if (process.ppid !== parent) return false;
+  }
+}
+
 /** The offered release taken in a process of its own (`kuvo-link.js update --offered`), as Update
  * Now's is, when it's due: never in the process that asks, whose answer it would outlive, and
  * which isn't the bridge that goes for the keeper to start the new one. */
-export async function startOfferedUpdate(): Promise<boolean> {
-  if (!(await offerDue())) return false;
+let offerSpawned = 0;
+export async function startOfferedUpdate(clock: () => number = Date.now): Promise<boolean> {
+  // (Asked again every few seconds while one waits: not a second process while the first starts.)
+  if (clock() - offerSpawned < 60_000 || !(await offerDue())) return false;
+  offerSpawned = clock();
   spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--offered"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
   return true;
 }

@@ -56,7 +56,7 @@ import { letDevicesConnect } from "../mac/routes";
 import { freshBoxPermissions } from "../permissions";
 import type { BoxPermissions } from "../../shared/routes/box";
 import { macLink } from "../state";
-import { agentsWorking, newerVersion, updateRoute, updateStatus } from "../updates/update";
+import { agentsWorking, newerVersion, offerHeld, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
 import { sharedMachine } from "../setup/settle";
@@ -681,6 +681,8 @@ export const computerFacts = {
   /** What macOS allows its helper, as it sees it now (`freshBoxPermissions`). */
   permissions: (): BoxPermissions | Promise<BoxPermissions> => freshBoxPermissions(),
   update: updateStatus,
+  /** Why the release Kuvo Code here offered can't be taken now, even on your word. */
+  offerHeld: (): string | null => offerHeld(),
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
   devices: (): boolean | null => macLink.config?.phones ?? null,
@@ -740,7 +742,11 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   if (update.updating) rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
   else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...(update.blocked ? { tone: "warning" as const } : {}) }));
   else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs when nothing’s at work, or now.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: ready, actions: [now("Update Now")] }));
-  else if (update.offered && newerVersion(update.offered, update.version)) rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, line: "It installs when nothing’s at work.", kind: "status", value: update.offered }));
+  // (The release Kuvo Code here offered: taken as soon as nothing's at work, or now.)
+  else if (update.offered && newerVersion(update.offered, update.version)) {
+    const held = computerFacts.offerHeld();
+    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...(held ? { line: held, kind: "status" } : { line: "It installs once nothing’s at work, or now.", kind: "actions", actions: [now("Update Now")] }), value: update.offered }));
+  }
   else rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself when nothing’s at work.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: update.version, actions: [now("Check Now")] }));
 
   // "Let my devices connect": a Mac's switch. A computer you added always lets them in.

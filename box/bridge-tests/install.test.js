@@ -154,7 +154,7 @@ test("an engine named as a file is only ever a test's: without a test's say-so t
   const where = computer();
   const refused = install(where, "status", { env: { KUVO_TEST_INSTALL_FILE_ENGINE: "" } });
   assert.equal(refused.status, 1);
-  assert.deepEqual(refused.said, { result: "failed", message: "This copy of Kuvo Code is damaged. Download it again, then try again." });
+  assert.deepEqual(refused.said, { result: "failed", message: "This copy of Kuvo is damaged. Download it again, then try again." });
   assert.deepEqual(everything(path.join(staging(where), "engine")), []);
 });
 
@@ -166,7 +166,7 @@ test("a damaged copy is refused in words before anything of it runs: a pack that
   const one = computer();
   const refused = install(one, "status", { from: damaged });
   assert.equal(refused.status, 1);
-  assert.deepEqual(refused.said, { result: "failed", message: "This copy of Kuvo Code is damaged. Download it again, then try again." });
+  assert.deepEqual(refused.said, { result: "failed", message: "This copy of Kuvo is damaged. Download it again, then try again." });
   assert.deepEqual(everything(staging(one)), [], "nothing unpacked");
 
   // The engine, other bytes than the release pinned.
@@ -175,7 +175,7 @@ test("a damaged copy is refused in words before anything of it runs: a pack that
   try {
     const wrong = install(two, "status");
     assert.equal(wrong.status, 1);
-    assert.deepEqual(wrong.said, { result: "failed", message: "The engine that was downloaded isn't what this Kuvo Code's release says. Try again." });
+    assert.deepEqual(wrong.said, { result: "failed", message: "The engine that was downloaded isn't what this copy of Kuvo's release says. Try again." });
     assert.deepEqual(everything(path.join(staging(two), "engine")), [], "no engine kept, nor what was fetched");
     // And one that can't be had (offline): said so, to try again.
     fs.rmSync(engineTar);
@@ -209,8 +209,29 @@ test("beside a box that's here already, nothing is made, and the engine the inst
   const refused = install(where, "new");
   assert.equal(refused.status, 1);
   assert.equal(refused.said.result, "refused");
-  assert.equal(refused.said.message, "This computer is set up as one of your machines already: Kuvo Code uses what's here.");
+  assert.equal(refused.said.message, "This computer is set up as one of your machines already: Kuvo uses what's here.");
   assert.equal(read(path.join(where.K, "bin", "kuvo-start")), "#!/bin/sh\n", "its files as they were");
+});
+
+test("update brings the box that's here up by the release's own update, on the box's own engine; with no box it's refused, and --now is update's alone", () => {
+  const where = computer();
+  const none = install(where, "update");
+  assert.equal(none.status, 1);
+  assert.deepEqual(none.said, { result: "refused", message: `There's no Kuvo on ${mac ? "this Mac" : "this computer"} to update.` });
+  assert.equal(exists(where.K), false, "nothing made for it");
+  assert.equal(install(where, "status", { args: [...(mac ? ["--app", where.bundle] : []), "--now"] }).status, 2, "not asked as its usage says");
+  // A box that's here, older, on its own engine: the release's update runs, and judges the release
+  // (this test's is signed with a key no real box trusts, so it's refused there, with nothing changed).
+  write(path.join(where.K, "bin", "box-version"), "0.9.0");
+  write(path.join(where.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700);
+  write(path.join(where.K, "engine", ENGINE, "opencode"), engineBinary, 0o755);
+  fs.mkdirSync(path.join(where.K, "run"), { recursive: true });
+  const ran = install(where, "update", { args: [...(mac ? ["--app", where.bundle] : []), "--now"] });
+  assert.equal(ran.status, 1, ran.stderr + JSON.stringify(ran.lines));
+  assert.equal(ran.said.result, "failed");
+  assert.match(ran.said.message, /signed/);
+  assert.equal(read(path.join(where.K, "bin", "box-version")), "0.9.0");
+  assert.equal(exists(path.join(staging(where), "engine")), false, "nothing fetched: the box's own engine ran it");
 });
 
 test("a computer whose box has another engine than the release's is still told how it stands, offline: asking never waits on a download", () => {
@@ -454,7 +475,7 @@ test("a copy of the app never judges or installs for the real one, and is refuse
     const where = computer({ app: "run.kuvo.code" });
     const refused = install(where, verb);
     assert.equal(refused.status, 1);
-    assert.deepEqual(refused.said, { result: "refused", message: "Kuvo Code itself sets up ~/.kuvo-code only." });
+    assert.deepEqual(refused.said, { result: "refused", message: "Kuvo itself sets up ~/.kuvo-code only." });
     assert.equal(exists(where.K), false, "nothing written, not even its folder");
     assert.deepEqual(fs.readdirSync(where.home).sort(), ["Applications", "tools"]);
   }
@@ -463,7 +484,7 @@ test("a copy of the app never judges or installs for the real one, and is refuse
   for (const args of [[], ["--app", path.join(unnamed.home, "No Such.app")]]) {
     const asked = install(unnamed, "status", { args });
     assert.equal(asked.status, 1);
-    assert.deepEqual(asked.said, { result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo Code again." });
+    assert.deepEqual(asked.said, { result: "refused", message: "Kuvo couldn't tell which app started it. Open Kuvo again." });
     assert.equal(exists(unnamed.K), false);
   }
 });

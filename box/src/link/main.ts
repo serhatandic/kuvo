@@ -114,7 +114,7 @@ import { runningServe, SERVE_FILE, SERVE_NEEDED, stopKeptServe } from "./serve-k
 import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { keepMachinesUp } from "./add/keep-up";
-import { type UpdateOptions, agentsWorking, checkDrift, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { type UpdateOptions, agentsWorking, checkDrift, offerWaits, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -188,8 +188,8 @@ export { KEEP_FOR, SEEN_FILE, forgetPhones, phoneSeenLately } from "./compat/lea
 export { engineConnect, engineControl, toolRun } from "./areas/engine";
 export { botPersonalities, changePersonalities, mergePersonalities, personalitiesDocument, readPersonalities } from "./personalities/library";
 export { keyFilesWait, syncKeyFiles } from "./keys";
-export { KEEP_UP_FILE, keepUpRound } from "./add/keep-up";
-export { UPDATE_KEYS, agentsWorking, boxVersion, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerUpdate, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { KEEP_UP_FILE, keepUpRound, keepingSelfUp } from "./add/keep-up";
+export { UPDATE_KEYS, agentsWorking, boxVersion, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -477,6 +477,9 @@ async function run(): Promise<void> {
   };
   setTimeout(nightly, 60_000);
   setInterval(nightly, 600_000);
+  // While a release Kuvo Code here offered waits, it's taken as soon as nothing's at work (a look
+  // at the engine here every 20 seconds, only then), not at the next ten-minute round.
+  setInterval(() => { if (offerWaits()) startOfferedUpdate().catch(() => {}); }, 20_000).unref?.();
   // Recently Deleted's skills past their 30 days, gone with no client there too.
   keepSkillTrashClear();
   // What a Work Queue change left half read as the box stopped.
@@ -640,7 +643,8 @@ async function box(command: string): Promise<void> {
       const blocked = updatesBlocked();
       if (blocked) return say({ status: 409, message: blocked });
       if (isUpdating()) return say({ status: 409, message: "It's updating already." });
-      spawn(process.execPath, [...OWN_RUNTIME, fileURLToPath(import.meta.url), "update", "--now"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+      // (Now whatever its age, but never through work: nobody was asked first here.)
+      spawn(process.execPath, [...OWN_RUNTIME, fileURLToPath(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
       return say({ status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route": {
@@ -1192,12 +1196,35 @@ if (main) {
     const from = option("--from");
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")!], blocked: null } : {};
-    const step: UpdateOptions["step"] = running => noteUpdate({ running });
-    const outcome = offered
-      ? await takeOffer({ step, ...test })
-      : from && !path.isAbsolute(from)
-        ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
-        : await update({ now: args.includes("--now"), from, step, ...test });
+    // COMPAT(0.8 beta update): `--installer` goes once no Mac's box is from before `computers.update.here`.
+    // `--installer`: run by the installer Kuvo Code carries (`kuvo-install update [--now]`), for a
+    // box from before it took that release by itself as soon as nothing's at work: it says how it
+    // goes in lines, and without `--now` waits here for nothing to be at work first.
+    const installer = args.includes("--installer") && !!from && path.isAbsolute(from);
+    const now = args.includes("--now");
+    let told = false;
+    const step: UpdateOptions["step"] = running => {
+      noteUpdate({ running });
+      // (Said once it's past looking at the release: one this box has already ends there.)
+      if (installer && !told && running !== "checking") { told = true; console.log(JSON.stringify(installerSteps.updating)); }
+    };
+    let outcome: Awaited<ReturnType<typeof update>> | null;
+    for (;;) {
+      told = false;
+      if (installer && !now && !(await untilFree(from!, test))) process.exit(0);
+      // (Update Now while the box takes it itself already: waited for, and then it's there.)
+      while (installer && now && isUpdating()) {
+        await sleep(1000);
+        if (process.ppid === 1) process.exit(0);
+      }
+      outcome = offered
+        ? await takeOffer({ step, ...test })
+        : from && !path.isAbsolute(from)
+          ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
+          : await update({ now, whileBusy: now && !args.includes("--free"), from, step, ...test });
+      // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
+      if (!(installer && !now && outcome?.result === "busy")) break;
+    }
     // (None due, or another process took it just before this one: nothing happened to note.)
     if (outcome && !(offered && outcome.result === "busy")) noteUpdate({ running: null, ...(outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } }) });
     if (outcome?.result === "updated") {
@@ -1213,6 +1240,7 @@ if (main) {
       }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
+    if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
   }
   // The browser agents use here (PROTOCOL.md, "The browser on a machine"): `browser install [--now]
   // [--repair]` sets it up, as the keeper starts it (one at a time); `browser start [--now]

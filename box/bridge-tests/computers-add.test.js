@@ -556,6 +556,43 @@ test("a machine whose Kuvo is older is brought up to date by this box once nothi
   assert.deepEqual(current.steps.map(step => [step.id, step.state, step.detail]).slice(1), ["files", "engine", "starting", "joining"].map(id => [id, "done", "It’s up to date already"]));
 });
 
+test("a machine heard from that never says its version (a box from before they said it) is offered Update Now at once, before any look over SSH; a look that finds it as new clears it", async () => {
+  const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
+  const listed = async () => (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key);
+  const told = path.join(home, "run", "peer-agents.json");
+  const before = fs.existsSync(told) ? fs.readFileSync(told, "utf8") : null;
+  const all = before ? JSON.parse(before) : {};
+  const { computer: _computer, ...rest } = all[peer.key] ?? {};
+  fs.writeFileSync(told, JSON.stringify({ ...all, [peer.key]: { ...rest, at: Date.now(), heard: Date.now() } }));
+  fs.rmSync(link.KEEP_UP_FILE, { force: true });
+  try {
+    const it = await listed();
+    assert.equal(it.reach, "connected");
+    assert.equal(it.version, undefined, "it never said");
+    assert.equal(it.update.state, "waiting");
+    assert.ok(it.actions.some(each => each.id === "update" && each.label === "Update Now"), "never a dead end");
+    // One this box didn't set up over SSH (its record didn't come along): it can't be brought up
+    // from here until it is, which is what it offers, never nothing.
+    const list = path.join(home, "machines.json");
+    const saved = fs.readFileSync(list, "utf8");
+    fs.writeFileSync(list, "[]");
+    try {
+      const apart = await listed();
+      assert.deepEqual(apart.update, { state: "waiting", title: "Kuvo on studio needs an update. Set it up over SSH from Studio to update it.", detail: "" });
+      assert.deepEqual(apart.actions.find(each => each.id === "add"), { id: "add", label: "Set Up Over SSH…" });
+    } finally {
+      fs.writeFileSync(list, saved);
+    }
+    // Looked at over SSH: as new as this box, so nothing more is said.
+    await link.keepUpRound();
+    const after = await listed();
+    assert.equal(after.update, undefined);
+    assert.equal(after.actions.some(each => each.id === "update"), false);
+  } finally {
+    if (before === null) fs.rmSync(told, { force: true }); else fs.writeFileSync(told, before);
+  }
+});
+
 test("a phone's Add a Machine (the old Mac app's `POST kuvo/machines`) is this box's own add, waited for; what it must ask you is asked on the Mac", async () => {
   // Its machines, as the box says them itself: by the name your computers know it by, with the
   // hosts it could add.

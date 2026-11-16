@@ -312,7 +312,7 @@ export type Found = Infer<typeof FOUND>;
  * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
  * and uninstalling Kuvo Code from it. `update` (`computers.update`): on that box, bringing a machine
  * whose Kuvo is older than its own up to date now (asked first while something is at work there). */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall", "update"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "allow-devices", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):

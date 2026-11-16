@@ -21,7 +21,7 @@ import { readPeerAgents } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { peersOf } from "../peers/known";
 import { readLink } from "../state";
-import { boxVersion, newerVersion } from "../updates/update";
+import { boxVersion, isUpdating, newerVersion, offerHeld, offerWaits, updateStatus } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
 import { type Running, underWay } from "./tries";
 
@@ -166,11 +166,11 @@ export async function keepUpRound(clock: () => number = Date.now): Promise<void>
   }
 }
 
-/** Rounds from now on, the first a minute in. (A box that set nothing up over SSH, as a test's, does
- * nothing in them.) */
+/** Rounds from now on, the first 20 seconds in (an older machine is brought up soon after this box
+ * is). (A box that set nothing up over SSH, as a test's, does nothing in them.) */
 export function keepMachinesUp(): void {
   const round = () => { keepUpRound().catch(error => console.error(`Kuvo's round keeping machines up to date failed: ${String(error)}`)); };
-  setTimeout(round, 60_000).unref?.();
+  setTimeout(round, 20_000).unref?.();
   setInterval(round, KEEP_UP_ROUND).unref?.();
 }
 
@@ -182,16 +182,28 @@ const sessions = (count: number): string => `${count} ${count === 1 ? "session i
  * Nothing for one as new as this box, one it didn't set up, and one that's away now. */
 export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind" | "here" | "apart" | "reach" | "version" | "working">, here: string, now = Date.now()): { update?: ComputerUpdate; actions: ComputerAction[] } {
   const none = { actions: [] };
-  if (computer.here || computer.apart || computer.kind !== "machine" || !computer.key) return none;
+  if (computer.here) return keepingSelfUp(computer.name || here, computer.working);
+  if (computer.apart || computer.kind !== "machine" || !computer.key) return none;
   const mine = boxVersion();
-  const at = mine ? sshAddressOf(computer.key) : null;
-  if (!mine || !at || !canAdd().can) return none;
+  if (!mine || !canAdd().can) return none;
+  const at = sshAddressOf(computer.key);
   const name = computer.name || "this machine";
+  // One older that this box didn't set up over SSH (another Mac did, or its record didn't come
+  // along): it can't be brought up from here until it's set up over SSH from here, which Set Up
+  // Over SSH begins (a client opens Add a Machine at its address, `id`, for you to confirm).
+  if (!at) {
+    const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected";
+    if (!older || computer.reach === "away") return none;
+    return { update: { state: "waiting", title: `Kuvo on ${name} needs an update. Set it up over SSH from ${here} to update it.`, detail: "" }, actions: [{ id: "add", label: "Set Up Over SSH…" }] };
+  }
   const under = underWay(at.destination);
   const line = (state: ComputerUpdate["state"], title: string, long = false): ComputerUpdate => ({ state, title, detail: "", ...(long ? { long: true as const } : {}) });
   if (under?.seen.kind === "update") return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
   const was = readKept()[computer.key];
-  const older = computer.version ? newerVersion(mine, computer.version) : was?.older === true && was.mine === mine;
+  // (One heard from that never says its version is from before boxes said it, so older than this
+  // one, unless a look over SSH found it as new; one not heard from yet waits for the look.)
+  const looked = was?.mine === mine ? was.older : undefined;
+  const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected" ? looked !== false : looked === true;
   if (!older || computer.reach === "away") return none;
   // (What's at work there: the more of what it said and what the last look found, so the words and
   // Update Now's question never say less than the round waits for.)
@@ -211,4 +223,27 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
   if (was?.since !== undefined && working !== 0 && now - was.since >= LONG_WAIT) return { update: line("waiting", `Kuvo on ${name} hasn’t been free for a day.`, true), actions };
   if (working === 0) return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions };
   return { update: line("waiting", `Kuvo on ${name} updates once nothing’s at work there.`), actions };
+}
+
+/** How this box's own update stands, in one line (`update`), and Update Now (`update-here`, which
+ * is `POST kuvo/update {now}`): the release Kuvo Code here offered, newer than this box, is taken
+ * as soon as nothing's at work (`main.ts`), or now on your word, asked first while something is
+ * (what it's doing stops as Kuvo restarts). Nothing while none waits, or while this box can't
+ * update (blocked, its engine stopped on purpose, an update on trial: `offerHeld`). */
+export function keepingSelfUp(name: string, working: number | undefined, blocked?: string | null): { update?: ComputerUpdate; actions: ComputerAction[] } {
+  const none = { actions: [] };
+  if (!offerWaits()) return none;
+  const status = updateStatus();
+  if (blocked !== undefined) status.blocked = blocked;
+  const line = (state: ComputerUpdate["state"], title: string): ComputerUpdate => ({ state, title, detail: "" });
+  // (Looking for a release from GitHub isn't this one being taken.)
+  if (isUpdating() && status.updating && status.updating !== "checking") return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
+  if (status.blocked || offerHeld()) return none;
+  // (Asked first always: what the take waits for, conversations working and browser asks waiting,
+  // is more than the sessions counted at work.)
+  const at = working ?? 0;
+  const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
+  const actions: ComputerAction[] = [{ id: "update-here", label: "Update Now", confirm }];
+  if (status.offerFailed && status.offerFailed.version === status.offered) return { update: line("failed", `Kuvo on ${name} couldn’t be updated. It tries again later.`), actions };
+  return { update: line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`), actions };
 }

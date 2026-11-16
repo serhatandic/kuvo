@@ -1601,6 +1601,9 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Where a client reaches each of your own computers itself, in kuvo/computers' answer.)
     "computers.reach": ["GET", "kuvo/computers"],
     "computers.reach-words": ["GET", "kuvo/computers"],
+    // (How a machine this box keeps up to date stands, and this box's own update, in kuvo/computers' answer.)
+    "computers.update": ["GET", "kuvo/computers"],
+    "computers.update.here": ["GET", "kuvo/computers"],
     "computers.words": ["GET", "kuvo/computers"],
     config: ["GET", "kuvo/config"],
     "config.apply": ["GET", "kuvo/config/apply"],

@@ -1,10 +1,13 @@
 #!/bin/sh
 # Installs this computer's box from the release an app carries (protocol/PROTOCOL.md, "Installing
 # this computer's box"): run from the folder that holds it, beside `boxes.json` and the pack.
-#   sh kuvo-install status|new|move [--app <bundle>] [--root <name>]
+#   sh kuvo-install status|new|move|update [--now] [--app <bundle>] [--root <name>]
 #     status   what this computer holds (a verdict), and what to run next
 #     new      a new box, made in its home and started
 #     move     the old app's box and data moved into its home
+#     update   (COMPAT(0.8 beta update): goes once no Mac's box is from before computers.update.here)
+#              the box that's there brought up to this release (`kuvo-link.js update --installer`):
+#              once nothing's at work there, waiting till then, or at once with --now
 #   --app <bundle>   the app that runs it (a Mac's: its bundle says whose folder holds the old data)
 #   --root <name>    the box's home in your home folder (default .kuvo-code; a demo copy's own)
 # On a new computer nothing runs JavaScript yet, so the first steps are shell: the pack checked
@@ -20,7 +23,7 @@
 set -u
 
 usage() {
-    echo "Usage: sh kuvo-install status|new|move [--app <bundle>] [--root <name>]" >&2
+    echo "Usage: sh kuvo-install status|new|move|update [--now] [--app <bundle>] [--root <name>]" >&2
     exit 2
 }
 # (Its words hold no quotes or backslashes, so they're JSON as they are.)
@@ -36,10 +39,11 @@ refuse() {
 step() { printf '{"step":"%s","title":"%s"}\n' "$1" "$2"; }
 
 VERB=${1:-}
-case "$VERB" in status | new | move) shift ;; *) usage ;; esac
-APP="" ROOT=.kuvo-code
+case "$VERB" in status | new | move | update) shift ;; *) usage ;; esac
+APP="" ROOT=.kuvo-code NOW=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --now) [ "$VERB" = update ] || usage; NOW=--now; shift ;;
         --app) [ $# -ge 2 ] || usage; APP=$2; shift 2 ;;
         --root) [ $# -ge 2 ] || usage; ROOT=$2; shift 2 ;;
         *) usage ;;
@@ -115,6 +119,8 @@ PACK="$D/box-$VERSION.tar.gz"
 K="$HOME/$ROOT"
 I="$K/updates/install"
 R="$I/release"
+# (Only a box that's there is brought up: nothing is made for it.)
+if [ "$VERB" = update ] && [ ! -f "$K/bin/box-version" ]; then refuse "There's no Kuvo on $HERE to update."; fi
 (umask 077 && mkdir -p "$I") || fail "Kuvo couldn't write in your home folder ($ROOT)."
 
 # What it was started with never reaches the box's own commands (an older app's, a shell's), but a
@@ -205,7 +211,7 @@ take_engine() {
     "$S/opencode" --version >/dev/null 2>&1 || { WHY="Kuvo's engine doesn't run on $HERE."; return 1; }
     mkdir -p "$I/engine/$ENGINE" && mv -f "$S/opencode" "$E" || { WHY="Kuvo couldn't write in your home folder ($ROOT)."; return 1; }
 }
-if [ ! -x "$E" ] && [ "$VERB" = status ] && [ -n "$ANY" ]; then
+if [ ! -x "$E" ] && { [ "$VERB" = status ] || [ "$VERB" = update ]; } && [ -n "$ANY" ]; then
     E=$ANY
 elif [ ! -x "$E" ]; then
     trap 'rm -rf "$S"' EXIT
@@ -221,5 +227,9 @@ fi
 
 # The rest is the box's own (box/src/link/install): the verdict, and what's made.
 cd "$K" || fail "Kuvo couldn't write in your home folder ($ROOT)."
+# (Bringing the box up: the release's own update, with this folder as where it's taken from.)
+if [ "$VERB" = update ]; then
+    KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 exec "$E" --config=/dev/null --no-env-file "$R/bin/kuvo-link.js" update --installer --from "$D" $NOW
+fi
 if [ -n "$APP" ]; then set -- --app "$APP"; else set --; fi
 KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 exec "$E" --config=/dev/null --no-env-file "$R/bin/kuvo-link.js" install "--$VERB" --root "$ROOT" --release "$R" --engine "$I/engine" "$@"

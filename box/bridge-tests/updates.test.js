@@ -253,12 +253,13 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   assert.equal((await update()).result, "current");
 });
 
-test("an agent's browser waiting on you (a sign-in) holds the update: nothing is stopped or swapped", async t => {
+test("an agent's browser waiting on you (a sign-in) holds an update the box begins itself: nothing is stopped or swapped", async t => {
   machine();
   release();
   write(path.join(home, "run", "browser.pid"), String(await runningAs("kuvo-browser", t)));
   write(path.join(home, "run", "browser-asks.json"), JSON.stringify({ asks: [{ id: "ask_1", kind: "signIn", host: "github.com", session: "ses_1", username: true, password: true }] }));
-  assert.deepEqual(await update(), { result: "busy", message: "Something is running there now." });
+  // (Update Now, on your word, goes ahead: a client asks first. Not by night.)
+  assert.deepEqual(await update({ now: false }), { result: "busy", message: "Something is running there now." });
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(read(engineFile).version, "1.0.0", "its engine still runs");
 });
@@ -523,6 +524,91 @@ test("an offered release waits while something runs, and is taken once nothing d
   assert.equal((await take()).result, "updated");
   engines.add(read(engineFile).pid);
   assert.equal(link.confirmUpdate(), true);
+});
+
+test("Update Now takes the offered release whatever is at work, and this box's own row says how its update stands until then", async t => {
+  machine();
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null), { actions: [] }, "nothing offered: nothing said");
+  assert.equal(offer(release().folder).status, 202);
+  assert.equal(link.offerWaits(), true);
+  // Two sessions at work: it waits for them, and Update Now asks first, saying what stops.
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), {
+    update: { state: "waiting", title: "Kuvo on Studio Mac updates once your sessions there finish.", detail: "" },
+    actions: [{ id: "update-here", label: "Update Now", confirm: { title: "Update Kuvo on Studio Mac now?", message: "2 sessions are at work on Studio Mac: what they’re doing stops as Kuvo restarts there.", label: "Update Now" } }],
+  });
+  // No session counted at work: as soon as nothing is (a browser ask may wait), still asked first.
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null), {
+    update: { state: "waiting", title: "Kuvo on Studio Mac updates as soon as nothing’s at work there.", detail: "" },
+    actions: [{ id: "update-here", label: "Update Now", confirm: { title: "Update Kuvo on Studio Mac now?", message: "Whatever is at work on Studio Mac stops as Kuvo restarts there.", label: "Update Now" } }],
+  });
+  // A box that can't update (an older Mac connects), or not even on your word now (its engine
+  // stopped on purpose): nothing offered that couldn't be done.
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, "A Mac that connects to this machine has an older Kuvo Code"), { actions: [] });
+  fs.writeFileSync(path.join(home, "run", "stopped"), "");
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null), { actions: [] });
+  assert.equal(link.offerHeld(), "Its engine is stopped: start it to update it.");
+  fs.rmSync(path.join(home, "run", "stopped"));
+  write(path.join(home, "run", "browser.pid"), String(await runningAs("kuvo-browser", t)));
+  write(path.join(home, "run", "browser-asks.json"), JSON.stringify({ asks: [{ id: "ask_1", kind: "signIn", host: "github.com", session: "ses_1", username: true, password: true }] }));
+  assert.equal(await take(), null, "by itself, not while something's at work");
+  assert.deepEqual(await take({ now: true }), { result: "updated", version: "0.10.0" }, "on your word, now");
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.10.0");
+  assert.equal(fs.existsSync(offered), false, "taken, it goes");
+  assert.equal(link.offerWaits(), false);
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), { actions: [] });
+  assert.equal(link.confirmUpdate(), true);
+});
+
+test("`kuvo-link.js update --installer` (the installer Kuvo Code carries) waits for nothing to be at work, saying so once, then updates; with --now it doesn't wait", async t => {
+  machine();
+  const run = (...args) => {
+    const updating = spawn(process.execPath, [script, "update", "--installer", ...args, "--key", pinned], { env: { ...process.env, KUVO_TEST_UNTIL_FREE_EVERY: "100" }, stdio: ["ignore", "pipe", "inherit"] });
+    const lines = [];
+    let partial = "";
+    const listeners = new Set();
+    updating.stdout.setEncoding("utf8");
+    updating.stdout.on("data", chunk => {
+      partial += chunk;
+      const whole = partial.split("\n");
+      partial = whole.pop();
+      for (const line of whole) if (line.trim()) { lines.push(JSON.parse(line)); for (const listener of listeners) listener(); }
+    });
+    const closed = new Promise(resolve => updating.once("close", code => resolve(code)));
+    const said = step => new Promise(resolve => { const check = () => lines.some(line => line.step === step) && resolve(); listeners.add(check); check(); });
+    return { lines, closed, said };
+  };
+  const asks = path.join(home, "run", "browser-asks.json");
+  write(path.join(home, "run", "browser.pid"), String(await runningAs("kuvo-browser", t)));
+  write(asks, JSON.stringify({ asks: [{ id: "ask_1", kind: "signIn", host: "github.com", session: "ses_1", username: true, password: true }] }));
+  const { folder } = release({ released: new Date() });
+  const waiting = run("--from", folder);
+  await waiting.said("waiting");
+  assert.equal(boxVersion(), "0.9.0", "nothing taken while something's at work");
+  assert.equal(read(engineFile).version, "1.0.0", "its engine still runs");
+  fs.rmSync(asks);
+  assert.equal(await waiting.closed, 0);
+  assert.deepEqual(waiting.lines, [
+    { step: "waiting", title: "Kuvo on this Mac updates once your sessions finish.".replace("this Mac", process.platform === "darwin" ? "this Mac" : "this computer"), confirm: { title: `Update Kuvo on ${process.platform === "darwin" ? "this Mac" : "this computer"} now?`, message: `What your sessions on ${process.platform === "darwin" ? "this Mac" : "this computer"} are doing stops as Kuvo restarts. It’s back in a moment.`, label: "Update Now" } },
+    { step: "updating", title: `Updating Kuvo on ${process.platform === "darwin" ? "this Mac" : "this computer"}…` },
+    { result: "updated", version: "0.10.0" },
+  ]);
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.10.0");
+
+  // A newer one, with something at work: --now takes it at once; and once the box has it, a run
+  // that would wait has nothing to wait for.
+  write(asks, JSON.stringify({ asks: [{ id: "ask_2", kind: "signIn", host: "github.com", session: "ses_1", username: true, password: true }] }));
+  const newer = release({ version: "0.11.0" }).folder;
+  const now = run("--from", newer, "--now");
+  assert.equal(await now.closed, 0);
+  assert.deepEqual(now.lines.map(line => line.step ?? line.result), ["updating", "updated"]);
+  engines.add(read(engineFile).pid);
+  assert.equal(boxVersion(), "0.11.0");
+  const again = run("--from", newer);
+  assert.equal(await again.closed, 0);
+  assert.deepEqual(again.lines, [{ result: "current", version: "0.11.0" }]);
+  fs.rmSync(asks);
 });
 
 test("an offered release that doesn't come up is taken back and goes; one the box has caught up with goes untaken", async () => {
