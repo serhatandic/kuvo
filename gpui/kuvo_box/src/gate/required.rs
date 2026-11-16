@@ -70,6 +70,7 @@ pub const REQUIRED: &[&str] = &[
     "sessions.start.empty",
     "settings",
     "settings.flows",
+    "settings.vault",
     "setup.ready",
     "setup.welcomed",
     "sign-in.accounts.kinds",

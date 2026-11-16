@@ -6989,7 +6989,7 @@ import { spawn as spawn19 } from "node:child_process";
 import crypto67 from "node:crypto";
 import fs196 from "node:fs";
 import os26 from "node:os";
-import path204 from "node:path";
+import path205 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // box/src/shared/hang.ts
@@ -9387,6 +9387,7 @@ var FEATURES = [
   "sessions.start.empty",
   "settings",
   "settings.flows",
+  "settings.vault",
   "setup",
   "setup.mainOnly",
   "setup.ready",
@@ -41746,7 +41747,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "334571f78fa0";
+var BRIDGE_VERSION = "dcd7d2bf05ed";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62182,7 +62183,7 @@ async function* settingsRoute(context) {
 }
 
 // box/src/link/areas/settings-pages.ts
-import path201 from "node:path";
+import path202 from "node:path";
 init_home();
 
 // box/src/link/areas/work.ts
@@ -62452,7 +62453,9 @@ async function asked8(context, answer, method, path, body) {
     headers: {},
     ...body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) },
     ...context.request.fromApp ? { fromApp: true } : {},
-    ...context.request.fromMac ? { fromMac: true } : {}
+    ...context.request.fromMac ? { fromMac: true } : {},
+    ...context.request.vaultClient ? { vaultClient: true } : {},
+    ...context.request.desktop ? { desktop: true } : {}
   };
   let status = 500;
   const chunks = [];
@@ -63202,6 +63205,586 @@ var mcpSection = {
   look: () => `${mtime2(CONFIG_FILE)} ${mtime2(FLOWS_FILE)} ${mtime2(CATALOG_FILE)} ${Math.floor(Date.now() / 1000)}`
 };
 
+// box/src/link/areas/settings-vault.ts
+import path199 from "node:path";
+init_home();
+var TITLE2 = "Vault";
+var computerHere2 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+var capitalized2 = (words) => words.charAt(0).toUpperCase() + words.slice(1);
+var atStart = (words) => words.startsWith("this ") ? capitalized2(words) : words;
+var whose = (computer) => `${computer}’s`;
+var ACTIVITY_SHOWN = 50;
+async function facts2(context) {
+  const vault = await asked8(context, vaultRoute, "GET", "kuvo/vault");
+  if (vault.status !== 200)
+    return vault;
+  const state = vault.value.state;
+  const asks = await asked8(context, vaultRoute, "GET", "kuvo/vault/asks");
+  const activity = state.locked || !state.made ? null : await asked8(context, vaultRoute, "GET", `kuvo/vault/activity?limit=${ACTIVITY_SHOWN}`);
+  return {
+    state,
+    items: [...vault.value.items].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
+    grants: vault.value.grants,
+    asks: asks.status === 200 ? asks.value.asks : [],
+    activity: activity?.status === 200 ? activity.value.entries : [],
+    bots: listBots().map((bot) => ({ id: bot.id, name: bot.name })).sort((a, b) => a.name.localeCompare(b.name))
+  };
+}
+var KIND_TITLES = { login: "Sign-in", key: "API Key", file: "File", note: "Note" };
+function lineOf3(each) {
+  const more = each.kind === "login" ? [each.username, each.sites[0]] : each.kind === "file" ? [each.fileName && each.fileName !== each.name ? each.fileName : undefined] : each.kind === "note" ? [each.readable ? "Bots may read it" : undefined] : [each.sites.length ? each.sites.join(", ") : each.fields.length > 1 ? each.fields.join(", ") : undefined];
+  return [KIND_TITLES[each.kind], ...more].filter(Boolean).join(" · ");
+}
+function badgeOf2(grants) {
+  if (grants.some((grant) => grant.how === "own"))
+    return { words: "On its own", tone: "good" };
+  return grants.length ? { words: "Asks", tone: "quiet" } : undefined;
+}
+var label = (field) => field === "password" ? "Password" : field === "text" ? "Text" : field === "value" ? "Value" : field.split("_").filter(Boolean).map(capitalized2).join(" ");
+var SHOW = (id, field) => ({ route: `kuvo/vault/items/${encodeURIComponent(id)}/values`, field });
+function itemFields(each) {
+  const kind = each?.kind;
+  const only = (...kinds) => each ? {} : { shown: { field: "kind", is: kinds } };
+  const has = (kinds) => !kind || kinds.includes(kind);
+  const unchanged = each ? { placeholder: "Unchanged" } : {};
+  const fields = [];
+  if (!each)
+    fields.push({ id: "kind", title: "Kind", kind: "choice", value: "login", choices: ITEM_KINDS.map((id) => ({ id, title: KIND_TITLES[id] })) });
+  fields.push({ id: "name", title: "Name", kind: "text", value: each?.name ?? "", placeholder: "What it’s for, like GitHub" });
+  if (has(["login"])) {
+    fields.push({ id: "site", title: "Site", kind: "text", value: each ? each.sites.join(", ") : "", placeholder: "github.com", line: "It’s filled in only on this site and those under it.", ...only("login") });
+    fields.push({ id: "username", title: "Username", kind: "text", value: each?.username ?? "", placeholder: "Email or username", ...only("login") });
+    fields.push({ id: "password", title: "Password", kind: "secret", ...unchanged, ...each?.fields.includes("password") ? { shows: SHOW(each.id, "password") } : {}, ...only("login") });
+    fields.push({ id: "signInOnly", title: "Only for Signing In", kind: "switch", value: each ? each.signInOnly === true : true, line: "Agents sign in with it in the browser, and can’t hand it to a command.", ...only("login") });
+  }
+  if (has(["key"])) {
+    fields.push({ id: "hosts", title: "Hosts", kind: "text", value: each ? each.sites.join(", ") : "", placeholder: "api.example.com (optional)", ...only("key") });
+    fields.push({ id: "value", title: "Value", kind: "secret", ...unchanged, ...each?.fields.includes("value") ? { shows: SHOW(each.id, "value") } : {}, ...only("key") });
+    for (const field of each?.fields.filter((name) => name !== "value") ?? []) {
+      fields.push({ id: `field-${field}`, title: label(field), kind: "secret", placeholder: "Unchanged", shows: SHOW(each.id, field) });
+    }
+    fields.push({
+      id: "more",
+      title: each ? "Add Fields" : "Other Fields",
+      kind: "pairs",
+      secret: true,
+      value: [],
+      pairs: { key: "field_name", value: "Value" },
+      line: "For a key with more than one part, like an issuer ID.",
+      ...only("key")
+    });
+  }
+  if (has(["file"])) {
+    fields.push({ id: "file", title: "File", kind: "file", ...each?.fileName ? { value: { name: each.fileName } } : {}, file: { choose: "Choose File…", none: "No file chosen" }, line: "At most about 700 KB.", ...only("file") });
+  }
+  if (has(["note"])) {
+    fields.push({ id: "text", title: "Text", kind: "secret", multi: true, ...each ? { placeholder: "Unchanged. Type here to replace it." } : {}, ...each?.fields.includes("text") ? { shows: SHOW(each.id, "text") } : {}, ...only("note") });
+    fields.push({ id: "readable", title: "Bots May Read It", kind: "switch", value: each?.readable === true, line: "For what isn’t a secret, like a contact for App Review.", ...only("note") });
+  }
+  return fields;
+}
+var keptWords = (state, computer) => state.store === "keychain" ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.` : `Kept on ${computer}, encrypted, with a key only your devices hold. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
+var addForm = (known, computer) => ({ title: "Add Item", submit: "Add", fields: itemFields(null), note: keptWords(known.state, computer) });
+var editForm = (each) => ({ title: each.name, submit: "Save", fields: itemFields(each), note: "A value left empty stays as it is." });
+var text8 = (value) => typeof value === "string" ? value : "";
+var pairs2 = (value) => Array.isArray(value) ? value.filter(isObject).map((each) => ({ key: text8(each.key).trim(), value: text8(each.value) })) : [];
+var SHORTEST2 = 4;
+var FIELD2 = /^[a-z][a-z0-9_]{0,39}$/;
+var LARGEST_FILE = 700000;
+function readForm2(known, each, values) {
+  const fields = [];
+  let ready = true;
+  const say = (id, words, tone) => {
+    fields.push({ id, words, tone });
+    if (tone === "warning")
+      ready = false;
+  };
+  const kind = each?.kind ?? values.kind;
+  if (!ITEM_KINDS.includes(kind))
+    return { fields: [{ id: "kind", words: "Pick what it is.", tone: "warning" }], ready: false };
+  const name = text8(values.name).trim();
+  if (!name) {
+    say("name", "Give it a name.", "quiet");
+    ready = false;
+  } else if (known.items.some((other) => other.id !== each?.id && other.name.toLowerCase() === name.toLowerCase())) {
+    say("name", `There’s an item called “${name}” already.`, "warning");
+  }
+  const siteField = kind === "login" ? "site" : "hosts";
+  const sites = [];
+  if (kind === "login" || kind === "key") {
+    for (const typed of text8(values[siteField]).split(/[\s,]+/).filter(Boolean)) {
+      const site = siteOf2(typed);
+      if (!site)
+        say(siteField, `“${typed.slice(0, 80)}” isn’t a site.`, "warning");
+      else if (!sites.includes(site))
+        sites.push(site);
+    }
+    if (kind === "login" && !sites.length && !fields.some((word) => word.id === "site")) {
+      say("site", "The site it’s for, like github.com.", "quiet");
+      ready = false;
+    }
+  }
+  const given = { kind, name, sites, username: kind === "login" ? text8(values.username).trim() : "", values: {} };
+  if (kind === "login")
+    given.signInOnly = values.signInOnly === true;
+  if (kind === "note")
+    given.readable = values.readable === true;
+  const secret = (id, field, required) => {
+    const typed = text8(values[id]);
+    if (!typed) {
+      if (required) {
+        say(id, kind === "note" ? "What it says." : kind === "login" ? "Its password." : "Its value.", "quiet");
+        ready = false;
+      }
+      return;
+    }
+    if (Array.from(typed).length < SHORTEST2)
+      return say(id, `A value needs at least ${SHORTEST2} characters, so it can be hidden from agents.`, "warning");
+    given.values[field] = typed;
+  };
+  if (kind === "login")
+    secret("password", "password", !each);
+  if (kind === "key") {
+    secret("value", "value", !each);
+    for (const field of each?.fields.filter((name) => name !== "value") ?? [])
+      secret(`field-${field}`, field, false);
+    for (const pair of pairs2(values.more).filter((pair) => pair.key || pair.value)) {
+      const field = pair.key.toLowerCase().replaceAll(" ", "_");
+      if (!field)
+        say("more", "Give each value a name.", "warning");
+      else if (!FIELD2.test(field))
+        say("more", `${field.slice(0, 40)} isn’t a field’s name: lowercase letters, digits and _, starting with a letter.`, "warning");
+      else if (field === "value" || field in given.values || each?.fields.includes(field))
+        say("more", `${field} is given twice.`, "warning");
+      else if (!pair.value)
+        say("more", `Give ${field} a value.`, "warning");
+      else if (Array.from(pair.value).length < SHORTEST2)
+        say("more", `A value needs at least ${SHORTEST2} characters, so it can be hidden from agents.`, "warning");
+      else
+        given.values[field] = pair.value;
+    }
+  }
+  if (kind === "file") {
+    const file = isObject(values.file) ? values.file : null;
+    const data = typeof file?.data === "string" ? file.data : null;
+    const size = data !== null ? Buffer.byteLength(data, "base64") : typeof file?.size === "number" ? file.size : null;
+    if (size === null) {
+      if (!each) {
+        say("file", "Choose the file.", "quiet");
+        ready = false;
+      }
+    } else if (size > LARGEST_FILE) {
+      say("file", "That file is too big for the vault (at most about 700 KB).", "warning");
+    } else if (size === 0) {
+      say("file", "That file is empty.", "warning");
+    } else {
+      const fileName = path199.basename(text8(file?.name).trim());
+      if (fileName)
+        given.fileName = fileName;
+      if (data !== null)
+        given.values.file = data;
+    }
+  }
+  if (kind === "note")
+    secret("text", "text", !each);
+  return { fields, ready, ...ready ? { given } : {} };
+}
+var whoId = (who) => who.bot ? `bot-${who.bot}` : who.project ? `project-${who.project}` : "everyone";
+var HOWS = [{ id: "own", title: "On Its Own" }, { id: "ask", title: "Asks Each Time" }, { id: "no", title: "No" }];
+function whoForm(known, each) {
+  const grants = known.grants.filter((grant) => grant.item === each.id);
+  const how = (who) => grants.find((grant) => whoId(grant.who) === whoId(who))?.how ?? "no";
+  const listedBots = known.bots.filter((bot) => grants.some((grant) => grant.who.bot === bot.id));
+  const projects = grants.flatMap((grant) => grant.who.project ? [grant.who.project] : []);
+  const fields = [
+    ...listedBots.map((bot) => ({ id: `bot-${bot.id}`, title: bot.name, kind: "choice", value: how({ bot: bot.id }), choices: HOWS, verified: true })),
+    ...projects.map((project) => ({ id: `project-${project}`, title: path199.basename(project) || project, line: project, kind: "choice", value: how({ project }), choices: HOWS, verified: true })),
+    { id: "everyone", title: listedBots.length || projects.length ? "Other sessions and bots" : "Every agent", kind: "choice", value: how({ everyone: true }), choices: HOWS, verified: true }
+  ];
+  const others = known.bots.filter((bot) => !listedBots.includes(bot));
+  if (others.length) {
+    fields.push({
+      id: "add-bot",
+      title: "Let a Bot Use It",
+      kind: "choice",
+      value: "none",
+      verified: true,
+      choices: [{ id: "none", title: "No One Else" }, ...others.map((bot) => ({ id: bot.id, title: bot.name }))],
+      line: "It asks you each time, until you choose On Its Own."
+    });
+  }
+  const note = each.kind === "login" ? `Only on ${each.sites.join(", ")}. Agents never see the password: Kuvo fills it in.` : "Agents never see it: Kuvo fills it in, or hands it to a command they run.";
+  return { title: `Who Can Use “${each.name}”`, submit: "Save", fields, note };
+}
+var askerOf = (ask) => ask.botName ?? ask.sessionName ?? "An agent";
+var mayAlways = (ask) => !ask.group && ask.always !== false;
+function askRow(ask, known) {
+  const asker = askerOf(ask);
+  const title = ask.kind === "use" ? `${asker} wants to use “${ask.itemName ?? "an item"}”` : `${asker} needs ${ask.need ?? "something from your vault"}`;
+  const line = [ask.why, ask.site ? `On ${ask.site}` : undefined].filter(Boolean).join(" · ") || undefined;
+  const no = { id: "no", title: "Don’t Allow" };
+  if (ask.kind === "use") {
+    const always = mayAlways(ask) ? [{
+      id: "always",
+      title: "Always Allow…",
+      verified: true,
+      confirm: { title: `Let ${asker} use “${ask.itemName ?? "it"}” on its own?`, body: "From now on it uses it without asking you. Change that in its Who Can Use It.", button: "Always Allow" }
+    }] : [];
+    return item({ id: `ask-${ask.id}`, title, ...line ? { line } : {}, kind: "actions", actions: [no, { id: "once", title: "Allow Once" }, ...always] });
+  }
+  const give = known.items.length ? {
+    id: "give",
+    title: "Give…",
+    form: {
+      title: `Give ${asker} an Item`,
+      submit: "Give",
+      fields: [
+        { id: "item", title: "Item", kind: "choice", value: known.items[0].id, choices: known.items.map((each) => ({ id: each.id, title: each.name, line: lineOf3(each) })) },
+        ...mayAlways(ask) ? [{ id: "how", title: "For", kind: "choice", value: "once", verified: true, choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On" }] }] : []
+      ],
+      ...ask.need ? { note: `It needs ${ask.need}.` } : {}
+    }
+  } : { id: "give", title: "Give…", can: { why: "There’s nothing in the vault to give yet." } };
+  return item({ id: `ask-${ask.id}`, title, ...line ? { line } : {}, kind: "actions", actions: [no, give] });
+}
+var isWarning = (entry) => entry.what === "refused" && entry.how !== "no grant" && entry.how !== "autopilot";
+function sentence(entry) {
+  const { what, how, botName, sessionName, client, site, program } = entry;
+  const named = entry.itemName ? `“${entry.itemName}”` : undefined;
+  if (entry.mine === true) {
+    const thing = named ?? "an item";
+    const agent = botName ?? sessionName ?? "an agent";
+    switch (what) {
+      case "allowed":
+        return `Let ${agent} use ${thing}${how === "always" ? " from now on" : " once"}`;
+      case "declined":
+        return `Said no to ${agent} using ${thing}`;
+      case "added":
+        return `Added ${thing}`;
+      case "changed":
+        return `Changed ${thing}`;
+      case "removed":
+        return `Removed ${thing}`;
+      case "shown":
+        return `Looked at ${thing}`;
+    }
+  }
+  if (client === undefined) {
+    const agent = botName ?? sessionName ?? "An agent";
+    switch (what) {
+      case "allowed":
+        return how === "always" ? `${agent} may use ${named ?? "an item"} from now on` : `${agent} was allowed ${named ?? "an item"} once`;
+      case "declined":
+        return `${agent} wasn’t allowed ${named ?? "an item"}`;
+      case "added":
+        return `${named ?? "An item"} was added`;
+      case "changed":
+        return `${named ?? "An item"} was changed`;
+      case "removed":
+        return `${named ?? "An item"} was removed`;
+      case "shown":
+        return `${named ?? "An item"} was looked at`;
+    }
+  }
+  const you = client !== undefined ? `You, on ${client === "Mac" ? "your Mac" : client},` : "You";
+  const who = botName ?? sessionName ?? (client === undefined ? "An agent" : you);
+  const thing = named ?? "an item";
+  const where = site ? ` on ${site}` : program ? ` with ${program}` : "";
+  switch (what) {
+    case "used":
+      return `${who} used ${thing}${where}` + (how === "once" ? ", allowed once" : how === "always" ? ", now always allowed" : "");
+    case "asked":
+      return entry.itemName === undefined ? `${who} asked for something from the vault` : `${who} asked to use ${thing}${where}`;
+    case "allowed":
+      return `${you} let ${botName ?? sessionName ?? "an agent"} use ${thing}${how === "always" ? " from now on" : " once"}`;
+    case "declined":
+      return `${you} said no to ${botName ?? sessionName ?? "an agent"} using ${thing}`;
+    case "refused":
+      switch (how) {
+        case "wrong site":
+          return `Refused ${thing}${where}: not one of its sites. ${botName ?? "The bot"} was paused`;
+        case "paused":
+          return `${who} couldn’t use ${thing}: paused`;
+        case "autopilot":
+          return entry.itemName === undefined ? `${who} went on without something from your vault, on Autopilot` : `${who} left ${thing} for you, on Autopilot`;
+        default:
+          return `${who} wasn’t allowed ${thing}`;
+      }
+    case "added":
+      return `${you} added ${thing}`;
+    case "changed":
+      return `${you} changed ${thing}`;
+    case "removed":
+      return `${you} removed ${thing}`;
+    case "shown":
+      return `${you} looked at ${thing}`;
+    case "granted":
+      return `${capitalized2(thing)} is now ${how === "own" ? "used on its own" : "asked for each time"} by ${botName ?? "everyone allowed"}`;
+    case "ungranted":
+      return `${capitalized2(thing)} taken away from ${botName ?? "an agent"}`;
+    case "paused":
+      return botName ? `${botName}’s use of the vault was paused` : "The vault was paused";
+    case "resumed":
+      return botName ? `${botName}’s use of the vault goes on again` : "The vault goes on again";
+  }
+  return `${who}: ${what} ${thing}`;
+}
+async function vaultPage(context) {
+  const known = await facts2(context);
+  if (!("state" in known))
+    return unreadPage("vault", TITLE2, known);
+  const computer = computerHere2(context);
+  const { state } = known;
+  const notes = [];
+  if (state.locked) {
+    notes.push({ words: `${atStart(whose(computer))} vault is locked since it started again. Its agents can’t use it until you unlock it in Kuvo on your iPhone, which keeps its key.`, tone: "warning" });
+    return { id: "vault", title: TITLE2, groups: [], notes };
+  }
+  if (state.tampered)
+    notes.push({ words: "Its files were changed outside Kuvo, so it uses none of them, and every agent’s use is paused. Add its items again.", tone: "warning" });
+  if (state.agents === false) {
+    notes.push({ words: state.agentsWaiting ? "Locked for now: some agents started before the sandbox was on. The vault opens when they finish." : `Agents can’t use keys, files and notes from ${whose(computer)} vault yet. Sign-ins you let them use on their own still fill.`, tone: "quiet" });
+  }
+  const groups = [];
+  if (known.asks.length)
+    groups.push({ id: "asks", title: "Waiting for You", rows: known.asks.map((ask) => askRow(ask, known)) });
+  const items = known.items.map((each) => {
+    const grants = known.grants.filter((grant) => grant.item === each.id);
+    const badge = badgeOf2(grants);
+    const kept = item({
+      id: `item-${each.id}`,
+      title: each.name,
+      line: lineOf3(each),
+      kind: "actions",
+      actions: [
+        { id: "edit", title: "Edit…", form: editForm(each) },
+        { id: "who", title: "Who Can Use It…", form: whoForm(known, each) },
+        { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from ${whose(computer)} vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } }
+      ]
+    });
+    return { ...kept, ...badge ? { badge } : {} };
+  });
+  const add = { id: "add", title: "Add Item…", form: addForm(known, computer), ...state.made ? {} : { can: { why: `There’s no vault on ${computer} yet. Add its first item in Kuvo on your iPhone, which keeps the key that unlocks it after ${computer} restarts.` } } };
+  groups.push({
+    id: "items",
+    title: "Items",
+    note: keptWords(state, computer),
+    rows: [row({
+      id: "items",
+      title: "Items",
+      kind: "list",
+      items,
+      add,
+      empty: "Nothing yet. Add a sign-in, a key, a file or a note for your agents to use.",
+      ...items.length > 6 ? { search: { placeholder: "Search the vault", empty: "Nothing in the vault matches “{query}”." } } : {}
+    })]
+  });
+  if (state.made) {
+    const paused = Object.entries(state.pausedBots).sort(([a], [b]) => a.localeCompare(b)).map(([who, why]) => {
+      const name = known.bots.find((bot) => bot.id === who)?.name ?? (who.startsWith("bot_") ? "A bot" : "A conversation");
+      return row({ id: `paused-${who}`, title: `${name} is paused`, line: why, kind: "actions", actions: [{ id: "go-on", title: "Let Go On" }] });
+    });
+    groups.push({
+      id: "pause",
+      rows: [
+        row({ id: "pause", title: "Pause Agents’ Use", line: `Stops every agent on ${computer} from using the vault at once. What they ask still comes to you.`, kind: "switch", value: state.paused, can: true }),
+        ...paused
+      ]
+    });
+    const zone = zoneHere(readZoneSetting()).zone;
+    const when = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: zone });
+    groups.push({
+      id: "activity",
+      title: "Activity",
+      rows: [row({
+        id: "activity",
+        title: "Activity",
+        kind: "list",
+        empty: "Nothing used yet.",
+        items: known.activity.map((noted) => ({ ...noted, botName: noted.botName ?? known.bots.find((bot) => bot.id === noted.bot)?.name })).map((entry) => item({
+          id: `activity-${entry.id}`,
+          title: sentence(entry),
+          line: [when.format(new Date(entry.at)), entry.why].filter(Boolean).join(" · "),
+          kind: "status",
+          ...isWarning(entry) ? { tone: "warning" } : {}
+        })),
+        ...known.activity.length > 6 ? { search: { placeholder: "Search the activity", empty: "No activity matches “{query}”." } } : {}
+      })]
+    });
+  }
+  return { id: "vault", title: TITLE2, groups, ...notes.length ? { notes } : {} };
+}
+var vault = (context, method, route, body) => asked8(context, vaultRoute, method, route, body);
+async function vaultChange(context, at, value) {
+  if (at.id !== "pause")
+    return { status: 400, message: "That isn't something to change." };
+  if (value === at.value)
+    return null;
+  return refusal5(await vault(context, "POST", "kuvo/vault/pause", { paused: value === true }));
+}
+var formRefused2 = (checked) => {
+  const first = checked.fields.find((each) => each.tone === "warning") ?? checked.fields[0];
+  return { status: 400, message: first?.words ?? "Fill in what it needs first.", fields: [...checked.fields] };
+};
+function itemRefused(answer, kind) {
+  const refused = refusal5(answer);
+  if (!refused)
+    return null;
+  const field = /item called/.test(refused.message) ? "name" : /site/.test(refused.message) ? kind === "login" ? "site" : "hosts" : null;
+  return field ? { ...refused, status: 400, fields: [{ id: field, words: refused.message, tone: "warning" }] } : refused;
+}
+var ID4 = /^v_[a-z0-9]{10}$/;
+async function vaultAct(context, at, action, values) {
+  const known = await facts2(context);
+  if (!("state" in known))
+    return refusal5(known) ?? { status: 503, message: said9(known, "This computer's vault couldn't be read.") };
+  if (at.id === "items" && action.id === "add") {
+    const checked = readForm2(known, null, values ?? {});
+    if (!checked.given)
+      return formRefused2(checked);
+    const { kind, ...rest } = checked.given;
+    return itemRefused(await vault(context, "POST", "kuvo/vault/items", { kind, ...rest, ...rest.username ? {} : { username: undefined } }), kind);
+  }
+  if (at.id.startsWith("ask-")) {
+    const id = at.id.slice("ask-".length);
+    const ask = known.asks.find((each) => each.id === id);
+    if (!ask)
+      return STALE;
+    const answer = (body) => vault(context, "POST", `kuvo/vault/asks/${encodeURIComponent(id)}`, body);
+    switch (action.id) {
+      case "no":
+        return staleOr404(await answer({ answer: "no" }));
+      case "once":
+        return staleOr404(await answer({ answer: "once" }));
+      case "always":
+        if (!mayAlways(ask))
+          return { status: 403, message: "This one can only be allowed once." };
+        return staleOr404(await answer({ answer: "always" }));
+      case "give": {
+        const given = text8(values?.item);
+        if (!known.items.some((each) => each.id === given))
+          return { status: 400, message: "Pick an item to give.", fields: [{ id: "item", words: "Pick an item to give.", tone: "warning" }] };
+        const how = values?.how === "always" && mayAlways(ask) ? "always" : "once";
+        return staleOr404(await answer({ answer: how, item: given }));
+      }
+    }
+    return { status: 404, message: "That isn't something it does." };
+  }
+  if (at.id.startsWith("paused-") && action.id === "go-on") {
+    return refusal5(await vault(context, "POST", "kuvo/vault/pause", { paused: false, bot: at.id.slice("paused-".length) }));
+  }
+  if (!at.id.startsWith("item-"))
+    return { status: 404, message: "That isn't something it does." };
+  const id = at.id.slice("item-".length);
+  const each = known.items.find((one) => one.id === id);
+  if (!each || !ID4.test(id))
+    return STALE;
+  const route = `kuvo/vault/items/${encodeURIComponent(id)}`;
+  switch (action.id) {
+    case "edit": {
+      const checked = readForm2(known, each, values ?? {});
+      if (!checked.given)
+        return formRefused2(checked);
+      const { kind: _, values: typed, ...rest } = checked.given;
+      const changes = {};
+      for (const [field, value] of Object.entries(typed)) {
+        if (typeof value === "string" && each.fields.includes(field)) {
+          const same = await vault(context, "POST", `${route}/same`, { values: { [field]: value } });
+          if (same.status === 200 && same.value.same === true)
+            continue;
+        }
+        changes[field] = value;
+      }
+      const body = {};
+      if (rest.name !== each.name)
+        body.name = rest.name;
+      if ((each.kind === "login" || each.kind === "key") && rest.sites.join(" ") !== each.sites.join(" "))
+        body.sites = rest.sites;
+      if (each.kind === "login" && rest.username !== (each.username ?? ""))
+        body.username = rest.username;
+      if (each.kind === "login" && rest.signInOnly !== (each.signInOnly === true))
+        body.signInOnly = rest.signInOnly;
+      if (each.kind === "note" && rest.readable !== (each.readable === true))
+        body.readable = rest.readable;
+      if (each.kind === "file" && rest.fileName && rest.fileName !== each.fileName)
+        body.fileName = rest.fileName;
+      if (Object.keys(changes).length)
+        body.values = changes;
+      if (!Object.keys(body).length)
+        return null;
+      return itemRefused(await vault(context, "PATCH", route, body), each.kind);
+    }
+    case "who": {
+      const grants = known.grants.filter((grant) => grant.item === id);
+      const now = (who) => grants.find((grant) => whoId(grant.who) === whoId(who))?.how ?? "no";
+      const wanted = [];
+      for (const [field, value] of Object.entries(values ?? {})) {
+        if (field === "add-bot")
+          continue;
+        const who = field === "everyone" ? { everyone: true } : field.startsWith("bot-") ? { bot: field.slice(4) } : field.startsWith("project-") && grants.some((grant) => grant.who.project === field.slice(8)) ? { project: field.slice(8) } : null;
+        if (!who || !HOWS.some((choice) => choice.id === value))
+          return { status: 400, message: "That isn't someone it can be given to." };
+        if (who.bot && !known.bots.some((bot) => bot.id === who.bot))
+          return STALE;
+        if (now(who) !== value)
+          wanted.push({ who, how: value });
+      }
+      const more = text8(values?.["add-bot"]);
+      if (more && more !== "none") {
+        if (!known.bots.some((bot) => bot.id === more))
+          return STALE;
+        if (now({ bot: more }) === "no" && !wanted.some((each) => each.who.bot === more))
+          wanted.push({ who: { bot: more }, how: "ask" });
+      }
+      for (const each of wanted) {
+        const done = refusal5(await vault(context, "POST", "kuvo/vault/grants", { item: id, who: each.who, how: each.how === "no" ? null : each.how }));
+        if (done)
+          return done;
+      }
+      return null;
+    }
+    case "delete":
+      return staleOrRefusal(await vault(context, "DELETE", route));
+  }
+  return { status: 404, message: "That isn't something it does." };
+}
+var staleOr404 = (answer) => answer.status === 404 ? STALE : refusal5(answer);
+async function vaultCheck(context, at, action, values) {
+  const known = await facts2(context);
+  if (!("state" in known))
+    return { fields: [], ready: false };
+  if (at.id === "items" && action.id === "add") {
+    const { fields, ready } = readForm2(known, null, values);
+    return { fields, ready };
+  }
+  if (at.id.startsWith("item-") && action.id === "edit") {
+    const each = known.items.find((one) => one.id === at.id.slice("item-".length));
+    if (!each)
+      return { fields: [], ready: false };
+    const { fields, ready } = readForm2(known, each, values);
+    return { fields, ready };
+  }
+  if (action.id === "give")
+    return { fields: [], ready: known.items.some((each) => each.id === values.item) };
+  return { fields: [], ready: true };
+}
+var FILES5 = ["items.json", "grants.json", "paused.json", "activity.jsonl", "key.json"].map((name) => path199.join(VAULT_FOLDER, name));
+var vaultSection = {
+  listed: {
+    id: "vault",
+    title: TITLE2,
+    group: "Agents & Tools",
+    icon: "shield",
+    line: "Sign-ins, keys, files and notes agents use without ever seeing them.",
+    keywords: ["vault", "secrets", "passwords", "sign-ins", "api keys", "files", "notes", "waiting for you", "who can use it", "pause", "activity"]
+  },
+  read: vaultPage,
+  change: vaultChange,
+  act: vaultAct,
+  check: vaultCheck,
+  look: () => `${FILES5.map(mtime2).join(" ")} ${isLocked()} ${agentsUseVault()} ${holdsVault() ? listAsks().map((ask) => ask.id).join(",") : Math.floor(Date.now() / 1000)}`
+};
+
 // box/src/shared/routes/settings-pages.ts
 init_shape();
 var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
@@ -63209,7 +63792,8 @@ var SETTING_CAN = oneOf(literal(true), object({ why: string }));
 var SETTING_CONFIRM = object({ title: string, body: string, button: string });
 var SETTING_CHOICE = object({ id: string, title: string, "line?": string });
 var SETTING_FOLDER = object({ choose: string, clear: string, prompt: string, message: string });
-var SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs"];
+var SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs", "secret", "file"];
+var SETTING_FIELD_SHOWS = object({ route: string, field: string });
 var SETTING_FIELD = object({
   id: string,
   title: string,
@@ -63222,7 +63806,12 @@ var SETTING_FIELD = object({
   "folder?": SETTING_FOLDER,
   "pairs?": object({ key: string, value: string }),
   "shown?": object({ field: string, is: list(string) }),
-  "can?": SETTING_CAN
+  "can?": SETTING_CAN,
+  "multi?": bool,
+  "shows?": SETTING_FIELD_SHOWS,
+  "secret?": bool,
+  "verified?": bool,
+  "file?": object({ choose: string, none: string })
 });
 var SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string, "revision?": string });
 var SETTING_ACTION = object({
@@ -63232,7 +63821,8 @@ var SETTING_ACTION = object({
   "confirm?": SETTING_CONFIRM,
   "opens?": string,
   "can?": SETTING_CAN,
-  "form?": SETTING_FORM
+  "form?": SETTING_FORM,
+  "verified?": bool
 });
 var SETTING_BADGE_TONES = ["quiet", "good", "busy", "warning", "failed"];
 var SETTING_BADGE = object({ words: string, tone: words(...SETTING_BADGE_TONES) });
@@ -63327,7 +63917,7 @@ init_link();
 init_files2();
 import { spawnSync as spawnSync19 } from "node:child_process";
 import fs192 from "node:fs";
-import path199 from "node:path";
+import path200 from "node:path";
 init_home();
 init_host_interface();
 function runs(pid) {
@@ -63356,7 +63946,7 @@ var PERMISSIONS = [
   { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
   { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true }
 ];
-var LATER = () => path199.join(K, "box", "permissions-later.json");
+var LATER = () => path200.join(K, "box", "permissions-later.json");
 function putOff() {
   try {
     const kept = parsed(fs192.readFileSync(LATER(), "utf8"));
@@ -63368,7 +63958,7 @@ function putOff() {
 function keepPutOff(later) {
   if (!later.size)
     return fs192.rmSync(LATER(), { force: true });
-  fs192.mkdirSync(path199.dirname(LATER()), { recursive: true, mode: 448 });
+  fs192.mkdirSync(path200.dirname(LATER()), { recursive: true, mode: 448 });
   writePrivate(LATER(), JSON.stringify({ later: [...later].sort() }));
 }
 function boxPermissions() {
@@ -63388,7 +63978,7 @@ function boxPermissions() {
     return unknown;
   let noted;
   try {
-    noted = parsed(fs192.readFileSync(path199.join(K, "run", "permissions.json"), "utf8"));
+    noted = parsed(fs192.readFileSync(path200.join(K, "run", "permissions.json"), "utf8"));
   } catch {
     return unknown;
   }
@@ -63457,12 +64047,12 @@ init_state();
 // box/src/link/mac/keeper-runs.ts
 init_home();
 import fs193 from "node:fs";
-import path200 from "node:path";
+import path201 from "node:path";
 var boxAnswers = (route) => route === "kuvo/engine/restart" && (OWN_HOME_MAC || keeperRuns2());
 function keeperRuns2() {
   let pid = 0;
   try {
-    pid = Number(JSON.parse(fs193.readFileSync(path200.join(RUN, "keeper.json"), "utf8"))?.pid);
+    pid = Number(JSON.parse(fs193.readFileSync(path201.join(RUN, "keeper.json"), "utf8"))?.pid);
   } catch {
     return false;
   }
@@ -63526,6 +64116,7 @@ var SECTIONS = [
   { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
   { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
+  vaultSection.listed,
   mcpSection.listed
 ];
 var browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE));
@@ -63876,9 +64467,9 @@ async function worktreesChange(context, at, value) {
   if ((config.value.worktree?.directory ?? "") !== at.value)
     return STALE;
   const folder = typed ? typed.replace(/^~(?=$|\/)/, homeFolder()) : null;
-  if (folder && !path201.isAbsolute(folder))
+  if (folder && !path202.isAbsolute(folder))
     return { status: 400, message: "Give a full path to the folder." };
-  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path201.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
+  return staleOrRefusal(await asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["worktree", "directory"], value: folder ? path202.resolve(folder) : null, was: config.value.worktree?.directory ?? null }] }));
 }
 async function worktreesAct(context, at, action) {
   if (action.id !== "remove" || !at.id.startsWith("tree-"))
@@ -64064,7 +64655,7 @@ var computerFacts = {
   letDevices: letDevicesConnect
 };
 var computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer");
-var computerHere2 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
+var computerHere3 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer";
 var LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
 var ALLOWS = {
   screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
@@ -64072,7 +64663,7 @@ var ALLOWS = {
 };
 async function computerPage(context) {
   const here = context.request.fromApp === true;
-  const where = computerHere2(context), name = context.info.name || where;
+  const where = computerHere3(context), name = context.info.name || where;
   const kind = computerFacts.kind();
   const ownMac = kind === "ownMac" && process.platform === "darwin";
   const atLogin = ownMac ? computerFacts.atLogin() : null;
@@ -64194,8 +64785,9 @@ var PAGES2 = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  vault: vaultSection,
   mcp: mcpSection,
-  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path201.join(RUN, "permissions.json"))} ${mtime2(path201.join(RUN, "update.json"))} ${mtime2(path201.join(RUN, "update.lock"))} ${mtime2(path201.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path202.join(RUN, "permissions.json"))} ${mtime2(path202.join(RUN, "update.json"))} ${mtime2(path202.join(RUN, "update.lock"))} ${mtime2(path202.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
 };
 var followers2 = new Set;
 var changed5 = () => {
@@ -64689,14 +65281,14 @@ async function* forgetHost(context, id, here) {
 
 // box/src/link/mac/app.ts
 import fs195 from "node:fs";
-import path202 from "node:path";
+import path203 from "node:path";
 init_files();
 init_home();
 init_host_interface();
-var APP_FILE = () => path202.join(RUN, "app.json");
-var OPENING_FILE = () => path202.join(RUN, "app-opening.json");
-var FAILED_FILE = () => path202.join(RUN, "app-open-failed.json");
-var UPDATING_FILE = () => path202.join(RUN, "app-updating");
+var APP_FILE = () => path203.join(RUN, "app.json");
+var OPENING_FILE = () => path203.join(RUN, "app-opening.json");
+var FAILED_FILE = () => path203.join(RUN, "app-open-failed.json");
+var UPDATING_FILE = () => path203.join(RUN, "app-updating");
 var WAIT = 30000;
 var REST = 5 * 60000;
 var UPDATING_FOR = 2 * 60000;
@@ -64714,10 +65306,10 @@ function readJSON3(file) {
   }
 }
 function bundleOf2(given) {
-  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path202.isAbsolute(given))
+  if (typeof given !== "string" || given.length > 1024 || given.includes("\x00") || !path203.isAbsolute(given))
     return null;
   const bundle = given.replace(/\/+$/, "");
-  return bundle.endsWith(".app") && path202.normalize(bundle) === bundle ? bundle : null;
+  return bundle.endsWith(".app") && path203.normalize(bundle) === bundle ? bundle : null;
 }
 function toolsOf(given) {
   if (!isObject(given) || typeof given.url !== "string" || typeof given.token !== "string")
@@ -65593,7 +66185,7 @@ init_format();
 init_home();
 
 // box/src/link/places.ts
-import path203 from "node:path";
+import path204 from "node:path";
 init_home();
 init_machines();
 init_home();
@@ -65611,11 +66203,11 @@ function boxPlaces() {
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
-    browser: path203.join(K, "browser"),
-    trash: path203.join(K, "trash"),
-    temporary: path203.join(K, "t"),
+    browser: path204.join(K, "browser"),
+    trash: path204.join(K, "trash"),
+    temporary: path204.join(K, "t"),
     engineData: ENGINE_DATA,
-    engineConfig: ENGINE_CONFIG ?? path203.join(K, "config"),
+    engineConfig: ENGINE_CONFIG ?? path204.join(K, "config"),
     settingsFile: CONFIG_FILE,
     engineLayerFile: ENGINE_LAYER_FILE,
     defaultsPlugin: DEFAULTS_PLUGIN,
@@ -65716,9 +66308,9 @@ async function run7() {
   fs196.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
-    process.env.PATH = joinPath(path204.join(K, "bin"), saved);
+    process.env.PATH = joinPath(path205.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs196.rmSync(path204.join(RUN, folder), { recursive: true, force: true });
+    fs196.rmSync(path205.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -66219,7 +66811,7 @@ async function serve() {
     } catch {}
   try {
     if (APP_FOLDER)
-      writePrivate(path204.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+      writePrivate(path205.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
     else
       clearKept(K);
   } catch {}
@@ -66456,7 +67048,7 @@ if (main) {
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
     const step = (running) => noteUpdate({ running });
-    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path204.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
+    const outcome = offered ? await takeOffer({ step, ...test }) : from && !path205.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now: args.includes("--now"), from, step, ...test });
     if (outcome && !(offered && outcome.result === "busy"))
       noteUpdate({ running: null, ...outcome.result === "updated" ? {} : { last: { at: Date.now(), ...outcome } } });
     if (outcome?.result === "updated") {

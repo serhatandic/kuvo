@@ -24,9 +24,19 @@ export const SETTING_FOLDER = object({ choose: string, clear: string, prompt: st
 
 /** The kinds of a form's field, each a control every client has: one line of text, several
  * (`mono`: in a typeface that keeps a command's flags apart), a segmented pick of `choices`, a
- * switch, a folder (the box's picker, with its `folder` words), and names with values (`pairs`, its
- * two placeholders; its value `[{key, value}]`, in order). */
-export const SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs"] as const;
+ * switch, a folder (the box's picker, with its `folder` words), names with values (`pairs`, its
+ * two placeholders; its value `[{key, value}]`, in order), a secret (`secret`: hidden as it's
+ * typed, `multi` for several lines; it opens empty, and empty sends nothing new), and a file of the
+ * client's own (`file`, with its `file` words: chosen on the client's computer, sent as `{name,
+ * data}`, its bytes as base64). A secret's value, a `secret` pairs' values and a file's bytes are
+ * only ever sent with the action itself: a check gets each as `•` once for each character (a file
+ * as `{name, size}`), so the box can say what's missing or too short without seeing it. */
+export const SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs", "secret", "file"] as const;
+
+/** Where a `secret` field's kept value is read, only when you ask to see it (Show): `GET route` of
+ * the same box → `{values}`, of which `values[field]` is shown in the field (the route notes that it
+ * was shown, where it keeps such notes). Kept only while the form is open. */
+export const SETTING_FIELD_SHOWS = object({ route: string, field: string });
 
 /** One of a form's fields: its `id` (the key of its value sent back), its words, its kind, its
  * value as the form opens, and, with `shown`, drawn only while another `choice` field is one of
@@ -37,6 +47,8 @@ export const SETTING_FIELD = object({
   "pairs?": object({ key: string, value: string }),
   "shown?": object({ field: string, is: list(string) }),
   "can?": SETTING_CAN,
+  "multi?": bool, "shows?": SETTING_FIELD_SHOWS, "secret?": bool, "verified?": bool,
+  "file?": object({ choose: string, none: string }),
 });
 
 /** What an action asks for before it's done (Add Server…, Edit…): a sheet with the box's title, its
@@ -50,10 +62,12 @@ export const SETTING_FORM = object({ title: string, submit: string, fields: list
  * `destructive`, what's asked first, and whether it can be done from here (`can`, absent: it can).
  * One with `opens` sends nothing: the client opens that address (a web page; an address of the
  * box's own computer is only ever given to a client there). One with `form` asks for its values
- * first. */
+ * first. `verified` (an action, or a form's field): it lets something use what's yours from now on
+ * (a vault's grant), so a client makes sure it's you first (Touch ID); one that can't draws it,
+ * unavailable, and says where it can be done. */
 export const SETTING_ACTION = object({
   id: string, title: string, "style?": words("default", "destructive"), "confirm?": SETTING_CONFIRM,
-  "opens?": string, "can?": SETTING_CAN, "form?": SETTING_FORM,
+  "opens?": string, "can?": SETTING_CAN, "form?": SETTING_FORM, "verified?": bool,
 });
 
 /** How a thing in a list stands, beside its title: a dot of its tone and the box's words. */

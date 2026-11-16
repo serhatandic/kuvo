@@ -68,6 +68,9 @@ export async function asked(context: RouteContext, answer: (context: RouteContex
     ...(body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) }),
     ...(context.request.fromApp ? { fromApp: true } : {}),
     ...(context.request.fromMac ? { fromMac: true } : {}),
+    // (Who it is to the vault, as the holder proved it, and what kind of client: the same.)
+    ...(context.request.vaultClient ? { vaultClient: true } : {}),
+    ...(context.request.desktop ? { desktop: true } : {}),
   };
   let status = 500;
   const chunks: Buffer[] = [];

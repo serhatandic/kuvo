@@ -5439,6 +5439,9 @@
             "literal": "settings.flows"
            },
            {
+            "literal": "settings.vault"
+           },
+           {
             "literal": "setup"
            },
            {
@@ -6127,6 +6130,9 @@
            },
            {
             "literal": "settings.flows"
+           },
+           {
+            "literal": "settings.vault"
            },
            {
             "literal": "setup"
@@ -15209,6 +15215,12 @@
                       },
                       {
                        "literal": "pairs"
+                      },
+                      {
+                       "literal": "secret"
+                      },
+                      {
+                       "literal": "file"
                       }
                      ]
                     },
@@ -15258,6 +15270,21 @@
                        }
                       }
                      ]
+                    },
+                    "multi?": "bool",
+                    "shows?": {
+                     "object": {
+                      "route": "string",
+                      "field": "string"
+                     }
+                    },
+                    "secret?": "bool",
+                    "verified?": "bool",
+                    "file?": {
+                     "object": {
+                      "choose": "string",
+                      "none": "string"
+                     }
                     }
                    }
                   }
@@ -15265,7 +15292,8 @@
                  "note?": "string",
                  "revision?": "string"
                 }
-               }
+               },
+               "verified?": "bool"
               }
              }
             },
@@ -15342,6 +15370,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -15391,6 +15425,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -15398,7 +15447,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "name?": "string",
@@ -15530,6 +15580,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -15579,6 +15635,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -15586,7 +15657,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               }
@@ -15799,6 +15871,12 @@
                          },
                          {
                           "literal": "pairs"
+                         },
+                         {
+                          "literal": "secret"
+                         },
+                         {
+                          "literal": "file"
                          }
                         ]
                        },
@@ -15848,6 +15926,21 @@
                           }
                          }
                         ]
+                       },
+                       "multi?": "bool",
+                       "shows?": {
+                        "object": {
+                         "route": "string",
+                         "field": "string"
+                        }
+                       },
+                       "secret?": "bool",
+                       "verified?": "bool",
+                       "file?": {
+                        "object": {
+                         "choose": "string",
+                         "none": "string"
+                        }
                        }
                       }
                      }
@@ -15855,7 +15948,8 @@
                     "note?": "string",
                     "revision?": "string"
                    }
-                  }
+                  },
+                  "verified?": "bool"
                  }
                 }
                },
@@ -15932,6 +16026,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -15981,6 +16081,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -15988,7 +16103,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                },
                "name?": "string",
@@ -16120,6 +16236,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -16169,6 +16291,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -16176,7 +16313,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  }
@@ -16247,6 +16385,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -16296,6 +16440,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -16303,7 +16462,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "empty?": "string"
@@ -16560,6 +16720,12 @@
                       },
                       {
                        "literal": "pairs"
+                      },
+                      {
+                       "literal": "secret"
+                      },
+                      {
+                       "literal": "file"
                       }
                      ]
                     },
@@ -16609,6 +16775,21 @@
                        }
                       }
                      ]
+                    },
+                    "multi?": "bool",
+                    "shows?": {
+                     "object": {
+                      "route": "string",
+                      "field": "string"
+                     }
+                    },
+                    "secret?": "bool",
+                    "verified?": "bool",
+                    "file?": {
+                     "object": {
+                      "choose": "string",
+                      "none": "string"
+                     }
                     }
                    }
                   }
@@ -16616,7 +16797,8 @@
                  "note?": "string",
                  "revision?": "string"
                 }
-               }
+               },
+               "verified?": "bool"
               }
              }
             },
@@ -16693,6 +16875,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -16742,6 +16930,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -16749,7 +16952,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "name?": "string",
@@ -16881,6 +17085,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -16930,6 +17140,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -16937,7 +17162,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               }
@@ -17150,6 +17376,12 @@
                          },
                          {
                           "literal": "pairs"
+                         },
+                         {
+                          "literal": "secret"
+                         },
+                         {
+                          "literal": "file"
                          }
                         ]
                        },
@@ -17199,6 +17431,21 @@
                           }
                          }
                         ]
+                       },
+                       "multi?": "bool",
+                       "shows?": {
+                        "object": {
+                         "route": "string",
+                         "field": "string"
+                        }
+                       },
+                       "secret?": "bool",
+                       "verified?": "bool",
+                       "file?": {
+                        "object": {
+                         "choose": "string",
+                         "none": "string"
+                        }
                        }
                       }
                      }
@@ -17206,7 +17453,8 @@
                     "note?": "string",
                     "revision?": "string"
                    }
-                  }
+                  },
+                  "verified?": "bool"
                  }
                 }
                },
@@ -17283,6 +17531,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -17332,6 +17586,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -17339,7 +17608,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                },
                "name?": "string",
@@ -17471,6 +17741,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -17520,6 +17796,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -17527,7 +17818,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  }
@@ -17598,6 +17890,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -17647,6 +17945,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -17654,7 +17967,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "empty?": "string"
@@ -17919,6 +18233,12 @@
                       },
                       {
                        "literal": "pairs"
+                      },
+                      {
+                       "literal": "secret"
+                      },
+                      {
+                       "literal": "file"
                       }
                      ]
                     },
@@ -17968,6 +18288,21 @@
                        }
                       }
                      ]
+                    },
+                    "multi?": "bool",
+                    "shows?": {
+                     "object": {
+                      "route": "string",
+                      "field": "string"
+                     }
+                    },
+                    "secret?": "bool",
+                    "verified?": "bool",
+                    "file?": {
+                     "object": {
+                      "choose": "string",
+                      "none": "string"
+                     }
                     }
                    }
                   }
@@ -17975,7 +18310,8 @@
                  "note?": "string",
                  "revision?": "string"
                 }
-               }
+               },
+               "verified?": "bool"
               }
              }
             },
@@ -18052,6 +18388,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -18101,6 +18443,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -18108,7 +18465,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "name?": "string",
@@ -18240,6 +18598,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -18289,6 +18653,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -18296,7 +18675,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               }
@@ -18509,6 +18889,12 @@
                          },
                          {
                           "literal": "pairs"
+                         },
+                         {
+                          "literal": "secret"
+                         },
+                         {
+                          "literal": "file"
                          }
                         ]
                        },
@@ -18558,6 +18944,21 @@
                           }
                          }
                         ]
+                       },
+                       "multi?": "bool",
+                       "shows?": {
+                        "object": {
+                         "route": "string",
+                         "field": "string"
+                        }
+                       },
+                       "secret?": "bool",
+                       "verified?": "bool",
+                       "file?": {
+                        "object": {
+                         "choose": "string",
+                         "none": "string"
+                        }
                        }
                       }
                      }
@@ -18565,7 +18966,8 @@
                     "note?": "string",
                     "revision?": "string"
                    }
-                  }
+                  },
+                  "verified?": "bool"
                  }
                 }
                },
@@ -18642,6 +19044,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -18691,6 +19099,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -18698,7 +19121,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                },
                "name?": "string",
@@ -18830,6 +19254,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -18879,6 +19309,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -18886,7 +19331,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  }
@@ -18957,6 +19403,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -19006,6 +19458,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -19013,7 +19480,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "empty?": "string"
@@ -19278,6 +19746,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -19327,6 +19801,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -19334,7 +19823,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               },
@@ -19411,6 +19901,12 @@
                        },
                        {
                         "literal": "pairs"
+                       },
+                       {
+                        "literal": "secret"
+                       },
+                       {
+                        "literal": "file"
                        }
                       ]
                      },
@@ -19460,6 +19956,21 @@
                         }
                        }
                       ]
+                     },
+                     "multi?": "bool",
+                     "shows?": {
+                      "object": {
+                       "route": "string",
+                       "field": "string"
+                      }
+                     },
+                     "secret?": "bool",
+                     "verified?": "bool",
+                     "file?": {
+                      "object": {
+                       "choose": "string",
+                       "none": "string"
+                      }
                      }
                     }
                    }
@@ -19467,7 +19978,8 @@
                   "note?": "string",
                   "revision?": "string"
                  }
-                }
+                },
+                "verified?": "bool"
                }
               },
               "name?": "string",
@@ -19599,6 +20111,12 @@
                           },
                           {
                            "literal": "pairs"
+                          },
+                          {
+                           "literal": "secret"
+                          },
+                          {
+                           "literal": "file"
                           }
                          ]
                         },
@@ -19648,6 +20166,21 @@
                            }
                           }
                          ]
+                        },
+                        "multi?": "bool",
+                        "shows?": {
+                         "object": {
+                          "route": "string",
+                          "field": "string"
+                         }
+                        },
+                        "secret?": "bool",
+                        "verified?": "bool",
+                        "file?": {
+                         "object": {
+                          "choose": "string",
+                          "none": "string"
+                         }
                         }
                        }
                       }
@@ -19655,7 +20188,8 @@
                      "note?": "string",
                      "revision?": "string"
                     }
-                   }
+                   },
+                   "verified?": "bool"
                   }
                  }
                 }
@@ -19868,6 +20402,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -19917,6 +20457,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -19924,7 +20479,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  },
@@ -20001,6 +20557,12 @@
                           },
                           {
                            "literal": "pairs"
+                          },
+                          {
+                           "literal": "secret"
+                          },
+                          {
+                           "literal": "file"
                           }
                          ]
                         },
@@ -20050,6 +20612,21 @@
                            }
                           }
                          ]
+                        },
+                        "multi?": "bool",
+                        "shows?": {
+                         "object": {
+                          "route": "string",
+                          "field": "string"
+                         }
+                        },
+                        "secret?": "bool",
+                        "verified?": "bool",
+                        "file?": {
+                         "object": {
+                          "choose": "string",
+                          "none": "string"
+                         }
                         }
                        }
                       }
@@ -20057,7 +20634,8 @@
                      "note?": "string",
                      "revision?": "string"
                     }
-                   }
+                   },
+                   "verified?": "bool"
                   }
                  },
                  "name?": "string",
@@ -20189,6 +20767,12 @@
                              },
                              {
                               "literal": "pairs"
+                             },
+                             {
+                              "literal": "secret"
+                             },
+                             {
+                              "literal": "file"
                              }
                             ]
                            },
@@ -20238,6 +20822,21 @@
                               }
                              }
                             ]
+                           },
+                           "multi?": "bool",
+                           "shows?": {
+                            "object": {
+                             "route": "string",
+                             "field": "string"
+                            }
+                           },
+                           "secret?": "bool",
+                           "verified?": "bool",
+                           "file?": {
+                            "object": {
+                             "choose": "string",
+                             "none": "string"
+                            }
                            }
                           }
                          }
@@ -20245,7 +20844,8 @@
                         "note?": "string",
                         "revision?": "string"
                        }
-                      }
+                      },
+                      "verified?": "bool"
                      }
                     }
                    }
@@ -20316,6 +20916,12 @@
                        },
                        {
                         "literal": "pairs"
+                       },
+                       {
+                        "literal": "secret"
+                       },
+                       {
+                        "literal": "file"
                        }
                       ]
                      },
@@ -20365,6 +20971,21 @@
                         }
                        }
                       ]
+                     },
+                     "multi?": "bool",
+                     "shows?": {
+                      "object": {
+                       "route": "string",
+                       "field": "string"
+                      }
+                     },
+                     "secret?": "bool",
+                     "verified?": "bool",
+                     "file?": {
+                      "object": {
+                       "choose": "string",
+                       "none": "string"
+                      }
                      }
                     }
                    }
@@ -20372,7 +20993,8 @@
                   "note?": "string",
                   "revision?": "string"
                  }
-                }
+                },
+                "verified?": "bool"
                }
               },
               "empty?": "string"
@@ -20634,6 +21256,12 @@
                       },
                       {
                        "literal": "pairs"
+                      },
+                      {
+                       "literal": "secret"
+                      },
+                      {
+                       "literal": "file"
                       }
                      ]
                     },
@@ -20683,6 +21311,21 @@
                        }
                       }
                      ]
+                    },
+                    "multi?": "bool",
+                    "shows?": {
+                     "object": {
+                      "route": "string",
+                      "field": "string"
+                     }
+                    },
+                    "secret?": "bool",
+                    "verified?": "bool",
+                    "file?": {
+                     "object": {
+                      "choose": "string",
+                      "none": "string"
+                     }
                     }
                    }
                   }
@@ -20690,7 +21333,8 @@
                  "note?": "string",
                  "revision?": "string"
                 }
-               }
+               },
+               "verified?": "bool"
               }
              }
             },
@@ -20767,6 +21411,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -20816,6 +21466,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -20823,7 +21488,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "name?": "string",
@@ -20955,6 +21621,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -21004,6 +21676,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -21011,7 +21698,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               }
@@ -21224,6 +21912,12 @@
                          },
                          {
                           "literal": "pairs"
+                         },
+                         {
+                          "literal": "secret"
+                         },
+                         {
+                          "literal": "file"
                          }
                         ]
                        },
@@ -21273,6 +21967,21 @@
                           }
                          }
                         ]
+                       },
+                       "multi?": "bool",
+                       "shows?": {
+                        "object": {
+                         "route": "string",
+                         "field": "string"
+                        }
+                       },
+                       "secret?": "bool",
+                       "verified?": "bool",
+                       "file?": {
+                        "object": {
+                         "choose": "string",
+                         "none": "string"
+                        }
                        }
                       }
                      }
@@ -21280,7 +21989,8 @@
                     "note?": "string",
                     "revision?": "string"
                    }
-                  }
+                  },
+                  "verified?": "bool"
                  }
                 }
                },
@@ -21357,6 +22067,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -21406,6 +22122,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -21413,7 +22144,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                },
                "name?": "string",
@@ -21545,6 +22277,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -21594,6 +22332,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -21601,7 +22354,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  }
@@ -21672,6 +22426,12 @@
                      },
                      {
                       "literal": "pairs"
+                     },
+                     {
+                      "literal": "secret"
+                     },
+                     {
+                      "literal": "file"
                      }
                     ]
                    },
@@ -21721,6 +22481,21 @@
                       }
                      }
                     ]
+                   },
+                   "multi?": "bool",
+                   "shows?": {
+                    "object": {
+                     "route": "string",
+                     "field": "string"
+                    }
+                   },
+                   "secret?": "bool",
+                   "verified?": "bool",
+                   "file?": {
+                    "object": {
+                     "choose": "string",
+                     "none": "string"
+                    }
                    }
                   }
                  }
@@ -21728,7 +22503,8 @@
                 "note?": "string",
                 "revision?": "string"
                }
-              }
+              },
+              "verified?": "bool"
              }
             },
             "empty?": "string"
@@ -22014,6 +22790,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -22063,6 +22845,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -22070,7 +22867,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               },
@@ -22147,6 +22945,12 @@
                        },
                        {
                         "literal": "pairs"
+                       },
+                       {
+                        "literal": "secret"
+                       },
+                       {
+                        "literal": "file"
                        }
                       ]
                      },
@@ -22196,6 +23000,21 @@
                         }
                        }
                       ]
+                     },
+                     "multi?": "bool",
+                     "shows?": {
+                      "object": {
+                       "route": "string",
+                       "field": "string"
+                      }
+                     },
+                     "secret?": "bool",
+                     "verified?": "bool",
+                     "file?": {
+                      "object": {
+                       "choose": "string",
+                       "none": "string"
+                      }
                      }
                     }
                    }
@@ -22203,7 +23022,8 @@
                   "note?": "string",
                   "revision?": "string"
                  }
-                }
+                },
+                "verified?": "bool"
                }
               },
               "name?": "string",
@@ -22335,6 +23155,12 @@
                           },
                           {
                            "literal": "pairs"
+                          },
+                          {
+                           "literal": "secret"
+                          },
+                          {
+                           "literal": "file"
                           }
                          ]
                         },
@@ -22384,6 +23210,21 @@
                            }
                           }
                          ]
+                        },
+                        "multi?": "bool",
+                        "shows?": {
+                         "object": {
+                          "route": "string",
+                          "field": "string"
+                         }
+                        },
+                        "secret?": "bool",
+                        "verified?": "bool",
+                        "file?": {
+                         "object": {
+                          "choose": "string",
+                          "none": "string"
+                         }
                         }
                        }
                       }
@@ -22391,7 +23232,8 @@
                      "note?": "string",
                      "revision?": "string"
                     }
-                   }
+                   },
+                   "verified?": "bool"
                   }
                  }
                 }
@@ -22604,6 +23446,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -22653,6 +23501,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -22660,7 +23523,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  },
@@ -22737,6 +23601,12 @@
                           },
                           {
                            "literal": "pairs"
+                          },
+                          {
+                           "literal": "secret"
+                          },
+                          {
+                           "literal": "file"
                           }
                          ]
                         },
@@ -22786,6 +23656,21 @@
                            }
                           }
                          ]
+                        },
+                        "multi?": "bool",
+                        "shows?": {
+                         "object": {
+                          "route": "string",
+                          "field": "string"
+                         }
+                        },
+                        "secret?": "bool",
+                        "verified?": "bool",
+                        "file?": {
+                         "object": {
+                          "choose": "string",
+                          "none": "string"
+                         }
                         }
                        }
                       }
@@ -22793,7 +23678,8 @@
                      "note?": "string",
                      "revision?": "string"
                     }
-                   }
+                   },
+                   "verified?": "bool"
                   }
                  },
                  "name?": "string",
@@ -22925,6 +23811,12 @@
                              },
                              {
                               "literal": "pairs"
+                             },
+                             {
+                              "literal": "secret"
+                             },
+                             {
+                              "literal": "file"
                              }
                             ]
                            },
@@ -22974,6 +23866,21 @@
                               }
                              }
                             ]
+                           },
+                           "multi?": "bool",
+                           "shows?": {
+                            "object": {
+                             "route": "string",
+                             "field": "string"
+                            }
+                           },
+                           "secret?": "bool",
+                           "verified?": "bool",
+                           "file?": {
+                            "object": {
+                             "choose": "string",
+                             "none": "string"
+                            }
                            }
                           }
                          }
@@ -22981,7 +23888,8 @@
                         "note?": "string",
                         "revision?": "string"
                        }
-                      }
+                      },
+                      "verified?": "bool"
                      }
                     }
                    }
@@ -23052,6 +23960,12 @@
                        },
                        {
                         "literal": "pairs"
+                       },
+                       {
+                        "literal": "secret"
+                       },
+                       {
+                        "literal": "file"
                        }
                       ]
                      },
@@ -23101,6 +24015,21 @@
                         }
                        }
                       ]
+                     },
+                     "multi?": "bool",
+                     "shows?": {
+                      "object": {
+                       "route": "string",
+                       "field": "string"
+                      }
+                     },
+                     "secret?": "bool",
+                     "verified?": "bool",
+                     "file?": {
+                      "object": {
+                       "choose": "string",
+                       "none": "string"
+                      }
                      }
                     }
                    }
@@ -23108,7 +24037,8 @@
                   "note?": "string",
                   "revision?": "string"
                  }
-                }
+                },
+                "verified?": "bool"
                }
               },
               "empty?": "string"
@@ -23412,6 +24342,12 @@
                         },
                         {
                          "literal": "pairs"
+                        },
+                        {
+                         "literal": "secret"
+                        },
+                        {
+                         "literal": "file"
                         }
                        ]
                       },
@@ -23461,6 +24397,21 @@
                          }
                         }
                        ]
+                      },
+                      "multi?": "bool",
+                      "shows?": {
+                       "object": {
+                        "route": "string",
+                        "field": "string"
+                       }
+                      },
+                      "secret?": "bool",
+                      "verified?": "bool",
+                      "file?": {
+                       "object": {
+                        "choose": "string",
+                        "none": "string"
+                       }
                       }
                      }
                     }
@@ -23468,7 +24419,8 @@
                    "note?": "string",
                    "revision?": "string"
                   }
-                 }
+                 },
+                 "verified?": "bool"
                 }
                }
               },
@@ -23545,6 +24497,12 @@
                        },
                        {
                         "literal": "pairs"
+                       },
+                       {
+                        "literal": "secret"
+                       },
+                       {
+                        "literal": "file"
                        }
                       ]
                      },
@@ -23594,6 +24552,21 @@
                         }
                        }
                       ]
+                     },
+                     "multi?": "bool",
+                     "shows?": {
+                      "object": {
+                       "route": "string",
+                       "field": "string"
+                      }
+                     },
+                     "secret?": "bool",
+                     "verified?": "bool",
+                     "file?": {
+                      "object": {
+                       "choose": "string",
+                       "none": "string"
+                      }
                      }
                     }
                    }
@@ -23601,7 +24574,8 @@
                   "note?": "string",
                   "revision?": "string"
                  }
-                }
+                },
+                "verified?": "bool"
                }
               },
               "name?": "string",
@@ -23733,6 +24707,12 @@
                           },
                           {
                            "literal": "pairs"
+                          },
+                          {
+                           "literal": "secret"
+                          },
+                          {
+                           "literal": "file"
                           }
                          ]
                         },
@@ -23782,6 +24762,21 @@
                            }
                           }
                          ]
+                        },
+                        "multi?": "bool",
+                        "shows?": {
+                         "object": {
+                          "route": "string",
+                          "field": "string"
+                         }
+                        },
+                        "secret?": "bool",
+                        "verified?": "bool",
+                        "file?": {
+                         "object": {
+                          "choose": "string",
+                          "none": "string"
+                         }
                         }
                        }
                       }
@@ -23789,7 +24784,8 @@
                      "note?": "string",
                      "revision?": "string"
                     }
-                   }
+                   },
+                   "verified?": "bool"
                   }
                  }
                 }
@@ -24002,6 +24998,12 @@
                            },
                            {
                             "literal": "pairs"
+                           },
+                           {
+                            "literal": "secret"
+                           },
+                           {
+                            "literal": "file"
                            }
                           ]
                          },
@@ -24051,6 +25053,21 @@
                             }
                            }
                           ]
+                         },
+                         "multi?": "bool",
+                         "shows?": {
+                          "object": {
+                           "route": "string",
+                           "field": "string"
+                          }
+                         },
+                         "secret?": "bool",
+                         "verified?": "bool",
+                         "file?": {
+                          "object": {
+                           "choose": "string",
+                           "none": "string"
+                          }
                          }
                         }
                        }
@@ -24058,7 +25075,8 @@
                       "note?": "string",
                       "revision?": "string"
                      }
-                    }
+                    },
+                    "verified?": "bool"
                    }
                   }
                  },
@@ -24135,6 +25153,12 @@
                           },
                           {
                            "literal": "pairs"
+                          },
+                          {
+                           "literal": "secret"
+                          },
+                          {
+                           "literal": "file"
                           }
                          ]
                         },
@@ -24184,6 +25208,21 @@
                            }
                           }
                          ]
+                        },
+                        "multi?": "bool",
+                        "shows?": {
+                         "object": {
+                          "route": "string",
+                          "field": "string"
+                         }
+                        },
+                        "secret?": "bool",
+                        "verified?": "bool",
+                        "file?": {
+                         "object": {
+                          "choose": "string",
+                          "none": "string"
+                         }
                         }
                        }
                       }
@@ -24191,7 +25230,8 @@
                      "note?": "string",
                      "revision?": "string"
                     }
-                   }
+                   },
+                   "verified?": "bool"
                   }
                  },
                  "name?": "string",
@@ -24323,6 +25363,12 @@
                              },
                              {
                               "literal": "pairs"
+                             },
+                             {
+                              "literal": "secret"
+                             },
+                             {
+                              "literal": "file"
                              }
                             ]
                            },
@@ -24372,6 +25418,21 @@
                               }
                              }
                             ]
+                           },
+                           "multi?": "bool",
+                           "shows?": {
+                            "object": {
+                             "route": "string",
+                             "field": "string"
+                            }
+                           },
+                           "secret?": "bool",
+                           "verified?": "bool",
+                           "file?": {
+                            "object": {
+                             "choose": "string",
+                             "none": "string"
+                            }
                            }
                           }
                          }
@@ -24379,7 +25440,8 @@
                         "note?": "string",
                         "revision?": "string"
                        }
-                      }
+                      },
+                      "verified?": "bool"
                      }
                     }
                    }
@@ -24450,6 +25512,12 @@
                        },
                        {
                         "literal": "pairs"
+                       },
+                       {
+                        "literal": "secret"
+                       },
+                       {
+                        "literal": "file"
                        }
                       ]
                      },
@@ -24499,6 +25567,21 @@
                         }
                        }
                       ]
+                     },
+                     "multi?": "bool",
+                     "shows?": {
+                      "object": {
+                       "route": "string",
+                       "field": "string"
+                      }
+                     },
+                     "secret?": "bool",
+                     "verified?": "bool",
+                     "file?": {
+                      "object": {
+                       "choose": "string",
+                       "none": "string"
+                      }
                      }
                     }
                    }
@@ -24506,7 +25589,8 @@
                   "note?": "string",
                   "revision?": "string"
                  }
-                }
+                },
+                "verified?": "bool"
                }
               },
               "empty?": "string"

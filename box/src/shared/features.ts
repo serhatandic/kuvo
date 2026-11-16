@@ -175,6 +175,7 @@ export const FEATURES = [
   "sessions.start.empty",
   "settings",
   "settings.flows",
+  "settings.vault",
   "setup",
   "setup.mainOnly",
   "setup.ready",

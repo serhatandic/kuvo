@@ -7017,6 +7017,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser, Git, Worktrees, Storage and Archived Sessions ("A box's settings", #727) |
 | `settings.flows` | In `kuvo/settings`: an action's `form`, checked as it's typed (`POST …/<row>/<action>/check`) and sent as `values`; a row's `badge`, `notice` and `flow` (a sign-in the box leads); and the MCP Servers section built with them ("A box's settings", #727) |
+| `settings.vault` | In `kuvo/settings`: the Vault section ("A box's settings"), and a form's `secret` and `file` fields, a `secret` pairs, Show (`shows`), and checks that never carry a value |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
@@ -8726,7 +8727,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived` and `mcp`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `vault` and `mcp`; the rest come page by page.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
@@ -8776,10 +8777,22 @@ so a client still on those (the phone) sees every change kept just as they keep 
   - An action may ask for values first: `form: {title, submit, fields, note?}`, drawn as a sheet
     with the box's title, its fields in order, `note` under them, Cancel and `submit`'s words. A
     field is `{id, title, kind, line?, value?, placeholder?, choices?, mono?, folder?, pairs?,
-    shown?, can?}`; its kinds: `text` (a line), `lines` (several; `mono` in a typeface that keeps a
-    command's flags apart), `choice` (a segmented pick of `choices`), `switch`, `folder` (the box's
-    picker, with its `folder` words; clearing it sends empty text) and `pairs` (names and values,
-    `pairs: {key, value}` its placeholders, its value `[{key, value}]` in order). `shown: {field,
+    shown?, can?, multi?, shows?, secret?, file?}`; its kinds: `text` (a line), `lines` (several;
+    `mono` in a typeface that keeps a command's flags apart), `choice` (a segmented pick of
+    `choices`; a client may draw many as a menu), `switch`, `folder` (the box's picker, with its
+    `folder` words; clearing it sends empty text), `pairs` (names and values, `pairs: {key, value}`
+    its placeholders, its value `[{key, value}]` in order; `secret: true`, its values hidden as
+    they're typed), and, with `settings.vault`, `secret` and `file`. A `secret` opens empty (never
+    a value: its `placeholder` says "Unchanged" where one is kept, and empty sends nothing new),
+    hidden as it's typed (`multi`: several lines, not hidden); `shows: {route, field}` offers Show,
+    which reads `GET <route>` of the same box (`{values}`) only when you press it and puts
+    `values[field]` in the field, kept only while the sheet is open (the vault's values route, which
+    notes it as shown). A `file` is one on the client's own computer, chosen with its `file:
+    {choose, none}` words, sent as `{name, data}` (its bytes, base64); it opens with `{name}` where
+    one is kept, sent back as it is when none is chosen. A secret's value, a `secret` pairs' values
+    and a file's bytes go only with the action itself: a check gets each as `•` once a character (a
+    file as `{name, size}`), so the box can say what's missing or short without seeing it, and no
+    words the box says hold one. `shown: {field,
     is}` draws it only while that `choice` field is one of `is` (values typed in a field hidden
     meanwhile are kept while the sheet is open, and sent). `can: {why}`: drawn, not changed. The
     values a form opens with are part of its row's revision, and the form has its own (`revision`,
@@ -8950,6 +8963,33 @@ The sections now:
   `timeout-catalog`, `timeout-execution`, `number`s at `mcp.timeout`). Its events follow the
   settings file, its flows and the catalog, and read the engine each second. The engine doesn't
   list a server's tools, so the page doesn't either.
+
+- **Vault** (`vault`, group `Agents & Tools`, `settings.vault`): this computer's vault, read and
+  changed through its own routes ("Vault") as the client asking reads them, so only your clients
+  see it (anything else gets the page with a note, nothing listed) and the vault's rules, refusals
+  and activity are its own. Locked (a machine's, after a restart): a note alone, saying it's
+  unlocked in Kuvo on your iPhone, which keeps its key (a page can't carry it). Notes for files
+  changed outside Kuvo and for agents that can't use it yet. Waiting for You (`asks`, while agents
+  wait): each `ask-<id>` an `actions` row, its title "<who> wants to use “<item>”" or "<who> needs
+  <need>", its line why and where; `no` (Don't Allow), `once` (Allow Once) and, where Always would
+  give it for good, `always` (Always Allow…, asked first); an `item` ask has `no` and `give`
+  (Give…: `item`, a choice of the items, and `how`, This Once or From Now On), answered through
+  `kuvo/vault/asks/<id>`; one answered elsewhere meanwhile is stale. Items (`items`, a `list` of
+  `item-<id>` by name, its line what it is and its sites, user or file, its `badge` On its own or
+  Asks where anyone may use it; searched past six): `edit` (Edit…: `name`, `site` and
+  `username` and `password` and `signInOnly` for a sign-in, `hosts` and `value`, `field-<name>`
+  for each other kept field and `more` (`pairs`, secret) for an API key, `file` for a file, `text`
+  (`multi`) and `readable` for a note; each kept value with `shows`), `who` (Who Can Use It…:
+  `bot-<id>` and `project-<folder>` for each one listed, `everyone`, each On Its Own, Asks Each
+  Time or No, and `add-bot`, Let a Bot Use It, which asks each time) and `delete` (Delete…, asked
+  first). Edit writes only what changed (a value typed as it's kept, asked with `/same`, isn't).
+  The list's `add` is Add Item's form, the same fields with `kind` first and each shown for its
+  kind, checked for a name taken, a site, and each value's presence and length; before a machine
+  has a vault it can't be pressed here (`can`: its first item is added in Kuvo on your iPhone,
+  which keeps the key it makes). Then `pause` (a `switch`, Pause Agents' Use) and `paused-<who>`
+  for each bot or conversation paused (`go-on`, Let Go On); and Activity (`activity`, its newest
+  50 as `status` rows, each a sentence, the client's own said plainly, a refusal a warning).
+  Its events follow the vault's files and, in the process that holds it, what's asked.
 
 - **Archived Sessions** (`archived`): archived sessions grouped by project, from
   `kuvo/sessions/list`; each row uses `kuvo/sessions/<id>/actions` verbatim, including

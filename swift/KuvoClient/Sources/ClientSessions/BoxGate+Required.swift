@@ -72,6 +72,7 @@ extension BoxGate {
         "sessions.start.empty",
         "settings", // #727: a box describes its own settings (`kuvo/settings`)
         "settings.flows", // #727: forms, checks and flows in `kuvo/settings` (MCP Servers)
+        "settings.vault", // A computer's Vault in `kuvo/settings`: secret and file fields, Show
         "setup.ready", // the first run's skip, decided by the box
         "setup.welcomed", // #733
         "sign-in.accounts.kinds", // #711

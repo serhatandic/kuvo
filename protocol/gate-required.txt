@@ -67,6 +67,7 @@ sessions.needsYou
 sessions.start.empty
 settings
 settings.flows
+settings.vault
 setup.ready
 setup.welcomed
 sign-in.accounts.kinds
