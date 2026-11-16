@@ -27,7 +27,7 @@ import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { VoiceWords } from "./voice"
 import { setToolProgram } from "./kuvotools"
-import { dropCarriedSignIns, dropOwnPrograms, groupsMemoryKey, machineHome, onMachine, takeOwnFolders } from "./machine"
+import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
 import { cancelSignIns, handler, signInsWaiting } from "./server"
@@ -240,6 +240,7 @@ if (groupFolders) {
       listen: (session, listener) => link.listen(session, listener),
       place: onMachine ? "this machine" : undefined,
       memoryKey: groupMemoryKey,
+      formerMemoryKey: formerGroupsMemoryKey,
       // A coding agent's own account, as Settings › Accounts shows it: one with a way to sign in, not signed in.
       agentAccount: async (provider) => {
         const agent = roster.find(provider)
