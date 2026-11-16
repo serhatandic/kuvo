@@ -331,8 +331,9 @@ function backupsSize(): number {
 }
 
 // The engine's data as it is, the engine stopped, before another engine reads it: kept whole or not
-// at all in `updates/backups/<date>-<engine>-to-<engine>`, and the one before it goes.
-function keepData(name: string): void {
+// at all in `updates/backups/<date>-<engine>-to-<engine>`, and the one before it goes. What it says:
+// how the data was as it was copied (`dataNow`), to tell later whether an engine wrote to it since.
+function keepData(name: string): string {
   const folder = path.join(K, "data", "opencode"), partial = path.join(BACKUPS, `.${name}.partial`);
   fs.mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
   // (The one before goes first: its room is what this one takes, `roomForData`.)
@@ -342,6 +343,15 @@ function keepData(name: string): void {
     if (fs.existsSync(path.join(folder, each))) fs.copyFileSync(path.join(folder, each), path.join(partial, each));
   }
   fs.renameSync(partial, path.join(BACKUPS, name));
+  return dataNow();
+}
+
+// The engine's data, each file's size and when it was last written (none: "-"): what changes as
+// any engine writes to it.
+function dataNow(): string {
+  return ["opencode.db", "opencode.db-wal"].map(each => {
+    try { const stat = fs.statSync(path.join(K, "data", "opencode", each)); return `${stat.size}:${stat.mtimeMs}`; } catch { return "-"; }
+  }).join(" ");
 }
 
 // Whether there's room to keep the engine's data beside it, with some to spare.
@@ -355,7 +365,8 @@ function roomForData(): boolean {
 
 // Whether the engine came up as `version` and answers, and the coding agents' bridge with it when
 // it ran before, within `timeout` ms.
-async function cameUp(version: string, withAgents: boolean, timeout = 120_000, readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
+// `answered`: told once the engine of `version` answered, whatever came of the bridge.
+async function cameUp(version: string, withAgents: boolean, timeout = 120_000, answered: () => void = () => {}, readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
   const began = Date.now();
   while (Date.now() - began < timeout) {
     await sleep(Math.min(2000, timeout / 10));
@@ -363,6 +374,7 @@ async function cameUp(version: string, withAgents: boolean, timeout = 120_000, r
     try { engine = readEngine(); } catch {}
     if (engine?.version !== version) continue;
     if (!(await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))) continue;
+    answered();
     if (!withAgents) return true;
     let bridge: BridgeRecord | null = null;
     try { bridge = readBridge(); } catch {}
@@ -475,6 +487,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
+  // The engine's data as it was copied before a newer engine ran (`keepData`), and whether that
+  // engine ever answered: one that never did and wrote nothing goes back with the rest.
+  let dataKept: string | null = null, newAnswered = false;
   // The box's keeper, as the update runs it (its stop, its start, putting back what was there): with
   // HOME spelled as the running engine was started with, so a keeper of any age knows that engine
   // as its own, never starting a second beside it (Kuvo Helper gave its keeper "/Users/you/", and
@@ -626,7 +641,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       throw new Error(`Kuvo's engine on ${HERE} couldn't be stopped for the update, so nothing changed. Try again in a few minutes.`);
     }
     // (A copy of its data, never put back by anything: for you to restore by hand, as a last resort.)
-    if (otherEngine) keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
+    if (otherEngine) dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     swapped = true;
     swapping();
     if (staged) {
@@ -648,7 +663,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (newerEngine) writePrivate(ENGINE_STARTED, manifest.engine);
     ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
-    if (!(await cameUp(manifest.engine, withAgents, upWithin))) throw new Error("The new version didn't come up.");
+    if (!(await cameUp(manifest.engine, withAgents, upWithin, () => { newAnswered = true; }))) throw new Error("The new version didn't come up.");
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
     // (Not its bundles: the helper's own keeper may put its own back, which is never drift.)
     writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
@@ -667,6 +682,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // Room first: what was downloaded goes before anything's put back.
     if (stage) fs.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
+      // A newer engine that never answered and wrote nothing to the data: it goes back too, the old
+      // engine reading only what it wrote itself. (The keeper's own rollback, later, keeps the new.)
+      if (!newAnswered && dataKept !== null && dataNow() === dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
       ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
     } else {
       // Nothing changed: what was kept goes, and the engine starts again if it was stopped.

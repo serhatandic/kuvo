@@ -36,18 +36,22 @@ write(path.join(K, "run", "link.json"), JSON.stringify({ phones: [{ key: "phone-
 write(path.join(K, "run", "update.json"), JSON.stringify({ trial: { from: "0.9.0", to: "0.10.0", at: Date.now(), healthy: true } }));
 write(path.join(K, "run", "update-trial"), "0.10.0");
 write(path.join(K, "updates", "rollback", "restore.sh"), "#!/bin/sh\n");
+// The copy of the engine's data an update kept 31 days ago (a Mac runs no bridge whose rounds would
+// take it away).
+write(path.join(K, "updates", "backups", "2026-10-16-1.0.0-to-1.1.0", "opencode.db"), "the data from before");
+for (const each of ["2026-10-16-1.0.0-to-1.1.0/opencode.db", "2026-10-16-1.0.0-to-1.1.0"]) fs.utimesSync(path.join(K, "updates", "backups", each), new Date(Date.now() - 31 * 86_400_000), new Date(Date.now() - 31 * 86_400_000));
 
 Object.assign(process.env, { HOME: home, KUVO_HOME: K, TMPDIR: home });
 delete process.env.KUVO_BOX;
 const link = await import(built);
 
 // The box's server, as its helper starts it (`kuvo-start serve`: the box's own script), looking at
-// its files as often as a test's says.
+// its files as often as a test's says (`every`, in ms).
 const running = new Set();
 atEnd(() => { for (const child of running) child.kill(); });
-async function serve() {
+async function serve(every = 100) {
   const child = spawn(process.execPath, [path.join(K, "bin", "kuvo-link.js"), "serve"], {
-    env: { ...process.env, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_SERVE_EVERY: "100", KUVO_TEST_NO_PEERS: "1" },
+    env: { ...process.env, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_SERVE_EVERY: String(every), KUVO_TEST_NO_PEERS: "1" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   running.add(child);
@@ -63,10 +67,11 @@ async function serve() {
     });
     exited.then(code => reject(new Error(`serve exited ${code}: ${err}`)));
   });
-  return { exited, said: () => err };
+  // Gone as its app or helper closes its input.
+  const stop = async () => { child.stdin.end(); await exited; };
+  return { exited, said: () => err, stop };
 }
 
-let served;
 async function until(check, what) {
   for (let i = 0; i < 300; i++) {
     if (check()) return;
@@ -75,9 +80,12 @@ async function until(check, what) {
   assert.fail(`never: ${what}`);
 }
 
-test("a Mac's box's server says the update it runs on is well once it's up: the keeper has nothing to take back", async () => {
-  served = await serve();
+test("a Mac's box's server says the update it runs on is well as soon as it's up: the keeper has nothing to take back", async () => {
+  // (Its next look an hour away: what's below comes of its first, as it starts.)
+  const first = await serve(3_600_000);
   await until(() => !fs.existsSync(path.join(K, "run", "update-trial")), "said to be well");
+  assert.deepEqual(fs.readdirSync(path.join(K, "updates", "backups")), [], "the copy past its 30 days, gone");
+  await first.stop();
   assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), false, "no longer on trial");
   assert.equal(fs.existsSync(path.join(K, "updates", "rollback")), false, "what was kept to put back goes");
   const state = readJSON(path.join(K, "run", "update.json"));
@@ -110,6 +118,7 @@ test("a server whose files an update changed goes, once no update is under way, 
   assert.equal(check({ leaves: false }), "stay", "one its app starts (an app's own box) stays");
 
   // The real one: an update put a new version in place, and is done.
+  const served = await serve();
   write(path.join(K, "bin", "box-version"), "0.11.0");
   assert.equal(await served.exited, 0, "it ends cleanly, as its helper starts it again");
   assert.match(served.said(), /files changed under it/);

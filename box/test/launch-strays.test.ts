@@ -78,3 +78,13 @@ test("a number noted once that's another program's now, and an engine this box n
   expect(runs(other.pid!)).toBe(true)
   expect(runs(unnoted)).toBe(true)
 })
+
+test("a number noted once that's the box's own server or bridge now (the same program, running the link) is left alone", () => {
+  const { home: at, K, engine } = home("server")
+  // As a Mac's helper or the keeper runs it: the engine's program, with the box's link.
+  const server = spawn(engine, ["--config=/dev/null", "--no-env-file", path.join(K, "bin", "kuvo-link.js"), "serve"], { stdio: "ignore", detached: true })
+  children.push(server)
+  fs.writeFileSync(path.join(K, "run", "engines", String(server.pid)), "")
+  start(at)
+  expect(runs(server.pid!)).toBe(true)
+})

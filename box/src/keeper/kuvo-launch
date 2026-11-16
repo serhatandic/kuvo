@@ -132,16 +132,18 @@ fi
 # Never two on the same data: an engine a start before this one began (each is noted in
 # run/engines by its number) that still runs though none is noted now (its note lost: an update
 # or a rollback cut short, a stop that didn't reach it) is stopped first, by that number and only
-# while that number is still this box's engine. Never by its name: one this box didn't start
-# isn't touched.
+# while that number is still this box's engine: its engine's own command (`<K>/engine/<version>/opencode
+# serve --port`), never the box's server or bridge the same program runs (`… kuvo-link.js serve`).
+# Never by its name: one this box didn't start isn't touched.
+engine_runs() { kuvo_runs "$1" "$K/engine/" && kuvo_runs "$1" "/opencode serve --port"; }
 mkdir -p "$R/engines" && chmod 700 "$R/engines"
 for f in "$R"/engines/*; do
   [ -f "$f" ] || continue
   p=${f##*/}
-  if kuvo_runs "$p" "$K/engine/"; then
+  if engine_runs "$p"; then
     kill "$p" 2>/dev/null; n=0
-    while kuvo_runs "$p" "$K/engine/" && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
-    kuvo_runs "$p" "$K/engine/" && kill -9 "$p" 2>/dev/null
+    while engine_runs "$p" && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+    engine_runs "$p" && kill -9 "$p" 2>/dev/null
   fi
   rm -f "$f"
 done

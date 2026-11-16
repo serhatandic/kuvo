@@ -928,18 +928,23 @@ async function serve(): Promise<void> {
   // app gone does, for its helper to start the new ones. An update to the version it runs, on trial
   // and up, said to be well once it's up and answering (its first look, then each while one's open),
   // so the keeper doesn't take it back: on a Mac nothing else says so (no relay welcomes a machine's
-  // bridge here). (A test's box looks as often as it says.)
+  // bridge here). And the copy of the engine's data an update kept, gone after its 30 days (a Mac
+  // runs no bridge whose rounds would). As soon as it answers, then every 30 seconds. (A test's box
+  // looks as often as it says.)
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30_000;
   let leaving = false;
-  setInterval(() => {
+  const look = (): void => {
     if (leaving) return;
+    try { dropOldBackups(); } catch {}
     const check = serveCheck(started, { leaves });
     if (check === "confirm") updateIsWell();
     if (check !== "leave") return;
     leaving = true;
     console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
     void leave();
-  }, every).unref?.();
+  };
+  look();
+  setInterval(look, every).unref?.();
   process.stdin.on("end", leave);
   process.stdin.on("close", leave);
   process.stdin.resume();

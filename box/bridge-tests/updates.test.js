@@ -51,11 +51,13 @@ process.env.FAKE_ENGINE = fakeEngine;
 // This node itself, not a version manager's shim that might start it as a child: the engine is the
 // keeper's own process (its pid, $!), as the keeper's start waits to see it noted.
 process.env.FAKE_NODE = process.execPath;
-const engineBinary = version => `#!/bin/sh
+// One that `breaks` runs and fails before it answers: "silent", writing nothing; "writes", after
+// writing its journal beside the data (as an engine opening it does).
+const engineBinary = (version, breaks = null) => `#!/bin/sh
 [ "$1" = --config=/dev/null ] && shift
 [ "$1" = --no-env-file ] && shift
 case "$1" in --version) echo ${version}; exit 0 ;; *.js) exec "$FAKE_NODE" "$@" ;; esac
-exec "$FAKE_NODE" "$FAKE_ENGINE" ${version} "$KUVO_HOME" "$0"
+${breaks === "writes" ? `mkdir -p "$KUVO_HOME/data/opencode"; echo "the new engine's journal" > "$KUVO_HOME/data/opencode/opencode.db-wal"; exit 1` : breaks ? "exit 1" : `exec "$FAKE_NODE" "$FAKE_ENGINE" ${version} "$KUVO_HOME" "$0"`}
 `;
 // The keeper: stops the engine (waiting until it's gone, as the real one does), or starts this
 // version's. As the real one's (RemoteEngine.swift's bootScript), a start leaves an engine that
@@ -145,7 +147,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 atEnd(() => server.close());
 const base = `http://127.0.0.1:${server.address().port}`;
 
-function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, tamper = false, key = privateKey, bundle = null, extra = null, link = false } = {}) {
+function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_400_000), breaks = false, engineBreaks = null, tamper = false, key = privateKey, bundle = null, extra = null, link = false } = {}) {
   const files = path.join(scratch, `files-${crypto.randomUUID()}`);
   write(path.join(files, "bin", "box-version"), version);
   write(path.join(files, "bin", "kuvo-start"), keeper("1.1.0", breaks), 0o700);
@@ -166,7 +168,7 @@ function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_
   const pack = path.join(scratch, `pack-${crypto.randomUUID()}.tgz`);
   spawnSync("tar", ["czf", pack, "-C", files, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   const engine = path.join(scratch, `engine-${crypto.randomUUID()}`);
-  write(path.join(engine, "package", "bin", "opencode"), engineBinary("1.1.0"), 0o755);
+  write(path.join(engine, "package", "bin", "opencode"), engineBinary("1.1.0", engineBreaks), 0o755);
   const engineTar = path.join(scratch, `engine-${crypto.randomUUID()}.tgz`);
   spawnSync("tar", ["czf", engineTar, "-C", engine, "package"], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
   const packData = fs.readFileSync(pack), engineData = fs.readFileSync(engineTar);
@@ -283,25 +285,36 @@ test("an agent's browser waiting on you (a sign-in) holds an update the box begi
   assert.equal(read(engineFile).version, "1.0.0", "its engine still runs");
 });
 
-test("a new version that doesn't come up is taken back: its code (the files, the box's version), never the data; with another engine, the new one stays", async () => {
+test("a new engine that never answers, and wrote nothing, goes back with the rest: the old keeper starts the old engine, on the data as it was", async () => {
   machine();
-  release({ breaks: true });
+  release({ engineBreaks: "silent" });
   const outcome = await update();
   assert.equal(outcome.result, "failed");
   assert.match(outcome.message, /didn't come up/);
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
   assert.equal(fs.readFileSync(path.join(home, "bin", ".own", "kuvo-wake"), "utf8"), "# the old wake-ups\n", "the box's own tools as they were");
-  // The keeper put back starts the new engine: the old one may not read what the new one wrote.
-  assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /^V=1\.1\.0$/m);
-  assert.doesNotMatch(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /breaks|journal/, "the old keeper's code");
-  await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs, under the old code");
+  assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /^V=1\.0\.0$/m);
+  await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.0.0", "the old engine runs again");
   engines.add(read(engineFile).pid);
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
   assert.equal(read(path.join(home, "run", "update.json")).last.result, "failed");
-  // The data as the new engine left it: nothing put back over it.
-  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db-wal"), "utf8"), "the new engine's journal\n");
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "the old engine's data");
+});
+
+test("a new engine that wrote to the data before it failed stays: the rollback puts back code only, never the data", async () => {
+  machine();
+  release({ engineBreaks: "writes" });
+  const outcome = await update();
+  assert.equal(outcome.result, "failed");
+  assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
+  assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
+  // The keeper put back starts the new engine: the old one may not read what the new one wrote.
+  assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /^V=1\.1\.0$/m);
+  assert.doesNotMatch(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /breaks|journal/, "the old keeper's code");
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db-wal"), "utf8"), "the new engine's journal\n", "the data as the new engine left it");
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
 });
 
 test("a rollback after an engine change keeps what was written since: the copy from before is only kept aside, the latest one", async () => {

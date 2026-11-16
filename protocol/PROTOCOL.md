@@ -3068,10 +3068,20 @@ did: the box keeps working as itself ("For released Macs").
        engine, once that was put in place and started (`updates/rollback/engine-started`, noted
        just before the keeper's start), the keeper it puts back starts the new engine (its `V`), as
        the older engine may not read what the newer one wrote; before that, the old engine goes
-       back with the rest.
+       back with the rest. So it does when the update itself takes it back because the new engine
+       never answered and the data is as it was copied (each file's size and time).
+     - The keeper started meanwhile (or again) counts the trial's twenty minutes from its start,
+       unless it tried `restore.sh` already: a Mac asleep right after a good update isn't taken
+       back as it wakes.
+     - Never two engines on one box's data: each engine start (`kuvo-launch`) notes its engine's
+       pid in `run/engines/<pid>`; a start that finds no noted engine running (`run/engine.json`)
+       first stops each noted one still running as that box's engine (`…/engine/…/opencode serve
+       --port`), by that pid, never by name; the keeper's stop drops the note of the engine it
+       stopped. Engines started before this note existed aren't known, and are left alone.
      - A rollback an update from before kept with the engine's data in it (`updates/rollback/data`,
        which its `restore.sh` would put back): the keeper moves that data to `updates/backups`
-       first, and runs `restore.sh` only once it has.
+       first, and runs `restore.sh` only once it has; the keeper that puts back starts the engine
+       that ran meanwhile (`run/engine.json`'s `version`) where that's newer than its own `V`.
   4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last, with copies of the
      release's tools in `bin/.own` (kept for a rollback as the rest is). A bundle goes whole, in
      among them: the new one staged beside it (`<name>.app.new`), the old one put aside
@@ -3087,10 +3097,14 @@ did: the box keeps working as itself ("For released Macs").
      old bridge goes and the keeper starts the new one. The new bridge confirms the update after
      the relay's welcome or three minutes: what was kept, and other engines, go. On a Mac's own box
      its server (`serve`, which Kuvo Helper starts and starts again when it ends) confirms it, once
-     it runs on the version on trial: at its first look once it answers, and every 30 seconds while
-     one is. A `serve`
+     it runs on the version on trial: as soon as it answers, and every 30 seconds while one is
+     (taking away a copy of the data past its 30 days too, as a Mac runs no bridge). A `serve`
      whose files (`bin/box-version`, `bin/kuvo-link.js`) aren't what it started on any more, no
      update being under way, leaves as when its app goes, for its helper to start the new one.
+     One from before this (an update into it, taken by the box before it) does neither: while an
+     update is on trial, a Mac's keeper ends the `serve` that `run/serve.json` names, only while
+     that number runs `kuvo-link.js serve` (not `--kept`) and started before `bin/kuvo-link.js`
+     was written, for its helper to start the new one, which confirms it.
   6. If the new version doesn't come up, `restore.sh` puts back what was there. The keeper runs
      it too when `run/update-trial` is twenty minutes old, five minutes apart (`run/update-restore`).
      After six failed tries it gives up and starts what's there. Without a bridge to start again
