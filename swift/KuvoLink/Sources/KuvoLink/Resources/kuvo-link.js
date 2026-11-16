@@ -51770,7 +51770,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "46bb5dd84c13";
+var BRIDGE_VERSION = "05f2d6bbd3ed";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -52047,6 +52047,7 @@ var BESIDE_WHOLE = [["bots.json", "bots.json"], ["opencode-files", "opencode-fil
 var APP_ATTACHMENTS = "Attachments";
 var PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|update-(trial|restore))$/;
 var SERVED_FILE = "served.json";
+var DESKTOP = "desktop";
 var RELEASE_HELPER = path171.join("bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
 function releaseRefusal(release) {
   const fileAt = (file) => {
@@ -52198,7 +52199,7 @@ function planBack({ appFolder, home }, merged = []) {
       placements.push({ from, to, staged: stage(path171.basename(from)), ...run ? { run: true } : {} });
   };
   for (const name of listOf(home).sort()) {
-    if (name === "bin")
+    if (name === "bin" || name === DESKTOP)
       continue;
     if (name === "updates" || name === "trash") {
       for (const each of listOf(path171.join(home, name)).sort()) {
@@ -52462,7 +52463,7 @@ async function carryOn2(journal, rewriter) {
     stepTo(journal, "install");
     if (journal.way === "move") {
       const aside = path171.join(home, "trash", `earlier-box-${stamp4(journal.began)}`);
-      const there = listOf(home).filter((name) => name !== "updates").map((name) => path171.join(home, name)).concat(listOf(path171.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path171.join(home, "updates", name)));
+      const there = listOf(home).filter((name) => name !== "updates" && name !== DESKTOP).map((name) => path171.join(home, name)).concat(listOf(path171.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path171.join(home, "updates", name)));
       for (const file of there.sort()) {
         if (file === path171.join(home, "trash") || !exists6(file))
           continue;
@@ -52812,7 +52813,7 @@ async function rehomeNew(folders, options = {}) {
     for (const scratch of ["bin.new", "engine.new"])
       fs162.rmSync(path171.join(home, scratch), { recursive: true, force: true });
     const aside = path171.join(home, "trash", `earlier-box-${stamp4(now)}`);
-    const there = listOf(home).filter((name) => name !== "updates" && name !== "trash").map((name) => path171.join(home, name)).concat(listOf(path171.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path171.join(home, "updates", name))).concat(listOf(path171.join(home, "trash")).filter((name) => !name.startsWith("earlier-box-")).map((name) => path171.join(home, "trash", name)));
+    const there = listOf(home).filter((name) => name !== "updates" && name !== "trash" && name !== DESKTOP).map((name) => path171.join(home, name)).concat(listOf(path171.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path171.join(home, "updates", name))).concat(listOf(path171.join(home, "trash")).filter((name) => !name.startsWith("earlier-box-")).map((name) => path171.join(home, "trash", name)));
     for (const file of there.sort()) {
       fs162.mkdirSync(path171.dirname(path171.join(aside, path171.relative(home, file))), { recursive: true, mode: 448 });
       fs162.renameSync(file, path171.join(aside, path171.relative(home, file)));

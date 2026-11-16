@@ -50,6 +50,9 @@ export const PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|
 /** What says the app's box started (`serve`, `run/served.json`): the app's version and the link's,
  * so a move waits for the upgrades a newer app runs as its box starts. */
 export const SERVED_FILE = "served.json";
+/** The desktop app's own folder in `~/.kuvo-code` (its list of your computers, its pairing): never
+ * the box's, so no move, making or move back sets it aside or carries it anywhere. */
+export const DESKTOP = "desktop";
 
 /** The box's release must bring its helper, which starts it in its home at login (#333 piece 4): a
  * box moved or made there without it would start with nothing. */
@@ -196,7 +199,8 @@ export function planBack({ appFolder, home }: Folders, merged: { source: string;
     if (!placements.some(each => each.from === from)) placements.push({ from, to, staged: stage(path.basename(from)), ...(run ? { run: true } : {}) });
   };
   for (const name of listOf(home).sort()) {
-    if (name === "bin") continue;
+    // (Nor the desktop app's own folder, `desktop`: never the box's, nor ever in 0.7's folder.)
+    if (name === "bin" || name === DESKTOP) continue;
     // (`updates` an entry at a time, never the move's own; `trash` so too, never an earlier box the
     // move set aside there, which stays where it was.)
     if (name === "updates" || name === "trash") {
@@ -480,7 +484,8 @@ async function carryOn(journal: Journal, rewriter: Rewriter): Promise<void> {
       // What's in its home that isn't a box (#333 §3.7: a box its Mac removed, or what was left),
       // set aside in its trash first, nothing deleted.
       const aside = path.join(home, "trash", `earlier-box-${stamp(journal.began)}`);
-      const there = listOf(home).filter(name => name !== "updates").map(name => path.join(home, name))
+      // (Not the desktop app's own folder, `desktop`: its list of your computers and its pairing.)
+      const there = listOf(home).filter(name => name !== "updates" && name !== DESKTOP).map(name => path.join(home, name))
         .concat(listOf(path.join(home, "updates")).filter(name => name !== "rehome" && name !== "install").map(name => path.join(home, "updates", name)));
       for (const file of there.sort()) {
         if (file === path.join(home, "trash") || !exists(file)) continue;
@@ -876,7 +881,8 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
   function making(now: number): RehomeOutcome {
     for (const scratch of ["bin.new", "engine.new"]) fs.rmSync(path.join(home, scratch), { recursive: true, force: true });
     const aside = path.join(home, "trash", `earlier-box-${stamp(now)}`);
-    const there = listOf(home).filter(name => name !== "updates" && name !== "trash").map(name => path.join(home, name))
+    // (Not the desktop app's own folder, `desktop`, as for a machine's.)
+    const there = listOf(home).filter(name => name !== "updates" && name !== "trash" && name !== DESKTOP).map(name => path.join(home, name))
       .concat(listOf(path.join(home, "updates")).filter(name => name !== "rehome" && name !== "install").map(name => path.join(home, "updates", name)))
       .concat(listOf(path.join(home, "trash")).filter(name => !name.startsWith("earlier-box-")).map(name => path.join(home, "trash", name)));
     for (const file of there.sort()) {

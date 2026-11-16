@@ -7322,7 +7322,8 @@ refused anything but `--status` on the real `~/.kuvo-code`.
      20261030054400_job`, the pinned engine 2.2.6's); one never used (no tables) is no refusal. A
      refusal counts as a try.
   2. **Install.** What's in `~/.kuvo-code` that isn't a box (one its Mac removed, or what was
-     left) is set aside into `trash/earlier-box-<date>`, nothing deleted.
+     left) is set aside into `trash/earlier-box-<date>`, nothing deleted; never the desktop app's own
+     folder (`desktop`), which isn't the box's.
   3. **Clone.** Each folder cloned (`cp -c`, for up to six hours: APFS clones, links as links,
      sockets left out) into
      staging: the box's own folder's entries (not `bin`, nor in `run` its processes' records:
@@ -7430,7 +7431,7 @@ refused anything but `--status` on the real `~/.kuvo-code`.
   the data as it is now (what was made since goes back too), into the app's folder it came from
   (`state.json`'s `from`). What the move merged goes back where it came from; each other entry of
   `~/.kuvo-code` to where the move took it from (`updates` an entry at a time, never the move's
-  own folder), any other into the app's `box`, without `box/kind` or the key files written from the
+  own folder; never the desktop app's `desktop`, which stays), any other into the app's `box`, without `box/kind` or the key files written from the
   Keychain (`box/keys`, `box/bot-keys`, which go as it clears, never kept), nor a box the move set
   aside in `trash` (it stays); folders made again as they were in the move's kept copy.
   Where the app made a file again meanwhile, the box's keeps the name and the app's is kept beside
@@ -7459,7 +7460,7 @@ refused anything but `--status` on the real `~/.kuvo-code`.
   `box/kind` or has keys of its own in `box/keys`), for a copy of the app into the real `~/.kuvo-code`, without
   the release's files, or before the engine is in the app's folder. Under the move's lock: what's
   there that isn't a box set aside into `trash/earlier-box-<date>` (as the move's install step
-  does), the release's `bin` put in place whole, the app's `engine` cloned beside it (copied where
+  does; never the desktop app's `desktop`), the release's `bin` put in place whole, the app's `engine` cloned beside it (copied where
   the disk can't clone; the app's stays), Keep This Mac Awake off where it's off in the app, then
   `box/kind` (`mac`), last, saying it's being made meanwhile (`updates/rehome/new`, written before
   anything's set aside): one cut short is made again from the start, what it left set aside in the
@@ -7704,9 +7705,9 @@ above. Only on a Mac.
   OpenRouter or Z.ai connected); starred
   models; a list the app set aside as unreadable (a file, or its machines'); usage keys or a proxy set
   up by hand (`Usage/*.json`); a group chat that couldn't be read; a machine's bot's seat in a
-  group chat (it takes one again where it lives); messages for machines that were away; and,
-  where new sessions ran everything without asking (`toolApproval` unset or `approveAll`),
-  that they start with Auto now. The rest of the app's preferences are its window's own.
+  group chat (it takes one again where it lives); and messages for machines that were away. Where
+  new sessions ran everything without asking (`toolApproval` unset or `approveAll`), they start
+  with Auto now, unsaid. The rest of the app's preferences are its window's own.
 
 #### Installing this computer's box
 
@@ -7792,7 +7793,8 @@ there.
   (`bin/kuvo-start`) is enough; but under the installer's mark (`updates/install/making`) only
   one that runs is a box.
 - Data in `S` is anything there but what's nobody's: the engine's download (`engine`), caches
-  (`opencode/cache`, `Caches`, `cache`, `tmp`, logs), the desktop app's own folder (`desktop`), and
+  (`opencode/cache`, `Caches`, `cache`, `tmp`, logs), a folder early builds of the desktop app kept there (`desktop`; it keeps to
+  `~/.kuvo-code/desktop` now, which the move, a new box and a move back all leave as it is), and
   a `box` folder holding only `run` and `bin`. Broad on purpose: a Mac with data taken for a new
   one would get a box beside what it has.
 
