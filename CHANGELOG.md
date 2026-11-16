@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- **Kuvo is in the menu bar** on a Mac, for as long as it runs there, with the desktop app open or not: its mark shows how many sessions are at work and a dot when something needs you. Click it to see what needs you, what's at work and your plan limits' rings, to **Open Kuvo**, or to **Stop Kuvo on this Mac** (asked first while something's at work; it starts again when you open Kuvo or next log in). The first time you quit the desktop app, a note says Kuvo keeps working and where to find it.
 - Settings › **MCP Servers** is in the desktop app: each server says how it's doing (Connected, Needs sign-in, Couldn’t connect) with its error under it; **Add Server…** and **Edit…** open a form that says as you type what the name will be, whether the computer has the command's program and whether a URL is one (paste a server's setup from its README into the name and the rest fills in); and **Sign In…** shows how it's going under the server until it's done. It's the same for each of your computers, picked at the top of Settings.
 - The desktop archived sidebar and Settings › Archived Sessions show the same archived sessions in the same groups and order, including archived bot sessions.
 
