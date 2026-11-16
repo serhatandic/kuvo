@@ -2,8 +2,10 @@
 // app"): its host is its helper, which holds its keys but can't answer what only the open app can (a
 // phone's ask of the Mac's own routes). So the app, as it registers, says where its own host
 // interface answers (`kuvo/box/app`'s `host`, from the app itself only), and a phone's ask goes there
-// while it's open: proved to be the app each time, and nothing once it quits. The real box script, in
-// a home of the test's own laid out as a Mac's; the helper, the app and the relay are stand-ins.
+// while it's open: proved to be the app each time, and nothing once it quits. With no app's host
+// registered (every Mac with only the desktop app, a client), the box answers those routes itself
+// (#713 piece 8: own-home-mac-routes.test.js). The real box script, in a home of the test's own laid
+// out as a Mac's; the helper, the app and the relay are stand-ins.
 //
 // Run with `node --test box/bridge-tests/own-box-app-host.test.js`.
 import "./test-safety.js";
@@ -136,24 +138,25 @@ async function pairedPhone() {
 before(() => { link.runMacLink(); });
 atEnd(() => link.stopMacLink());
 
-test("a phone's ask of the Mac's own routes goes to the open app's own host as it registered, proved each time, and to nothing once it quits", async () => {
+// The box's own answer to `kuvo/mac` (While Agents Work, as it says it with no app to ask).
+const boxsOwn = answer => answer.status === 200 && typeof answer.json?.backgroundWork === "string";
+
+test("a phone's ask of the Mac's own routes goes to the open app's own host as it registered, proved each time; with none registered the box answers itself", async () => {
   assert.ok((await ask("GET", "kuvo/info")).json.features.includes("box.app.host"));
   assert.equal((await ask("PUT", "kuvo/link/config", { phones: true, machines: false, relay: relay.url, name: "Studio Mac", app: "0.9.0" })).status, 200);
   const phone = await pairedPhone();
 
-  // The app not registered yet: the helper can't answer it, and it isn't asked to.
-  const before = await phone("GET", "kuvo/mac/info");
-  assert.equal(before.status, 503);
-  assert.equal(before.json.message, "Kuvo Code isn't open on this Mac.");
+  // No app registered: the box's own answer. The helper can't answer it, and isn't asked to.
+  assert.ok(boxsOwn(await phone("GET", "kuvo/mac")));
   assert.deepEqual(helper.asked.filter(call => call !== "/link/identity"), []);
 
   // Registered, from the app itself: answered by the app, where it said.
   assert.equal((await ask("POST", "kuvo/box/app", registration)).status, 200);
   assert.equal(fs.statSync(path.join(K, "run", "app.json")).mode & 0o777, 0o600);
-  const first = await phone("GET", "kuvo/mac/info");
-  assert.deepEqual([first.status, first.json], [200, { answered: "app", path: "kuvo/mac/info" }]);
+  const first = await phone("GET", "kuvo/mac");
+  assert.deepEqual([first.status, first.json], [200, { answered: "app", path: "kuvo/mac" }]);
   await phone("GET", "kuvo/asks");
-  assert.deepEqual(app.asked, ["kuvo/mac/info", "kuvo/asks"]);
+  assert.deepEqual(app.asked, ["kuvo/mac", "kuvo/asks"]);
   assert.equal(app.hellos, 2, "proved for each ask: the box outlives the app, and its port could be anyone's after a crash");
   assert.deepEqual(helper.asked.filter(call => call !== "/link/identity"), []);
   // What the box says of it never gives its host's password.
@@ -163,35 +166,31 @@ test("a phone's ask of the Mac's own routes goes to the open app's own host as i
   const elsewhere = { ...registration, host: { url: "http://127.0.0.1:1", password: "p".repeat(32) } };
   assert.equal((await ask("POST", "kuvo/box/app", elsewhere, { fromMac: true })).status, 403);
   assert.equal((await ask("POST", "kuvo/box/app", { ...registration, host: { url: "http://example.com:80", password: "p".repeat(32) } })).status, 400);
-  assert.equal((await phone("GET", "kuvo/mac/info")).status, 200, "still the app's");
+  assert.equal((await phone("GET", "kuvo/mac")).json.answered, "app", "still the app's");
   // Registered again saying nothing of its host (a Kuvo Code from before it said one): the host the
   // last one gave goes, never kept for this one.
   assert.equal((await ask("POST", "kuvo/box/app", { tools: registration.tools }, { fromMac: true })).status, 200);
-  const unsaid = await phone("GET", "kuvo/mac/info");
-  assert.equal(unsaid.status, 503);
-  assert.equal(unsaid.json.message, "Kuvo Code isn't open on this Mac.");
+  assert.ok(boxsOwn(await phone("GET", "kuvo/mac")), "the box's own again");
   assert.equal((await ask("POST", "kuvo/box/app", registration)).status, 200);
-  assert.equal((await phone("GET", "kuvo/mac/info")).status, 200);
+  assert.equal((await phone("GET", "kuvo/mac")).json.answered, "app");
 
   // It quits: nothing goes to where it answered.
   assert.equal((await ask("POST", "kuvo/box/app", { tools: null })).status, 200);
   const asked = app.asked.length;
-  const after = await phone("GET", "kuvo/mac/info");
-  assert.equal(after.status, 503);
-  assert.equal(after.json.message, "Kuvo Code isn't open on this Mac.");
+  assert.ok(boxsOwn(await phone("GET", "kuvo/mac")), "the box's own, not where the app answered");
   assert.equal(app.asked.length, asked);
 
   // Opened again, then quit to install an update: the same.
   assert.equal((await ask("POST", "kuvo/box/app", registration)).status, 200);
   assert.equal((await ask("POST", "kuvo/box/app", { updating: true })).status, 200);
-  assert.equal((await phone("GET", "kuvo/mac/info")).status, 503);
+  assert.ok(boxsOwn(await phone("GET", "kuvo/mac")));
   assert.equal(app.asked.length, asked);
 });
 
 test("something else on the app's port after it crashed is never sent a phone's ask", async () => {
   assert.equal((await ask("POST", "kuvo/box/app", registration)).status, 200);
   const phone = await pairedPhone();
-  assert.equal((await phone("GET", "kuvo/mac/info")).status, 200);
+  assert.equal((await phone("GET", "kuvo/mac")).json.answered, "app");
   // The app gone without saying; something else answers there, with no proof it's the app.
   const squatter = [];
   const other = http.createServer(async (request, response) => {
@@ -202,7 +201,7 @@ test("something else on the app's port after it crashed is never sent a phone's 
   const otherPort = await listen(other);
   const record = JSON.parse(fs.readFileSync(path.join(K, "run", "app.json"), "utf8"));
   fs.writeFileSync(path.join(K, "run", "app.json"), JSON.stringify({ ...record, host: { url: `http://127.0.0.1:${otherPort}`, password: APP_PASSWORD } }));
-  const answer = await phone("GET", "kuvo/mac/info");
+  const answer = await phone("GET", "kuvo/mac");
   assert.equal(answer.status, 503);
   assert.match(answer.json.message, /isn't answering/, "registered, but not answering as the app");
   assert.deepEqual(squatter, ["/hello"], "asked only for the proof it can't give");

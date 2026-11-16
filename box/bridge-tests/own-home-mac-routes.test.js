@@ -1,0 +1,267 @@
+// A Mac that has only Kuvo Code's desktop app (#713 piece 8; PROTOCOL.md, "Machines", In a home
+// of its own): its box lives in a home of its own, and no app answers for it (the desktop app is a
+// client). What a phone asks of the Mac's own routes, which the old Mac app answered (its machines,
+// the machines phones reach, what its browser asks you, While Agents Work, restarting its engine),
+// the box answers itself. The real box script, in a home of the test's own laid out as a Mac's; its
+// helper, `launchctl`, its keeper's `kuvo-start` and the relay are stand-ins.
+//
+// Run with `node --test box/bridge-tests/own-home-mac-routes.test.js`.
+import "./test-safety.js";
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { before, test } from "node:test";
+import { relayStandIn } from "./relay-stand-in.js";
+import { atEnd, removeAtEnd } from "./at-end.js";
+
+const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-own-home-routes-")));
+removeAtEnd(home);
+const K = path.join(home, ".kuvo-code");
+const write = (file, text, mode = 0o600) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text, { mode });
+  fs.chmodSync(file, mode);
+};
+const readJSON = file => JSON.parse(fs.readFileSync(file, "utf8"));
+write(path.join(K, "box", "kind"), "mac\n");
+fs.mkdirSync(path.join(K, "run"), { recursive: true });
+
+// Its keeper's tool, noting what it's asked; Kuvo Helper, its launch agent, and `launchctl`, which
+// says whether you switched the helper off in Login Items.
+const asked = path.join(home, "kuvo-start-asked");
+write(path.join(K, "bin", "kuvo-start"), `#!/bin/sh\necho "$*" >>'${asked}'\n`, 0o755);
+const helperProgram = path.join(K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
+write(helperProgram, "#!/bin/sh\nexit 0\n", 0o755);
+write(path.join(home, "Library", "LaunchAgents", "run.kuvo.code.machine.plist"), `<plist><array><string>${helperProgram}</string></array></plist>`);
+const tools = path.join(home, "tools");
+const switchedOff = path.join(home, "switched-off");
+write(path.join(tools, "launchctl"), `#!/bin/sh\ncase "$1" in print-disabled) if [ -f '${switchedOff}' ]; then echo '"run.kuvo.code.machine" => disabled'; else echo '"run.kuvo.code.machine" => enabled'; fi ;; esac\n`, 0o755);
+
+const listen = async server => {
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  atEnd(() => { server.closeAllConnections(); server.close(); });
+  return server.address().port;
+};
+const body = request => new Promise(resolve => {
+  const chunks = [];
+  request.on("data", chunk => chunks.push(chunk));
+  request.on("end", () => resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")));
+});
+
+// This Mac's keys, as its helper keeps them in your Keychain. It answers nothing else.
+const helper = { asked: [], keys: null };
+const HELPER_PASSWORD = crypto.randomBytes(16).toString("hex");
+const helperHost = http.createServer(async (request, response) => {
+  const given = await body(request);
+  if (request.url === "/hello") {
+    const proof = crypto.createHmac("sha256", HELPER_PASSWORD).update(`kuvo-host-hello\u0000${given.nonce}\u0000127.0.0.1:${helperHost.address().port}`).digest("hex");
+    return response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ proof }));
+  }
+  if (request.headers.authorization !== `Bearer ${HELPER_PASSWORD}`) return response.writeHead(401).end();
+  helper.asked.push(request.url);
+  if (request.url === "/link/identity") return response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(helper.keys));
+  response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ message: "Kuvo Code isn’t open on this Mac." }));
+});
+const helperPort = await listen(helperHost);
+write(path.join(K, "run", "host.json"), JSON.stringify({ url: `http://127.0.0.1:${helperPort}`, password: HELPER_PASSWORD }));
+
+Object.assign(process.env, { HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools });
+delete process.env.KUVO_BOX;
+const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const relay = await relayStandIn(link);
+atEnd(() => relay.close());
+
+const macKey = link.newKey();
+const macSecret = crypto.randomBytes(32);
+const macAddress = link.addressOf(macSecret);
+helper.keys = { key: macKey.toString("base64url"), secret: macSecret.toString("base64url"), sign: link.newSigningSeed() };
+
+// Kuvo Code's desktop app, a client of this box over its own server.
+const handle = link.engineHandler(link.readEngineFile, { name: "Studio Mac" }, link.readBridgeFile);
+async function ask(method, p, given) {
+  const parts = [];
+  for await (const part of handle({ method, path: p, headers: {}, body: given ? Buffer.from(JSON.stringify(given)) : Buffer.alloc(0), fromApp: true }, {}, undefined)) parts.push(part);
+  const text = Buffer.concat(parts.filter(part => part.body).map(part => part.body)).toString();
+  let json;
+  try { json = JSON.parse(text); } catch {}
+  return { status: parts[0].head.status, json };
+}
+
+async function untilConnected() {
+  const stop = new AbortController();
+  try {
+    for await (const part of handle({ method: "GET", path: "kuvo/link/status/events", headers: {}, body: Buffer.alloc(0), fromApp: true }, {}, stop.signal)) {
+      if (part.body && part.body.toString().split("\n").filter(Boolean).some(line => JSON.parse(line).state === "connected")) return;
+    }
+  } finally {
+    stop.abort();
+  }
+}
+
+// A phone, paired with this Mac, asking it things over the relay.
+async function pairedPhone() {
+  const pairing = await ask("POST", "kuvo/phones/pair");
+  assert.equal(pairing.status, 200, JSON.stringify(pairing.json));
+  await untilConnected();
+  const token = new URL(pairing.json.link).searchParams.get("token");
+  const key = link.newKey();
+  const device = relay.device();
+  const session = crypto.randomInt(1, 2 ** 31);
+  const frames = async () => {
+    const message = link.readRelay(await device.next());
+    return message?.kind === "deliver" ? link.readFrame(message.payload) : { kind: "unreachable" };
+  };
+  const initiator = new link.IKInitiator(key, link.publicOf(macKey), link.PROLOGUE);
+  device.send(macAddress, link.frame(link.Frame.handshake1, session, initiator.writeMessage1(Buffer.from(JSON.stringify({ v: 1, name: "Test iPhone", app: "0", pair: token })))));
+  const answer = await frames();
+  assert.equal(answer.kind, link.Frame.handshake2, "paired");
+  const { transport } = initiator.readMessage2(answer.body);
+  return async (method, p, given) => {
+    const sent = given ? Buffer.from(JSON.stringify(given)) : Buffer.alloc(0);
+    for (const piece of link.pieces({ t: "req", id: crypto.randomInt(1, 2 ** 20), m: method, p, h: {} }, sent, true)) device.send(macAddress, link.frame(link.Frame.transport, session, transport.seal(piece)));
+    const pieces = [];
+    for (;;) {
+      const next = await frames();
+      if (next.kind !== link.Frame.transport) break;
+      const message = link.decodeMessage(transport.open(next.body));
+      pieces.push(message);
+      if (message.head.end === true) break;
+    }
+    return { status: pieces[0].head.s, json: JSON.parse(Buffer.concat(pieces.map(piece => piece.body)).toString() || "null") };
+  };
+}
+
+let phone;
+before(async () => {
+  link.runMacLink();
+  assert.equal((await ask("PUT", "kuvo/link/config", { phones: true, machines: true, relay: relay.url, name: "Studio Mac", app: "1.0.0" })).status, 200);
+  phone = await pairedPhone();
+});
+atEnd(() => link.stopMacLink());
+
+const NOT_OPEN = /isn.t open/;
+
+test("what its browser asks you: a phone reads it from the box, as from a machine's, with no app to ask", async () => {
+  const asks = await phone("GET", "kuvo/asks");
+  assert.deepEqual([asks.status, asks.json], [200, { asks: [] }]);
+  // (One that isn't asked: the box's own answer, not that an app must be open.)
+  assert.equal((await phone("POST", "kuvo/asks/none", { answer: "declined" })).status, 404);
+  assert.deepEqual(helper.asked.filter(call => call !== "/link/identity"), [], "its helper was asked for nothing but its keys");
+});
+
+test("While Agents Work: a phone reads and changes it on the box, which keeps the Mac awake itself and says whether Kuvo starts at login", async () => {
+  const darwin = process.platform === "darwin";
+  const read = await phone("GET", "kuvo/mac");
+  assert.equal(read.status, 200, JSON.stringify(read.json));
+  // (Only a Mac has Login Items: anywhere else no helper keeps this box, which is `off`.)
+  assert.deepEqual(read.json, { backgroundWork: darwin ? "on" : "off", openAtLogin: darwin, keepsAwake: true, awakeNow: false });
+
+  // Keep This Mac Awake, turned off from the phone: the box's own setting, which it holds by.
+  const off = await phone("PATCH", "kuvo/mac", { keepsAwake: false });
+  assert.deepEqual([off.status, off.json.keepsAwake], [200, false]);
+  assert.equal(readJSON(path.join(K, "box", "work.json")).keepsAwake, false);
+  assert.equal((await ask("GET", "kuvo/work/settings")).json.keepsAwake, false, "the desktop app's Settings reads the same");
+  assert.equal((await phone("PATCH", "kuvo/mac", { keepsAwake: true })).json.keepsAwake, true);
+  // What isn't a yes or a no changes nothing.
+  assert.equal((await phone("PATCH", "kuvo/mac", { keepsAwake: "yes" })).status, 400);
+  assert.equal((await phone("GET", "kuvo/mac")).json.keepsAwake, true);
+  assert.equal((await phone("DELETE", "kuvo/mac")).status, 405);
+
+  if (!darwin) {
+    const refused = await phone("PATCH", "kuvo/mac", { backgroundWork: true });
+    assert.equal(refused.status, 409);
+    assert.match(refused.json.message, /Kuvo Helper isn’t set up/);
+    return;
+  }
+  // On already: asking for it again is the same; turning it off is yours, on the Mac.
+  assert.equal((await phone("PATCH", "kuvo/mac", { backgroundWork: true })).json.backgroundWork, "on");
+  const refused = await phone("PATCH", "kuvo/mac", { backgroundWork: false, keepsAwake: false });
+  assert.deepEqual([refused.status, refused.json], [400, { message: "Background work is turned off in Login Items & Extensions, on the Mac." }]);
+  assert.equal((await phone("GET", "kuvo/mac")).json.keepsAwake, true, "refused, so nothing of it was kept");
+  // You switched Kuvo Helper off in Login Items: it waits for you there, and a phone can't turn it on.
+  fs.writeFileSync(switchedOff, "");
+  try {
+    assert.deepEqual((await phone("GET", "kuvo/mac")).json, { backgroundWork: "needsApproval", openAtLogin: false, keepsAwake: true, awakeNow: false });
+    const waits = await phone("PATCH", "kuvo/mac", { openAtLogin: true });
+    assert.deepEqual([waits.status, waits.json.backgroundWork], [200, "needsApproval"]);
+  } finally {
+    fs.rmSync(switchedOff);
+  }
+});
+
+test("Restart Engine from a phone: the box asks its own keeper, with no app", async () => {
+  const restart = await phone("POST", "kuvo/engine/restart");
+  assert.deepEqual([restart.status, restart.json], [202, {}]);
+  await link.toolRun();
+  assert.equal(fs.readFileSync(asked, "utf8"), "restart\n");
+});
+
+test("its machines: a phone reads the list in the box's own words, follows it, and changes what the box keeps", async () => {
+  // A computer this Mac set up (as the box's own add leaves it), under two addresses, and one it
+  // removed that phones still reach.
+  const studio = { key: link.publicOf(link.newKey()).toString("base64url"), sign: link.newSigningSeed(), address: crypto.randomBytes(16).toString("base64url") };
+  const old = { key: link.publicOf(link.newKey()).toString("base64url"), address: crypto.randomBytes(16).toString("base64url") };
+  write(path.join(K, "machines.json"), JSON.stringify([{ destination: "studio", otherAddresses: ["studio.lan"] }]));
+  write(path.join(K, "phone-link.json"), JSON.stringify({ machines: {
+    studio: { name: "studio", address: studio.address, key: studio.key, sign: studio.sign, anotherMac: false, peers: true },
+    attic: { name: "attic", address: old.address, key: old.key, anotherMac: false, peers: true },
+  } }));
+
+  const listed = await phone("GET", "kuvo/machines");
+  assert.equal(listed.status, 200, JSON.stringify(listed.json));
+  assert.deepEqual(listed.json, { machines: [{ id: "studio", name: "studio", otherAddresses: ["studio.lan"], connection: "notConnected", status: "Not connected" }], hosts: [] });
+  assert.doesNotMatch(JSON.stringify(listed.json), NOT_OPEN, "nothing says an app must be open");
+
+  // Followed: a line now, as the app's stream gave.
+  const stop = new AbortController();
+  let first = "";
+  for await (const part of link.macFront(handle)({ method: "GET", path: "kuvo/machines/events", headers: {}, body: Buffer.alloc(0) }, {}, stop.signal)) {
+    if (!part.body) continue;
+    first = part.body.toString();
+    stop.abort();
+  }
+  assert.deepEqual(JSON.parse(first), listed.json);
+
+  // One of its other addresses forgotten.
+  const dropped = await phone("DELETE", "kuvo/machines/studio/addresses/studio.lan");
+  assert.deepEqual([dropped.status, dropped.json.machine.otherAddresses], [200, []]);
+  assert.deepEqual(readJSON(path.join(K, "machines.json")), [{ destination: "studio", otherAddresses: [] }]);
+  assert.equal((await phone("DELETE", "kuvo/machines/studio/addresses/studio.lan")).status, 404);
+  assert.equal((await phone("DELETE", "kuvo/machines/nope")).status, 404);
+
+  // What stood for the old app's SSH connection: refused in words that say why, never that an app must be open.
+  for (const action of ["connect", "disconnect", "start", "home", "same-as"]) {
+    const refused = await phone("POST", `kuvo/machines/studio/${action}`, action === "same-as" ? { other: "attic" } : undefined);
+    assert.equal(refused.status, 409, action);
+    assert.ok(refused.json.message.length > 20, action);
+    assert.doesNotMatch(refused.json.message, NOT_OPEN, action);
+  }
+  // An address that can't name a computer never reaches ssh.
+  const bad = await phone("POST", "kuvo/machines", { destination: "-oProxyCommand=sh" });
+  assert.equal(bad.status, 400);
+  assert.deepEqual((await phone("POST", "kuvo/machines", {})).json, { message: "Give the machine’s SSH host: a Host from ~/.ssh/config, or user@host." });
+
+  // The machines a phone reaches directly: the one it has, and the one it removed, marked so.
+  const hosts = await phone("GET", "kuvo/hosts");
+  assert.equal(hosts.status, 200, JSON.stringify(hosts.json));
+  assert.deepEqual(hosts.json.hosts.map(each => [each.machine, each.removed, each.relay]), [["attic", true, relay.url], ["studio", false, relay.url]]);
+  // Forgotten for your phones: only one it removed.
+  const still = await phone("DELETE", "kuvo/hosts/studio");
+  assert.equal(still.status, 409);
+  assert.match(still.json.message, /one of Studio Mac’s machines/);
+  assert.deepEqual([(await phone("DELETE", "kuvo/hosts/attic")).status, (await phone("DELETE", "kuvo/hosts/attic")).status], [200, 404]);
+  assert.deepEqual(Object.keys(readJSON(path.join(K, "phone-link.json")).machines), ["studio"]);
+  assert.equal(fs.statSync(path.join(K, "phone-link.json")).mode & 0o777, 0o600);
+  assert.deepEqual((await phone("GET", "kuvo/hosts")).json.hosts.map(each => each.machine), ["studio"]);
+
+  // Removed (never signed in to your computers: only off its list), and the list is empty, not unreadable.
+  assert.equal((await phone("DELETE", "kuvo/machines/studio")).status, 200);
+  assert.deepEqual(readJSON(path.join(K, "machines.json")), []);
+  assert.deepEqual((await phone("GET", "kuvo/machines")).json.machines, []);
+  // The desktop app, over the box's own server, is answered the same.
+  assert.equal((await ask("GET", "kuvo/machines")).status, 200);
+  assert.deepEqual(helper.asked.filter(call => call !== "/link/identity"), []);
+});

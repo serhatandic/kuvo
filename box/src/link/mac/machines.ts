@@ -36,7 +36,7 @@ const TIMING: AppTiming = { wait: 5000, look: 10_000 };
 
 const macName = () => macLink.config?.name || "this Mac";
 const notOpen = () => `Kuvo Code isn’t open on ${macName()}`;
-const UNREADABLE = "This Mac’s list of machines can’t be read right now.";
+export const UNREADABLE = "This Mac’s list of machines can’t be read right now.";
 
 interface KeptHost {
   name?: unknown;
@@ -46,7 +46,7 @@ interface KeptHost {
 }
 
 // What the app keeps of your machines' bridges: undefined without the file, null when it won't read.
-function keptHosts(): Record<string, KeptHost> | null | undefined {
+export function keptHosts(): Record<string, KeptHost> | null | undefined {
   try {
     return JSON.parse(fs.readFileSync(PHONE_LINK_FILE, "utf8")).machines ?? {};
   } catch (error) {
@@ -57,7 +57,7 @@ function keptHosts(): Record<string, KeptHost> | null | undefined {
 // Its machines as the app keeps them, or null when that can't be told, which isn't the same as none:
 // a list that won't read, or no list while the app keeps bridges for machines. (Removing the last one
 // leaves an empty list; no list then means it couldn't be written, and it's in the app's settings.)
-function savedMachines(kept = keptHosts()): { destination: string; otherAddresses?: string[] }[] | null {
+export function savedMachines(kept = keptHosts()): { destination: string; otherAddresses?: string[] }[] | null {
   let text: string;
   try {
     text = fs.readFileSync(LIST_FILE, "utf8");
@@ -102,7 +102,7 @@ export function machinesWithoutApp(now = Date.now()): MacMachines | null {
 /** `kuvo/hosts` as this box says it without the app, from what the app keeps: null when that can't
  * be told or there's no relay yet to name, since a phone takes this list for all your machines and
  * forgets the rest. */
-function hostsWithoutApp(): Hosts | null {
+export function hostsWithoutApp(): Hosts | null {
   const kept = keptHosts();
   const saved = savedMachines(kept);
   const relay = macLink.config?.relay;

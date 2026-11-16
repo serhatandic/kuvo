@@ -197,7 +197,7 @@ export function removeHere(key: string): Acted {
 
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
 // it off: what `kuvo/machines` and whether the link meets machines go by. One that won't read stays.
-function forgetSaved(id: string): void {
+export function forgetSaved(id: string): void {
   try {
     const saved: unknown = JSON.parse(fs.readFileSync(LIST_FILE, "utf8"));
     if (!Array.isArray(saved) || !saved.some(each => each?.destination === id)) return;
