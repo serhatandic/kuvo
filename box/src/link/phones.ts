@@ -82,10 +82,28 @@ const MOST_BLOCKED = 64;
 // box vouch for before, which could ask for the computer to be allowed again.
 function blockVoucher(link: LinkState, phone: Phone, now: number): void {
   if (!phone.by) return;
-  for (const other of link.phones ?? []) if (other.by === phone.by && other.key !== phone.key) noteRemoved(link, other.key, other.pairing ?? "");
-  link.phones = (link.phones ?? []).filter(each => each.by !== phone.by);
+  takeOffVouched(link, phone.by);
   link.vouchBlocked = [...(link.vouchBlocked ?? []).filter(each => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
 }
+
+/** Every device the box `by` vouched for taken off (in place), each by the pairing it has now and
+ * noted among the removals as any removal is, so this box's phones document carries them and
+ * they're out on every computer: whether any was. What another box vouched for, a phone, and what
+ * this box paired itself stay. Also what removing that computer itself does (`setMacPeers`,
+ * mac/routes.ts): Kuvo Code's app there no longer reaches the others with the key it had. That
+ * alone keeps no box from vouching: one that's removed is no machine of this box's, so its vouch
+ * isn't taken (`deviceAct`), and added again it vouches as a new one does. */
+export function takeOffVouched(link: LinkState, by: string): boolean {
+  const theirs = (link.phones ?? []).filter(each => each.by === by);
+  for (const each of theirs) noteRemoved(link, each.key, each.pairing ?? "");
+  if (theirs.length) link.phones = link.phones!.filter(each => each.by !== by);
+  return theirs.length > 0;
+}
+
+/** What a confirm adds, before a computer is removed or uninstalled, where its box vouched for a
+ * device this box lets in (the main computer alone knows): that Kuvo Code's app there goes too. */
+export const vouchedWords = (link: LinkState | null | undefined, key: string | undefined, name: string): string =>
+  (key && (link?.phones ?? []).some(each => each.by === key) ? ` Kuvo Code's app on ${name} is taken off your devices.` : "");
 
 /** The removal that keeps the box `key` from vouching now, if any. */
 export const vouchBlockOf = (link: LinkState | null | undefined, key: string | undefined) => (key ? (link?.vouchBlocked ?? []).find(each => each.key === key) : undefined);

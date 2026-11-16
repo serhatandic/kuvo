@@ -1682,8 +1682,19 @@ machines; a client that wants every computer's facts asks the box that has it as
     and off that Mac's list of machines (`machines.json`); its app listing it again
     (`kuvo/link/peers`), or setting it up as it connects (`kuvo/link/setup?key=`), doesn't bring it
     back (`removedHere` in link.json) until it's added again: on that Mac's list of machines
-    (`machines.json`) once more. It keeps running there, as a box of its own, with its sessions. `200
-    {}`, and the same for one removed already.
+    (`machines.json`) once more. It keeps running there, as a box of its own, with its sessions.
+    **Kuvo Code's app on it goes from your devices with it** (#753): every device that computer's
+    box vouched for (`by`, "Paired phones", `kuvo/devices/pair`) is taken off the writer's list,
+    each by the pairing it has now and noted among the removals as any removal is, so the
+    writer's phones document carries them, they're out on every computer, their sessions end,
+    and none is paired again by asking. The same however the computer is removed (handed by
+    another box, `uninstall` below, or `removed` in `kuvo/link/peers`). What another computer
+    vouched for, a phone, and what the writer paired itself stay. The removed computer isn't
+    noted as kept from vouching (`vouchBlocked`): it's no machine of the writer's now, so its
+    vouch isn't taken, and added again it vouches as a new one does. `confirm.message` says
+    "Kuvo Code's app on <computer> is taken off your devices." on the box that knows of such a
+    device (the main computer). `200 {}`, and the same for one removed already (whose devices,
+    were any left from before this, go then).
   - `POST kuvo/computers/<key>/connect`: this box's own, for a peer that's `away`: its link tells
     that computer its agents now, asking for theirs (`run/reach-again.json`, sent by the process
     that holds the relay connection, as `box route` leaves it), so its answer marks it back
@@ -1735,8 +1746,11 @@ machines; a client that wants every computer's facts asks the box that has it as
     computer adds), with a relay and keys for its link and its own release's files in its folder.
     A member answers `409 {message, primary}`; a Linux box `409 {message}` (only a Mac's box
     writes the record of a setup's computers yet, #183); a Mac while the old app is attached to
-    its box `409` (that app keeps its own list); `503 {message}` for the rest. `GET
-    kuvo/computers/add` says the same as `can: false` with `why`.
+    its box `409` (that app keeps its own list); `503 {message}` for the rest, a list of machines
+    that can't be told among them: read as `kuvo/machines` reads it ("Machines": there and won't
+    read, or not there while `phone-link.json` keeps machines), so no computer is added over a
+    list that's only missing (#753). `GET kuvo/computers/add` says the same as `can: false` with
+    `why`.
   - `GET kuvo/computers/add` → `{can, why?, hosts, tries}`: `hosts`, the `Host`s of the box's
     computer's `~/.ssh/config` and the files it includes (names only, never a pattern), 50 at
     most, those not an address of a computer it set up; `tries`, those under way first, then the
@@ -1820,8 +1834,13 @@ machines; a client that wants every computer's facts asks the box that has it as
     (Set Up Again), which brings an older Kuvo Code there up to this box's. `POST
     kuvo/computers/<key>/uninstall` → `202 {try}`: over SSH the computer lets this box go
     (`leave`) and, unless another Mac that set it up still uses it, runs its own `kuvo-link.js
-    uninstall` and deletes the sign-ins and keys it keeps; then the box removes it as `DELETE
-    kuvo/computers/<key>` does. Its folder stays. Asked while that computer is being set up, the
+    uninstall` and deletes the sign-ins and keys it keeps, and the folder of Kuvo Code's app
+    there (`~/.kuvo-code/desktop`: the key that app is known by among your devices, and its list
+    of your computers; #753); then the box removes it as `DELETE kuvo/computers/<key>` does,
+    which takes that app off your devices on every computer. (On a Mac the app keeps its key in
+    its Keychain, which SSH doesn't reach: there, being taken off your devices is what keeps it
+    out. Where another Mac still uses the computer, nothing is deleted there, and its app is
+    taken off this setup's devices all the same.) The rest of its folder stays. Asked while that computer is being set up, the
     try under way is stopped first and waited for, so nothing starts it again behind the removal
     (#603). Both are offered in `actions` (`setup`, `uninstall` with its `confirm`; `why` while
     one is under way) on machines the box has an SSH address for, and are `404` for any other.
@@ -4099,8 +4118,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     of `other`'s addresses, as Same Computer As does: `200 {"machine"}`, the other; `404` when
     `other` isn't another of the Mac's machines; `409 {"message"}` when the two told Kuvo Code
     different names and stay two machines.
-  - The list isn't only the app's: it's `machines.json` in this Mac's box's folder, which the app
-    alone writes and the box only reads (bridge 0.9.201). With the app closed, stuck (no answer
+  - The list isn't only the app's: it's `machines.json` in this Mac's box's folder, which the box
+    writes as it adds, sets up and removes computers itself ("Computers", Adding one), and the
+    Mac app before 1.0 wrote while attached (bridge 0.9.201). With the app closed, stuck (no answer
     within seconds) or answering anything else, the box answers from it, so a phone needs nothing
     different:
     - `GET kuvo/machines` lists them with `connection` `notConnected`, no `action`, no `failure`, and
@@ -10206,7 +10226,8 @@ On both, for a paired phone:
       over nor which computer was kept out, and takes that computer's vouch again.
 
     To keep a member out for good, remove the computer (`DELETE kuvo/computers/<key>`): its box
-    then vouches for nothing.
+    then vouches for nothing, and every device it vouched for goes with it ("Computers",
+    Managing them, #753).
   - **At most 16 desktop apps** are paired this way at once: one more is `409 {"message"}` until
     one is removed, so a box that vouches never fills the list.
   - Every box of the setup lets the device in from the main computer's phones document, as it

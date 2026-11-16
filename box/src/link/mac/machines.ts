@@ -1,10 +1,12 @@
 // A Mac's machines for a phone (PROTOCOL.md, "Machines"), with its app open or closed.
 //
 // The app connects to them over SSH, so how a connection stands and what's done with one are the
-// app's to say. The list isn't: it's in `machines.json` in this box's folder, which the app alone
-// writes and this box only reads, so there's one list, and this box answers from it while the app
-// isn't there. It says what it can tell of each by itself (its box was heard from lately), and what
-// needs the app says so.
+// app's to say. The list isn't: it's in `machines.json` in this box's folder, so there's one list,
+// and this box answers from it while the app isn't there. This box writes it as it adds, sets up
+// and removes computers itself (`add/flow.ts`, `peers/manage.ts`); the Mac app before 1.0 wrote it
+// too, while it was attached. It's read in one place, `savedMachines`, so what can't be read is
+// never taken for none by one reader and not another. It says what it can tell of each by itself
+// (its box was heard from lately), and what needs the app says so.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -54,10 +56,21 @@ function keptHosts(): Record<string, KeptHost> | null | undefined {
   }
 }
 
-// Its machines as the app keeps them, or null when that can't be told, which isn't the same as none:
-// a list that won't read, or no list while the app keeps bridges for machines. (Removing the last one
-// leaves an empty list; no list then means it couldn't be written, and it's in the app's settings.)
-function savedMachines(kept = keptHosts()): { destination: string; otherAddresses?: string[] }[] | null {
+/** A computer on this Mac's list (`machines.json`): the address it was added under (its id among
+ * this Mac's machines), its other addresses, and its id there (`machine-id`). */
+export interface SavedMachine {
+  destination: string;
+  otherAddresses?: string[];
+  identity?: string;
+  [more: string]: unknown;
+}
+
+/** This Mac's machines as its list keeps them, or null when that can't be told, which isn't the
+ * same as none: a list that won't read, or no list while bridges are kept for machines
+ * (`phone-link.json`). (Removing the last one leaves an empty list; no list then means it couldn't
+ * be written, or is still in the old app's settings.) The one read of it, for what this box says of
+ * its machines and for adding one (`add/flow.ts`): a list never written over where it can't be told. */
+export function savedMachines(kept = keptHosts()): SavedMachine[] | null {
   let text: string;
   try {
     text = fs.readFileSync(LIST_FILE, "utf8");

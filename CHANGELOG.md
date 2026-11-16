@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Removing a computer, or uninstalling Kuvo Code from it, also takes Kuvo Code's app on that computer off your devices, so it no longer reaches your other computers; the confirmation says so. Uninstall also deletes that app's key from the computer.
 - The desktop app sets Kuvo up on your Mac itself the first time it opens: the welcome's first card says **Setting up Kuvo…** beside this Mac, then goes on to the welcome. Updating from Kuvo Code 0.7, the same card shows each step of the move with a bar, and picks it up where it is if you quit meanwhile. If either can't be done, the card says why, with **Try Again**.
 - When Screen Recording or Accessibility isn't allowed for Kuvo Helper, the program your agents run under on a Mac, the desktop app asks once: **Open System Settings** opens the right list with Kuvo Helper's icon in a small window beside it, to drag in and switch on. The small window closes by itself once it's allowed, and **Not Now** is remembered on that Mac.
 - Amazon Bedrock says Connect. Key sheets on desktop and phone say Add Key, Replace Key or Add Another Key with the account’s name; account sign-ins keep Sign In to the account’s name.

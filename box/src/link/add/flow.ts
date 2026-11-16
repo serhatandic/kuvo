@@ -18,9 +18,10 @@ import { writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { ownName } from "../letters/start";
 import { macLinkCheck } from "../mac/link";
-import { LIST_FILE, PHONE_LINK_FILE } from "../mac/machines";
+import { LIST_FILE, PHONE_LINK_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers, setupGift } from "../mac/routes";
 import { ADDRESS, KEY, ownKey, peersOf } from "../peers/known";
+import { vouchedWords } from "../phones";
 import { oldAppAttached, removeHere } from "../peers/manage";
 import { appsOf, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
@@ -32,32 +33,6 @@ import * as scripts from "./scripts";
 import { gatherSeed } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
-
-/** A computer this box set up over SSH, as its list keeps it (`machines.json`, as the Mac app kept
- * it): the address it was added under (its id among this Mac's machines), its other addresses, and
- * its id there (`machine-id`). */
-interface Saved {
-  destination: string;
-  otherAddresses?: string[];
-  identity?: string;
-  [more: string]: unknown;
-}
-
-/** This box's list of the computers it set up; null when it's there and won't read (never taken for none). */
-export function savedMachines(): Saved[] | null {
-  let text: string;
-  try {
-    text = fs.readFileSync(LIST_FILE, "utf8");
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : null;
-  }
-  try {
-    const saved: unknown = JSON.parse(text);
-    return Array.isArray(saved) && saved.every(each => typeof each?.destination === "string") ? saved as Saved[] : null;
-  } catch {
-    return null;
-  }
-}
 
 /** Every address of the computers this box set up. */
 export const takenAddresses = (): string[] => (savedMachines() ?? []).flatMap(each => [each.destination, ...(Array.isArray(each.otherAddresses) ? each.otherAddresses : [])]);
@@ -480,6 +455,6 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
   const why = busy ? (busy.seen.kind === "uninstall" ? "Kuvo Code is being uninstalled from it now." : "It’s being set up now.") : null;
   return [
     { id: "setup", label: "Set Up Again", ...(why ? { why } : {}) },
-    { id: "uninstall", label: "Uninstall", ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: `Uninstall Kuvo Code from ${name}?`, message: `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on ${name}.`, label: "Uninstall" } }) },
+    { id: "uninstall", label: "Uninstall", ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: `Uninstall Kuvo Code from ${name}?`, message: `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted.${vouchedWords(readLink(), computer.key, name)} Its sessions stay in ~/.kuvo-code on ${name}.`, label: "Uninstall" } }) },
   ];
 }

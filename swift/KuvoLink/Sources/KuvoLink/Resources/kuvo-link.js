@@ -2378,11 +2378,16 @@ function noteRemoved(link, key, pairing) {
 function blockVoucher(link, phone, now) {
   if (!phone.by)
     return;
-  for (const other of link.phones ?? [])
-    if (other.by === phone.by && other.key !== phone.key)
-      noteRemoved(link, other.key, other.pairing ?? "");
-  link.phones = (link.phones ?? []).filter((each) => each.by !== phone.by);
+  takeOffVouched(link, phone.by);
   link.vouchBlocked = [...(link.vouchBlocked ?? []).filter((each) => each.key !== phone.by), { key: phone.by, device: phone.name ?? "", at: now }].slice(-MOST_BLOCKED);
+}
+function takeOffVouched(link, by) {
+  const theirs = (link.phones ?? []).filter((each) => each.by === by);
+  for (const each of theirs)
+    noteRemoved(link, each.key, each.pairing ?? "");
+  if (theirs.length)
+    link.phones = link.phones.filter((each) => each.by !== by);
+  return theirs.length > 0;
 }
 function allowVouching(link, key) {
   if (!vouchBlockOf(link, key))
@@ -2515,7 +2520,7 @@ function pairingLink(link) {
   });
   return `kuvo-link://pair?${query}`;
 }
-var PAIRING, MOST_AT_ONCE = 16, MOST_KEPT = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto24.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, ownPhones = (link) => ({
+var PAIRING, MOST_AT_ONCE = 16, MOST_KEPT = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), MOST_BLOCKED = 64, vouchedWords = (link, key, name) => key && (link?.phones ?? []).some((each) => each.by === key) ? ` Kuvo Code's app on ${name} is taken off your devices.` : "", vouchBlockOf = (link, key) => key ? (link?.vouchBlocked ?? []).find((each) => each.key === key) : undefined, fits2 = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING.test(entry.pairing)), newPairing = () => crypto24.randomBytes(12).toString("base64url"), MOST_DESKTOPS = 16, ownPhones = (link) => ({
   phones: (link.phones ?? []).filter((phone) => phone.from === "pair").map((phone) => ({ key: phone.key, name: phone.name ?? "", ...phone.address ? { address: phone.address } : {}, pairing: phone.pairing ?? "", ...phone.kind === "desktop" ? { kind: "desktop" } : {} })),
   removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing }))
 }), PAIRING_MINUTES = 10, newPairingToken = () => ({ token: crypto24.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000 }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
@@ -32391,6 +32396,7 @@ init_home();
 init_directory();
 init_known();
 init_library();
+init_phones();
 init_state();
 init_link();
 init_main_only();
@@ -32416,6 +32422,8 @@ function setMacPeers(link, given) {
   const gone = peersOf(link).filter((peer) => removed.includes(peer.key));
   const kept = (Array.isArray(link.left) ? link.left : []).filter((key) => !now.some((peer) => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
+  for (const key of removed)
+    takeOffVouched(link, key);
   const before = new Map((Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).map(cleanPeer).map((peer) => [peer.key, peer.name]));
   if (link.peerNames) {
     for (const key of Object.keys(link.peerNames)) {
@@ -32636,6 +32644,7 @@ async function* linkRoute(context) {
 // box/src/link/peers/manage.ts
 init_main_only();
 init_settle();
+init_phones();
 init_state();
 init_files2();
 init_directory();
@@ -32712,7 +32721,7 @@ function actionsOf(computer, here, trying, link = readLink(), facts = writerFact
     actions.push({ id: "connect", label: "Connect" });
   if (!whyNot(computer, "remove", here, link, facts)) {
     const waits = waitsFor(computer, here, facts);
-    actions.push({ id: "remove", label: "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
+    actions.push({ id: "remove", label: "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}.${vouchedWords(link, computer.key, name)} It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
   }
   if (computer.vouching?.blocked) {
     actions.push({ id: "allow-devices", label: "Allow Its App Again", confirm: { title: `Let ${name} add Kuvo Code's app again?`, message: `Kuvo Code on ${name} can add itself to your devices again, and reach every computer of yours. What you removed stays removed.`, label: "Allow" } });
@@ -32748,7 +32757,7 @@ function removeHere(key) {
     const peer = link ? peersOf(link).find((each) => each.key === key) : undefined;
     already = Boolean(link?.removedHere?.includes(key));
     if (!link || !peer)
-      return null;
+      return link && already && takeOffVouched(link, key) ? link : null;
     id = peer.id;
     link.removedHere = [...(link.removedHere ?? []).filter((each) => each !== key), key].slice(-64);
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter((each) => each?.key !== key), moved: link.macMoved, removed: [key] });
@@ -32759,6 +32768,8 @@ function removeHere(key) {
       delete made.link.peerNames[key];
     return made.link;
   });
+  if (!gone.length && already)
+    macDocsChanged();
   if (!gone.length)
     return already ? answer4(200, {}) : answer4(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id)
@@ -41640,6 +41651,7 @@ init_home();
 init_link();
 init_machines();
 init_known();
+init_phones();
 init_main_only();
 init_state();
 
@@ -42027,6 +42039,10 @@ if [ -f "$K/data/opencode/opencode.db" ]; then
   KUVO_DB="$K/data/opencode/opencode.db" BUN_BE_BUN=1 "$E" -e 'const { Database } = require("bun:sqlite"); const db = new Database(process.env.KUVO_DB); try { db.run("DELETE FROM credential"); } catch {} db.close()' >/dev/null 2>&1 || true
 fi
 rm -rf "$K/integrations" "$K/keys" "$K/box/keys" "$K/box/bot-keys"
+# (And the key Kuvo Code's app there is known by among your devices, which the box that removes this
+# computer takes off them too. On a Mac the app keeps it in its Keychain, which isn't reached from
+# here: there, being taken off your devices is what keeps it out.)
+rm -rf "$K/desktop"
 rm -f "$K/run/launch.env" "$K/run/launch.notes"
 if [ -d "$K/agents" ]; then
   find "$K/agents" -path "$K/agents/runtime" -prune -o -type f \( -name .credentials.json -o -name 'auth.json*' -o -name 'acp_token.json*' -o -name 'oauth-token.json*' -o -path '*/claude/tokens/*' \) -exec rm -f {} + 2>/dev/null
@@ -43202,21 +43218,7 @@ async function forgetTries() {
 }
 
 // box/src/link/add/flow.ts
-function savedMachines2() {
-  let text;
-  try {
-    text = fs131.readFileSync(LIST_FILE, "utf8");
-  } catch (error) {
-    return error.code === "ENOENT" ? [] : null;
-  }
-  try {
-    const saved = JSON.parse(text);
-    return Array.isArray(saved) && saved.every((each) => typeof each?.destination === "string") ? saved : null;
-  } catch {
-    return null;
-  }
-}
-var takenAddresses = () => (savedMachines2() ?? []).flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]);
+var takenAddresses = () => (savedMachines() ?? []).flatMap((each) => [each.destination, ...Array.isArray(each.otherAddresses) ? each.otherAddresses : []]);
 function keepHost(id, host) {
   let kept = {};
   try {
@@ -43247,7 +43249,7 @@ function canAdd() {
     return { can: false, status: 503, message: `${here} isn’t linked to your other computers yet, so it can’t add one.` };
   if (!RELEASE_FILES.every(([name]) => fs131.existsSync(`${K}/${name}`)))
     return { can: false, status: 503, message: `Kuvo Code on ${here} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.` };
-  if (!savedMachines2())
+  if (!savedMachines())
     return { can: false, status: 503, message: `${here}’s list of machines can’t be read right now.` };
   return { can: true };
 }
@@ -43372,7 +43374,7 @@ async function setUp2(tell, destination, name, kind) {
     const judged = judgeComputer(foundOf(probe.lines), oursNow(link), appsOf(probe.lines));
     if (judged.verdict === "self")
       throw new Failed(`That’s ${ownName()} itself. Add another computer.`, false);
-    const saved = savedMachines2();
+    const saved = savedMachines();
     if (!saved)
       throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
     const found = foundOf(probe.lines).find((box) => !box.app);
@@ -43506,7 +43508,7 @@ async function join3(reach, destination, name, identity) {
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
-  const saved = savedMachines2();
+  const saved = savedMachines();
   if (!saved)
     throw new Failed(`${ownName()}’s list of machines can’t be read right now.`);
   const had = saved.find((each) => each.destination === destination);
@@ -43549,7 +43551,7 @@ function beginAdd(destination) {
 }
 function sshAddressOf(key) {
   const peer = peersOf(readLink()).find((each) => each.key === key);
-  if (!peer?.id || addressProblem(peer.id) || !(savedMachines2() ?? []).some((each) => each.destination === peer.id))
+  if (!peer?.id || addressProblem(peer.id) || !(savedMachines() ?? []).some((each) => each.destination === peer.id))
     return null;
   return { destination: peer.id, name: peer.name };
 }
@@ -43615,7 +43617,7 @@ function sshActions(computer, here) {
   const why = busy ? busy.seen.kind === "uninstall" ? "Kuvo Code is being uninstalled from it now." : "It’s being set up now." : null;
   return [
     { id: "setup", label: "Set Up Again", ...why ? { why } : {} },
-    { id: "uninstall", label: "Uninstall", ...busy?.seen.kind === "uninstall" ? { why } : { confirm: { title: `Uninstall Kuvo Code from ${name}?`, message: `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on ${name}.`, label: "Uninstall" } } }
+    { id: "uninstall", label: "Uninstall", ...busy?.seen.kind === "uninstall" ? { why } : { confirm: { title: `Uninstall Kuvo Code from ${name}?`, message: `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted.${vouchedWords(readLink(), computer.key, name)} Its sessions stay in ~/.kuvo-code on ${name}.`, label: "Uninstall" } } }
   ];
 }
 
@@ -51654,7 +51656,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1249a4cf8b38";
+var BRIDGE_VERSION = "379687dd10d3";
 
 // box/src/link/rehome/move.ts
 init_outside();
