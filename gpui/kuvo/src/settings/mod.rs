@@ -1140,6 +1140,7 @@ impl SettingsView {
                                 && flow.state == kuvo_box::settings_pages::FlowState::Waiting
                                 && flow_before.as_deref() != Some(flow.id.as_str())
                                 && let Some(address) = flow.opens.clone()
+                                && (address.starts_with("https://") || address.starts_with("http://"))
                             {
                                 this.act(Act::Open(address), cx);
                             }
@@ -1410,7 +1411,8 @@ impl SettingsView {
     /// field's Choose… opens the page's picker for it.
     pub fn open_form(&mut self, at: At, action: String, form: kuvo_box::settings_pages::Form, cx: &mut Context<Self>) {
         let Some(client) = self.client.clone() else { return };
-        let target = form::Target { section: at.section.clone(), row: at.row.clone(), was: at.revision.clone(), action };
+        let was = form.revision.clone().unwrap_or_else(|| at.revision.clone());
+        let target = form::Target { section: at.section.clone(), row: at.row.clone(), was, action };
         let sheet = cx.new(|cx| FormSheet::new(client, self.live, target, form, cx));
         self.form_events = Some(cx.subscribe(&sheet, move |this: &mut SettingsView, _, event: &FormEvent, cx| {
             match event {
@@ -1418,6 +1420,11 @@ impl SettingsView {
                     this.form = None;
                     this.form_events = None;
                     this.take_changed(&at.section, &at.row, Ok(changed.clone()), cx);
+                }
+                // (What it shows changed meanwhile: the page under it is the box's now; the sheet
+                // stays with what was typed, and says so.)
+                FormEvent::Stale(page) => {
+                    this.pages.insert(at.section.clone(), Reading::Ready(page.clone()));
                 }
                 FormEvent::Cancelled => {
                     this.form = None;

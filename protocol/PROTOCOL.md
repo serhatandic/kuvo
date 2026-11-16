@@ -8760,7 +8760,10 @@ so a client still on those (the phone) sees every change kept just as they keep 
     `pairs: {key, value}` its placeholders, its value `[{key, value}]` in order). `shown: {field,
     is}` draws it only while that `choice` field is one of `is` (values typed in a field hidden
     meanwhile are kept while the sheet is open, and sent). `can: {why}`: drawn, not changed. The
-    values a form opens with are part of its row's revision.
+    values a form opens with are part of its row's revision, and the form has its own (`revision`,
+    of those values alone), which its checks and its values are sent with as `was`: a form goes
+    stale only when what it shows changed, never because another thing in its list did. A flow's
+    state is part of its row's revision, its actions (which differ by who asks) aren't.
   - `POST kuvo/settings/<section>/<row>/<action>/check {was?, values}` → `{fields, ready,
     values?}`: the values checked as they're typed, changing nothing: the box's words under each
     field (`{id, words, tone}`, `tone` `quiet`, `good` or `warning`), whether its button can be
@@ -8769,7 +8772,8 @@ so a client still on those (the phone) sees every change kept just as they keep 
     `409 {page}` where the row changed since, `404` for an action with no form.
   - `POST kuvo/settings/<section>/<row>/<action> {was, values}` for an action with a form: the
     page (`200`, the sheet closes), or `400 {message, fields?}` (the sheet stays, each field's
-    words under it); without `values`, `400`.
+    words under it); without `values`, `400`; `409 {page}` where what it shows changed (the sheet
+    stays with what was typed, says so, and is sent again from the form's revision in `page`).
   - A flow the box leads for a row: `flow: {id, state, title, line, opens?, code?, actions}`,
     `state` `waiting`, `done` or `failed`, with the box's `line` (why, once failed). Started by an
     action (Sign In…), kept by the box (`run/settings-flows.json`, so whichever of its processes
@@ -8917,7 +8921,8 @@ The sections now:
   through `kuvo/config` with the server's settings as read (`was`): what the form doesn't show (a
   timeout of its own, a sign-in set up by hand) stays. A server's sign-in is the engine's
   (`api/integration/<id>/connect/oauth`), led as a `flow`; once done, the server is connected
-  again. Then the popular servers (`kuvo/mcp/catalog`, not an integration's) in groups by what
+  again. Its page is kept only as an http(s) address, and a pasted address its page turns down
+  is refused in words (`400`). Then the popular servers (`kuvo/mcp/catalog`, not an integration's) in groups by what
   they need (`popular-signIn`, `popular-open`, `popular-local`), each `popular-<id>` with `add`
   (`POST kuvo/mcp/catalog/<id>`'s add) or "Added"; and Timeouts (`timeout-startup`,
   `timeout-catalog`, `timeout-execution`, `number`s at `mcp.timeout`). Its events follow the

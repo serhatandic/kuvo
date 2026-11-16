@@ -28,8 +28,10 @@ const SETTLE: Duration = Duration::from_millis(300);
 
 /// What the sheet came to, for the page under it.
 pub enum FormEvent {
-    /// Sent and done (or stale): the page as the box has it now.
+    /// Sent and done: the page as the box has it now.
     Done(Changed),
+    /// What it shows changed since it opened: the page as it is now (the sheet stays).
+    Stale(kuvo_box::settings_pages::Page),
     Cancelled,
     /// A folder field's Choose…: the page's picker, starting at `start`.
     ChooseFolder { field: String, words: Folder, start: String },
@@ -261,6 +263,14 @@ impl FormSheet {
         let then = |this: &mut FormSheet, done: kuvo_box::Result<Sent>, cx: &mut Context<FormSheet>| {
             this.sending = false;
             match done {
+                Ok(Sent::Changed(Changed::Stale { message, page })) => {
+                    // Kept open with what was typed, said; sent again, it goes from what's there now.
+                    if let Some(revision) = page.row(&this.target.row).and_then(|row| row.actions.iter().chain(row.add.iter()).find(|action| action.id == this.target.action)).and_then(|action| action.form.as_ref()).and_then(|form| form.revision.clone()) {
+                        this.target.was = revision;
+                    }
+                    this.refused = Some(message);
+                    cx.emit(FormEvent::Stale(page));
+                }
                 Ok(Sent::Changed(changed)) => cx.emit(FormEvent::Done(changed)),
                 Ok(Sent::Refused { message, fields }) => {
                     this.refused = Some(message);

@@ -1376,3 +1376,23 @@ fn another_computers_sign_in_takes_the_address_its_page_ended_on(cx: &mut TestAp
     assert_eq!(sent[0]["values"]["code"], json!("http://127.0.0.1:19876/mcp/oauth/callback?code=abc"));
     assert!(shown(cx, "row-server-linear-flow-ok"), "done, as the box answered");
 }
+
+#[gpui::test]
+fn a_form_whose_thing_changed_meanwhile_stays_open_with_what_was_typed(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_mcp();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "mcp");
+    click(cx, "row-server-files-menu");
+    click(cx, "menu-item-Edit…");
+    click(cx, "settings-form-command-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("npx -y files-server --readonly");
+    // Turned off on another device meanwhile.
+    stand_in.with_mcp(|settings| settings.mcp.servers[0].entry["disabled"] = json!(true));
+    click(cx, "settings-form-submit");
+    assert!(shown(cx, "settings-form"), "kept open");
+    assert_eq!(view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).refused().map(str::to_owned))).as_deref(), Some("It changed since you read it."));
+    let typed = view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["command"].clone());
+    assert_eq!(typed, json!("npx -y files-server --readonly"));
+}

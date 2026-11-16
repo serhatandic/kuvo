@@ -158,6 +158,10 @@ pub struct Form {
     pub fields: Vec<Field>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Its own revision, sent back as `was` with its values and checks (a box from before forms had
+    /// theirs: the row's).
+    #[serde(default)]
+    pub revision: Option<String>,
 }
 
 /// What a form's field is drawn as; one this client doesn't know is `Unknown` (its title is drawn,

@@ -293,10 +293,10 @@ async function followFlows(known: Facts): Promise<void> {
   }
 }
 
-async function mcpPage(context: RouteContext): Promise<SettingsPage> {
+async function mcpPage(context: RouteContext, quiet = false): Promise<SettingsPage> {
   const known = await facts(context);
   if (!("settings" in known)) return unreadPage("mcp", TITLE, known);
-  await followFlows(known);
+  if (!quiet) await followFlows(known);
   const flows = flowsOf("mcp");
   const where = computerHere(context);
   const items: SettingItem[] = yourServers(known).map(([name, entry]) => {
@@ -433,7 +433,12 @@ async function mcpAct(context: RouteContext, at: SettingItem, action: SettingAct
       const pasted = text(values?.code).trim();
       if (!pasted) return { status: 400, message: "Paste the address the sign-in page ended on." };
       const loaded = await asked(context, ctx => loadSignInReturn(ctx.request.body, ctx.signal), "POST", "kuvo/sign-in/return", { url: pasted });
-      return refusal(loaded);
+      const refused = refusal(loaded);
+      if (refused) return refused;
+      // (Loaded, but the page it returns to turned it down: an old address, another sign-in's.)
+      const answered = Number(loaded.value?.status);
+      if (!(answered >= 200 && answered < 400)) return { status: 400, message: "The sign-in didn't take that address. Paste the one its page ended on for this sign-in, or start it again." };
+      return null;
     }
     case "cancel":
     case "dismiss":
@@ -456,7 +461,9 @@ async function signIn(context: RouteContext, known: Facts, row: string, name: st
     if (!method) return { status: 409, message: `${name}'s sign-in can't be started from here.` };
     const started = await call(known.engine, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: method.id }, AbortSignal.timeout(30_000)) as { attemptID?: string; url?: string } | null;
     if (!started?.attemptID) return { status: 502, message: "The sign-in couldn't be started." };
-    keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...(started.url ? { url: started.url } : {}) } });
+    // (Its page is the server's to name: only a web page is kept to open.)
+    const page = typeof started.url === "string" && /^https?:\/\//i.test(started.url) ? started.url : undefined;
+    keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...(page ? { url: page } : {}) } });
     return null;
   } catch (error) {
     return { status: 502, message: error instanceof Error && error.message ? error.message : "The sign-in couldn't be started." };

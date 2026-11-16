@@ -88,7 +88,10 @@ const page = async (fromApp = true) => {
 }
 const rowOf = (shown: any, id: string): any => shown.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])])).find((row: any) => row.id === id)
 const act = (row: any, action: string, values?: unknown, was = row.revision, fromApp = true) => ask(handler, "POST", `kuvo/settings/mcp/${encodeURIComponent(row.id)}/${action}`, { was, ...(values === undefined ? {} : { values }) }, { fromApp })
-const check = (row: any, action: string, values: unknown) => ask(handler, "POST", `kuvo/settings/mcp/${encodeURIComponent(row.id)}/${action}/check`, { was: row.revision, values })
+/** A form's own revision, which its values and checks are sent from. */
+const formOf = (row: any, action: string) => [...(row.actions ?? []), ...(row.add ? [row.add] : [])].find((each: any) => each.id === action)?.form
+const check = (row: any, action: string, values: unknown) => ask(handler, "POST", `kuvo/settings/mcp/${encodeURIComponent(row.id)}/${action}/check`, { was: formOf(row, action).revision, values })
+const submit = (row: any, action: string, values?: unknown) => act(row, action, values, formOf(row, action).revision)
 const change = (row: any, value: unknown, was = row.revision) => ask(handler, "PATCH", "kuvo/settings/mcp", { row: row.id, value, was })
 /** A form's values as it opens, by field. */
 const formValues = (action: any) => Object.fromEntries(action.form.fields.map((field: any) => [field.id, field.value]))
@@ -174,14 +177,16 @@ test("Add Server's form is checked as it's typed, in the box's words, and adds a
 
   // Submitting what isn't ready is refused with the same words, and nothing is written.
   const before = readFileSync(CONFIG_FILE, "utf8")
-  const refused = await act(servers, "add", { ...opened, name: "files", command: "sh" })
+  const refused = await submit(servers, "add", { ...opened, name: "files", command: "sh" })
   expect(refused.status).toBe(400)
   expect(refused.json).toMatchObject({ message: "There's a server called files already.", fields: expect.arrayContaining([{ id: "name", words: "There's a server called files already.", tone: "warning" }]) })
   expect(readFileSync(CONFIG_FILE, "utf8")).toBe(before)
   // Without its values: refused.
-  expect((await act(servers, "add")).status).toBe(400)
+  expect((await submit(servers, "add")).status).toBe(400)
 
-  const added = await act(servers, "add", { ...opened, name: "docs", command: "npx -y docs-server ~/Docs", environment: [{ key: "TOKEN", value: "{env:DOCS}" }], codemode: true })
+  // Another server changed meanwhile (on a phone): the form read before still goes.
+  await change(rowOf(await page(), "server-tracker"), false)
+  const added = await submit(servers, "add", { ...opened, name: "docs", command: "npx -y docs-server ~/Docs", environment: [{ key: "TOKEN", value: "{env:DOCS}" }], codemode: true })
   expect(added.status).toBe(200)
   expect(config().mcp.servers.docs).toEqual({ type: "local", command: ["npx", "-y", "docs-server", "~/Docs"], environment: { TOKEN: "{env:DOCS}" }, codemode: true })
   expect(rowOf(added.json, "server-docs")).toMatchObject({ value: true, line: "npx -y docs-server ~/Docs" })
@@ -206,11 +211,11 @@ test("Edit… opens with the server's settings, saves what's changed, keeps what
   expect(edit.form).toMatchObject({ title: "files", submit: "Save" })
   expect(formValues(edit)).toMatchObject({ runs: "local", command: "sh", codemode: true })
   // Switched to the web: its command goes, what the form doesn't show (its timeout) stays.
-  const saved = await act(files, "edit", { ...formValues(edit), runs: "remote", url: "mcp.example.com/mcp", oauth: false })
+  const saved = await submit(files, "edit", { ...formValues(edit), runs: "remote", url: "mcp.example.com/mcp", oauth: false })
   expect(saved.status).toBe(200)
   expect(config().mcp.servers.files).toEqual({ type: "remote", url: "https://mcp.example.com/mcp", oauth: false, timeout: 9000, codemode: true })
   // The form read before that change is stale now.
-  const stale = await act(files, "edit", { ...formValues(edit), command: "sh -x" })
+  const stale = await submit(files, "edit", { ...formValues(edit), command: "sh -x" })
   expect(stale.status).toBe(409)
   expect(config().mcp.servers.files.type).toBe("remote")
 })
@@ -240,6 +245,10 @@ test("a server's sign-in is led by the box: started, followed, done, and its ser
   expect((await act(tracker, "open-sign-in", undefined, tracker.revision, false)).status).toBe(400)
 
   // The address the page ended on, pasted: loaded on this computer, and the engine signs it in.
+  // An address its page doesn't take is said, and the sign-in still waits.
+  const turnedDown = await act(tracker, "finish", { code: `http://127.0.0.1:${fake.port}/elsewhere?code=old` }, tracker.revision, false)
+  expect(turnedDown.status).toBe(400)
+  expect(turnedDown.json.message).toBe("The sign-in didn't take that address. Paste the one its page ended on for this sign-in, or start it again.")
   const pasted = `http://127.0.0.1:${fake.port}/mcp/oauth/callback?code=abc&state=1`
   expect((await act(tracker, "finish", { code: pasted }, tracker.revision, false)).status).toBe(200)
   expect(engine.returned).toEqual(["?code=abc&state=1"])

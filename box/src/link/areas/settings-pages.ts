@@ -22,7 +22,7 @@ import { WORK_SETTINGS_FILE } from "../work/settings";
 import { WORKTREES_FILE, readWorktrees } from "./worktree-records";
 import { worktreesRoute } from "./worktrees";
 import { isObject, parsed, sortedJSON } from "../../shared/json";
-import { actionsOf, asked, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
+import { actionsOf, asked, expectedRevision, item, mtime, noActions, refusal, revised, row, rowsOf, said, STALE, staleOrRefusal, unreadPage } from "./settings-kit";
 import type { Refused, Section } from "./settings-kit";
 import { mcpSection } from "./settings-mcp";
 import { SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
@@ -805,12 +805,12 @@ async function checked(context: RouteContext, section: Section, rowPart: string,
   const given = parsed(context.request.body);
   if (!fitsShape(SETTINGS_CHECK, given)) return [400, { message: "Send its form's values as an object (values)." }];
   const body = given as { was?: string; values: Record<string, unknown> };
-  const page = await section.read(context);
+  const page = await section.read(context, true);
   const at = rowsOf(page).find(each => each.id === idOf(rowPart));
   if (!at) return [404, { message: "That isn't on this page now." }];
-  if (body.was !== undefined && at.revision !== body.was) return [409, { message: CHANGED_SINCE, page }];
   const action = actionsOf(at).find(each => each.id === idOf(actionPart));
   if (!action?.form) return [404, { message: "That has no form to check." }];
+  if (body.was !== undefined && expectedRevision(at, action) !== body.was) return [409, { message: CHANGED_SINCE, page }];
   return [200, section.check ? await section.check(context, at, action, body.values) : { fields: [], ready: true }];
 }
 
@@ -865,10 +865,10 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     const page = await section.read(context);
     const at = rowsOf(page).find(each => each.id === rowId);
     if (!at) return { status: 404, value: { message: "That isn't on this page now." } };
-    if (at.revision !== given.was) return { status: 409, value: { message: CHANGED_SINCE, page } };
+    const action = rowPart !== undefined ? actionsOf(at).find(each => each.id === idOf(actionPart)) : undefined;
+    if (expectedRevision(at, action) !== given.was) return { status: 409, value: { message: CHANGED_SINCE, page } };
     let done: Refused | null;
     if (rowPart !== undefined) {
-      const action = actionsOf(at).find(each => each.id === idOf(actionPart));
       if (!action) return { status: 404, value: { message: "That isn't something it does." } };
       if (action.opens !== undefined) return { status: 400, value: { message: "That opens a page: open it in the app." } };
       const why = whyNot(action.can);

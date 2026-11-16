@@ -82,5 +82,37 @@ the engine (a server's status, a sign-in's progress).
 - Phone pairing: a flow whose `line` and `opens` carry the pairing code / QR address.
 - Usage: rows (`meter`, switches): no forms.
 
-## Where I am
-(Filled in as work goes.)
+## How to build the next section (for Codex)
+1. A module `box/src/link/areas/settings-<id>.ts` exporting a `Section & { listed }` (copy
+   settings-mcp.ts's shape), listed in settings-pages.ts (`SECTIONS` and `PAGES`). Helpers are in
+   settings-kit.ts: `row`, `item`, `asked`, `refusal`, `STALE`, `staleOrRefusal`, `unreadPage`.
+2. Read through the box's existing routes (`asked`), write through them with `was`; map their 409
+   to `STALE`. Never a second copy of their rules.
+3. Forms: build each with its current values (the box computes `form.revision`). One function reads
+   the values for both `check` and the submit (`readForm` in settings-mcp.ts), so the words under
+   a field and the refusal are the same. Field words: `warning` holds Submit only through `ready`.
+4. What the engine says from moment to moment (a status, the actions that follow from it: Try
+   Again, Sign In) goes on the row after `item()` builds it, so it's outside the revision
+   (settings-mcp.ts, `now`). Anything that differs by who asks (`fromApp`) must be outside the
+   revision too.
+5. A flow: `keepFlow` on start, follow it in `read` unless `quiet` (a check reads quietly), `endFlow`
+   once (its `true` says you're the one to do what follows), `dropFlow` on cancel/dismiss. Only keep
+   an `opens` that's http(s).
+6. Tests (box): the section rules note's list, plus: a check's words, a submit refused with the same
+   words, a form not stale from another item's change, the flow's states. Desktop: the stand-in's page
+   for the section (gpui/kuvo/src/stand_in/settings/<id>.rs) and scenario tests through the window;
+   shots light and dark.
+7. One line in FEATURES only if the section needs a new kind; else none.
+
+## Where I am (2026-11-16)
+Done: the kinds (box shapes, route, PROTOCOL.md), MCP Servers on the box (Mac and Linux tests),
+the desktop app drawing them generically (tests, shots `gpui/shots/screens-settings-mcp-*`), the
+review's findings fixed (form revisions; stale form stays open; only http(s) sign-in pages; a pasted
+address turned down is said; checks don't follow flows; flow actions out of the revision).
+Open: the phone draws no `kuvo/settings` pages yet (none of them), so MCP Servers isn't on the phone;
+`settings.flows` is in the gate lists as the brief asked, which holds an older box for clients that
+require it. Left for later: the stand-in copies some MCP behaviour in Rust (keep later sections' to
+fixed pages); a declarative way to keep status actions out of the revision; the flows file isn't
+locked between the box's processes (a double reconnect at worst); a check reads the page and the
+facts twice; the notice isn't selectable; the segmented pick isn't reachable by keyboard; brand marks
+on popular servers; the engine lists no server's tools.

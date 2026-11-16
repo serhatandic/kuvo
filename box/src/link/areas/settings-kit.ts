@@ -28,11 +28,28 @@ export function revised<Row extends Omit<SettingItem, "revision"> & { items?: re
     choices: row.choices?.map(choice => choice.id), actions: row.actions?.map(action),
     start: action(row.start), section: row.section, address: row.address, name: row.name,
     items: row.items?.map(each => each.revision), add: action((row as { add?: SettingAction }).add),
-    flow: row.flow && { id: row.flow.id, state: row.flow.state, actions: row.flow.actions.map(action) },
+    // (A flow's state, not its actions, which differ by who asks: Finish only where it's pasted back.)
+    flow: row.flow && { id: row.flow.id, state: row.flow.state },
   };
-  const revision = crypto.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
-  return { ...row, revision };
+  const revision = hashed(governs);
+  const withForm = (each: SettingAction) => (each.form ? { ...each, form: { ...each.form, revision: formRevision(each.form) } } : each);
+  const add = (row as { add?: SettingAction }).add;
+  return {
+    ...row, revision,
+    ...(row.actions ? { actions: row.actions.map(withForm) } : {}),
+    ...(add ? { add: withForm(add) } : {}),
+  };
 }
+
+const hashed = (value: unknown): string => crypto.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16);
+
+/** A form's own revision: of the values it opens with, so a form goes stale only when what it shows
+ * changed (never because another thing in its list did). */
+export const formRevision = (form: NonNullable<SettingAction["form"]>): string =>
+  hashed(form.fields.map(field => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true })));
+
+/** What a request about `action` on `at` must have read: its form's revision, or the row's. */
+export const expectedRevision = (at: SettingItem, action: SettingAction | undefined): string => action?.form?.revision ?? at.revision;
 
 export const item = (row: Omit<SettingItem, "revision">): SettingItem => revised(row);
 export const row = (fields: Omit<SettingRow, "revision">): SettingRow => revised(fields);
@@ -85,7 +102,8 @@ export async function noActions(): Promise<Refused | null> {
 /** A section: its page; a change to a row; what a row offers, with its form's values (or a flow's
  * code); a form's values checked as they're typed; and what's looked at for a change made elsewhere. */
 export interface Section {
-  read: (context: RouteContext) => Promise<SettingsPage>;
+  /** (`quiet`: read only, following no flow, for a form's check.) */
+  read: (context: RouteContext, quiet?: boolean) => Promise<SettingsPage>;
   change: (context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown) => Promise<Refused | null>;
   act: (context: RouteContext, at: SettingItem, action: SettingAction, values?: Record<string, unknown>) => Promise<Refused | null>;
   check?: (context: RouteContext, at: SettingItem, action: SettingAction, values: Record<string, unknown>) => Promise<SettingsChecked>;

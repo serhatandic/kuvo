@@ -576,7 +576,7 @@ fn badge_of(key: &str, words: String, tone: BadgeTone, cx: &App) -> AnyElement {
         .gap(space::S1)
         .text_ui(TypeSize::Small)
         .text_color(c.text_muted)
-        .child(kuvo_ui::small::status_dot(dot))
+        .child(if tone == BadgeTone::Busy { spinner(SharedString::from(format!("{key}-badge-busy")), IconSize::Nav, c.text_muted).into_any_element() } else { kuvo_ui::small::status_dot(dot).into_any_element() })
         .child(words)
         .into_any_element()
 }
@@ -801,7 +801,9 @@ impl Render for SettingsView {
                             this.folder_picker = None;
                             match (&for_form, this.form().cloned()) {
                                 (Some(field), Some(form)) => form.update(cx, |form, cx| form.chose_folder(field, &path, cx)),
-                                _ => this.act(Act::Change { at: at.clone(), value: serde_json::json!(path), asked: false }, cx),
+                                // (Its form closed meanwhile: nothing to put it in.)
+                                (Some(_), None) => {}
+                                (None, _) => this.act(Act::Change { at: at.clone(), value: serde_json::json!(path), asked: false }, cx),
                             }
                             cx.notify();
                         }))),

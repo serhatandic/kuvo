@@ -51772,7 +51772,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fc2751d21adf";
+var BRIDGE_VERSION = "55c348774c91";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62335,11 +62335,21 @@ function revised(row) {
     name: row.name,
     items: row.items?.map((each) => each.revision),
     add: action(row.add),
-    flow: row.flow && { id: row.flow.id, state: row.flow.state, actions: row.flow.actions.map(action) }
+    flow: row.flow && { id: row.flow.id, state: row.flow.state }
   };
-  const revision = crypto63.createHash("sha256").update(sortedJSON(governs)).digest("base64url").slice(0, 16);
-  return { ...row, revision };
+  const revision = hashed2(governs);
+  const withForm = (each) => each.form ? { ...each, form: { ...each.form, revision: formRevision(each.form) } } : each;
+  const add = row.add;
+  return {
+    ...row,
+    revision,
+    ...row.actions ? { actions: row.actions.map(withForm) } : {},
+    ...add ? { add: withForm(add) } : {}
+  };
 }
+var hashed2 = (value) => crypto63.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16);
+var formRevision = (form) => hashed2(form.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true })));
+var expectedRevision = (at, action) => action?.form?.revision ?? at.revision;
 var item = (row) => revised(row);
 var row = (fields) => revised(fields);
 var rowsOf4 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []]));
@@ -62896,11 +62906,12 @@ async function followFlows(known) {
     }
   }
 }
-async function mcpPage(context) {
+async function mcpPage(context, quiet = false) {
   const known = await facts(context);
   if (!("settings" in known))
     return unreadPage("mcp", TITLE, known);
-  await followFlows(known);
+  if (!quiet)
+    await followFlows(known);
   const flows = flowsOf("mcp");
   const where = computerHere(context);
   const items = yourServers(known).map(([name, entry]) => {
@@ -63038,7 +63049,13 @@ async function mcpAct(context, at, action, values) {
       if (!pasted)
         return { status: 400, message: "Paste the address the sign-in page ended on." };
       const loaded = await asked8(context, (ctx) => loadSignInReturn(ctx.request.body, ctx.signal), "POST", "kuvo/sign-in/return", { url: pasted });
-      return refusal5(loaded);
+      const refused = refusal5(loaded);
+      if (refused)
+        return refused;
+      const answered = Number(loaded.value?.status);
+      if (!(answered >= 200 && answered < 400))
+        return { status: 400, message: "The sign-in didn't take that address. Paste the one its page ended on for this sign-in, or start it again." };
+      return null;
     }
     case "cancel":
     case "dismiss":
@@ -63062,7 +63079,8 @@ async function signIn(context, known, row, name) {
     const started = await call(known.engine, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, { methodID: method.id }, AbortSignal.timeout(30000));
     if (!started?.attemptID)
       return { status: 502, message: "The sign-in couldn't be started." };
-    keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...started.url ? { url: started.url } : {} } });
+    const page = typeof started.url === "string" && /^https?:\/\//i.test(started.url) ? started.url : undefined;
+    keepFlow({ section: "mcp", row, id: started.attemptID, about: { integration, attempt: started.attemptID, server: name, ...page ? { url: page } : {} } });
     return null;
   } catch (error) {
     return { status: 502, message: error instanceof Error && error.message ? error.message : "The sign-in couldn't be started." };
@@ -63115,7 +63133,7 @@ var SETTING_FIELD = object({
   "shown?": object({ field: string, is: list(string) }),
   "can?": SETTING_CAN
 });
-var SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string });
+var SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string, "revision?": string });
 var SETTING_ACTION = object({
   id: string,
   title: string,
@@ -64116,15 +64134,15 @@ async function checked3(context, section, rowPart, actionPart) {
   if (!fitsShape(SETTINGS_CHECK, given))
     return [400, { message: "Send its form's values as an object (values)." }];
   const body = given;
-  const page = await section.read(context);
+  const page = await section.read(context, true);
   const at = rowsOf4(page).find((each) => each.id === idOf6(rowPart));
   if (!at)
     return [404, { message: "That isn't on this page now." }];
-  if (body.was !== undefined && at.revision !== body.was)
-    return [409, { message: CHANGED_SINCE, page }];
   const action = actionsOf3(at).find((each) => each.id === idOf6(actionPart));
   if (!action?.form)
     return [404, { message: "That has no form to check." }];
+  if (body.was !== undefined && expectedRevision(at, action) !== body.was)
+    return [409, { message: CHANGED_SINCE, page }];
   return [200, section.check ? await section.check(context, at, action, body.values) : { fields: [], ready: true }];
 }
 async function* settingsPageRoute(context, match) {
@@ -64183,11 +64201,11 @@ async function* settingsPageRoute(context, match) {
     const at = rowsOf4(page).find((each) => each.id === rowId);
     if (!at)
       return { status: 404, value: { message: "That isn't on this page now." } };
-    if (at.revision !== given.was)
+    const action = rowPart !== undefined ? actionsOf3(at).find((each) => each.id === idOf6(actionPart)) : undefined;
+    if (expectedRevision(at, action) !== given.was)
       return { status: 409, value: { message: CHANGED_SINCE, page } };
     let done;
     if (rowPart !== undefined) {
-      const action = actionsOf3(at).find((each) => each.id === idOf6(actionPart));
       if (!action)
         return { status: 404, value: { message: "That isn't something it does." } };
       if (action.opens !== undefined)

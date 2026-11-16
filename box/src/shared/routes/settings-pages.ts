@@ -42,7 +42,9 @@ export const SETTING_FIELD = object({
 /** What an action asks for before it's done (Add Server…, Edit…): a sheet with the box's title, its
  * fields in order, a line under them, and its button's words (`submit`). Its values are sent with
  * the action (`values`), and checked as they're typed (`…/check`). */
-export const SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string });
+/** (`revision`: the form's own, of the values it opens with, sent back as `was` with its values and
+ * checks, so only a change to what the form shows makes it stale.) */
+export const SETTING_FORM = object({ title: string, submit: string, fields: list(SETTING_FIELD), "note?": string, "revision?": string });
 
 /** Something a row offers to do: its `id` (`POST …/:row/:id`), its words, whether it's
  * `destructive`, what's asked first, and whether it can be done from here (`can`, absent: it can).
