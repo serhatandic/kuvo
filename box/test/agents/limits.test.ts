@@ -1145,3 +1145,10 @@ describe("names, the bar's ring and windows that started over (#668)", () => {
     expect(text).toContain("weekly limit: 40% used")
   })
 })
+
+test("a newly added provider is read immediately before its first scheduled tick", async () => {
+  let reads = 0
+  const limits = new Limits(() => [{ provider: "codex-cli@new", service: "codex", limits: { every: 60_000, read: async () => { reads++; return null } } }])
+  await limits.readAgain("codex-cli@new")
+  expect(reads).toBe(1)
+})

@@ -734,8 +734,6 @@ impl AreaView {
         rows.push(SectionHeader::new("groups", "Group Chats").action(div().debug_selector(|| "new-group".into()).child(new_group)).into_any_element());
         if let (true, Some(why)) = (bots.groups.is_empty(), &bots.groups_failed) {
             rows.push(div().debug_selector(|| "groups-failed".into()).child(quiet(&format!("Group chats couldn’t be read: {why}"), false, cx)).into_any_element());
-        } else if bots.groups.is_empty() {
-            rows.push(div().debug_selector(|| "groups-none".into()).child(quiet("No group chats yet. Make one with the + beside Group Chats, to bring a few bots together.", false, cx)).into_any_element());
         }
         let now = self.now();
         for group in &bots.groups {

@@ -187,6 +187,7 @@ pub struct SettingsView {
     confirm: Option<Confirm>,
     folder_picker: Option<FolderPicker>,
     sign_in: Option<Entity<SignIn>>,
+    added_sign_in: Option<String>,
     sign_in_closed: Option<Subscription>,
     /// A form the box asked to be filled in, as a sheet, and what it says as it ends.
     form: Option<Entity<FormSheet>>,
@@ -304,6 +305,7 @@ impl SettingsView {
             confirm: None,
             folder_picker: None,
             sign_in: None,
+            added_sign_in: None,
             sign_in_closed: None,
             form: None,
             form_events: None,
@@ -1327,6 +1329,20 @@ impl SettingsView {
                 cx.emit(Pick { place, record: true });
             }
             Act::SignIn { side, account, name, sheet_title } => self.open_sign_in_titled(side, &account, &name, sheet_title, cx),
+            Act::AddAgent { account, name, sheet_title } => {
+                let key = format!("account-{account}");
+                self.set_busy(&key, "Adding…");
+                self.run(key.clone(), move |client| client.add_agent_account(&account), move |this, result, cx| {
+                    this.done(&key);
+                    match result {
+                        Ok(account) => {
+                            this.open_sign_in_titled(AccountSide::Agents, &account, &name, sheet_title, cx);
+                            this.added_sign_in = Some(account);
+                        },
+                        Err(error) => this.problem = Some(said(&error)),
+                    }
+                }, cx);
+            }
             Act::Install { account, name } => {
                 let key = format!("account-{account}");
                 self.set_busy(&key, "Installing…");
@@ -1576,10 +1592,17 @@ impl SettingsView {
         let Some(client) = self.client.clone() else { return };
         let sheet = cx.new(|cx| SignIn::new(client, self.live, side, account, name, cx).sheet_title(title));
         // Closed, however it ended (a key may have gone in as it closed): Accounts read again.
-        self.sign_in_closed = Some(cx.subscribe(&sheet, |this: &mut SettingsView, _, _: &sign_in::Closed, cx| {
+        self.sign_in_closed = Some(cx.subscribe(&sheet, |this: &mut SettingsView, _, closed: &sign_in::Closed, cx| {
             this.sign_in = None;
             this.sign_in_closed = None;
-            this.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx);
+            let remove = this.added_sign_in.take().filter(|_| !closed.signed_in);
+            this.run("read-accounts", move |client| {
+                if let Some(account) = remove { client.remove_unfinished_agent_account(&account)?; }
+                client.sign_in_accounts()
+            }, |this, read, _| {
+                if let Err(error) = &read { this.problem = Some(said(error)); }
+                this.accounts = reading(read, &this.accounts);
+            }, cx);
             cx.notify();
         }));
         sheet.update(cx, |sheet, cx| sheet.start(cx));

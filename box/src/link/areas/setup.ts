@@ -1,3 +1,4 @@
+import { computerInSentence } from "../computer-name";
 // `kuvo/setup` (PROTOCOL.md, "Your setup"): who's in your setup and who its main computer is, as
 // this box says it, on every box, for every client; and its events, a line now and one as it changes.
 // `POST kuvo/setup/judge`: what a Mac adding a computer found there over SSH, judged by this box.
@@ -81,7 +82,7 @@ export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerP
       return Array.isArray(listed) ? listed.filter((each): each is ListedAccount => typeof (each as ListedAccount | null)?.id === "string") : null;
     };
     const [lists, fromEngine, fromAgents] = await Promise.all([listsHere(engine, agents), accounts(engine), accounts(agents)]);
-    return yield* json(200, firstRunReady(lists, fromEngine, fromAgents, readEndedSignIns(), plainName(context.info.name) || "this computer"));
+    return yield* json(200, firstRunReady(lists, fromEngine, fromAgents, readEndedSignIns(), computerInSentence(context.request)));
   }
   if (route === "kuvo/setup/events") {
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };

@@ -104,7 +104,7 @@ Sign In Again, Install, Disconnect, Sign Out or Remove Account show. Only the la
 signed in, the actions are in a menu (a lone one that asks first stays a button, Disconnect);
 otherwise buttons, in the box's order; an action that only works on the box's computer (`here`)
 is drawn only there. In a menu, a row that opens something first ends in an ellipsis, drawn here.
-Not drawn yet (no control for them): a program's `update`, `rename`, and `addAnother`.
+Not drawn yet (no control for them): a program's `update` and `rename`. Coding agents’ `addAnother` creates a separate account, then opens its sign-in.
 
 The sheet (the Mac's `ConnectView` steps): the box's ways in order, legacy ones under "Other ways
 to sign in", "Or set … in your shell profile"; one way alone starts at once. A key: masked field,

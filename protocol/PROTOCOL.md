@@ -3523,9 +3523,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   - Accounts: besides each agent's own sign-in, ones you added, each its own provider
     `<agent's provider>@<id>` (`claude-code@1f2e3d4c`), named `Claude Code · Work` in
     `kuvo/agents/api/integration` (`metadata.accountID`, `metadata.accountLabel`). Their models
-    and sessions are theirs. `kuvo/agents/api/kuvo/accounts`: `POST {agent, label}` (agent:
-    `claude`, `codex`, `cursor`, `grok`, `antigravity`) → `{data: {providerID}}`, then sign in as
-    any; `PATCH …/accounts/<provider> {label}`; `DELETE …/accounts/<provider>`.
+    and sessions are theirs. `kuvo/agents/api/kuvo/accounts`: `POST {provider, label}` (the existing provider ID, including an added account’s ID), or `POST {agent, label}` (agent:
+    `claude`, `codex`, `cursor`, `grok`, `antigravity`) → `{data: {providerID}}`, then sign in to the returned provider ID; `PATCH …/accounts/<provider> {label}`; `DELETE …/accounts/<provider>`. With `?onlyUnsigned=1`, DELETE first checks the account afresh and keeps it if sign-in completed meanwhile.
+    `metadata.addedAccounts: true` says this agent supports separate accounts. On its own sign-in only, `addAnother` means POST `kuvo/agents/api/kuvo/accounts` first, then open sign-in for the returned provider, never replace the first account’s sign-in. Cancelled new sign-ins remove the newly created account through DELETE.
     A signed-in account's connection has `what: true` where its `label` says what it's signed in
     with ("OpenAI API key", "Google account", "grok.com", a plan with no one named), not who.
     `metadata.signInEnded` true: its maker ended the sign-in; mark the account (the Mac says
@@ -3800,8 +3800,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       doesn't offer it and says where instead. The ids, and the route each is done through:
       `signIn` and `signInAgain` (a coding agent's that's signed in or ended; an engine's with a
       sign-in that ended, the one in use or another, or whose one in use failed) and `addAnother`
-      (an engine's that's signed in: the engine uses
-      one at a time) start a sign-in from `methods`, there only where `methods` isn't empty;
+      (an engine’s that’s signed in: the engine uses one at a time) start a sign-in from `methods`, there only where `methods` isn’t empty. A coding agent’s own sign-in also offers `addAnother` when `metadata.addedAccounts` is true: POST `kuvo/agents/api/kuvo/accounts` with `{provider: id}` first, then sign in to the returned provider ID;
       `disconnect` (an engine's plan with a sign-in or key the box keeps, never an integration's
       server's; one from the shell's environment has none, and where one stays beside a saved
       one the confirm says it stays, and its models with it) is `POST kuvo/accounts/<id>/forget`; `install` is `POST

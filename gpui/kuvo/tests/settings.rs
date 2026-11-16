@@ -1581,3 +1581,36 @@ fn storage_shows_its_parts_a_breakdown_and_opens_the_pages_that_clear_the_rest(c
     click(cx, "row-manage-worktrees");
     assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.area_view(Area::Settings).and_then(|view| view.read(cx).settings().cloned())).map(|view| view.read_with(cx, |view, _| view.section().to_owned())).as_deref(), Some("worktrees"));
 }
+
+#[gpui::test]
+fn added_agent_signs_in_to_its_new_provider_and_cancel_removes_it(cx: &mut TestAppContext) {
+    added_agent_cancel(cx, false);
+}
+
+#[gpui::test]
+fn closing_after_oauth_completed_before_ui_poll_keeps_the_added_account(cx: &mut TestAppContext) {
+    added_agent_cancel(cx, true);
+}
+
+fn added_agent_cancel(cx: &mut TestAppContext, completed: bool) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "accounts");
+    assert!(view.read_with(cx, |view, _| view.account_act("codex-cli", "addAnother").is_some()));
+    click(cx, "account-codex-cli-menu");
+    click(cx, "menu-item-Add Another Account…");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.sign_in().is_some()));
+    // Codex offers two ways (its browser sign-in and an API key): the browser's is picked.
+    click(cx, "sign-in-way-0");
+    let starts = stand_in.seen_at("POST", "kuvo/sign-in/start");
+    let start = starts.last().expect("new account sign-in");
+    assert!(start.path.contains("integration=codex-cli%40added"), "{}", start.path);
+    if completed { stand_in.end_sign_ins(Ending::Complete, None); }
+    let sheet = view.read_with(cx, |view, _| view.sign_in().unwrap().clone());
+    sheet.update(cx, |sheet, cx| sheet.close(cx));
+    cx.run_until_parked();
+    assert!(stand_in.seen().iter().any(|seen| seen.method == "DELETE" && seen.path.starts_with("kuvo/agents/api/kuvo/accounts/codex-cli")));
+    let accounts = BoxClient::new(stand_in).sign_in_accounts().unwrap();
+    assert_eq!(accounts.agents.iter().any(|entry| entry.integration.id.starts_with("codex-cli@added")), completed);
+}

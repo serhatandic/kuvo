@@ -248,7 +248,7 @@ impl Workspace {
         });
         let permissions = cx.new(|cx| crate::permissions::HeadsUp::new(client.clone(), live, window, cx));
         let areas = areas::views(&client, live, cx);
-        let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe(view, |this: &mut Workspace, view, _: &Picked, cx| this.area_picked(&view, cx))).collect();
+        let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.extend(areas.iter().map(|(_, view)| {
             cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
@@ -1462,9 +1462,17 @@ impl Workspace {
         self.show_area(Area::Settings, window, cx);
     }
 
-    fn area_picked(&mut self, view: &Entity<AreaView>, cx: &mut Context<Self>) {
+    fn area_picked(&mut self, view: &Entity<AreaView>, window: &mut Window, cx: &mut Context<Self>) {
         let (area, picked) = view.read_with(cx, |view, _| (view.area(), view.selected().map(str::to_owned)));
-        // A row picked in Bots shows its page (a bot's own row, from its conversation, too).
+        if area == Area::Bots {
+            if let Some(bot) = picked.as_deref().and_then(|key| key.strip_prefix("bot:")) {
+                if let Some(session) = self.bot_session(bot, cx) {
+                    self.open_bot_chat(bot, &session, None, window, cx);
+                    return;
+                }
+            }
+        }
+        // Non-bot rows in Bots show their page.
         if area == Area::Bots {
             self.in_bot_chat = false;
             self.show_composer_on_screen(cx);
@@ -1681,7 +1689,7 @@ impl Workspace {
             .px(space::S3)
             .border_b_1()
             .border_color(c.border)
-            .child(Button::icon_only("bot-chat-back", IconName::ArrowLeft, "Back to its page").ghost().size(ButtonSize::Small).tooltip("Its page").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
+            .child(Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings").ghost().size(ButtonSize::Small).tooltip("Bot Settings").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
             .children(listed.as_ref().map(|bot| areas::bot_face(&bot.look, px(22.))))
             .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
             .children(listed.as_ref().map(|bot| {

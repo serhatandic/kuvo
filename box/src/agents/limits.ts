@@ -582,8 +582,12 @@ export class Limits {
    * shows at once), and waits for that round.
    */
   readAgain(provider: string): Promise<void> {
-    const entry = this.entries.get(provider)
-    if (!entry) return Promise.resolve()
+    let entry = this.entries.get(provider)
+    if (!entry) {
+      if (!this.account(provider)) return Promise.resolve()
+      entry = { windows: [], next: 0 }
+      this.entries.set(provider, entry)
+    }
     entry.next = 0
     entry.elsewhere = undefined
     this.forced.add(provider)

@@ -1,3 +1,4 @@
+import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
 // peers (the boxes its Macs name), and the boxes those vouch for (plan limits only). What each is,
@@ -25,7 +26,7 @@ import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents, vouchedOf } from "../peers/directory";
 import { isApart } from "../peers/apart";
 import { addressOf } from "../crypto/keys";
-import { ADDRESS, namedBoxes, ownKey, peersOf } from "../peers/known";
+import { ADDRESS, ownKey, peersOf } from "../peers/known";
 import { actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
@@ -185,11 +186,9 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   const { version, engine, system: runs } = ownComputer();
   const atWork = atWorkHere();
-  // (A machine by the name its Macs' records give it, renamed there, else its own.)
-  const named = !IS_MAC && own ? namedBoxes(link).find(box => box.key === own)?.name : undefined;
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
-    name: (IS_MAC ? macLink.config?.name : named || name) || name || os.hostname(),
+    name: ownComputerName(),
     kind: IS_MAC ? "mac" : "machine",
     here: true,
     shared: sharedMachine(link),

@@ -89,7 +89,7 @@ fn adding_a_machine_asks_about_its_key_then_shows_each_step_until_its_one_of_you
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computers-add");
-    assert!(shown(cx, "add-machine-page") && shown(cx, "add-form") && shown(cx, "add-hosts") && shown(cx, "add-how"));
+    assert!(shown(cx, "add-machine-page") && shown(cx, "add-form") && shown(cx, "add-hosts") && !shown(cx, "add-how"));
     assert_eq!(title(&workspace, cx).as_deref(), Some("Add a Machine"));
     // Nothing typed: nothing to add, and nothing is sent.
     click(cx, "add-machine");

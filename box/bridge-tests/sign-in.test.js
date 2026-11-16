@@ -139,7 +139,8 @@ test("how each account stands and what can be done with it, in the box's words: 
   });
   const on = link.engineHandler(() => ({ pid: process.pid, ...signedIn, version: "2.0.32" }), { name: "Studio" }, () => null);
   const copilot = async () => (await answer("GET", "kuvo/sign-in/accounts", on)).json.accounts[0];
-  const disconnect = { id: "disconnect", label: "Disconnect", confirm: { title: "Disconnect GitHub Copilot?", message: "Its sign-ins and keys go from Studio, and its models leave the model picker there. Sessions on its models stop until you sign in again.", label: "Disconnect" } };
+  const displayName = (await answer("GET", "kuvo/computers", on)).json.computers.find(computer => computer.here).name;
+  const disconnect = { id: "disconnect", label: "Disconnect", confirm: { title: "Disconnect GitHub Copilot?", message: `Its sign-ins and keys go from ${displayName}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`, label: "Disconnect" } };
   const another = { id: "addAnother", label: "Add Another Account", sheetTitle: "Sign In to GitHub Copilot" };
   let said = await copilot();
   assert.deepEqual({ state: said.state, line: said.line, actions: said.actions, connections: said.connections }, {
@@ -209,4 +210,24 @@ test("kuvo/info says the box answers them", async () => {
   const info = await answer("GET", "kuvo/info");
   assert.ok(info.json.features.includes("sign-in.methods"));
   assert.ok(info.json.features.includes("sign-in.accounts.state"));
+});
+
+test("adding an agent account forwards provider and returns the separate provider ID", async () => {
+  let given;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    given = { method: request.method, path: request.url, body: JSON.parse(Buffer.concat(chunks).toString()) };
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ data: { providerID: "codex-cli@1234abcd" } }));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const on = handlerOn(() => ({ pid: agents, port: server.address().port, password: "p" }));
+    const pieces = [];
+    for await (const piece of on({ method: "POST", path: "kuvo/agents/api/kuvo/accounts", headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ provider: "codex-cli" })) }, {}, undefined)) pieces.push(piece);
+    assert.equal(pieces[0].head.status, 200);
+    assert.deepEqual(JSON.parse(Buffer.concat(pieces.filter(piece => piece.body).map(piece => piece.body)).toString()), { data: { providerID: "codex-cli@1234abcd" } });
+    assert.deepEqual(given, { method: "POST", path: "/api/kuvo/accounts", body: { provider: "codex-cli" } });
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });

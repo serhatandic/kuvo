@@ -92,14 +92,15 @@ fn only_the_area_on_screen_asks_the_box(cx: &mut TestAppContext) {
 #[gpui::test]
 fn control_one_to_five_switch_areas_from_anywhere_in_the_window(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    assert!(bounds(cx, "rail-bots").unwrap().top() < bounds(cx, "rail-sessions").unwrap().top());
     // From the composer of a conversation, as from anywhere.
     click(cx, "session-project-ses_limits");
     for (keys, expected, shown) in [
-        ("ctrl-2", Area::Bots, "bot-bot_inbox"),
+        ("ctrl-1", Area::Bots, "bot-bot_inbox"),
         ("ctrl-3", Area::Queue, "status-todo"),
         ("ctrl-4", Area::Computers, "computer-key_devbox"),
         ("ctrl-5", Area::Settings, "setting-general"),
-        ("ctrl-1", Area::Sessions, "session-project-ses_limits"),
+        ("ctrl-2", Area::Sessions, "session-project-ses_limits"),
     ] {
         cx.simulate_keystrokes(keys);
         cx.run_until_parked();
@@ -161,9 +162,9 @@ fn a_narrow_window_folds_the_areas_sidebar_away_and_the_rail_brings_it_out(cx: &
 fn switching_areas_in_a_wide_window_still_folds_the_sidebar_when_it_narrows(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     click(cx, "session-project-ses_signup");
-    cx.simulate_keystrokes("ctrl-2");
+    cx.simulate_keystrokes("ctrl-1");
     assert_eq!(area(&workspace, cx), Area::Bots);
-    cx.simulate_keystrokes("ctrl-1 cmd-shift-f");
+    cx.simulate_keystrokes("ctrl-2 cmd-shift-f");
     cx.run_until_parked();
     assert_eq!(area(&workspace, cx), Area::Sessions);
     cx.simulate_resize(size(px(760.), px(800.)));

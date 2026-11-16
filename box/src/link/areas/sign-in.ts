@@ -16,6 +16,7 @@ import { agentsDown } from "./agents-down";
 import { engineDown } from "./engine";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { plainName } from "../../shared/text";
+import { computerInSentence } from "../computer-name";
 import { accountState } from "./sign-in-state";
 
 export const SIGN_IN_METHODS_ROUTE = "kuvo/sign-in/methods";
@@ -229,7 +230,7 @@ async function* accountsRoute(context: RouteContext, query: URLSearchParams): As
     const agents = query.get("agents") === "1";
     // The engine's plans whose saved sign-in runs were refused with, as the box keeps them.
     const ended = agents ? new Map<string, string>() : readEndedSignIns();
-    const computer = plainName(context.info.name) || "this computer";
+    const computer = computerInSentence(context.request);
     return yield* json(200, {
       accounts: accounts.map(account => {
         const service = serviceOf(account, agents);

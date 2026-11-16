@@ -1,8 +1,9 @@
+import { watchSignIn } from "./signin-watch"
 // The bridge's HTTP API: the engine's, the parts the app uses for a session, its models and its
 // sign-in, answered for outside agents. Anything else is "not here", which the app takes as it
 // takes an engine without that feature.
 
-import { kinds, type AgentKind } from "./accounts"
+import { kinds, parseProvider, type AgentKind } from "./accounts"
 import type { Account, Agent, SignInAttempt } from "./agent"
 import type { Auto, AutoList } from "./auto"
 import type { EngineLink } from "./engine"
@@ -71,11 +72,11 @@ export interface Context {
   usage?: Usage
 }
 
-const attempts = new Map<string, { agent: Agent; attempt: SignInAttempt; created: number; expires: number }>()
+const attempts = new Map<string, { agent: Agent; attempt: SignInAttempt; created: number; expires: number; stop: () => void }>()
 
 /** Sign-ins still waiting, given up on (the bridge is stopping). */
 export function cancelSignIns() {
-  for (const pending of attempts.values()) pending.attempt.cancel()
+  for (const pending of attempts.values()) { pending.stop(); pending.attempt.cancel() }
   attempts.clear()
 }
 
@@ -89,6 +90,7 @@ export function signInsWaiting(): boolean {
 setInterval(() => {
   for (const [id, pending] of attempts) {
     if (Date.now() < pending.expires + 60_000) continue
+    pending.stop()
     pending.attempt.cancel()
     attempts.delete(id)
   }
@@ -156,6 +158,7 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
     metadata: {
       source: "agent",
       agent: agent.id,
+      addedAccounts: kinds.includes(agent.id as AgentKind),
       // Which of your accounts with it: `default` is the agent's own sign-in.
       accountID: agent.instance.id,
       accountLabel: agent.instance.label,
@@ -261,7 +264,8 @@ export function handler(context: Context) {
             const created = Date.now()
             // Long enough for a download first (Antigravity's agent) on a slow connection.
             const expires = created + 30 * 60_000
-            attempts.set(id, { agent, attempt, created, expires })
+            const stop = watchSignIn(attempt, expires, () => void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {}))
+            attempts.set(id, { agent, attempt, created, expires, stop })
             return located({ attemptID: id, url: attempt.url, instructions: attempt.instructions, mode: attempt.mode, acceptsCode: attempt.acceptsCode || undefined, userCode: attempt.userCode, time: { created, expires } })
           }
           const pending = d ? attempts.get(d) : undefined
@@ -269,8 +273,9 @@ export function handler(context: Context) {
           if (method === "GET" && !e) {
             const expired = Date.now() > pending.expires
             const status = expired ? { status: "expired" } : pending.attempt.status()
-            if (expired) pending.attempt.cancel()
+            if (expired) { pending.stop(); pending.attempt.cancel() }
             if (status.status !== "pending") attempts.delete(d!)
+
             return located(status)
           }
           if (method === "POST" && e === "complete") {
@@ -280,6 +285,7 @@ export function handler(context: Context) {
             return json({})
           }
           if (method === "DELETE") {
+            pending.stop()
             pending.attempt.cancel()
             attempts.delete(d!)
             return json({})
@@ -289,6 +295,7 @@ export function handler(context: Context) {
           const { key } = await body()
           if (!agent.signInWithKey) return error(400, `${agent.name} doesn't take a key here.`)
           await agent.signInWithKey(String(key ?? "").trim())
+          void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {})
           return json({})
         }
         // Its program installed with its maker's installer (the command `metadata.install` shows),
@@ -481,7 +488,8 @@ export function handler(context: Context) {
       // Your accounts with the agents: adding one (it then signs in as any does), naming one, removing one.
       if (area === "kuvo" && a === "accounts") {
         if (method === "POST" && !b) {
-          const { agent, label } = await body()
+          const { agent: givenAgent, provider, label } = await body()
+          const agent = givenAgent ?? (typeof provider === "string" ? parseProvider(provider)?.kind : undefined)
           if (!kinds.includes(agent)) return error(400, "That isn't one of the coding agents.")
           const record = roster.accounts.add(agent as AgentKind, label)
           roster.sync()
@@ -499,6 +507,7 @@ export function handler(context: Context) {
           return json({})
         }
         if (method === "DELETE") {
+          if (url.searchParams.get("onlyUnsigned") === "1" && (await target.account(true)).signedIn) return json({})
           sessions.forgetProvider(target.providerID)
           await target.removeAccount?.().catch(() => {})
           target.shutdown?.()

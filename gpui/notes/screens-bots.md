@@ -1,6 +1,6 @@
 # Bots: a bot's page, New Bot, changing and deleting one
 
-The Bots area's main view (⌃2). The idea is the Mac's (a bot has a name, a look, a job, a
+The Bots area's main view (⌃1). The idea is the Mac's (a bot has a name, a look, a job, a
 personality and a model, its own conversation and the sessions it starts), drawn in this app's own
 language, not the Mac's views: where the Mac opens a bot's conversation and keeps everything else in
 one Edit Bot form with Save, here a bot has a page. Code: `kuvo/src/bots/` (`mod.rs` the view, what

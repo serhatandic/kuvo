@@ -46,7 +46,7 @@ const RETRY: Duration = Duration::from_secs(10);
 pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let open = workspace.area();
     let waiting = workspace.waiting();
-    let top = [Area::Sessions, Area::Bots, Area::Queue, Area::Computers].into_iter().map(|area| {
+    let top = [Area::Bots, Area::Sessions, Area::Queue, Area::Computers].into_iter().map(|area| {
         // How many things wait on you there, as the box counts them (`kuvo/waiting`).
         let count = match area {
             Area::Sessions => waiting.sessions,
