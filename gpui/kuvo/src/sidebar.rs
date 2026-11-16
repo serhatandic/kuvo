@@ -456,7 +456,7 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
             };
             let (toggle, start_in) = (directory.clone(), directory.clone());
             let mut header = NavRow::new(SharedString::from(format!("project-{directory}")), group.name.clone())
-                .icon(if collapsed { IconName::ChevronRight } else { IconName::Folder })
+                .icon(project_icon(collapsed))
                 .cursor(cursor)
                 .hover_trailing(
                     Button::icon_only(
@@ -908,4 +908,20 @@ fn needs_row(workspace: &mut Workspace, id: &str, asks: &str, cursor: bool, cx: 
         .child(with_menu)
         .children(popover)
         .into_any_element()
+}
+
+/// Keep the project recognizable as a folder in both disclosure states.
+fn project_icon(collapsed: bool) -> IconName {
+    if collapsed { IconName::Folder } else { IconName::FolderOpen }
+}
+
+#[cfg(test)]
+mod project_icon_tests {
+    use super::*;
+
+    #[test]
+    fn project_disclosure_keeps_a_folder_in_both_states() {
+        assert_eq!(project_icon(true), IconName::Folder);
+        assert_eq!(project_icon(false), IconName::FolderOpen);
+    }
 }

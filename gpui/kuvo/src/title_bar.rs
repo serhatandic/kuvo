@@ -90,6 +90,14 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                 .h_full()
                 .pl(px(LIGHTS))
                 .pr(space::S2)
+                .child(buttons(
+                    Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
+                        .ghost()
+                        .size(ButtonSize::Small)
+                        .selected(workspace.sidebar_shown())
+                        .tooltip(if workspace.sidebar_shown() { "Hide Sidebar (⌘B)" } else { "Show Sidebar (⌘B)" })
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
+                ))
                 .child(buttons(computer_switcher(workspace, cx)))
                 .when(workspace.sidebar_shown(), |zone| zone.child(div().flex_1()))
                 .child(buttons(nav)),

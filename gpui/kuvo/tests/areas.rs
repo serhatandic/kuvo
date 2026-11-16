@@ -463,3 +463,25 @@ fn opening_the_gate_refreshes_the_area_already_on_screen(cx: &mut TestAppContext
         assert_eq!(workspace.landing().read(cx).field().read(cx).text(), "ready");
     });
 }
+
+#[gpui::test]
+fn title_bar_button_and_command_b_toggle_the_same_sidebar_as_the_rail(cx: &mut TestAppContext) {
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    assert!(bounds(cx, "area-sidebar").is_some());
+    let toggle = bounds(cx, "toggle-sidebar").unwrap();
+    let picker = bounds(cx, "computer-switcher").unwrap();
+    assert!(toggle.right() <= picker.left(), "the toggle precedes the computer picker");
+    click(cx, "toggle-sidebar");
+    assert!(bounds(cx, "area-sidebar").is_none());
+    cx.simulate_keystrokes("cmd-b");
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_some());
+    cx.simulate_keystrokes("cmd-b");
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_none());
+    click(cx, "rail-sessions");
+    assert!(bounds(cx, "area-sidebar").is_some());
+    click(cx, "toggle-sidebar");
+    click(cx, "toggle-sidebar");
+    assert!(bounds(cx, "area-sidebar").is_some());
+}
