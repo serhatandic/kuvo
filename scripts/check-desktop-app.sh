@@ -20,6 +20,8 @@
 #       written in your own home folder: the copy, its home and the engine `status` fetches (it
 #       needs the network) are in a temporary folder that goes when this ends.
 #   NODE   the Node to read the release with (default: node)
+#   PRIVATE_FEED   1: Kuvo Code itself may read a private feed (https, never the real feed or key):
+#          the user's own copy, scripts/private-feed.sh.
 #   WITHOUT_KEYS   1: an app with no kuvo-keys passes, said (a release signing's dry run, which takes
 #          it out: scripts/sign-desktop-app.sh). Never for an app that's published.
 set -eu
@@ -81,7 +83,11 @@ REAL_KEY=$(sed -n 's/^REAL_UPDATE_PUBLIC_KEY="\(.*\)"$/\1/p' scripts/build-deskt
 if FEED=$(info SUFeedURL); then
     UPDATE_KEY=$(info SUPublicEDKey) || fail "its Info.plist names a feed but no update key (SUPublicEDKey)."
     [ "$(info SUVerifyUpdateBeforeExtraction)" = true ] || fail "its Info.plist doesn't have updates checked before they're unpacked (SUVerifyUpdateBeforeExtraction)."
-    if [ "$ID" = run.kuvo.code ]; then
+    if [ "$ID" = run.kuvo.code ] && [ "${PRIVATE_FEED:-}" = 1 ]; then
+        # (The user's own copy reading a private feed, scripts/private-feed.sh: never the real ones.)
+        case "$FEED" in https://?*) ;; *) fail "its private feed isn't read over https: $FEED." ;; esac
+        [ "$FEED" != "$REAL_FEED" ] && [ "$UPDATE_KEY" != "$REAL_KEY" ] || fail "a private feed's build reads Kuvo Code's own feed or key."
+    elif [ "$ID" = run.kuvo.code ]; then
         [ "$FEED" = "$REAL_FEED" ] || fail "Kuvo Code reads $FEED, not its own feed."
         [ "$UPDATE_KEY" = "$REAL_KEY" ] || fail "Kuvo Code trusts updates signed with another key than its own."
     elif [ "$FEED" = "$REAL_FEED" ] || [ "$UPDATE_KEY" = "$REAL_KEY" ]; then

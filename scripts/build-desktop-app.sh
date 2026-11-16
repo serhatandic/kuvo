@@ -44,6 +44,11 @@
 #   FEED_URL, UPDATE_PUBLIC_KEY   a feed of its own and the EdDSA key its updates are signed with,
 #               both, for a copy of its own (APP_ID not run.kuvo.code): a test's
 #               (scripts/try-desktop-update.sh), never the real app's.
+#   PRIVATE_FEED 1: the user's own Kuvo Code (run.kuvo.code) before the first release with a feed,
+#               reading a private feed of its own (scripts/private-feed.sh, the only one to ask):
+#               FEED_URL (https) and UPDATE_PUBLIC_KEY, never the real ones, and SIGN_IDENTITY, a
+#               real identity (Apple Development) the helper, kuvo-keys and the app are signed with.
+#               For a copy of its own (private-feed.sh dry-run), any FEED_URL, and ad hoc or not.
 #   BUN, NODE   as scripts/box-release.sh takes them
 #   MIN_SYSTEM  the oldest macOS it runs on (default 26.0)
 # Needs Xcode (the helper, the icon), Rust as gpui/README.md sets it up, Bun and Node. It's a
@@ -60,7 +65,17 @@ if [ $# -ne 0 ]; then
     awk 'NR > 1 && /^set -eu/ { exit } NR > 1' "$0" >&2
     exit 2
 fi
-if [ "${SIGN_IDENTITY:--}" != "-" ]; then
+# The box releases' key, out of the environment at once: only scripts/box-release.sh is given it,
+# never cargo, the helper's build or anything else this runs.
+BOX_SIGNING_KEY="${KUVO_BOX_SIGNING_KEY:-}"
+unset KUVO_BOX_SIGNING_KEY
+IDENTITY="${SIGN_IDENTITY:--}"
+if [ "${PRIVATE_FEED:-}" = 1 ]; then
+    if [ "$IDENTITY" = "-" ] && [ "${APP_ID:-run.kuvo.code}" = run.kuvo.code ]; then
+        echo "A private feed's build of Kuvo Code itself is signed with a real identity: SIGN_IDENTITY (scripts/private-feed.sh)." >&2
+        exit 2
+    fi
+elif [ "$IDENTITY" != "-" ]; then
     echo "scripts/build-desktop-app.sh signs ad hoc only: signing with an identity is the release's step." >&2
     exit 2
 fi
@@ -76,7 +91,21 @@ esac
 # same key, so it updates into this app). scripts/set-update-key.sh uploads it for the release.
 REAL_FEED_URL="https://github.com/serhatandic/kuvo-code/releases/latest/download/appcast.xml"
 REAL_UPDATE_PUBLIC_KEY="uG/YbzL4kf+DAYCiTTfK8ztEOBo96hkEAuKk9rw9BE4="
-if [ "$APP_ID" = run.kuvo.code ]; then
+if [ "${PRIVATE_FEED:-}" = 1 ]; then
+    # (The user's own copy, before the first release with a feed: its own feed and key, both.)
+    # (A copy of its own takes this path too: scripts/private-feed.sh dry-run's, over http on 127.0.0.1.)
+    [ "${FEED:-}" != 1 ] || { echo "PRIVATE_FEED and FEED are one or the other." >&2; exit 2; }
+    if [ "$APP_ID" = run.kuvo.code ]; then
+        case "${FEED_URL:-}" in https://?*) ;; *) echo "A private feed is read over https: FEED_URL." >&2; exit 2 ;; esac
+    else
+        [ -n "${FEED_URL:-}" ] || { echo "A private feed takes its address: FEED_URL." >&2; exit 2; }
+    fi
+    [ -n "${UPDATE_PUBLIC_KEY:-}" ] || { echo "A private feed takes the key its updates are signed with: UPDATE_PUBLIC_KEY." >&2; exit 2; }
+    if [ "$UPDATE_PUBLIC_KEY" = "$REAL_UPDATE_PUBLIC_KEY" ] || [ "$FEED_URL" = "$REAL_FEED_URL" ]; then
+        echo "A private feed is never Kuvo Code's own feed or key: that's FEED=1." >&2
+        exit 2
+    fi
+elif [ "$APP_ID" = run.kuvo.code ]; then
     if [ -n "${FEED_URL:-}" ] || [ -n "${UPDATE_PUBLIC_KEY:-}" ]; then
         echo "Kuvo Code itself reads only its own feed, with its own key: FEED_URL and UPDATE_PUBLIC_KEY are for a copy of its own (APP_ID)." >&2
         exit 2
@@ -144,7 +173,9 @@ xcrun actool swift/KuvoCode/AppIcon.icon --compile "$work/icon" --app-icon AppIc
 test -s "$work/icon/AppIcon.icns" || { echo "actool made no AppIcon.icns from swift/KuvoCode/AppIcon.icon." >&2; exit 1; }
 
 # Kuvo Helper, for the box's release, and kuvo-keys: each signed ad hoc, as its own.
-env -u HELPER_EXECUTABLE -u KEYS_EXECUTABLE -u KUVO_SIGNED_KEYS SIGN_IDENTITY=- APP_ID="$APP_ID" VERSION="$VERSION" BUILD="$BUILD" \
+# (A private feed's build: both signed with its identity, kuvo-keys kept, as the user's copy needs it.)
+if [ "$IDENTITY" = "-" ]; then SIGNED_KEYS=""; else SIGNED_KEYS=1; fi
+env -u HELPER_EXECUTABLE -u KEYS_EXECUTABLE KUVO_SIGNED_KEYS="$SIGNED_KEYS" SIGN_IDENTITY="$IDENTITY" APP_ID="$APP_ID" VERSION="$VERSION" BUILD="$BUILD" \
     MIN_SYSTEM="$MIN_SYSTEM" ICON="$work/icon/AppIcon.icns" ./scripts/build-helper.sh "$work/helper"
 # Sparkle, as this checkout pins it.
 SPARKLE=$(./scripts/sparkle.sh)
@@ -200,26 +231,27 @@ if [ -n "${BOX_RELEASE:-}" ]; then
     mkdir "$NEW/Contents/Resources/box-release"
     cp -p "$BOX_RELEASE/boxes.json" "$BOX_RELEASE/kuvo-install" "$BOX_RELEASE/box-$VERSION.tar.gz" "$NEW/Contents/Resources/box-release/"
 else
-    if [ -z "${KUVO_BOX_SIGNING_KEY:-}" ]; then
-        KUVO_BOX_SIGNING_KEY=$("$NODE" -e 'process.stdout.write(require("node:crypto").generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }))')
+    if [ -z "$BOX_SIGNING_KEY" ]; then
+        BOX_SIGNING_KEY=$("$NODE" -e 'process.stdout.write(require("node:crypto").generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }))')
         echo "No KUVO_BOX_SIGNING_KEY: the box's release is signed with a key made for this build, which no box trusts for an update."
     fi
-    env -u BOX_SOURCES KUVO_BOX_SIGNING_KEY="$KUVO_BOX_SIGNING_KEY" NODE="$NODE" ./scripts/box-release.sh "$VERSION" "$BOX_URL" "$NEW/Contents/Resources/box-release" "$work/helper/Kuvo Helper.app"
+    env -u BOX_SOURCES KUVO_BOX_SIGNING_KEY="$BOX_SIGNING_KEY" NODE="$NODE" ./scripts/box-release.sh "$VERSION" "$BOX_URL" "$NEW/Contents/Resources/box-release" "$work/helper/Kuvo Helper.app"
 fi
 
 # Signed inside out: Sparkle's programs and the framework, kuvo-keys (as Kuvo Code itself to the
 # Keychain), and the app over all of it.
-SIGN_IDENTITY=- ./scripts/sign-desktop-app.sh "$NEW"
+KUVO_SIGNED_KEYS="$SIGNED_KEYS" SIGN_IDENTITY="$IDENTITY" ./scripts/sign-desktop-app.sh "$NEW"
 
 # Checked before it takes the last build's place: one that doesn't pass is never left there.
-./scripts/check-desktop-app.sh "$NEW"
+PRIVATE_FEED="${PRIVATE_FEED:-}" ./scripts/check-desktop-app.sh "$NEW"
 rm -rf "$APP"
 mv "$NEW" "$APP"
 if [ "${ZIP:-}" = 1 ]; then
     ditto -c -k --keepParent "$APP" "$OUT/Kuvo-$VERSION.zip"
     echo "Packed $OUT/Kuvo-$VERSION.zip"
 fi
-echo "Built $APP $VERSION ($APP_ID, signed ad hoc, $(du -sh "$APP" | cut -f1 | tr -d " "))"
+if [ "$IDENTITY" = "-" ]; then SIGNED_SAY="signed ad hoc"; else SIGNED_SAY="signed with $IDENTITY"; fi
+echo "Built $APP $VERSION ($APP_ID, $SIGNED_SAY, $(du -sh "$APP" | cut -f1 | tr -d " "))"
 if [ "$APP_ID" = run.kuvo.code ]; then
     echo "It's Kuvo Code itself: opened, it sets up or moves into the real ~/.kuvo-code. Never open it on a Mac in use."
 fi
