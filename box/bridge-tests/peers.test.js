@@ -588,7 +588,7 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [] });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
   assert.deepEqual(others, [
-    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", title: "Connecting", detail: "devbox hasn’t heard from it yet.", notice: { title: "Connecting to mac…", detail: "devbox hasn’t heard from it yet." }, via: "relay", ...reached(mac.address), limits: [], limitServices: [], actions: [] },
+    { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", title: "Connecting", detail: "devbox hasn’t heard from it yet.", notice: { title: "Connecting to mac…", detail: "devbox hasn’t heard from it yet." }, settingsNotice: { title: "Connecting to mac…", detail: "Its settings show here once devbox hears from it." }, via: "relay", ...reached(mac.address), limits: [], limitServices: [], actions: [] },
     { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", ...reached(second.address), version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", title: "Connected", workingTitle: "2 sessions at work", working: 2, limits: [], limitServices: [], actions: [] },
   ]);
 
