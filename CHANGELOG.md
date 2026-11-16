@@ -6,8 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Adding a Mac with Kuvo Code 0.7's sessions asks you to update it there first, unless Kuvo is already set up on it as a machine. Make This Mac Its Home and Same Computer As have been removed. Moving saved sign-ins into the vault now removes their Keychain copies after checking they arrived safely; any it can't be sure of stay in the Keychain, and Kuvo says how many.
-
+- On a Linux computer, Kuvo Code's own tools (starting sessions, messages, the browser and the rest) no longer all disappear from a conversation when Kuvo there can't answer one of them.
 - On a Mac, the engine and what your agents run get what your login shell sets up again, as in Kuvo Code 0.7: keys and settings you export in `.zshrc` or `.zprofile` (a provider's key, `JAVA_HOME`, a proxy), and `{env:NAME}` in a server's settings; and the SSH agent macOS runs for you, so `git push` over SSH works with keys you added to it. Commands you allow to run outside the sandbox, and those using vault values, get the same.
 - On a Mac set up fresh with the desktop app, the commands agents run find your own settings and sign-ins (`gh`, npm, git's), as on your other computers.
 - Bots moved from Kuvo Code 0.7 remember their group chats once, kept up to date, rather than keeping an old copy beside the current one.

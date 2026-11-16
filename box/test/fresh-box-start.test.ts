@@ -257,7 +257,7 @@ test.if(!!ENGINE)("a computer's first box, installed and started the real way: i
   }
   // The vault's and the sandbox's asks are the box's long-running process's, which a Mac's own box
   // always runs (Kuvo Helper's `serve`); a machine's runs once it has something to answer (a Mac that
-  // set it up, a phone, a vault: PROTOCOL.md, "Peers"), and this one, installed with no Mac, has none.
+  // set it up, a phone, a vault: PROTOCOL.md, "Paired phones"), and this one, installed with no Mac, has none.
   // (Whether a machine's should run with nothing to answer, so its sandbox and asks work with no
   // Mac, a desktop app on that computer say, is an open design question, not this test's.)
   for (const name of ["vault_ask", "sandbox_ask"]) {
