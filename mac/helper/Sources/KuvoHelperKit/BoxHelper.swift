@@ -552,10 +552,12 @@ struct Permissions: Equatable, Sendable {
                 answer(Permissions(screenRecording: screenRecording, accessibility: accessibility))
             }
             do { try process.run() } catch { return answer(nil) }
-            // Still running at five seconds: told to stop, and a moment later, made to.
+            // No answer at five seconds (still running, or its output held open by something else):
+            // none, so nothing waits on it for good; one still running told to stop, and a moment
+            // later, made to.
             DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-                guard process.isRunning else { return }
                 answer(nil)
+                guard process.isRunning else { return }
                 process.terminate()
                 DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
             }
