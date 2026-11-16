@@ -45,7 +45,8 @@ const opened = (bytes, to) => {
   return JSON.parse(link.openOneWay(body, to.key, link.publicOf(here.key)).payload.toString("utf8"));
 };
 
-// An engine with nothing at work, and the coding agents' bridge, whose plan limits say which
+// An engine with one session waiting on you (what it asks, as the box noted it) and nothing at
+// work, and the coding agents' bridge, whose plan limits say which
 // accounts are signed in on which computer: Claude here and on `second`, Codex on `third`, Gemini on
 // the Mac, and a plan that ended on `second`.
 async function standIns(t) {
@@ -62,7 +63,14 @@ async function standIns(t) {
     t.after(() => { server.closeAllConnections(); server.close(); });
     return server.address().port;
   };
-  const engine = await serve(url => (url.startsWith("/api/session?") ? { data: [] } : url === "/api/session/active" ? { data: [] } : undefined));
+  const now = Date.now();
+  const sessions = [
+    { id: "ses_ask", title: "Deploy the docs", directory: "/work", time: { created: now - 20, updated: now - 5 } },
+    { id: "ses_idle", title: "Read the docs", directory: "/work", time: { created: now - 30, updated: now - 10 } },
+  ];
+  fs.mkdirSync(path.join(run, "glance"), { recursive: true });
+  fs.writeFileSync(path.join(run, "glance", "asks.json"), JSON.stringify({ asks: { per_1: { session: "ses_ask", at: now - 1, asks: { kind: "permission", summary: "asks to run a command" } } } }));
+  const engine = await serve(url => (url.startsWith("/api/session?") ? { data: sessions } : url === "/api/session/active" ? { data: [] } : undefined));
   const rows = [
     { service: "claude", title: "Claude", rings: { short: { window: "five_hour", used: 0.62, level: "calm" } }, boxes: [{ key: here.pub, here: true }, { key: second.pub }] },
     { service: "codex", title: "Codex", rings: { short: { window: "five_hour", used: 0.95, level: "near" }, long: { window: "week", used: 0.4, level: "calm" } }, boxes: [{ key: third.pub }] },
@@ -104,7 +112,9 @@ test("the menu bar's computers: this one first, then each of yours with what's a
   assert.equal(said.computers[0].here, true);
   assert.deepEqual(said.computers.map(each => each.name).slice(1).sort(), ["Studio", "second", "third"]);
 
-  assert.deepEqual(computers.here, { key: here.pub, name: "devbox", kind: "machine", here: true, reach: "connected", working: 0, sessions: [], waiting: 0, asking: [],
+  const asking = [{ id: "ses_ask", title: "Deploy the docs", asks: "asks to run a command" }];
+  assert.deepEqual(said.asking, asking);
+  assert.deepEqual(computers.here, { key: here.pub, name: "devbox", kind: "machine", here: true, reach: "connected", working: 0, sessions: [], waiting: 1, asking,
     rings: [{ service: "claude", title: "Claude", short: { used: 0.62, level: "calm" } }] });
   assert.deepEqual(computers.second, { key: second.pub, name: "second", kind: "machine", reach: "connected",
     working: 2, sessions: [{ id: "ses_a1", title: "Ship the release" }, { id: "ses_b2" }],
@@ -124,10 +134,11 @@ test("the menu bar's computers: this one first, then each of yours with what's a
   const back = (await atWork(handle)).computers.find(each => each.name === "Studio");
   assert.deepEqual([back.reach, back.working, back.sessions, back.waiting], ["connected", 1, [{ id: "ses_m3", title: "Now" }], 0]);
 
-  // What this box tells its peers of itself: what waits on you here too, beside what's at work.
+  // What this box tells its peers of itself: what waits on you here too (the session asking, with
+  // what it asks), beside what's at work.
   const sent = [];
   await link.announce({ send: bytes => sent.push(bytes) }, () => engine, link.readLink(), Date.now(), true);
   const toSecond = sent.find(bytes => k(bytes.subarray(1, 17)) === second.address);
   const told = opened(toSecond, second).agents.computer;
-  assert.deepEqual([told.working, told.waiting, told.asking], [0, 0, []]);
+  assert.deepEqual([told.working, told.waiting, told.asking], [0, 1, asking]);
 });

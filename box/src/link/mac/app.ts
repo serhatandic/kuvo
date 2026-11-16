@@ -328,7 +328,10 @@ export async function* appRoute({ request, json }: RouteContext): AsyncGenerator
     return yield* json(200, appStatus());
   }
   // Kuvo's desktop app, saying where it is as it opens (`{desktop}` alone).
+  // (Only from the app itself, over this box's server: never `box route`, which anything you run
+  // could use to have Open Kuvo open another copy.)
   if ("desktop" in given && !("tools" in given)) {
+    if (!request.fromApp) return yield* json(403, { message: "Only Kuvo itself says where its desktop app is." });
     const desktop = bundleOf(given.desktop);
     if (!desktop) return yield* json(400, { message: "Say where the desktop app is: a whole path to it (…/Kuvo.app)." });
     registerDesktop(desktop);

@@ -42891,7 +42891,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6f17ee963e0f";
+var BRIDGE_VERSION = "d55a24915e4f";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -54428,7 +54428,7 @@ async function ringsOn(bridge, signal) {
     return [{ rings: { service: row.service, title: row.title, ...short ? { short } : {}, ...long ? { long } : {} }, on: [...new Set(on)] }];
   });
 }
-function computersOf(here, rings, link = readLinkSafely(), now = Date.now()) {
+function computersOf(here, rings, waitingHere, link = readLinkSafely(), now = Date.now()) {
   const own = link ? ownKey(link) : null;
   const ringsFor = (key) => rings.filter((each) => each.on.includes(key) || key === "here" && own !== null && each.on.includes(own)).map((each) => each.rings);
   const computers = [{
@@ -54439,7 +54439,7 @@ function computersOf(here, rings, link = readLinkSafely(), now = Date.now()) {
     reach: "connected",
     working: here.working,
     sessions: here.sessions,
-    waiting: here.waiting.sessions,
+    waiting: waitingHere,
     asking: here.asking,
     rings: ringsFor("here")
   }];
@@ -54475,8 +54475,6 @@ var readLinkSafely = () => {
 function atWorkOf(list, rings, background = readBackground()) {
   const sessions = Object.entries(list?.sessions ?? {}).map(([id, { facts }]) => ({ id, facts })).filter(({ facts }) => !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden");
   const working = sessions.filter(({ facts }) => facts.running && facts.asked === undefined).sort((a, b) => b.facts.updated - a.facts.updated || (a.id < b.id ? -1 : 1));
-  const asking = sessions.filter(({ facts }) => facts.asked !== undefined).sort((a, b) => b.facts.asked - a.facts.asked || (a.id < b.id ? -1 : 1));
-  const asks = new Map((list?.needsYou ?? []).map((each) => [each.session, each.asks.summary]));
   const workingIds = new Set(working.map(({ id }) => id));
   const besides = Object.keys(background).filter((id) => !workingIds.has(id)).length;
   return {
@@ -54487,11 +54485,7 @@ function atWorkOf(list, rings, background = readBackground()) {
       const bot = botName(facts.bot);
       return { id, ...title ? { title } : {}, ...bot ? { bot } : {} };
     }),
-    asking: asking.slice(0, MOST_NAMED2).map(({ id, facts }) => {
-      const title = titleOf(facts);
-      const said = asks.get(id);
-      return { id, ...title ? { title } : {}, ...said ? { asks: said } : {} };
-    }),
+    asking: askingOf(list).slice(0, MOST_NAMED2),
     waiting: waitingOf(list),
     background: besides,
     busy: working.length > 0 || besides > 0,
@@ -54512,8 +54506,9 @@ async function* atWorkRoute(context, match) {
   await listNow(context, signal ?? undefined).catch(() => null);
   const read = async () => {
     const rings = await ringsOn(bridge(), signal ?? undefined);
-    const here = atWorkOf(keptList(), rings.map((each) => each.rings));
-    return { ...here, computers: computersOf(here, rings) };
+    const list = keptList();
+    const here = atWorkOf(list, rings.map((each) => each.rings));
+    return { ...here, computers: computersOf(here, rings, askingOf(list).length) };
   };
   if (!match[1])
     return yield* json(200, await read());
@@ -69367,6 +69362,8 @@ async function* appRoute({ request, json }) {
     return yield* json(200, appStatus());
   }
   if ("desktop" in given && !("tools" in given)) {
+    if (!request.fromApp)
+      return yield* json(403, { message: "Only Kuvo itself says where its desktop app is." });
     const desktop = bundleOf2(given.desktop);
     if (!desktop)
       return yield* json(400, { message: "Say where the desktop app is: a whole path to it (…/Kuvo.app)." });

@@ -143,19 +143,10 @@ test("the app registers with its place; a browser call goes to its tools as it c
   assert.equal((await route("POST", "kuvo/box/app", { tools: { url: "http://example.com/mcp", token: TOKEN } })).status, 400);
 });
 
-test("Kuvo's desktop app says where it is as it opens: kept for Open Kuvo, never taken for the app the browser opens", async () => {
-  const desktop = "/Applications/Kuvo.app";
-  const said = await route("POST", "kuvo/box/app", { desktop });
-  assert.equal(said.status, 200, JSON.stringify(said.body));
-  assert.equal(said.body.desktop, desktop);
-  // What the browser's app registered stays as it was: its place, and that it's open.
-  assert.deepEqual([said.body.bundle, said.body.open], [BUNDLE, true]);
-  assert.equal((await route("GET", "kuvo/box/app")).body.desktop, desktop);
-  // The browser's app registering again (or quitting) keeps where the desktop app is.
-  assert.equal((await route("POST", "kuvo/box/app", { tools, bundle: BUNDLE })).body.desktop, desktop);
-  // A whole path to an app, only.
-  assert.equal((await route("POST", "kuvo/box/app", { desktop: "Kuvo.app" })).status, 400);
-  assert.equal((await route("POST", "kuvo/box/app", { desktop: "/Applications/../tmp/Kuvo.app" })).status, 400);
+test("where Kuvo's desktop app is isn't taken from `box route`, which anything on the Mac can run", async () => {
+  const said = await route("POST", "kuvo/box/app", { desktop: "/Applications/Kuvo.app" });
+  assert.equal(said.status, 403);
+  assert.equal((await route("GET", "kuvo/box/app")).body.desktop, null);
 });
 
 test("with the app closed, browser calls from two of the box's tool servers open it once, where it registered, and each goes on", async () => {

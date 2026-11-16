@@ -251,8 +251,8 @@ async function served(where) {
     });
     ended.then(code => reject(new Error(`serve ended (${code})`)));
   });
-  const ask = async (route, method = "GET", body) => {
-    const answer = await fetch(`${url}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"), ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const ask = async (route, method = "GET", body, headers = {}) => {
+    const answer = await fetch(`${url}/${route}`, { method, headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"), ...(body ? { "content-type": "application/json" } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
     return { status: answer.status, body: await answer.json().catch(() => null) };
   };
   return { ask, stop: async () => { child.stdin.end(); await ended; } };
@@ -375,6 +375,24 @@ test("kuvo/box/permissions: a machine's box runs under no such program, and says
   assert.deepEqual(await box.ask("kuvo/box/permissions"), { status: 200, body: { applies: false, name: null, known: false, screenRecording: null, accessibility: null, bundle: null, list: [] } });
   // Nothing to put off where nothing's asked.
   assert.equal((await box.ask("kuvo/box/permissions", "POST", { later: "accessibility" })).status, 409);
+  await box.stop();
+});
+
+test("Kuvo's desktop app says where it is as it opens: kept for Open Kuvo, never taken for the app the browser opens", { skip: process.platform !== "darwin" && "only a Mac's box has the helper" }, async () => {
+  const where = home("mac");
+  const box = await served(where);
+  const app = { "x-kuvo-from": "app" };
+  const desktop = "/Applications/Kuvo.app";
+  const said = await box.ask("kuvo/box/app", "POST", { desktop }, app);
+  assert.equal(said.status, 200, JSON.stringify(said.body));
+  assert.deepEqual([said.body.desktop, said.body.bundle, said.body.open], [desktop, null, false]);
+  assert.equal((await box.ask("kuvo/box/app")).body.desktop, desktop);
+  // The browser's app registering (or quitting) keeps where the desktop app is.
+  assert.equal((await box.ask("kuvo/box/app", "POST", { tools: null }, app)).body.desktop, desktop);
+  // Only from the app itself, and a whole path to an app only.
+  assert.equal((await box.ask("kuvo/box/app", "POST", { desktop: "/Users/someone/Kuvo.app" }, { "x-kuvo-from": "mac" })).status, 403);
+  assert.equal((await box.ask("kuvo/box/app", "POST", { desktop: "Kuvo.app" }, app)).status, 400);
+  assert.equal((await box.ask("kuvo/box/app", "POST", { desktop: "/Applications/../tmp/Kuvo.app" }, app)).status, 400);
   await box.stop();
 });
 

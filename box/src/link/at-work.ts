@@ -103,12 +103,12 @@ type Computer = NonNullable<AtWork["computers"]>[number];
  * of the accounts signed in there. Never a computer that isn't one of yours (a machine Macs of
  * different setups share, another setup's box), nor one known by a peer's word alone; a shared
  * machine lists itself alone. */
-export function computersOf(here: Omit<AtWork, "computers">, rings: RingsOn[], link: LinkState | null = readLinkSafely(), now = Date.now()): Computer[] {
+export function computersOf(here: Omit<AtWork, "computers">, rings: RingsOn[], waitingHere: number, link: LinkState | null = readLinkSafely(), now = Date.now()): Computer[] {
   const own = link ? ownKey(link) : null;
   const ringsFor = (key: string) => rings.filter(each => each.on.includes(key) || (key === "here" && own !== null && each.on.includes(own))).map(each => each.rings);
   const computers: Computer[] = [{
     key: own ?? "", name: ownComputerName(), kind: IS_MAC ? "mac" : "machine", here: true, reach: "connected",
-    working: here.working, sessions: here.sessions, waiting: here.waiting.sessions, asking: here.asking, rings: ringsFor("here"),
+    working: here.working, sessions: here.sessions, waiting: waitingHere, asking: here.asking, rings: ringsFor("here"),
   }];
   if (!link || sharedMachine(link)) return computers;
   const told = readPeerAgents();
@@ -138,9 +138,6 @@ export function atWorkOf(list: Kept | null, rings: AtWork["rings"], background =
     .filter(({ facts }) => !facts.archived && !facts.away && facts.kind !== "subagent" && facts.kind !== "hidden");
   const working = sessions.filter(({ facts }) => facts.running && facts.asked === undefined)
     .sort((a, b) => b.facts.updated - a.facts.updated || (a.id < b.id ? -1 : 1));
-  const asking = sessions.filter(({ facts }) => facts.asked !== undefined)
-    .sort((a, b) => b.facts.asked! - a.facts.asked! || (a.id < b.id ? -1 : 1));
-  const asks = new Map((list?.needsYou ?? []).map(each => [each.session, each.asks.summary]));
   const workingIds = new Set(working.map(({ id }) => id));
   // (Work a session left running, a command or a subagent, once its own turn is over.)
   const besides = Object.keys(background).filter(id => !workingIds.has(id)).length;
@@ -152,11 +149,8 @@ export function atWorkOf(list: Kept | null, rings: AtWork["rings"], background =
       const bot = botName(facts.bot);
       return { id, ...(title ? { title } : {}), ...(bot ? { bot } : {}) };
     }),
-    asking: asking.slice(0, MOST_NAMED).map(({ id, facts }) => {
-      const title = titleOf(facts);
-      const said = asks.get(id);
-      return { id, ...(title ? { title } : {}), ...(said ? { asks: said } : {}) };
-    }),
+    // (Those waiting on you, by the rule your other computers hear them by: `askingOf`.)
+    asking: askingOf(list).slice(0, MOST_NAMED),
     waiting: waitingOf(list),
     background: besides,
     busy: working.length > 0 || besides > 0,
@@ -177,8 +171,9 @@ export async function* atWorkRoute(context: RouteContext, match: RegExpMatchArra
   await listNow(context, signal ?? undefined).catch(() => null);
   const read = async () => {
     const rings = await ringsOn(bridge(), signal ?? undefined);
-    const here = atWorkOf(keptList(), rings.map(each => each.rings));
-    return { ...here, computers: computersOf(here, rings) };
+    const list = keptList();
+    const here = atWorkOf(list, rings.map(each => each.rings));
+    return { ...here, computers: computersOf(here, rings, askingOf(list).length) };
   };
   if (!match[1]) return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };

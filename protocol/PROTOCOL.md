@@ -8196,8 +8196,9 @@ app's panel through it, with no Chromium of its own. A machine's box answers `40
   answer now, whether an update installs (said in the last two minutes), whether an opening is under
   way, and the last opening that failed, within its rest (`{at, message}`, `at` in ms), and `desktop`
   (below). Kept in `run/app.json` (`{bundle, desktop, tools, host, at}`, `0600`).
-- **Kuvo's desktop app** (#781): `POST kuvo/box/app` `{desktop}` (from Kuvo Code itself, as the
-  others), a whole path to its `.app`: the desktop app says where it is as it opens, once its
+- **Kuvo's desktop app** (#781): `POST kuvo/box/app` `{desktop}`, only from the app itself over
+  this box's server (`x-kuvo-from: app`; `403` otherwise, `box route` too, which anything on the
+  Mac can run), a whole path to its `.app`: the desktop app says where it is as it opens, once its
   nearest box says `applies` ("In the menu bar"), so Kuvo Helper's **Open Kuvo** opens that very
   copy, never an older one with the same bundle ID. Kept apart from `bundle`: the desktop app has no
   browser for agents yet, so it's never what a browser call opens. Answered as above, with
