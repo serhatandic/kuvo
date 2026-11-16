@@ -25,7 +25,7 @@ import type { LastUpdate, UpdateStatus, UpdateStep } from "../../shared/routes/b
 import { quote } from "../../shared/text";
 import { sleep } from "../../shared/wait";
 import { readAsks } from "../areas/asks";
-import { asked, fetched, readBridgeFile, readEngineFile } from "../engine/client";
+import { asked, fetchedPatiently, readBridgeFile, readEngineFile } from "../engine/client";
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, textOf, writePrivate } from "../files";
 import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder } from "../home";
@@ -391,7 +391,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     let released: Buffer;
     if (from) released = readRelease(path.join(from, "boxes.json"), 1_000_000);
     else try {
-      released = await fetched(url, 1_000_000, 30_000);
+      released = await fetchedPatiently(url, 1_000_000, 30_000);
     } catch (error) {
       // COMPAT(0.7 no-boxes-json): a newest release without `boxes.json` (0.7.2) is "current". Goes once a release with one is the newest.
       // The newest release has none for machines (one from before them): nothing newer for it.
@@ -411,7 +411,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     stage = path.join(UPDATES, manifest.version);
     fs.rmSync(stage, { recursive: true, force: true });
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
-    const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await fetched(manifest.pack.url, 100_000_000, 300_000);
+    const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await fetchedPatiently(manifest.pack.url, 100_000_000, 300_000);
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
@@ -464,7 +464,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
       if (!build?.url || !/^sha512-/.test(build.integrity ?? "")) throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await fetched(build.url, 400_000_000, 900_000);
+      const tarball = await fetchedPatiently(build.url, 400_000_000, 900_000);
       if (crypto.createHash("sha512").update(tarball).digest("base64") !== build.integrity!.slice(7)) throw new Error("The engine isn't what the release says.");
       fs.writeFileSync(path.join(stage, "engine.tgz"), tarball, { mode: 0o600 });
       fs.mkdirSync(path.join(stage, "engine"), { mode: 0o700 });
