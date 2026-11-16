@@ -770,9 +770,9 @@ test("a phone's Remove, Uninstall and Forget (the old Mac app's `kuvo/machines/<
   assert.deepEqual(pidsThere(path.join(homes.macbook, ".kuvo-code")).filter(alive), [], "nothing of it runs there");
   assert.equal(peer(), undefined);
 
-  // Forgotten for your phones too, each once.
-  assert.deepEqual([(await ask("DELETE", "kuvo/hosts/macbook")).status, (await ask("DELETE", "kuvo/hosts/studio")).status, (await ask("DELETE", "kuvo/hosts/studio")).status], [200, 200, 404]);
-  assert.deepEqual(await hosts(), []);
+  // Forgotten for your phones too, once. (The other stays kept, for the tests after.)
+  assert.deepEqual([(await ask("DELETE", "kuvo/hosts/macbook")).status, (await ask("DELETE", "kuvo/hosts/macbook")).status], [200, 404]);
+  assert.deepEqual(await hosts(), [["studio", true]]);
 });
 
 test("a member of a setup, and a request that can't stay, are told where to add from", async () => {
