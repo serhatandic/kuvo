@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";

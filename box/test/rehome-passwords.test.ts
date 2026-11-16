@@ -1,3 +1,4 @@
+import "./safety"
 import { test, expect } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
