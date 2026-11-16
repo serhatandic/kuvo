@@ -333,6 +333,8 @@ impl ConversationView {
         let held: HashSet<String> = queue.items.iter().flatten().filter(|item| item.held || item.delivery != "steer").map(|item| item.id.clone()).collect();
         self.queue = queue;
         self.queue_failed = None;
+        let has_queue = !self.queued().is_empty();
+        self.composer.update(cx, |composer, cx| composer.set_has_queue(has_queue, cx));
         if !held.is_empty() {
             self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id).then_some(true), cx));
         }
@@ -387,6 +389,8 @@ impl ConversationView {
                         if let Some(items) = this.queue.items.as_mut() {
                             items.retain(|each| each.id != item);
                         }
+                        let has_queue = !this.queued().is_empty();
+                        this.composer.update(cx, |composer, cx| composer.set_has_queue(has_queue, cx));
                         // (One of yours waiting in the conversation goes from it too.)
                         this.composer.update(cx, |composer, cx| composer.let_go(&item, cx));
                         if let (true, Some(removed)) = (edit, removed) {
@@ -401,6 +405,45 @@ impl ConversationView {
                 {
                     this.queue = queue;
                 }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Steer: a queued message to the agent at its next step, its run going on.
+    pub fn steer_queued(&mut self, item: String, cx: &mut Context<Self>) {
+        let (client, session) = (self.client.clone(), self.session.clone());
+        self.queue_change(move || client.steer_queued(&session, &item), "It couldn’t be steered in", cx);
+    }
+
+    /// Send Now: a waiting message to the agent right away, the step under way stopped for it.
+    pub fn send_queued_now(&mut self, item: String, cx: &mut Context<Self>) {
+        let (client, session) = (self.client.clone(), self.session.clone());
+        self.queue_change(move || client.send_queued_now(&session, &item), "It couldn’t be sent now", cx);
+    }
+
+    /// Resume: the queue held by a Stop goes on, its next message now.
+    pub fn resume_queue(&mut self, cx: &mut Context<Self>) {
+        let (client, session) = (self.client.clone(), self.session.clone());
+        self.queue_change(move || client.resume_queue(&session), "The queue couldn’t be resumed", cx);
+    }
+
+    /// Asks the box to change the queue (`work`), off the UI thread; what the box makes of it comes
+    /// with the queue's follow, and a refusal is said over the queue (`failed`, and the box's why).
+    fn queue_change(&mut self, work: impl FnOnce() -> kuvo_box::Result<()> + Send + 'static, failed: &'static str, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async move { work() });
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                // (Read again at once where nothing follows it: tests and shots.)
+                if !this.live
+                    && let Ok(queue) = this.client.queue(&this.session)
+                {
+                    this.take_queue(queue, cx);
+                }
+                this.queue_failed = result.err().map(|error| format!("{failed}: {}", kuvo_box::accounts::said(&error)));
                 cx.notify();
             })
             .ok();
@@ -876,8 +919,10 @@ impl ConversationView {
 }
 
 impl ConversationView {
-    /// What waits its turn, over the composer: each message as you wrote it (who it's from, when
-    /// it isn't yours), with Edit (yours) and Remove under the pointer.
+    /// What waits its turn, over the composer, in the order it goes: each message as you wrote it
+    /// (who it's from, when it isn't yours), with what can be done with it as 0.7 offered it: Steer
+    /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
+    /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let items = self.queued_shown(cx);
         if items.is_empty() {
@@ -885,15 +930,43 @@ impl ConversationView {
         }
         let c = cx.theme().colors.clone();
         let count = items.len();
-        let said = if self.queue.paused { format!("{count} waiting · paused") } else if count == 1 { "1 waiting".to_owned() } else { format!("{count} waiting") };
+        let running = self.running;
+        let paused = self.queue.paused && !running;
+        let said = if paused { format!("{count} waiting · paused") } else if count == 1 { "1 waiting".to_owned() } else { format!("{count} waiting") };
         let rows = items.iter().enumerate().map(|(ix, item)| {
             let group = SharedString::from(format!("queued-{ix}"));
-            let (edit_id, remove_id) = (item.id.clone(), item.id.clone());
+            let (edit_id, remove_id, go_id) = (item.id.clone(), item.id.clone(), item.id.clone());
             let selector = format!("queued-{}", item.id);
+            // Where it stands: for after the run, or for the agent's next step.
+            let steered = !item.is_queued() && !item.is_on_box();
+            let mark = Icon::new(if steered { IconName::ArrowRight } else { IconName::Clock }).size(IconSize::Nav).color(if ix == 0 { c.accent } else { c.text_faint });
             let lead: AnyElement = match &item.from {
-                Some(from) => div().flex_none().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(from.clone()).into_any_element(),
-                None => Icon::new(IconName::Clock).size(IconSize::Nav).color(if ix == 0 { c.accent } else { c.text_faint }).into_any_element(),
+                Some(from) => div().flex().flex_none().items_center().gap(space::S1_5).child(mark).child(div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(from.clone())).into_any_element(),
+                None => mark.into_any_element(),
             };
+            // Its way on: Steer while the run goes on (Send with none); one already for the agent's
+            // next step says so, with Send Now; one held on the box goes as Send Now sends it.
+            let (go_label, go_steers) = match (running, item.is_on_box(), steered) {
+                (true, false, false) => ("Steer", true),
+                (true, _, _) => ("Send Now", false),
+                (false, _, _) => ("Send", false),
+            };
+            let go_selector = format!("go-{}", item.id);
+            let go = div().debug_selector(move || go_selector).child(
+                Button::new(SharedString::from(format!("go-{}", item.id)), go_label)
+                    .ghost()
+                    .size(ButtonSize::Small)
+                    .tooltip(match go_label {
+                        "Steer" => "Steer: the agent takes this at its next step, without waiting for the run to end",
+                        "Send Now" => "Send Now: stops the agent's current step and gives it this",
+                        _ => "Send it now",
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| if go_steers { this.steer_queued(go_id.clone(), cx) } else { this.send_queued_now(go_id.clone(), cx) })),
+            );
+            let next_step = (running && steered).then(|| {
+                let selector = format!("next-step-{}", item.id);
+                div().debug_selector(move || selector).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child("At its next step")
+            });
             div()
                 .id(SharedString::from(format!("queued-{}", item.id)))
                 .debug_selector(move || selector)
@@ -912,6 +985,8 @@ impl ConversationView {
                     let files = if item.files.len() == 1 { item.files[0].clone() } else { format!("{} files", item.files.len()) };
                     div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(files)
                 }))
+                .children(next_step)
+                .child(go)
                 .child(
                     div()
                         .flex()
@@ -942,7 +1017,23 @@ impl ConversationView {
                 .bg(c.sunken)
                 .border_1()
                 .border_color(c.border)
-                .child(div().px(space::S2).pt(space::S1).pb(space::S0_5).text_ui(TypeSize::Caption).text_color(c.text_faint).child(said))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(space::S2)
+                        .pt(space::S1)
+                        .pb(space::S0_5)
+                        .text_ui(TypeSize::Caption)
+                        .text_color(c.text_faint)
+                        .child(said)
+                        .children(paused.then(|| {
+                            div().debug_selector(|| "queue-resume".into()).child(
+                                Button::new("queue-resume", "Resume").ghost().size(ButtonSize::Small).tooltip("Send the waiting messages, one after another").on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx))),
+                            )
+                        })),
+                )
                 .child(div().id("queue-rows").max_h(px(30. * 4.)).overflow_y_scroll().children(rows))
                 .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
                 .into_any_element(),

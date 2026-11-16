@@ -60,7 +60,8 @@ impl Entry {
     /// one the box gives, so the box's copy taking its place is always drawn again.
     pub fn outgoing(outgoing: &crate::composer::Outgoing, running: bool) -> (Entry, u64) {
         let files = outgoing.files.iter().map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()).collect();
-        let waits = outgoing.taken && running && outgoing.failed.is_none();
+        // (One for after the run goes to the queue over the composer, not the agent's next step.)
+        let waits = outgoing.taken && running && outgoing.failed.is_none() && !outgoing.is_queued();
         let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else if waits { u64::MAX - 2 } else { u64::MAX };
         (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, failed: outgoing.failed.clone(), waits }, revision)
     }

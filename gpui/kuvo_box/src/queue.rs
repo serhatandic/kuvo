@@ -1,5 +1,6 @@
 //! A conversation's queue (PROTOCOL.md, "The queue", `queue.items`): every message waiting, in the
-//! order the box says clients show them, and taking one back (to edit it, or for good).
+//! order the box says clients show them, and what's done with one: taken back (to edit it, or for
+//! good), steered into the run under way, or sent now; and the queue resumed after a Stop.
 
 use serde::Deserialize;
 
@@ -38,6 +39,16 @@ impl Item {
     pub fn is_yours(&self) -> bool {
         self.from.is_none()
     }
+
+    /// Waiting for the run to end (not for the agent's next step).
+    pub fn is_queued(&self) -> bool {
+        self.delivery != "steer"
+    }
+
+    /// Waiting on the box itself (it came while the queue was paused), not in the engine.
+    pub fn is_on_box(&self) -> bool {
+        self.on == "box"
+    }
 }
 
 /// One taken back: its words as shown, the keyword it went with, what goes back in the composer as
@@ -70,6 +81,17 @@ impl BoxClient {
     /// Follows `session`'s queue: now, and again as it changes.
     pub fn follow_queue(&self, session: &str, timing: Timing) -> Follow<Followed<Queue>> {
         follow_lines(self, "kuvo-box queue", format!("{}/events", route(session)), format!("{}?items=1", route(session)), timing)
+    }
+
+    /// Steer: `item` to the agent at its next step, the run going on (`queue.steer`; its box says
+    /// where the agent can't take one partway, and sends one with nothing running now).
+    pub fn steer_queued(&self, session: &str, item: &str) -> Result<()> {
+        self.done(&Request::post(format!("{}/{}/steer", route(session), paths::segment(item)), serde_json::json!({})))
+    }
+
+    /// Send Now: `item` to the agent right away, the step under way stopped for it.
+    pub fn send_queued_now(&self, session: &str, item: &str) -> Result<()> {
+        self.done(&Request::post(format!("{}/{}/now", route(session), paths::segment(item)), serde_json::json!({})))
     }
 
     /// Takes `item` out of the queue (wherever it waits), with what it was.

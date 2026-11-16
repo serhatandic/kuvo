@@ -21,7 +21,7 @@ use kuvo_box::groups::GroupMember;
 use kuvo_box::mentions::{For, Mention};
 use kuvo_box::image_names;
 use kuvo_box::quoting::{self, Quote};
-use kuvo_box::parts::File;
+use kuvo_box::parts::{Delivery, File};
 use kuvo_box::{BoxClient, Draft, Sent, Where};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Pasted, StyledType, TextField, TextFieldEvent, TypeSize,
@@ -30,7 +30,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-actions!(composer, [SlashNext, SlashPrevious, SlashPick, SlashDismiss]);
+actions!(composer, [SlashNext, SlashPrevious, SlashPick, SlashDismiss, SendQueued]);
 
 const CONTEXT: &str = "Composer";
 const SLASH: &str = "SlashMenu";
@@ -42,8 +42,9 @@ const MENTION_PAUSE: Duration = Duration::from_millis(150);
 /// How many of "/"'s offers show at once (the rest scroll).
 const SLASH_MOST: usize = 8;
 
-/// The keys "/"'s list takes while it shows, ahead of the field's own.
+/// The keys "/"'s list takes while it shows, ahead of the field's own; ⌘Return, for after this run.
 pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-enter", SendQueued, Some(CONTEXT))]);
     let context = format!("{SLASH} > {}", kuvo_ui::text_field::CONTEXT);
     let context = Some(context.as_str());
     cx.bind_keys([
@@ -66,6 +67,19 @@ pub enum Target {
     /// names whoever they name.
     Group { id: String },
 }
+
+/// How a message goes while the agent works (0.7's choice on send): into the run under way, at the
+/// agent's next step (Return, the default); after the run (⌘Return); or now, the step under way
+/// stopped for it (Send Now).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendAs {
+    Steer,
+    Queue,
+    Now,
+}
+
+/// The placeholder while the agent works (0.7's).
+const WHILE_RUNNING: &str = "Add to the task…";
 
 /// What the composer tells its owner.
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +112,13 @@ pub struct Outgoing {
     pub arrived: bool,
     /// What goes again on Retry, under the same id (the box takes one id once).
     draft: Draft,
+}
+
+impl Outgoing {
+    /// Sent for after the run: its box puts it in the queue, not the agent's next step.
+    pub fn is_queued(&self) -> bool {
+        self.draft.delivery == Delivery::Queue
+    }
 }
 
 /// What the chips show, as the box says it.
@@ -136,6 +157,9 @@ pub struct Composer {
     sending: bool,
     /// The message on its way to the conversation's box, for Stop to take with it.
     on_its_way: Option<String>,
+    /// Whether anything waits in the conversation's queue (as its box says): ⌘Return queues after
+    /// it even with nothing running.
+    has_queue: bool,
     /// Messages sent from here that the conversation doesn't have yet, in the order sent.
     outgoing: Vec<Outgoing>,
     /// Whether it reads the box by itself (the app), or shows what it's handed (tests and shots).
@@ -258,6 +282,7 @@ impl Composer {
             running: false,
             sending: false,
             on_its_way: None,
+            has_queue: false,
             outgoing: Vec::new(),
             live: read,
             models: Models::default(),
@@ -433,8 +458,26 @@ impl Composer {
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         if self.running != running {
             self.running = running;
+            // (0.7's words while the agent works: what's sent goes into its task.)
+            if matches!(self.target, Target::Session { .. }) && !self.client.gate().is_held() {
+                let placeholder: SharedString = if running { WHILE_RUNNING.into() } else { self.placeholder.clone() };
+                self.field.update(cx, |field, _| field.set_placeholder(placeholder));
+            }
             cx.notify();
         }
+    }
+
+    /// Whether anything waits in the conversation's queue, as its box says.
+    pub fn set_has_queue(&mut self, has_queue: bool, cx: &mut Context<Self>) {
+        if self.has_queue != has_queue {
+            self.has_queue = has_queue;
+            cx.notify();
+        }
+    }
+
+    /// Whether "Queue for After This Run" has anything to wait for: a run, or a queue.
+    pub fn can_queue(&self) -> bool {
+        matches!(self.target, Target::Session { .. }) && (self.running || self.has_queue)
     }
 
     /// The model the chip names: the conversation's as its box says, else the one picked here.
@@ -842,6 +885,12 @@ impl Composer {
 
     /// Sends what's written (or, in a new conversation, starts it on the box and sends it there).
     pub fn send(&mut self, cx: &mut Context<Self>) {
+        self.send_as(SendAs::Steer, cx);
+    }
+
+    /// Sends what's written as `how` says: with nothing to wait for (no run, no queue), what's for
+    /// after the run goes now, as 0.7's did.
+    pub fn send_as(&mut self, how: SendAs, cx: &mut Context<Self>) {
         if self.client.gate().is_held() { return; }
         let text = self.text(cx);
         let group = matches!(self.target, Target::Group { .. });
@@ -849,6 +898,9 @@ impl Composer {
             return;
         }
         let mut draft = Draft::new(BoxClient::new_id(), text.clone());
+        let queues = how == SendAs::Queue && self.can_queue();
+        draft.delivery = if queues { Delivery::Queue } else { Delivery::Steer };
+        let now = how == SendAs::Now && self.running;
         // (Its files go with it as its box takes them, read as it goes: `go`.)
         let files = std::mem::take(&mut self.attached);
         // The agents picked from "&"'s list that are still named in it.
@@ -904,7 +956,7 @@ impl Composer {
                     self.outgoing.push(Outgoing { id: draft.id.clone(), words: text.clone(), files: files.clone(), failed: None, taken: false, arrived: false, draft: draft.clone() });
                     cx.emit(ComposerEvent::Outgoing);
                 }
-                self.go(id, draft, text, files, quotes, shows, cx);
+                self.go(id, draft, text, files, quotes, shows, now, cx);
             }
             Target::New(place) => {
                 let model = self.picked.clone();
@@ -952,7 +1004,9 @@ impl Composer {
     /// Sends `draft` to conversation `session` (`send` or Retry): one at a time, Stop taking it as
     /// it goes. `shows`: it's drawn in the conversation (`outgoing`), which says what became of it;
     /// else what was written goes back to the composer if it couldn't go.
-    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, shows: bool, cx: &mut Context<Self>) {
+    /// `now`: Send Now, once its box has it (the step under way stopped for it).
+    #[allow(clippy::too_many_arguments)]
+    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, shows: bool, now: bool, cx: &mut Context<Self>) {
         // (One at a time: `send` and Retry refuse another while this one's on its way.)
         debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
         self.sending = true;
@@ -968,7 +1022,13 @@ impl Composer {
             draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
             let quote = |words: &str| quoting::message(&quotes, words);
             let quote: Option<&dyn Fn(&str) -> String> = if quotes.is_empty() { None } else { Some(&quote) };
-            client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())
+            let sent = client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())?;
+            // Send Now: its box has it; the step under way stops for it. (Taken by the agent
+            // meanwhile, it's no longer waiting: that's as good.)
+            if now && let Sent::Message { id } = &sent {
+                let _ = client.send_queued_now(&session, id);
+            }
+            Ok(sent)
         };
         self.spawn(cx, work, move |this, result, cx| {
             this.sending = false;
@@ -1033,7 +1093,7 @@ impl Composer {
         outgoing.failed = None;
         let (draft, text, files) = (outgoing.draft.clone(), outgoing.words.clone(), outgoing.files.clone());
         cx.emit(ComposerEvent::Outgoing);
-        self.go(session, draft, text, files, Vec::new(), true, cx);
+        self.go(session, draft, text, files, Vec::new(), true, false, cx);
         cx.notify();
     }
 
@@ -1921,6 +1981,29 @@ fn said(answer: &Answer) -> Option<Note> {
     None
 }
 
+impl Composer {
+    /// While the agent works: Send (into its run, at its next step), Queue for After This Run, and
+    /// Send Now (the step under way stopped for it), as 0.7 offered them.
+    fn send_choices(&self, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity();
+        let can_queue = self.can_queue();
+        let trigger = Button::icon_only("send-choices", IconName::ChevronDown, "More ways to send").ghost().size(ButtonSize::Small);
+        div()
+            .debug_selector(|| "send-choices".into())
+            .child(PopoverMenu::new("send-choices-menu", trigger, move |_, cx| {
+                let (steer, queue, now) = (this.clone(), this.clone(), this.clone());
+                cx.new(|cx| {
+                    Menu::new(cx)
+                        .width(px(300.))
+                        .entry(MenuEntry::new("Send").detail("The agent reads it at its next step").shortcut("↩").on_select(move |_, cx| steer.update(cx, |this, cx| this.send_as(SendAs::Steer, cx))))
+                        .entry(MenuEntry::new("Queue for After This Run").detail("Sent once this run ends").shortcut("⌘↩").disabled(!can_queue).on_select(move |_, cx| queue.update(cx, |this, cx| this.send_as(SendAs::Queue, cx))))
+                        .entry(MenuEntry::new("Send Now").detail("Stops the step it's on and gives it this").on_select(move |_, cx| now.update(cx, |this, cx| this.send_as(SendAs::Now, cx))))
+                })
+            }).align_right())
+            .into_any_element()
+    }
+}
+
 impl Render for Composer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let held = self.client.gate().is_held();
@@ -1949,13 +2032,18 @@ impl Render for Composer {
         let send = if stop {
             Button::icon_only("stop", IconName::Stop, "Stop").style(kuvo_ui::ButtonStyle::Secondary).pill().on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
+            // While the agent works, 0.7's words: Return steers it in, ⌘Return waits for the run.
+            let steers = self.running && !empty && matches!(self.target, Target::Session { .. });
             Button::icon_only("send", IconName::ArrowUp, if empty { "Type to send" } else { "Send" })
                 .accent()
                 .pill()
+                .when(steers, |button| button.tooltip("Send: the agent reads it at its next step (Return). ⌘Return queues it for after this run."))
                 .disabled(empty || self.sending || self.client.gate().is_held())
                 .loading(self.sending)
                 .on_click(cx.listener(|this, _, _, cx| this.send(cx)))
         };
+        // The other ways to send while the agent works, beside Send.
+        let choices = (self.running && !empty && !self.sending && matches!(self.target, Target::Session { .. })).then(|| self.send_choices(cx));
         let note = self.note.clone().map(|note| {
             div()
                 .px(space::S2)
@@ -1998,11 +2086,13 @@ impl Render for Composer {
                     .children(self.effort_chip(cx))
                     .children(self.worktree_chip(cx))
                     .child(div().flex_1())
+                    .children(choices)
                     .child(send),
             );
         div()
             .id("composer")
             .key_context(context.as_str())
+            .on_action(cx.listener(|this, _: &SendQueued, _, cx| this.send_as(SendAs::Queue, cx)))
             .on_action(cx.listener(|this, _: &SlashNext, _, cx| this.slash_step(1, cx)))
             .on_action(cx.listener(|this, _: &SlashPrevious, _, cx| this.slash_step(-1, cx)))
             .on_action(cx.listener(|this, _: &SlashPick, window, cx| this.slash_pick(this.slash_at, window, cx)))

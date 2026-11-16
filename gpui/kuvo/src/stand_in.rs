@@ -115,6 +115,10 @@ struct State {
     asks: HashMap<String, Vec<Value>>,
     /// Each conversation's queue, in the order the box shows it (`kuvo/sessions/<id>/queue`).
     queues: HashMap<String, Vec<Value>>,
+    /// The conversations whose queue a Stop holds until Resume.
+    paused: HashSet<String>,
+    /// Steer and Send Now as each was asked (`steer <id>`, `now <id>`), in order.
+    queue_asked: Vec<String>,
     /// Its repositories and folders.
     git: Option<git::Git>,
     /// Those following a folder's changed files (`kuvo/git/files/events`): the folder, and where its
@@ -728,6 +732,41 @@ impl StandIn {
         state.told(session, Followed::Asks);
     }
 
+    /// `session`'s queue held by a Stop (`true`) until Resume, or going on.
+    pub fn pause_queue(&self, session: &str, paused: bool) {
+        let mut state = self.state();
+        if paused {
+            state.paused.insert(session.to_owned());
+        } else {
+            state.paused.remove(session);
+        }
+        state.told(session, Followed::Queue);
+    }
+
+    /// Whether `session` runs, as its engine says (`api/session/active`).
+    pub fn set_running(&self, session: &str, running: bool) {
+        let mut state = self.state();
+        if running {
+            state.running.insert(session.to_owned());
+        } else {
+            state.running.remove(session);
+        }
+        if let Some(facts) = state.sessions.get_mut(session) {
+            facts["running"] = json!(running);
+        }
+        state.list_changed();
+    }
+
+    /// Steer and Send Now as they were asked of its queue (`steer <id>`, `now <id>`), in order.
+    pub fn queue_asked(&self) -> Vec<String> {
+        self.state().queue_asked.clone()
+    }
+
+    /// `session`'s queue as its box shows it now.
+    pub fn queue_of(&self, session: &str) -> Vec<Value> {
+        self.state().queues.get(session).cloned().unwrap_or_default()
+    }
+
     /// `session`'s queue from now on, in the box's order (each as `items` lists it; a `draft` on one
     /// is what its box puts back for Edit, else its words).
     pub fn set_queue(&self, session: &str, items: Vec<Value>) {
@@ -1136,7 +1175,7 @@ impl State {
     fn followed(&self, session: &str, what: Followed) -> String {
         match what {
             Followed::Asks => json!({ "asks": self.asks.get(session).cloned().unwrap_or_default() }),
-            Followed::Queue => json!({ "paused": false, "held": [], "items": self.queues.get(session).cloned().unwrap_or_default() }),
+            Followed::Queue => json!({ "paused": self.paused.contains(session), "held": [], "items": self.queues.get(session).cloned().unwrap_or_default() }),
         }
         .to_string()
     }
@@ -1869,6 +1908,8 @@ impl StandIn {
                 answer(200, json!({ "mentions": mentions }))
             }
             ("POST", ["kuvo", "sessions", session, "queue", "resume"]) => {
+                state.paused.remove(*session);
+                state.told(*session, Followed::Queue);
                 let bot = state.bots.bots.iter().find(|bot| bot["session"] == json!(session)).and_then(|bot| bot["id"].as_str()).map(str::to_owned);
                 if let Some(bot) = bot {
                     for group in state.groups.resumed(&bot) {
@@ -1878,7 +1919,28 @@ impl StandIn {
                 answer(200, json!({}))
             }
             ("GET", ["kuvo", "sessions", session, "queue"]) if state.sessions.contains_key(*session) => {
-                answer(200, json!({ "paused": false, "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default() }))
+                answer(200, json!({ "paused": state.paused.contains(*session), "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default() }))
+            }
+            // Steer: for the agent's next step (one on the box, or with nothing running, goes now).
+            // Send Now: to the agent at once. Either sets a stopped queue going.
+            ("POST", ["kuvo", "sessions", session, "queue", item, how @ ("steer" | "now")]) => {
+                let session = (*session).to_owned();
+                let running = state.running.contains(&session);
+                let Some(queue) = state.queues.get_mut(&session) else { return answer(404, json!({ "message": "That message isn't waiting any more." })) };
+                let Some(at) = queue.iter().position(|each| each["id"] == json!(item)) else { return answer(404, json!({ "message": "That message isn't waiting any more." })) };
+                let goes_now = *how == "now" || !running || queue[at]["on"] == json!("box");
+                if goes_now {
+                    let gone = queue.remove(at);
+                    let now = now_ms();
+                    let message = user(gone["id"].as_str().unwrap_or_default(), now, gone["words"].as_str().unwrap_or_default(), gone["keyword"].as_str());
+                    state.messages.entry(session.clone()).or_default().push(message);
+                } else {
+                    queue[at]["delivery"] = json!("steer");
+                }
+                state.queue_asked.push(format!("{how} {item}"));
+                state.paused.remove(&session);
+                state.told(&session, Followed::Queue);
+                answer(200, json!({ "paused": false, "held": [] }))
             }
             ("DELETE", ["kuvo", "sessions", session, "queue", item]) => {
                 let Some(queue) = state.queues.get_mut(*session) else { return answer(404, json!({})) };
@@ -1951,6 +2013,14 @@ impl StandIn {
                 let body = request.body.clone().unwrap_or(Value::Null);
                 let words = body["words"].as_str().unwrap_or("").to_owned();
                 let id = body["id"].as_str().map(str::to_owned).unwrap_or_else(|| state.id("msg"));
+                // For after the run, while one runs (or a Stop holds the queue): it waits in the queue.
+                if body["delivery"] == json!("queue") && body["command"].is_null() && (state.running.contains(&session) || state.paused.contains(&session)) {
+                    let on = if state.paused.contains(&session) { "box" } else { "engine" };
+                    let files: Vec<Value> = body["files"].as_array().into_iter().flatten().filter_map(|file| file["name"].as_str().map(|name| json!(name))).collect();
+                    state.queues.entry(session.clone()).or_default().push(json!({ "id": id, "words": words, "files": files, "keyword": body["keyword"], "from": null, "on": on, "delivery": "queue", "held": false }));
+                    state.told(&session, Followed::Queue);
+                    return answer(200, if on == "box" { json!({ "waits": true }) } else { json!({}) });
+                }
                 let now = now_ms();
                 let message = match body["command"].as_str() {
                     // A command's message is the prompt it sent, with no parts kept.
