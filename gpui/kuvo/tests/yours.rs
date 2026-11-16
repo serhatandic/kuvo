@@ -33,13 +33,17 @@ fn kept() -> (tempfile::TempDir, PathBuf) {
 }
 
 fn open<'a>(cx: &'a mut TestAppContext, path: &PathBuf) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+    open_with(cx, path, StandIn::at(Replies::Never, NOW))
+}
+
+fn open_with<'a>(cx: &'a mut TestAppContext, path: &PathBuf, stand_in: StandIn) -> (Entity<Workspace>, &'a mut VisualTestContext) {
     let path = path.clone();
     cx.update(|cx| {
         yours::init(Some(path), cx);
         Theme::init(yours::appearance(Appearance::Light, cx), cx);
         kuvo::bind_keys(cx);
     });
-    let client = BoxClient::new(StandIn::at(Replies::Never, NOW));
+    let client = BoxClient::new(stand_in);
     let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
@@ -481,7 +485,9 @@ fn clicking_a_notification_opens_its_computer_at_its_session(cx: &mut TestAppCon
 #[gpui::test]
 fn privacy_rows_and_usage_preference_persist(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
-    let (_workspace, cx) = open(cx, &path);
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_vault();
+    let (workspace, cx) = open_with(cx, &path, stand_in);
     click(cx, "rail-settings");
     click(cx, "setting-privacy");
     for row in ["row-share-usage", "row-privacy-policy", "row-privacy-storage", "row-privacy-browser", "row-privacy-vault"] {
@@ -490,25 +496,32 @@ fn privacy_rows_and_usage_preference_persist(cx: &mut TestAppContext) {
     assert!(next_run(&path).privacy.share_anonymous_usage);
     click(cx, "row-share-usage-switch");
     assert!(!next_run(&path).privacy.share_anonymous_usage);
+    click(cx, "row-privacy-vault");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Vault"));
+    assert_eq!(settings(&workspace, cx).read_with(cx, |view, _| view.side()), Side::Computer);
 }
 
 #[gpui::test]
-fn panel_start_is_kept_and_used_by_a_new_panel(cx: &mut TestAppContext) {
+fn panel_start_is_kept_and_used_when_the_workspace_panel_opens(cx: &mut TestAppContext) {
     let (_folder, path) = kept();
-    let (_workspace, cx) = open(cx, &path);
+    let (workspace, cx) = open(cx, &path);
     click(cx, "rail-settings");
     click(cx, "setting-panel");
-    assert!(shown(cx, "row-panel-start"));
     click(cx, "row-panel-start-menu");
     click(cx, "menu-item-Files");
     assert_eq!(next_run(&path).panel.starts_with, yours::PanelStart::Files);
-    let client = BoxClient::new(StandIn::at(Replies::Never, NOW));
-    let panel = cx.new(|cx| kuvo::panel::SidePanel::new(client, false, cx));
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    let panel = workspace.read_with(cx, |workspace, _| {
+        assert!(workspace.is_panel_open());
+        workspace.panel().clone()
+    });
     assert_eq!(panel.read_with(cx, |panel, _| panel.tab()), kuvo::panel::Tab::Files);
-    // A choice applies to the next panel; it does not move one someone is reading.
-    cx.update(|_, cx| yours::change(yours::Change::PanelStart(yours::PanelStart::Branches), cx));
-    assert_eq!(panel.read_with(cx, |panel, _| panel.tab()), kuvo::panel::Tab::Files);
-    assert_eq!(next_run(&path).panel.starts_with, yours::PanelStart::Branches);
+    // A tab picked in the panel stays picked across later opens and preference changes.
+    workspace.update(cx, |workspace, cx| workspace.show_panel(kuvo::panel::Tab::Changes, cx));
+    cx.simulate_keystrokes("cmd-alt-0 cmd-alt-0");
+    cx.run_until_parked();
+    assert_eq!(panel.read_with(cx, |panel, _| panel.tab()), kuvo::panel::Tab::Changes);
 }
 
 #[gpui::test]
@@ -519,14 +532,20 @@ fn shortcuts_come_from_the_running_keymap_and_can_be_searched(cx: &mut TestAppCo
         let shortcuts = kuvo::settings::shortcuts::read(cx);
         let keymap = cx.key_bindings();
         let keymap = keymap.borrow();
-        assert_eq!(shortcuts.len(), keymap.bindings().len());
+        assert_eq!(shortcuts.len(), keymap.bindings().filter(|binding| !kuvo::settings::shortcuts::standard(binding.action().name())).count());
         for binding in keymap.bindings() {
-            let keys = binding.keystrokes().iter().map(|key| key.inner().unparse(gpui::OperatingSystem::Mac)).collect::<Vec<_>>().join(" ");
-            assert!(shortcuts.iter().any(|row| row.keys == keys));
+            let name = binding.action().name();
+            let (area, title) = kuvo::settings::shortcuts::title(name).unwrap_or_else(|| panic!("Add plain words for bound action {name}"));
+            if kuvo::settings::shortcuts::standard(name) { continue; }
+            let keys = binding.keystrokes().iter().map(|key| key.inner().display(gpui::OperatingSystem::Mac).to_string()).collect::<Vec<_>>().join(" ");
+            let context = binding.predicate().map(|predicate| predicate.to_string()).unwrap_or_default();
+            assert!(shortcuts.iter().any(|row| row.area == area && row.title == title && row.keys == keys && row.context == context));
         }
         shortcuts
     });
-    assert!(!shortcuts.is_empty());
+    assert_eq!(kuvo::settings::shortcuts::description("Workspace && !KuvoTextField"), "Outside text fields");
+    assert_eq!(kuvo::settings::shortcuts::description("Sidebar > KuvoTextField"), "In the sidebar");
+    assert!(shortcuts.iter().any(|row| row.title == "Show or hide the sidebar" && row.keys == "⌘B"));
     click(cx, "rail-settings");
     click(cx, "setting-shortcuts");
     assert!(shown(cx, "row-shortcut-search"));

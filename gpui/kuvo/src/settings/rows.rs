@@ -475,7 +475,7 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
             use crate::yours::PanelStart;
             let picked = facts.yours.panel.starts_with;
             vec![Block::Group(String::new(), String::new(), vec![Row::new(
-                "row-panel-start", "Start each panel with", "For a new window’s side panel.",
+                "row-panel-start", "Start each panel with", "When the side panel opens.",
                 Control::Menu {
                     shown: Some(picked.title().into()),
                     choices: PanelStart::ALL.iter().map(|start| (start.title().into(), None, Some(Act::Yours(Change::PanelStart(*start))), *start == picked)).collect(),
