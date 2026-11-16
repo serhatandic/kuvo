@@ -3,6 +3,10 @@
 // does what after a wrap-up. Each is held to test/groups-rules.json.
 
 import type { ToolCall } from "../wire"
+import { WORDS } from "../../browser/tools"
+import { SERVICES } from "../../shared/integrations/table"
+import { SERVERS as CATALOG } from "../../shared/integrations/servers"
+import { toolWords, type KnownTools } from "../../shared/message-words"
 
 /** A chat, as the Mac's `BotGroup` is written (dates as ISO 8601, to the second). */
 export interface Group {
@@ -648,7 +652,9 @@ export function activity(messages: any[], promptID: string, sent: number): Activ
     if (message?.type !== "assistant") continue
     for (const block of message.content ?? []) {
       if (block?.type === "tool") {
-        found.push({ kind: "tool", call: bare(block) })
+        // Worded as the box words its steps (PROTOCOL.md, "Tool steps"), so a chat never shows a tool's id.
+        const said = toolWords(String(block.name ?? ""), block.state?.input, CHAT_TOOLS)
+        found.push({ kind: "tool", call: said ? { ...bare(block), ...said } : bare(block) })
       } else if (block?.type === "reasoning") {
         const line = thought(String(block.text ?? ""))
         if (line) found.push({ kind: "thinking", text: line })
@@ -658,6 +664,17 @@ export function activity(messages: any[], promptID: string, sent: number): Activ
     }
   }
   return found.slice(-1)
+}
+
+/** What a chat words its bots' tool steps with: the browser's and Kuvo Code's own tools' words, and
+ * the integrations' and the catalog's servers by their titles. (The vault's, the sandbox's and the
+ * Work Queue's words live with the link, so here those read by their names in words.) */
+const CHAT_TOOLS: KnownTools = {
+  own: new Map(Object.entries(WORDS)),
+  servers: new Map([
+    ...CATALOG.map((server) => [server.id, server.title] as const),
+    ...SERVICES.filter((service) => service.way !== "browser").map((service) => [service.id, service.title] as const),
+  ]),
 }
 
 /** Thinking under way, in a line: the latest it's written, without Markdown's stars. */
