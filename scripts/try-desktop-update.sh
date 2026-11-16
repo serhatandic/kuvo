@@ -7,8 +7,11 @@
 #   scripts/try-desktop-update.sh
 #   OLD, NEW    the two versions (default 9.0.0 and 9.0.1)
 #   PORT        the feed's port (default 8743)
-#   PROMPT=1    instead: the old copy finds the update and Sparkle's own window offers it (with
-#               no automatic install); it's left open for you to look at, and Ctrl-C ends it all
+#   PROMPT=1    Install and Relaunch, as most people get updates: Sparkle's own window offers the
+#               update (no automatic install); you click Install and Relaunch; the copy quits,
+#               Sparkle installs the new one in its place and opens it; that's checked (found by
+#               its exact test bundle ID, from that place), and you quit it with ⌘Q to end. Needs
+#               you at the Mac.
 # It opens the old copy's window on this Mac for a minute (it refuses to set anything up: a copy
 # with no root of its own). Everything goes when it ends: the copies, the key, the feed, and what
 # Sparkle and macOS kept for the test ID (its defaults, caches). Never the real app's: its ID,
@@ -28,10 +31,16 @@ NODE="${NODE:-node}"
 temporary=${TMPDIR:-/tmp}
 work=$(mktemp -d "${temporary%/}/kuvo-try-update.XXXXXXXX")
 work=$(cd "$work" && pwd -P)
-SERVER="" APP_PID=""
+SERVER="" APP_PID="" RELAUNCHED=""
+WAIT="$PWD/scripts/try-desktop-update-wait.py"
 finish() {
     set +e
     [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null && wait "$APP_PID" 2>/dev/null
+    # (The copy Sparkle opened, where this ended before you quit it: by its PID alone, before its
+    # folder goes.)
+    if [ -n "$RELAUNCHED" ] && kill "$RELAUNCHED" 2>/dev/null; then
+        python3 "$WAIT" exited "$RELAUNCHED" 30
+    fi
     [ -n "$SERVER" ] && kill "$SERVER" 2>/dev/null && wait "$SERVER" 2>/dev/null
     defaults delete "$ID" >/dev/null 2>&1
     for kept in "Caches/$ID" "HTTPStorages/$ID" "HTTPStorages/$ID.binarycookies" "Saved Application State/$ID.savedState" "WebKit/$ID" "Preferences/$ID.plist"; do
@@ -79,29 +88,8 @@ version_of() { plutil -extract CFBundleShortVersionString raw -o - "$1/Contents/
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$work/feed" >"$work/server.log" 2>&1 &
 SERVER=$!
 
-# Waits, on the file system's word (no clock), for what's asked: a line in a log, or a version in a
-# bundle; gives up after a time.
-cat >"$work/wait.py" <<'EOF'
-import os, select, sys, time, plistlib
-kind, path, wanted, limit = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
-def done():
-    try:
-        if kind == "log":
-            return wanted in open(path, errors="replace").read()
-        with open(os.path.join(path, "Kuvo.app/Contents/Info.plist"), "rb") as info:
-            return plistlib.load(info).get("CFBundleShortVersionString") == wanted
-    except OSError:
-        return False
-fd = os.open(path, os.O_RDONLY)
-queue = select.kqueue()
-event = select.kevent(fd, select.KQ_FILTER_VNODE, select.KQ_EV_ADD | select.KQ_EV_CLEAR, select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND | select.KQ_NOTE_RENAME | select.KQ_NOTE_LINK)
-end = time.monotonic() + limit
-while not done():
-    left = end - time.monotonic()
-    if left <= 0:
-        sys.exit(f"gave up after {limit:.0f}s waiting for {wanted}")
-    queue.control([event], 1, min(left, 5))
-EOF
+# The old copy's Sparkle loads as the app loads it, and it names the test's feed.
+"$INSTALLED/Contents/MacOS/kuvo" --updater-status
 
 # Sparkle's settings, in the test ID's defaults alone: what it finds downloads and installs as the
 # copy quits (PROMPT=1: it asks, in its own window).
@@ -120,19 +108,30 @@ APP_PID=$!
 echo "Opened the $OLD copy ($APP_PID), reading $FEED."
 
 if [ "${PROMPT:-}" = 1 ]; then
-    python3 "$work/wait.py" log "$work/app.log" "Kuvo $NEW is available" 120
-    echo "Sparkle's window offers $NEW. Ctrl-C ends it."
-    wait "$APP_PID"
-    exit 0
+    python3 "$WAIT" log "$work/app.log" "Kuvo $NEW is available" 120 || { cat "$work/app.log" >&2; exit 1; }
+    echo "Sparkle's window offers $NEW: click Install and Relaunch."
+    # (However long you take: the copy ends once you've clicked, or when you quit it.)
+    wait "$APP_PID" 2>/dev/null || true
+    APP_PID=""
+else
+    python3 "$WAIT" log "$work/app.log" "installs when Kuvo quits" 300 || { cat "$work/app.log" >&2; exit 1; }
+    kill "$APP_PID"
+    wait "$APP_PID" 2>/dev/null || true
+    APP_PID=""
 fi
-
-python3 "$work/wait.py" log "$work/app.log" "installs when Kuvo quits" 300 || { cat "$work/app.log" >&2; exit 1; }
 cat "$work/app.log"
-kill "$APP_PID"
-wait "$APP_PID" 2>/dev/null || true
-APP_PID=""
-echo "Quit the $OLD copy; Sparkle installs $NEW."
-python3 "$work/wait.py" version "$work/Applications" "$NEW" 180 || { echo "The copy is still $(version_of "$INSTALLED")." >&2; exit 1; }
+echo "The $OLD copy quit; Sparkle installs $NEW."
+python3 "$WAIT" version "$work/Applications" "$NEW" 180 || { echo "The copy is still $(version_of "$INSTALLED")." >&2; exit 1; }
 codesign --verify --deep --strict "$INSTALLED"
 ./scripts/check-desktop-app.sh "$INSTALLED"
+"$INSTALLED/Contents/MacOS/kuvo" --updater-status
+if [ "${PROMPT:-}" = 1 ]; then
+    # Opened again by Sparkle, from the same place, as the new version.
+    RELAUNCHED=$(python3 "$WAIT" launched "$ID" "$INSTALLED" 120) || { echo "Sparkle didn't open $NEW again after installing it." >&2; exit 1; }
+    echo "Sparkle opened $NEW again ($RELAUNCHED, from $INSTALLED). Quit it with ⌘Q to finish."
+    python3 "$WAIT" exited "$RELAUNCHED" 3600 || { echo "It's still open; it's quit by its PID as this ends." >&2; exit 1; }
+    RELAUNCHED=""
+    echo "Installed and relaunched: the copy went from $OLD to $NEW through Sparkle's Install and Relaunch, and Sparkle opened it again."
+    exit 0
+fi
 echo "Updated: the copy at $INSTALLED went from $OLD to $(version_of "$INSTALLED") by itself, through Sparkle, checked with the update key."

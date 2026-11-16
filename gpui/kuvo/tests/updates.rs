@@ -174,3 +174,16 @@ fn the_search_finds_updates_from_the_computers_side(cx: &mut TestAppContext) {
     assert_eq!(view.read_with(opened.cx, |view, _| view.place()), "yours/updates");
     assert!(shown(opened.cx, "row-update-betas"));
 }
+
+/// `kuvo --updater-status` outside an app bundle (as `cargo run` has it): no feed, no Sparkle, and
+/// it says so and fails, starting nothing. (In a bundle the release and scripts/try-desktop-update.sh
+/// check it loads.)
+#[cfg(target_os = "macos")]
+#[test]
+fn the_updater_status_of_a_build_outside_a_bundle_says_it_has_no_sparkle() {
+    let ran = std::process::Command::new(env!("CARGO_BIN_EXE_kuvo")).arg("--updater-status").env_clear().env("HOME", std::env::temp_dir()).output().expect("kuvo runs");
+    assert_eq!(ran.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&ran.stdout);
+    assert!(said.contains("feed: none"), "{said}");
+    assert!(String::from_utf8_lossy(&ran.stderr).starts_with("sparkle: "), "{}", String::from_utf8_lossy(&ran.stderr));
+}

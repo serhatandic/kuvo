@@ -116,6 +116,44 @@ fn gets_betas() -> bool {
     wants_betas(chosen, version())
 }
 
+/// Loads the bundle's Sparkle (`Contents/Frameworks/Sparkle.framework`) and finds the class the app
+/// starts it with: what macOS refuses here (a signature its library validation won't take, a file
+/// that isn't there) is what keeps a signed app from updating itself. Its controller's class and
+/// Sparkle's version; else why, in dyld's words.
+pub fn load() -> Result<(&'static AnyClass, String), String> {
+    let main = NSBundle::mainBundle();
+    let frameworks = main.privateFrameworksPath().ok_or("Kuvo isn't running from an app bundle, so it has no Sparkle.")?;
+    let path = format!("{frameworks}/Sparkle.framework");
+    let framework = NSBundle::bundleWithPath(&NSString::from_str(&path)).ok_or_else(|| format!("There's no Sparkle at {path}."))?;
+    if let Err(error) = unsafe { framework.loadAndReturnError() } {
+        let why: Retained<NSString> = unsafe { msg_send![&error, debugDescription] };
+        return Err(format!("Sparkle didn't load: {why}"));
+    }
+    let class = AnyClass::get(c"SPUStandardUpdaterController").ok_or("Sparkle loaded, but has no SPUStandardUpdaterController.")?;
+    let version = framework.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString")).and_then(|version| version.downcast::<NSString>().ok()).map_or_else(|| "?".to_owned(), |version| version.to_string());
+    Ok((class, version))
+}
+
+/// What `kuvo --updater-status` says of this build, without starting anything or reaching the
+/// network: the feed its Info.plist names, and whether its Sparkle loads as the app would load it
+/// (under the bundle's own signature: the hardened runtime and its library validation for a
+/// Developer ID or Apple Development build). 0 where it loads; 1 otherwise.
+pub fn status() -> i32 {
+    let main = NSBundle::mainBundle();
+    let feed = main.objectForInfoDictionaryKey(&NSString::from_str("SUFeedURL")).and_then(|feed| feed.downcast::<NSString>().ok()).map(|feed| feed.to_string());
+    println!("feed: {}", feed.as_deref().unwrap_or("none (this build doesn't update itself)"));
+    match load() {
+        Ok((_, version)) => {
+            println!("sparkle: {version}, loaded");
+            0
+        }
+        Err(why) => {
+            eprintln!("sparkle: {why}");
+            1
+        }
+    }
+}
+
 /// Sparkle, started: its controller (the standard update windows), its updater, and the delegate
 /// they hold weakly, kept here for the app's life.
 pub struct Sparkle {
@@ -135,15 +173,10 @@ impl Sparkle {
             return Err(NOT_THIS_BUILD.into());
         }
         let missing = "Kuvo’s updater is missing from the app. Download Kuvo again to get updates.";
-        let frameworks = main.privateFrameworksPath().ok_or(missing)?;
-        let framework = NSBundle::bundleWithPath(&NSString::from_str(&format!("{frameworks}/Sparkle.framework"))).ok_or(missing)?;
-        if let Err(error) = unsafe { framework.loadAndReturnError() } {
-            // (Why, in dyld's words: a signature it won't take, a file that isn't there.)
-            let why: Retained<NSString> = unsafe { msg_send![&error, debugDescription] };
-            say(&format!("Sparkle didn't load: {why}"));
-            return Err(missing.into());
-        }
-        let class = AnyClass::get(c"SPUStandardUpdaterController").ok_or(missing)?;
+        let (class, _) = load().map_err(|why| {
+            say(&why);
+            missing.to_owned()
+        })?;
         let delegate = Delegate::new(mtm, tell);
         let controller: Option<Retained<AnyObject>> = unsafe {
             let allocated: Allocated<AnyObject> = msg_send![class, alloc];

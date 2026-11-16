@@ -5,7 +5,9 @@
 # a process loads only libraries signed by its own team, and ad hoc code has none, so an ad hoc
 # app with it can't load its own Sparkle ("mapping process and mapped file (non-platform) have
 # different Team IDs"). Signed with a Developer ID, the app and Sparkle are one team's, and the
-# app has the hardened runtime as notarization requires.
+# app has the hardened runtime as notarization requires. Whatever it's signed with, check it loads
+# its Sparkle as the app will: `<Kuvo.app>/Contents/MacOS/kuvo --updater-status` (it starts and
+# reaches nothing; 0 where Sparkle loads, with the feed it names).
 #   scripts/sign-desktop-app.sh <Kuvo.app>
 #   SIGN_IDENTITY     "-" (the default): ad hoc, as every local build is. A Developer ID (its
 #                     SHA-1, as release.yml names it) is the release's step: with a secure

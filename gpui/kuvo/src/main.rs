@@ -28,6 +28,11 @@ fn main() {
     if std::env::args().any(|argument| argument == "--install-status") {
         std::process::exit(install_status());
     }
+    // Whether this build's Sparkle loads as the app would load it, and the feed it names; nothing
+    // started, nothing reached (`kuvo --updater-status`: the release and a signed copy check it).
+    if std::env::args().any(|argument| argument == "--updater-status") {
+        std::process::exit(updater_status());
+    }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
         // Its updates: Sparkle, where the bundle carries it and names a feed (`updates`). The
@@ -127,6 +132,17 @@ fn install_status() -> i32 {
             1
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn updater_status() -> i32 {
+    kuvo::updates::sparkle::status()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn updater_status() -> i32 {
+    eprintln!("This build has no updater of its own.");
+    1
 }
 
 /// Whether it's run against the made-up box (`--stand-in`, with the `stand-in` feature).

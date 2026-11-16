@@ -197,6 +197,20 @@ jobs:
             fi
           done
 
+      # The desktop app's program, compiled before the signing certificate is imported: compiling
+      # runs every dependency's build script (Zed's crates, from git), and none of them may run
+      # while the Developer ID is usable. "Build the desktop app" compiles nothing again (the same
+      # command, version and checkout) and checks it didn't.
+      - name: Compile the desktop app
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd gpui && rustup toolchain install)
+          (cd gpui && KUVO_APP_VERSION="$VERSION" cargo build --release --locked -p kuvo --bin kuvo)
+          target=$(cd gpui && cargo metadata --format-version 1 --no-deps --locked | node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).target_directory)')
+          echo "KUVO_PROGRAM=$target/release/kuvo" >> "$GITHUB_ENV"
+          echo "KUVO_PROGRAM_SHA=$(shasum -a 256 "$target/release/kuvo" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+
       - name: Import the signing certificate
         shell: bash
         env:
@@ -328,9 +342,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd gpui && rustup toolchain install)
           # FEED=1: the only build that names Kuvo Code's own feed and key (0.7's), for updates.
           FEED=1 VERSION="$VERSION" BOX_RELEASE=dist OUT=build ./scripts/build-desktop-app.sh
+          # (What "Compile the desktop app" compiled, before the certificate was imported: nothing
+          # was compiled since.)
+          test "$(shasum -a 256 "$KUVO_PROGRAM" | cut -d ' ' -f 1)" = "$KUVO_PROGRAM_SHA" \
+            || { echo "The desktop app was compiled again after the signing certificate was imported." >&2; exit 1; }
           # (No kuvo-keys signed with the Developer ID yet: see the top. Publishing refuses an app without one.)
           KUVO_SIGNED_KEYS=0 SIGN_IDENTITY="$MACOS_SIGNING_IDENTITY" ./scripts/sign-desktop-app.sh build/Kuvo.app
           WITHOUT_KEYS=1 ./scripts/check-desktop-app.sh build/Kuvo.app
@@ -344,6 +361,10 @@ jobs:
           codesign --verify --strict --deep --verbose=2 "$app"
           codesign -d --verbose=2 "$app" 2>&1 | grep -q 'flags=.*runtime' \
             || { echo "The hardened runtime is off" >&2; exit 1; }
+          # Signed with the Developer ID and the hardened runtime, it loads its own Sparkle (library
+          # validation takes one team's), as it will to update itself; nothing else runs.
+          "$app/Contents/MacOS/kuvo" --updater-status | tee "$RUNNER_TEMP/updater-status"
+          grep -qx "feed: https://github.com/serhatandic/kuvo-code/releases/latest/download/appcast.xml" "$RUNNER_TEMP/updater-status"
 
       - name: Notarize the desktop app
         shell: bash
