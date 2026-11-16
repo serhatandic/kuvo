@@ -42887,7 +42887,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "241ec62b2797";
+var BRIDGE_VERSION = "904c2df82855";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62932,8 +62932,8 @@ async function* modelsOfferedRoute(context) {
   return yield* json(200, {
     ...answer,
     scoped: true,
-    models: bot || side === "agents" ? answer.models : answer.models.filter((model) => model.side === side),
-    ...!bot && side === "engine" ? { note: "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}
+    models: side === "agents" ? answer.models : answer.models.filter((model) => model.side === side),
+    ...side === "engine" ? { note: bot ? "To use a coding agent in this bot, change its model in Edit Bot." : "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}
   });
 }
 function providersOf(models, lists) {

@@ -136,7 +136,7 @@ test("the route offers an API-key provider and refreshes its models when credent
     const scoped = await read("bot-session")
     expect(scoped.scoped).toBe(true)
     expect(scoped.models).toEqual(answer.models)
-    expect(scoped.note).toBeUndefined()
+    expect(scoped.note).toBe("To use a coding agent in this bot, change its model in Edit Bot.")
     const coding = await read("coding-session")
     expect(coding.scoped).toBe(true)
     expect(coding.note).toContain("This conversation uses provider models")
@@ -148,4 +148,43 @@ test("the route offers an API-key provider and refreshes its models when credent
     server.stop(true)
     forgetModelLists()
   }
+})
+
+test("bridge bots offer provider models too; engine bots explain choosing a coding agent in Edit Bot", async () => {
+  let sessionOnBridge = false
+  const serve = (agents: boolean) => Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    if (route.startsWith("/api/session/") && sessionOnBridge !== agents) return new Response("", { status: 404 })
+    const provider = agents ? "claude-code" : "opencode-go"
+    const data = route.startsWith("/api/session/")
+      ? { id: "bot-session", metadata: { kuvo: { bot: "bot-one" } } }
+      : route === "/api/provider" ? [{ id: provider }]
+      : route === "/api/model" ? [listed(provider, "model", "Model", [])]
+      : route === "/api/integration" ? [{ id: provider, name: provider, methods: [{ type: "key" }], connections: [{}], metadata: { modelsComplete: true } }]
+      : route === "/api/kuvo/auto" ? { lists: [] } : null
+    return Response.json({ data })
+  } })
+  const engine = serve(false), agents = serve(true)
+  const target = (server: typeof engine) => ({ port: server.port!, password: "test", pid: process.pid })
+  const read = async (onBridge: boolean) => {
+    sessionOnBridge = onBridge
+    let answer: any
+    const context = {
+      request: { method: "GET", path: "kuvo/models/offered?session=bot-session", headers: {} },
+      readEngine: () => target(engine),
+      bridge: () => target(agents),
+      json: (status: number, value: unknown) => { expect(status).toBe(200); answer = value; return [] },
+    } as unknown as RouteContext
+    for await (const _ of modelsOfferedRoute(context)) {}
+    return answer
+  }
+  forgetModelLists()
+  try {
+    const bridge = await read(true)
+    expect(bridge.models.map((model: any) => model.providerID)).toEqual(["opencode-go", "claude-code"])
+    expect(bridge.note).toBeUndefined()
+    const answer = await read(false)
+    expect(answer.models.map((model: any) => model.providerID)).toEqual(["opencode-go"])
+    expect(answer.note).toBe("To use a coding agent in this bot, change its model in Edit Bot.")
+  } finally { engine.stop(true); agents.stop(true); forgetModelLists() }
 })

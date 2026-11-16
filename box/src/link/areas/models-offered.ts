@@ -76,8 +76,10 @@ export async function* modelsOfferedRoute(context: RouteContext): AsyncGenerator
   return yield* json(200, {
     ...answer,
     scoped: true,
-    models: bot || side === "agents" ? answer.models : answer.models.filter(model => model.side === side),
-    ...(!bot && side === "engine" ? { note: "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}),
+    models: side === "agents" ? answer.models : answer.models.filter(model => model.side === side),
+    ...(side === "engine" ? { note: bot
+      ? "To use a coding agent in this bot, change its model in Edit Bot."
+      : "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}),
   });
 }
 
