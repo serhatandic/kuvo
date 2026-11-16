@@ -166,6 +166,13 @@ test.if(mac)("a bot of 0.6, which had no description in its folder, is one the b
   expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toContain("A bot on your machines was described only on this Mac by the earlier Kuvo Code, and may not show there. Its work is still on that machine: make it again if it's missing.")
 }, 120_000)
 
+test.if(mac)("a Mac with no machines left gets an empty list of them, never none: no list beside what it keeps of machines it had would read as one that can't be told (#753)", () => {
+  // (What it keeps of a machine it had, `phone-link.json`, stays after the machine is removed.)
+  const m = mac07(root, m => { kept07(m); preferences(m, { calibration: 1 }) })
+  expect(run(m).said).toMatchObject({ result: "done" })
+  expect(readJSON(join(m.K, "machines.json"))).toEqual([])
+}, 120_000)
+
 test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, with a relay of your own; a Mac that ran everything without asking is told new sessions start with Auto", () => {
   const m = mac07(root, m => preferences(m, { phoneLink: false, "phoneLink.relay": "wss://relay.example.test/" }))
   expect(run(m).said).toMatchObject({ result: "done" })

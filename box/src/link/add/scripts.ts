@@ -207,10 +207,15 @@ ${link("box route")}`;
 /** Takes Kuvo Code off the computer: it lets this computer (`key`) go; and unless another Mac
  * still uses it (`only: false` leaves it running for them), its own `uninstall` (nothing of it
  * runs or starts again: its launch agent and crontab line too), then the sign-ins and keys it
- * keeps. Its folder stays, with its sessions. Prints `kept` (another Mac uses it), or what its
+ * keeps, and the folder of Kuvo Code's app there (`desktop`, the key it's paired by as one of
+ * your devices). The rest of its folder stays, with its sessions. Prints `kept` (another Mac uses it), or what its
  * uninstall said (JSON); exit 1 when that couldn't stop everything. */
 export const uninstall = (version: string, key: string, only: boolean): string => String.raw`${K}
 ${engineOf(version)}
+# (The key Kuvo Code's app there is known by among your devices, which the box that removes this
+# computer takes off them too: with or without a Kuvo Code that runs. On a Mac the app keeps it in
+# its Keychain, which isn't reached from here: there, being taken off your devices keeps it out.)
+${only ? 'rm -rf "$K/desktop"' : ""}
 if [ ! -x "$E" ] || [ ! -f "$K/bin/kuvo-link.js" ]; then echo '{"result":"none"}'; exit 0; fi
 ${link(`leave ${quote(key)}`)} >/dev/null 2>&1 || true
 ${only ? "" : "echo kept; exit 0"}

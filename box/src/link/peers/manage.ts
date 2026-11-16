@@ -10,16 +10,16 @@
 // Letting a computer add Kuvo Code's app to your devices again (`allow-devices`) is the main
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
-import fs from "node:fs";
 import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { macDocsChanged } from "../documents/exchange";
 import { IS_MAC } from "../home";
 import { tellGone } from "../mac/link";
-import { LIST_FILE } from "../mac/machines";
+import { LIST_FILE, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { sharedMachine } from "../setup/settle";
+import { takeOffVouched, vouchedWords } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
 import { writePrivate } from "../files";
 import { ownName } from "../letters/start";
@@ -134,7 +134,7 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
   if (!whyNot(computer, "remove", here, link, facts)) {
     // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
     const waits = waitsFor(computer, here, facts);
-    actions.push({ id: "remove", label: "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
+    actions.push({ id: "remove", label: "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}.${vouchedWords(link, computer.key, name)} It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
   }
   // (Kept from adding Kuvo Code's app to your devices, as this box, the main computer, says of it:
   // `vouching`, areas/computers.ts.)
@@ -170,7 +170,9 @@ export function renameHere(key: string, name: string): Acted {
 
 /** Removes the machine `key` here, on the box that writes its record: its peers document names it
  * among those you removed (`left`), so it lets this Mac go and your other computers drop it, and
- * this Mac's list of machines no longer has it. It keeps running there, as a box of its own. */
+ * this Mac's list of machines no longer has it. Kuvo Code's app on it goes from your devices too:
+ * every device its box vouched for (`setMacPeers`; `takeOffVouched`, phones.ts), as this box's
+ * phones document then says to your other computers. It keeps running there, as a box of its own. */
 export function removeHere(key: string): Acted {
   let gone: Peer[] = [];
   let id: string | undefined;
@@ -179,7 +181,8 @@ export function removeHere(key: string): Acted {
     const peer = link ? peersOf(link).find(each => each.key === key) : undefined;
     // (Removed already, from here: the same again, as when it's asked again after a restart.)
     already = Boolean(link?.removedHere?.includes(key));
-    if (!link || !peer) return null;
+    // (One removed before its devices went with it, #753: they go when it's asked again.)
+    if (!link || !peer) return link && already && takeOffVouched(link, key) ? link : null;
     id = peer.id;
     link.removedHere = [...(link.removedHere ?? []).filter(each => each !== key), key].slice(-64);
     const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] });
@@ -188,6 +191,8 @@ export function removeHere(key: string): Acted {
     if (made.link.peerNames) delete made.link.peerNames[key];
     return made.link;
   });
+  // (Its devices' removals go to your other computers either way.)
+  if (!gone.length && already) macDocsChanged();
   if (!gone.length) return already ? answer(200, {}) : answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   if (id) forgetSaved(id);
   macDocsChanged();
@@ -198,11 +203,9 @@ export function removeHere(key: string): Acted {
 // The machine `id` gone from this Mac's list of machines (`machines.json`), as its app would take
 // it off: what `kuvo/machines` and whether the link meets machines go by. One that won't read stays.
 function forgetSaved(id: string): void {
-  try {
-    const saved: unknown = JSON.parse(fs.readFileSync(LIST_FILE, "utf8"));
-    if (!Array.isArray(saved) || !saved.some(each => each?.destination === id)) return;
-    writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each?.destination !== id), null, 2));
-  } catch {}
+  const saved = savedMachines();
+  if (!saved?.some(each => each.destination === id)) return;
+  try { writePrivate(LIST_FILE, JSON.stringify(saved.filter(each => each.destination !== id), null, 2)); } catch {}
 }
 
 /** What another of your computers' box handed here (`area: "computers"`): done as this box's own

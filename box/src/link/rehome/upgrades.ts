@@ -190,8 +190,10 @@ function worktrees({ prefs, staged }: Upgrade): void {
 function machines({ prefs, staged }: Upgrade): void {
   const listed = [...(Array.isArray(prefs["machines.unsaved"]) ? prefs["machines.unsaved"] : []), ...(Array.isArray(prefs.machines) ? prefs.machines : [])]
     .filter((each): each is Record<string, unknown> => isObject(each) && typeof each.destination === "string" && each.destination.length > 0);
-  if (!listed.length) return;
   const file = staged("machines.json");
+  // (With none, an empty list where there's no list yet: no list, beside what's kept of machines
+  // it had, `phone-link.json`, would read as one that can't be told. `mac/machines.ts`)
+  if (!listed.length) return fs.existsSync(file) ? undefined : writeWhole(file, "[]");
   const had = readJSON(file);
   const list: Record<string, unknown>[] = Array.isArray(had) ? had.filter(isObject) : [];
   for (const machine of listed) {

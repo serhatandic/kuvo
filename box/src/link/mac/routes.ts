@@ -3,7 +3,7 @@
 // and agents of this Mac's conversations.
 
 import fs from "node:fs";
-import { LIST_FILE } from "./machines";
+import { savedMachines } from "./machines";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -20,6 +20,7 @@ import { refreshOwn } from "../peers/agents";
 import { PEER_LOCK, readPeerAgents } from "../peers/directory";
 import { cleanMoved, cleanPeer, fitsPeer, KEY, MOST_PEERS, ownKey, peersOf } from "../peers/known";
 import { readPersonalities } from "../personalities/library";
+import { takeOffVouched } from "../phones";
 import { macLink, readLink, updateLink } from "../state";
 import { keepsOwnConfig, macKeys, macLinkCheck, saveMacConfig, tellGone } from "./link";
 import { noteKeyNow } from "../setup/lead";
@@ -80,6 +81,9 @@ export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
   const gone = peersOf(link).filter(peer => removed.includes(peer.key));
   const kept = (Array.isArray(link.left) ? link.left : []).filter(key => !now.some(peer => peer.key === key) && !removed.includes(key));
   link.left = [...kept, ...removed].slice(-64);
+  // Kuvo Code's app on a computer you removed goes from your devices with it: every device that
+  // computer's box vouched for (`by`), as removing one of them takes off the rest (phones.ts).
+  for (const key of removed) takeOffVouched(link, key);
   // A name you gave one goes once the app names it otherwise (renamed there), or it's removed; one
   // just missing from this list keeps it.
   const before = new Map((Array.isArray(link.macPeers) ? link.macPeers : []).filter(fitsPeer).map(cleanPeer).map(peer => [peer.key, peer.name]));
@@ -104,12 +108,7 @@ export function setMacPeers(link: LinkState, given: unknown): MacPeersSet {
 
 // The machines on this Mac's list of machines (`machines.json`), by their ids there.
 function savedIds(): Set<string> {
-  try {
-    const saved: unknown = JSON.parse(fs.readFileSync(LIST_FILE, "utf8"));
-    return new Set(Array.isArray(saved) ? saved.filter(each => typeof each?.destination === "string").map(each => each.destination as string) : []);
-  } catch {
-    return new Set();
-  }
+  return new Set((savedMachines() ?? []).map(each => each.destination));
 }
 
 /** What setting up a machine over SSH gives it (`kuvo/link/setup`; `add/flow.ts`, the box adding

@@ -513,6 +513,20 @@ test("the desktop app on a member's computer is paired through its own box and r
   await eventually(() => (labLink()?.phones ?? []).some(each => each.key === studio.public));
   assert.equal((await studio.open(member)).kind, "machine");
 
+  // (#753) Removing a computer takes Kuvo Code's app on it off your devices: the one attic's box
+  // added reaches the main computer and the member until then, and neither after, though it still
+  // has its key. Every other device stays.
+  await eventually(() => (labLink()?.phones ?? []).some(each => each.key === loft.public));
+  assert.deepEqual([(await loft.open(main)).kind, (await loft.open(member)).kind], ["mac", "machine"]);
+  // (The Mac app before 1.0 isn't attached: it said its link's config as this began.)
+  link.macLink.appSaid = undefined;
+  assert.deepEqual(await ask("DELETE", `kuvo/computers/${attic.pub}`), { status: 200, json: {} });
+  assert.deepEqual(await loft.open(main), { refused: true });
+  assert.ok(!(await ask("GET", "kuvo/phones")).json.phones.some(each => each.key === loft.public));
+  await memberHeardRemoved(loft.public);
+  assert.deepEqual(await loft.open(member), { refused: true });
+  assert.deepEqual([(await phone.open(main)).kind, (await studio.open(main)).kind, (await studio.open(member)).kind, (await phone.open(member)).kind], ["mac", "mac", "machine", "machine"]);
+
   // (5) A member that says it's shared with another setup vouches for no one: mailed with the
   // member's own key, as its box would, the main computer answers no and pairs nothing.
   const act = vouch(link.publicOf(link.newKey()).toString("base64url"));

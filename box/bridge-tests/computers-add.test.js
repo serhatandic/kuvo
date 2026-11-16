@@ -493,6 +493,17 @@ test("setting a computer up again finds its files in place and leaves its runnin
 test("uninstalling while it's being set up waits for the start under way, then nothing runs there and nothing starts it again (#603)", async () => {
   const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
   const engine = read(path.join(remote, "run", "engine.json")).pid;
+  // Kuvo Code's app there is one of your devices, added by its box (`by`), with the key it keeps
+  // in its own folder there; a phone is another (#753).
+  write(path.join(remote, "desktop", "identity"), "its-device-key", 0o600);
+  const appThere = k(link.publicOf(link.newKey()));
+  link.updateLink(state => {
+    link.pairDevice(state, { key: appThere, name: "Studio screen", by: peer.key });
+    link.pairPhone(state, { key: k(link.publicOf(link.newKey())), name: "My iPhone", added: 1, from: "pair", pairing: "its-own" });
+    return state;
+  });
+  const confirms = (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key).actions.find(action => action.id === "uninstall").confirm.message;
+  assert.match(confirms, /The sign-ins and keys it keeps are deleted\. Kuvo Code’s app on studio is taken off your devices\. Its sessions stay/);
   // A Set Up Again, held at its start there (the script that can't be cut short).
   fs.writeFileSync(path.join(fake, "hold"), 'bin/kuvo-start" start');
   const setup = await ask("POST", `kuvo/computers/${peer.key}/setup`);
@@ -531,6 +542,11 @@ test("uninstalling while it's being set up waits for the start under way, then n
   assert.deepEqual(read(path.join(home, "machines.json")), []);
   assert.ok(fs.existsSync(path.join(remote, "data")));
   assert.equal((await ask("POST", `kuvo/computers/${peer.key}/uninstall`)).status, 404, "no longer one it set up");
+  // Kuvo Code's app there is no device of yours now: its key deleted there, and taken off here,
+  // removed as any device is (so on every computer). The phone stays.
+  assert.equal(fs.existsSync(path.join(remote, "desktop")), false, "the app's key there is deleted");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
+  assert.deepEqual(link.ownPhones(link.readLink()).removed.map(each => each.key), [appThere]);
 });
 
 // Adds `destination`, trusting its key: the try as it ended (or as `wanted` says).
@@ -565,6 +581,37 @@ test("a Mac that has Kuvo Code's app is someone's already: it's added, and none 
   // Taken off again, for the tests after.
   const uninstall = await ask("POST", `kuvo/computers/${done.computer.key}/uninstall`);
   assert.equal((await over(uninstall.body.try.id)).state, "done");
+});
+
+test("a computer set up again with keys made anew is still the one whose app goes with it when it's removed (#753)", async () => {
+  // (Its host key is trusted already, from when it was added before: nothing is asked.)
+  const done = await over((await ask("POST", "kuvo/computers/add", { destination: "macbook" })).body.try.id);
+  assert.equal(done.state, "done", JSON.stringify(done.failure));
+  // Kuvo Code's app there, one of your devices on its box's word.
+  const appThere = k(link.publicOf(link.newKey()));
+  link.updateLink(state => {
+    link.pairDevice(state, { key: appThere, name: "MacBook screen", by: done.computer.key });
+    return state;
+  });
+  // Its box's keys are lost there (stopped, its link's file gone), and it's set up again: the same
+  // computer, at the same address, with keys of its own made anew.
+  const kuvo = path.join(homes.macbook, ".kuvo-code");
+  for (const file of ["box.pid", "link.pid"]) {
+    let pid = 0;
+    try { pid = Number(fs.readFileSync(path.join(kuvo, "run", file), "utf8")); } catch {}
+    if (pid > 1 && alive(pid) && command(pid).includes(kuvo)) process.kill(pid);
+  }
+  fs.rmSync(path.join(kuvo, "run", "link.json"));
+  const again = await ask("POST", `kuvo/computers/${done.computer.key}/setup`);
+  const set = await over(again.body.try.id);
+  assert.equal(set.state, "done", JSON.stringify(set.failure));
+  const now = link.macPeersBody(link.readLink()).boxes.filter(each => each.kind === "machine");
+  assert.deepEqual(now.map(each => [each.name, each.key === done.computer.key]), [["macbook", false]], "the one computer, by another key");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone", "MacBook screen"], "its app is still one of your devices");
+  // Taken off your computers: its app goes with it all the same.
+  const uninstall = await ask("POST", `kuvo/computers/${now[0].key}/uninstall`);
+  assert.equal((await over(uninstall.body.try.id)).state, "done");
+  assert.deepEqual((await ask("GET", "kuvo/phones")).body.phones.map(each => each.name), ["My iPhone"]);
 });
 
 test("an add that fails, or is stopped, after Kuvo Code started on a computer that had nothing leaves nothing running there and no key behind", async () => {
@@ -649,5 +696,27 @@ test("a member of a setup, and a request that can't stay, are told where to add 
     assert.equal((await ask("POST", "kuvo/computers/add", { destination: "gpu" })).status, 409);
   } finally {
     link.macLink.appSaid = undefined;
+  }
+});
+
+test("no list of machines while this box keeps its machines' links isn't none: it says so, and adds no computer over it (#753)", async () => {
+  // (Its list gone, as when it couldn't be written; what it keeps of the machines it added still there.)
+  const list = path.join(home, "machines.json");
+  const before = fs.readFileSync(list);
+  assert.ok(Object.keys(read(path.join(home, "phone-link.json")).machines).length > 0);
+  fs.rmSync(list);
+  try {
+    const said = (await ask("GET", "kuvo/computers/add")).body;
+    assert.deepEqual([said.can, said.why], [false, "Studio’s list of machines can’t be read right now."]);
+    const refused = await ask("POST", "kuvo/computers/add", { destination: "gpu" });
+    assert.deepEqual([refused.status, refused.body.message], [503, "Studio’s list of machines can’t be read right now."]);
+    assert.equal(fs.existsSync(list), false, "no new list written in its place");
+    // What a phone asks of this Mac's machines says the same: the one reading of it.
+    const front = link.macFront(handle, { wait: 10, look: 60_000 });
+    const pieces = [];
+    for await (const piece of front({ method: "GET", path: "kuvo/machines", headers: {} }, undefined)) pieces.push(piece);
+    assert.equal(pieces.find(each => each.head).head.status, 503);
+  } finally {
+    fs.writeFileSync(list, before);
   }
 });
