@@ -413,6 +413,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   // as its own, never starting a second beside it (Kuvo Helper gave its keeper "/Users/you/", and
   // Kuvo Code runs this with "/Users/you").
   let keeperEnv: Record<string, string> = {};
+  // The new engine, downloaded and checked: kept in its place when the update fails before anything
+  // changed, so the next try (a moment later, or the next quiet moment) doesn't fetch it again.
+  let checkedEngine: { from: string; to: string } | null = null;
   let fetching = false;
   brokeOff = stopFailed = false;
   const download = async <T>(get: () => Promise<T>): Promise<T> => {
@@ -492,7 +495,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
 
     // Its engine, unless it's here already.
     const engineFolder = path.join(K, "engine", manifest.engine);
-    let staged = null;
+    let staged: string | null = null;
     if (!fs.existsSync(path.join(engineFolder, "opencode"))) {
       // (Another kind of machine has none: no kind, and no build.)
       const kind = { x64: "x86_64", arm64: "aarch64" }[os.arch() as "x64" | "arm64"];
@@ -513,6 +516,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     step("checking it");
     const engine = staged ?? path.join(engineFolder, "opencode");
     if (ran(engine, ["--version"]).status !== 0) throw new Error("The new engine doesn't run here.");
+    if (staged) checkedEngine = { from: staged, to: path.join(engineFolder, "opencode") };
     const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
     if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
@@ -573,6 +577,13 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   } catch (error) {
     brokeOff = fetching;
     const message = String((error as Error | undefined)?.message ?? error).slice(0, 300);
+    // (An engine of another version beside the one running changes nothing: the keeper starts its own.)
+    if (!swapped && checkedEngine && fs.existsSync(checkedEngine.from) && !fs.existsSync(checkedEngine.to)) {
+      try {
+        fs.mkdirSync(path.dirname(checkedEngine.to), { recursive: true, mode: 0o700 });
+        fs.renameSync(checkedEngine.from, checkedEngine.to);
+      } catch {}
+    }
     // Room first: what was downloaded goes before anything's put back.
     if (stage) fs.rmSync(stage, { recursive: true, force: true });
     if (swapped) {

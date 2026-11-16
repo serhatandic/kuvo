@@ -125,7 +125,10 @@ let served = {};
 // connection kept from the last one as the server closed it ("fetch failed").
 // What breaks off once before it's served (`drop`: the connection cut, else that status).
 let breaksOnce = {};
+// How many times each was asked for.
+const fetched = {};
 const server = http.createServer((request, response) => {
+  fetched[request.url] = (fetched[request.url] ?? 0) + 1;
   const breaking = breaksOnce[request.url];
   if (breaking) {
     delete breaksOnce[request.url];
@@ -690,6 +693,7 @@ test("`kuvo-link.js update --installer` tries once more by itself, a little late
   machine();
   const { folder: again } = release();
   const keeperFile = path.join(home, "bin", "kuvo-start");
+  const enginesBefore = fetched["/engine.tgz"] ?? 0;
   write(keeperFile, keeper("1.0.0").replace(/^stop\) /m, `stop) [ -f "$R/once" ] || { touch "$R/once"; echo "A start of the engine is under way there." >&2; exit 4; }; `), 0o700);
   const stopping = await (async () => {
     const ran = spawn(process.execPath, [script, "update", "--installer", "--now", "--from", again, "--key", pinned], { env: { ...process.env, KUVO_TEST_FETCH_WAIT: "20" }, stdio: ["ignore", "pipe", "inherit"] });
@@ -700,6 +704,7 @@ test("`kuvo-link.js update --installer` tries once more by itself, a little late
     return said.split("\n").filter(line => line.trim()).map(line => JSON.parse(line));
   })();
   assert.deepEqual(stopping.filter(line => line.result), [{ result: "updated", version: "0.10.0" }], "only the try that went through is said");
+  assert.equal(fetched["/engine.tgz"] - enginesBefore, 1, "its engine downloaded once: kept from the try that failed");
   engines.add(read(engineFile).pid);
 
   // A check that would fail again (what it got isn't what it says): said at once, not tried again.
