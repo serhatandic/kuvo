@@ -25,7 +25,7 @@ use kuvo_box::parts::{Delivery, File};
 use kuvo_box::{BoxClient, Draft, Sent, Where};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Pasted, StyledType, TextField, TextFieldEvent, TypeSize,
-    menu::{Menu, MenuEntry, PopoverMenu},
+    menu::{Menu, MenuEntry, PopoverMenu, PopoverMenuHandle},
     small::{Chip, ChipTone},
     theme::{radius, space},
 };
@@ -160,6 +160,8 @@ pub struct Composer {
     /// Whether anything waits in the conversation's queue (as its box says): ⌘Return queues after
     /// it even with nothing running.
     has_queue: bool,
+    /// The menu beside Send while the agent works.
+    send_menu: PopoverMenuHandle,
     /// Messages sent from here that the conversation doesn't have yet, in the order sent.
     outgoing: Vec<Outgoing>,
     /// Whether it reads the box by itself (the app), or shows what it's handed (tests and shots).
@@ -283,6 +285,7 @@ impl Composer {
             sending: false,
             on_its_way: None,
             has_queue: false,
+            send_menu: PopoverMenuHandle::default(),
             outgoing: Vec::new(),
             live: read,
             models: Models::default(),
@@ -1990,17 +1993,26 @@ impl Composer {
         let trigger = Button::icon_only("send-choices", IconName::ChevronDown, "More ways to send").ghost().size(ButtonSize::Small);
         div()
             .debug_selector(|| "send-choices".into())
-            .child(PopoverMenu::new("send-choices-menu", trigger, move |_, cx| {
-                let (steer, queue, now) = (this.clone(), this.clone(), this.clone());
-                cx.new(|cx| {
-                    Menu::new(cx)
-                        .width(px(300.))
-                        .entry(MenuEntry::new("Send").detail("The agent reads it at its next step").shortcut("↩").on_select(move |_, cx| steer.update(cx, |this, cx| this.send_as(SendAs::Steer, cx))))
-                        .entry(MenuEntry::new("Queue for After This Run").detail("Sent once this run ends").shortcut("⌘↩").disabled(!can_queue).on_select(move |_, cx| queue.update(cx, |this, cx| this.send_as(SendAs::Queue, cx))))
-                        .entry(MenuEntry::new("Send Now").detail("Stops the step it's on and gives it this").on_select(move |_, cx| now.update(cx, |this, cx| this.send_as(SendAs::Now, cx))))
-                })
-            }).align_right())
+            .child(PopoverMenu::new("send-choices-menu", trigger, move |_, cx| Self::send_menu(this.clone(), can_queue, cx)).with_handle(self.send_menu.clone()).align_right())
             .into_any_element()
+    }
+
+    fn send_menu(this: Entity<Composer>, can_queue: bool, cx: &mut App) -> Entity<Menu> {
+        let (steer, queue, now) = (this.clone(), this.clone(), this);
+        cx.new(|cx| {
+            Menu::new(cx)
+                .width(px(400.))
+                .entry(MenuEntry::new("Send").detail("At its next step").shortcut("↩").on_select(move |_, cx| steer.update(cx, |this, cx| this.send_as(SendAs::Steer, cx))))
+                .entry(MenuEntry::new("Queue for After This Run").detail("Once this run ends").shortcut("⌘↩").disabled(!can_queue).on_select(move |_, cx| queue.update(cx, |this, cx| this.send_as(SendAs::Queue, cx))))
+                .entry(MenuEntry::new("Send Now").detail("Stops its current step").on_select(move |_, cx| now.update(cx, |this, cx| this.send_as(SendAs::Now, cx))))
+        })
+    }
+
+    /// Opens the menu beside Send (for shots).
+    pub fn open_send_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let menu = Self::send_menu(cx.entity(), self.can_queue(), cx);
+        self.send_menu.open(menu, window, cx);
+        cx.notify();
     }
 }
 

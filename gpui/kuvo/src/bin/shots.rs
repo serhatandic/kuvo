@@ -47,6 +47,12 @@ struct Screen {
 
 type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
+/// The menu beside Send open, as a click opens it.
+fn send_menu_open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
+    composer.update(cx, |composer, cx| composer.open_send_menu(window, cx));
+}
+
 const SCREENS: &[Screen] = &[
     Screen { slug: "composer-shell", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-compact", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -54,6 +60,10 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "held-box-sessions", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "held-box", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "conversation", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // While the agent works (#776): a message written, the way beside Send, and the queue with one
+    // steered in, one queued and another agent's letter; then the menu beside Send open.
+    Screen { slug: "send-while-working", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "send-while-working-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(send_menu_open) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
     Screen { slug: "select-paragraph", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_paragraph) },
@@ -1247,6 +1257,13 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             if screen.slug == "compaction-running" { stand_in.running_compaction(); }
+            if screen.slug.starts_with("send-while-working") {
+                stand_in.set_queue("ses_signup", vec![
+                    serde_json::json!({ "id": "msg_w0", "words": "Check the error copy against the tone guide too", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }),
+                    serde_json::json!({ "id": "msg_w1", "words": "Then do the same for the password field: keep it, and say what's wrong with it", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "queue", "held": false }),
+                    serde_json::json!({ "id": "msg_w2", "words": "The design review is at 3: the error copy should match the new tone guide.", "files": ["tone-guide.pdf"], "keyword": null, "from": "Mira", "on": "box", "delivery": "queue", "held": false }),
+                ]);
+            }
             // The rate limits' conversation waits on a permission; another one waits behind it.
             let mut second = kuvo::stand_in::redis_permission();
             second["id"] = serde_json::json!("per_push");

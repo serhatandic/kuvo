@@ -167,3 +167,19 @@ fn a_queue_a_stop_holds_says_so_and_resumes(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(sent(&stand_in, "ses_signup"), vec![("And the docs".into(), "queue".into())]);
 }
+
+#[gpui::test]
+fn a_right_click_on_a_queued_message_offers_what_can_be_done_with_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_signup", cx);
+    let at = bounds(cx, "queued-msg_q1").expect("the row").center();
+    cx.simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::default());
+    cx.run_until_parked();
+    for item in ["Steer", "Send Now", "Edit", "Remove"] {
+        assert!(bounds(cx, &format!("menu-item-{item}")).is_some(), "{item}");
+    }
+    click(cx, "menu-item-Send Now");
+    assert_eq!(stand_in.queue_asked(), vec!["now msg_q1"]);
+}

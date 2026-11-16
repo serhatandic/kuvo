@@ -967,7 +967,25 @@ impl ConversationView {
                 let selector = format!("next-step-{}", item.id);
                 div().debug_selector(move || selector).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child("At its next step")
             });
-            div()
+            // A right-click offers what 0.7's did: Steer (while it runs), Send Now, Edit (yours), Remove.
+            let view = cx.entity();
+            let (menu_item, yours, steers) = (item.id.clone(), item.is_yours(), running && item.is_queued() && !item.is_on_box());
+            let menu = move |_: &mut Window, cx: &mut App| {
+                let (steer, now, edit, remove) = (view.clone(), view.clone(), view.clone(), view.clone());
+                let (a, b, e, r) = (menu_item.clone(), menu_item.clone(), menu_item.clone(), menu_item.clone());
+                cx.new(|cx| {
+                    let mut menu = Menu::new(cx);
+                    if steers {
+                        menu = menu.entry(MenuEntry::new("Steer").on_select(move |_, cx| steer.update(cx, |this, cx| this.steer_queued(a.clone(), cx))));
+                    }
+                    menu = menu.entry(MenuEntry::new("Send Now").on_select(move |_, cx| now.update(cx, |this, cx| this.send_queued_now(b.clone(), cx))));
+                    if yours {
+                        menu = menu.entry(MenuEntry::new("Edit").on_select(move |_, cx| edit.update(cx, |this, cx| this.unqueue(e.clone(), true, cx))));
+                    }
+                    menu.separator().entry(MenuEntry::new("Remove").destructive().on_select(move |_, cx| remove.update(cx, |this, cx| this.unqueue(r.clone(), false, cx))))
+                })
+            };
+            let row = div()
                 .id(SharedString::from(format!("queued-{}", item.id)))
                 .debug_selector(move || selector)
                 .group(group.clone())
@@ -998,11 +1016,14 @@ impl ConversationView {
                             let selector = format!("edit-{}", item.id);
                             d.child(div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("edit-{}", item.id)), IconName::Pencil, "Edit").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(edit_id.clone(), true, cx)))))
                         })
+                        // (Another's isn't yours to edit: its room kept, so every row's buttons line up.)
+                        .when(!item.is_yours(), |d| d.child(div().opacity(0.).child(Button::icon_only(SharedString::from(format!("edit-room-{}", item.id)), IconName::Pencil, "").size(ButtonSize::Small).disabled(true))))
                         .child({
                             let selector = format!("remove-{}", item.id);
                             div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))))
                         }),
-                )
+                );
+            ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu)
         });
         Some(
             div()
