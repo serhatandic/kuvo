@@ -14,6 +14,7 @@ kuvo_box = { path = "../kuvo_box" }
 anyhow = "1"
 # The installer's steps, handed from the thread that runs it to the window.
 async-channel = "2.5"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # The app's device key, in the Mac's keychain; and where System Settings' window is, with the
@@ -25,6 +26,10 @@ core-graphics = "0.24"
 libc = "0.2"
 objc2 = "0.6"
 raw-window-handle = "0.6"
+# Your settings' Notifications and General: the Dock's count, the alert sound, and which editors
+# are on this Mac (notifications.rs, yours/mac.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace", "NSGraphics"] }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

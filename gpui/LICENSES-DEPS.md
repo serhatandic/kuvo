@@ -28,6 +28,7 @@ and its entry in the repo's `THIRD_PARTY_LICENSES.txt` (`scripts/third-party-lic
 | libc | MIT OR Apache-2.0 | Reading a process's command line on macOS (is it the box's server?) | kuvo_box |
 | percent-encoding | MIT OR Apache-2.0 | Writing a route's path and query | kuvo_box |
 | serde, serde_json | MIT OR Apache-2.0 | Reading and writing a box's JSON | kuvo_box, kuvo (its stand-in box) |
+| objc2-foundation, objc2-app-kit (0.3, a few features, already in GPUI's build) | Zlib OR Apache-2.0 OR MIT | Your settings on a Mac: the Dock's count, the alert sound, which editors are installed | kuvo |
 | x25519-dalek (with curve25519-dalek) | BSD-3-Clause | The link's keys and its Noise handshake (X25519), to your other computers | kuvo_box |
 | aes-gcm, sha2, hmac | MIT OR Apache-2.0 | The link's encryption (AES-256-GCM, SHA-256, HMAC), held to `protocol/vectors/noise.json` | kuvo_box |
 | tungstenite | MIT OR Apache-2.0 | The WebSocket to the relay | kuvo_box |
@@ -39,7 +40,7 @@ and its entry in the repo's `THIRD_PARTY_LICENSES.txt` (`scripts/third-party-lic
 GPUI's `test-support` feature (Apache-2.0, same crate) is used only by the tests and the
 `shots` binary. `tempfile` (MIT OR Apache-2.0) gives `kuvo_box`'s tests and example folders of
 their own. Before the link, every crate `kuvo_box` used was already in the build (below); the link's are
-the first it adds. The app, `kuvo`, uses only crates already listed here.
+the first it adds. The app, `kuvo`, uses only crates already in the build and listed here.
 
 GPUI also brings in other crates from Zed's repository, all Apache-2.0: `gpui_apple`,
 `gpui_macos`, `gpui_macros`, `gpui_shared_string`, `gpui_util`, `collections`, `refineable`,

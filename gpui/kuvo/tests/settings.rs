@@ -104,8 +104,8 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     click(cx, "rail-settings");
     // Your settings first: this app's own, which ask no box anything.
     assert!(shown(cx, "settings-yours-title") && shown(cx, "settings-search"));
-    assert!(shown(cx, "row-theme"), "Appearance first");
-    assert_eq!(title(&workspace, cx).as_deref(), Some("Appearance"));
+    assert!(shown(cx, "row-editor"), "General first");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("General"));
     assert!(stand_in.seen_at("GET", "kuvo/settings").is_empty());
     // One of your own that isn't in the desktop app yet says so.
     // What isn't in the desktop app yet is one row, opening its short list; each says so.

@@ -22,7 +22,7 @@ use kuvo_box::areas::{Computer, Waiting};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, BoxInfo, Listing, Where};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, Theme, TypeSize,
+    ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TextFieldEvent, TypeSize,
     menu::Menu,
     theme::{radius, space},
 };
@@ -2404,7 +2404,7 @@ impl Render for Workspace {
             })
             .on_action(cx.listener(|_, _: &ToggleAppearance, _, cx| {
                 let next = cx.theme().appearance.toggled();
-                Theme::set_appearance(next, cx);
+                crate::yours::set_theme(next, cx);
             }))
             .flex()
             .flex_col()

@@ -28,13 +28,16 @@ const fn listed(id: &'static str, title: &'static str, icon: IconName, group: &'
     Listed { id, title, icon, group, keywords }
 }
 
-/// Your settings: this app's own, on this device, kept and drawn by the app.
-pub const YOURS: &[Listed] = &[listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors")];
+/// Your settings: this app's own, on this device, kept (`crate::yours`) and drawn by the app.
+/// Adding one: `.claude/notes/yours-settings-pattern.md`.
+pub const YOURS: &[Listed] = &[
+    listed("general", "General", IconName::Settings, "", "open files editor code text"),
+    listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors"),
+    listed("notifications", "Notifications", IconName::Bell, "", "sound badge dock finished waits asks alerts"),
+];
 
 /// Yours that the desktop app hasn't yet: each opens a page saying so.
 pub const YOURS_LATER: &[Listed] = &[
-    listed("general", "General", IconName::Settings, "", "window swipe open files"),
-    listed("notifications", "Notifications", IconName::Bell, "", "sound badge finished waits"),
     listed("voice", "Voice", IconName::Mic, "", "microphone dictation speech"),
     listed("shortcuts", "Keyboard Shortcuts", IconName::Return, "", "keys"),
     listed("panel", "Side Panel", IconName::PanelRight, "", "browser history terminal files"),
@@ -111,6 +114,8 @@ pub enum Act {
     SetModel { path: &'static [&'static str], model: Option<String>, was: Option<String> },
     SetNotice(Notice, bool),
     SetDark(bool),
+    /// One of your own settings changed, kept on this device.
+    Yours(crate::yours::Change),
     /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
     /// its confirm, where it has one, was answered).
     Change { at: At, value: Value, asked: bool },
@@ -363,10 +368,37 @@ fn capitalized(words: &str) -> String {
     chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
+/// What your own settings' pages are drawn from: your settings now, and what this device has.
+pub struct YoursFacts<'a> {
+    pub yours: &'a crate::yours::Yours,
+    pub dark: bool,
+    /// The editors on this Mac General offers.
+    pub editors: &'a [crate::yours::editors::Editor],
+    /// Why the last change couldn't be kept, where it couldn't.
+    pub problem: Option<&'a str>,
+    /// Where System Settings shows this app's notifications.
+    pub notification_settings: &'a str,
+}
+
+/// A switch of your own settings: on, and the change flipping it makes.
+fn yours_switch(on: bool, change: fn(bool) -> crate::yours::Change) -> Control {
+    Control::Switch { on, act: Some(Act::Yours(change(!on))) }
+}
+
 /// One of your own settings' pages, as blocks.
-pub fn yours(section: &str, dark: bool) -> Vec<Block> {
-    match section {
+pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
+    use crate::yours::Change;
+    let mut blocks = match section {
+        "general" => {
+            let picked = facts.yours.general.editor.as_deref().and_then(|id| facts.editors.iter().find(|editor| editor.id == id));
+            let default = "Each file’s default app";
+            let mut choices = vec![(default.to_owned(), None, Some(Act::Yours(Change::Editor(None))), picked.is_none())];
+            choices.extend(facts.editors.iter().map(|editor| (editor.name.clone(), None, Some(Act::Yours(Change::Editor(Some(editor.id.clone())))), picked == Some(editor))));
+            let editor = Row::new("row-editor", "Open code and text in", "From Files, for a file on this Mac.", Control::Menu { shown: Some(picked.map_or(default, |editor| &editor.name).to_owned()), choices });
+            vec![Block::Group("Files".into(), String::new(), vec![editor])]
+        }
         "appearance" => {
+            let dark = facts.dark;
             let theme = Row::new(
                 "row-theme",
                 "Theme",
@@ -375,8 +407,22 @@ pub fn yours(section: &str, dark: bool) -> Vec<Block> {
             );
             vec![Block::Group("Theme".into(), String::new(), vec![theme])]
         }
+        "notifications" => {
+            let now = &facts.yours.notifications;
+            let rows = vec![
+                Row::new("row-notify-sessions", "Sessions", "When one finishes or asks you something, while Kuvo isn’t in front.", yours_switch(now.sessions, Change::Sessions)),
+                Row::new("row-notify-sound", "Play a sound", "", yours_switch(now.sound, Change::Sound)),
+                Row::new("row-notify-dock", "Count on the Dock icon", "What waits for you, on all your computers.", yours_switch(now.dock, Change::Dock)),
+                Row::new("row-notify-system", "System notification settings", "How they look, or to allow them again.", Control::Buttons(vec![Push::new("Open", Act::Open(facts.notification_settings.to_owned()))])),
+            ];
+            vec![Block::Group(String::new(), String::new(), rows)]
+        }
         _ => Vec::new(),
+    };
+    if let Some(problem) = facts.problem.filter(|_| !blocks.is_empty()) {
+        blocks.push(Block::Note { key: "note-yours-problem".into(), words: format!("Your change couldn’t be kept for next time: {problem}"), busy: false, warning: true });
     }
+    blocks
 }
 
 /// One of a computer's pages this app still draws itself, as blocks.
