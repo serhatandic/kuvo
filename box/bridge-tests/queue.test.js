@@ -321,6 +321,49 @@ test("Send Now gives a queued message to the agent right away: steered, the step
   assert.equal((await ask("POST", "kuvo/sessions/ses_1/queue/msg_gone/now")).status, 404);
 });
 
+test("Steer gives a queued message to the agent at its next step: the run goes on, nothing stopped; with nothing running it goes as Send Now", async () => {
+  inboxes.ses_1 = [{ id: "msg_q1", delivery: "queue" }, { id: "msg_q2", delivery: "queue" }];
+  running.add("ses_1");
+  const steered = await ask("POST", "kuvo/sessions/ses_1/queue/msg_q2/steer");
+  assert.deepEqual(steered, { status: 200, json: { paused: false, held: [] } });
+  assert.deepEqual(asked, ["ses_1 msg_q2 steer"], "steered, and the run not stopped");
+  // Taken by the agent meanwhile: not waiting any more.
+  taken.add("msg_q1");
+  assert.equal((await ask("POST", "kuvo/sessions/ses_1/queue/msg_q1/steer")).status, 404);
+  assert.equal((await ask("POST", "kuvo/sessions/ses_1/queue/msg_gone/steer")).status, 404);
+  // Nothing running: it goes now (steering it starts a run).
+  taken.clear();
+  running.delete("ses_1");
+  asked.length = 0;
+  assert.equal((await ask("POST", "kuvo/sessions/ses_1/queue/msg_q1/steer")).status, 200);
+  assert.deepEqual(asked, ["ses_1 msg_q1 steer"]);
+});
+
+test("Steer on one waiting on the box while a run goes on sends it to the engine, as Send Now does", async () => {
+  inboxes.ses_1 = [];
+  running.add("ses_1");
+  await ask("POST", "kuvo/sessions/ses_1/stop");
+  await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w1", text: "Then the docs." });
+  assert.deepEqual(prompted, []);
+  const steered = await ask("POST", "kuvo/sessions/ses_1/queue/msg_w1/steer");
+  assert.equal(steered.status, 200);
+  assert.equal(steered.json.paused, false);
+  assert.deepEqual(prompted.map(each => [each.id, each.delivery]), [["msg_w1", "steer"]]);
+});
+
+test("a message sent for after this run while the queue is paused waits on the box, shown with the queue; one sent to go now goes", async () => {
+  inboxes.ses_1 = [];
+  running.add("ses_1");
+  await ask("POST", "kuvo/sessions/ses_1/stop");
+  running.delete("ses_1");
+  const queued = await ask("POST", "kuvo/sessions/ses_1/send", { id: "msg_s1", words: "After this, the docs.", delivery: "queue" });
+  assert.deepEqual(queued, { status: 200, json: { waits: true } });
+  assert.deepEqual(prompted, [], "nothing reached the engine, which would run it");
+  assert.deepEqual(link.queueOf("ses_1").waiting.map(({ id, text }) => ({ id, text })), [{ id: "msg_s1", text: "After this, the docs." }]);
+  await ask("POST", "kuvo/sessions/ses_1/send", { id: "msg_s2", words: "Now this.", delivery: "steer" });
+  assert.deepEqual(prompted.map(each => [each.id, each.delivery]), [["msg_s2", "steer"]]);
+});
+
 test("a queue left with nothing running when the engine started again waits for Resume; the same engine's events coming back don't pause it", async () => {
   inboxes.ses_1 = [{ id: "msg_q1", delivery: "queue" }, { id: "msg_s1", delivery: "steer" }];
   inboxes.ses_2 = [];

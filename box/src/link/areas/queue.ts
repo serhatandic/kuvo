@@ -10,7 +10,7 @@ import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, resumeQueue, sendNow, showsQueue, shownQueue, takeBackFromInbox } from "../engine/queue";
+import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, resumeQueue, sendNow, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
@@ -28,7 +28,7 @@ import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
-export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now))?))$/;
+export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
 
 // How long the queue's read waits for the engine, each time (where the session is, then its inbox):
 // a client draws it at once, and a busy engine's `items` are null rather than late.
@@ -54,6 +54,7 @@ async function queueShown(session: string, targets: Target[]): Promise<QueueShow
 // each time that changes. `GET kuvo/sessions/<id>/queue`: one session's. `POST …/stop`: what waits
 // held and paused, then the run stopped. `POST …/queue/hold`: held and paused without stopping.
 // `POST …/queue/resume`: the queue goes on. `POST …/queue/<item>/now`: that message right away.
+// `POST …/queue/<item>/steer`: that message at the agent's next step, the run going on.
 // `POST …/queue/add`: a client's message for the queue, waiting on the box while it's paused (else
 // to the engine). `DELETE …/queue/<item>`: one waiting on the box taken away.
 export async function* queueRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
@@ -164,7 +165,8 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     forgetStopped(session);
     forgetArriving(session);
     if (step === "resume") return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
-    if (!(await sendNow(place.target, session, decodeURIComponent(item)))) return yield* json(404, { message: "That message isn't waiting any more." });
+    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : sendNow(place.target, session, decodeURIComponent(item));
+    if (!(await go)) return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
   } catch (error) {
     return yield* json(502, { message: String((error as Error | null)?.message ?? error) });

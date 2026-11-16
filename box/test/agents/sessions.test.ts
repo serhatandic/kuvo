@@ -1331,6 +1331,48 @@ describe("steering", () => {
     expect(a.runs).toHaveLength(1)
   })
 
+  test("Steer on one queued: it goes into the turn under way, not after it", async () => {
+    a.script = works
+    const id = create()
+    send(id, "first")
+    await until(() => a.runs.length === 1)
+    const queued = send(id, "after this", "queue")
+    const steered: string[] = []
+    a.threads[0].steer = async (input) => {
+      steered.push(input.text)
+      return true
+    }
+    // Only asked for: as the engine has it, it'd go next (no Steer).
+    expect(steered).toEqual([])
+    sessions.setDelivery(id, queued, "steer", true)
+    await until(() => steered.length === 1)
+    await until(() => sessions.inbox(id).length === 0)
+    expect(steered).toEqual(["after this"])
+    a.threads[0].onStop!()
+    await settled(id, 1)
+    expect(a.runs).toHaveLength(1)
+  })
+
+  test("Steer on one queued, for an agent that can't take one partway: it goes next, after the turn", async () => {
+    let release!: () => void
+    a.script = (input, turn) => {
+      if (input.text !== "first") return replies(input, turn, {} as TurnHooks, {} as FakeThread)
+      return new Promise((resolve) => (release = () => resolve({ outcome: "succeeded" })))
+    }
+    const id = create()
+    send(id, "first")
+    await until(() => a.runs.length === 1)
+    send(id, "second", "queue")
+    const steered = send(id, "third", "queue")
+    sessions.setDelivery(id, steered, "steer", true)
+    expect(sessions.inbox(id).map((item) => item.delivery)).toEqual(["queue", "steer"])
+    release()
+    await until(() => a.runs.length >= 2)
+    expect(a.runs[1].text).toBe("third")
+    await settled(id, 3)
+    expect(a.runs.map((run) => run.text)).toEqual(["first", "third", "second"])
+  })
+
   test("a text file sent partway goes in the message, as for one that starts a turn", async () => {
     a.script = works
     const id = create()

@@ -1876,7 +1876,9 @@ export class Sessions {
   }
 
   /** Steer (it goes next, and now if nothing runs) or queue (it waits its turn) a waiting message. */
-  setDelivery(id: string, inputID: string, delivery: Delivery) {
+  // `into`: steered into the turn under way, at its next step, where its agent takes one partway
+  // (as a message sent then is: Steer on one queued); else, as the engine has it, it goes next.
+  setDelivery(id: string, inputID: string, delivery: Delivery, into = false) {
     const record = this.record(id)
     const input = this.queue(record).find((waiting) => waiting.id === inputID)
     if (!input) throw new NotFound("That message was sent already.")
@@ -1886,7 +1888,14 @@ export class Sessions {
       this.store.save(id, true)
       emit("session.inbox.delivery.changed", { sessionID: id, inboxID: inputID, delivery }, record.session.location.directory)
     }
-    if (delivery === "steer") this.wake(id)
+    if (delivery !== "steer") return
+    const live = this.live.get(id)
+    const doing = live?.doing
+    if (into && live && doing?.kind === "running" && !doing.run.compacting && doing.run.agent?.thread.steer && !live.steering.has(inputID)) {
+      void this.steerNow(id, live, doing.run, input)
+      return
+    }
+    this.wake(id)
   }
 
   cancelInput(id: string, inputID: string) {

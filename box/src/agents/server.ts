@@ -399,7 +399,8 @@ export function handler(context: Context) {
               return json({})
             }
             if (method === "PATCH" && c) {
-              sessions.setDelivery(id, c, (await body()).delivery)
+              const asked = await body()
+              sessions.setDelivery(id, c, asked.delivery, asked.into === true)
               return json({})
             }
             return json({ data: sessions.inbox(id) })
