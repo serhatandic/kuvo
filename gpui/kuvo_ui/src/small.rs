@@ -386,11 +386,21 @@ impl RenderOnce for Avatar {
     }
 }
 
+/// A line of status where only what waits on you is coloured: `words` in the caller's colour (the
+/// second level), and the part `attention` names ("1 waiting on you", a byte range of `words`) in
+/// the theme's calmer attention colour. "1 at work" stays as quiet as the rest.
+pub fn status_words(words: impl Into<SharedString>, attention: Option<std::ops::Range<usize>>, cx: &App) -> gpui::StyledText {
+    let words: SharedString = words.into();
+    let color = cx.theme().colors.attention;
+    let highlights = attention.filter(|range| range.end <= words.len() && words.is_char_boundary(range.start) && words.is_char_boundary(range.end)).map(|range| (range, gpui::HighlightStyle { color: Some(color), ..Default::default() }));
+    gpui::StyledText::new(words).with_highlights(highlights)
+}
+
 /// A spinner: a turning arc, for work in progress. Holds still when the system asks for less
 /// motion (GPUI's animations do that themselves).
 pub fn spinner(id: impl Into<ElementId>, size: IconSize, color: Hsla) -> impl IntoElement {
     svg()
-        .path(IconName::Spinner.path())
+        .path(IconName::Spinner.path_at(size))
         .size(size.pixels())
         .flex_none()
         .text_color(color)

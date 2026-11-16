@@ -891,7 +891,7 @@ pub fn setting_button(key: &str, shown: String, open: impl Fn(&mut Window, &mut 
         .bg(c.card)
         .cursor_pointer()
         .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(if shown.is_empty() { "—".to_owned() } else { shown }))
-        .child(div().flex().flex_none().flex_col().child(svg().path(IconName::ChevronUp.path()).size(px(10.)).text_color(c.icon)).child(svg().path(IconName::ChevronDown.path()).size(px(10.)).text_color(c.icon)));
+        .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)));
     kuvo_ui::menu::PopoverMenu::view(SharedString::from(format!("{key}-popover")), trigger, open).align_right().into_any_element()
 }
 

@@ -6,7 +6,7 @@ use gpui::{
     AnyElement, AppContext as _, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
     menu::{Menu, MenuEntry, PopoverMenu},
     small::{Chip, spinner, status_dot},
     theme::{radius, space},
@@ -69,7 +69,6 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
             .ghost()
             .size(ButtonSize::Medium)
                 .icon_size(IconSize::Large)
-            .selected(workspace.is_panel_open())
             .tooltip("⌥⌘0")
             .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(cx)))
     });
@@ -100,8 +99,9 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                     Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
                         .ghost()
                         .size(ButtonSize::Medium)
-                .icon_size(IconSize::Large)
-                        .selected(workspace.sidebar_shown())
+                        .icon_size(IconSize::Large)
+                        // (No "on" wash: the sidebar beside it says it's shown, as Finder's and
+                        // Codex's sidebar buttons do; a filled tile was the bar's heaviest thing.)
                         .tooltip("⌘B")
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
                 ))
@@ -118,8 +118,9 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                 .gap(space::S2)
                 .pl(space::S3)
                 .pr(space::S3)
-                .children(title.map(|title| div().debug_selector(|| "window-title".into()).min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(title)))
-                .children(beside.map(|beside| div().flex_none().text_ui(TypeSize::Small).text_color(c.text_faint).child(beside)))
+                // The title is the bar's strongest words; where it is, quieter beside it.
+                .children(title.map(|title| div().debug_selector(|| "window-title".into()).min_w_0().truncate().text_role(TextRole::WindowTitle).text_color(c.text).child(title)))
+                .children(beside.map(|beside| div().flex_none().text_role(TextRole::WindowContext).text_color(c.text_faint).child(beside)))
                 .when(archived, |d| d.child(div().flex_none().child(Chip::new("is-archived", "Archived"))))
                 .child(div().flex_1())
                 .children(update_chip(workspace, cx))
@@ -182,7 +183,9 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
     };
     // A long name is cut, so back, forward and + stay at the sidebar's edge.
     let shown: gpui::SharedString = if name.chars().count() > 18 { format!("{}…", name.chars().take(17).collect::<String>()).into() } else { name.clone() };
-    let trigger = Button::new("computer-switcher", shown).ghost().size(ButtonSize::Medium).icon_size(IconSize::Large).icon(IconName::Computer).icon_after(IconName::ChevronDown);
+    // Where the window is, not what to do: its words quieter than the title's, its icon the
+    // toolbar's 16 px beside 13 px words.
+    let trigger = Button::new("computer-switcher", shown).ghost().quiet().size(ButtonSize::Medium).icon_size(IconSize::Medium).icon(IconName::Computer).icon_after(IconName::ChevronDown);
     let menu_name = name.clone();
     // Your other computers, as the box lists them (`kuvo/computers`), each with how it's reached.
     // A workspace by itself shows its one box: they're listed, and can't be switched to.

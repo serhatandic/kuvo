@@ -9,7 +9,7 @@ use gpui::{
 };
 use kuvo_box::areas::Level;
 use kuvo_ui::{
-    ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
     button::{Button, ButtonSize},
     menu::{Menu, MenuEntry, PopoverMenu},
     row::{NavRow, SectionHeader},
@@ -46,7 +46,7 @@ impl SettingsView {
                 group = entry.group.clone();
                 let fold = NavRow::new("settings-later-row", super::LATER)
                     .muted(true)
-                    .trailing(div().flex().items_center().gap(space::S2).child(div().text_ui(TypeSize::Small).text_color(c.text_faint).child(later.to_string())).child(Icon::new(if listed { IconName::ChevronDown } else { IconName::ChevronRight }).color(c.icon)))
+                    .trailing(div().flex().items_center().gap(space::S2).child(div().text_role(TextRole::Meta).text_color(c.text_faint).child(later.to_string())).child(Icon::new(if listed { IconName::ChevronDown } else { IconName::ChevronRight }).color(c.icon)))
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_later(cx)));
                 rows.push(div().debug_selector(|| "settings-later".into()).pt(space::S3).pb(space::S0_5).child(fold).into_any_element());
             }
@@ -90,12 +90,12 @@ impl SettingsView {
             rows.push(div().debug_selector(|| "settings-sections-problem".into()).child(quiet(format!("{name}’s other settings couldn’t be read: {why}"))).into_any_element());
         }
         let title: AnyElement = match side {
-            Side::Yours => div().debug_selector(|| "settings-yours-title".into()).pl(space::S1).h(px(36.)).flex().items_center().text_size(kuvo_ui::theme::scaled(px(17.))).medium().text_color(c.text).child("Your settings").into_any_element(),
+            Side::Yours => div().debug_selector(|| "settings-yours-title".into()).pl(space::S1).h(px(36.)).flex().items_center().text_role(TextRole::PaneTitle).text_color(c.text).child("Your settings").into_any_element(),
             Side::Computer => self.picker(cx),
         };
         let foot = match side {
             Side::Yours => NavRow::new("settings-foot-row", "Computer settings").icon(IconName::Computer).trailing(
-                div().flex().items_center().gap(space::S2).child(div().max_w(px(88.)).truncate().text_ui(TypeSize::Small).text_color(c.text_faint).child(name.clone())).child(Icon::new(IconName::ChevronRight).color(c.icon)),
+                div().flex().items_center().gap(space::S2).child(div().max_w(px(88.)).truncate().text_role(TextRole::Meta).text_color(c.text_faint).child(name.clone())).child(Icon::new(IconName::ChevronRight).color(c.icon)),
             ),
             Side::Computer => NavRow::new("settings-foot-row", "Your settings").icon(IconName::User).trailing(Icon::new(IconName::ChevronRight).color(c.icon)),
         }
@@ -151,7 +151,7 @@ impl SettingsView {
             .cursor_pointer()
             .hover(|d| d.bg(c.hover))
             .child(Icon::new(IconName::Computer).color(c.icon))
-            .child(div().flex_1().min_w_0().truncate().text_size(kuvo_ui::theme::scaled(px(17.))).medium().text_color(c.text).child(name))
+            .child(div().flex_1().min_w_0().truncate().text_role(TextRole::PaneTitle).text_color(c.text).child(name))
             .child(div().flex_none().text_ui(TypeSize::Small).text_color(c.text_faint).child(kind))
             .child(Icon::new(IconName::ChevronDown).color(c.icon))
             .into_any_element();
@@ -664,7 +664,7 @@ impl SettingsView {
                         .bg(c.card)
                         .cursor_pointer()
                         .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(if shown.is_empty() { "—".to_owned() } else { shown }))
-                        .child(div().flex().flex_none().flex_col().child(svg().path(IconName::ChevronUp.path()).size(px(10.)).text_color(c.icon)).child(svg().path(IconName::ChevronDown.path()).size(px(10.)).text_color(c.icon)))
+                        .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)))
                         .into_any_element(),
                 };
                 let wide = choices.iter().any(|(_, line, _, _)| line.is_some());

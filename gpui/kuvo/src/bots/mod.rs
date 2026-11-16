@@ -26,7 +26,7 @@ use kuvo_box::models::Offered;
 use kuvo_box::typed::ModelRef;
 use kuvo_ui::{TextField, TextFieldEvent};
 
-use crate::areas::{Reading, doing, reading};
+use crate::areas::{Reading, doing_parts, reading};
 use crate::time;
 
 /// How many of a bot's sessions its page lists before "Show All".
@@ -127,12 +127,25 @@ pub enum Tone {
     Refused,
 }
 
+/// A session's line on its bot's page: its project and how it stands, with where "Waiting on
+/// you" is in it (the only part coloured).
+pub(crate) fn session_line(project: &str, state: WorkState) -> (String, Option<std::ops::Range<usize>>) {
+    let mut line = project.to_owned();
+    let Some(words) = state_words(state) else { return (line, None) };
+    if !line.is_empty() {
+        line.push_str(" · ");
+    }
+    let start = line.len();
+    line.push_str(words);
+    (line, (state == WorkState::Asking).then(|| start..start + words.len()))
+}
+
 /// One of the page list's items.
 #[derive(Clone, Debug, PartialEq)]
 enum Item {
     Title(String),
     /// A bot's head: its face, name and job, what it's doing now, and Chat.
-    Head { bot: Box<Bot>, doing: Option<String> },
+    Head { bot: Box<Bot>, doing: Option<crate::areas::Doing> },
     /// A bot that lives elsewhere: what's known of it here.
     ElsewhereHead { key: String, name: String, look: Option<Look>, line: String },
     Notice { key: String, tone: Tone, title: String, words: String },
@@ -536,7 +549,7 @@ impl BotsView {
                 Reading::Ready(_) => vec![Item::Note { key: "bot-gone".into(), words: format!("This bot isn’t on {} any more.", self.this_box), busy: false }, Item::End],
             };
         };
-        let mut items = vec![Item::Head { bot: Box::new(bot.clone()), doing: doing(&bot.now, self.now()) }];
+        let mut items = vec![Item::Head { bot: Box::new(bot.clone()), doing: doing_parts(&bot.now, self.now()) }];
         items.extend(self.notices(id));
 
         items.push(Item::Group("Recent sessions".into()));
@@ -1183,5 +1196,21 @@ mod tests {
         assert_eq!(listed(&["name", "look", "job"]), "name, look and job");
         let request = new_request();
         assert!((8..=64).contains(&request.len()) && request.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'), "{request}");
+    }
+
+    /// A session waiting on you colours only "Waiting on you" on its bot's page, never its project
+    /// (a project named like the words included); others colour nothing.
+    #[test]
+    fn only_waiting_on_you_is_coloured_in_a_session_line() {
+        let coloured = |project: &str, state| {
+            let (line, range) = super::session_line(project, state);
+            (line.clone(), range.map(|range| line[range].to_owned()))
+        };
+        assert_eq!(coloured("Website", WorkState::Asking), ("Website · Waiting on you".into(), Some("Waiting on you".into())));
+        let (line, range) = super::session_line("Waiting on you", WorkState::Asking);
+        assert_eq!(range, Some("Waiting on you · ".len()..line.len()), "the state, not the project of the same name");
+        assert_eq!(coloured("", WorkState::Asking), ("Waiting on you".into(), Some("Waiting on you".into())));
+        assert_eq!(coloured("Website", WorkState::Working), ("Website · At work".into(), None));
+        assert_eq!(coloured("Website", WorkState::Other), ("Website".into(), None));
     }
 }

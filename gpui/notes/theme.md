@@ -31,7 +31,23 @@ Files read: `crates/ui/src/styles/{typography,spacing,units,elevation,color}.rs`
   #9E9E9E in light and #ECECEC / #A3A3A3 / #6E6E6E in dark; radii 8 (navigation), 16 (cards),
   pill (calls to action), and 6 for small inline things; spacing on a 4 px grid.
 - Dark surfaces step up with elevation: sunken wells #121212, the surface #181818, menus and
-  popovers #242424; the selected wash (10 %) is clearly stronger than hover (4–5 %).
+  popovers #242424.
+- Washes (the design reviews of 2026-11-16): hover 3–4 %, selected 8–9 %, pressed 12 %; a
+  test holds selected apart from the surface (1.15:1) and from hover beside it (1.08:1). An
+  open or selected place's icon takes `icon_on` (#5D5D5D light, #CFCFCF dark), never `text`. A
+  selected row is a light wash under words that lead, not a grey block heavier than its
+  neighbours (the reviews found the 10 % one the heaviest thing in the sidebar).
+- **The type ramp by role** (`TextRole`, `.text_role(..)`): every sidebar, row and the title bar
+  set their words through it, never a size of their own. Window title 14 medium; where it is
+  beside it 13 regular, faint; a sidebar's heading 17 medium (as Settings' already was: a step
+  over the names in its list); a two-line row's name 14 medium on
+  an 18 px line over its detail 12 regular on 15 px, second level; a one-line row's label 13
+  regular (the brief's "rows at 13"); sections, counts and times 12 regular, faint. The
+  brief's four sizes and two weights, and the headings' 17.
+- **Attention** (`colors.attention`, #3466B2 light, #85AEE0 dark): what waits on you, in
+  words, the accent's hue with less saturation, 4.5:1 on every surface it's on. Only that part
+  of a status is coloured ("1 at work, **1 waiting on you**", `small::status_words`); work
+  under way, finished, a job, stay in the second level. Badges and dots keep the accent.
 - The primary call to action is inverted neutral (dark on light, light on dark), as in the
   blueprint and OpenBot; the accent is kept for focus, links, the caret, switches and badges.
 - The dotted backdrop (Capy and OpenBot's calm empty pages) is ours: a seeded value-noise field
@@ -39,6 +55,11 @@ Files read: `crates/ui/src/styles/{typography,spacing,units,elevation,color}.rs`
 
 ## Gaps and findings
 
+- **The font** (checked for the 2026-11-16 reviews, one of which asked whether a custom font
+  made the type look "rounded and soft"): it's SF Pro, the system font. `text_ui` and
+  `text_role` set `.SystemUIFont`, which is also GPUI's own default family, so text that sets
+  no family is SF Pro too. What read as soft was regular-weight names at the same size as the
+  lines under them, loose two-line rows, and no tracking (below), not the family.
 - **Letter spacing:** GPUI has no tracking control (no field in `TextStyle`, nothing in the
   text systems). The brief's -0.15 px is recorded as `LETTER_SPACING` and not applied. SF Pro
   already tightens at text sizes; adding real tracking means positioning glyphs ourselves

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- In the desktop app, the sidebars and title bar read more calmly. Every icon in the rail, title bar, toolbars and rows has the same line weight, and the open area's icon no longer looks bolder than the rest. Bots', computers' and waiting sessions' names are set a step stronger than the line under them, which is smaller. Only "waiting on you" is coloured, in a softer blue; "1 at work" stays grey. A selected row's background is lighter. In the title bar, the window's title is the strongest text, the computer's name is quieter, and the sidebar button no longer shows a filled tile.
+
 - In the desktop app, the bar over a bot's composer no longer shows how many tokens the day has used ("4 sessions at work · answered 1 ask"); that will live in Insights.
 - Quotes work as in 0.7: each part you add to the chat has its own answer under it (click a quote to answer it), so you can comment on each one, and your own words go after them.
 

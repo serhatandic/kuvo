@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px, svg,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::BoxClient;
 use kuvo_box::settings_pages::{Changed, Checked, Field, FieldKind, FieldWords, Folder, Form, MOST_FILE_BYTES, Sent, WordsTone, file_value, for_check};
@@ -716,7 +716,7 @@ impl FormSheet {
                     .bg(c.card)
                     .when(!disabled, |d| d.cursor_pointer())
                     .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(if disabled { c.text_muted } else { c.text }).child(if shown.is_empty() { "—".to_owned() } else { shown }))
-                    .child(div().flex().flex_none().flex_col().child(svg().path(IconName::ChevronUp.path()).size(px(10.)).text_color(c.icon)).child(svg().path(IconName::ChevronDown.path()).size(px(10.)).text_color(c.icon)));
+                    .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)));
                 if disabled {
                     trigger.into_any_element()
                 } else {

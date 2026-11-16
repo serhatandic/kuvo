@@ -13,7 +13,7 @@ use gpui::{
 
 use crate::{
     icon::{Icon, IconName, IconSize},
-    theme::{ActiveTheme, StyledType, TypeSize, radius, space},
+    theme::{ActiveTheme, StyledType, TextRole, TypeSize, radius, space},
 };
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -124,8 +124,9 @@ impl NavRow {
     }
 }
 
-/// The height of a navigation row.
-pub const NAV_ROW_HEIGHT: Pixels = px(32.);
+/// The height of a navigation row: a 13 px label with room around it, and a target well over
+/// 28 px.
+pub const NAV_ROW_HEIGHT: Pixels = px(30.);
 
 impl RenderOnce for NavRow {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -138,10 +139,12 @@ impl RenderOnce for NavRow {
         } else {
             c.text_muted
         };
+        // Selected is told by the row's wash, not a heavier icon: its icon only steps up
+        // (`icon_on`), never to the text's near-black.
         let icon_color = if self.disabled {
             c.text_faint
         } else if self.selected {
-            c.text
+            c.icon_on
         } else {
             c.icon
         };
@@ -159,7 +162,7 @@ impl RenderOnce for NavRow {
             .rounded(radius::NAV)
             .border_1()
             .border_color(gpui::transparent_black())
-            .text_ui(TypeSize::Body)
+            .text_role(TextRole::RowLabel)
             .text_color(text)
             .when(self.selected, |r| r.bg(selected_bg));
         if self.cursor {
@@ -276,7 +279,7 @@ impl RenderOnce for SectionHeader {
             .h(px(28.))
             .pl(space::S2)
             .pt(space::S2)
-            .text_ui(TypeSize::Caption)
+            .text_role(TextRole::Meta)
             .text_color(c.text_faint)
             .child(self.label)
             .child(
