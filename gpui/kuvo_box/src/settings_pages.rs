@@ -383,6 +383,21 @@ pub struct Suggestion { pub value: f64, pub title: String }
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ConfirmBelow { pub value: f64, pub confirm: Confirm }
 
+/// One part of a `meter` row's whole (what Kuvo keeps on a computer): its name, how much, its words,
+/// and what it's made of.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Part {
+    #[serde(default)]
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub value: f64,
+    #[serde(default)]
+    pub words: String,
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub parts: Vec<Part>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Unit { pub name: String, pub factor: f64, pub decimals: usize, pub rounding: Rounding }
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -449,6 +464,9 @@ pub struct Row {
     pub actions: Vec<Action>,
     #[serde(default, deserialize_with = "crate::accounts::readable")]
     pub windows: Vec<Window>,
+    /// A `meter`'s parts of a whole, instead of windows.
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub parts: Vec<Part>,
     #[serde(default)]
     pub section: Option<String>,
     #[serde(default)]

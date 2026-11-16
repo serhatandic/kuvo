@@ -98,7 +98,7 @@ fn control_one_to_five_switch_areas_from_anywhere_in_the_window(cx: &mut TestApp
         ("ctrl-2", Area::Bots, "bot-bot_inbox"),
         ("ctrl-3", Area::Queue, "status-todo"),
         ("ctrl-4", Area::Computers, "computer-key_devbox"),
-        ("ctrl-5", Area::Settings, "setting-appearance"),
+        ("ctrl-5", Area::Settings, "setting-general"),
         ("ctrl-1", Area::Sessions, "session-project-ses_limits"),
     ] {
         cx.simulate_keystrokes(keys);
@@ -417,7 +417,7 @@ fn a_held_older_box_has_one_notice_without_claiming_its_content_is_empty(cx: &mu
     assert!(bounds(cx, "held-area").is_some());
     assert!(bounds(cx, "queue-empty").is_none());
     click(cx, "rail-settings");
-    assert!(bounds(cx, "row-theme").is_some(), "local appearance remains available");
+    assert!(bounds(cx, "row-editor").is_some(), "your own settings remain available");
     // Its own settings are its box's: they wait with it.
     click(cx, "settings-foot");
     assert!(bounds(cx, "settings-held").is_some());

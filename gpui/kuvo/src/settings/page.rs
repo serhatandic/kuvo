@@ -4,7 +4,7 @@
 //! the right), with what the box refused over it, a confirm, or the sign-in sheet.
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
+    AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
     prelude::FluentBuilder as _, px, svg,
 };
 use kuvo_box::areas::Level;
@@ -17,7 +17,7 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use super::rows::{Act, Control, FlowDrawn, Leading, Meter, Push, Row, Tone};
+use super::rows::{Act, Control, FlowDrawn, Layout, Leading, Meter, Part, Push, Row, Tone};
 use kuvo_box::settings_pages::{BadgeTone, FlowState};
 use super::{AddMachine, Drawn, Item, PAGE_WIDTH, Pick, SettingsView, Side, Standing, box_key, yours_key};
 use crate::areas::computer_line;
@@ -206,8 +206,8 @@ impl SettingsView {
                 .flex()
                 .flex_col()
                 .gap(space::S1)
-                .when(!label.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(label)))
-                .when(!words.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_faint).child(words)))
+                .when(!label.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(label)))
+                .when(!words.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)))
                 .into_any_element(),
             Item::Row { row, first, last } => self.row(*row, first, last, cx),
             Item::Note { key, words, busy, warning } => div()
@@ -242,7 +242,10 @@ impl SettingsView {
 
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let Row { key, leading, title, detail, tone, why, control, badge, notice, flow } = row;
+        if row.layout == Layout::Bare {
+            return self.bare_row(row, cx);
+        }
+        let Row { key, leading, title, detail, tone, why, control, badge, notice, flow, aside, .. } = row;
         let (mark, letter) = (format!("{key}-mark"), format!("{key}-initial"));
         let leading: Option<AnyElement> = match leading {
             Leading::None => None,
@@ -253,48 +256,55 @@ impl SettingsView {
             }),
             Leading::Initial(name) => Some(div().debug_selector(move || letter).child(initial(&name, cx)).into_any_element()),
         };
+        // A card of rows, each its own item: the card's edge drawn a side at a time, a hairline
+        // between rows.
+        let card = |d: gpui::Stateful<gpui::Div>| {
+            d.w_full()
+                .bg(c.card)
+                .border_color(c.border)
+                .border_l_1()
+                .border_r_1()
+                .when(first, |d| d.rounded_t(radius::POPOVER).border_t_1())
+                .when(last, |d| d.rounded_b(radius::POPOVER).border_b_1())
+                .px(space::S5)
+        };
         if matches!(&control, Control::Field { save: Act::Filter, .. }) {
             let selector = key.clone();
             let control = self.control(&key, control, cx);
-            return div()
-                .id(SharedString::from(key))
-                .debug_selector(move || selector)
-                .w_full()
-                .bg(c.card)
-                .when(first, |d| d.rounded_t(radius::POPOVER))
-                .when(last, |d| d.rounded_b(radius::POPOVER))
-                .shadow(if first && last { cx.theme().card_shadow() } else { Vec::new() })
-                .px(space::S5)
-                .child(div().py(space::S3).when(!last, |d| d.border_b_1().border_color(c.border)).child(control))
-                .into_any_element();
+            return card(div().id(SharedString::from(key)).debug_selector(move || selector)).child(div().py(space::S3).when(!last, |d| d.border_b_1().border_color(c.border)).child(control)).into_any_element();
         }
         let badge = badge.map(|(words, tone)| badge_of(&key, words, tone, cx));
         let notice = notice.map(|(words, tone)| {
-                                let selector = format!("{key}-notice");
-                                div()
-                                    .debug_selector(move || selector)
-                                    .pt(space::S0_5)
-                                    .flex()
-                                    .items_start()
-                                    .gap(space::S1_5)
-                                    .text_ui(TypeSize::Small)
-                                    .text_color(c.text_muted)
-                                    .child(div().pt(px(2.)).child(Icon::new(if tone == Tone::Warning { IconName::Warning } else { IconName::Info }).size(IconSize::Nav).color(if tone == Tone::Warning { c.warning } else { c.text_faint })))
-                                    .child(div().flex_1().min_w_0().line_clamp(3).child(words))
-                            });
+            let selector = format!("{key}-notice");
+            div()
+                .debug_selector(move || selector)
+                .pt(space::S0_5)
+                .flex()
+                .items_start()
+                .gap(space::S1_5)
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .child(div().pt(px(2.)).child(Icon::new(if tone == Tone::Warning { IconName::Warning } else { IconName::Info }).size(IconSize::Nav).color(if tone == Tone::Warning { c.warning } else { c.text_faint })))
+                .child(div().flex_1().min_w_0().line_clamp(3).child(words))
+        });
         let flow = flow.map(|flow| self.flow(&key, flow, cx));
-        let control = self.control(&key, control, cx);
+        // A row that opens a page is pressed whole, its › at the end.
+        let opens = match &control {
+            Control::Opens(act) => Some(act.clone()),
+            _ => None,
+        };
+        let control = match control {
+            Control::Opens(_) => Icon::new(IconName::ChevronRight).color(c.icon).into_any_element(),
+            control => self.control(&key, control, cx),
+        };
+        let aside = aside.map(|words| {
+            let selector = format!("{key}-aside");
+            div().debug_selector(move || selector).flex_none().text_ui(TypeSize::Body).text_color(c.text_muted).child(words)
+        });
         let selector = key.clone();
         let why_selector = format!("{key}-why");
-        div()
-            .id(SharedString::from(key))
-            .debug_selector(move || selector)
-            .w_full()
-            .bg(c.card)
-            .when(first, |d| d.rounded_t(radius::POPOVER).mt(px(0.)))
-            .when(last, |d| d.rounded_b(radius::POPOVER))
-            .shadow(if first && last { cx.theme().card_shadow() } else { Vec::new() })
-            .px(space::S5)
+        card(div().id(SharedString::from(key)).debug_selector(move || selector))
+            .when_some(opens, |d, act| d.cursor_pointer().hover(|d| d.bg(c.hover)).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))))
             .child(
                 div()
                     .flex()
@@ -338,9 +348,65 @@ impl SettingsView {
                             .children(notice)
                             .children(flow),
                     )
-                    .child(div().flex_none().max_w(px(340.)).child(control)),
+                    .children(aside)
+                    .child(div().flex_none().max_w(px(360.)).child(control)),
             )
             .into_any_element()
+    }
+
+    /// A row on the page itself: a group's one multi-line field, full width; or a whole by its
+    /// parts, its title and actions over its bar.
+    fn bare_row(&mut self, row: Row, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let Row { key, title, detail, tone, why, control, .. } = row;
+        let selector = key.clone();
+        let why = why.map(|why| div().debug_selector({ let key = key.clone(); move || format!("{key}-why") }).pt(space::S2).text_ui(TypeSize::Small).text_color(c.text_faint).child(why));
+        let body: AnyElement = match control {
+            Control::Parts { parts, actions, busy, open, expand } => {
+                let buttons = self.buttons(&key, actions, cx);
+                let header = div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S3)
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().debug_selector({ let key = key.clone(); move || format!("{key}-title") }).text_ui(TypeSize::Body).medium().text_color(c.text).child(title)).when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(detail))))
+                    .children(busy.map(|words| div().debug_selector({ let key = key.clone(); move || format!("{key}-busy") }).flex().items_center().gap(space::S1_5).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy-spinner")), IconSize::Nav, c.text_muted)).child(words)))
+                    .children(buttons);
+                div().flex().flex_col().gap(space::S3).child(header).child(parts_drawn(&key, &parts, open, expand, cx)).into_any_element()
+            }
+            control => {
+                let field = self.field(&key).cloned();
+                let busy = match &control {
+                    Control::Field { busy, .. } => busy.clone(),
+                    _ => None,
+                };
+                let lines = match &control {
+                    Control::Field { lines, .. } => *lines,
+                    _ => None,
+                };
+                match field {
+                    Some(field) => div()
+                        .debug_selector({ let key = key.clone(); move || format!("{key}-field") })
+                        .on_mouse_down_out({
+                            let leave = field.focus_handle(cx);
+                            move |_, window, cx| if leave.is_focused(window) { window.blur(cx) }
+                        })
+                        .relative()
+                        .w_full()
+                        .min_h(px(lines.map_or(32., |(min, _)| min as f32 * 22. + 24.)))
+                        .px(space::S4)
+                        .py(space::S3)
+                        .rounded(radius::POPOVER)
+                        .border_1()
+                        .border_color(c.border_strong)
+                        .bg(c.card)
+                        .child(field)
+                        .children(busy.map(|_| div().absolute().top(space::S3).right(space::S3).child(spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted))))
+                        .into_any_element(),
+                    None => self.control(&key, control, cx),
+                }
+            }
+        };
+        div().id(SharedString::from(key)).debug_selector(move || selector).w_full().child(body).children(why).into_any_element()
     }
 
     /// A flow the box leads for a row, under it: a spinner and the box's words while it waits, a
@@ -443,24 +509,31 @@ impl SettingsView {
                 }
             }
             Control::Buttons(buttons) => div().flex().gap(space::S2).children(self.buttons(key, buttons, cx)).into_any_element(),
-            Control::Field { more, lines, unit, save, .. } => {
+            Control::Field { more, lines, unit, save, browse, picks, busy, .. } => {
                 let field = self.field(key).cloned();
+                let leave = field.as_ref().map(|field| field.focus_handle(cx));
                 let selector = format!("{key}-field");
                 let search = matches!(save, Act::Filter);
                 let stacked = lines.is_some();
-                let mut buttons = more;
-                let menu = if buttons.len() > 2 {
-                    let choices = buttons.split_off(1).into_iter().map(|push| (push.label, None, push.act, false)).collect();
-                    Some(self.control(&format!("{key}-picks"), Control::Menu { shown: None, choices }, cx))
-                } else {
-                    None
-                };
+                // In the field, at its end: a change on its way, common values to pick, a folder to
+                // choose.
+                let busy = busy.map(|_| spinner(SharedString::from(format!("{key}-busy")), IconSize::Nav, c.text_muted).into_any_element());
+                let picks = (!picks.is_empty()).then(|| {
+                    let choices = picks.into_iter().map(|push| (push.label, None, push.act, false)).collect();
+                    self.picks_menu(&format!("{key}-picks"), choices, cx)
+                });
+                let browse = browse.map(|act| {
+                    Button::icon_only(SharedString::from(format!("{key}-browse")), IconName::Folder, "Choose a Folder…").ghost().size(ButtonSize::Small).tooltip("Choose a Folder…").on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))).into_any_element()
+                });
                 let input = div()
                     .debug_selector(move || selector)
+                    // A press anywhere else leaves it (it's saved then), as on any page.
+                    .when_some(leave, |d, leave| d.on_mouse_down_out(move |_, window, cx| if leave.is_focused(window) { window.blur(cx) }))
                     .when(search, |d| d.w_full())
-                    .when(!search, |d| d.w(px(if stacked { 320. } else if unit.is_some() { 140. } else { 200. })))
+                    .when(!search, |d| d.w(px(if stacked || browse.is_some() { 320. } else if unit.is_some() { 150. } else { 260. })))
                     .min_h(px(lines.map_or(32., |(min, _)| min as f32 * 22. + 12.)))
-                    .px(space::S3)
+                    .pl(space::S3)
+                    .pr(if browse.is_some() || picks.is_some() { space::S1 } else { space::S3 })
                     .flex()
                     .when(stacked, |d| d.py(space::S2).items_start())
                     .when(!stacked, |d| d.items_center())
@@ -471,30 +544,47 @@ impl SettingsView {
                     .bg(c.card)
                     .children(search.then(|| Icon::new(IconName::Search).size(IconSize::Nav).color(c.text_faint)))
                     .children(field.map(|field| div().flex_1().min_w_0().child(field)))
-                    .children(unit.map(|unit| div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(unit)));
-                if stacked {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_start()
-                        .gap(space::S2)
-                        .child(input)
-                        .when(!buttons.is_empty() || menu.is_some(), |d| {
-                            d.child(div().flex().flex_wrap().items_center().gap(space::S2).children(self.buttons(key, buttons, cx)).children(menu))
-                        })
-                        .into_any_element()
-                } else {
-                    div()
-                        .flex()
-                        .items_center()
-                        .when(search, |d| d.w_full())
-                        .gap(space::S2)
-                        .child(input)
-                        .children(self.buttons(key, buttons, cx))
-                        .children(menu)
-                        .into_any_element()
-                }
+                    .children(unit.map(|unit| div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(unit)))
+                    .children(busy)
+                    .children(picks)
+                    .children(browse);
+                div().flex().items_center().when(search, |d| d.w_full()).gap(space::S2).child(input).children(self.buttons(key, more, cx)).into_any_element()
             }
+            Control::Segments(choices) => {
+                let this = cx.entity().downgrade();
+                div()
+                    .debug_selector({ let key = key.to_owned(); move || format!("{key}-segments") })
+                    .flex()
+                    .items_center()
+                    .gap(space::S0_5)
+                    .p(px(2.))
+                    .rounded(radius::NAV)
+                    .bg(c.sunken)
+                    .children(choices.into_iter().enumerate().map(|(ix, (label, act, chosen))| {
+                        let selector = format!("{key}-segment-{ix}");
+                        let this = this.clone();
+                        div()
+                            .id(SharedString::from(selector.clone()))
+                            .debug_selector(move || selector)
+                            .px(space::S3)
+                            .h(px(26.))
+                            .flex()
+                            .items_center()
+                            .rounded(radius::SMALL)
+                            .text_ui(TypeSize::Small)
+                            .when(chosen, |d| d.bg(c.card).text_color(c.text).medium().shadow(cx.theme().card_shadow()))
+                            .when(!chosen, |d| d.text_color(c.text_muted))
+                            .when(!chosen && act.is_some(), |d| d.cursor_pointer().hover(|d| d.text_color(c.text)))
+                            .child(label)
+                            .when_some(act.filter(|_| !chosen), |d, act| {
+                                d.on_click(move |_, _, cx| {
+                                    this.update(cx, |this, cx| this.act(act.clone(), cx)).ok();
+                                })
+                            })
+                    }))
+                    .into_any_element()
+            }
+            Control::Parts { parts, open, expand, .. } => parts_drawn(key, &parts, open, expand, cx),
             Control::Opens(act) => Button::icon_only(SharedString::from(format!("{key}-open")), IconName::ChevronRight, "Open").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))).into_any_element(),
             Control::Menu { shown, choices } => {
                 let this = cx.entity().downgrade();
@@ -556,6 +646,113 @@ impl SettingsView {
             }
         }
     }
+}
+
+impl SettingsView {
+    /// A field's common values, under a small chevron at its end.
+    fn picks_menu(&mut self, id: &str, choices: Vec<(String, Option<String>, Option<Act>, bool)>, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let trigger = Button::icon_only(SharedString::from(format!("{id}-menu")), IconName::ChevronDown, "Common values").ghost().size(ButtonSize::Small).into_any_element();
+        PopoverMenu::new(SharedString::from(format!("{id}-popover")), trigger, move |_, cx| {
+            let (choices, this) = (choices.clone(), this.clone());
+            cx.new(|cx| {
+                let mut menu = Menu::new(cx).width(px(200.));
+                for (label, _, act, _) in choices {
+                    let this = this.clone();
+                    menu = menu.entry(match act {
+                        Some(act) => MenuEntry::new(label).on_select(move |_, cx| {
+                            this.update(cx, |this, cx| this.act(act.clone(), cx)).ok();
+                        }),
+                        None => MenuEntry::new(label).disabled(true),
+                    });
+                }
+                menu
+            })
+        })
+        .align_right()
+        .into_any_element()
+    }
+}
+
+/// The colours a whole's parts are drawn in, in order: the last a neutral grey, for what's left.
+fn part_color(ix: usize, count: usize, cx: &App) -> Hsla {
+    let c = &cx.theme().colors;
+    let dark = cx.theme().appearance.is_dark();
+    if ix + 1 == count && count > 1 {
+        return c.text_faint;
+    }
+    let (lightness, saturation) = if dark { (0.62, 0.70) } else { (0.52, 0.72) };
+    match ix % 4 {
+        0 => gpui::hsla(214. / 360., saturation, lightness, 1.),
+        1 => gpui::hsla(146. / 360., saturation - 0.15, lightness - 0.06, 1.),
+        2 => gpui::hsla(38. / 360., 0.88, lightness + 0.04, 1.),
+        _ => gpui::hsla(268. / 360., saturation - 0.12, lightness + 0.04, 1.),
+    }
+}
+
+/// A whole by its parts: one bar of them, each its colour and share; under it each one's dot,
+/// name and words; and, where they're made of more, a breakdown that opens.
+fn parts_drawn(key: &str, parts: &[Part], open: bool, expand: Act, cx: &mut Context<SettingsView>) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let count = parts.len();
+    // (A part too small to see still shows a sliver.)
+    let bar = div()
+        .debug_selector({ let key = key.to_owned(); move || format!("{key}-bar") })
+        .h(px(10.))
+        .w_full()
+        .flex()
+        .gap(px(2.))
+        .rounded(radius::PILL)
+        .overflow_hidden()
+        .bg(c.border)
+        .children(parts.iter().enumerate().filter(|(_, part)| part.share > 0.).map(|(ix, part)| div().h_full().flex_basis(gpui::relative(part.share.max(0.004))).min_w(px(3.)).bg(part_color(ix, count, cx))));
+    let legend = div().flex().flex_wrap().gap_x(space::S6).gap_y(space::S2).children(parts.iter().enumerate().map(|(ix, part)| {
+        let selector = format!("{key}-part-{ix}");
+        div()
+            .debug_selector(move || selector)
+            .flex()
+            .flex_col()
+            .gap(space::S0_5)
+            .child(div().flex().items_center().gap(space::S1_5).text_ui(TypeSize::Small).text_color(c.text_muted).child(div().size(px(8.)).rounded(radius::PILL).bg(part_color(ix, count, cx))).child(part.title.clone()))
+            .child(div().pl(px(14.)).text_ui(TypeSize::Small).text_color(c.text).child(part.words.clone()))
+    }));
+    let made_of: Vec<&Part> = parts.iter().filter(|part| !part.parts.is_empty()).collect();
+    let breakdown = (!made_of.is_empty()).then(|| {
+        let toggle = div()
+            .id(SharedString::from(format!("{key}-breakdown")))
+            .debug_selector({ let key = key.to_owned(); move || format!("{key}-breakdown") })
+            .flex()
+            .items_center()
+            .gap(space::S1)
+            .cursor_pointer()
+            .text_ui(TypeSize::Small)
+            .text_color(c.text_muted)
+            .hover(|d| d.text_color(c.text))
+            .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.icon))
+            .child("Breakdown")
+            .on_click(cx.listener(move |this, _, _, cx| this.act(expand.clone(), cx)));
+        let list = open.then(|| {
+            div()
+                .debug_selector({ let key = key.to_owned(); move || format!("{key}-breakdown-list") })
+                .mt(space::S1)
+                .flex()
+                .flex_col()
+                .rounded(radius::POPOVER)
+                .border_1()
+                .border_color(c.border)
+                .bg(c.card)
+                .px(space::S5)
+                .children(made_of.iter().flat_map(|part| {
+                    let heading = div().pt(space::S3).pb(space::S1).text_ui(TypeSize::Small).medium().text_color(c.text).child(part.title.clone()).into_any_element();
+                    std::iter::once(heading).chain(part.parts.iter().map(|(title, words)| {
+                        div().flex().items_center().justify_between().gap(space::S3).py(space::S1).text_ui(TypeSize::Small).child(div().min_w_0().truncate().text_color(c.text_muted).child(title.clone())).child(div().flex_none().text_color(c.text).child(words.clone())).into_any_element()
+                    }))
+                }))
+                .child(div().h(space::S3))
+        });
+        div().flex().flex_col().child(toggle).children(list)
+    });
+    div().flex().flex_col().gap(space::S3).child(bar).child(legend).children(breakdown).into_any_element()
 }
 
 /// How a thing stands, beside its name: a dot of its tone and the box's words.
@@ -636,6 +833,7 @@ impl Render for SettingsView {
         if self.dark != cx.theme().appearance.is_dark() {
             self.rebuild(cx);
         }
+        self.hear_blurs(window, cx);
         let page = list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full();
         let problem = self.problem.clone().map(|problem| {
             // Over the page, which starts under it: never over its title.

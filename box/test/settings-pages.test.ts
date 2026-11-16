@@ -452,8 +452,8 @@ test("Git rows wrap config, with independent revisions and stale writes refused"
   const shown = await page("git")
   expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.id, r.kind, r.title, r.value]))).toEqual([
     ["branch-prefix", "text", "Branch prefix", "kuvo/"],
-    ["commit-instructions", "text", "Instructions", ""],
-    ["pull-request-instructions", "text", "Instructions", ""],
+    ["commit-instructions", "text", "Commit instructions", ""],
+    ["pull-request-instructions", "text", "Pull request instructions", ""],
   ])
 })
 
@@ -511,17 +511,17 @@ test("Git requires text", async () => {
   expect([answer.status, answer.json.message]).toEqual([400, "Send text."])
 })
 
-test("Git wording and multi-line hints match its Swift sections", async () => {
+test("Git: the prefix in a card of its own, each set of instructions full width under its own heading", async () => {
   const shown = await page("git")
-  expect(shown.groups.map((g: any) => [g.id, g.title, g.note])).toEqual([
-    ["branches", "Branches", undefined],
-    ["commit-messages", "Commit Messages", "Added when Suggest a Message in Changes asks the model for one."],
-    ["pull-requests", "Pull Requests", "Added when Create Pull Request writes the title and description."],
+  expect(shown.groups.map((g: any) => [g.id, g.title, g.note, g.rows.length])).toEqual([
+    ["branches", undefined, undefined, 1],
+    ["commit-messages", "Commit Instructions", "Added when Suggest a Message in Changes asks the model for one.", 1],
+    ["pull-requests", "Pull Request Instructions", "Added when Create Pull Request writes the title and description.", 1],
   ])
   expect(shown.groups.flatMap((g: any) => g.rows.map((r: any) => [r.title, r.line, r.placeholder, r.lines]))).toEqual([
     ["Branch prefix", "How a session’s own branch in a worktree starts.", "None", undefined],
-    ["Instructions", undefined, "For example: Start with the area changed, like “ui: …”, and never mention tickets.", { min: 3, max: 8 }],
-    ["Instructions", undefined, "For example: Add a Testing section, and link the issue if the branch names one.", { min: 3, max: 8 }],
+    ["Commit instructions", undefined, "For example: Start with the area changed, like “ui: …”, and never mention tickets.", { min: 5, max: 12 }],
+    ["Pull request instructions", undefined, "For example: Add a Testing section, and link the issue if the branch names one.", { min: 5, max: 12 }],
   ])
   const { revised } = await import("../src/link/areas/settings-pages")
   const original = rowOf(shown, "commit-instructions")
@@ -542,24 +542,47 @@ test("Git events follow the old one-time settings migration route", async () => 
 })
 
 
-test("Worktrees words, folders and removal confirmation match Swift", async () => {
+test("Worktrees: one folder field showing the default, the projects folder beside it, and the sessions' worktrees", async () => {
   const shown = await page("worktrees")
   expect(shown.groups.map((g: any) => [g.id, g.title, g.note])).toEqual([
-    ["new-projects", "New Projects", "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them."],
-    ["new-worktrees", "New Worktrees", undefined],
-    ["session-worktrees", "Worktrees", "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet."],
+    ["folders", undefined, undefined],
+    ["session-worktrees", "Sessions’ Worktrees", "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet."],
   ])
-  expect(rowOf(shown, "projects-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "None", value: "" })
-  expect(rowOf(shown, "worktrees-folder")).toMatchObject({ title: "Folder", kind: "folder", placeholder: "Kuvo Code’s Folder", value: "" })
+  // (No project yet, nor one going elsewhere: no place rows, the field's placeholder says it.)
+  expect(shown.groups[0].rows.map((r: any) => r.id)).toEqual(["worktrees-folder", "projects-folder"])
+  const { ENGINE_DATA } = await import("../src/link/home")
+  const { homeFolder } = await import("../src/link/home")
+  const fallback = join(ENGINE_DATA, "worktree")
+  expect(rowOf(shown, "worktrees-folder")).toMatchObject({ title: "Worktree folder", line: "Each session’s worktree is a folder in it. Leave it empty for the default.", kind: "folder", value: "", placeholder: fallback.startsWith(homeFolder() + "/") ? "~" + fallback.slice(homeFolder().length) : fallback })
+  expect(rowOf(shown, "projects-folder")).toMatchObject({ title: "New projects folder", kind: "folder", placeholder: "None", value: "" })
   expect(rowOf(shown, "projects-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." })
-  expect(rowOf(shown, "worktrees-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." })
-  expect(rowOf(shown, "worktrees-place").title).toBe("New worktrees go in")
+  expect(rowOf(shown, "worktrees-folder").folder).toEqual({ choose: "Choose a Folder…", clear: "Default Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." })
   expect(rowOf(shown, "worktrees").empty).toBe("None yet. Choose Worktree in a new session’s composer to give it one.")
   const { worktreeRemovalWords, revised } = await import("../src/link/areas/settings-pages")
   expect(worktreeRemovalWords({ branch: "topic", uncommitted: true, ahead: 2 })).toBe("Its folder is deleted, with changes in it that aren’t committed. topic keeps its 2 commits not merged yet. Its sessions stay, without a folder to run in.")
   expect(worktreeRemovalWords({ branch: "topic", uncommitted: false })).toBe("Its folder is deleted. Git sees nothing in it that isn’t committed. Its sessions stay, without a folder to run in.")
   const original = rowOf(shown, "projects-folder")
   expect(revised({ ...original, line: "Reworded" }).revision).toBe(original.revision)
+})
+
+test("Worktrees lists a project's place only where it needs you: a folder inside its repository", async () => {
+  const repo = join(outside, "repo")
+  mkdirSync(repo, { recursive: true })
+  const git = (...args: string[]) => Bun.spawnSync(["git", "-C", repo, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } })
+  git("init", "-q")
+  writeFileSync(join(repo, "a.txt"), "a")
+  git("add", ".")
+  git("commit", "-qm", "first")
+  write(PROJECTS_FILE, { projects: [{ directory: repo }] })
+  // The default (each project's in a folder of its own there): nothing listed.
+  expect((await page("worktrees")).groups[0].rows.map((r: any) => r.id)).toEqual(["worktrees-folder", "projects-folder"])
+  // A folder in the repository's own checkout: said, as a warning, between the two folders.
+  write(CONFIG_FILE, { worktree: { directory: "trees" } })
+  const rows = (await page("worktrees")).groups[0].rows
+  expect(rows.map((r: any) => r.id)).toEqual(["worktrees-folder", `place-${repo}`, "projects-folder"])
+  expect(rows[1]).toMatchObject({ title: "New worktrees go in", value: join(realpathSync(repo), "trees"), tone: "warning" })
+  expect(rows[1].line).toContain("inside repo’s repository")
+  rmSync(repo, { recursive: true, force: true })
 })
 
 test("Worktrees writes through both routes, refuses stale revisions, and unrelated folders still write", async () => {
@@ -674,8 +697,8 @@ const update = (more: Record<string, unknown> = {}) => ({ setUp: true, version: 
 const allowed = (screenRecording: boolean | null, accessibility: boolean | null) => ({
   applies: true, name: "Kuvo Helper", known: screenRecording !== null, screenRecording, accessibility, bundle: "/Users/sam/.kuvo-code/bin/Kuvo Helper.app",
   list: [
-    { id: "screenRecording" as const, name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: screenRecording === false },
-    { id: "accessibility" as const, name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: accessibility === false },
+    { id: "screenRecording" as const, name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: screenRecording === false },
+    { id: "accessibility" as const, name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: accessibility === false },
   ],
 })
 /** A Mac's own box, as its helper keeps it, with its link's switch kept by the test. */
