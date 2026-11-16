@@ -2,6 +2,7 @@
 //! the rail and the area's sidebar; then the main view's title, and the side panel's button.
 //! Dragging it moves the window.
 
+use kuvo_ui::motion::{MotionExt as _};
 use gpui::{
     AnyElement, AppContext as _, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
 };
@@ -328,7 +329,7 @@ fn update_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyElem
         .text_ui(TypeSize::Small)
         .text_color(c.text)
         .child(leading)
-        .child(div().debug_selector(|| "update-chip-label".into()).child(label))
+        .child(div().debug_selector(|| "update-chip-label".into()).child(div().id("update-chip-label").child(label).map(|d| if held.updating { d.pulsing().into_any_element() } else { d.into_any_element() })))
         .on_click(cx.listener(|this, _, _, cx| this.toggle_update_card(cx)));
     let card = open.then(|| crate::session_menu::title_anchored_popover(update_card(workspace, &held, cx)));
     Some(div().relative().flex_none().child(buttons(chip)).children(card).into_any_element())
@@ -399,7 +400,7 @@ fn update_card(workspace: &Workspace, held: &crate::workspace::HeldUpdate, cx: &
                 } else {
                     Icon::new(IconName::Computer).color(c.icon).into_any_element()
                 })
-                .child(div().debug_selector(|| "update-card-title".into()).min_w_0().text_ui(TypeSize::Small).medium().text_color(c.text).child(title)),
+                .child(div().debug_selector(|| "update-card-title".into()).min_w_0().text_ui(TypeSize::Small).medium().text_color(c.text).child(title).map(|d| if held.updating && confirm.is_none() { d.id("update-card-label").pulsing().into_any_element() } else { d.into_any_element() })),
         )
         .children((!words.is_empty()).then(|| div().debug_selector(|| "update-card-words".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(words)))
         .children(why.filter(|_| confirm.is_none()).map(|why| div().debug_selector(|| "update-card-why".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child(why)))

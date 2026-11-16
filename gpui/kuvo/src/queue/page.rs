@@ -2,6 +2,7 @@
 //! chips to take off), its items as rows in raised cards under each status, an item's page with its
 //! chips, and the sheets over them (a new item, an item rewritten, a label made, changed, removed).
 
+use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
     AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred,
     div, list, point, prelude::FluentBuilder as _, px,
@@ -1043,6 +1044,7 @@ impl QueueView {
         // Return confirms a label's sheet from anywhere in it (a colour just picked, a removal asked).
         let enter_saves = matches!(sheet, Sheet::NewLabel | Sheet::EditLabel(_) | Sheet::RemoveLabel(_));
         div()
+            .id(gpui::SharedString::from(format!("queue-sheet-{sheet:?}")))
             .debug_selector(|| "queue-sheet".into())
             .track_focus(&self.sheet_focus)
             .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
@@ -1059,6 +1061,7 @@ impl QueueView {
             .border_color(c.border)
             .shadow(cx.theme().elevated_shadow())
             .child(body)
+            .animate_in(Direction::FromTop, true)
             .into_any_element()
     }
 }

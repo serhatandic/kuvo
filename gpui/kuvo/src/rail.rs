@@ -5,6 +5,7 @@
 //! The rings are their own view ([`Rings`]): their accounts are read on their own clock, so a
 //! reading redraws the rings, not the window.
 
+use kuvo_ui::motion::{MotionExt as _, Direction};
 use std::time::Duration;
 
 use gpui::{
@@ -425,12 +426,13 @@ fn card_beside(account: &Account, now: f64, cx: &mut Context<Rings>) -> impl Int
         deferred(
             anchored().anchor(Anchor::LeftCenter).snap_to_window_with_margin(px(8.)).child(
                 div()
-                    .id("ring-card")
+                    .id(SharedString::from(format!("ring-card-{}", account_key(account))))
                     .debug_selector(|| "ring-card".into())
                     .occlude()
                     .pl(space::S2)
                     .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.card_hovered(*hovered, cx)))
-                    .child(card_frame(card, cx)),
+                    .child(card_frame(card, cx))
+                    .animate_in(Direction::FromLeft, true),
             ),
         )
         .with_priority(1),

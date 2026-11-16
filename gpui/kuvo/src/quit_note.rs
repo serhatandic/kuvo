@@ -7,6 +7,7 @@
 //! Whether it applies is the box's to say (`kuvo/box/at-work`'s `applies`: a Mac's own box, which
 //! Kuvo Helper draws in the menu bar); the app only remembers that you've seen it.
 
+use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{AnyElement, App, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Styled, Window, div, px};
 use kuvo_ui::{ActiveTheme, Button, StyledType, TypeSize, theme::{radius, space}};
 
@@ -115,7 +116,8 @@ pub fn card(focus: &gpui::FocusHandle, cancel: impl Fn(&mut Window, &mut App) + 
                         .pt(space::S2)
                         .child(Button::new("quit-note-cancel", "Cancel").on_click(move |_, window, cx| on_cancel(window, cx)))
                         .child(Button::new("quit-note-quit", "Quit").primary().on_click(move |_, window, cx| on_quit(window, cx))),
-                ),
+                )
+                .animate_in(Direction::FromTop, true),
         )
         .into_any_element()
 }
