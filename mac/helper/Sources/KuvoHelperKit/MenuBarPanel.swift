@@ -2,6 +2,33 @@
 import AppKit
 import SwiftUI
 
+/// A service's mark in the panel's rings, by the box's `service` id: the desktop app's own files
+/// (gpui/assets/marks), which scripts/build-helper.sh puts in the helper's Resources/Marks, drawn
+/// as a template so they follow light and dark. None for an id Kuvo has no mark for.
+public enum ServiceMark {
+    /// Where the marks are: the helper's bundle; a test build, the desktop app's folder in the source.
+    nonisolated(unsafe) public static var folder: URL? = {
+        if let inBundle = Bundle.main.resourceURL?.appending(path: "Marks"), FileManager.default.fileExists(atPath: inBundle.path) { return inBundle }
+        #if DEBUG
+        return URL(filePath: #filePath).deletingLastPathComponent().appending(path: "../../../../gpui/assets/marks").standardizedFileURL
+        #else
+        return nil
+        #endif
+    }()
+
+    @MainActor private static var loaded: [String: NSImage?] = [:]
+
+    @MainActor public static func image(_ service: String) -> NSImage? {
+        // (An id is the box's word: letters, digits and dashes, never a path.)
+        guard !service.isEmpty, service.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }), let folder else { return nil }
+        if let known = loaded[service] { return known }
+        let image = NSImage(contentsOf: folder.appending(path: "\(service).svg"))
+        image?.isTemplate = true
+        loaded[service] = image
+        return image
+    }
+}
+
 /// Kuvo's mark in the menu bar: the app icon's artwork made one colour, with thin gaps where its
 /// shapes meet (the user's pick, 11-16), as a template, so macOS draws it as it draws its own icons
 /// (light or dark menu bar, selected or not). Its bytes are mac/helper/Assets/kuvo-mark.png's
@@ -277,7 +304,14 @@ private struct Rings: View {
             ForEach(Array(rings.enumerated()), id: \.offset) { index, ring in
                 self.ring(ring, size - (stroke + 1.5) * 2 * CGFloat(index))
             }
-            Text(account.service.prefix(1).uppercased()).font(.system(size: rings.count > 1 ? 7 : 9, weight: .semibold)).foregroundStyle(p.muted)
+            // The service's mark, as the desktop app's rail has it; one Kuvo has no mark for (a
+            // service a newer box names), its first letter.
+            if let mark = ServiceMark.image(account.service) {
+                Image(nsImage: mark).renderingMode(.template).resizable().scaledToFit()
+                    .frame(width: rings.count > 1 ? 10 : 13, height: rings.count > 1 ? 10 : 13).foregroundStyle(p.muted)
+            } else {
+                Text(account.service.prefix(1).uppercased()).font(.system(size: rings.count > 1 ? 7 : 9, weight: .semibold)).foregroundStyle(p.muted)
+            }
         }
         .frame(width: size, height: size)
     }

@@ -89,6 +89,18 @@ import Testing
         #expect(image.representations.first?.pixelsWide == 54)
     }
 
+    /// Each service the box reads limits of has its mark, the desktop app's own file, as a template;
+    /// one Kuvo has no mark for (or an id that isn't one) has none, and keeps its letter.
+    @Test @MainActor func theRingsShowEachServicesMark() {
+        for service in ["claude", "codex", "grok", "cursor", "antigravity", "copilot", "openrouter", "zai", "ollama", "opencode"] {
+            let mark = ServiceMark.image(service)
+            #expect(mark != nil, "\(service)")
+            #expect(mark?.isTemplate == true)
+        }
+        #expect(ServiceMark.image("newservice") == nil)
+        #expect(ServiceMark.image("../marks/claude") == nil)
+    }
+
     /// The item as a menu bar draws it (the mark tinted as a template is, the count, the dot), on a
     /// light and a dark menu bar; written out where `HELPER_SHOTS` names a folder.
     @Test func theItemDrawsOnLightAndDarkMenuBars() throws {
