@@ -106,6 +106,25 @@ test("a Mac's own box, moved with no note of how its engine starts: its keeper n
   assert.equal((await fetch(`http://127.0.0.1:${noted.port}/session`)).status, 200, "and answers where it's noted");
 });
 
+test("an engine started with HOME written with a slash at its end (as Kuvo Helper gave it) is stopped by a stop with HOME written without, and not started twice", async () => {
+  // Kuvo Helper gave its keeper HOME as "/Users/you/", so its engine ran as
+  // "/Users/you//.kuvo-code/engine/…"; an update run from Kuvo Code, with HOME "/Users/you", stopped
+  // nothing (its engine wasn't the one it looked for), and the update failed: "Its engine couldn't
+  // be stopped to update it."
+  const mac = box("mac");
+  write(path.join(mac.run, "launch.env"), "LANG=C\n", 0o600);
+  const helpers = { ...mac.env, HOME: `${mac.home}/` };
+  assert.equal(spawnSync("sh", [path.join(mac.K, "bin", "kuvo-start"), "engine"], { cwd: mac.K, env: helpers }).status, 0);
+  const { pid } = JSON.parse(read(path.join(mac.run, "engine.json")));
+  assert.match(command(pid), /\/\/\.kuvo-code\/engine\//, "started as the helper's HOME spells it");
+  // Another start, as the app's HOME spells it, finds it running: no second engine.
+  assert.equal(spawnSync("sh", [path.join(mac.K, "bin", "kuvo-start"), "engine"], { cwd: mac.K, env: mac.env }).status, 0);
+  assert.equal(JSON.parse(read(path.join(mac.run, "engine.json"))).pid, pid, "the same engine, not a second");
+
+  assert.equal(spawnSync("sh", [path.join(mac.K, "bin", "kuvo-start"), "stop"], { cwd: mac.K, env: mac.env }).status, 0);
+  assert.equal(alive(pid), false, "the engine is stopped");
+});
+
 test("a Mac's own box keeps the note it has; a machine's box that was never set up starts nothing", async () => {
   // Noted already: left as it is.
   const mac = box("mac");

@@ -55,7 +55,7 @@ const engineBinary = version => `#!/bin/sh
 [ "$1" = --config=/dev/null ] && shift
 [ "$1" = --no-env-file ] && shift
 case "$1" in --version) echo ${version}; exit 0 ;; *.js) exec "$FAKE_NODE" "$@" ;; esac
-exec "$FAKE_NODE" "$FAKE_ENGINE" ${version} "$KUVO_HOME"
+exec "$FAKE_NODE" "$FAKE_ENGINE" ${version} "$KUVO_HOME" "$0"
 `;
 // The keeper: stops the engine (waiting until it's gone, as the real one does), or starts this
 // version's. As the real one's (RemoteEngine.swift's bootScript), a start leaves an engine that
@@ -125,7 +125,10 @@ let served = {};
 // connection kept from the last one as the server closed it ("fetch failed").
 // What breaks off once before it's served (`drop`: the connection cut, else that status).
 let breaksOnce = {};
+// How many times each was asked for.
+const fetched = {};
 const server = http.createServer((request, response) => {
+  fetched[request.url] = (fetched[request.url] ?? 0) + 1;
   const breaking = breaksOnce[request.url];
   if (breaking) {
     delete breaksOnce[request.url];
@@ -368,6 +371,53 @@ test("an engine that won't stop changes nothing; no release for machines yet is 
   assert.equal(read(engineFile).pid, running, "the engine it had, still running");
   served = {};
   assert.deepEqual(await update(), { result: "current", version: "0.9.0" });
+});
+
+test("an older keeper with an engine Kuvo Helper started (HOME written with a slash at its end): run as that engine was started, it stops it, and a stop that fails starts no second engine", async t => {
+  // Kuvo Helper gave its keeper HOME "/Users/you/", so the engine runs as "…//.kuvo-code/engine/…".
+  // An older keeper names its folder from HOME and knows its engine only by that very spelling:
+  // run from Kuvo Code (HOME "/Users/you"), its stop stopped nothing (the update failed: "Its engine
+  // couldn't be stopped to update it."), and its start started a second engine beside the first.
+  machine();
+  release();
+  const above = path.dirname(home), name = path.basename(home);
+  const realHome = process.env.HOME;
+  process.env.HOME = above;
+  t.after(() => { process.env.HOME = realHome; });
+  const older = `#!/bin/sh
+K="$KUVO_HOME"; R="$K/run"; O="$HOME/${name}"
+noted() { sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null; }
+mine() { [ -n "$1" ] && ps -ww -o command= -p "$1" 2>/dev/null | grep -q -- "$O/engine/"; }
+case "$1" in
+stop) [ -f "$K/once" ] || { touch "$K/once"; echo "A start of the engine is under way there." >&2; exit 4; }
+  touch "$R/stopped"; pid=$(noted); if mine "$pid"; then kill "$pid"; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; echo "$pid" >>"$K/stopped-by-keeper"; fi; rm -f "$R/engine.json" ;;
+start) rm -f "$R/stopped"; mine "$(noted)" && exit 0; echo started >>"$K/started"; "$O/engine/1.0.0/opencode" serve >/dev/null 2>&1 </dev/null & pid=$!; until [ "$(noted)" = "$pid" ]; do kill -0 "$pid" 2>/dev/null || exit 3; sleep 0.1; done ;;
+esac
+`;
+  write(path.join(home, "bin", "kuvo-start"), older, 0o700);
+  stopEngine();
+  // (Started in the background of a shell that ends, as a keeper's launch does: not this test's child.)
+  spawnSync("sh", ["-c", `"$1//${name}/engine/1.0.0/opencode" serve >/dev/null 2>&1 </dev/null &`, "sh", above], { env: process.env });
+  await waitFor(() => fs.existsSync(engineFile), "the engine runs as the helper started it");
+  const running = read(engineFile).pid;
+  engines.add(running);
+  assert.match(spawnSync("ps", ["-ww", "-o", "command=", "-p", String(running)], { encoding: "utf8" }).stdout, /\/\/[^/]+\/engine\/1\.0\.0\/opencode/);
+
+  // Its stop fails (a start under way): nothing changed, and the engine it had is the one running.
+  const failed = await update();
+  assert.equal(failed.result, "failed");
+  assert.match(failed.message, /couldn't be stopped for the update, so nothing changed/);
+  assert.equal(fs.existsSync(path.join(home, "started")), false, "no second engine started");
+  assert.equal(read(engineFile).pid, running);
+  process.kill(running, 0);
+
+  // Then its own stop stops it, and the update goes through.
+  const outcome = await update();
+  assert.deepEqual(outcome, { result: "updated", version: "0.10.0" });
+  assert.equal(fs.readFileSync(path.join(home, "stopped-by-keeper"), "utf8").trim(), String(running), "the keeper's own stop");
+  assert.throws(() => process.kill(running, 0), "the engine it had is stopped");
+  await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
+  engines.add(read(engineFile).pid);
 });
 
 test("a release that isn't what it says, an older one, or one too new for the night changes nothing", async () => {
@@ -638,6 +688,25 @@ test("`kuvo-link.js update --installer` tries once more by itself, a little late
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.10.0");
 
+  // Its engine not stopped the first time (a start of it under way holds its keeper's lock): the
+  // second try stops it, and nothing was said of the first.
+  machine();
+  const { folder: again } = release();
+  const keeperFile = path.join(home, "bin", "kuvo-start");
+  const enginesBefore = fetched["/engine.tgz"] ?? 0;
+  write(keeperFile, keeper("1.0.0").replace(/^stop\) /m, `stop) [ -f "$R/once" ] || { touch "$R/once"; echo "A start of the engine is under way there." >&2; exit 4; }; `), 0o700);
+  const stopping = await (async () => {
+    const ran = spawn(process.execPath, [script, "update", "--installer", "--now", "--from", again, "--key", pinned], { env: { ...process.env, KUVO_TEST_FETCH_WAIT: "20" }, stdio: ["ignore", "pipe", "inherit"] });
+    let said = "";
+    ran.stdout.setEncoding("utf8");
+    ran.stdout.on("data", chunk => { said += chunk; });
+    await new Promise(resolve => ran.once("close", resolve));
+    return said.split("\n").filter(line => line.trim()).map(line => JSON.parse(line));
+  })();
+  assert.deepEqual(stopping.filter(line => line.result), [{ result: "updated", version: "0.10.0" }], "only the try that went through is said");
+  assert.equal(fetched["/engine.tgz"] - enginesBefore, 1, "its engine downloaded once: kept from the try that failed");
+  engines.add(read(engineFile).pid);
+
   // A check that would fail again (what it got isn't what it says): said at once, not tried again.
   machine();
   const tampered = release({ version: "0.10.0", tamper: true }).folder;
@@ -718,12 +787,17 @@ test("an offered release that fails before anything changes (its engine's downlo
   assert.equal(said.offerFailed.version, "0.10.0");
   assert.equal(said.offerFailed.takenBack, false);
   assert.equal(said.offerFailed.message, outcome.message);
+  // One failure that changed nothing isn't said as a failure: it's tried again by itself.
+  assert.equal(link.keepingSelfUp("Studio Mac", 0, null).update.state, "waiting");
+  assert.equal(link.keepingSelfUp("Studio Mac", 0, null).update.title, "Kuvo on Studio Mac tries its update again in a while.");
   assert.equal(await take(), null, "not again at once");
   assert.deepEqual(offer(folder), { status: 202, version: "0.10.0" }, "offered again meanwhile: it's there already");
   // Failing again an hour on (as one whose own checks fail would, every time), it rests a day.
   const at = hours => ({ clock: () => Date.now() + hours * 3_600_000 + 1000 });
   assert.equal((await take(at(1))).result, "failed");
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed.tries, 2);
+  // Failing again: said, with Update Now.
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated. It tries again later.", detail: "" });
   assert.equal(await take(at(2)), null, "not an hour on");
   assert.equal(link.offeredVersion(), "0.10.0");
   served["/engine.tgz"] = engine;
