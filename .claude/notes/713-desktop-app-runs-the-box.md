@@ -1118,7 +1118,7 @@ box-era machine. It has:
 - its link with its keys in `run/link.json` (`state.ts:171-175`);
 - its settings in `box/opencode.json` (`kuvo-launch:146`);
 - its integrations' keys as files in `box/keys` (`home.ts:137`), plus the older `keys/` that
-  `kuvo-launch:136-145` still writes;
+  `kuvo-launch:136-142` still writes;
 - a vault of encrypted files, locked after each restart until a client unlocks it
   (`vault/store.ts:1-6,180`);
 - its coding agents' default sign-ins and history in `agents/<kind>/home`, where a Mac's own box
@@ -1158,23 +1158,30 @@ never waits on a device, and the adopt can't lose what the merge brought.
      (question 2). Then pause it whole with a new keeper verb, `kuvo-start pause`: link, server,
      keeper, then engine and bridge, as `off` does, but without `run/off`. It leaves
      `run/link.needed` and `serve.needed` alone, so a go-back starts the link again.
-   - **What keeps it paused is the move's own lock** (`rehome/state.ts:315-336`, a live pid), plus
-     `updates/rehome/forward` from the swap on. Every start path honours both: `kuvo-start`'s
+   - **What keeps it paused is a mark of its own**, `run/paused`, naming the run's pid: written at
+     `pause`, removed at `start`. From the swap on there's also `updates/rehome/forward`. Every
+     start path honours both: `kuvo-start`'s
      `box`, `engine`, `start`, `restart` and `serve`, `kuvo-launch`, and the link's `box adopt`,
      `setup`, `box seed`, `leave` and `uninstall`.
      - That covers another Mac's Set Up Again and Remove too: their scripts call `K`'s own
        programs, which are this release's after the update (`add/scripts.ts:158-232`).
      - It doesn't cover the shell steps of that script: Remove's `DELETE FROM credential` and its
        `rm -rf`, at `:224-227`. Hence question 3's fingerprint.
-   - **Before the swap a lock with no live holder is let go,** and `K` starts. A later try starts
-     afresh from `plan`.
+   - **Before the swap a `run/paused` whose process is gone is let go,** and `K` starts. A later
+     try starts afresh from `plan`.
+   - **After a crash mid-swap,** `forward` with no live holder makes `kuvo-start box` (at login,
+     or from the launch agent) run `kuvo-link.js rehome --resume` itself, which undoes the swap.
+     So `K` isn't left down until someone opens the app here.
    - **`K` starts again whatever happens:** in the run's `finally`, and as an owed `start`.
    - **Rejected:**
      - `stop`: it leaves the keeper and the link up, writing in `run` while we clone.
      - `off`: it reads as removed (`runsAt` says `gone`, `judge.ts:259-263`). Then
        `machineBoxThere` is false, the verdict becomes `app-07`, and piece 4's `install` step
        sets `K` aside in its trash (`move.ts:477-502`).
-     - A second mark beside the lock (`run/held`): it duplicates what the lock already says.
+     - Using the move's lock as the pause (`rehome/state.ts:315-336`). The lock is held for the
+       whole run (`move.ts:718-724`), so honouring it would block the starts that run under it:
+       the merge's own `update`, piece 4's `helper start` in `settle` (`run.ts:151,202-216`),
+       Linux `install --new`'s start (`install/command.ts:320-371`), and the adopt's start.
      - Reading `K` while it runs: its database's log and its files change under the clone.
 2. **`K`'s version.**
    - **Answer:** the merge runs only when `K` is at exactly this release (the same `box-version`
@@ -1232,7 +1239,8 @@ never waits on a device, and the adopt can't lose what the merge brought.
      aside + stopped. A row that doesn't add up stops the merge.
    - **`K` unchanged since the clone.** At `clone`, `K`'s live state is fingerprinted: the
      database and its log (size, modification time), `run/off`, `bin/kuvo-start`, `box/keys`,
-     `keys`, `run/link.json`, `machine-id`, `integrations`. It's compared again under the lock
+     `keys`, `run/link.json`, `machine-id`, `integrations`, and the agents' credential files that
+     Remove deletes (`add/scripts.ts:229-231`). It's compared again under the lock
      just before `swap`. Any difference: the merge goes back, saying the computer was changed from
      elsewhere meanwhile.
    - **Rejected:**
@@ -1254,13 +1262,21 @@ never waits on a device, and the adopt can't lose what the merge brought.
      - The files are moved into `updates/rehome/kept`, not deleted, until the adopt is `done`.
      - The same key in both: the newer (the item's modification date against the file's) is used.
        The other is kept as an item named `<name>.from-earlier`. Said.
-   - **The vault converts in the adopt, not after.** Once `box/kind` is `mac`, a machine-format
-     vault reads as tampered (`store.ts:66,104-106,180,217`). So:
-     - The adopt runs only when `K`'s vault is empty, or unlocked now.
-     - It then hands each value to the helper, re-signs the vault's files with the Mac's file key,
-       and registers their generations, all before the kind flips.
-     - Only an unlocking device can let it run. The desktop app has no unlock yet (#635), so today
-       that's the iPhone (call 3).
+   - **The vault converts before the adopt pauses `K`, inside `K`'s running link.** Once
+     `box/kind` is `mac`, a machine-format vault reads as tampered
+     (`store.ts:66,104-106,180,217`). A machine's store key lives only in its running link's
+     memory (`store.ts:1-6,36-38`), so no other process can read the values, and a paused `K` is
+     locked again. So:
+     - The adopt asks `K`'s link whether its vault is empty or unlocked (`kuvo/vault`'s state).
+     - If unlocked, the link itself, as its own child process with the values on a pipe (as
+       `kuvo-keys passwords` does), hands each value to Kuvo Helper from `K/bin`. The helper
+       keeps them as Keychain items and re-signs the vault's files with the Mac's file key, which
+       it holds.
+     - The link writes the converted files beside its own (`box/vault.mac/`) and registers their
+       generations. It goes on using its machine store until the pause.
+     - The adopt then pauses `K` and swaps `box/vault.mac` in before the kind flips.
+     - Only an unlocking device lets this run. The desktop app has no unlock yet (#635), so today
+       that's the iPhone (call 3). Spike A proves it end to end.
    - **Rejected:**
      - A `kuvo-keys` verb piping Keychain secrets into files: it widens §8a.1, and leaves secrets
        in files on a Mac.
@@ -1340,7 +1356,7 @@ piece 4's are.
 
    | Entry | Rule |
    | --- | --- |
-   | `bots/<id>` (`newID("bot_")`, `bots/make.ts:163`), `wakes/<session>`, `attachments/<session>`, `search/<session>` | added by ID; the same ID with other bytes stops it |
+   | `bots/<id>` (`newID("bot_")`, `bots/make.ts:163`), `wakes/<session>`, `attachments/<session>` | added by ID; the same ID with other bytes stops it |
    | a bot's, a group chat's or a personality's name | the same name gets ` 2` (what names it follows) |
    | `chats/<name>`, `groups/<id>`, `workspace/<name>` | the same name gets ` 2`, through step 7's map |
    | `agents/<agent>/accounts/<id>` and `agents/accounts.json` | added by ID. The same account (agent and sign-in): newer kept, the other `<id>.from-earlier` (a folder, like any account). Said |
@@ -1352,7 +1368,7 @@ piece 4's are.
    | `data/opencode/worktree/<name>`, `shell`, `storage`, `tool-output` | added by name; the same name with other bytes stops it |
    | `config/opencode`, `box/opencode.json` | question 5 |
    | `run/link.json`, `box/keys`, `keys`, `box/vault`, `box/kind`, the card, `machine-id`, `state`, `browser`, `desktop` | `K`'s |
-   | `cache`, `tmp`, `S`'s `search` index of what's rebuilt | dropped (rebuilt) |
+   | `cache`, `tmp`, `S`'s `search` | dropped (rebuilt as sessions change) |
    | `machines.json`, `phone-link.json` from `S`'s machines | not taken: a member doesn't add machines (`setup/main-only.ts`). Said, naming each (call 10) |
    | anything else in both, with other bytes | stops it, naming the entry (call 7) |
 
@@ -1372,8 +1388,22 @@ piece 4's are.
     - **This goes back.** Nothing writes in `K` meanwhile (question 1), so until `start` a failure
       renames `K`'s own back and removes `forward`.
 12. **`start`:** this is the point the merge only goes forward from.
-    - `forward` removed, the lock given back, `kuvo-start` (`box`): `K` runs, still a machine.
+    - `forward` and `run/paused` removed, then `kuvo-start` (`box`): `K` runs, still a machine.
+    - `K`'s record says `way: "merge"`, `state: "done"`, with `S`'s fingerprint.
     - Owed: `passwords`, then `adopt`.
+
+**After a done merge, `K` is never judged `two` again.**
+
+- `S` stays on disk and `K` is still a machine, so `machineBoxThere` and the app's data are both
+  still true (`install/verdict.ts:88-95`).
+- So the verdict reads the record first: a done merge with an unchanged `S` fingerprint is
+  `merged`, never `two`. Its verb is `move` only while the adopt is owed and its conditions hold;
+  else there's no verb.
+- An `S` changed since (an old 0.7 opened again) is said, never merged a second time.
+- **Until the adopt runs**, the desktop app treats `K` as this Mac's: `place.rs` takes a
+  machine-kind `K` whose record says `way: "merge"`, `state: "done"`, as this Mac's own, attached
+  in place (`Speaker` for a machine's box attached in place, `local.rs:28`). That's a small
+  `kuvo_box` change in piece E.
 
 **Safe if killed.**
 
@@ -1490,15 +1520,15 @@ screen is needed (call 11: confirm that, or have drafts made).
 | B | **Fixtures, update and pause**: a K-world made by the real add scripts in a test home (at this release, an older one, one not yet confirmed) with a 0.7.2 `S` (`rehome-run-world.ts`) and every clash above; `kuvo-start pause` and the lock honoured by every start path; `K` updated and confirmed first | keeper, box | bridge: paused, a killed holder releases, `forward` holds, each start path refuses, the other Mac's Set Up Again while paused; Linux for the keeper part | 2 |
 | C | **The database merge** (`rehome/merge-database.ts`) | box | per rule and per refusal; exact accounting; the real 2.2.6 engine on the merged database (`KUVO_TEST_ENGINE`) | 2 |
 | D | **The folders' merge** (`rehome/merge-files.ts`), the renames' map, snapshots' objects and refs | box | per entry rule; an unknown clash stops it | 2 |
-| E | **The merge's run**: `way: "merge"` in `run.ts`, `two` given verb `move` in `verdict.ts`, fingerprint, swap going back, counts, words | box | `rehome-run.test.ts`: a stop at each step, then run again; `S` byte for byte; `K` back byte for byte after every failure; a change in `K` meanwhile sends it back | 2 |
+| E | **The merge's run**: `way: "merge"` in `run.ts`, `two` given verb `move` and `merged` judged in `verdict.ts`, fingerprint, swap going back, `kuvo-start box` resuming after a crash mid-swap, counts, words; `place.rs` taking a merged `K` as this Mac's | box, `gpui/kuvo_box` | `rehome-run.test.ts`: a stop at each step, then run again; `S` byte for byte; `K` back byte for byte after every failure; a change in `K` meanwhile sends it back; a done merge judged `merged`, never run again | 2–2.5 |
 | F1 | **The adopt's keys**: `kuvo-keys copy --except link`; the helper's `keys adopt`, `keep-aside`, `uncopy` for them | `mac/helper` (Swift) | helper tests with a test keychain | 1.5–2 |
-| F2 | **The adopt's run**: vault converted before the flip, agents' homes to accounts, settings, `kind`, `owed: machine-start`; for `machine` too | box | setup role kept; a vault unlocked, locked and empty; sessions of a default account still open after; launch agent and crontab stand-ins | 2–3 |
+| F2 | **The adopt's run**: the vault converted by `K`'s running link before the pause, agents' homes to accounts, settings, `kind`, `owed: machine-start`; for `machine` too | box | setup role kept; a vault unlocked, locked and empty; sessions of a default account still open after; launch agent and crontab stand-ins | 2–3 |
 | G | **The other Mac's side**: Set Up Again and Uninstall refused for a Mac with Kuvo of its own; the phone's `kuvo/machines` lists it as a computer | box | `computers-add.test.js` | 1 |
 | H | **Rehearsal and docs**: a real 0.7.2 `S` with `K` added by a real box from another Mac, merged and adopted; `troubleshooting.md`, `machines.md`, the changelog | all | the checklist | 1.5–2 |
 
-- **Order:** P, then A. Then B, C, D (C and D alongside), then E. F1 and F2 after E, G with them.
-  H last.
-- **Total:** about 17–21 h, plus the rehearsal account's time. Review: high risk (data, another
+- **Order:** P, then A. Then F1 (C's `keys keep-aside` is its verb) and B. Then C and D,
+  alongside, then E. F2 after E, G with it. H last.
+- **Total:** about 17–22 h, plus the rehearsal account's time. Review: high risk (data, another
   computer), so the lead's separate review comes after E and after F2.
 
 ### The user's calls (with what I recommend)
@@ -1596,11 +1626,30 @@ screen is needed (call 11: confirm that, or have drafts made).
 - `bots/make.ts:163`.
 - Files' times are kept by `cp -p`.
 
+**The second pass** (the same `reviewer`, on the revision) found two blockers the revision
+brought, both fixed:
+
+1. **The move's lock as the pause blocked the starts that run under that lock.** Now `run/paused`
+   is a mark of its own, held only from `pause` to `start`.
+2. **A separate, paused process can't read a machine's vault.** Now `K`'s running link converts
+   it while unlocked, before the pause.
+
+Also fixed:
+
+- a done merge was judged `two` again: now `merged`, and the desktop app takes `K` as this Mac's
+  until the adopt;
+- the fingerprint now covers the agents' credential files;
+- a crash mid-swap is undone by `K`'s keeper itself;
+- F1 comes before C;
+- `search` has one rule;
+- one line number.
+
 **Left for spike A** (none checked by anyone):
 
 - the engine's `kv`, project events and snapshot pruning;
 - `credential.active`'s meaning;
-- whether keeper builds' `K` take an offered update.
+- whether keeper builds' `K` take an offered update;
+- the vault conversion through `K`'s link and the helper, end to end.
 
 ## 9. Questions only the user can answer
 
