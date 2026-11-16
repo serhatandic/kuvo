@@ -365,6 +365,7 @@ impl QueueView {
             _subscriptions: subscriptions,
         };
         view.rebuild(cx);
+        kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
         view
     }
 

@@ -211,6 +211,7 @@ impl ComputersView {
             items: Vec::new(),
             list: ListState::new(0, ListAlignment::Top, px(400.)),
         };
+        kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
         // The box's tries, followed as they go; in tests and shots, read as each thing is asked.
         if live {
             let follow = view.client.follow_adding(Timing::default());

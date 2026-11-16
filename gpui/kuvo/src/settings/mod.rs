@@ -29,7 +29,7 @@ use kuvo_box::follow::{Follow, Followed, Timing};
 use kuvo_box::models::Offered;
 use kuvo_box::settings::{Config, UsageSettings};
 use kuvo_box::settings_pages::{Changed, Page, Section};
-use kuvo_ui::{ActiveTheme, Appearance, IconName, TextField, TextFieldEvent};
+use kuvo_ui::{IconName, TextField, TextFieldEvent};
 use serde_json::Value;
 
 use crate::areas::Reading;
@@ -192,8 +192,6 @@ pub struct SettingsView {
     /// The confirm asks for the keyboard as it opens (Escape cancels it).
     confirm_focus: FocusHandle,
     focus_confirm: bool,
-    /// Drawn in dark (the Theme row says which is on).
-    dark: bool,
     /// The editors on this Mac General offers (read as Settings opens).
     editors: Vec<crate::yours::editors::Editor>,
     /// Where System Settings shows this app's notifications.
@@ -304,7 +302,6 @@ impl SettingsView {
             codes: HashMap::new(),
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
-            dark: cx.theme().appearance.is_dark(),
             editors: if live { crate::yours::editors::installed() } else { Vec::new() },
             notification_settings: crate::yours::desk::notification_settings(),
             yours_now: Default::default(),
@@ -319,6 +316,7 @@ impl SettingsView {
             _subscriptions: vec![subscription, cx.observe_global::<crate::yours::Store>(|this: &mut SettingsView, cx| this.rebuild(cx))],
         };
         view.rebuild(cx);
+        kuvo_ui::theme::remeasure_on_text_size(&view.list, cx);
         view
     }
 
@@ -614,7 +612,7 @@ impl SettingsView {
         match entry.drawn {
             Drawn::Yours => {
                 let (yours, problem) = &self.yours_now;
-                rows::yours(&entry.id, &rows::YoursFacts { yours, dark: self.dark, editors: &self.editors, problem: problem.as_deref(), notification_settings: &self.notification_settings })
+                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, problem: problem.as_deref(), notification_settings: &self.notification_settings })
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
@@ -730,6 +728,17 @@ impl SettingsView {
         })
     }
 
+    /// What a menu row on the page open shows as picked.
+    pub fn row_shown(&self, key: &str) -> Option<String> {
+        self.items.iter().find_map(|item| match item {
+            Item::Row { row, .. } if row.key == key => match &row.control {
+                rows::Control::Menu { shown, .. } => shown.clone(),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
     /// Why a row on the page open can't be changed from here, as drawn under it.
     pub fn row_why(&self, key: &str) -> Option<String> {
         self.items.iter().find_map(|item| match item {
@@ -766,7 +775,6 @@ impl SettingsView {
 
     /// Works the page's items out again, from what it's drawn from now.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.dark = cx.theme().appearance.is_dark();
         self.yours_now = cx.try_global::<crate::yours::Store>().map(|store| (store.now().clone(), store.problem().map(str::to_owned))).unwrap_or_default();
         let name = self.computer_name();
         let placeholder = if self.side == Side::Yours { "Search your settings…".to_owned() } else { format!("Search {name}’s settings…") };
@@ -1334,7 +1342,6 @@ impl SettingsView {
                 // A part changed on another computer meanwhile is turned away: the box's is shown.
                 self.change(key, move |client| client.set_usage_notices(notices, based.as_deref()), |this, usage| this.usage = Reading::Ready(usage), cx)
             }
-            Act::SetDark(dark) => crate::yours::set_theme(if dark { Appearance::Dark } else { Appearance::Light }, cx),
             Act::Yours(change) => crate::yours::change(change, cx),
         }
         self.rebuild(cx);

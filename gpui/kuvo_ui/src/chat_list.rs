@@ -39,6 +39,7 @@ impl ChatListState {
     pub fn new<V: 'static>(count: usize, cx: &mut Context<V>) -> Self {
         let list = ListState::new(count, ListAlignment::Bottom, px(1200.));
         list.set_follow_mode(FollowMode::Tail);
+        crate::theme::remeasure_on_text_size(&list, cx);
         let unseen = Rc::new(Cell::new(false));
         let view = cx.entity().downgrade();
         let seen = unseen.clone();

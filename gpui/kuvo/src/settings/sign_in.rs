@@ -721,7 +721,7 @@ impl SignIn {
                     .flex()
                     .items_center()
                     .gap(space::S3)
-                    .child(div().debug_selector(|| "sign-in-user-code".into()).font_family(kuvo_ui::theme::MONO_FONT).text_size(px(24.)).medium().text_color(c.text).child(code))
+                    .child(div().debug_selector(|| "sign-in-user-code".into()).font_family(kuvo_ui::theme::MONO_FONT).text_size(kuvo_ui::theme::scaled(px(24.))).medium().text_color(c.text).child(code))
                     .child(
                         Button::new("sign-in-copy-code", if self.copied { "Copied" } else { "Copy Code" }).icon(IconName::Copy).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copying.clone()));
