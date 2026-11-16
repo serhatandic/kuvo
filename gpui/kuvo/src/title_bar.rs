@@ -95,7 +95,7 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                         .ghost()
                         .size(ButtonSize::Small)
                         .selected(workspace.sidebar_shown())
-                        .tooltip(if workspace.sidebar_shown() { "Hide Sidebar (⌘B)" } else { "Show Sidebar (⌘B)" })
+                        .tooltip("⌘B")
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
                 ))
                 .child(buttons(computer_switcher(workspace, cx)))

@@ -987,19 +987,19 @@ impl EntityInputHandler for TextField {
 }
 
 impl Render for TextField {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.blink_subscriptions.is_empty() {
             let focus = self.focus.clone();
             self.blink_subscriptions = vec![
-                cx.on_focus(&focus, _window, |this, window, cx| this.sync_blink(window, cx)),
-                cx.on_blur(&focus, _window, |this, window, cx| this.sync_blink(window, cx)),
-                cx.observe_window_activation(_window, |this, window, cx| this.sync_blink(window, cx)),
+                cx.on_focus(&focus, window, |this, window, cx| this.sync_blink(window, cx)),
+                cx.on_blur(&focus, window, |this, window, cx| this.sync_blink(window, cx)),
+                cx.observe_window_activation(window, |this, window, cx| this.sync_blink(window, cx)),
             ];
         }
-        self.sync_blink(_window, cx);
+        self.sync_blink(window, cx);
         let theme = cx.theme().clone();
         let c = &theme.colors;
-        let focused = self.focus.is_focused(_window);
+        let focused = self.focus.is_focused(window);
         let mut field = div()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
