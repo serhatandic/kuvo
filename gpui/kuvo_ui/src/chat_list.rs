@@ -31,6 +31,8 @@ pub struct ChatListState {
     /// Whether the reader was last seen away from the bottom. The list can't say while a new
     /// message is still unmeasured, so the last answer stands until it can.
     away: Rc<Cell<bool>>,
+    /// Measures the messages again when the text size changes, while the list is kept.
+    _sized: Rc<gpui::Subscription>,
 }
 
 impl ChatListState {
@@ -39,6 +41,7 @@ impl ChatListState {
     pub fn new<V: 'static>(count: usize, cx: &mut Context<V>) -> Self {
         let list = ListState::new(count, ListAlignment::Bottom, px(1200.));
         list.set_follow_mode(FollowMode::Tail);
+        let sized = Rc::new(crate::theme::remeasure_on_text_size(&list, cx));
         let unseen = Rc::new(Cell::new(false));
         let view = cx.entity().downgrade();
         let seen = unseen.clone();
@@ -48,7 +51,7 @@ impl ChatListState {
             }
             view.update(cx, |_, cx| cx.notify()).ok();
         });
-        Self { list, unseen, away: Rc::new(Cell::new(false)) }
+        Self { list, unseen, away: Rc::new(Cell::new(false)), _sized: sized }
     }
 
     /// Messages were added at the end.

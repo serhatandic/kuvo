@@ -57,6 +57,7 @@ fn main() {
             let (boxes, first) = stand_in_boxes();
             cx.open_window(options, |window, cx| {
                 Theme::init(kuvo::yours::appearance(Appearance::of(window), cx), cx);
+                kuvo::yours::follow_system(window);
                 cx.new(|cx| Home::new(boxes, first, true, window, cx))
             })
             .map(|window| {
@@ -72,6 +73,7 @@ fn main() {
             let opens = opens();
             cx.open_window(options, |window, cx| {
                 Theme::init(kuvo::yours::appearance(Appearance::of(window), cx), cx);
+                kuvo::yours::follow_system(window);
                 cx.new(|cx| Launch::new(opens, true, window, cx))
             })
             .map(|_| ())

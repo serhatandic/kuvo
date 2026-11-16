@@ -202,6 +202,12 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-yours-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_general) },
     Screen { slug: "settings-yours-notifications", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_notifications) },
+    Screen { slug: "settings-yours-appearance", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_appearance) },
+    // Text size (`-small`, `-larger`: the smallest and largest), in Settings and in a
+    // conversation, its sidebar and its composer.
+    Screen { slug: "settings-yours-appearance-larger", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_appearance) },
+    Screen { slug: "conversation-text-small", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Can you also check the form on a narrow phone screen, and say what wraps?"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "conversation-text-larger", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Can you also check the form on a narrow phone screen, and say what wraps?"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // A file of this Mac's, with the editor picked in General.
     Screen { slug: "file-open-in", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(file_open_in) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
@@ -598,6 +604,9 @@ fn yours_general(w: &mut Workspace, window: &mut Window, cx: &mut Context<Worksp
 }
 fn yours_notifications(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "yours/notifications", window, cx);
+}
+fn yours_appearance(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/appearance", window, cx);
 }
 /// The sign-up form, opened to read, with TextEdit picked (on every Mac). (Kept only while the
 /// shots run; the screens after it don't open files.)
@@ -1122,6 +1131,16 @@ fn main() -> anyhow::Result<()> {
         }
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
+            // The text size: the default, but where a screen's name says (kept only while the
+            // shots run).
+            let text_size = if screen.slug.ends_with("-small") {
+                kuvo::yours::TextSize::Small
+            } else if screen.slug.ends_with("-larger") {
+                kuvo::yours::TextSize::Larger
+            } else {
+                kuvo::yours::TextSize::Default
+            };
+            cx.update(|cx| kuvo::yours::change(kuvo::yours::Change::TextSize(text_size), cx));
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
             if screen.slug.starts_with("settings-mcp") {
                 stand_in.show_mcp();

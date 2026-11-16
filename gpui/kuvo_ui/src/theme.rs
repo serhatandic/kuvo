@@ -4,14 +4,17 @@
 //! screen. The rules come from the design brief:
 //!
 //! - SF Pro (the system font) in regular and medium only;
-//! - four sizes of type: 12, 13, 14 and 24 px;
+//! - four sizes of type: 12, 13, 14 and 24 px, all scaled together by the text size picked
+//!   ([`TextSize`]);
 //! - three levels of text: #292929, #5D5D5D and #9E9E9E in light, and their dark equivalents;
 //! - icons at 14 px for navigation and 20 px for cards (see [`crate::icon`]);
 //! - radii of 8 px for navigation, 16 px for cards, and pills for calls to action.
 
+use std::cell::Cell;
+
 use gpui::{
-    App, BoxShadow, FontWeight, Global, Hsla, Pixels, Styled, Window, WindowAppearance, hsla,
-    point, px, rgb, rgba,
+    App, BoxShadow, Context, FontWeight, Global, Hsla, ListState, Pixels, Styled, Subscription,
+    Window, WindowAppearance, hsla, point, px, rgb, rgba,
 };
 
 /// Light or dark.
@@ -25,7 +28,12 @@ pub enum Appearance {
 impl Appearance {
     /// The appearance the system asks for in this window.
     pub fn of(window: &Window) -> Self {
-        match window.appearance() {
+        Self::of_system(window.appearance())
+    }
+
+    /// Light or dark, for an appearance the system names.
+    pub fn of_system(appearance: WindowAppearance) -> Self {
+        match appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::Dark,
             WindowAppearance::Light | WindowAppearance::VibrantLight => Self::Light,
         }
@@ -57,24 +65,102 @@ pub enum TypeSize {
 }
 
 impl TypeSize {
+    /// The size, at the text size picked ([`TextSize`]).
     pub fn size(self) -> Pixels {
-        match self {
+        scaled(match self {
             Self::Caption => px(12.),
             Self::Small => px(13.),
             Self::Body => px(14.),
             Self::Title => px(24.),
-        }
+        })
     }
 
     /// The line height that goes with the size: roughly 1.35 for text sizes, 1.25 for titles.
     pub fn line_height(self) -> Pixels {
-        match self {
+        scaled(match self {
             Self::Caption => px(16.),
             Self::Small => px(18.),
             Self::Body => px(20.),
             Self::Title => px(30.),
+        })
+    }
+}
+
+/// How big all text is, as picked in Your settings › Appearance: four steps around the brief's
+/// sizes, each a scale of every size and line height, rounded to whole pixels so text stays
+/// crisp. Icons, spacing and radii stay as they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextSize {
+    /// Body 13, captions 11.
+    Small,
+    /// The brief's sizes: body 14, captions 12.
+    #[default]
+    Default,
+    /// Body 15, captions 13.
+    Large,
+    /// Body 17, captions 14.
+    Larger,
+}
+
+/// The text size as a global, set only by [`TextSize::set`], which keeps it and the scale
+/// ([`SCALE`]) together.
+struct TextSizeNow(TextSize);
+
+impl Global for TextSizeNow {}
+
+thread_local! {
+    /// The scale of the text size now. Text is laid out on the UI's thread only, so each app
+    /// (each test, too) has its own.
+    static SCALE: Cell<f32> = const { Cell::new(1.) };
+}
+
+impl TextSize {
+    pub const ALL: [TextSize; 4] = [TextSize::Small, TextSize::Default, TextSize::Large, TextSize::Larger];
+
+    pub fn scale(self) -> f32 {
+        match self {
+            Self::Small => 0.92,
+            Self::Default => 1.,
+            // (0.7's conversation text was 13, 14, 15.5 and 17.)
+            Self::Large => 1.08,
+            Self::Larger => 1.2,
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Default => "Default",
+            Self::Large => "Large",
+            Self::Larger => "Larger",
+        }
+    }
+
+    /// The text size now.
+    pub fn of(cx: &App) -> TextSize {
+        cx.try_global::<TextSizeNow>().map(|now| now.0).unwrap_or_default()
+    }
+
+    /// Sets the text size for every window, redrawn at once (lists that keep their items'
+    /// heights measure them again: [`remeasure_on_text_size`]).
+    pub fn set(size: TextSize, cx: &mut App) {
+        SCALE.with(|scale| scale.set(size.scale()));
+        cx.set_global(TextSizeNow(size));
+        cx.refresh_windows();
+    }
+}
+
+/// A size the type scale doesn't name (a page's 17 px heading), at the text size picked.
+pub fn scaled(size: Pixels) -> Pixels {
+    let scale = SCALE.with(Cell::get);
+    if scale == 1. { size } else { px((f32::from(size) * scale).round()) }
+}
+
+/// Measures `list`'s items again whenever the text size changes, while the subscription is kept
+/// (keep it with the view, so a closed view's list goes with it).
+pub fn remeasure_on_text_size<V: 'static>(list: &ListState, cx: &mut Context<V>) -> Subscription {
+    let list = list.clone();
+    cx.observe_global::<TextSizeNow>(move |_, _| list.remeasure())
 }
 
 /// The two weights type comes in.

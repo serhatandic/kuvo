@@ -32,7 +32,7 @@ const fn listed(id: &'static str, title: &'static str, icon: IconName, group: &'
 /// Adding one: `.claude/notes/yours-settings-pattern.md`.
 pub const YOURS: &[Listed] = &[
     listed("general", "General", IconName::Settings, "", "open files editor code text"),
-    listed("appearance", "Appearance", IconName::Sun, "", "theme light dark colours colors"),
+    listed("appearance", "Appearance", IconName::Sun, "", "theme light dark system auto colours colors text size font bigger smaller larger zoom"),
     listed("notifications", "Notifications", IconName::Bell, "", "sound badge dock finished waits asks alerts"),
 ];
 
@@ -113,7 +113,6 @@ pub enum Act {
     /// A model setting at a path in the engine's settings, from what was read there.
     SetModel { path: &'static [&'static str], model: Option<String>, was: Option<String> },
     SetNotice(Notice, bool),
-    SetDark(bool),
     /// One of your own settings changed, kept on this device.
     Yours(crate::yours::Change),
     /// A row the box describes, changed to `value` from the revision it was read at (`asked`:
@@ -406,7 +405,6 @@ fn capitalized(words: &str) -> String {
 /// What your own settings' pages are drawn from: your settings now, and what this device has.
 pub struct YoursFacts<'a> {
     pub yours: &'a crate::yours::Yours,
-    pub dark: bool,
     /// The editors on this Mac General offers.
     pub editors: &'a [crate::yours::editors::Editor],
     /// Why the last change couldn't be kept, where it couldn't.
@@ -433,14 +431,29 @@ pub fn yours(section: &str, facts: &YoursFacts) -> Vec<Block> {
             vec![Block::Group("Files".into(), String::new(), vec![editor])]
         }
         "appearance" => {
-            let dark = facts.dark;
+            use crate::yours::{TextSize, Theme};
+            let now = &facts.yours.appearance;
+            let picked = now.theme.unwrap_or(Theme::System);
+            let themes = [(Theme::Light, "Light"), (Theme::Dark, "Dark"), (Theme::System, "System")];
             let theme = Row::new(
                 "row-theme",
                 "Theme",
-                "Light or dark colours. ⌘⇧L switches them too.",
-                Control::Menu { shown: Some(if dark { "Dark".into() } else { "Light".into() }), choices: vec![("Light".into(), None, Some(Act::SetDark(false)), !dark), ("Dark".into(), None, Some(Act::SetDark(true)), dark)] },
+                "System follows this Mac’s light or dark as it changes. ⌘⇧L switches between light and dark.",
+                Control::Menu {
+                    shown: themes.iter().find(|(theme, _)| *theme == picked).map(|(_, label)| (*label).to_owned()),
+                    choices: themes.iter().map(|(theme, label)| ((*label).to_owned(), None, Some(Act::Yours(Change::Theme(*theme))), *theme == picked)).collect(),
+                },
             );
-            vec![Block::Group("Theme".into(), String::new(), vec![theme])]
+            let size = Row::new(
+                "row-text-size",
+                "Text size",
+                "",
+                Control::Menu {
+                    shown: Some(now.text_size.ui().label().to_owned()),
+                    choices: TextSize::ALL.iter().map(|size| (size.ui().label().to_owned(), None, Some(Act::Yours(Change::TextSize(*size))), *size == now.text_size)).collect(),
+                },
+            );
+            vec![Block::Group(String::new(), String::new(), vec![theme, size])]
         }
         "notifications" => {
             let now = &facts.yours.notifications;

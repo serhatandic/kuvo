@@ -3,7 +3,7 @@
 //! `~/.kuvo-code/desktop`), one object per page:
 //!
 //! ```json
-//! {"appearance": {"theme": "dark"}, "general": {"editor": "dev.zed.Zed"},
+//! {"appearance": {"theme": "dark", "textSize": "large"}, "general": {"editor": "dev.zed.Zed"},
 //!  "notifications": {"sessions": true, "sound": true, "dock": true}, "quitNoteSeen": true}
 //! ```
 //!
@@ -33,19 +33,61 @@ pub const FILE: &str = "settings.json";
 /// The file's key for whether the first Quit's note was seen.
 const QUIT_NOTE_SEEN: &str = "quitNoteSeen";
 
-/// Light or dark, as picked in Appearance (none: as the Mac is when the app opens).
+/// Light, dark, or as the system is (following it as it changes), as picked in Appearance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Theme {
     Light,
     Dark,
+    System,
+}
+
+/// How big the app's text is, as picked in Appearance (see [`kuvo_ui::TextSize`] for the sizes).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextSize {
+    Small,
+    #[default]
+    Default,
+    Large,
+    Larger,
+}
+
+impl TextSize {
+    pub const ALL: [TextSize; 4] = [TextSize::Small, TextSize::Default, TextSize::Large, TextSize::Larger];
+
+    pub fn ui(self) -> kuvo_ui::TextSize {
+        match self {
+            TextSize::Small => kuvo_ui::TextSize::Small,
+            TextSize::Default => kuvo_ui::TextSize::Default,
+            TextSize::Large => kuvo_ui::TextSize::Large,
+            TextSize::Larger => kuvo_ui::TextSize::Larger,
+        }
+    }
 }
 
 /// Appearance.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
+    /// None (as nothing was picked yet): as the system is.
+    #[serde(deserialize_with = "or_default")]
     pub theme: Option<Theme>,
+    #[serde(rename = "textSize", deserialize_with = "or_default")]
+    pub text_size: TextSize,
+}
+
+/// A field read on its own: one this app can't read (a newer app's choice) is its default, and
+/// the page's other fields are still read. (A change on the page then writes that default.)
+fn or_default<'de, D: serde::Deserializer<'de>, T: DeserializeOwned + Default>(deserializer: D) -> Result<T, D::Error> {
+    Ok(serde_json::from_value(Value::deserialize(deserializer)?).unwrap_or_default())
+}
+
+impl Appearance {
+    /// Whether the app's colours follow the system's light or dark.
+    pub fn follows_system(&self) -> bool {
+        matches!(self.theme, None | Some(Theme::System))
+    }
 }
 
 /// General.
@@ -89,6 +131,7 @@ pub struct Yours {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
     Theme(Theme),
+    TextSize(TextSize),
     Editor(Option<String>),
     Sessions(bool),
     Sound(bool),
@@ -100,6 +143,7 @@ impl Change {
     fn apply(self, yours: &mut Yours) {
         match self {
             Change::Theme(theme) => yours.appearance.theme = Some(theme),
+            Change::TextSize(size) => yours.appearance.text_size = size,
             Change::Editor(editor) => yours.general.editor = editor,
             Change::Sessions(on) => yours.notifications.sessions = on,
             Change::Sound(on) => yours.notifications.sound = on,
@@ -188,9 +232,13 @@ impl Store {
     }
 }
 
-/// Reads your settings from `path` (none: kept only while the app runs), for every window.
+/// Reads your settings from `path` (none: kept only while the app runs), for every window, and
+/// sets the text size they pick (the theme is set as each window opens: [`appearance`]).
 pub fn init(path: Option<PathBuf>, cx: &mut App) {
-    cx.set_global(Store::read(path));
+    let store = Store::read(path);
+    let size = store.now.appearance.text_size.ui();
+    cx.set_global(store);
+    kuvo_ui::TextSize::set(size, cx);
 }
 
 /// Your settings now (the defaults where nothing read them yet).
@@ -198,27 +246,61 @@ pub fn now(cx: &App) -> Yours {
     cx.try_global::<Store>().map(|store| store.now.clone()).unwrap_or_default()
 }
 
-/// Makes a change to your settings and keeps it; whatever follows them hears it
+/// Makes a change to your settings and keeps it, and makes what it changes for every window at
+/// once (the theme, the text size); whatever else follows them hears it
 /// (`cx.observe_global::<Store>`).
 pub fn change(change: Change, cx: &mut App) {
     if !cx.has_global::<Store>() {
         init(None, cx);
     }
+    let effect = change.clone();
     cx.update_global::<Store, _>(|store, _| store.change(change));
+    match effect {
+        Change::Theme(theme) => {
+            let system = kuvo_ui::Appearance::of_system(cx.window_appearance());
+            let appearance = match theme {
+                Theme::Light => kuvo_ui::Appearance::Light,
+                Theme::Dark => kuvo_ui::Appearance::Dark,
+                Theme::System => system,
+            };
+            show_in(appearance, cx);
+        }
+        Change::TextSize(size) => kuvo_ui::TextSize::set(size.ui(), cx),
+        _ => {}
+    }
 }
 
-/// Light or dark, for every window, kept as your pick.
+/// Light or dark, for every window, kept as your pick (⌘⇧L: from System too).
 pub fn set_theme(appearance: kuvo_ui::Appearance, cx: &mut App) {
-    kuvo_ui::Theme::set_appearance(appearance, cx);
     change(Change::Theme(if appearance.is_dark() { Theme::Dark } else { Theme::Light }), cx);
 }
 
-/// The appearance a window opens in: your pick, else the Mac's (`system`).
+/// The appearance a window opens in: your pick, else the system's (`system`, the window's).
 pub fn appearance(system: kuvo_ui::Appearance, cx: &App) -> kuvo_ui::Appearance {
     match now(cx).appearance.theme {
         Some(Theme::Light) => kuvo_ui::Appearance::Light,
         Some(Theme::Dark) => kuvo_ui::Appearance::Dark,
-        None => system,
+        None | Some(Theme::System) => system,
+    }
+}
+
+/// Follows the system's light or dark in `window` as it changes, while your theme is System. Call
+/// as each window opens.
+pub fn follow_system(window: &mut gpui::Window) {
+    window.observe_window_appearance(|window, cx| system_changed(kuvo_ui::Appearance::of(window), cx)).detach();
+}
+
+/// The system turned light or dark (`system`): every window follows it while your theme is System.
+pub fn system_changed(system: kuvo_ui::Appearance, cx: &mut App) {
+    if now(cx).appearance.follows_system() {
+        show_in(system, cx);
+    }
+}
+
+/// Every window in `appearance`, where it isn't yet.
+fn show_in(appearance: kuvo_ui::Appearance, cx: &mut App) {
+    if cx.try_global::<kuvo_ui::Theme>().map(|theme| theme.appearance) != Some(appearance) {
+        kuvo_ui::Theme::set_appearance(appearance, cx);
     }
 }
 
@@ -325,6 +407,31 @@ mod tests {
         let store = Store::read(Some(path));
         assert_eq!(store.now().appearance.theme, None);
         assert!(!store.now().notifications.sound && store.now().notifications.sessions, "a key left out is its default");
+    }
+
+    #[test]
+    fn appearance_follows_the_system_at_the_default_size_until_picked_and_keeps_its_picks() {
+        let folder = folder();
+        let path = folder.path().join(FILE);
+        // Nothing picked, or a file from before System was a choice (none written as null).
+        for file in ["{}", r#"{"appearance": {"theme": null}}"#] {
+            std::fs::write(&path, file).unwrap();
+            let now = Store::read(Some(path.clone())).now().appearance.clone();
+            assert!(now.follows_system(), "{file}");
+            assert_eq!(now.text_size, TextSize::Default);
+        }
+        let mut store = Store::read(Some(path.clone()));
+        store.change(Change::TextSize(TextSize::Large));
+        store.change(Change::Theme(Theme::Light));
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file["appearance"], serde_json::json!({"theme": "light", "textSize": "large"}));
+        store.change(Change::Theme(Theme::System));
+        let again = Store::read(Some(path.clone())).now().appearance.clone();
+        assert!(again.follows_system() && again.text_size == TextSize::Large);
+        // A size this app doesn't know (a newer app's) is the default, and the theme stays.
+        std::fs::write(&path, r#"{"appearance": {"theme": "dark", "textSize": "huge"}}"#).unwrap();
+        let odd = Store::read(Some(path)).now().appearance.clone();
+        assert_eq!((odd.theme, odd.text_size), (Some(Theme::Dark), TextSize::Default));
     }
 
     #[test]

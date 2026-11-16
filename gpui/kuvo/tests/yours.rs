@@ -206,6 +206,94 @@ fn the_theme_picked_is_kept_and_the_next_run_opens_in_it(cx: &mut TestAppContext
     });
 }
 
+fn dark(cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| kuvo_ui::ActiveTheme::theme(cx).appearance.is_dark())
+}
+
+#[gpui::test]
+fn system_follows_the_macs_light_and_dark_as_it_changes_and_a_pick_stops_it(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (workspace, cx) = open(cx, &path);
+    // (GPUI's test windows can't be told the Mac changed from outside GPUI, so this goes from
+    // what `follow_system`, called as each window opens in `main.rs`, calls: `system_changed`.)
+    cx.update(|window, _| yours::follow_system(window));
+    click(cx, "rail-settings");
+    click(cx, "setting-appearance");
+    // Nothing picked yet: System, the default.
+    let view = settings(&workspace, cx);
+    assert_eq!(view.read_with(cx, |view, _| view.row_shown("row-theme")).as_deref(), Some("System"));
+    cx.update(|_, cx| yours::system_changed(Appearance::Dark, cx));
+    assert!(dark(cx));
+    cx.update(|_, cx| yours::system_changed(Appearance::Light, cx));
+    assert!(!dark(cx));
+    // Dark picked: the Mac turning light leaves it dark.
+    click(cx, "row-theme-menu");
+    click(cx, "menu-item-Dark");
+    cx.update(|_, cx| yours::system_changed(Appearance::Light, cx));
+    assert!(dark(cx));
+    // System picked again: as the Mac is now (the test platform's light), and following it.
+    click(cx, "row-theme-menu");
+    click(cx, "menu-item-System");
+    assert!(!dark(cx));
+    assert_eq!(next_run(&path).appearance.theme, Some(yours::Theme::System));
+    cx.update(|_, cx| yours::system_changed(Appearance::Dark, cx));
+    assert!(dark(cx));
+    // The next run opens as the Mac is.
+    cx.update(|_, cx| {
+        yours::init(Some(path.clone()), cx);
+        assert_eq!(yours::appearance(Appearance::Dark, cx), Appearance::Dark);
+        assert_eq!(yours::appearance(Appearance::Light, cx), Appearance::Light);
+    });
+}
+
+#[gpui::test]
+fn the_text_size_picked_resizes_the_text_at_once_and_the_next_run_opens_in_it(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (workspace, cx) = open(cx, &path);
+    click(cx, "rail-settings");
+    click(cx, "setting-appearance");
+    let view = settings(&workspace, cx);
+    assert_eq!(view.read_with(cx, |view, _| view.row_shown("row-text-size")).as_deref(), Some("Default"));
+    let row = |cx: &mut VisualTestContext| bounds(cx, "row-theme").expect("the Theme row").size.height;
+    let at_default = row(cx);
+    click(cx, "row-text-size-menu");
+    click(cx, "menu-item-Larger");
+    assert_eq!(kuvo_ui::TypeSize::Body.size(), px(17.));
+    assert_eq!(kuvo_ui::TypeSize::Small.size(), px(16.));
+    assert!(row(cx) > at_default, "the row grows with its text");
+    assert_eq!(view.read_with(cx, |view, _| view.row_shown("row-text-size")).as_deref(), Some("Larger"));
+    assert_eq!(next_run(&path).appearance.text_size, yours::TextSize::Larger);
+    click(cx, "row-text-size-menu");
+    click(cx, "menu-item-Small");
+    assert_eq!(kuvo_ui::TypeSize::Body.size(), px(13.));
+    assert!(row(cx) < at_default);
+    // The next run opens in the size picked.
+    cx.update(|_, cx| {
+        kuvo_ui::TextSize::set(kuvo_ui::TextSize::Default, cx);
+        yours::init(Some(path.clone()), cx);
+    });
+    assert_eq!(kuvo_ui::TypeSize::Caption.size(), px(11.));
+    assert_eq!(cx.update(|_, cx| kuvo_ui::TextSize::of(cx)), kuvo_ui::TextSize::Small);
+}
+
+#[gpui::test]
+fn a_conversation_grows_at_a_larger_text_size(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    let (workspace, cx) = open(cx, &path);
+    // (Short enough that the conversation scrolls.)
+    cx.simulate_resize(size(px(1280.), px(480.)));
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_signup", window, cx));
+    cx.run_until_parked();
+    let height = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| {
+        workspace.read_with(cx, |workspace, cx| workspace.conversation().map(|conversation| conversation.read(cx).list().list_state().max_offset_for_scrollbar().y))
+    };
+    let before = height(&workspace, cx).expect("a conversation open");
+    cx.update(|_, cx| yours::change(yours::Change::TextSize(yours::TextSize::Larger), cx));
+    cx.run_until_parked();
+    let after = height(&workspace, cx).unwrap();
+    assert!(after > before, "the conversation scrolls further: {before:?} → {after:?}");
+}
+
 #[gpui::test]
 fn a_settings_file_that_cant_be_read_opens_with_the_defaults(cx: &mut TestAppContext) {
     let (_folder, path) = kept();

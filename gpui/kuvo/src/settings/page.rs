@@ -90,7 +90,7 @@ impl SettingsView {
             rows.push(div().debug_selector(|| "settings-sections-problem".into()).child(quiet(format!("{name}’s other settings couldn’t be read: {why}"))).into_any_element());
         }
         let title: AnyElement = match side {
-            Side::Yours => div().debug_selector(|| "settings-yours-title".into()).pl(space::S1).h(px(36.)).flex().items_center().text_size(px(17.)).medium().text_color(c.text).child("Your settings").into_any_element(),
+            Side::Yours => div().debug_selector(|| "settings-yours-title".into()).pl(space::S1).h(px(36.)).flex().items_center().text_size(kuvo_ui::theme::scaled(px(17.))).medium().text_color(c.text).child("Your settings").into_any_element(),
             Side::Computer => self.picker(cx),
         };
         let foot = match side {
@@ -151,7 +151,7 @@ impl SettingsView {
             .cursor_pointer()
             .hover(|d| d.bg(c.hover))
             .child(Icon::new(IconName::Computer).color(c.icon))
-            .child(div().flex_1().min_w_0().truncate().text_size(px(17.)).medium().text_color(c.text).child(name))
+            .child(div().flex_1().min_w_0().truncate().text_size(kuvo_ui::theme::scaled(px(17.))).medium().text_color(c.text).child(name))
             .child(div().flex_none().text_ui(TypeSize::Small).text_color(c.text_faint).child(kind))
             .child(Icon::new(IconName::ChevronDown).color(c.icon))
             .into_any_element();
