@@ -146,6 +146,48 @@ fn cmd_a_selects_the_message_youre_in_then_the_whole_conversation(cx: &mut TestA
     assert_eq!(copied(cx), "Fix the form\n\nDone:\n\n- kept what was typed\n- the error shows under the field");
 }
 
+/// The menu bar's Edit › Copy and Select All reach the conversation's text as ⌘C and ⌘A do: chosen
+/// as the Mac sends a menu's choice, to the window from what has the keyboard.
+#[gpui::test]
+fn the_edit_menus_copy_and_select_all_reach_the_conversations_text(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    show(
+        &view,
+        json!([
+            { "type": "user", "id": "m1", "time": { "created": 1000 }, "text": "Fix the form" },
+            { "type": "assistant", "id": "m2", "time": { "created": 2000 }, "content": [{ "type": "text", "text": "Done, and the error shows under the field" }] }
+        ]),
+        cx,
+    );
+    let edit = |name: &str| -> Box<dyn gpui::Action> {
+        let menus = kuvo::app_menu::menus();
+        let menu = menus.iter().find(|menu| menu.name.as_ref() == "Edit").expect("an Edit menu");
+        menu.items
+            .iter()
+            .find_map(|item| match item {
+                gpui::MenuItem::Action { name: each, action, .. } if each.as_ref() == name => Some(action.boxed_clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no Edit › {name}"))
+    };
+    let choose = |name: &str, cx: &mut VisualTestContext| {
+        let action = edit(name);
+        assert!(cx.update(|window, cx| window.is_action_available(action.as_ref(), cx)), "Edit › {name} is enabled in the conversation");
+        cx.update(|window, cx| window.dispatch_action(action, cx));
+        cx.run_until_parked();
+    };
+    drag(at(&view, "m2", &[0, 0], "the error", false, cx), at(&view, "m2", &[0, 0], "shows", true, cx), cx);
+    choose("Copy", cx);
+    assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("the error shows"));
+    // As ⌘A: the message you're in, then the whole conversation.
+    choose("Select All", cx);
+    choose("Copy", cx);
+    assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("Done, and the error shows under the field"));
+    choose("Select All", cx);
+    choose("Copy", cx);
+    assert_eq!(cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("Fix the form\n\nDone, and the error shows under the field"));
+}
+
 #[gpui::test]
 fn a_link_opens_on_a_click_but_not_at_the_end_of_a_drag(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");

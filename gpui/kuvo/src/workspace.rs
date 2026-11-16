@@ -39,7 +39,7 @@ use crate::session_menu::{
 };
 use crate::sidebar::{FocusSearch, Line};
 use crate::panel::{self, Place, SidePanel, Tab};
-use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, areas, landing, sidebar, time, title_bar};
+use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
 
 /// How long typing pauses before the box is asked to search conversations.
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
@@ -1484,6 +1484,12 @@ impl Workspace {
             self.show_area(area, window, cx);
             return;
         }
+        self.toggle_sidebar(window, cx);
+    }
+
+    /// Folds the open area's sidebar away, or brings it back (its rail button pressed again, or
+    /// View › Show Sidebar).
+    pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // (The window as it is now, should it have changed since it was last drawn.)
         self.narrow = window.viewport_size().width < NARROW;
         if self.narrow {
@@ -2419,6 +2425,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &RenameSession, window, cx| this.run_shortcut("rename", window, cx)))
             .on_action(cx.listener(|this, _: &ArchiveSession, window, cx| this.run_shortcut("archive", window, cx)))
             .on_action(cx.listener(|this, _: &DeleteSession, window, cx| this.run_shortcut("delete", window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)))
             .on_action(cx.listener(|this, _: &TogglePanel, window, cx| {
                 if this.area != Area::Sessions {
                     this.show_area(Area::Sessions, window, cx);

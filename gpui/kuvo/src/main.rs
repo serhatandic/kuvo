@@ -4,9 +4,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Bounds, Focusable, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
+use gpui::{App, AppContext as _, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 use kuvo::launch::{Launch, Opens};
-use kuvo::{Home, Quit, bind_keys};
+use kuvo::{Home, bind_keys};
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::Boxes;
 use kuvo_box::install::Installer;
@@ -35,12 +35,10 @@ fn main() {
         kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
         // Who its notifications are from (macOS takes it from the bundle; Linux from this).
         cx.set_app_identity("run.kuvo.code", "Kuvo");
-        // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one). The
-        // first time, on a Mac whose Kuvo stays at work in the menu bar, a note says so first
-        // (`kuvo::quit_note`), remembered in your settings. (After the key's dispatch: the window
-        // it came through is busy until then.)
-        cx.on_action(|_: &Quit, cx| cx.defer(kuvo::quit_note::quit));
-        cx.set_menus([Menu { name: "Kuvo".into(), items: vec![MenuItem::action("Quit Kuvo", Quit)], disabled: false }]);
+        // Its menu bar (Quit with ⌘Q among it), and quitting as its window closes (it has only the
+        // one). The first Quit, on a Mac whose Kuvo stays at work in the menu bar, says so first
+        // (`kuvo::quit_note`, answered in `app_menu`), remembered in your settings.
+        kuvo::app_menu::init(cx);
         cx.on_window_closed(|cx, _| {
             // (The small window beside System Settings isn't the app's own.)
             if !cx.windows().iter().any(|window| window.downcast::<Home>().is_some() || window.downcast::<Launch>().is_some()) {
