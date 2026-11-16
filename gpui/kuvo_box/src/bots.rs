@@ -312,6 +312,63 @@ pub struct WorkSession {
     /// When it started (ms).
     #[serde(default)]
     pub started: Option<f64>,
+    /// The model it runs on, and its effort.
+    #[serde(default, deserialize_with = "lenient")]
+    pub model: Option<WorkModel>,
+    /// Its mode (`plan`, `build`).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// The account it runs on, as Settings › Accounts lists it.
+    #[serde(default, deserialize_with = "lenient")]
+    pub account: Option<WorkAccount>,
+    /// What it asks you, while it waits on you.
+    #[serde(default)]
+    pub asks: Option<String>,
+}
+
+impl WorkSession {
+    /// At work: working, or waiting on you.
+    pub fn is_at_work(&self) -> bool {
+        matches!(self.state, WorkState::Working | WorkState::Asking)
+    }
+}
+
+/// A model as a bot's work names it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkModel {
+    pub id: String,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub variant: Option<String>,
+}
+
+/// An account as a bot's work names it: the box's whole short name for it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct WorkAccount {
+    pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// What a bot started today, and the tokens its sessions used.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct WorkToday {
+    #[serde(default)]
+    pub started: u32,
+    /// The asks it answered for its sessions since midnight on its computer.
+    #[serde(default)]
+    pub answered: u32,
+    #[serde(default)]
+    pub tokens: u64,
+}
+
+/// When each bot's work last changed (`kuvo/work/events`), by its id.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct WorkChanged {
+    #[serde(default)]
+    pub changed: std::collections::BTreeMap<String, f64>,
 }
 
 /// A bot's sessions, the latest first.
@@ -319,6 +376,8 @@ pub struct WorkSession {
 pub struct Work {
     #[serde(default, deserialize_with = "readable")]
     pub sessions: Vec<WorkSession>,
+    #[serde(default)]
+    pub today: WorkToday,
 }
 
 /// A value a newer box may say in a way this doesn't know: none.
@@ -402,6 +461,20 @@ impl BoxClient {
     /// A bot's sessions, the latest first.
     pub fn bot_work(&self, bot: &str) -> Result<Work> {
         self.get(&format!("kuvo/work?bot={bot}"))
+    }
+
+    /// When each bot's work last changed, now and as it changes.
+    pub fn follow_work_changes(&self, timing: crate::Timing) -> crate::Follow<crate::follow::Followed<WorkChanged>> {
+        crate::follow::follow_lines(self, "kuvo-box work", "kuvo/work/events".into(), "kuvo/work/events".into(), timing)
+    }
+
+    /// Every session of a bot's work stopped (Stop All).
+    pub fn stop_bot_work(&self, bot: &str) -> Result<()> {
+        let response = self.send(&Request::post(format!("kuvo/bots/{bot}/stop-all"), serde_json::json!({})))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        Ok(())
     }
 }
 

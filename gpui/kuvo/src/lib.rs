@@ -31,6 +31,7 @@ pub mod sidebar;
 pub mod stand_in;
 pub mod time;
 pub mod title_bar;
+pub mod work_bars;
 pub mod workspace;
 
 use gpui::{App, KeyBinding, actions};

@@ -11,8 +11,10 @@
 //! (`Debug` leaves it out).
 
 pub mod accounts;
+pub mod approval;
 pub mod areas;
 pub mod asks;
+pub mod background;
 pub mod bots;
 pub mod boxes;
 pub mod client;

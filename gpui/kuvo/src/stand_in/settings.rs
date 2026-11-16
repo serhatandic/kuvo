@@ -40,7 +40,8 @@ pub struct Settings {
     /// Sign-ins finish by themselves after a few asks (the app's `--stand-in`).
     pub finishes: bool,
     config: Value,
-    approval: Value,
+    /// This computer's modes (`kuvo/approval`): Full Access confirmed, the default, Auto held.
+    pub approval: Value,
     sandbox: Value,
     allowed: Vec<Value>,
     browser: Value,
@@ -434,13 +435,21 @@ impl Settings {
                 (200, self.config.clone())
             }
             ("GET", ["kuvo", "approval"]) => (200, self.approval.clone()),
-            ("PATCH", ["kuvo", "approval"]) => match body.get("otherComputers").and_then(Value::as_bool) {
-                Some(allowed) => {
-                    self.approval["otherComputers"] = json!(allowed);
-                    (200, self.approval.clone())
+            // (Full Access confirmed on this computer, from a composer's mode menu; your other
+            // computers' starts, from Settings.)
+            ("PATCH", ["kuvo", "approval"]) => {
+                let (full, others) = (body.get("fullAccess").and_then(Value::as_bool), body.get("otherComputers").and_then(Value::as_bool));
+                if full.is_none() && others.is_none() {
+                    return Some((400, json!({ "message": "Say otherComputers as true or false." })));
                 }
-                None => (400, json!({ "message": "Say otherComputers as true or false." })),
-            },
+                if let Some(full) = full {
+                    self.approval["fullAccess"] = json!(full);
+                }
+                if let Some(allowed) = others {
+                    self.approval["otherComputers"] = json!(allowed);
+                }
+                (200, self.approval.clone())
+            }
             ("GET", ["kuvo", "sandbox"]) => (200, self.sandbox.clone()),
             ("POST", ["kuvo", "sandbox", "check"]) => (200, json!({})),
             ("GET", ["kuvo", "sandbox", "allowed"]) => (200, json!({ "allowed": self.allowed })),
