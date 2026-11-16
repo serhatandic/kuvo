@@ -131,20 +131,26 @@ test("an update taken by a Mac's box from before: the server still on the old co
   write(path.join(R, "update-trial"), "0.10.0");
   write(path.join(K, "updates", "rollback", "restore.sh"), `#!/bin/sh\ntouch '${folder}/restored'\n`, 0o700);
   // Its server as its helper started it before the update, on the old link (which never says so).
-  const old = path.join(folder, "old", "kuvo-link.js");
-  write(old, "setInterval(() => {}, 1000);\n");
+  // (From the box's own link, as its helper runs it: the file is replaced under it by the update.)
+  const old = path.join(K, "bin", "kuvo-link.js");
+  const up = path.join(folder, "old-serve-up");
+  write(old, `require("fs").writeFileSync(${JSON.stringify(up)}, "");\nsetInterval(() => {}, 1000);\n`);
   const server = spawn(process.execPath, [old, "serve"], { stdio: "ignore" });
   atEnd(() => { try { server.kill("SIGKILL"); } catch {} });
   const ended = new Promise(done => server.once("exit", (code, signal) => done(signal)));
   write(path.join(R, "serve.json"), JSON.stringify({ pid: server.pid, port: 1, password: "x", kept: false }));
-  // The new link, put there after that server started.
+  // (Running the old code before the update replaces the file under it.)
+  await until(() => exists(up), "the old server");
+  // The new link, put there after that server started, with the release's own time on it (a
+  // release's files all say 2026-01-01, and a Mac's disk clones a big file with its time): only
+  // when it was put there (its change time) is now.
   write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url)), "utf8"));
-  fs.utimesSync(path.join(K, "bin", "kuvo-link.js"), new Date(Date.now() + 120_000), new Date(Date.now() + 120_000));
+  const released = new Date("2026-01-01T00:00:00Z");
+  fs.utimesSync(path.join(K, "bin", "kuvo-link.js"), released, released);
 
   const stop = keep(where);
   assert.equal(await ended, "SIGTERM", "the old server, ended");
   // Its helper starts it again: the new link, as it is now.
-  fs.utimesSync(path.join(K, "bin", "kuvo-link.js"), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
   const fresh = spawn(process.execPath, [path.join(K, "bin", "kuvo-link.js"), "serve"], { env: { ...env, KUVO_HOME: K, TMPDIR: folder, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_NO_PEERS: "1" }, stdio: ["pipe", "ignore", "ignore"] });
   const freshGone = new Promise(done => fresh.once("exit", done));
   atEnd(() => { try { fresh.kill("SIGKILL"); } catch {} });

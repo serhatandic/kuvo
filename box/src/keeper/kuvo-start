@@ -258,11 +258,15 @@ keep)
     # the new one, which says so. Goes once no Mac's box is from before beta.31.
     if [ -f "$R/update-trial" ] && own_mac; then
       s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)
-      if is "$s" "kuvo-link.js serve" && ! is "$s" --kept; then
+      if is "$s" "$K/bin/kuvo-link.js serve" && ! is "$s" --kept; then
         # (How long it has run, from `ps`'s [[dd-]hh:]mm:ss, the same on macOS and Linux.)
         e=$(ps -o etime= -p "$s" 2>/dev/null | tr -d ' ' | awk -F'[-:]' '{ s = $NF + 60 * $(NF - 1); if (NF >= 3) s += 3600 * $(NF - 2); if (NF >= 4) s += 86400 * $(NF - 3); print s }')
-        m=$(stat -c %Y "$K/bin/kuvo-link.js" 2>/dev/null || stat -f %m "$K/bin/kuvo-link.js" 2>/dev/null)
-        if [ -n "$e" ] && [ -n "$m" ] && [ $((now - e)) -lt "$m" ]; then kill -TERM "$s" 2>/dev/null; fi
+        # (When the link was put there: its change time, which a copy can't carry over, as it
+        # carries the release's own time over, for a file a Mac's disk clones.)
+        m=$(stat -c %Z "$K/bin/kuvo-link.js" 2>/dev/null || stat -f %c "$K/bin/kuvo-link.js" 2>/dev/null)
+        # (Within a second of it: `ps` counts whole seconds. A new one started that soon is ended
+        # once, and its helper starts it again.)
+        if [ -n "$e" ] && [ -n "$m" ] && [ $(($(date +%s) - e)) -le $((m + 1)) ]; then kill -TERM "$s" 2>/dev/null; fi
       fi
     fi
     # An update whose new link never said it's well (it doesn't start, the machine went
@@ -286,6 +290,8 @@ keep)
           if [ ! -e "$b" ] || { mkdir -p "$K/updates/backups" && chmod 700 "$K/updates/backups" && rm -rf "$n" && mv "$b" "$n" && { for o in "$K/updates/backups"/* "$K/updates/backups"/.[!.]*; do [ ! -e "$o" ] || [ "$o" = "$n" ] || rm -rf "$o"; done; true; }; }; then
             kept="$K/updates/rollback/files/bin/kuvo-start"
             ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
+            # (None running now, stopped meanwhile: the newest there, as V falls back to.)
+            [ -n "$ran" ] || ran=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
             was=$(sed -n 's/^V=//p' "$kept" 2>/dev/null | head -n 1)
             if grep -q 'data/opencode.db' "$K/updates/rollback/restore.sh" 2>/dev/null && [ -n "$ran" ] && [ -n "$was" ] && [ "$ran" != "$was" ] && [ "$(printf '%s\n%s\n' "$was" "$ran" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$ran" ]; then
               sed "s/^V=.*/V=$ran/" "$kept" >"$kept.new" && chmod 700 "$kept.new" && mv -f "$kept.new" "$kept"

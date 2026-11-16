@@ -684,6 +684,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (swapped) {
       // A newer engine that never answered and wrote nothing to the data: it goes back too, the old
       // engine reading only what it wrote itself. (The keeper's own rollback, later, keeps the new.)
+      // (Looked at before restore.sh stops it: a commit it lands in that moment goes unseen. A narrow
+      // window, taken as it is: an engine that hasn't answered in two minutes is still starting.)
       if (!newAnswered && dataKept !== null && dataNow() === dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
       ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
     } else {
