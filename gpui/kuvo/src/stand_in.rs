@@ -1020,6 +1020,9 @@ fn signup(now: f64) -> Vec<Value> {
         json!({ "type": "user", "id": "msg_s3b", "time": { "created": t + 90_000.0 }, "text": "[Session finished] \"Write a test for a taken email\" in website (address ses_sub3), after 2 min:\nAdded signup.taken.test.ts; it fails on main and passes with the fix.", "metadata": { "kuvo": {
             "note": { "from": "Its sessions", "line": "“Write a test for a taken email” finished" },
             "news": [{ "session": "ses_sub3", "title": "Write a test for a taken email", "status": "finished", "said": "Added signup.taken.test.ts; it fails on main and passes with the fix." }] } } }),
+        // A wake-up of its own, as its box marks it on the page.
+        json!({ "type": "user", "id": "msg_s3c", "time": { "created": t + 100_000.0 }, "text": "[Wake-up] Check the preview deploy: open its URL, sign up with a taken email, and say whether the form keeps what was typed.\n\nIf it's still building, schedule another wake-up in 10 minutes.", "metadata": { "kuvo": {
+            "wake": { "summary": "Check the preview deploy", "note": "Check the preview deploy: open its URL, sign up with a taken email, and say whether the form keeps what was typed.\n\nIf it's still building, schedule another wake-up in 10 minutes." } } } }),
         user("msg_s4", t + 120_000.0, "Keep what they typed, and say which field is wrong", Some("/plan")),
         json!({ "type": "assistant", "id": "msg_s5", "time": { "created": t + 121_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "content": [
             // Kuvo Code's own tool, by the title its box gives it.

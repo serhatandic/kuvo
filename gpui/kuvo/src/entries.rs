@@ -934,14 +934,26 @@ fn lowered(words: &str) -> String {
     letters.next().map(|first| first.to_lowercase().chain(letters).collect()).unwrap_or_default()
 }
 
-/// A message from another agent, or one of its sessions' news, as its card shows it: who it's from,
-/// what happened ("finished", "asks"), what it said, and the conversation it's from (none where
-/// it can't be opened).
+/// What a card in a conversation is: a message from another agent, one of its sessions' news, or a
+/// wake-up (or watch) of its own. Each has its own mark and title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Mail,
+    News,
+    Wake,
+}
+
+/// A message the user didn't write, as its card shows it: what it is, who it's from (a wake-up:
+/// "Wake-up"), what happened ("finished", "asks"), what it said, the line it shows folded where it
+/// isn't its first (a wake-up's summary), and the conversation it's from (none where it can't be
+/// opened).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Letter {
+    pub kind: Kind,
     pub from: String,
     pub status: Option<String>,
     pub said: String,
+    pub preview: Option<String>,
     pub session: Option<String>,
 }
 
@@ -951,10 +963,36 @@ impl Letter {
         !self.folds() || open.contains(&Fold::Card(message.to_owned(), n))
     }
 
-    /// Whether there's more to it than its first line shows.
+    /// Whether there's more to it than its folded line shows.
     fn folds(&self) -> bool {
         let said = self.said.trim();
+        if let Some(preview) = &self.preview {
+            return said != preview.trim();
+        }
         said.lines().count() > 1 || said.chars().count() > 140
+    }
+
+    /// The line it shows folded: its own (a wake-up's summary), or its first as it reads, without
+    /// the marks that shape it whole.
+    fn folded_line(&self) -> String {
+        if let Some(preview) = &self.preview {
+            return preview.trim().to_owned();
+        }
+        self.said.trim().lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim().trim_start_matches(['#', '>', '-', '*', ' ']).replace("**", "").replace('`', "")
+    }
+
+    /// Its mark, and the colour it's drawn in: a send mark for a message, an alarm clock for a
+    /// wake-up, and for a session's news what happened (finished, asks, stopped).
+    fn mark(&self, c: &kuvo_ui::theme::Colors) -> (IconName, gpui::Hsla) {
+        match (self.kind, self.status.as_deref()) {
+            (Kind::Mail, _) => (IconName::Send, c.accent),
+            (Kind::Wake, _) => (IconName::Alarm, c.accent),
+            (Kind::News, Some("finished")) => (IconName::Check, c.success),
+            (Kind::News, Some("asks")) => (IconName::Question, c.accent),
+            (Kind::News, Some("stopped" | "not summarized")) => (IconName::Warning, c.warning),
+            (Kind::News, Some("stopped by you")) => (IconName::Close, c.text_muted),
+            (Kind::News, _) => (IconName::Send, c.accent),
+        }
     }
 }
 
@@ -963,18 +1001,22 @@ impl Letter {
 pub fn letters(user: &kuvo_box::messages::UserMessage) -> Vec<Letter> {
     // Its sessions' news its box couldn't read: whole, from them, rather than lost.
     if let Some(text) = user.unread_news() {
-        return vec![Letter { from: "Its sessions".into(), status: None, said: text, session: None }];
+        return vec![Letter { kind: Kind::News, from: "Its sessions".into(), status: None, said: text, preview: None, session: None }];
+    }
+    // A wake-up of its own: its summary, opening to its note.
+    if let Some(wake) = user.wake() {
+        return vec![Letter { kind: Kind::Wake, from: "Wake-up".into(), status: None, said: wake.note, preview: Some(wake.summary), session: None }];
     }
     let news: Vec<News> = user.news();
     if !news.is_empty() {
         return news
             .into_iter()
-            .map(|news| Letter { from: news.title, status: news.status, said: news.said, session: Some(news.session).filter(|session| session.starts_with("ses")) })
+            .map(|news| Letter { kind: Kind::News, from: news.title, status: news.status, said: news.said, preview: None, session: Some(news.session).filter(|session| session.starts_with("ses")) })
             .collect();
     }
     let parts = user.parts();
     let Some(mail) = parts.mail else { return Vec::new() };
-    vec![Letter { from: mail.name, status: None, said: parts.words.trim().to_owned(), session: Some(mail.session).filter(|session| session != "unknown" && !session.is_empty()) }]
+    vec![Letter { kind: Kind::Mail, from: mail.name, status: None, said: parts.words.trim().to_owned(), preview: None, session: Some(mail.session).filter(|session| session != "unknown" && !session.is_empty()) }]
 }
 
 /// Messages from other agents (or a lead's sessions' news), each as a card of its own: a send mark,
@@ -989,8 +1031,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
         let toggle = toggle.clone();
         let id = SharedString::from(format!("letter-{message}-{n}"));
         let selector = id.to_string();
-        // Its first line as it reads, without the marks that shape it whole.
-        let preview: String = letter.said.trim().lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim().trim_start_matches(['#', '>', '-', '*', ' ']).replace("**", "").replace('`', "");
+        let preview = letter.folded_line();
         let open_it = letter.session.clone().map(|session| {
             let open_session = around.open_session.clone();
             let selector = format!("open-{message}-{n}");
@@ -1010,23 +1051,25 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
                 })
                 .child("Open")
         });
-        // One line: "From", its name (cut short where it's long), what happened.
+        // One line: "From" and its name (cut short where it's long) for a message; a session's name
+        // and what happened ("Sign-in finished"); "Wake-up".
         let from = div()
             .flex()
             .items_center()
             .gap(space::S1)
             .min_w_0()
             .text_color(c.text_muted)
-            .child(div().flex_none().child("From"))
+            .when(letter.kind == Kind::Mail, |d| d.child(div().flex_none().child("From")))
             .child(div().min_w_0().truncate().text_color(c.text).font_weight(FontWeight::SEMIBOLD).child(letter.from.clone()))
-            .children(letter.status.clone().map(|status| div().flex_none().child(format!("· {status}"))));
+            .children(letter.status.clone().map(|status| div().flex_none().child(status)));
+        let (mark, tint) = letter.mark(c);
         let head = div()
             .flex()
             .items_center()
             .gap(space::S1_5)
             .min_w_0()
             .text_ui(TypeSize::Small)
-            .child(div().flex().flex_none().w(px(16.)).justify_center().child(Icon::new(IconName::Send).size(IconSize::Nav).color(c.accent)))
+            .child(div().flex().flex_none().w(px(16.)).justify_center().child(Icon::new(mark).size(IconSize::Nav).color(tint)))
             .child(div().flex().flex_1().min_w_0().child(from))
             .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, time::now_ms())))
             .children(open_it)
@@ -1597,14 +1640,42 @@ mod tests {
         let Entry::Message(message) = &rows[0] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
         let mail = letters(user);
-        assert_eq!(mail, [Letter { from: "Mira".into(), status: None, said: "Done.\n\nAll green.".into(), session: Some("ses_m".into()) }]);
+        assert_eq!(mail, [Letter { kind: Kind::Mail, from: "Mira".into(), status: None, said: "Done.\n\nAll green.".into(), preview: None, session: Some("ses_m".into()) }]);
         assert!(mail[0].folds(), "more than its first line");
         let Entry::Message(message) = &rows[1] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
-        assert_eq!(letters(user), [Letter { from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), session: Some("ses_a".into()) }]);
+        assert_eq!(letters(user), [Letter { kind: Kind::News, from: "Sign-in".into(), status: Some("asks".into()), said: "May I run npm i?".into(), preview: None, session: Some("ses_a".into()) }]);
         // Its words are selectable once it's shown whole.
         assert!(units(&rows[0], &HashSet::new()).is_empty());
         assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)])).is_empty());
+    }
+
+    /// A wake-up its box marked shows as a card of its own (#768): its summary folded, its note
+    /// whole once opened, never as your words. One an older box didn't mark is drawn as it was.
+    #[test]
+    fn a_wake_up_is_a_card_with_its_summary_opening_to_its_note() {
+        let note = "Pacing check: read plan_limits.\n\nReply only with the readings.";
+        let (rows, _) = entries(conversation(
+            json!([
+                { "type": "user", "id": "m1", "time": { "created": 1 }, "text": format!("[Wake-up] {note}"), "metadata": { "kuvo": { "wake": { "summary": "Pacing check", "note": note } } } },
+                { "type": "user", "id": "m2", "time": { "created": 2 }, "text": "[Wake-up] Unmarked." },
+            ]),
+            false,
+            None,
+        ));
+        assert_eq!(keys(&rows), ["m1", "m2"]);
+        let Entry::Message(message) = &rows[0] else { panic!() };
+        let Message::User(user) = &**message else { panic!() };
+        assert!(user.is_letter());
+        let wake = letters(user);
+        assert_eq!(wake, [Letter { kind: Kind::Wake, from: "Wake-up".into(), status: None, said: note.into(), preview: Some("Pacing check".into()), session: None }]);
+        assert_eq!(wake[0].folded_line(), "Pacing check");
+        assert!(wake[0].folds(), "it opens to the whole note");
+        assert!(units(&rows[0], &HashSet::new()).is_empty(), "folded, only its summary shows");
+        assert!(!units(&rows[0], &HashSet::from([Fold::Card("m1".into(), 0)])).is_empty());
+        let Entry::Message(message) = &rows[1] else { panic!() };
+        let Message::User(user) = &**message else { panic!() };
+        assert!(!user.is_letter(), "nothing marks it: the app reads no text to tell");
     }
 
     #[test]

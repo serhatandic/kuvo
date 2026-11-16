@@ -125,6 +125,7 @@ export const FEATURES = [
   "messages.send",
   "messages.session-news",
   "messages.tool-titles",
+  "messages.wake-cards",
   "models.offered",
   "models.offered.folder",
   "models.offered.free",

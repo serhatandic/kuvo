@@ -120,11 +120,26 @@ impl UserMessage {
         (from == "Its sessions" && kuvo.get("news").is_none() && !self.text.trim().is_empty()).then(|| self.text.trim().to_owned())
     }
 
-    /// Whether it's drawn as a message from other agents: another agent wrote it, or it's the box's
-    /// note of a lead's sessions' news.
-    pub fn is_letter(&self) -> bool {
-        !self.news().is_empty() || self.unread_news().is_some() || self.parts().mail.is_some()
+    /// The wake-up (or watch) it is, as its box marks it on the page (`kuvo.wake` with its `note`):
+    /// its card's summary and the note it opens to. None for any other message, and for one an
+    /// older box didn't mark (drawn as it was).
+    pub fn wake(&self) -> Option<Wake> {
+        let wake = self.metadata.as_ref()?.get("kuvo")?.get("wake")?.clone();
+        serde_json::from_value(wake).ok()
     }
+
+    /// Whether it's drawn as a card rather than as your words: another agent wrote it, it's the
+    /// box's note of a lead's sessions' news, or it's a wake-up.
+    pub fn is_letter(&self) -> bool {
+        !self.news().is_empty() || self.unread_news().is_some() || self.parts().mail.is_some() || self.wake().is_some()
+    }
+}
+
+/// A wake-up's message, as its box marks it: what its card shows, and the whole note.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Wake {
+    pub summary: String,
+    pub note: String,
 }
 
 /// One of a lead's sessions telling it what it did: which session (its address, "" where it isn't
