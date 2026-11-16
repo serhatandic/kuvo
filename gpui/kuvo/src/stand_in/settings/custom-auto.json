@@ -207,18 +207,9 @@
                       {
                         "id": "variant",
                         "title": "Effort",
-                        "kind": "choice",
+                        "kind": "text",
                         "value": "",
-                        "choices": [
-                          {
-                            "id": "",
-                            "title": "Default"
-                          },
-                          {
-                            "id": "high",
-                            "title": "high"
-                          }
-                        ]
+                        "line": "Supported efforts: high. Leave empty for the default."
                       }
                     ],
                     "revision": "EGJyM4SIHn99W5EY"

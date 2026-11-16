@@ -8984,7 +8984,7 @@ The sections now:
   described as lists and ordinary forms. New List and Edit ask for a name; Add Model and Change
   the model or its effort offer the models from `kuvo/models/offered` (excluding Auto itself),
   with a single effort field (the add form checks typed efforts against the selected model;
-  the edit form offers that entry’s efforts). Move Up/Down are offered only where a move is
+  the edit form initially states that entry’s efforts; checks follow the selected model). Move Up/Down are offered only where a move is
   possible and apply to lists and entries, Remove deletes an entry,
   and Delete List confirms first (the last list cannot be deleted). Changes use the coding
   agents' existing `api/kuvo/auto` routes with their per-list `revision` (order uses `was`);

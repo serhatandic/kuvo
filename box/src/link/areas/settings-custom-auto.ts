@@ -36,10 +36,12 @@ function entryForm(models: Model[], entry?: AutoEntry): SettingForm {
 
   return { title: entry ? "Change the model or its effort" : "Add Model", submit: entry ? "Save" : "Add Model", fields: [
     { id: "model", title: "Model", kind: "choice", value: entry ? modelKey(entry) : choices[0]?.id ?? "", choices },
-    ...(entry ? [{ id: "variant", title: "Effort", kind: "choice" as const, value: entry.variant ?? "", choices: [{ id: "", title: "Default" }, ...[...new Set([...(models.find(model => modelKey(entry) === JSON.stringify([model.providerID, model.id]))?.efforts ?? []), ...(entry.variant ? [entry.variant] : [])])].map(id => ({ id, title: id }))] }]
-      : [{ id: "variant", title: "Effort", kind: "text" as const, value: "", line: "Leave empty for the default. Choose a model to see its supported efforts below." }]),
+    { id: "variant", title: "Effort", kind: "text", value: entry?.variant ?? "", line: entry ? effortWords(models.find(model => modelKey(entry) === JSON.stringify([model.providerID, model.id]))) : "Leave empty for the default. Choose a model to see its supported efforts below." },
   ] };
 }
+const effortWords = (model: Model | undefined): string => model?.efforts.length
+  ? `Supported efforts: ${model.efforts.join(", ")}. Leave empty for the default.`
+  : "This model uses its default effort.";
 const rowId = (id: string) => `list-${id}`;
 const entryId = (id: string, index: number) => `entry-${encodeURIComponent(id)}-${index}`;
 const moveActions = (index: number, length: number): SettingAction[] => [
@@ -89,7 +91,7 @@ function readForm(values: Record<string, unknown>, model: boolean, form?: Settin
     const original = form.fields.find(field => field.id === "model")?.value;
     const supported = new Set(["", ...(selected?.efforts ?? []), ...(original === values.model ? [String(effort?.value ?? "")] : [])]);
     if (typeof values.variant !== "string" || !supported.has(values.variant)) fields.push({ id: "variant", words: "Choose an effort this model supports.", tone: "warning" });
-    else fields.push({ id: "variant", words: selected?.efforts.length ? `Supported efforts: ${selected.efforts.join(", ")}. Leave empty for the default.` : "This model uses its default effort.", tone: "quiet" });
+    else fields.push({ id: "variant", words: effortWords(selected), tone: "quiet" });
   }
   return { fields, ready: !fields.some(field => field.tone === "warning") };
 }

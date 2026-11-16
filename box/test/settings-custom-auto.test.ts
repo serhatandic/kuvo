@@ -123,7 +123,7 @@ test("a large catalog keeps two fields per form and only the edited model's effo
  for (const index of [0,1]) {
    const form = actionOf(rowOf(shown, `entry-first-${index}`), "edit-model").form
    expect(form.fields.length).toBe(2)
-   expect(form.fields.find((field:any) => field.id === "variant").choices.map((choice:any) => choice.id)).toEqual(["",`effort-${index}`])
+   expect(form.fields.find((field:any) => field.id === "variant")).toMatchObject({kind:"text",line:`Supported efforts: effort-${index}. Leave empty for the default.`})
  }
 })
 
@@ -150,4 +150,19 @@ test("limit resets use the computer's configured zone and include a date only ou
    if (previous === undefined) rmSync(ZONE_FILE, {force:true}); else writeFileSync(ZONE_FILE, previous)
    forgetZoneRead()
  }
+})
+
+
+test("editing a model and its different supported effort uses a single editable field", async () => {
+ modelCatalog = defaultModels.map(model => model.id === "other" ? {...model, variants:[{id:"low"}]} : model)
+ auto.change("first", auto.all()[0]!.revision, {entries:[{providerID:"codex-cli",modelID:"fast",variant:"high"}]})
+ forgetModelLists()
+ const entry = rowOf(await page(), "entry-first-0"), form = actionOf(entry,"edit-model").form
+ expect(form.fields.find((field:any) => field.id === "variant")).toMatchObject({kind:"text",value:"high"})
+ const values = {model:JSON.stringify(["codex-cli","other"]),variant:"low"}
+ const checked = await ask(handler,"POST","kuvo/settings/custom-auto/entry-first-0/edit-model/check",{values})
+ expect(checked.json.ready).toBe(true)
+ expect(checked.json.fields.find((field:any) => field.id === "variant").words).toBe("Supported efforts: low. Leave empty for the default.")
+ expect((await act(entry,"edit-model",values)).status).toBe(200)
+ expect(auto.all()[0]!.entries).toEqual([{providerID:"codex-cli",modelID:"other",variant:"low"}])
 })
