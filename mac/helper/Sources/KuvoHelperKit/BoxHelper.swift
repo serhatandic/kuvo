@@ -31,8 +31,9 @@ public final class BoxHelper {
     /// Whether macOS is asking you something now (a test's says).
     var asking: () -> Bool = { BoxHelper.systemPromptOpen }
 
-    /// What macOS allows this program now (a test's says).
-    var allowed: () -> Permissions = { Permissions.asMacOSSays }
+    /// What macOS allows this program now (a test's says): asked in a process of its own each time
+    /// (`Permissions.afresh`), off the main actor.
+    var allowed: @Sendable () -> Permissions = { Permissions.afresh() ?? Permissions.asMacOSSays }
     private var notedPermissions: Permissions?
 
     private var keeper: Child?
@@ -75,12 +76,34 @@ public final class BoxHelper {
         #if DEBUG
         // Tests alone: a keychain file of their own.
         if let file = option("--test-keychain"), let password = option("--test-keychain-password") { keychain = HostKeychain(testFile: file, password: password) }
-        // Nor does a test's build ask macOS what it's allowed: the test says (`screen-recording,accessibility`; nothing unless said).
-        let said = Set((option("--test-permissions") ?? "").split(separator: ",").map(String.init))
-        let allowed: @Sendable () -> Permissions = { Permissions(screenRecording: said.contains("screen-recording"), accessibility: said.contains("accessibility")) }
+        // Nor does a test's build ask macOS what it's allowed: the test says (`screen-recording,accessibility`;
+        // nothing unless said), or a file of its own does, read again at each ask (`--test-permissions-file`).
+        let saidFile = option("--test-permissions-file")
+        let saidHere = option("--test-permissions") ?? ""
+        let inThisProcess: @Sendable () -> Permissions = {
+            let said = Set((saidFile.map { (try? String(contentsOfFile: $0, encoding: .utf8)) ?? "" } ?? saidHere).split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init))
+            return Permissions(screenRecording: said.contains("screen-recording"), accessibility: said.contains("accessibility"))
+        }
+        #else
+        let inThisProcess: @Sendable () -> Permissions = { Permissions.asMacOSSays }
+        #endif
+        // `permissions`: what macOS allows this program, asked by this process, which has never asked
+        // before (macOS answers Screen Recording once for each process: `Permissions.afresh`).
+        if words == ["permissions"] {
+            say(inThisProcess().said)
+            exit(0)
+        }
+        #if DEBUG
         // (A debug build is the tests' alone, and never reaches your login keychain: the release's is
         // built by scripts/build-helper.sh.)
         guard keychain.isTests else { fail("A test build of \(BoxHelperBundle.name) reads only a test's keychain: --test-keychain <file> --test-keychain-password <password>.") }
+        // (Asked afresh, as the release's is, where the test's file says.)
+        let allowed: @Sendable () -> Permissions
+        if let saidFile {
+            allowed = { Permissions.afresh(["--test-permissions-file", saidFile]) ?? inThisProcess() }
+        } else {
+            allowed = inThisProcess
+        }
         #endif
         // (launchd's `open` adds a process serial number for an app it opens.)
         words.removeAll { $0.hasPrefix("-psn_") }
@@ -92,7 +115,7 @@ public final class BoxHelper {
         let pinned = false
         #else
         let pinned = true
-        let allowed: @Sendable () -> Permissions = { Permissions.asMacOSSays }
+        let allowed: @Sendable () -> Permissions = { Permissions.afresh() ?? inThisProcess() }
         #endif
         let home: URL
         switch box(given: given, bundle: Bundle.main.bundleURL, accountHome: accountHome(), pinned: pinned, keeping: command == "keep") {
@@ -152,7 +175,7 @@ public final class BoxHelper {
                 fail(error.localizedDescription)
             }
         default:
-            fail("Usage: \(BoxHelperBundle.name) [keep] [--home <box>] | keys check|uncopy|clear|back [--app <Kuvo Code.app>]")
+            fail("Usage: \(BoxHelperBundle.name) [keep] [--home <box>] | keys check|uncopy|clear|back [--app <Kuvo Code.app>] | permissions")
         }
     }
 
@@ -224,7 +247,7 @@ public final class BoxHelper {
     }
 
     /// The box kept, in this process, for as long as it runs.
-    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, allowed: @escaping () -> Permissions) {
+    private static func keep(home: URL, keychain: HostKeychain, prefix: String, app: String, allowed: @escaping @Sendable () -> Permissions) {
         let run = home.appending(path: "run")
         try? FileManager.default.createDirectory(at: run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // One at a time: one opened while launchd's runs goes at once, and cleanly.
@@ -319,8 +342,10 @@ public final class BoxHelper {
             signals.append(source)
         }
         host.failed = { [weak self] in Task { @MainActor in await self?.startHost() } }
-        notePermissions()
+        // (Asked by the box as a client asks it: what macOS allows it then, not ten seconds ago.)
+        host.permissionsNow = { [weak self] in await self?.notePermissions() }
         Task {
+            await notePermissions()
             await startHost()
             startServe()
             startKeeper()
@@ -396,7 +421,7 @@ public final class BoxHelper {
     private func look() async {
         while !finishing, !Task.isCancelled {
             noteAsking(asking())
-            notePermissions()
+            await notePermissions()
             if serveLacksFileKey, let serve, serve.isRunning, host.vaultFileKey().key != nil {
                 log.info("The vault's key can be read now: the box's server starts again with it")
                 serve.planned = true
@@ -418,8 +443,10 @@ public final class BoxHelper {
     /// What macOS allows this program, written for the box when it changes (and first): facts only,
     /// with this process's number and when it started (in seconds, as the kernel has it), so the
     /// box can tell a record left by one that's gone, whoever has its number now.
-    func notePermissions() {
-        let now = allowed()
+    func notePermissions() async {
+        let allowed = self.allowed
+        let now = await Task.detached { allowed() }.value
+        guard !finishing else { return }
         // (Written again where the note's gone: whatever took it away, the box hears again.)
         guard now != notedPermissions || !FileManager.default.fileExists(atPath: permissionsFile.path(percentEncoded: false)) else { return }
         var info = proc_bsdinfo()
@@ -467,9 +494,44 @@ struct Permissions: Equatable, Sendable {
     var screenRecording: Bool
     var accessibility: Bool
 
-    /// As macOS says of this process now. Neither call asks you anything.
-    static var asMacOSSays: Permissions {
+    /// As macOS says of this process now. Neither call asks you anything. (macOS answers Screen
+    /// Recording once for each process, and keeps to that answer however it changes after: only
+    /// a process that never asked before hears the change.)
+    nonisolated static var asMacOSSays: Permissions {
         Permissions(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: AXIsProcessTrusted())
+    }
+
+    /// As said in JSON (`permissions`).
+    var said: [String: Any] { ["screenRecording": screenRecording, "accessibility": accessibility] }
+
+    /// As macOS says of this program now, asked by a process of its own that never asked before
+    /// (`Kuvo Helper permissions`, its own child, so macOS asks about the same program): what you
+    /// switched on in System Settings since the helper started is seen without starting it again.
+    /// Nil where that process couldn't say (within five seconds).
+    nonisolated static func afresh(_ more: [String] = []) -> Permissions? {
+        guard let program = Bundle.main.executableURL else { return nil }
+        let process = Process()
+        process.executableURL = program
+        process.arguments = ["permissions"] + more
+        process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        process.standardInput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        let ended = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in ended.signal() }
+        do { try process.run() } catch { return nil }
+        if ended.wait(timeout: .now() + 5) == .timedOut {
+            process.terminate()
+            _ = ended.wait(timeout: .now() + 2)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            return nil
+        }
+        // (A line of a few dozen bytes: all there once it has ended.)
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0, let said = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let screenRecording = said["screenRecording"] as? Bool, let accessibility = said["accessibility"] as? Bool else { return nil }
+        return Permissions(screenRecording: screenRecording, accessibility: accessibility)
     }
 }
 

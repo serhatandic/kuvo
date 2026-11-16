@@ -51772,7 +51772,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "55c348774c91";
+var BRIDGE_VERSION = "52a89195d6de";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63238,6 +63238,7 @@ import { spawnSync as spawnSync19 } from "node:child_process";
 import fs191 from "node:fs";
 import path198 from "node:path";
 init_home();
+init_host_interface();
 function runs(pid) {
   try {
     process.kill(pid, 0);
@@ -63318,10 +63319,22 @@ function boxPermissions() {
   }
   return said(allowed);
 }
+async function askedAfresh() {
+  if (process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac")
+    return;
+  const host = appHost();
+  if (!host)
+    return;
+  try {
+    await askHost(host, "permissions", {}, true);
+  } catch {}
+}
 async function* permissionsRoute({ request, json }) {
   const method = request.method.toUpperCase();
-  if (method === "GET")
+  if (method === "GET") {
+    await askedAfresh();
     return yield* json(200, boxPermissions());
+  }
   if (method !== "POST")
     return yield* json(405, {});
   let asked;

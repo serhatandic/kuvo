@@ -702,6 +702,42 @@ private final class InTheTests {}
         #expect(!FileManager.default.fileExists(atPath: facts.path))
     }
 
+    @Test func aPermissionSwitchedOnWhileItRunsIsSeenAsTheBoxAsksWithoutStartingItAgain() async throws {
+        // macOS answers Screen Recording once for each process, so it asks in a process of its own
+        // each time (`permissions`, read here from the test's file, as macOS would say it then).
+        try standIns()
+        let facts = run.appending(path: "permissions.json"), said = folder.appending(path: "allowed")
+        try write(said, "")
+        let helper = try keeping(["--test-permissions-file", said.path])
+        defer { cleanUp([helper]) }
+        until { FileManager.default.fileExists(atPath: facts.path) && FileManager.default.fileExists(atPath: run.appending(path: "host.json").path) }
+        #expect(json(facts)["screenRecording"] as? Bool == false)
+        // Switched on in System Settings: the box, asked by a client, asks the helper, which notes
+        // it before it answers.
+        try write(said, "screen-recording")
+        let asked = try await post(json(run.appending(path: "host.json")), "/permissions", [:])
+        #expect(asked.status == 200)
+        #expect(json(facts)["screenRecording"] as? Bool == true)
+        #expect(json(facts)["accessibility"] as? Bool == false)
+        #expect(json(facts)["pid"] as? Int == Int(helper.process.processIdentifier), "still the helper's own word, which the box checks")
+        #expect(helper.isRunning, "never started again for it")
+        // And its own look, every ten seconds, takes it away again as it's switched off.
+        try write(said, "")
+        until { json(facts)["screenRecording"] as? Bool == false }
+        #expect(json(facts)["screenRecording"] as? Bool == false)
+        // Only for the box: nothing without its password.
+        #expect(try await post(json(run.appending(path: "host.json")), "/permissions", [:], authorized: false).status == 401)
+    }
+
+    @Test func itSaysWhatMacOSAllowsItInAProcessOfItsOwn() throws {
+        let said = folder.appending(path: "allowed")
+        try write(said, "accessibility")
+        let ran = try helper(["permissions", "--test-permissions-file", said.path])
+        #expect(ran.status == 0)
+        let answer = try #require(try JSONSerialization.jsonObject(with: Data(ran.output.utf8)) as? [String: Bool])
+        #expect(answer == ["screenRecording": false, "accessibility": true])
+    }
+
     // MARK: kuvo-keys, the hand-over
 
     /// `kuvo-keys`, as the release's script built and signed it (as the test's Kuvo Code).

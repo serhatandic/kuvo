@@ -7994,6 +7994,9 @@ application/json`:
 - `vault/get {"id"}` → `{"values"}` (`404` for none), `vault/set {"id", "values"}` → `{}`,
   `vault/delete {"id"}` → `{}`: the vault's values, by item, in the Keychain ("Vault", bridge
   0.9.100);
+- `permissions {}` → `{}`: Kuvo Helper only ("This Mac's box: its helper", What macOS allows):
+  what macOS allows it, looked at again and noted in `run/permissions.json` before it answers;
+  the app's keeper answers `404`;
 - `trash {"path"}` → `{}`: a folder the box put in its trash (`box/trash`, a deleted bot's), to the
   Finder's Trash (bridge 0.9.52); one anywhere else stays where it is;
 - `app/open {"bundle"}` → `{}`: Kuvo Code at `bundle` opened in the background, as the box asks for
@@ -8096,10 +8099,16 @@ was named Kuvo Code Box, in no release.)
   gone, it does the same.
 - **What macOS allows** (`box.permissions`). Everything the box runs is asked about, and allowed,
   as Kuvo Helper, and only the helper can ask macOS what it's allowed. It does (neither call asks
-  you anything) as it starts and every ten seconds, and writes `run/permissions.json` when that
-  changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
+  you anything) as it starts, every ten seconds, and whenever the box asks it to (its host's
+  `permissions {}` → `{}`, answered once it has noted it; a helper from before that answers `404`),
+  each time in a process of its own that never asked before (`Kuvo Helper permissions`, its own
+  child, which says `{"screenRecording", "accessibility"}` and exits): macOS answers Screen
+  Recording once for each process, so a running helper asking itself would never see a change you
+  make. It writes `run/permissions.json` when that changes or the note's gone: `{"v": 1, "pid": <its own>, "started": <when its process started, in
   seconds>, "screenRecording": bool, "accessibility": bool}`, `0600`, taken away as it goes. The box says it:
-  - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility, bundle, list}`.
+  - `GET kuvo/box/permissions` → `{applies, name, known, screenRecording, accessibility, bundle, list}`,
+    the helper asked to look again first (above), so what you just switched on in System Settings
+    is said at once; where it can't be asked, the note as it is.
     `applies`: whether this box runs under such a program (a Mac's own box in a home of its own);
     `name`: what System Settings lists it as (`"Kuvo Helper"`), null where it doesn't apply;
     `known`: whether the helper runs now and has said (a note whose `pid` isn't a running process
@@ -8126,8 +8135,7 @@ was named Kuvo Code Box, in no release.)
     answer `{applies: false, name: null, known: false, …null, bundle: null, list: []}`: on Linux there's nothing to allow,
     and on a Mac macOS asks about each program there by its own name.
   - Files and Folders and Local Network aren't here yet: macOS can't be asked about them, so they
-    can only be told from what fails. Screen Recording as macOS has it for a running program may
-    lag a change you make until the helper starts again.
+    can only be told from what fails.
 - **`serve`**: `kuvo-start serve`, on a Mac's own box only (else exit 3; `run/off`, exit 0), runs
   `kuvo-link.js serve` in the foreground with the engine's Bun, as the box's other processes are
   started, its output in `run/serve.log`. The helper gives it, on its stdin's first line,
