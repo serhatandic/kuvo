@@ -42,3 +42,13 @@ the app telling the helper it just quit, and it opens a panel by itself.
 
 **Brand decision:** the item's mark in A and B is a stand-in SF Symbol. Kuvo's menu bar mark is for
 the user to pick.
+
+## Picked (11-16)
+
+A (the card) and Quit note 1. The item's mark is still the user's: `logo-template.png` puts four
+options side by side on light and dark menu bars, each with and without a count: the stand-in, the
+app icon's own artwork made one colour (with thin gaps where its shapes' colours meet, or solid,
+eyes clear either way), and the website favicon's hexagon. `logo-template-gaps.png` and
+`logo-template-solid.png` are the templates themselves (`logo.swift` makes them from
+`swift/KuvoCode/AppIcon.icon/Assets/artwork-light.png`). The helper draws its mark from
+`MenuBarMark` alone, so whichever is picked goes in there.
