@@ -20,6 +20,11 @@ fn main() {
         eprintln!("This build has no stand-in box. Run it with: cargo run -p kuvo --features stand-in -- --stand-in");
         std::process::exit(2);
     }
+    // What this computer holds, as the installer the bundle carries says it, and nothing more: no
+    // window, nothing set up or started (`kuvo --install-status`, for checking a built bundle).
+    if std::env::args().any(|argument| argument == "--install-status") {
+        std::process::exit(install_status());
+    }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
         // Its menu, and quitting: with ⌘Q, or as its window closes (it has only the one).
@@ -67,6 +72,46 @@ fn main() {
     });
 }
 
+/// Asks the installer this build carries what this computer holds (`status`, which changes nothing
+/// of a Kuvo that's here), and prints its steps and its answer as they are. 0 where it answered;
+/// 1 where this build carries none or may not run it, or it gave no answer.
+fn install_status() -> i32 {
+    use kuvo_box::install::{Progress, Ran, Verb};
+    let installer = match opens().installer {
+        Ok(installer) => installer,
+        Err(why) => {
+            eprintln!("{}", why.0);
+            return 1;
+        }
+    };
+    println!("app: {} ({})", installer.carried().bundle.display(), installer.carried().id);
+    println!("home: ~/{}", installer.root());
+    let ran = installer.run(Verb::Status, &mut |progress| {
+        if let Progress::Step(step) = progress {
+            println!("step: {}", step.title.unwrap_or(step.step));
+        }
+    });
+    match ran {
+        Ran::Answered { exit, answer } => {
+            let word = |said: Option<String>| said.unwrap_or_else(|| "none".into());
+            println!("exit: {exit}");
+            if let Some(result) = answer.result {
+                println!("result: {result}");
+            }
+            println!("verdict: {}", word(answer.verdict));
+            println!("verb: {}", word(answer.verb));
+            if let Some(message) = answer.message {
+                println!("message: {message}");
+            }
+            0
+        }
+        Ran::Broken(why) => {
+            eprintln!("{why}");
+            1
+        }
+    }
+}
+
 /// Whether it's run against the made-up box (`--stand-in`, with the `stand-in` feature).
 fn stand_in() -> bool {
     cfg!(feature = "stand-in") && std::env::args().any(|argument| argument == "--stand-in")
@@ -112,7 +157,8 @@ fn your_boxes(root: &str, app_id: &str) -> Result<(Boxes, BoxClient), String> {
         keeper,
         dial: Arc::new(WebSocketDial),
         name: kuvo_box::boxes::device_name(),
-        app: env!("CARGO_PKG_VERSION").to_owned(),
+        // (The bundle's version where it was built into one: scripts/build-desktop-app.sh.)
+        app: option_env!("KUVO_APP_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")).to_owned(),
         kept: Some(folder.join("boxes.json")),
         timing: Default::default(),
     });
