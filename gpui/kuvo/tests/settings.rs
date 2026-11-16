@@ -800,6 +800,8 @@ fn usage_lists_each_accounts_windows_as_the_rings_do(cx: &mut TestAppContext) {
         assert!(shown(cx, window), "{window}");
     }
     assert!(!shown(cx, "usage-0-window-3"));
+    // Cursor's plan ended: listed, saying so, with no meters.
+    assert!(shown(cx, "usage-1") && !shown(cx, "usage-1-window-0"));
     let _ = view;
 }
 

@@ -192,7 +192,7 @@ fn each_item_shows_the_mac_apps_key(cx: &mut TestAppContext) {
         ("Edit", "Copy", "cmd-c"),
         ("Edit", "Paste", "cmd-v"),
         ("Edit", "Select All", "cmd-a"),
-        ("View", "Show Sidebar", "cmd-0"),
+        ("View", "Show Sidebar", "cmd-b"),
         ("View", "Show Panel", "cmd-alt-0"),
         ("View", "Show Changes", "cmd-alt-i"),
         ("View", "Show Files", "cmd-alt-f"),

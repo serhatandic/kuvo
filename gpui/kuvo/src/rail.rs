@@ -8,14 +8,14 @@
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
-    StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, canvas, div, point, prelude::FluentBuilder as _, px, svg,
+    Anchor, AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
+    StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, anchored, canvas, deferred, div, point, prelude::FluentBuilder as _, px, svg,
 };
 use kuvo_box::BoxClient;
 use kuvo_box::areas::{Account, Level};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
-    menu::{HoverCard, Tooltip},
+    menu::{Tooltip, card_frame},
     small::count_badge,
     theme::{radius, space},
 };
@@ -42,6 +42,11 @@ const RAIL_REST: f32 = 44. + 4. * 46. + 2. * 46. + 40.;
 /// this only picks up what it read), and sooner after a read that failed (a box still starting).
 const REREAD: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_secs(10);
+/// How long the pointer rests on a ring before its card opens (one already open moves at once).
+pub const CARD_DELAY: Duration = Duration::from_millis(300);
+/// How long the card stays once the pointer is on neither ring nor card: across the gap between
+/// two rings, the open card moves to the next at once rather than closing.
+pub const CARD_GRACE: Duration = Duration::from_millis(120);
 
 pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
     let open = workspace.area();
@@ -116,15 +121,22 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
 pub struct Rings {
     client: BoxClient,
     accounts: Option<Vec<Account>>,
-    /// Now, as a window's "starts over in" counts from it (fixed for shots).
+    /// Now, as a window's "resets in" counts from it (fixed for shots).
     now: Option<f64>,
     _reading: Option<Task<()>>,
     again: Option<Task<()>>,
+    /// The ring whose card is open (its place among those drawn), the ring the pointer is on, and
+    /// whether it's on the card; the card waiting to open.
+    card: Option<usize>,
+    on_ring: Option<usize>,
+    on_card: bool,
+    opening: Option<Task<()>>,
+    closing: Option<Task<()>>,
 }
 
 impl Rings {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> Rings {
-        let mut rings = Rings { client, accounts: None, now: None, _reading: None, again: None };
+        let mut rings = Rings { client, accounts: None, now: None, _reading: None, again: None, card: None, on_ring: None, on_card: false, opening: None, closing: None };
         if live {
             rings._reading = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -176,18 +188,106 @@ impl Rings {
     fn now(&self) -> f64 {
         self.now.unwrap_or_else(time::now_ms)
     }
+
+    /// The accounts drawn as rings: a plan that ended has none (the box says so, `ended`).
+    fn ringed(&self) -> Vec<&Account> {
+        self.accounts.iter().flatten().filter(|account| !account.ended).collect()
+    }
+
+    /// The pointer came onto a ring, or left it: its card opens once it rests there (at once
+    /// where another's is open), and closes once the pointer is on neither ring nor card.
+    fn ring_hovered(&mut self, ix: usize, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            self.on_ring = Some(ix);
+            if self.card.is_some() {
+                self.card = Some(ix);
+                self.opening = None;
+            } else {
+                self.opening = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(CARD_DELAY).await;
+                    this.update(cx, |this, cx| {
+                        if this.on_ring == Some(ix) {
+                            this.card = Some(ix);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }));
+            }
+        } else if self.on_ring == Some(ix) {
+            self.on_ring = None;
+        }
+        self.settle(cx);
+    }
+
+    fn card_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        self.on_card = hovered;
+        self.settle(cx);
+    }
+
+    /// Off both ring and card: the card closes, after a moment (`CARD_GRACE`) in which reaching
+    /// another ring moves it there instead.
+    fn settle(&mut self, cx: &mut Context<Self>) {
+        if self.on_ring.is_none() && !self.on_card {
+            self.opening = None;
+            if self.card.is_some() && self.closing.is_none() {
+                self.closing = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(CARD_GRACE).await;
+                    this.update(cx, |this, cx| {
+                        this.closing = None;
+                        if this.on_ring.is_none() && !this.on_card {
+                            this.card = None;
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }));
+            }
+        } else {
+            self.closing = None;
+        }
+        cx.notify();
+    }
+
+    /// Opens a ring's card as if the pointer rested on it (shots).
+    pub fn show_card(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.on_ring = Some(ix);
+        self.card = Some(ix);
+        cx.notify();
+    }
+
+    fn close_card(&mut self, cx: &mut Context<Self>) {
+        self.card = None;
+        self.opening = None;
+        self.closing = None;
+        self.on_card = false;
+        cx.notify();
+    }
 }
 
 impl Render for Rings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
-        let Some(accounts) = self.accounts.as_ref() else { return div().into_any_element() };
+        if self.accounts.is_none() {
+            return div().into_any_element();
+        }
+        let accounts: Vec<Account> = self.ringed().into_iter().cloned().collect();
         let now = self.now();
         // As many as the rail has room for (four at most), the rest behind "+N" (which takes a
         // ring's room itself), so Help and Settings stay in reach in a short window.
         let room = ((f32::from(window.viewport_size().height) - RAIL_REST) / RING_ROOM).floor().max(0.) as usize;
         let most = if accounts.len() <= room.min(MOST_RINGS) { accounts.len() } else { room.saturating_sub(1).min(MOST_RINGS) };
-        let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, cx)).collect();
+        // A ring gone since (its account left the list, or behind "+N" now) takes its card along,
+        // and what the pointer was on: its card's or ring's leaving is never heard once it's gone.
+        if self.card.is_some_and(|ix| ix >= most) || self.on_ring.is_some_and(|ix| ix >= most) {
+            self.card = None;
+            self.on_ring = None;
+            self.on_card = false;
+            self.opening = None;
+            self.closing = None;
+        }
+        let card = self.card;
+        let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, card == Some(ix), cx)).collect();
         // Past the rail's room: "+N", opening Settings › Usage.
         if accounts.len() > most {
             let more = accounts.len() - most;
@@ -254,14 +354,13 @@ pub fn level_color(level: Level, cx: &App) -> Hsla {
     }
 }
 
-fn ring_button(ix: usize, account: &Account, now: f64, cx: &mut Context<Rings>) -> AnyElement {
+fn ring_button(ix: usize, account: &Account, now: f64, open: bool, cx: &mut Context<Rings>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let hover = c.hover;
     // The box's rings (`rows[].rings`): its short window outside and its long one inside, one
-    // where it says one; each by its own share, coloured by the box's level. A plan with no
-    // window has an empty track.
+    // where it says one; each filled with what's left of it (a full ring, all of it), coloured by
+    // the box's level. A plan with no window has an empty track.
     let rings = account.rings();
-    let card = account.clone();
     let arcs_drawn: Vec<AnyElement> = if rings.is_empty() {
         vec![arcs(RING, STROKE, 0., c.text_muted, c.border).into_any_element()]
     } else {
@@ -272,7 +371,7 @@ fn ring_button(ix: usize, account: &Account, now: f64, cx: &mut Context<Rings>) 
                 let size = RING - (STROKE + INNER_GAP) * 2. * ix as f32;
                 let inset = (STROKE + INNER_GAP) * ix as f32;
                 let selector = format!("ring-{}-arc-{ix}", account_key(account));
-                div().debug_selector(move || selector).absolute().top(inset).left(inset).size(size).child(arcs(size, STROKE, *used, level_color(*level, cx), c.border)).into_any_element()
+                div().debug_selector(move || selector).absolute().top(inset).left(inset).size(size).child(arcs(size, STROKE, 1. - *used, level_color(*level, cx), c.border)).into_any_element()
             })
             .collect()
     };
@@ -306,12 +405,34 @@ fn ring_button(ix: usize, account: &Account, now: f64, cx: &mut Context<Rings>) 
                 .children(arcs_drawn)
                 .child(mark),
         )
-        .hoverable_tooltip(move |_, cx| {
-            let account = card.clone();
-            HoverCard::new(move |_, cx| account_card(&account, now, cx)).build(cx)
-        })
-        .on_click(|_, window, cx| window.dispatch_action(Box::new(ShowUsage), cx))
+        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| this.ring_hovered(ix, *hovered, cx)))
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.close_card(cx);
+            window.dispatch_action(Box::new(ShowUsage), cx);
+        }))
+        .when(open, |ring| ring.child(card_beside(account, now, cx)))
         .into_any_element()
+}
+
+/// A ring's card: to its right, centred on it (kept in the window), over everything else and
+/// taking the pointer's clicks itself, so what's under it isn't reached and the rings below stay
+/// in view. It starts where the ring ends, so the pointer moves onto it without closing it.
+fn card_beside(account: &Account, now: f64, cx: &mut Context<Rings>) -> impl IntoElement {
+    let card = account_card(account, now, cx);
+    div().absolute().left_full().top((RING + px(6.)) / 2.).size_0().child(
+        deferred(
+            anchored().anchor(Anchor::LeftCenter).snap_to_window_with_margin(px(8.)).child(
+                div()
+                    .id("ring-card")
+                    .debug_selector(|| "ring-card".into())
+                    .occlude()
+                    .pl(space::S2)
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.card_hovered(*hovered, cx)))
+                    .child(card_frame(card, cx)),
+            ),
+        )
+        .with_priority(1),
+    )
 }
 
 /// How a ring's arcs are named in tests: the account's service and label.
@@ -319,8 +440,8 @@ fn account_key(account: &Account) -> String {
     format!("{}{}", account.service, account.label.as_deref().filter(|label| !label.is_empty()).map(|label| format!("-{label}")).unwrap_or_default())
 }
 
-/// Paints a ring: a faint track, and an arc from the top, clockwise, for `used` (0 to 1).
-fn arcs(size: Pixels, stroke: Pixels, used: f32, color: Hsla, track: Hsla) -> impl IntoElement {
+/// Paints a ring: a faint track, and an arc from the top, clockwise, for `share` (0 to 1).
+fn arcs(size: Pixels, stroke: Pixels, share: f32, color: Hsla, track: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -336,19 +457,19 @@ fn arcs(size: Pixels, stroke: Pixels, used: f32, color: Hsla, track: Hsla) -> im
             if let Ok(path) = full.build() {
                 window.paint_path(path, track);
             }
-            let used = used.clamp(0., 1.);
-            if used <= 0.005 {
+            let share = share.clamp(0., 1.);
+            if share <= 0.005 {
                 return;
             }
             let mut arc = PathBuilder::stroke(stroke).with_style(style());
             arc.move_to(top);
-            if used >= 0.995 {
+            if share >= 0.995 {
                 arc.arc_to(point(r, r), px(0.), false, true, bottom);
                 arc.arc_to(point(r, r), px(0.), false, true, top);
             } else {
-                let angle = used * std::f32::consts::TAU;
+                let angle = share * std::f32::consts::TAU;
                 let end = point(center.x + r * angle.sin(), center.y - r * angle.cos());
-                arc.arc_to(point(r, r), px(0.), used > 0.5, true, end);
+                arc.arc_to(point(r, r), px(0.), share > 0.5, true, end);
             }
             if let Ok(path) = arc.build() {
                 window.paint_path(path, color);
@@ -361,7 +482,8 @@ fn arcs(size: Pixels, stroke: Pixels, used: f32, color: Hsla, track: Hsla) -> im
     .size(size)
 }
 
-/// What resting on a ring shows: the account, its plan, and each window with when it starts over.
+/// What resting on a ring shows: the account, its plan, and what's left of each window with when
+/// it resets.
 fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
     let c = cx.theme().colors.clone();
     let title = account.title.clone();
@@ -371,8 +493,9 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
         let color = level_color(window.level, cx);
         // (A level this app doesn't know is drawn as quietly as a calm one.)
         let calm = matches!(window.level, Level::Calm | Level::Unknown);
-        let said = if over { "Not read since it started over".to_owned() } else { format!("{}% used", (window.used * 100.).round() as u32) };
-        let resets = window.resets_at.filter(|_| !over).map(|at| format!("Starts over in {}", time::until(at, now)));
+        let left = 1. - window.used.clamp(0., 1.);
+        let said = if over { "Not read since it reset".to_owned() } else { format!("{}% left", (left * 100.).round() as u32) };
+        let resets = window.resets_at.filter(|_| !over).map(|at| format!("Resets in {}", time::until(at, now)));
         div()
             .flex()
             .flex_col()
@@ -388,7 +511,8 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
                     .child(div().flex_none().text_color(if calm { c.text_muted } else { color }).when(!calm, |d| d.medium()).child(said)),
             )
             .child(
-                div().h(px(4.)).w_full().rounded(radius::PILL).bg(c.border).child(div().h_full().w(gpui::relative(if over { 0. } else { window.used.clamp(0., 1.) })).rounded(radius::PILL).bg(color)),
+                // (What's left, as the ring has it; one that reset since it was read, all of it.)
+                div().h(px(4.)).w_full().rounded(radius::PILL).bg(c.border).child(div().h_full().w(gpui::relative(left)).rounded(radius::PILL).bg(color)),
             )
             .children(resets.map(|resets| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(resets)))
     });

@@ -60,7 +60,8 @@ pub fn bind_keys(cx: &mut App) {
     app_menu::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-n", NewSession, Some("Workspace")),
-        // As the Mac app's Show Sessions: the open area's sidebar folded away or brought back.
+        // The open area's sidebar folded away or brought back; keep ⌘0 as an alias.
+        KeyBinding::new("cmd-b", ToggleSidebar, Some("Workspace")),
         KeyBinding::new("cmd-0", ToggleSidebar, Some("Workspace")),
         // As the Mac app's: Show Panel, Show Changes, Show Files.
         KeyBinding::new("cmd-alt-0", TogglePanel, Some("Workspace")),

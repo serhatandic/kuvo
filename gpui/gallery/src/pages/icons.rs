@@ -10,7 +10,7 @@ use crate::{Gallery, page as frame, section};
 pub fn page(_window: &mut Window, cx: &mut Context<Gallery>) -> AnyElement {
     frame(
         "Icons",
-        "Kuvo's own line icons, drawn on a 16-unit grid: 14 px in navigation, 20 px on cards. They take the colour of the text around them.",
+        "Lucide line icons, adapted to a 16-unit grid with 1.2-unit strokes: 14 px in navigation, 20 px on cards. They take the colour of the text around them.",
         vec![
             section("Every icon at 14 px, the navigation size", grid(IconSize::Nav, cx), cx),
             section("At 20 px, the card size", grid(IconSize::Card, cx), cx),

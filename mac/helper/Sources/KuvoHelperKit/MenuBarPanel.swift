@@ -262,7 +262,8 @@ struct Arc: Shape {
 }
 
 /// Each account's rings, as the desktop app's rail draws them: the short window outside, the long
-/// one inside, coloured by the box's word; its name, and the short window's share.
+/// one inside, each filled with what's left of it, coloured by the box's word; its name, and
+/// what's left of the short window.
 private struct Accounts: View {
     let accounts: [AtWork.Account]
     let p: Palette
@@ -274,7 +275,7 @@ private struct Accounts: View {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(account.title).font(.system(size: 12, weight: .medium)).foregroundStyle(p.text).lineLimit(1)
                         if let shown = account.short ?? account.long {
-                            Text("\(Int((shown.used * 100).rounded()))%").font(.system(size: 11).monospacedDigit())
+                            Text("\(Int(((1 - min(max(shown.used, 0), 1)) * 100).rounded()))% left").font(.system(size: 11).monospacedDigit())
                                 .foregroundStyle(shown.level == "calm" ? p.faint : p.level(shown.level))
                         }
                     }
@@ -287,7 +288,7 @@ private struct Accounts: View {
     }
 
     static func spoken(_ account: AtWork.Account) -> String {
-        let shares = [account.short, account.long].compactMap { $0 }.map { "\(Int(($0.used * 100).rounded())) percent" }
+        let shares = [account.short, account.long].compactMap { $0 }.map { "\(Int(((1 - min(max($0.used, 0), 1)) * 100).rounded())) percent left" }
         return ([account.title] + shares).joined(separator: ", ")
     }
 }
@@ -319,7 +320,7 @@ private struct Rings: View {
     private func ring(_ ring: AtWork.Ring?, _ side: CGFloat) -> some View {
         ZStack {
             Circle().stroke(p.border, lineWidth: stroke)
-            if let ring { Arc(used: ring.used).stroke(p.level(ring.level), style: StrokeStyle(lineWidth: stroke, lineCap: .round)) }
+            if let ring { Arc(used: 1 - ring.used).stroke(p.level(ring.level), style: StrokeStyle(lineWidth: stroke, lineCap: .round)) }
         }
         .frame(width: side - stroke, height: side - stroke)
     }
