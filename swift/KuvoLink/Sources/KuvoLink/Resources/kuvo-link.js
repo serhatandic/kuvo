@@ -40169,7 +40169,7 @@ function ownComputerName() {
   } catch {}
   const key = link ? ownKey(link) : undefined;
   const named = !IS_MAC && link && key ? namedBoxes(link).find((box) => box.key === key)?.name : undefined;
-  return plainName((IS_MAC ? macLink.config?.name : named) || computerName2());
+  return plainName(IS_MAC ? macLink.config?.name : plainName(named) || link?.name) || computerName2();
 }
 function computerInSentence(request) {
   return request.fromApp === true && IS_MAC ? "this Mac" : ownComputerName();
@@ -41764,7 +41764,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "797bf8b83b84";
+var BRIDGE_VERSION = "8de021b9efbc";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -45195,7 +45195,6 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const byName = (boxes) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   const { version, engine, system: runs } = ownComputer();
   const atWork = atWorkHere();
-  const named = !IS_MAC && own ? namedBoxes(link).find((box) => box.key === own)?.name : undefined;
   const computers = [{
     key: own ?? "",
     name: ownComputerName(),

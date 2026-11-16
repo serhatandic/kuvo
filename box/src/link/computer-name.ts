@@ -9,8 +9,10 @@ export function ownComputerName(): string {
   let link;
   try { link = readLink(); } catch {}
   const key = link ? ownKey(link) : undefined;
+  // A Mac by the name its app gave it; a machine by the name its Macs' records give it (renamed
+  // there), else its own link's name. The system's name only when the box was given none.
   const named = !IS_MAC && link && key ? namedBoxes(link).find(box => box.key === key)?.name : undefined;
-  return plainName((IS_MAC ? macLink.config?.name : named) || computerName());
+  return plainName(IS_MAC ? macLink.config?.name : plainName(named) || link?.name) || computerName();
 }
 
 export function computerInSentence(request: { fromApp?: boolean }): string {
