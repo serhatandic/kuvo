@@ -735,7 +735,7 @@ fn summary(calls: &[Call]) -> String {
             "shell" => Kind::Ran,
             "grep" | "glob" | "list" | "ls" | "websearch" => Kind::Searched,
             "webfetch" => Kind::Fetched,
-            "task" => Kind::Asked,
+            "task" | "subagent" => Kind::Asked,
             "todowrite" | "todoread" => Kind::Planned,
             _ => call.title.map_or(Kind::Other, Kind::Titled),
         };
@@ -1088,7 +1088,8 @@ pub fn tool_label(name: &str, state: &Value, busy: bool) -> (IconName, SharedStr
         "glob" | "list" | "ls" => (IconName::Folder, "Listed", "Listing", text("pattern").or_else(|| text("path"))),
         "webfetch" => (IconName::Globe, "Read", "Reading", text("url")),
         "websearch" => (IconName::Globe, "Searched the web for", "Searching the web for", text("query")),
-        "task" => (IconName::Bot, "Asked a subagent", "Asking a subagent", text("description")),
+        "task" | "subagent" => (IconName::Bot, "Asked a subagent", "Asking a subagent", text("description")),
+        "execute" => (IconName::Terminal, "Ran code", "Running code", None),
         "todowrite" | "todoread" => (IconName::Check, "Updated its plan", "Updating its plan", None),
         // (Named by its box, as `call_label` says; never by its id, which reads as code.)
         _ => (IconName::Sliders, "Used a tool", "Using a tool", None),
@@ -1399,6 +1400,8 @@ mod tests {
         // The engine's own keep their verbs.
         let (_, label, _) = call_label("read", None, None, &json!({ "input": { "filePath": "/a/b.ts" } }), false);
         assert_eq!(label.as_ref(), "Read");
+        let (_, label, _) = call_label("subagent", None, None, &json!({ "input": { "description": "Check the forms" } }), false);
+        assert_eq!(label.as_ref(), "Asked a subagent");
     }
 
     /// Folded, a group still shows a step that failed, and the one under way while it waits on you.
