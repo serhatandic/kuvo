@@ -163,7 +163,8 @@ test("While Agents Work: a phone reads and changes it on the box, which keeps th
   const off = await phone("PATCH", "kuvo/mac", { keepsAwake: false });
   assert.deepEqual([off.status, off.json.keepsAwake], [200, false]);
   assert.equal(readJSON(path.join(K, "box", "work.json")).keepsAwake, false);
-  assert.equal((await ask("GET", "kuvo/work/settings")).json.keepsAwake, false, "the desktop app's Settings reads the same");
+  // (Only on a Mac does the box hold anything awake, so only there do its work settings name it.)
+  if (darwin) assert.equal((await ask("GET", "kuvo/work/settings")).json.keepsAwake, false, "the desktop app's Settings reads the same");
   assert.equal((await phone("PATCH", "kuvo/mac", { keepsAwake: true })).json.keepsAwake, true);
   // What isn't a yes or a no changes nothing.
   assert.equal((await phone("PATCH", "kuvo/mac", { keepsAwake: "yes" })).status, 400);
