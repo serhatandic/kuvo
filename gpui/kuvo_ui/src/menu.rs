@@ -5,18 +5,18 @@
 //! headers, separators and disabled entries, and wrapping around), Return chooses, Escape or a
 //! click outside closes it and gives focus back to where it was.
 
-use crate::motion::{MotionExt as _, Direction};
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, DismissEvent, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton,
     ParentElement, Pixels, Point, Render, RenderOnce, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Window, actions, anchored, deferred, div, point, prelude::FluentBuilder as _,
+    Styled, Subscription, Window, actions, div, prelude::FluentBuilder as _,
     px,
 };
 
 use crate::{
+    anchor::{Placement, Popover},
     button::keycap,
     icon::{Icon, IconName, IconSize},
     theme::{ActiveTheme, StyledType, TypeSize, radius, space},
@@ -327,6 +327,7 @@ impl Render for Menu {
         });
         div()
             .id("menu")
+            .debug_selector(|| "menu".into())
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::select_next))
@@ -477,7 +478,8 @@ type MenuBuilder = Rc<dyn Fn(&mut Window, &mut App) -> Entity<Menu>>;
 /// Makes what a popover shows and opens it with the handle.
 type Opener = Rc<dyn Fn(&PopoverMenuHandle, &mut Window, &mut App)>;
 
-/// A dropdown: a trigger (usually a button) and the menu it opens below itself.
+/// A dropdown: a trigger (usually a button) and the menu it opens from itself, by the rule in
+/// [`crate::anchor`]: below it at its leading edge, unless told otherwise.
 #[derive(IntoElement)]
 pub struct PopoverMenu {
     id: ElementId,
@@ -507,7 +509,7 @@ impl PopoverMenu {
         Self { id: id.into(), trigger: trigger.into_any_element(), menu, handle: None, align_right: false, above: false, centered: false }
     }
 
-    /// Opens above the trigger (a composer's, at the window's foot).
+    /// Opens above the trigger (a composer's control, at the window's foot).
     pub fn above(mut self) -> Self {
         self.above = true;
         self
@@ -524,7 +526,7 @@ impl PopoverMenu {
         self
     }
 
-    /// Lines the menu up with the trigger's right edge rather than its left.
+    /// Lines the menu up with the trigger's trailing edge (a trigger at the end of a bar or row).
     pub fn align_right(mut self) -> Self {
         self.align_right = true;
         self
@@ -539,13 +541,12 @@ impl RenderOnce for PopoverMenu {
         let open = handle.view();
         let builder = self.menu.clone();
         let toggle = handle.clone();
-        let anchor = match (self.above, self.align_right) {
-            (false, false) => gpui::Anchor::TopLeft,
-            (false, true) => gpui::Anchor::TopRight,
-            (true, false) => gpui::Anchor::BottomLeft,
-            (true, true) => gpui::Anchor::BottomRight,
+        let placement = match (self.above, self.align_right) {
+            (false, false) => Placement::below(),
+            (false, true) => Placement::below().align_end(),
+            (true, false) => Placement::above(),
+            (true, true) => Placement::above().align_end(),
         };
-        let (above, gap) = (self.above, if self.above { -space::S1 } else { space::S1 });
         div()
             .id(self.id)
             .relative()
@@ -566,15 +567,7 @@ impl RenderOnce for PopoverMenu {
                 }
             })
             .child(self.trigger)
-            .children(open.map(|menu| {
-                div()
-                    .absolute()
-                    .when(!above, |d| d.top_full())
-                    .when(above, |d| d.top_0())
-                    .when(self.align_right, |d| d.right_0())
-                    .when(!self.align_right, |d| d.left_0())
-                    .child(deferred(anchored().anchor(anchor).offset(point(px(0.), gap)).snap_to_window_with_margin(px(8.)).child(div().id(("menu-motion", menu.entity_id().as_u64())).child(menu).animate_in(if above { Direction::FromBottom } else { Direction::FromTop }, true))).with_priority(1))
-            }))
+            .children(open.map(|menu| Popover::new(("menu-motion", menu.entity_id().as_u64()), placement, menu)))
     }
 }
 
@@ -631,9 +624,7 @@ impl RenderOnce for ContextMenuArea {
                 cx.stop_propagation();
             })
             .child(self.child)
-            .children(open.zip(at).map(|(menu, at)| {
-                deferred(anchored().position(at).snap_to_window_with_margin(px(8.)).child(div().id(("context-menu-motion", menu.entity_id().as_u64())).child(menu).animate_in(Direction::FromTop, true))).with_priority(1)
-            }))
+            .children(open.zip(at).map(|(menu, at)| Popover::at(("context-menu-motion", menu.entity_id().as_u64()), at, menu)))
     }
 }
 

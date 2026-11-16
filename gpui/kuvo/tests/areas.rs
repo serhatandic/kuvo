@@ -397,7 +397,7 @@ fn settle_entry_motion(cx: &mut VisualTestContext) {
     }
 }
 
-/// Resting on a ring opens its card to the ring's right, centred on it, leaving the rings below
+/// Resting on a ring opens its card to the ring's right, top-aligned with it, leaving the rings below
 /// in view; the card takes the clicks on it, so what's under it isn't reached; moving onto it
 /// keeps it open, and off both closes it.
 #[gpui::test]
@@ -417,7 +417,7 @@ fn a_rings_card_opens_to_its_right_and_takes_its_own_clicks(cx: &mut TestAppCont
     settle_entry_motion(cx);
     let card = bounds(cx, "ring-card").expect("its card");
     assert!(card.left() >= ring.right() - px(0.5), "to the ring's right: {card:?} beside {ring:?}");
-    assert!((card.center().y - ring.center().y).abs() < px(1.), "centred on the ring: {card:?} beside {ring:?}");
+    assert!((card.top() - ring.top()).abs() < px(1.), "top-aligned with the ring: {card:?} beside {ring:?}");
     assert!(card.left() >= below.right() - px(0.5), "the ring below stays in view");
 
     // Onto the card: it stays open. A click on it reaches nothing under it (a section of Settings).
@@ -460,7 +460,7 @@ fn an_open_card_follows_the_pointer_down_the_rings(cx: &mut TestAppContext) {
     cx.simulate_mouse_move(second.center(), None, Modifiers::default());
     cx.run_until_parked();
     let card = bounds(cx, "ring-card").expect("the card, at once");
-    assert!((card.center().y - second.center().y).abs() < px(1.), "beside the second ring");
+    assert!((card.top() - second.top()).abs() < px(1.), "beside the second ring, top-aligned: {card:?} {second:?}");
 }
 
 #[gpui::test]

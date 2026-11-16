@@ -1323,6 +1323,9 @@ fn main() -> anyhow::Result<()> {
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
+        // A still shows what it draws at rest: a menu or card fully in, not the first frame of its
+        // entry motion (the clock doesn't run between frames here).
+        cx.set_reduce_motion(true);
         // Drawn as on a Mac, which asks Touch ID or its password before what lets something use
         // what's yours more (never asked here: nothing is pressed).
         cx.set_global(kuvo::confirm_you::ConfirmYou(std::sync::Arc::new(|_: &str| false)));

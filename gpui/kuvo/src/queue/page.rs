@@ -2,6 +2,7 @@
 //! chips to take off), its items as rows in raised cards under each status, an item's page with its
 //! chips, and the sheets over them (a new item, an item rewritten, a label made, changed, removed).
 
+use kuvo_ui::anchor::{Placement, Popover};
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
     AnyElement, App, AppContext as _, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, anchored, deferred,
@@ -518,7 +519,7 @@ impl QueueView {
         // Its menu, under it (over it where there's no room below).
         let menu = open.then(|| {
             let menu = self.picker_view(cx);
-            div().absolute().top_full().left_0().child(deferred(anchored().anchor(gpui::Anchor::TopLeft).offset(point(px(0.), space::S1)).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(2))
+            Popover::new(SharedString::from(format!("chip-menu-motion-{}", field.slug())), Placement::below(), menu).priority(2)
         });
         div().relative().flex_none().child(chip).children(menu).into_any_element()
     }
