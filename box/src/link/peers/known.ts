@@ -176,8 +176,8 @@ export function takeLegacyPeers(link: LinkState, mac: string, peers: unknown, at
 // Each of this box's Macs' word on its boxes: its peers document, or the list it gave before it
 // signed them (`legacy`). In a setup, its main computer's first (PROTOCOL.md, "Your setup"); every
 // Mac that set this box up is yours, so each one's word counts.
-function macWords(link: LinkState | null | undefined): MacWord[] {
-  return macDocs(link).map(({ mac, doc }) => {
+function macWords(link: LinkState | null | undefined, only?: string): MacWord[] {
+  return macDocs(link).filter(each => only === undefined || each.mac === only).map(({ mac, doc }) => {
     if (doc) return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
     // COMPAT(beta.1 peers-list): a beta.1 Mac's list, in place of its peers document. Goes on the user's word, once no Mac from before 1.0 connects.
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
@@ -265,12 +265,13 @@ const renamed = (link: LinkState, peer: Peer): Peer => {
   return typeof name === "string" && name ? { ...peer, name } : peer;
 };
 
-/** The boxes this box's Macs name (in a setup, its main computer's first), itself among them:
- * what each is called there, and what it is. A Mac's box names its own machines (`peersOf`). */
-export function namedBoxes(link: LinkState | null | undefined): Peer[] {
+/** The boxes this box's Macs name (in a setup, its main computer's first; `only`, that one Mac's
+ * word alone), itself among them: what each is called there, and what it is. A Mac's box names its
+ * own machines (`peersOf`). */
+export function namedBoxes(link: LinkState | null | undefined, only?: string): Peer[] {
   if (!link || IS_MAC) return [];
   const byKey = new Map<string, Peer>();
-  for (const word of macWords(link)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
+  for (const word of macWords(link, only)) for (const box of word.boxes) if (fitsPeer(box) && !byKey.has(box.key)) byKey.set(box.key, cleanPeer(box));
   return [...byKey.values()];
 }
 

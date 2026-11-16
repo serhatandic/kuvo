@@ -325,14 +325,30 @@ test("a machine an older Mac set up first (leading no setup) and a newer Mac set
   assert.deepEqual(names(lokum), ["MacBook", "mini-local", "vps"].sort());
 });
 
-test("a machine set aside as shared by an earlier Kuvo Code follows its setup again once its main computer names it, and another Mac's if that one never does", () => {
-  const mini = mac("mini-local"), macbook = mac("MacBook"), lokum = machine("lokum");
+test("a machine two of your Macs set up, each leading a setup of its own, follows the one led by the Mac it numbers from", () => {
+  const first = mac("MacBook"), second = mac("iMac"), b = machine("b");
+  setUp(b, first, [first.peers([b], leads(first, 1))]);
+  setUp(b, second, [second.peers([b], leads(second, 1, setupID("two")))]);
+  // (Both its Macs' documents in, and no setup kept yet: as a machine from before setups updating.)
+  delete b.state.link.setup;
+  link.settleSetup(b.state.link);
+  const ranked = link.rankedPrimary(b.state.link);
+  assert.ok([first.entry.key, second.entry.key].includes(ranked.peer?.key), "it numbers from one of its Macs");
+  assert.deepEqual([b.state.link.setup.primary, b.state.link.setup.aside], [ranked.peer.key, undefined]);
+});
+
+test("a machine set aside as shared by an earlier Kuvo Code follows its setup again once its main computer names it, and another Mac's if that one never does", async () => {
+  const mini = mac("mini-local"), macbook = mac("MacBook"), lokum = machine("lokum"), vps = machine("vps");
   setUp(lokum, mini, [mini.peers([lokum], leads(mini, 1, setupID("mini")))]);
-  setUp(lokum, macbook, [macbook.peers([lokum])]);
+  setUp(lokum, macbook, [macbook.peers([lokum, vps])]);
   // As an earlier Kuvo Code left it: set aside as shared, and mini-local stepped aside, naming none.
   lokum.state.link.setup.aside = true;
   link.docsWork(lokum.state, mini.entry, { give: [mini.peers([lokum])] });
   assert.equal(lokum.state.link.setup.aside, true);
+  // Meanwhile a phone asking it for your computers gets every machine your Macs name.
+  const hosts = await asked(lokum, "GET", "kuvo/hosts");
+  assert.deepEqual([hosts.status, hosts.json.hosts.map(each => each.name)], [200, ["lokum", "vps"]]);
+  fs.rmSync(path.join(home, "run", "link.json"), { force: true });
   // mini-local leads again (lokum now says it isn't shared): followed at once.
   link.docsWork(lokum.state, mini.entry, { give: [mini.peers([lokum], leads(mini, 1, setupID("mini")))] });
   assert.deepEqual([lokum.state.link.setup.primary, lokum.state.link.setup.aside], [mini.entry.key, undefined]);

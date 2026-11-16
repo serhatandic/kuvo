@@ -286,8 +286,8 @@ zoneFollowers.add(() => {
 });
 
 onLinkWritten(link => {
-  // The setup it follows, or whether Macs of two setups share it, changed: its bridge and its peers
-  // hear at once which computers are yours (PROTOCOL.md, "Plan limits", Whose).
+  // The setup it follows changed: its bridge and its peers hear at once (the usage panel's
+  // settings go between the boxes of one setup).
   if (whereChanged(link)) {
     tellSeatPeers(link, true).catch(() => {});
     const host = IS_MAC ? macLink.host : liveHost;

@@ -27,7 +27,8 @@ export interface SeatBox {
   name: string;
   seats: boolean;
   /** Never said now: every peer is one of your own computers (a machine more than one Mac set up
-   * is yours all the same, #783). Read by the bridge as before (#701) until it's taken out. */
+   * is yours all the same, #783). The bridge's handling of it (`groups/post.ts`, `limits-resets.ts`,
+   * `usage/usage-peers.ts`) is dead code, owed a removal (the link and bridge ship together). */
   apart?: true;
   /** Never said now, as `apart`. */
   shared?: true;

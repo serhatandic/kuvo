@@ -52,10 +52,11 @@ export function writerOf(link: LinkState | null | undefined): Writer {
 }
 
 /** The machines whose records the writer keeps, by key, as this box knows them: a Mac's own, or
- * those its Macs' documents name (this machine among them). */
+ * those the writer's own document names (this machine among them; never another Mac's machines,
+ * which that Mac keeps). */
 function writtenMachines(link: LinkState | null | undefined, writer: Writer): Set<string> {
   if (!writer) return new Set();
-  const boxes = writer.here ? peersOf(link) : namedBoxes(link);
+  const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
   return new Set(boxes.filter(box => box.kind === "machine").map(box => box.key));
 }
 

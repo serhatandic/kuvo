@@ -1346,8 +1346,8 @@ function takeLegacyPeers(link, mac, peers, at, moved = []) {
   link.legacy[mac] = { at, peers: peers.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer), moved: cleanMoved(moved) };
   return true;
 }
-function macWords(link) {
-  return macDocs(link).map(({ mac, doc }) => {
+function macWords(link, only) {
+  return macDocs(link).filter((each) => only === undefined || each.mac === only).map(({ mac, doc }) => {
     if (doc)
       return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
@@ -1416,11 +1416,11 @@ function peersOf(link) {
   }
   return [...byKey.values()];
 }
-function namedBoxes(link) {
+function namedBoxes(link, only) {
   if (!link || IS_MAC)
     return [];
   const byKey = new Map;
-  for (const word of macWords(link))
+  for (const word of macWords(link, only))
     for (const box of word.boxes)
       if (fitsPeer(box) && !byKey.has(box.key))
         byKey.set(box.key, cleanPeer(box));
@@ -3876,11 +3876,12 @@ function macName(link, mac) {
 function memberHosts(link) {
   if (IS_MAC || !mainElsewhere(link) || !link?.relay)
     return null;
-  const doc = setupDoc(link) ?? (link.setup.aside && macsOf(link).length === 1 ? macDoc(link, link.setup.primary, "peers") : null);
-  if (!doc)
+  const setup = setupDoc(link);
+  const docs = setup ? [setup] : link.setup.aside ? macsOf(link).map((mac) => macDoc(link, mac, "peers")).filter((doc) => doc !== null) : [];
+  if (!docs.length)
     return null;
   const hosts = [];
-  for (const box of Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []) {
+  for (const box of docs.flatMap((doc) => Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : [])) {
     if (!isObject(box) || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some((each) => each.key === box.key))
       continue;
     const name = String(box.name ?? "").slice(0, 100);
@@ -33239,7 +33240,7 @@ function writerOf(link) {
 function writtenMachines(link, writer) {
   if (!writer)
     return new Set;
-  const boxes = writer.here ? peersOf(link) : namedBoxes(link);
+  const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
   return new Set(boxes.filter((box) => box.kind === "machine").map((box) => box.key));
 }
 var OLD_APP_GRACE = 60000;
@@ -42803,7 +42804,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "66a17b712b88";
+var BRIDGE_VERSION = "83a7e5d608d3";
 
 // box/src/link/rehome/move.ts
 init_outside();

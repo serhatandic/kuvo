@@ -194,6 +194,14 @@ test("what you do to a machine can't reach the Mac that writes its record: refus
   assert.deepEqual(Object.keys(computers).sort(), ["Air", "Studio", "here", "second"]);
   assert.deepEqual(ids(computers.here), []);
   assert.equal(computers.second.apart, undefined);
+  // In Studio's setup too: Studio writes the records of its own machines, never of Air's, which Air
+  // keeps: Rename and Remove are offered for Studio's alone.
+  const fourth = box("machine", "fourth");
+  fresh({ macs: [mac.pub, other.pub], setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" },
+    peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, here.peer, second.peer] }, [other.pub]: { at: 1, peers: [other.peer, here.peer, fourth.peer] } } });
+  tell(mac, { features: MAC_TAKES, computer: { version: "1.1.0", working: 0 } });
+  const both = await listed();
+  assert.deepEqual([ids(both.second), ids(both.fourth)], [["rename", "remove"], []]);
 });
 
 test("while the old app is attached to the Mac that writes your machines' records, a machine's Remove says to quit it first, as that Mac told; not while that Mac is away", async () => {

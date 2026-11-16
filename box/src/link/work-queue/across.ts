@@ -67,6 +67,8 @@ export function numberingNow(link: LinkState | null): Numbering {
     const told = primary.via ? readTold(primary.via.key)?.primary?.since : readTold(primary.peer.key)?.since;
     named = { key: primary.peer.key, kind: primary.peer.kind, ...(told ? { since: told } : {}) };
   }
+  // COMPAT(#783 shared-false): older Macs lead a setup only once each machine says `shared: false`.
+  // Goes on the user's word, once no Mac from before #783 connects.
   return { kind, since, top: topOf(), ...(named ? { primary: named } : {}), shared: false };
 }
 

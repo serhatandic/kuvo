@@ -129,8 +129,8 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
 
-// The boxes this box's peers say they know that aren't its peers too (another Mac's box, and that
-// Mac's machines, beside a machine two Macs share): it takes plan limits from them, and tells its
+// The boxes this box's peers say they know that aren't its peers too (another of your Macs, and
+// that Mac's machines, beside a machine both set up): it takes plan limits from them, and tells its
 // own to them, and nothing else (PROTOCOL.md, "Plan limits", "Across your computers"). A peer's word
 // on them is as good as the peer, which a Mac set up; it goes with that peer.
 export function vouchedOf(link: LinkState | null | undefined, told?: Record<string, ToldAgents>): Peer[] {

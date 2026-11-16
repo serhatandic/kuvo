@@ -344,8 +344,9 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
- * a machine's name on its Mac; `shared`, always false (every computer listed is yours, #783: kept
- * for apps that read it); whether it's
+ * a machine's name on its Mac; `shared`, always false (every computer listed is yours, #783;
+ * COMPAT(#783 shared-false): kept for apps that read it, goes on the user's word once none does);
+ * whether it's
  * heard from (`connected`), not yet or being reached again (`connecting`), not lately (`away`), or not this box's to say (`unknown`: one known by a peer's word alone); Kuvo Code's version
  * there, its engine's and its system, as it said them; what its box answers (`features`, as it
  * said them, whole); how this box knows it (`here`, itself; `relay`, a peer it talks to; `peer`, by

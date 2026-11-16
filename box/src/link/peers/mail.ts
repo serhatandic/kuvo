@@ -49,9 +49,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     // (Its bots show in this box's list of those elsewhere: its followers hear at once.)
     noteBotsChanged();
   }
-  // Your time zone (`zone/setting.ts`), only from one of your own computers in this box's setup,
-  // and never on a machine two setups share: as the agents' mail it comes with says, else as it
-  // last told.
+  // Your time zone (`zone/setting.ts`), from any of your computers.
   if (isObject(payload.zone)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});

@@ -358,9 +358,9 @@ computer. Changing the main computer and joining two setups come later: #183.)
     (itself too), each `{kind: "machine", name, address, key, relay, machine, anotherMac: false,
     removed: false}` (`machine`, the id the main computer's app knows it by), by name. Only what
     that document says: a machine it leaves out isn't listed, and `anotherMac` and `removed` are
-    always false. Not the main computer's Mac: a phone pairs with it. Set aside by its one Mac
-    (which leads no setup now), it lists from that Mac's own peers document: its phones are all
-    that Mac's. `503 {"message"}` before it holds that document, or while it has no relay.
+    always false. Not the main computer's Mac: a phone pairs with it. Set aside (its main
+    computer leads no setup now), it lists what each of its Macs' own peers documents names, all
+    yours. `503 {"message"}` before it holds that document, or while it has no relay.
 
   Known gap until setups can be joined (#183's phase 7): a member set aside refuses all this in its
   main computer's name, but it still takes what each Mac that set it up gives over SSH, as before
