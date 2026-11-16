@@ -21,7 +21,7 @@ export function adding(): Adding {
 }
 
 // What a try needs a process that stays: `kuvo-link.js box route` answers once and ends.
-export const ONCE = "Ask this through Kuvo Code’s running box on this computer: a single request can’t stay to do it.";
+export const ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.";
 
 export async function* computersAddRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;

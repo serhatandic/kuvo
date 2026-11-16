@@ -98,9 +98,9 @@ impl FirstRun {
     /// made at).
     pub fn answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>, body: &Value, now: f64) -> Option<(u16, Value)> {
         Some(match (method, route) {
-            ("GET", "kuvo/setup") if self.setup_fails => (503, json!({ "message": "The box isn’t answering." })),
+            ("GET", "kuvo/setup") if self.setup_fails => (503, json!({ "message": "Kuvo on this computer isn’t answering." })),
             ("GET", "kuvo/setup") => (200, json!({ "setup": null, "epoch": null, "primary": null, "you": { "key": null, "role": null }, "computers": [], "startsFromOthers": { "value": null, "default": "off" }, "heldBy": [], "welcomed": self.welcomed })),
-            ("POST", "kuvo/setup/welcomed") if self.welcomed_fails => (503, json!({ "message": "The box isn’t answering." })),
+            ("POST", "kuvo/setup/welcomed") if self.welcomed_fails => (503, json!({ "message": "Kuvo on this computer isn’t answering." })),
             ("POST", "kuvo/setup/welcomed") => match body["welcomed"].as_bool() {
                 Some(welcomed) => {
                     self.welcomed = welcomed;
@@ -108,7 +108,7 @@ impl FirstRun {
                 }
                 None => (400, json!({ "message": "Say welcomed as true or false." })),
             },
-            ("GET", "kuvo/folders/suggested") if self.folders_fail => (503, json!({ "message": "The box isn’t answering." })),
+            ("GET", "kuvo/folders/suggested") if self.folders_fail => (503, json!({ "message": "Kuvo on this computer isn’t answering." })),
             ("GET", "kuvo/folders/suggested") => {
                 let suggested = |name: &str, inside: &str, repository: bool, seen: Option<f64>| json!({ "path": format!("{HOME}/{inside}/{name}"), "name": name, "repository": repository, "seen": seen.map(|seen| seen as u64) });
                 let folders = if self.no_folders {

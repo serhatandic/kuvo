@@ -239,6 +239,7 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
 /// How this app stands with one of your computers, in the switcher's words.
 pub fn reach_line(row: &Row) -> String {
     match &row.reach {
+        // BOX-NEEDED: this identifies the app’s nearest computer, a local view selection.
         Reach::Nearest => "This computer".into(),
         Reach::Connected => {
             let mut computer = row.computer.clone();
@@ -247,14 +248,14 @@ pub fn reach_line(row: &Row) -> String {
             computer.here = false;
             computer_line(&computer)
         }
-        Reach::Connecting => "Connecting…".into(),
-        Reach::Held { .. } => "Needs an update".into(),
-        Reach::Away(_) => "Can’t be reached".into(),
-        Reach::NotPaired => "Hasn’t taken this app yet".into(),
-        Reach::Apart => if row.computer.shared { "Shared machine" } else { "Another setup’s" }.into(),
+        Reach::Connecting => row.computer.reach_title("connecting"),
+        Reach::Held { .. } => row.computer.reach_title("held"),
+        Reach::Away(_) => row.computer.reach_title("away"),
+        Reach::NotPaired => row.computer.reach_title("notPaired"),
+        Reach::Apart => row.computer.reach_title(if row.computer.shared { "shared" } else { "apart" }),
         // The list itself says why where it can (it's away, it's older); else that this app has no
         // way to it.
         Reach::Unreached if row.computer.is_older() || row.computer.reach == "away" => computer_line(&row.computer),
-        Reach::Unreached => "Can’t be reached from this app".into(),
+        Reach::Unreached => row.computer.reach_title("unreached"),
     }
 }

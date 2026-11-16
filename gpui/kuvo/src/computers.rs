@@ -1150,7 +1150,7 @@ fn standing(computer: &Computer) -> String {
 
 /// How a computer stands, in a word or two.
 fn state_words(computer: &Computer) -> &str {
-    if computer.is_older() { return "Needs an update"; }
+    if computer.is_older() { return computer.reach_titles.get("held").map(String::as_str).unwrap_or_default(); }
     &computer.title
 }
 

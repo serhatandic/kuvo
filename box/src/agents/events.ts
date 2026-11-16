@@ -2,6 +2,7 @@
 // `server.connected` first, and a heartbeat every 15 seconds (the app drops a feed that goes quiet).
 
 import { newID } from "./ids"
+import { compactionEventWords } from "../shared/compaction-words"
 import type { ServerEvent } from "./wire"
 
 type Listener = (event: ServerEvent) => void
@@ -10,7 +11,7 @@ const listeners = new Set<Listener>()
 
 /** Sends an event to every open feed; returns it, for its ID. */
 export function emit(type: string, data: Record<string, unknown>, directory?: string): ServerEvent {
-  const event: ServerEvent = { id: newID("evt"), type, created: Date.now(), data }
+  const event: ServerEvent = { id: newID("evt"), type, created: Date.now(), data: compactionEventWords(type, data) }
   if (directory) event.location = { directory }
   for (const listener of listeners) listener(event)
   return event

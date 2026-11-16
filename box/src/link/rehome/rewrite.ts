@@ -155,7 +155,7 @@ export const PATH_REWRITER: Rewriter = {
     const data = placementOf(move, "data");
     const folder = data ? path.join(data.from, "opencode") : null;
     if (!folder || !databasesIn(folder).length) return null;
-    if (!process.versions.bun) return "This Mac's box moves only when run by its engine's Bun.";
+    if (!process.versions.bun) return "Kuvo on this Mac moves only when run by its engine's Bun.";
     return schemaRefusal(folder);
   },
 
@@ -196,13 +196,13 @@ export const PATH_REWRITER: Rewriter = {
     const { map, placements, way, home } = move;
     // Nothing left where it rewrites.
     const left = ownLeftovers(placements, way, home, map);
-    if (left.length) throw new Error(`The box's files still name where it was: ${left.slice(0, 5).join(", ")}${left.length > 5 ? "…" : ""}`);
+    if (left.length) throw new Error(`Kuvo's files still name where it was: ${left.slice(0, 5).join(", ")}${left.length > 5 ? "…" : ""}`);
     const notes: string[] = [];
     const data = placementOf(move, "data");
     const engineData = data ? path.join(data.staged, "opencode") : null;
     for (const database of engineData ? databasesIn(engineData) : []) {
       const { rewritten, elsewhere } = databaseLeftovers(database, map);
-      if (rewritten.length) throw new Error(`The engine's database still names where the box was: ${rewritten.join(", ")}`);
+      if (rewritten.length) throw new Error(`The engine's database still names where Kuvo was: ${rewritten.join(", ")}`);
       notes.push(...elsewhere.map(each => `${path.basename(database)}: ${each}`));
       // The same sessions and projects as before.
       const before = (JSON.parse(fs.readFileSync(countsFile(move), "utf8")) as Record<string, ReturnType<typeof databaseCounts>>)[path.basename(database)];

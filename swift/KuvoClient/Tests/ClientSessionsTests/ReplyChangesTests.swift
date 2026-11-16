@@ -34,12 +34,12 @@ struct ReplyChangesTests {
 
     @Test func aSummaryAndTheProjectsFoldersSayWhatChanged() throws {
         var changes = ReplyChanges()
-        changes.summarized("running")
+        changes.summarized(try JSONDecoder().decode(Message.Compaction.self, from: Data(#"{"id":"c","time":{"created":0},"status":"running","title":"Summarizing the conversation…"}"#.utf8)))
         #expect(changes.replied() == [])
-        changes.summarized("completed")
+        changes.summarized(try JSONDecoder().decode(Message.Compaction.self, from: Data(#"{"id":"c","time":{"created":0},"status":"completed","title":"Summary from lokum"}"#.utf8)))
         changes.note(try notice("Folders: /src/web", description: "Instructions updated: api/kuvo.project-folders",
                                 metadata: ["notice": "instructions", "instructionSources": ["api/kuvo.project-folders"]], type: "system"))
-        #expect(changes.replied() == ["summarized", "folders updated"])
+        #expect(changes.replied() == ["Summary from lokum", "folders updated"])
         changes.note(BoxNote(from: "Goal", line: "Goal started"))
         #expect(changes.replied() == ["goal started"])
     }

@@ -259,6 +259,8 @@ public enum Message: Codable, Sendable, Hashable, Identifiable {
     }
 
     public struct Compaction: Codable, Sendable, Hashable {
+        public var title: String
+        public var workingTitle: String?
         public var id: String
         public var time: Time
         public var status: String

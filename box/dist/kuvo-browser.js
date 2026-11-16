@@ -1,4 +1,4 @@
-// kuvo-browser 9de05b6925575ae5
+// kuvo-browser 0b173396124d97d1
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "925938ae9121";
+const KEEPER = "3f5955b61bd5";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -297,7 +297,7 @@ async function setUp(told, { repair = false, wait = 15 * 60_000 } = {}) {
   let status = await startSetUp({ repair });
   let said = "";
   while (true) {
-    if (!status) return { kind: "missing", message: "This machine's box can't set up the browser. Connect to the machine from Kuvo Code on your Mac." };
+    if (!status) return { kind: "missing", message: "Kuvo on this machine can't set up the browser. Connect to the machine from Kuvo Code on your Mac." };
     const underWay = ["checking", "downloading", "installing"].includes(status.state);
     const now = JSON.stringify([status.state, status.progress]);
     if (now !== said) {
@@ -308,7 +308,7 @@ async function setUp(told, { repair = false, wait = 15 * 60_000 } = {}) {
       if (status.state === "ready" && browserBinary(CURRENT)) return null;
       // Failed, or waits to try again: kind "missing", so an older Kuvo Code on a Mac puts the
       // browser there itself.
-      return { kind: "missing", message: status.message || "The browser isn't on this machine, and its box couldn't set it up." };
+      return { kind: "missing", message: status.message || "The browser isn't on this machine, and Kuvo couldn't set it up." };
     }
     if (Date.now() - began > wait) {
       const done = status.state === "downloading" && typeof status.progress === "number" ? ` (${Math.round(status.progress * 100)}% downloaded)` : "";
@@ -3488,8 +3488,8 @@ async function mcp() {
         // The vault's, the sandbox's and the Work Queue's, which this machine's box carries out (and
         // may ask you).
         const boxTool = typeof params.name === "string" && (params.name.startsWith("vault_") ? ["kuvo/vault/tools", "This machine's vault can't be reached now. Try again in a moment."]
-          : params.name.startsWith("sandbox_") ? ["kuvo/sandbox/tools", "This machine's box can't be reached now. Try again in a moment."]
-          : params.name.startsWith("queue_") ? ["kuvo/work-queue/tools", "This machine's box can't be reached now. Try again in a moment."] : null);
+          : params.name.startsWith("sandbox_") ? ["kuvo/sandbox/tools", "Kuvo on this machine can't be reached now. Try again in a moment."]
+          : params.name.startsWith("queue_") ? ["kuvo/work-queue/tools", "Kuvo on this machine can't be reached now. Try again in a moment."] : null);
         if (boxTool) {
           const asked = call;
           vaultRoute({ method: "POST", path: boxTool[0], body: { name: params.name, arguments: params.arguments || {}, session: asked.session } }, asked, 16 * 60_000)

@@ -238,9 +238,9 @@ import Testing
     func event(_ json: String) throws -> ServerEvent { try ServerEvent(json: Data(json.utf8)) }
     var transcript = Transcript(sessionID: "ses_1")
     transcript.load(messages: [], inbox: [], permissions: [], forms: [], isRunning: false)
-    transcript.apply(try event(#"{"id":"evt_1","created":1,"type":"session.compaction.started","data":{"sessionID":"ses_1","reason":"auto"}}"#))
-    transcript.apply(try event(#"{"id":"evt_2","created":2,"type":"session.compaction.ended","data":{"sessionID":"ses_1","text":"What happened so far."}}"#))
-    transcript.apply(try event(#"{"id":"evt_3","created":3,"type":"session.compaction.failed","data":{"sessionID":"ses_1"}}"#))
+    transcript.apply(try event(#"{"id":"evt_1","created":1,"type":"session.compaction.started","data":{"title":"Summarizing the conversation…","sessionID":"ses_1","reason":"auto"}}"#))
+    transcript.apply(try event(#"{"id":"evt_2","created":2,"type":"session.compaction.ended","data":{"title":"Conversation summarized","sessionID":"ses_1","text":"What happened so far."}}"#))
+    transcript.apply(try event(#"{"id":"evt_3","created":3,"type":"session.compaction.failed","data":{"title":"Couldn’t summarize the conversation","sessionID":"ses_1"}}"#))
     let summaries = transcript.messages.compactMap { if case .compaction(let summary) = $0 { summary } else { nil } }
     #expect(summaries.first?.status == "completed")
     #expect(summaries.first?.summary == "What happened so far.")
@@ -248,16 +248,16 @@ import Testing
     #expect(transcript.isStale)
     transcript.load(messages: transcript.messages, inbox: [], permissions: [], forms: [], isRunning: false)
     // An end whose start was missed doesn't turn the earlier summary into its own either.
-    transcript.apply(try event(#"{"id":"evt_3b","created":3,"type":"session.compaction.ended","data":{"sessionID":"ses_1","text":"A newer summary."}}"#))
+    transcript.apply(try event(#"{"id":"evt_3b","created":3,"type":"session.compaction.ended","data":{"title":"Conversation summarized","sessionID":"ses_1","text":"A newer summary."}}"#))
     #expect(transcript.messages.compactMap { if case .compaction(let summary) = $0 { summary.summary } else { nil } } == ["What happened so far."])
     #expect(transcript.isStale)
     transcript.load(messages: transcript.messages, inbox: [], permissions: [], forms: [], isRunning: false)
     // One a read since has whole already: nothing to read again.
-    transcript.apply(try event(#"{"id":"evt_3c","created":3,"type":"session.compaction.ended","data":{"sessionID":"ses_1","text":"What happened so far."}}"#))
+    transcript.apply(try event(#"{"id":"evt_3c","created":3,"type":"session.compaction.ended","data":{"title":"Conversation summarized","sessionID":"ses_1","text":"What happened so far."}}"#))
     #expect(!transcript.isStale)
 
-    transcript.apply(try event(#"{"id":"evt_4","created":4,"type":"session.compaction.started","data":{"sessionID":"ses_1","reason":"manual"}}"#))
-    transcript.apply(try event(#"{"id":"evt_5","created":5,"type":"session.compaction.failed","data":{"sessionID":"ses_1"}}"#))
+    transcript.apply(try event(#"{"id":"evt_4","created":4,"type":"session.compaction.started","data":{"title":"Summarizing the conversation…","sessionID":"ses_1","reason":"manual"}}"#))
+    transcript.apply(try event(#"{"id":"evt_5","created":5,"type":"session.compaction.failed","data":{"title":"Couldn’t summarize the conversation","sessionID":"ses_1"}}"#))
     let after = transcript.messages.compactMap { if case .compaction(let summary) = $0 { summary } else { nil } }
     #expect(after.map(\.status) == ["completed", "failed"])
     #expect(after.first?.summary == "What happened so far.")

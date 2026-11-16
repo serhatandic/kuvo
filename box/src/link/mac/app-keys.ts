@@ -22,7 +22,7 @@ import { readLink } from "../state";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 const ONLY_APP = "Only Kuvo Code on this Mac can ask for that.";
-const ONLY_OWN_HOME = "Only a Mac's box in a home of its own does this for its app.";
+const ONLY_OWN_HOME = "Only Kuvo on a Mac in its own folder does this for its app.";
 const KEY_TEXT = /^[A-Za-z0-9_-]{43}$/;
 /** A machine's id as its Macs name it (`link.json`'s `id`), with nothing that could run into the next part. */
 const MACHINE = /^[^\0]{1,300}$/;

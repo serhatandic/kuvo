@@ -53,7 +53,7 @@ impl Settings {
     pub(super) fn pages_answer(&mut self, method: &str, segments: &[&str], body: &Value, name: &str, here: bool) -> Option<(u16, Value)> {
         let ["kuvo", "settings", rest @ ..] = segments else { return None };
         Some(match (method, rest) {
-            ("GET", []) if self.pages_down => refused(503, "The box isn’t answering."),
+            ("GET", []) if self.pages_down => refused(503, "Kuvo on this computer isn’t answering."),
             ("GET", []) => {
                 let mut sections = self.sections();
                 if let Some(listed) = sections.as_array_mut() {

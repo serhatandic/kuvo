@@ -230,7 +230,7 @@ export class AntigravityPlan {
     try { return await response.json() } catch { throw new LimitsProblem("failed", "Antigravity returned an unreadable quota response.") }
   }
   private async read(now: number): Promise<LimitReading> {
-    if (!antigravityTransport.live && this.bases === productionBases) return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside a real box folder.", undefined, false))
+    if (!antigravityTransport.live && this.bases === productionBases) return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside Kuvo’s data folder.", undefined, false))
     const raw = this.raw()
     if (!raw) throw new LimitsProblem("none", "Sign in to Antigravity in Kuvo Code.", undefined, false)
     let c: Credential | undefined

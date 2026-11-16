@@ -444,7 +444,7 @@ const namespaceTry = (unshare: string, own: string) => ["-Urm", "/bin/sh", "-c",
  * the file of folders Also Allowed gives its project, one a line (fence/allowed.ts). Fails closed: when
  * the kernel can't, the command doesn't run (the box knows before, and says so).
  */
-export const LANDLOCK_RUNNER = String.raw`// Kuvo Code writes this each time its box starts: changes here don't last.
+export const LANDLOCK_RUNNER = String.raw`// Kuvo Code writes this each time Kuvo starts: changes here don't last.
 // Runs a command's shell in the sandbox (Landlock), as bin/kuvo-fence asks.
 import { dlopen, FFIType, ptr, read } from "bun:ffi";
 import fs from "node:fs";
