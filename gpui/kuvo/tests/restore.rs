@@ -232,3 +232,18 @@ fn an_archived_conversation_opens_again_as_it_is_still_there(cx: &mut TestAppCon
     assert_eq!(opened(&home, cx).as_deref(), Some("ses_limits"));
     assert_eq!(file(&path)["place"]["computers"]["nearest"]["session"], "ses_limits");
 }
+
+#[gpui::test]
+fn a_link_to_another_computer_as_the_app_opens_shows_that_computers_session(cx: &mut TestAppContext) {
+    let (_folder, path) = kept();
+    // The menu bar's Kuvo Helper opened the app for devbox's session (`kuvo-code://open`, which
+    // goes where a notification clicked does), before your computers' list was read: shown once
+    // it's reached, not lost to this Mac's window.
+    let (home, cx) = open_meanwhile(cx, &path, |home, cx| {
+        let notifier = home.read_with(cx, |home, _| home.notifier().clone());
+        notifier.update(cx, |notifier, cx| notifier.clicked("link|key_devbox|ses_releases", cx));
+        cx.run_until_parked();
+    });
+    assert_eq!(shown_key(&home, cx).as_deref(), Some("key_devbox"));
+    assert_eq!(opened(&home, cx).as_deref(), Some("ses_releases"));
+}
