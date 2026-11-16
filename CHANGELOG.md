@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Your settings now lists the keyboard shortcuts Kuvo uses, lets you choose the Side Panel’s first tab, and keeps your anonymous usage choice under Privacy. Nothing is sent yet.
+
 - Text carets blink while typing fields are focused, project folders keep open or closed folder icons in Sessions, and a title-bar button or ⌘B shows or hides the sidebar (⌘0 still works).
 - The usage rings in the desktop app and in Kuvo's menu bar item now fill with what's **left** of each limit (a full ring means all of it is left), and say "62% left"; the desktop app's card and Settings › Usage say it too, with when each resets. The card opens to the right of the ring you rest on, so the rings below stay in view, and clicking on it no longer clicks what's under it.
 - A plan that has ended (a Cursor or SuperGrok subscription that isn't active) no longer shows as a ring, in the app or the menu bar; Settings › Usage lists it as "Plan ended", and agents are told it ended.

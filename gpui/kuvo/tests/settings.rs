@@ -111,13 +111,13 @@ fn settings_opens_on_your_own_and_the_foot_row_goes_to_the_computers(cx: &mut Te
     assert!(stand_in.seen_at("GET", "kuvo/settings").is_empty());
     // One of your own that isn't in the desktop app yet says so.
     // What isn't in the desktop app yet is one row, opening its short list; each says so.
-    assert!(!shown(cx, "setting-shortcuts"));
+    assert!(!shown(cx, "setting-voice"));
     click(cx, "settings-later");
-    click(cx, "setting-shortcuts");
+    click(cx, "setting-voice");
     assert!(shown(cx, "placeholder"));
     // Folded again, the one shown stays listed.
     click(cx, "settings-later");
-    assert!(shown(cx, "setting-shortcuts"));
+    assert!(shown(cx, "setting-voice"));
     // The foot row goes to the computer's: its picker as the title, its sections as its box says them.
     click(cx, "settings-foot");
     assert!(shown(cx, "settings-computer") && !shown(cx, "settings-yours-title"));

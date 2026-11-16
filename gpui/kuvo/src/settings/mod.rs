@@ -17,6 +17,7 @@ mod described;
 pub mod form;
 pub(crate) mod page;
 mod rows;
+pub mod shortcuts;
 pub mod sign_in;
 
 use std::collections::HashMap;
@@ -212,6 +213,7 @@ pub struct SettingsView {
     updates: Option<(Entity<Updates>, crate::updates::Facts)>,
     /// The editors on this Mac General offers (read as Settings opens).
     editors: Vec<crate::yours::editors::Editor>,
+    shortcuts: Vec<shortcuts::Shortcut>,
     /// Where System Settings shows this app's notifications.
     notification_settings: String,
     /// Your settings as last kept, and why the last change couldn't be, where it couldn't.
@@ -326,6 +328,7 @@ impl SettingsView {
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
             updates: None,
+            shortcuts: shortcuts::read(cx),
             editors: if live { crate::yours::editors::installed() } else { Vec::new() },
             notification_settings: crate::yours::desk::notification_settings(),
             yours_now: Default::default(),
@@ -575,6 +578,7 @@ impl SettingsView {
 
     /// The area came on screen: the page open is read again, and the editors on this Mac.
     pub fn shown(&mut self, cx: &mut Context<Self>) {
+        self.shortcuts = shortcuts::read(cx);
         if self.live {
             self.editors = crate::yours::editors::installed();
             self.rebuild(cx);
@@ -654,7 +658,7 @@ impl SettingsView {
                 let (yours, problem) = &self.yours_now;
                 // (Kuvo on this computer, where the window's box is this computer's.)
                 let here = self.home.here().then_some(self.this_box.as_str());
-                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, problem: problem.as_deref(), notification_settings: &self.notification_settings, updates: self.updates.as_ref().map(|(_, facts)| facts), here, now: self.now.unwrap_or_else(crate::time::now_ms) })
+                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, shortcuts: &self.shortcuts, shortcut_filter: self.list_filters.get("row-shortcut-search").map(String::as_str).unwrap_or(""), problem: problem.as_deref(), notification_settings: &self.notification_settings, updates: self.updates.as_ref().map(|(_, facts)| facts), here, now: self.now.unwrap_or_else(crate::time::now_ms) })
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {

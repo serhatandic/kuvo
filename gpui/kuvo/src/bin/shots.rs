@@ -217,7 +217,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-agents-new", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agents_new) },
     Screen { slug: "settings-agents-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agents_list) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
+    Screen { slug: "settings-yours-privacy", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_privacy) },
+    Screen { slug: "settings-yours-voice", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_voice) },
+    Screen { slug: "settings-yours-panel", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_panel) },
     Screen { slug: "settings-yours-general", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_general) },
+    Screen { slug: "settings-yours-shortcuts", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_shortcuts) },
     Screen { slug: "settings-yours-notifications", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_notifications) },
     Screen { slug: "settings-yours-appearance", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_appearance) },
     // Text size (`-small`, `-larger`: the smallest and largest), in Settings and in a
@@ -639,7 +643,7 @@ fn file_open_in(workspace: &mut Workspace, window: &mut Window, cx: &mut Context
 }
 /// One of your own sections that isn't in the desktop app yet.
 fn yours_later(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    settings(w, "yours/shortcuts", window, cx);
+    settings(w, "yours/voice", window, cx);
 }
 fn row_storage(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "storage", window, cx); }
 fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "worktrees", window, cx); }
@@ -1699,3 +1703,12 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     }
     Ok(())
 }
+
+fn yours_privacy(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "yours/privacy", window, cx); }
+fn yours_voice(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "yours/voice", window, cx); }
+
+fn yours_panel(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    settings(w, "yours/panel", window, cx);
+}
+
+fn yours_shortcuts(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "yours/shortcuts", window, cx); }

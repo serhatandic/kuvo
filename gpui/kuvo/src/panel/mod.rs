@@ -96,6 +96,7 @@ pub(crate) fn run<V: 'static, T: Send + 'static>(
 
 pub struct SidePanel {
     tab: Tab,
+    picked: bool,
     place: Option<Place>,
     shown: bool,
     changes: Entity<ChangesView>,
@@ -107,7 +108,12 @@ pub struct SidePanel {
 impl SidePanel {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> SidePanel {
         SidePanel {
-            tab: Tab::Changes,
+            tab: match crate::yours::now(cx).panel.starts_with {
+                crate::yours::PanelStart::Changes => Tab::Changes,
+                crate::yours::PanelStart::Files => Tab::Files,
+                crate::yours::PanelStart::Branches => Tab::Branches,
+            },
+            picked: false,
             place: None,
             shown: false,
             changes: cx.new(|cx| ChangesView::new(client.clone(), live, cx)),
@@ -139,6 +145,7 @@ impl SidePanel {
 
     /// Shows `tab`.
     pub fn show(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.picked = true;
         self.tab = tab;
         self.tell(cx);
         cx.notify();
@@ -158,6 +165,13 @@ impl SidePanel {
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         if self.shown == shown {
             return;
+        }
+        if shown && !self.picked {
+            self.tab = match crate::yours::now(cx).panel.starts_with {
+                crate::yours::PanelStart::Changes => Tab::Changes,
+                crate::yours::PanelStart::Files => Tab::Files,
+                crate::yours::PanelStart::Branches => Tab::Branches,
+            };
         }
         self.shown = shown;
         self.tell(cx);
