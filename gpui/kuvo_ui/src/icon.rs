@@ -100,6 +100,7 @@ icons! {
     Queue => "queue",
     Return => "return",
     Search => "search",
+    Send => "send",
     Settings => "settings",
     Shield => "shield",
     Sidebar => "sidebar",

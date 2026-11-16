@@ -50,6 +50,7 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. S
 | queue | list-todo |
 | return | corner-down-left |
 | search | search |
+| send | send |
 | settings | settings |
 | shield | shield |
 | sidebar | panel-left |
