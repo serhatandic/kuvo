@@ -66,7 +66,9 @@ export function helperStatus() {
   if (tools && process.platform === "darwin") {
     const asked = spawnSync(tools.launchctl, ["print", `gui/${process.getuid?.() ?? 0}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] });
     loaded = asked.error ? null : asked.status === 0;
-    running = loaded === false ? false : loaded ? /^\s*state = running\b/m.test(asked.stdout ?? "") : null;
+    // (Where launchd says no state at all, it isn't known: only "not running" said counts.)
+    const state = /^\s*state = (.+)$/m.exec(asked.stdout ?? "")?.[1]?.trim();
+    running = loaded === false ? false : loaded && state ? state === "running" : null;
   }
   return { helper: fs.existsSync(helperProgram()), agent, loaded, running };
 }
