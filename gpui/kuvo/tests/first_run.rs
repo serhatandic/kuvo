@@ -470,3 +470,98 @@ fn the_box_saying_theres_nothing_to_ask_is_gone_by_whatever_the_app_can_see(cx: 
     click(cx, "first-run-next");
     assert_eq!(step(&workspace, cx), Step::Where);
 }
+
+// MARK: What macOS allows Kuvo Helper
+
+const SCREEN: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+/// A new Mac whose Kuvo says macOS allows Kuvo Helper neither permission yet, with a stand-in
+/// helper in a folder of the test's own (there, as the box says, to be offered to drag).
+fn nothing_allowed(helper: &std::path::Path) -> StandIn {
+    let bundle = helper.join("Kuvo Helper.app");
+    std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
+    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { bundle: bundle.to_str().unwrap().to_owned(), ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
+    stand_in
+}
+
+/// How many dots are under the card.
+fn dots(cx: &mut VisualTestContext) -> f32 {
+    bounds(cx, "first-run-dots").expect("the dots").size.width.into()
+}
+
+#[gpui::test]
+fn what_macos_must_allow_kuvo_helper_is_a_step_after_the_agents(cx: &mut TestAppContext) {
+    let helper = tempfile::tempdir().unwrap();
+    let stand_in = nothing_allowed(helper.path());
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Agents);
+    // Four dots, not three: the current one 16 wide, the rest 6, 6 apart.
+    assert_eq!(dots(cx), 16. + 3. * 6. + 3. * 6., "a dot more for the step");
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Allow);
+    // Each permission with the box's line and its own Open System Settings; Continue waits.
+    assert!(shown(cx, "permissions-step") && shown(cx, "permission-screenRecording-open") && shown(cx, "permission-accessibility-open"));
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Allow);
+    // System Settings on Screen Recording, with the tile beside it holding the helper.
+    click(cx, "permission-screenRecording-open");
+    assert_eq!(cx.opened_url().as_deref(), Some(SCREEN));
+    let permissions = run(&workspace, cx).read_with(cx, |run, _| run.permissions().cloned()).expect("the permissions");
+    assert!(permissions.read_with(cx, |permissions, _| permissions.tile().is_some()));
+    // Allowed there (and Accessibility too): said once the box says so, and the way on opens.
+    stand_in.set_permissions(|permissions| {
+        permissions.screen_recording = true;
+        permissions.accessibility = true;
+    });
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(shown(cx, "permission-screenRecording-allowed"));
+    assert!(permissions.read_with(cx, |permissions, _| permissions.tile().is_none()));
+    // (A permission allowed in System Settings directly is read as the window comes back.)
+    permissions.update(cx, |permissions, cx| permissions.read(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "permission-accessibility-allowed") && !shown(cx, "first-run-not-now"));
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Where);
+    // Back comes to it again, still one of the steps.
+    click(cx, "first-run-back");
+    assert_eq!(step(&workspace, cx), Step::Allow);
+    // And nothing's ever put off.
+    assert!(stand_in.seen_at("POST", "kuvo/box/permissions").is_empty());
+}
+
+#[gpui::test]
+fn not_now_puts_off_what_the_step_asks_about_and_goes_on(cx: &mut TestAppContext) {
+    let helper = tempfile::tempdir().unwrap();
+    let stand_in = nothing_allowed(helper.path());
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "first-run-next");
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Allow);
+    click(cx, "first-run-not-now");
+    assert_eq!(step(&workspace, cx), Step::Where);
+    let later: Vec<_> = stand_in.seen_at("POST", "kuvo/box/permissions").iter().map(|seen| seen.body.as_ref().map(|body| body["later"].clone())).collect();
+    assert_eq!(later, [Some(json!("screenRecording")), Some(json!("accessibility"))]);
+    assert_eq!(cx.opened_url(), None);
+    // On to the end: the window opens with nothing over it.
+    click(cx, "first-run-no-project");
+    click(cx, "first-run-next");
+    assert!(shown(cx, "rail-settings") && !shown(cx, "permissions-step"));
+}
+
+#[gpui::test]
+fn the_step_is_passed_over_where_nothing_needs_allowing(cx: &mut TestAppContext) {
+    // Both allowed already: the agents go straight on to where to work.
+    let stand_in = StandIn::first_run(Replies::Never, NOW, Scenario::Nothing);
+    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { screen_recording: true, accessibility: true, ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "first-run-next");
+    click(cx, "first-run-next");
+    assert_eq!(step(&workspace, cx), Step::Where);
+    assert_eq!(dots(cx), 16. + 2. * 6. + 2. * 6., "three dots");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert_eq!(step(&workspace, cx), Step::Agents);
+}

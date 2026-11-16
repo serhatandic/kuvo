@@ -42,7 +42,8 @@ import { ALLOWED_FILE } from "../fence/allowed";
 import { fenceState, SOFTWARE_UPDATE } from "../fence/state";
 import { followedLive } from "../follow";
 import { APPROVAL_FILE } from "../work/approval";
-import { APP_FOLDER, IS_MAC, RUN } from "../home";
+import { APP_FOLDER, IS_MAC, K, RUN } from "../home";
+import { isMeasuring, measureProblem, measureSizes, readSizes, SIZES_FILE } from "./storage-sizes";
 import { HELPER_NAME, helperAtLogin } from "../helper";
 import { MAC_LINK_FILE } from "../mac/link";
 import { letDevicesConnect } from "../mac/routes";
@@ -89,7 +90,7 @@ const SECTIONS: SettingsSection[] = [
     keywords: ["branch prefix", "worktree", "commit", "pull request", "instructions"],
   },
   { id: "worktrees", title: "Worktrees", group: "Projects", icon: "folder", line: "Where new projects and worktrees go, and sessions’ own copies of a project.", keywords: ["projects", "folders", "branches", "remove"] },
-  { id: "storage", title: "Storage", group: "System", icon: "drive", line: "Copies of what agents made, and how much older versions keep.", keywords: ["copies", "older versions", "budget", "disk", "clear"] },
+  { id: "storage", title: "Storage", group: "System", icon: "drive", line: "How much Kuvo keeps on this computer, and how much older versions of what agents made keep.", keywords: ["copies", "older versions", "budget", "disk", "clear", "space", "size", "folder"] },
   { id: "archived", title: "Archived Sessions", group: "System", icon: "archive", line: "Sessions out of the sidebar, still searchable; bring them back or delete them.", keywords: ["archive", "unarchive", "delete", "sessions"] },
   mcpSection.listed,
 ];
@@ -364,10 +365,13 @@ async function browserAct(context: RouteContext, at: SettingItem, action: Settin
 
 // MARK: Git
 
+// One card of single lines (the branch prefix), then each set of instructions as a group of its own:
+// its heading and line, and the text written full width under them (a `text` row with `lines`
+// alone in its group).
 const GIT_ROWS = [
-  { id: "branch-prefix", key: "branchPrefix", group: "Branches", groupId: "branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
-  { id: "commit-instructions", key: "commitInstructions", group: "Commit Messages", groupId: "commit-messages", title: "Instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
-  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Requests", groupId: "pull-requests", title: "Instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
+  { id: "branch-prefix", key: "branchPrefix", group: undefined, groupId: "branches", title: "Branch prefix", line: "How a session’s own branch in a worktree starts.", placeholder: "None" },
+  { id: "commit-instructions", key: "commitInstructions", group: "Commit Instructions", groupId: "commit-messages", title: "Commit instructions", line: "Added when Suggest a Message in Changes asks the model for one.", placeholder: "For example: Start with the area changed, like “ui: …”, and never mention tickets." },
+  { id: "pull-request-instructions", key: "pullRequestInstructions", group: "Pull Request Instructions", groupId: "pull-requests", title: "Pull request instructions", line: "Added when Create Pull Request writes the title and description.", placeholder: "For example: Add a Testing section, and link the issue if the branch names one." },
 ] as const;
 
 async function gitPage(context: RouteContext): Promise<SettingsPage> {
@@ -375,8 +379,9 @@ async function gitPage(context: RouteContext): Promise<SettingsPage> {
   if (read.status !== 200) return { id: "git", title: "Git", groups: [], notes: [{ words: said(read, "This computer's settings couldn't be read."), tone: "warning" }] };
   return { id: "git", title: "Git", groups: GIT_ROWS.map(each => {
     const value = read.value[GIT_SETTINGS[each.key][0]];
-    return { id: each.groupId, title: each.group, ...(each.key === "branchPrefix" ? {} : { note: each.line }), rows: [row({
-      id: each.id, title: each.title, ...(each.key === "branchPrefix" ? { line: each.line } : { lines: { min: 3, max: 8 } }), placeholder: each.placeholder,
+    const lines = each.key !== "branchPrefix";
+    return { id: each.groupId, ...(each.group ? { title: each.group, note: each.line } : {}), rows: [row({
+      id: each.id, title: each.title, ...(lines ? { lines: { min: 5, max: 12 } } : { line: each.line }), placeholder: each.placeholder,
       kind: "text", value: typeof value === "string" ? each.key === "branchPrefix" ? cleanBranchPrefix(value) : value.trim() : each.key === "branchPrefix" ? DEFAULT_BRANCH_PREFIX : "",
       can: typeof value === "string" || value === undefined ? true : { why: "This value is set in the settings file as something other than text. Change it there." },
     })] };
@@ -418,17 +423,27 @@ async function worktreesPage(context: RouteContext): Promise<SettingsPage> {
   try { engineRuns = Boolean(context.readEngine()?.port); } catch {}
   const projects = where.value.projects ?? [];
   const commonPlace = projects.length > 0 && projects.every((each: any) => each.folder === projects[0].folder);
-  const shownPlaces = commonPlace ? [projects.find((each: any) => each.inside && !each.ignored) ?? projects[0]] : projects.slice(0, 5);
-  const places: SettingRow[] = projects.length ? shownPlaces.map((each: any) => row({
+  // Where new worktrees go is the folder field itself (the default its placeholder): a project is
+  // listed only where it goes elsewhere (its own settings), or where its place needs you.
+  // (The engine keeps each project's in a folder of its own in the one chosen, or the default.)
+  const expected = typeof chosen === "string" && chosen ? chosen.replace(/^~(?=\/)/, homeFolder()) : String(where.value.default);
+  const elsewhere = (folder: unknown) => typeof folder === "string" && folder !== expected && !folder.startsWith(expected.replace(/\/+$/, "") + "/");
+  const needsYou = (each: any) => (each.exists === false && each.canMake === false) || (each.inside && !each.ignored);
+  const listedPlaces = (commonPlace ? [projects.find(needsYou) ?? projects[0]] : projects).filter((each: any) => needsYou(each) || elsewhere(each.folder));
+  const places: SettingRow[] = listedPlaces.slice(0, 5).map((each: any) => row({
     id: `place-${each.project}`, title: commonPlace ? "New worktrees go in" : each.name,
     kind: "status", value: each.folder ?? "Known once the engine runs",
-    ...(each.exists === false && each.canMake === false ? { line: "Kuvo Code can’t create this folder. Choose another one.", tone: "warning" as const } : each.inside && !each.ignored ? { line: `It’s inside ${commonPlace ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" as const } : {}),
-  })) : [row({ id: "worktrees-place", title: "New worktrees go in", kind: "status", value: chosen || where.value.default })];
-  if (!commonPlace && projects.length > 5) places.push(row({ id: "more-worktree-projects", title: `And ${projects.length - 5} more ${projects.length - 5 === 1 ? "project" : "projects"}`, kind: "status" }));
+    ...(each.exists === false && each.canMake === false ? { line: "Kuvo can’t create this folder. Choose another one.", tone: "warning" as const } : each.inside && !each.ignored ? { line: `It’s inside ${commonPlace ? each.name + "’s" : "this project’s"} repository, so git would list each worktree as new files there. Choose a folder outside it.`, tone: "warning" as const } : {}),
+  }));
+  if (listedPlaces.length > 5) places.push(row({ id: "more-worktree-projects", title: `And ${listedPlaces.length - 5} more ${listedPlaces.length - 5 === 1 ? "project" : "projects"}`, kind: "status" }));
+  const shown = (folder: string) => (folder === homeFolder() || folder.startsWith(homeFolder() + "/") ? "~" + folder.slice(homeFolder().length) : folder);
   return { id: "worktrees", title: "Worktrees", groups: [
-    { id: "new-projects", title: "New Projects", note: "Where projects your bots make go. A bot asks you before it makes one, and Kuvo Code never deletes them.", rows: [row({ id: "projects-folder", title: "Folder", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", folder: { choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." }, can: true })] },
-    { id: "new-worktrees", title: "New Worktrees", rows: [row({ id: "worktrees-folder", title: "Folder", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: "Kuvo Code’s Folder", folder: { choose: "Choose a Folder…", clear: "Kuvo Code’s Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." }, can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }), ...places] },
-    { id: "session-worktrees", title: "Worktrees", note: "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", rows: [row({ id: "worktrees", title: "Worktrees", kind: "list", empty: "None yet. Choose Worktree in a new session’s composer to give it one.", items: listed.value.worktrees.map((tree: any) => item({
+    { id: "folders", rows: [
+      row({ id: "worktrees-folder", title: "Worktree folder", line: "Each session’s worktree is a folder in it. Leave it empty for the default.", kind: "folder", value: typeof chosen === "string" ? chosen : "", placeholder: shown(String(where.value.default)), folder: { choose: "Choose a Folder…", clear: "Default Folder", prompt: "Choose", message: "Choose where new worktrees go. Each one is a folder in it." }, can: (config.value.worktree === undefined || isObject(config.value.worktree)) && (chosen === undefined || typeof chosen === "string") ? true : { why: "This folder is set in the settings file as something other than text. Change it there." } }),
+      ...places,
+      row({ id: "projects-folder", title: "New projects folder", line: "Where projects your bots make go. A bot asks you first, and Kuvo never deletes them.", kind: "folder", value: work.value.projectsFolder ?? "", placeholder: "None", folder: { choose: "Choose a Folder…", clear: "None", prompt: "Choose", message: "Choose where new projects go. Each one is a folder in it." }, can: true }),
+    ] },
+    { id: "session-worktrees", title: "Sessions’ Worktrees", note: "Removing one deletes its folder and anything in it that isn’t committed. Its branch stays if it isn’t merged yet.", rows: [row({ id: "worktrees", title: "Sessions’ Worktrees", kind: "list", empty: "None yet. Choose Worktree in a new session’s composer to give it one.", items: listed.value.worktrees.map((tree: any) => item({
       id: `tree-${tree.path}`, title: tree.branch, line: `${tree.projectName} · ${tree.sessions} ${tree.sessions === 1 ? "session" : "sessions"}`,
       kind: "actions", value: { record: readWorktrees().find(record => record.root === tree.path), uncommitted: tree.uncommitted, ahead: tree.ahead },
       actions: [{ id: "remove", title: "Remove…", style: "destructive", can: tree.working ? { why: `An agent is still working in the worktree of ${tree.branch}, so it stays. Stop it first, then remove the worktree.` } : engineRuns ? true : { why: `The engine isn't running, so the worktree of ${tree.branch} stays. Try again once it's started.` }, confirm: { title: `Remove the worktree for ${tree.branch}?`, body: worktreeRemovalWords(tree), button: "Remove" } }],
@@ -458,26 +473,67 @@ async function worktreesAct(context: RouteContext, at: SettingItem, action: Sett
   return staleOrRefusal(await asked(context, worktreesRoute, "POST", "kuvo/worktrees/remove", { path: at.id.slice(5), was: at.value }));
 }
 
-// MARK: Storage (the box-backed What Agents Made group)
+// MARK: Storage
 
+/** What Kuvo keeps on this computer, measured (`storage-sizes.ts`): the whole as a bar of its parts,
+ * Refresh, Kuvo's folder (and worktree folders outside it) with what each takes; what agents made,
+ * with how much older versions keep; and the pages that clear the rest (Worktrees, Archived
+ * Sessions). What agents made comes from the coding agents' side, which may be down: the rest stays. */
 async function storagePage(context: RouteContext): Promise<SettingsPage> {
+  const here = context.request.fromApp === true && IS_MAC;
+  const where = computerHere(context);
+  void measureSizes();
+  const sizes = readSizes();
+  const measuring = isMeasuring();
+  const problem = measureProblem();
+  const parts = sizes?.parts.map(part => ({
+    id: part.id, title: part.title, value: part.bytes, words: fileSize(part.bytes),
+    ...(part.folders?.length ? { parts: part.folders.map(folder => ({ title: folder.title, value: folder.bytes, words: fileSize(folder.bytes) })) } : {}),
+  }));
+  const finder = (path: string): SettingAction[] => (here ? [{ id: "show", title: "Show in Finder", opens: `file://${encodeURI(path)}` }] : []);
+  const folderRow = (id: string, title: string, path: string, bytes: number | undefined) => row({
+    id, title, line: path.startsWith(homeFolder() + "/") ? "~" + path.slice(homeFolder().length) : path,
+    kind: here ? "actions" : "status", ...(bytes === undefined ? {} : { value: bytes, unit: fileSizeUnit(bytes) }), ...(here ? { actions: finder(path) } : {}),
+  });
+  const groups: SettingGroup[] = [
+    { id: "computer", title: computerTitle(context), note: `What Kuvo keeps on ${where}.`, rows: [row({
+      id: "used", title: sizes ? `${fileSize(sizes.total)} used by Kuvo` : "Measuring what Kuvo keeps…",
+      ...(problem && !measuring ? { line: `It couldn’t be measured just now: ${problem}`, tone: "warning" as const } : {}),
+      kind: "meter", ...(parts ? { parts } : {}), ...(measuring ? { busy: "Measuring…" } : {}),
+      actions: [{ id: "refresh", title: "Refresh" }],
+    })] },
+    { id: "folders", title: "Storage by Folder", rows: [
+      folderRow("home-folder", "Kuvo’s folder", K, sizes?.home),
+      // (Worktrees kept outside it, by the folder they're in: theirs alone, not the folder's.)
+      ...(sizes?.outside ?? []).map((each, ix) => folderRow(`worktree-folder-${ix}`, `${each.trees} ${each.trees === 1 ? "worktree" : "worktrees"} in`, each.path, each.bytes)),
+    ] },
+  ];
+  const notes: { words: string; tone: "quiet" | "warning" }[] = [];
   const read = await asked(context, artifactsRoute, "GET", "kuvo/artifacts/storage");
-  if (read.status !== 200) return unreadPage("storage", "Storage", read);
-  const kept = read.value;
-  const unit = kept.budget < 1_000_000_000
-    ? { name: "MB", factor: 1_000_000, decimals: 2, rounding: "nearest" as const }
-    : { name: "GB", factor: 1_000_000_000, decimals: 2, rounding: "nearest" as const };
-  const copiesUnit = fileSizeUnit(kept.copies);
-  return { id: "storage", title: "Storage", groups: [{ id: "agents-made", title: "What Agents Made", rows: [
-    row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: copiesUnit }),
-    row({ id: "older-budget", title: "Older versions keep up to", line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", kind: "number", value: kept.budget, unit, min: 0, can: true,
-      suggestions: [0.25, 0.5, 1, 2, 5, 10].map(gb => ({ value: gb * 1_000_000_000, title: `${gb} GB` })),
-      confirmBelow: { value: kept.older, confirm: budgetConfirmation(kept.older) },
-    }),
-    row({ id: "older-copies", title: "Older versions", line: kept.older === 0 ? "None kept." : `${fileSize(kept.older)} now.`, kind: "actions", value: kept.older,
-      actions: [{ id: "clear", title: "Clear…", style: "destructive", can: kept.older > 0 ? true : { why: "None kept." }, confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } }],
-    }),
-  ] }], ...(kept.low ? { notes: [{ words: `The disk is nearly full, so only the newest version of each file keeps a copy until ${fileSize(kept.floor)} is free again.`, tone: "warning" as const }] } : {}) };
+  if (read.status === 200) {
+    const kept = read.value;
+    const unit = kept.budget < 1_000_000_000
+      ? { name: "MB", factor: 1_000_000, decimals: 2, rounding: "nearest" as const }
+      : { name: "GB", factor: 1_000_000_000, decimals: 2, rounding: "nearest" as const };
+    groups.push({ id: "agents-made", title: "What Agents Made", rows: [
+      row({ id: "copies", title: "Copies of what agents made", line: "Each version of the files agents write or change, so you can see what changed and put one back. Never what looks like a secret, and only the changes for code git keeps.", kind: "status", value: kept.copies, unit: fileSizeUnit(kept.copies) }),
+      row({ id: "older-budget", title: "Older versions keep up to", line: "Past it, the oldest go first. The newest version of each file, memory, skills and what’s kept always stay.", kind: "number", value: kept.budget, unit, min: 0, can: true,
+        suggestions: [0.25, 0.5, 1, 2, 5, 10].map(gb => ({ value: gb * 1_000_000_000, title: `${gb} GB` })),
+        confirmBelow: { value: kept.older, confirm: budgetConfirmation(kept.older) },
+      }),
+      row({ id: "older-copies", title: "Older versions", line: kept.older === 0 ? "None kept." : `${fileSize(kept.older)} now.`, kind: "actions", value: kept.older,
+        actions: [{ id: "clear", title: "Clear…", style: "destructive", can: kept.older > 0 ? true : { why: "None kept." }, confirm: { title: "Clear older versions?", body: "Their copies go; each stays listed, without one. The newest version of each file, memory, skills and what’s kept stay.", button: "Clear" } }],
+      }),
+    ] });
+    if (kept.low) notes.push({ words: `The disk is nearly full, so only the newest version of each file keeps a copy until ${fileSize(kept.floor)} is free again.`, tone: "warning" });
+  } else {
+    notes.push({ words: `What agents made couldn’t be read: ${said(read, "it didn’t answer.")}`, tone: "warning" });
+  }
+  groups.push({ id: "manage", rows: [
+    row({ id: "manage-worktrees", title: "Worktrees", line: "Sessions’ own copies of a project, and where they go.", kind: "open", section: "worktrees" }),
+    row({ id: "manage-archived", title: "Archived Sessions", line: "Bring sessions back, or delete them for good.", kind: "open", section: "archived" }),
+  ] });
+  return { id: "storage", title: "Storage", groups, ...(notes.length ? { notes } : {}) };
 }
 
 async function storageChange(context: RouteContext, at: SettingItem, value: unknown, confirmed?: unknown): Promise<Refused | null> {
@@ -486,6 +542,11 @@ async function storageChange(context: RouteContext, at: SettingItem, value: unkn
 }
 
 async function storageAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  if (at.id === "used" && action.id === "refresh") {
+    // (Begun, not waited for: the page says it's measuring, and shows the sizes once they're in.)
+    void measureSizes(true);
+    return null;
+  }
   if (at.id !== "older-copies" || action.id !== "clear") return noActions();
   return staleOrRefusal(await asked(context, artifactsRoute, "POST", "kuvo/artifacts/storage/clear", { was: at.value }));
 }
@@ -642,10 +703,10 @@ const computerHere = (context: RouteContext): string =>
   context.request.fromApp === true ? (process.platform === "darwin" ? "this Mac" : "this computer") : context.info.name || "this computer";
 
 const LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
-/** What each permission is for, and what's missing without it. */
-const ALLOWS: Record<string, { allowed: string; not: string }> = {
-  screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
-  accessibility: { allowed: "For agents that click and type in other apps.", not: "Not allowed. Agents can’t click or type in other apps." },
+/** What's missing without each permission (what it's for is the permission's own `line`). */
+const NOT_ALLOWED: Record<string, string> = {
+  screenRecording: "Not allowed. Agents can’t look at the screen.",
+  accessibility: "Not allowed. Agents can’t click or type in other apps.",
 };
 
 async function computerPage(context: RouteContext): Promise<SettingsPage> {
@@ -716,7 +777,7 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
         : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
     }
     for (const each of permissions.list) {
-      const words = ALLOWS[each.id] ?? { allowed: "", not: "Not allowed." };
+      const words = { allowed: each.line, not: NOT_ALLOWED[each.id] ?? "Not allowed." };
       if (each.allowed === false) allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
       else allows.push(row({ id: `allows-${each.id}`, title: each.name, line: each.allowed ? words.allowed : `${helper} hasn’t said yet. ${words.allowed}`.trim(), kind: "status", value: each.allowed ? "Allowed" : "Not known yet" }));
     }
@@ -764,7 +825,7 @@ const PAGES: Record<string, Section> = {
   browser: { read: browserPage, change: browserChange, act: browserAct, look: () => browserSettingsFiles().map(mtime).join(" ") },
   git: { read: gitPage, change: gitChange, act: noActions, look: () => `${mtime(CONFIG_FILE)}` },
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
-  storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
+  storage: { read: storagePage, change: storageChange, act: storageAct, look: () => `${Math.floor(Date.now() / 1000)} ${mtime(SIZES_FILE)} ${isMeasuring()}` },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
   mcp: mcpSection,
   computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },

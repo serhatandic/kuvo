@@ -45,12 +45,12 @@ function wroteIt(pid: number, started: number): boolean {
   return began !== null && Math.abs(began - started) <= 3;
 }
 
-/** Each permission macOS can be asked about, as System Settings names it, and the address that
- * opens its list there. Both are lists macOS has you add a program to yourself (`byHand`): it asks
+/** Each permission macOS can be asked about, as System Settings names it, what agents need it for
+ * (`line`), and the address that opens its list there. Both are lists macOS has you add a program to yourself (`byHand`): it asks
  * nothing for a program that never asks, and the helper doesn't. */
 const PERMISSIONS = [
-  { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
-  { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true },
+  { id: "screenRecording", name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true },
+  { id: "accessibility", name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true },
 ] as const;
 type PermissionID = (typeof PERMISSIONS)[number]["id"];
 
