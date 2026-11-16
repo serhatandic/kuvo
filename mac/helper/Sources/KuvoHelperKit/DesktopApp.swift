@@ -50,10 +50,11 @@ public enum DesktopApp {
     }
 
     /// The copy to open: `registered` where it's there (`about` reads it), has bundle ID `app` and
-    /// `trusted` takes it for Kuvo; else the newest of `copies` with that ID (by version, then build).
+    /// `trusted` takes it for Kuvo; else the newest of `copies` with that ID that `trusted` takes
+    /// (by version, then build); none where no copy is.
     public static func pick(registered: URL?, copies: [URL], app: String, about: (URL) -> About? = About.of, trusted: (URL) -> Bool) -> URL? {
         if let registered, about(registered)?.id == app, trusted(registered) { return registered }
-        let found = copies.compactMap { copy in about(copy).flatMap { $0.id == app ? (copy, $0) : nil } }
+        let found = copies.compactMap { copy in about(copy).flatMap { $0.id == app && trusted(copy) ? (copy, $0) : nil } }
         return found.max { older, newer in isOlder(older.1, than: newer.1) }?.0
     }
 

@@ -117,7 +117,7 @@ public struct MenuBarPanel: View {
             var rows = CGFloat(30 + 2) + CGFloat(asking + sessions) * 28 + (index > 0 ? 9 : 0)
             if asking > 0, max(computer.waiting ?? 0, computer.asking.count) > asking { rows += 22 }
             if sessions > 0, (computer.working ?? 0) > sessions { rows += 22 }
-            if asking + sessions == 0 { rows += 24 }
+            if asking + sessions == 0, computer.isHere || computer.reach != "away" { rows += 24 }
             let accounts = min(computer.rings.count, 6)
             if accounts > 0 { rows += CGFloat((accounts + 1) / 2) * 37 + 4 }
             return height + rows
@@ -210,7 +210,7 @@ private struct ComputerSection: View {
             if !computer.asking.isEmpty {
                 ForEach(computer.asking.prefix(most), id: \.id) { asking in
                     Hovered(p: p, action: { open(at(asking.id)) }) {
-                        Line(title: asking.title ?? "A session", detail: "Needs you", detailColor: p.warning, p: p) { Circle().fill(p.warning).frame(width: 7, height: 7) }
+                        Line(title: asking.title ?? "A session", detail: nil, p: p) { Circle().fill(p.warning).frame(width: 7, height: 7) }
                     }
                     .accessibilityLabel("\(asking.title ?? "A session"), \(asking.asks ?? "waits on you")")
                     .help(asking.asks ?? "")
@@ -220,13 +220,14 @@ private struct ComputerSection: View {
             if !computer.sessions.isEmpty {
                 ForEach(computer.sessions.prefix(most), id: \.id) { session in
                     Hovered(p: p, action: { open(at(session.id)) }) {
-                        Line(title: session.title ?? "A session", detail: session.bot, detailColor: p.faint, p: p) { Spinner(p: p) }
+                        Line(title: session.title ?? "A session", detail: session.bot, p: p) { Spinner(p: p) }
                     }
                     .accessibilityLabel([session.title ?? "A session", "at work", session.bot.map { "for \($0)" }].compactMap { $0 }.joined(separator: ", "))
                 }
                 More(count: (computer.working ?? 0) - min(computer.sessions.count, most), p: p)
             }
-            if computer.asking.isEmpty, computer.sessions.isEmpty {
+            // (Away says so beside its name: nothing more under it.)
+            if computer.asking.isEmpty, computer.sessions.isEmpty, computer.isHere || computer.reach != "away" {
                 Text(quiet).font(.system(size: 12)).foregroundStyle(p.faint)
                     .padding(.leading, 33).padding(.trailing, 10).frame(height: 24, alignment: .leading)
             }
@@ -257,7 +258,6 @@ private struct ComputerSection: View {
 
     /// What's said where nothing is listed.
     private var quiet: String {
-        if !computer.isHere, computer.reach == "away" { return "Not reached lately" }
         if computer.working == nil { return computer.reach == "connecting" ? "Reaching it…" : "Update Kuvo there to see its work" }
         if computer.isHere, (look.atWork?.background ?? 0) > 0 { return "Work is running in the background" }
         return "Nothing at work"
@@ -299,7 +299,6 @@ private struct More: View {
 private struct Line<Lead: View>: View {
     let title: String
     let detail: String?
-    var detailColor: Color? = nil
     let p: Palette
     @ViewBuilder let lead: () -> Lead
     var body: some View {
@@ -308,7 +307,7 @@ private struct Line<Lead: View>: View {
             Text(title).font(.system(size: 13)).foregroundStyle(p.text).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 8)
             // (The bot's name keeps up to a third of the row; the title gives way first.)
-            if let detail { Text(detail).font(.system(size: 12)).foregroundStyle(detailColor ?? p.faint).lineLimit(1).truncationMode(.tail).frame(maxWidth: 96, alignment: .trailing).layoutPriority(1) }
+            if let detail { Text(detail).font(.system(size: 12)).foregroundStyle(p.faint).lineLimit(1).truncationMode(.tail).frame(maxWidth: 96, alignment: .trailing).layoutPriority(1) }
         }
         .padding(.horizontal, 10).frame(height: 28)
         .accessibilityElement(children: .combine)

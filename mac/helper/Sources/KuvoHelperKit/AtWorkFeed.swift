@@ -89,7 +89,8 @@ public final class AtWorkFeed {
     public func registeredDesktop() async -> URL? {
         guard let server = server() else { return nil }
         var request = server.request("kuvo/box/app")
-        request.timeoutInterval = 5
+        // (Its own server, on this Mac: it answers at once, or Open Kuvo goes on without it.)
+        request.timeoutInterval = 1.5
         guard let (data, response) = try? await session.data(for: request), (response as? HTTPURLResponse)?.statusCode == 200,
               let said = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let desktop = said["desktop"] as? String, desktop.hasPrefix("/") else { return nil }
