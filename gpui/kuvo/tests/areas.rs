@@ -92,6 +92,7 @@ fn only_the_area_on_screen_asks_the_box(cx: &mut TestAppContext) {
 #[gpui::test]
 fn control_one_to_five_switch_areas_from_anywhere_in_the_window(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    assert!(bounds(cx, "rail-bots").unwrap().top() < bounds(cx, "rail-sessions").unwrap().top());
     // From the composer of a conversation, as from anywhere.
     click(cx, "session-project-ses_limits");
     for (keys, expected, shown) in [

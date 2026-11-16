@@ -97,7 +97,25 @@ test("Accounts' list says which are providers and their marks; a sign-in started
   }
 })
 
- test.each(["claude", "codex", "cursor", "grok", "antigravity"])("%s offers another account without replacing its sign-in", agent => {
- const said = accountState({ id: agent, name: agent, metadata: { agent }, connections: [] }, { methods: [{ id: "oauth", type: "oauth", label: "Sign In" }], environment: [], hint: "" }, { agents: true, computer: "this Mac" });
- expect(said.actions.find(action => action.id === "addAnother")?.label).toBe("Add Another Account");
- });
+test.each(["claude", "codex", "cursor", "grok", "antigravity"])("%s offers another account only on its own sign-in", agent => {
+  const offered = { methods: [{ id: "oauth", type: "oauth" as const, label: "Sign In" }], environment: [], hint: "" }
+  const account = { id: agent, name: agent, metadata: { addedAccounts: true } }
+  expect(accountState(account, offered, { agents: true, computer: "Studio" }).actions.some(action => action.id === "addAnother")).toBe(true)
+  expect(accountState({ ...account, id: agent + "@work" }, offered, { agents: true, computer: "Studio" }).actions.some(action => action.id === "addAnother")).toBe(false)
+})
+
+test("an outside account request uses the display name, never the request info hostname", async () => {
+  const { signInRoute } = await import("../src/link/areas/sign-in")
+  const { ownComputerName } = await import("../src/link/computer-name")
+  const engine = Bun.serve({ port: 0, fetch: () => Response.json({ data: [{ id: "codex-cli", name: "Codex", metadata: { installed: false, install: "install" }, methods: [] }] }) })
+  let result: any
+  try {
+    for await (const _ of signInRoute({
+      route: "kuvo/sign-in/accounts", request: { method: "GET", path: "kuvo/sign-in/accounts?agents=1", fromApp: false }, info: { name: "RAW-HOSTNAME.local" },
+      bridge: () => ({ port: engine.port, password: "pw" }),
+      json: function* (_: number, body: unknown) { result = body },
+    } as any)) {}
+    expect(result.accounts[0].line).toBe(`Not installed on ${ownComputerName()}`)
+    expect(result.accounts[0].line).not.toContain("RAW-HOSTNAME")
+  } finally { engine.stop(true) }
+})

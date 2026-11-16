@@ -78,7 +78,7 @@ cargo run -p kuvo                                       # this Mac's own box (Ku
   its windows), then Help and Settings. In a window under 820 px the area's sidebar folds away and
   its button brings it out. Computers' pages, and a group chat's, aren't in the app yet: a row
   picked there shows a page saying so.
-- **Bots** (⌃2, `notes/screens-bots.md`): a bot's page (its face, name and job, what it's doing
+- **Bots** (⌃1, `notes/screens-bots.md`): a bot's page (its face, name and job, what it's doing
   now, its recent sessions, each opening where sessions are) with Chat, its own conversation in
   the page's place; its settings in Settings' row style (Name, Look, Job, Personality, Model), each
   change sent to the box (`PATCH kuvo/bots/<id>`) and drawn as it answers, an edit the box holds

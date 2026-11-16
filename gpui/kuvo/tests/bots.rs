@@ -59,7 +59,7 @@ fn bot(workspace: &Entity<Workspace>, cx: &mut VisualTestContext, bot: &str) -> 
     }
     click(cx, &format!("bot-{bot}"));
     assert!(shown(cx, "bot-chat-strip"));
-    click(cx, "bot-chat-back");
+    click(cx, "bot-chat-settings");
     page(workspace, cx)
 }
 
@@ -114,12 +114,12 @@ fn a_bots_page_shows_who_it_is_what_its_doing_and_its_sessions(cx: &mut TestAppC
 
     // A bot with nothing under way and no sessions says so, and claims nothing of now.
     click(cx, "bot-bot_release");
-    click(cx, "bot-chat-back");
+    click(cx, "bot-chat-settings");
     assert!(shown(cx, "work-none") && !shown(cx, "bot-now"));
 
     // A session opens where sessions are, and Back comes back to the bot's page.
     click(cx, "bot-bot_mira");
-    click(cx, "bot-chat-back");
+    click(cx, "bot-chat-settings");
     click(cx, "work-ses_cms");
     assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_cms".into())));
     cx.simulate_keystrokes("cmd-[");
@@ -143,7 +143,7 @@ fn chat_opens_the_bots_conversation_in_bots_and_back_returns_to_its_page(cx: &mu
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), None);
 
     // The strip's arrow goes to its page; Back, to the conversation again, what was written still there.
-    click(cx, "bot-chat-back");
+    click(cx, "bot-chat-settings");
     assert!(shown(cx, "bot-head") && !shown(cx, "bot-chat-strip"));
     cx.simulate_keystrokes("cmd-[");
     cx.run_until_parked();
@@ -278,7 +278,7 @@ fn an_edit_for_a_bot_on_another_computer_is_held_and_says_waiting(cx: &mut TestA
     // A bot that moves to another computer while its page is open: the box takes the change
     // (202) and holds it for that computer, and the app keeps nothing itself.
     click(cx, "bot-bot_docs");
-    click(cx, "bot-chat-back");
+    click(cx, "bot-chat-settings");
     stand_in.move_bot("bot_docs", "studio-mini");
     click(cx, "bot-name-button");
     cx.simulate_input("Docs Warden");

@@ -21339,6 +21339,40 @@ class Roster {
   }
 }
 
+// box/src/agents/signin-watch.ts
+function watchSignIn(attempt, expires, completed, every = 250) {
+  let stopped = false;
+  let timer;
+  const check = () => {
+    if (stopped)
+      return;
+    if (Date.now() >= expires) {
+      stopped = true;
+      attempt.cancel();
+      return;
+    }
+    const status = attempt.status().status;
+    if (status === "complete") {
+      stopped = true;
+      completed();
+      return;
+    }
+    if (status !== "pending") {
+      stopped = true;
+      return;
+    }
+    timer = setTimeout(check, every);
+    timer.unref();
+  };
+  check();
+  return () => {
+    if (!stopped && Date.now() < expires && attempt.status().status === "complete")
+      completed();
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
 // box/src/agents/branch.ts
 var origins = ["branchedFrom", "handoffFrom", "handoffTo", "startedBy", "beside", "carriedFrom"];
 var listed2 = ["kuvo.pinned", "kuvo.archived"];
@@ -34898,8 +34932,10 @@ class LinkDirectory {
 // box/src/agents/server.ts
 var attempts = new Map;
 function cancelSignIns() {
-  for (const pending of attempts.values())
+  for (const pending of attempts.values()) {
+    pending.stop();
     pending.attempt.cancel();
+  }
   attempts.clear();
 }
 function signInsWaiting() {
@@ -34910,6 +34946,7 @@ setInterval(() => {
   for (const [id, pending] of attempts) {
     if (Date.now() < pending.expires + 60000)
       continue;
+    pending.stop();
     pending.attempt.cancel();
     attempts.delete(id);
   }
@@ -34959,6 +34996,7 @@ async function integration(agent, fresh = false, auto) {
     metadata: {
       source: "agent",
       agent: agent.id,
+      addedAccounts: kinds.includes(agent.id),
       accountID: agent.instance.id,
       accountLabel: agent.instance.label,
       installed: account.installed,
@@ -35050,7 +35088,8 @@ function handler(context) {
             const id = newID("att");
             const created = Date.now();
             const expires = created + 30 * 60000;
-            attempts.set(id, { agent, attempt, created, expires });
+            const stop = watchSignIn(attempt, expires, () => void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {}));
+            attempts.set(id, { agent, attempt, created, expires, stop });
             return located({ attemptID: id, url: attempt.url, instructions: attempt.instructions, mode: attempt.mode, acceptsCode: attempt.acceptsCode || undefined, userCode: attempt.userCode, time: { created, expires } });
           }
           const pending = d ? attempts.get(d) : undefined;
@@ -35059,13 +35098,12 @@ function handler(context) {
           if (method === "GET" && !e) {
             const expired = Date.now() > pending.expires;
             const status = expired ? { status: "expired" } : pending.attempt.status();
-            if (expired)
+            if (expired) {
+              pending.stop();
               pending.attempt.cancel();
+            }
             if (status.status !== "pending")
               attempts.delete(d);
-            if (status.status === "complete") {
-              context.limits?.readAgain(pending.agent.providerID).then(() => context.usage?.refresh()).catch(() => {});
-            }
             return located(status);
           }
           if (method === "POST" && e === "complete") {
@@ -35076,6 +35114,7 @@ function handler(context) {
             return json15({});
           }
           if (method === "DELETE") {
+            pending.stop();
             pending.attempt.cancel();
             attempts.delete(d);
             return json15({});
@@ -35086,8 +35125,7 @@ function handler(context) {
           if (!agent.signInWithKey)
             return error2(400, `${agent.name} doesn't take a key here.`);
           await agent.signInWithKey(String(key ?? "").trim());
-          await context.limits?.readAgain(agent.providerID);
-          await context.usage?.refresh();
+          context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {});
           return json15({});
         }
         if (b === "install" && method === "POST") {
@@ -35301,6 +35339,8 @@ function handler(context) {
           return json15({});
         }
         if (method === "DELETE") {
+          if (url.searchParams.get("onlyUnsigned") === "1" && (await target.account(true)).signedIn)
+            return json15({});
           sessions.forgetProvider(target.providerID);
           await target.removeAccount?.().catch(() => {});
           target.shutdown?.();
@@ -36826,4 +36866,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 6b61593f32b896f26933459d9f6ed713d55169d630a1adcc33f39840ad0b21e0
+// Built from Packages/Box/src/agents e2bb15d55152197d41ff57cf7681188c94f132e0dce899efe369acbe96a5f6aa

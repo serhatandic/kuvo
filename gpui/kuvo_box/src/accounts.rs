@@ -434,12 +434,18 @@ impl BoxClient {
         self.done(&Request::post(format!("kuvo/agents/api/integration/{}/disconnect", segment(account)), json!({})))
     }
 
-    /// Removes an account you added beside an agent's own sign-in.
+    /// Creates a separate account beside the agent’s own sign-in.
     pub fn add_agent_account(&self, account: &str) -> Result<String> {
         let value: serde_json::Value = self.value(&Request::post("kuvo/agents/api/kuvo/accounts", json!({ "provider": account })))?;
         value["data"]["providerID"].as_str().map(str::to_owned).ok_or_else(|| Error::BadAnswer("Missing added account".into()))
     }
 
+    /// Removes an unfinished added account; a sign-in that completed meanwhile stays.
+    pub fn remove_unfinished_agent_account(&self, account: &str) -> Result<()> {
+        self.done(&Request::delete(format!("kuvo/agents/api/kuvo/accounts/{}?onlyUnsigned=1", segment(account))))
+    }
+
+    /// Removes an account you added beside an agent’s own sign-in.
     pub fn remove_agent_account(&self, account: &str) -> Result<()> {
         self.done(&Request::delete(format!("kuvo/agents/api/kuvo/accounts/{}", segment(account))))
     }

@@ -218,12 +218,12 @@ impl Default for Settings {
             integration("claude-agent", "Claude Agent", json!([]), json!({})),
         ];
         let agents = vec![
-            integration("claude-code", "Claude Code", signed_in("sam@example.com", "oauth"), json!({ "agent": "claude", "installed": true, "version": "2.4.1", "remoteSignIn": true })),
-            integration("claude-code@w0rk1a2b", "Claude Code · Work", signed_in("sam@studio.example", "oauth"), json!({ "agent": "claude", "installed": true, "version": "2.4.1", "accountID": "w0rk1a2b", "accountLabel": "Work", "remoteSignIn": true })),
-            integration("codex-cli", "Codex", signed_in("sam@example.com", "oauth"), json!({ "agent": "codex", "installed": true, "version": "0.98.0", "signsOut": true, "remoteSignIn": true })),
-            integration("antigravity", "Antigravity", signed_in("sam@example.com", "oauth"), json!({ "agent": "antigravity", "installed": true, "signInEnded": true, "remoteSignIn": true })),
-            integration("cursor", "Cursor", json!([]), json!({ "agent": "cursor", "installed": true, "version": "1.9.0", "remoteSignIn": true })),
-            integration("grok-cli", "Grok", json!([]), json!({ "agent": "grok", "installed": false, "install": "npm install -g @stand-in/grok-cli", "remoteSignIn": true })),
+            integration("claude-code", "Claude Code", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "claude", "installed": true, "version": "2.4.1", "remoteSignIn": true })),
+            integration("claude-code@w0rk1a2b", "Claude Code · Work", signed_in("sam@studio.example", "oauth"), json!({ "addedAccounts": true, "agent": "claude", "installed": true, "version": "2.4.1", "accountID": "w0rk1a2b", "accountLabel": "Work", "remoteSignIn": true })),
+            integration("codex-cli", "Codex", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "codex", "installed": true, "version": "0.98.0", "signsOut": true, "remoteSignIn": true })),
+            integration("antigravity", "Antigravity", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "antigravity", "installed": true, "signInEnded": true, "remoteSignIn": true })),
+            integration("cursor", "Cursor", json!([]), json!({ "addedAccounts": true, "agent": "cursor", "installed": true, "version": "1.9.0", "remoteSignIn": true })),
+            integration("grok-cli", "Grok", json!([]), json!({ "addedAccounts": true, "agent": "grok", "installed": false, "install": "npm install -g @stand-in/grok-cli", "remoteSignIn": true })),
         ];
         let mut all = BTreeMap::new();
         let browser_sign_in = json!([{ "type": "oauth", "id": "browser", "label": "Sign in" }]);
@@ -396,6 +396,24 @@ impl Settings {
         let api: Vec<&str> = if agents_side { segments[3..].to_vec() } else if route.starts_with("api/") { segments[1..].to_vec() } else { Vec::new() };
         if agents_side && self.agents_down && api.first() == Some(&"integration") {
             return Some((503, json!({ "message": "The coding agents aren’t running." })));
+        }
+        if agents_side && api.as_slice() == ["kuvo", "accounts"] && method == "POST" {
+            let provider = body["provider"].as_str().unwrap_or_default();
+            let Some(mut account) = self.agents.iter().find(|each| each["id"] == provider).cloned() else {
+                return Some((404, json!({ "message": "No such agent." })));
+            };
+            self.next += 1;
+            let id = format!("{}@added{}", provider.split('@').next().unwrap_or(provider), self.next);
+            account["id"] = json!(id);
+            account["metadata"]["accountID"] = json!(format!("added{}", self.next));
+            account["connections"] = json!([]);
+            if let Some(ways) = self.ways_of(true, provider) { self.ways.insert(format!("agents:{id}"), ways); }
+            self.agents.push(account);
+            return Some((200, json!({ "data": { "providerID": id } })));
+        }
+        if agents_side && api.len() == 3 && api[0..2] == ["kuvo", "accounts"] && method == "DELETE" {
+            self.agents.retain(|each| each["id"] != api[2] || (query("onlyUnsigned").as_deref() == Some("1") && each["connections"].as_array().is_some_and(|connections| !connections.is_empty())));
+            return Some((200, json!({})));
         }
         if !api.is_empty()
             && let Some(answer) = self.integration_answer(method, agents_side, &api, body)
@@ -819,7 +837,7 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         } else if signs_in {
             actions.push(if !said.is_empty() || state == "ended" { sign_in("signInAgain", again) } else { sign_in("signIn", first) });
         }
-        if !installs && signs_in && matches!(meta["agent"].as_str(), Some("claude" | "codex" | "cursor" | "grok" | "antigravity")) {
+        if !added && !installs && signs_in && meta["addedAccounts"] == true {
             actions.push(sign_in("addAnother", another));
         }
         let latest = text(&meta["latestVersion"]);

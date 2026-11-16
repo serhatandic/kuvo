@@ -1172,7 +1172,8 @@
      "outdated": false,
      "updates": false,
      "remoteSignIn": true,
-     "install": "curl -fsSL https://claude.ai/install.sh | bash"
+     "install": "curl -fsSL https://claude.ai/install.sh | bash",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1226,7 +1227,8 @@
      "signsOut": true,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1286,7 +1288,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1346,7 +1349,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": false
+     "remoteSignIn": false,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1418,7 +1422,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1496,7 +1501,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1571,7 +1577,8 @@
      "signsOut": true,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1652,7 +1659,8 @@
      "updates": true,
      "remoteSignIn": true,
      "version": "2.1.0",
-     "latestVersion": "2.2.4"
+     "latestVersion": "2.2.4",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1741,7 +1749,8 @@
      "programUpdate": {
       "state": "updating",
       "at": 1
-     }
+     },
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1821,7 +1830,8 @@
      "outdated": true,
      "updates": false,
      "remoteSignIn": true,
-     "latestVersion": "2.2.4"
+     "latestVersion": "2.2.4",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1898,7 +1908,8 @@
      "updates": true,
      "remoteSignIn": true,
      "accountLabel": "Work",
-     "latestVersion": "2.2.4"
+     "latestVersion": "2.2.4",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1920,11 +1931,6 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
-     "sheetTitle": "Sign In to Claude Code · Work"
-    },
-    {
-     "id": "addAnother",
-     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
@@ -1974,7 +1980,8 @@
      "outdated": false,
      "updates": false,
      "remoteSignIn": true,
-     "accountLabel": "Work"
+     "accountLabel": "Work",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -1996,11 +2003,6 @@
     {
      "id": "signIn",
      "label": "Sign In",
-     "sheetTitle": "Sign In to Claude Code · Work"
-    },
-    {
-     "id": "addAnother",
-     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
@@ -2048,7 +2050,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -2112,7 +2115,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -2186,7 +2190,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -3486,7 +3491,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": false
+     "remoteSignIn": false,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -3550,7 +3556,8 @@
      "outdated": false,
      "updates": false,
      "remoteSignIn": true,
-     "accountLabel": "Work"
+     "accountLabel": "Work",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -3572,11 +3579,6 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
-     "sheetTitle": "Sign In to Claude Code · Work"
-    },
-    {
-     "id": "addAnother",
-     "label": "Add Another Account",
      "sheetTitle": "Sign In to Claude Code · Work"
     },
     {
@@ -3631,7 +3633,8 @@
      "outdated": false,
      "updates": false,
      "remoteSignIn": true,
-     "accountLabel": "Work"
+     "accountLabel": "Work",
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -3653,11 +3656,6 @@
     {
      "id": "signInAgain",
      "label": "Sign In Again",
-     "sheetTitle": "Sign In to Cursor · Work"
-    },
-    {
-     "id": "addAnother",
-     "label": "Add Another Account",
      "sheetTitle": "Sign In to Cursor · Work"
     },
     {
@@ -3717,7 +3715,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
@@ -3917,7 +3916,8 @@
      "signsOut": false,
      "outdated": false,
      "updates": false,
-     "remoteSignIn": true
+     "remoteSignIn": true,
+     "addedAccounts": true
     }
    },
    "computer": "Studio",
