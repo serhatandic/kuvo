@@ -1346,12 +1346,8 @@ function takeLegacyPeers(link, mac, peers, at, moved = []) {
   link.legacy[mac] = { at, peers: peers.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer), moved: cleanMoved(moved) };
   return true;
 }
-function macWords(link) {
-  const setup = setupDoc(link);
-  if (setup)
-    return [{ boxes: Array.isArray(setup.body.boxes) ? setup.body.boxes.slice(0, MOST_PEERS) : [], moved: setup.body.moved }];
-  return macsOf(link).map((mac) => {
-    const doc = macDoc(link, mac, "peers");
+function macWords(link, only) {
+  return macDocs(link).filter((each) => only === undefined || each.mac === only).map(({ mac, doc }) => {
     if (doc)
       return { boxes: Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, MOST_PEERS) : [], moved: doc.body.moved };
     return link?.legacy?.[mac] ? { boxes: link.legacy[mac].peers ?? [], moved: link.legacy[mac].moved } : null;
@@ -1385,9 +1381,13 @@ function movesTold(link, now = Date.now()) {
   } catch {}
   return words;
 }
-function removedBoxes(link) {
+function macDocs(link) {
   const setup = setupDoc(link);
-  const left = IS_MAC ? Array.isArray(link?.left) ? link.left : [] : (setup ? [setup] : macsOf(link).map((mac) => macDoc(link, mac, "peers"))).flatMap((doc) => {
+  const main = setup ? followedSetup(link).primary : null;
+  return [...setup ? [{ mac: main, doc: setup }] : [], ...macsOf(link).filter((mac) => mac !== main).map((mac) => ({ mac, doc: macDoc(link, mac, "peers") }))];
+}
+function removedBoxes(link) {
+  const left = IS_MAC ? Array.isArray(link?.left) ? link.left : [] : macDocs(link).map((each) => each.doc).flatMap((doc) => {
     const named = doc?.body.left;
     return Array.isArray(named) ? named.filter((key) => typeof key === "string") : [];
   });
@@ -1416,11 +1416,11 @@ function peersOf(link) {
   }
   return [...byKey.values()];
 }
-function namedBoxes(link) {
+function namedBoxes(link, only) {
   if (!link || IS_MAC)
     return [];
   const byKey = new Map;
-  for (const word of macWords(link))
+  for (const word of macWords(link, only))
     for (const box of word.boxes)
       if (fitsPeer(box) && !byKey.has(box.key))
         byKey.set(box.key, cleanPeer(box));
@@ -2055,7 +2055,6 @@ function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
       ...Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {},
       ...Array.isArray(given.boxes) ? { boxes: keptBoxes(given.boxes) } : {},
       ...typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {},
-      ...given.shared === true ? { shared: true } : {},
       ...given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {},
       ...computer ? { computer } : {}
     };
@@ -2262,6 +2261,1579 @@ var init_library = __esm(() => {
   MOST_COUNT = 2 ** 52;
 });
 
+// box/src/link/peers/reach.ts
+import fs63 from "node:fs";
+import path67 from "node:path";
+function readReach(file = PEER_REACH) {
+  try {
+    const kept = JSON.parse(fs63.readFileSync(file, "utf8"));
+    return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
+  } catch {
+    return {};
+  }
+}
+function noteUnreachable(address, now = Date.now()) {
+  const peer = peersOf(readLink()).find((each) => each.address === address.toString("base64url"));
+  if (!peer)
+    return;
+  if (now - (readReach(PEER_CHECKED)[peer.key] ?? 0) > CHECKED_EVERY)
+    change2((checked) => {
+      checked[peer.key] = now;
+      return true;
+    }, PEER_CHECKED);
+  if (readReach()[peer.key] !== undefined)
+    return;
+  change2((reach) => {
+    if (reach[peer.key] !== undefined)
+      return false;
+    reach[peer.key] = now;
+    return true;
+  });
+}
+function noteHeard(key) {
+  if (readReach(PEER_CHECKED)[key] !== undefined)
+    change2((checked) => delete checked[key], PEER_CHECKED);
+  if (readReach()[key] === undefined)
+    return false;
+  let back = false;
+  change2((reach) => {
+    if (reach[key] === undefined)
+      return false;
+    delete reach[key];
+    back = true;
+    return true;
+  });
+  return back;
+}
+var PEER_REACH, LOCK8, change2 = (edit, file = PEER_REACH) => {
+  try {
+    fs63.mkdirSync(RUN, { recursive: true, mode: 448 });
+    locked(LOCK8, () => {
+      const reach = readReach(file);
+      if (edit(reach))
+        writePrivate(file, JSON.stringify(reach));
+    });
+  } catch {}
+}, PEER_CHECKED, CHECKED_EVERY = 300000, awaySince = (key, reach = readReach()) => reach[key] ?? null, lastFoundAway = (key, checked = readReach(PEER_CHECKED)) => checked[key] ?? null;
+var init_reach = __esm(() => {
+  init_files2();
+  init_home();
+  init_state();
+  init_known();
+  PEER_REACH = path67.join(RUN, "peer-reach.json");
+  LOCK8 = path67.join(RUN, ".peer-reach.lock");
+  PEER_CHECKED = path67.join(RUN, "peer-reach-checked.json");
+});
+
+// box/src/link/work-queue/sources.ts
+function issueAt(given) {
+  if (typeof given !== "string")
+    return null;
+  const text = given.trim();
+  const found = text.match(STORED) ?? text.match(PAGE);
+  if (!found)
+    return null;
+  const [, owner, repo, digits] = found;
+  const number = Number(digits);
+  if (repo === "." || repo === ".." || !(number >= 1 && number <= 2 ** 31 - 1))
+    return null;
+  return { host: GITHUB_HOST, owner, repo, number };
+}
+var GITHUB_HOST = "github.com", OWNER = "[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})", REPO = "[A-Za-z0-9_.-]{1,100}", STORED, PAGE, refText = (at) => `gh:${at.owner}/${at.repo}#${at.number}`, sourceKey = (at) => `${at.host}/${at.owner}/${at.repo}#${at.number}`.toLowerCase(), sourceKeyOf = (source) => {
+  const at = issueAt(source.ref);
+  return at ? sourceKey(at) : `${source.kind}:${source.ref}`.toLowerCase();
+}, sameSource = (a, b) => sourceKeyOf(a) === sourceKeyOf(b) || a.id !== undefined && a.id === b.id;
+var init_sources = __esm(() => {
+  STORED = new RegExp(`^gh:(${OWNER})/(${REPO})#(\\d{1,10})$`);
+  PAGE = new RegExp(`^https?://(?:www\\.)?github\\.com/(${OWNER})/(${REPO})/(?:issues|pull)/(\\d{1,10})(?:[/?#][^\\s]*)?$`, "i");
+});
+
+// box/src/link/work-queue/statuses.ts
+function statusNamed(given) {
+  if (typeof given !== "string" || !given.trim())
+    return null;
+  const wanted = given.trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  return STATUSES.find((each) => each.id.replace(/-/g, " ") === wanted || each.name.toLowerCase() === wanted) ?? STATUSES.find((each) => each.id === ALSO[wanted]) ?? null;
+}
+function priorityNamed(given) {
+  if (typeof given !== "string" || !given.trim())
+    return null;
+  const wanted = given.trim().toLowerCase();
+  return PRIORITIES.find((each) => each.id === wanted) ?? (wanted === "medium" || wanted === "none" ? PRIORITIES[2] : null);
+}
+function fromCategory(category, name) {
+  if (category === "next")
+    return { status: "todo" };
+  if (category === "later")
+    return { status: "backlog" };
+  if (category === "done")
+    return { status: "done" };
+  if (category === "parked")
+    return { status: "backlog", label: PARKED_LABEL };
+  if (typeof category !== "string" || !/^cat_[a-z0-9-]{1,40}$/.test(category))
+    return { status: "todo" };
+  const said = (name ?? category.slice(4).replace(/-/g, " ")).trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  if (said === "waiting on you")
+    return { status: "needs-you" };
+  if (said === "correctness sweep" || said === "edge cases")
+    return { status: "backlog", label: category };
+  return { status: "todo", label: category };
+}
+var STATUSES, PRIORITIES, STATUS_ID, PRIORITY_ID, NEEDS_YOU2 = "needs-you", isClosed = (status) => STATUSES.some((each) => each.id === status && each.closed), statusName = (id) => STATUSES.find((each) => each.id === id)?.name ?? id, priorityName = (id) => PRIORITIES.find((each) => each.id === (id ?? "normal"))?.name ?? "Normal", ALSO, colorBefore = (id) => ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => sum * 31 + (each.codePointAt(0) ?? 0) & 65535, 0) % 6], PARKED_LABEL = "lbl_parked";
+var init_statuses = __esm(() => {
+  STATUSES = [
+    { id: "needs-you", name: "Needs you", closed: false },
+    { id: "in-review", name: "In review", closed: false },
+    { id: "in-progress", name: "In progress", closed: false },
+    { id: "waiting", name: "Waiting", closed: false },
+    { id: "todo", name: "Todo", closed: false },
+    { id: "backlog", name: "Backlog", closed: false },
+    { id: "done", name: "Done", closed: true },
+    { id: "canceled", name: "Canceled", closed: true }
+  ];
+  PRIORITIES = [
+    { id: "urgent", name: "Urgent" },
+    { id: "high", name: "High" },
+    { id: "normal", name: "Normal" },
+    { id: "low", name: "Low" }
+  ];
+  STATUS_ID = /^(?:needs-you|in-review|in-progress|waiting|todo|backlog|done|canceled)$/;
+  PRIORITY_ID = /^(?:urgent|high|normal|low)$/;
+  ALSO = {
+    next: "todo",
+    "to do": "todo",
+    later: "backlog",
+    cancelled: "canceled",
+    "waiting on you": "needs-you",
+    "needs user": "needs-you",
+    review: "in-review",
+    "in-review": "in-review",
+    doing: "in-progress",
+    blocked: "waiting"
+  };
+});
+
+// box/src/link/work-queue/migrate.ts
+import crypto22 from "node:crypto";
+import fs66 from "node:fs";
+import path70 from "node:path";
+function forgetMigrated() {
+  done = false;
+}
+function migrateItem(item, name) {
+  if (typeof item.status === "string")
+    return false;
+  const to = (category) => fromCategory(category, typeof category === "string" ? name(category) : undefined);
+  const { status, label } = to(item.category);
+  const sessions = (Array.isArray(item.sessions) ? item.sessions : []).flatMap((each) => isObject(each) && typeof each.session === "string" ? [each.session] : []);
+  const events = Array.isArray(item.events) ? item.events.filter(isObject) : [];
+  const lastWord = (session) => [...events].reverse().find((each) => each.kind === "done" || (each.kind === "started" || each.kind === "stopped") && isObject(each.by) && each.by.session === session);
+  const working = !item.removed && !isClosed(status) && sessions.some((session) => lastWord(session)?.kind === "started");
+  for (const each of events) {
+    if (each.kind !== "moved")
+      continue;
+    for (const side of ["from", "to"]) {
+      if (typeof each[side] !== "string")
+        continue;
+      const now = to(each[side]);
+      each[side] = now.status;
+      if (now.label)
+        each[`${side}Label`] = now.label;
+    }
+  }
+  item.status = status;
+  item.labels = label ? [label] : [];
+  delete item.category;
+  return working;
+}
+function migrate() {
+  fs66.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
+  const nothing = !queueFiles2(QUEUES).length && !fs66.existsSync(CATEGORIES_FILE);
+  if (nothing && !fs66.existsSync(BEFORE))
+    return void writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now() }));
+  if (!fs66.existsSync(BEFORE)) {
+    for (const name of fs66.readdirSync(WORK_QUEUE))
+      if (name.startsWith("before-statuses."))
+        fs66.rmSync(path70.join(WORK_QUEUE, name), { recursive: true, force: true });
+    const making = path70.join(WORK_QUEUE, `before-statuses.${crypto22.randomBytes(6).toString("hex")}`);
+    fs66.mkdirSync(path70.join(making, "queues"), { recursive: true, mode: 448 });
+    const copy = (from, to) => {
+      fs66.copyFileSync(from, to);
+      const handle = fs66.openSync(to, "r");
+      try {
+        fs66.fsyncSync(handle);
+      } finally {
+        fs66.closeSync(handle);
+      }
+    };
+    for (const name of queueFiles2(QUEUES))
+      copy(path70.join(QUEUES, name), path70.join(making, "queues", name));
+    if (fs66.existsSync(CATEGORIES_FILE))
+      copy(CATEGORIES_FILE, path70.join(making, "categories.json"));
+    onDisk(path70.join(making, "queues"));
+    onDisk(making);
+    fs66.renameSync(making, BEFORE);
+    onDisk(WORK_QUEUE);
+  }
+  if (!fs66.statSync(path70.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
+    throw new Error(`${BEFORE} isn't the copy of what was kept`);
+  const kept = jsonOf(path70.join(BEFORE, "categories.json"));
+  const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : []).filter((each) => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
+  const names = new Map(custom.map((each) => [each.id, each.name]));
+  const customIDs = custom.map((each) => each.id);
+  const was = [];
+  const started = [];
+  for (const name of queueFiles2(path70.join(BEFORE, "queues"))) {
+    const queue = jsonOf(path70.join(BEFORE, "queues", name));
+    if (!isObject(queue) || !Array.isArray(queue.items))
+      continue;
+    for (const each of queue.items) {
+      if (!isObject(each) || typeof each.id !== "string" || typeof each.status === "string")
+        continue;
+      const said = structuredClone(each);
+      if (migrateItem(said, (id) => names.get(id)))
+        started.push(each.id);
+      was.push({ id: each.id, category: each.category, order: typeof each.order === "number" && Number.isFinite(each.order) ? each.order : 0, said });
+    }
+  }
+  const order = new Map;
+  const byStatus = new Map;
+  for (const each of was)
+    byStatus.set(String(each.said.status), [...byStatus.get(String(each.said.status)) ?? [], each]);
+  for (const group of byStatus.values()) {
+    group.sort((a, b) => placeOf(a.category, customIDs) - placeOf(b.category, customIDs) || a.order - b.order || a.id.localeCompare(b.id));
+    group.forEach((each, index) => order.set(each.id, index));
+  }
+  {
+    const used = new Set(was.flatMap((each) => Array.isArray(each.said.labels) ? each.said.labels : []));
+    const becameStatus = (each) => fromCategory(each.id, each.name).label === undefined;
+    const made = [
+      ...custom.filter((each) => !becameStatus(each)).map((each) => ({ id: each.id, name: plainName(each.name).slice(0, 40) || each.id.slice(4), color: colorBefore(each.id) })),
+      ...[...used].filter((id) => id !== PARKED_LABEL && !names.has(id)).sort().map((id) => ({ id, name: id.slice(4).replace(/-/g, " "), color: colorBefore(id) })),
+      ...used.has(PARKED_LABEL) ? [{ id: PARKED_LABEL, name: "Parked", color: "graphite" }] : []
+    ];
+    const kept = jsonOf(LABELS_FILE);
+    const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
+    const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
+    const needed = new Set(queueFiles2(QUEUES).flatMap((name) => {
+      const queue = jsonOf(path70.join(QUEUES, name));
+      return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap((each) => isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : []) : [];
+    }));
+    const more = made.filter((each) => !has.has(each.id) && (kept === null || needed.has(each.id)));
+    if (more.length)
+      writePrivate(LABELS_FILE, JSON.stringify({ ...isObject(kept) ? kept : {}, labels: [...there, ...more] }));
+  }
+  for (const name of queueFiles2(QUEUES)) {
+    const file = path70.join(QUEUES, name);
+    const queue = jsonOf(file);
+    if (!isObject(queue) || !Array.isArray(queue.items))
+      continue;
+    let changed = false;
+    queue.items = queue.items.map((each) => {
+      if (!isObject(each) || typeof each.status === "string")
+        return each;
+      changed = true;
+      migrateItem(each, (id) => names.get(id));
+      const place = typeof each.id === "string" ? order.get(each.id) : undefined;
+      if (place !== undefined)
+        each.order = place;
+      return each;
+    });
+    if (changed)
+      writePrivate(file, JSON.stringify(queue));
+  }
+  fs66.rmSync(CATEGORIES_FILE, { force: true });
+  writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now(), ...started.length ? { started } : {} }));
+}
+function startedThen() {
+  const kept = jsonOf(MODEL_FILE);
+  return isObject(kept) && Array.isArray(kept.started) ? kept.started.filter((each) => typeof each === "string") : [];
+}
+function forgetStarted() {
+  const kept = jsonOf(MODEL_FILE);
+  if (!isObject(kept) || kept.started === undefined)
+    return;
+  const { started: _, ...rest } = kept;
+  writePrivate(MODEL_FILE, JSON.stringify(rest));
+}
+function migrateOnce() {
+  if (done)
+    return;
+  const kept = jsonOf(MODEL_FILE);
+  if (isObject(kept) && typeof kept.model === "number" && kept.model >= MODEL2) {
+    done = true;
+    return;
+  }
+  if (!fs66.existsSync(WORK_QUEUE))
+    return;
+  fs66.accessSync(WORK_QUEUE, fs66.constants.W_OK);
+  try {
+    fs66.mkdirSync(MOVING2);
+  } catch (error) {
+    if (error.code !== "EEXIST")
+      throw error;
+    const since = fs66.statSync(MOVING2, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    if (Date.now() - since < 120000)
+      throw new Error("another process is moving them over now");
+    fs66.rmSync(MOVING2, { recursive: true, force: true });
+    fs66.mkdirSync(MOVING2);
+  }
+  try {
+    locked(LOCK11, () => {
+      const again = jsonOf(MODEL_FILE);
+      if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL2))
+        migrate();
+    }, { stale: 60000, wait: 1e4 });
+  } finally {
+    fs66.rmSync(MOVING2, { recursive: true, force: true });
+  }
+  done = true;
+}
+var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LOCK11, MOVING2, MODEL_FILE, BEFORE, MODEL2 = 2, done = false, jsonOf = (file) => {
+  try {
+    return JSON.parse(fs66.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}, queueFiles2 = (folder) => {
+  try {
+    return fs66.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
+  } catch {
+    return [];
+  }
+}, placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2, onDisk = (folder) => {
+  try {
+    const handle = fs66.openSync(folder, "r");
+    try {
+      fs66.fsyncSync(handle);
+    } finally {
+      fs66.closeSync(handle);
+    }
+  } catch {}
+};
+var init_migrate = __esm(() => {
+  init_text();
+  init_files2();
+  init_home();
+  init_statuses();
+  WORK_QUEUE = path70.join(RUN, "work-queue");
+  QUEUES = path70.join(WORK_QUEUE, "queues");
+  CATEGORIES_FILE = path70.join(WORK_QUEUE, "categories.json");
+  LABELS_FILE = path70.join(WORK_QUEUE, "labels.json");
+  LOCK11 = path70.join(WORK_QUEUE, ".lock");
+  MOVING2 = path70.join(WORK_QUEUE, ".moving-to-statuses");
+  MODEL_FILE = path70.join(WORK_QUEUE, "model.json");
+  BEFORE = path70.join(WORK_QUEUE, "before-statuses");
+});
+
+// box/src/link/work-queue/store.ts
+import crypto23 from "node:crypto";
+import fs67 from "node:fs";
+import path71 from "node:path";
+function itemOf(given, owner) {
+  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string")
+    return null;
+  const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
+  const labels = before ? before.label ? [before.label] : [] : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
+  const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } } : { at: 0, by: { user: true } };
+  const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
+  const list = (value, keep) => Array.isArray(value) ? value.filter((each) => isObject(each) && keep(each)) : [];
+  const unknown = Object.fromEntries(Object.entries(given).filter(([key]) => !KNOWN2.has(key)));
+  return {
+    ...unknown,
+    id: given.id,
+    ...typeof given.number === "number" && Number.isInteger(given.number) && given.number > 0 ? { number: given.number } : {},
+    owner,
+    title: given.title,
+    body: typeof given.body === "string" ? given.body : "",
+    status: before ? before.status : given.status.slice(0, 40),
+    order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
+    ...typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {},
+    labels,
+    ...assigneeOf(given.assignee) ? { assignee: assigneeOf(given.assignee) } : {},
+    ...dayOf(given.due) ? { due: dayOf(given.due) } : {},
+    ...isObject(given.progress) ? { progress: { ...typeof given.progress.value === "number" ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: given.progress.note } : {} } } : {},
+    notes: list(given.notes, (each) => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
+    ...Array.isArray(given.events) ? { events: list(given.events, eventKept).slice(-MOST_EVENTS) } : {},
+    files: list(given.files, (each) => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
+    links: list(given.links, (each) => typeof each.url === "string"),
+    sessions: list(given.sessions, (each) => typeof each.session === "string" && SESSION2.test(each.session)),
+    ...Array.isArray(given.handed) ? { handed: list(given.handed, (each) => typeof each.from === "string" && typeof each.to === "string") } : {},
+    ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
+    ...typeof given.wanted === "number" && Number.isInteger(given.wanted) && given.wanted > 0 ? { wanted: given.wanted } : {},
+    ...typeof given.importedAs === "number" && Number.isInteger(given.importedAs) && given.importedAs > 0 ? { importedAs: given.importedAs } : {},
+    ...given.backGranted === true ? { backGranted: true } : {},
+    ...given.stays === true ? { stays: true } : {},
+    ...isObject(given.source) && typeof given.source.kind === "string" && typeof given.source.ref === "string" ? { source: given.source } : {},
+    ...handingOf(given.handing) ? { handing: handingOf(given.handing) } : {},
+    created,
+    updated,
+    ...typeof given.doneAt === "number" ? { doneAt: given.doneAt } : {},
+    ...isObject(given.removed) && typeof given.removed.at === "number" ? { removed: { at: given.removed.at, by: whoOf(given.removed.by) ?? { user: true } } } : {}
+  };
+}
+function migratedToRead() {
+  try {
+    migrateOnce();
+  } catch (error) {
+    if (!saidUnmoved)
+      console.error(`Work Queue: its items couldn't be moved over to statuses yet (${error?.message ?? error}): shown as they are, and tried again.`);
+    saidUnmoved = true;
+  }
+}
+function migratedToChange() {
+  try {
+    migrateOnce();
+  } catch (error) {
+    const why = String(error?.message ?? error);
+    if (/another process/.test(why))
+      throw new Refusal("The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).");
+    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${why}), so nothing was changed. Check ${WORK_QUEUE2} (is the disk full?), then try again.`);
+  }
+}
+function readQueue(owner) {
+  migratedToRead();
+  const file = fileOf2(owner);
+  let text;
+  try {
+    text = fs67.readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return { owner, items: [] };
+    throw new UnreadableQueue(owner, false);
+  }
+  let kept;
+  try {
+    kept = JSON.parse(text);
+  } catch {
+    throw new UnreadableQueue(owner, true);
+  }
+  if (!isObject(kept) || !Array.isArray(kept.items))
+    throw new UnreadableQueue(owner, true);
+  const seen = new Set;
+  const items = kept.items.map((each) => itemOf(each, owner)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  return { owner, items };
+}
+function setAside(owner, now = Date.now()) {
+  const aside = path71.join(QUEUES2, "aside", `${owner}-${now}.json`);
+  try {
+    fs67.mkdirSync(path71.dirname(aside), { recursive: true, mode: 448 });
+    fs67.renameSync(fileOf2(owner), aside);
+    return aside;
+  } catch {
+    return null;
+  }
+}
+function refusedOver(error, now) {
+  if (!error.aside)
+    return new QueueSetAside(`${error.message} just now, so nothing was changed: try again.`);
+  const aside = setAside(error.owner, now);
+  return new QueueSetAside(aside ? `${error.message}, so nothing was changed. It's kept at ${aside} for you to look at; try again to carry on with an empty queue for ${error.owner}.` : `${error.message}, so nothing was changed, and it couldn't be moved aside: look at ${fileOf2(error.owner)}.`);
+}
+function readQueueSettingAside(owner, now = Date.now()) {
+  try {
+    return readQueue(owner);
+  } catch (error) {
+    if (!(error instanceof UnreadableQueue) || !error.aside || !setAside(owner, now))
+      throw error;
+    return { owner, items: [] };
+  }
+}
+function owners() {
+  migratedToRead();
+  return listOf(QUEUES2).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((owner) => OWNER2.test(owner));
+}
+function readKeptQueue(owner) {
+  if (!KEPT_OWNER.test(owner) || OWNER2.test(owner))
+    return null;
+  let kept;
+  try {
+    kept = JSON.parse(fs67.readFileSync(fileOf2(owner), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject(kept) || !Array.isArray(kept.items))
+    return null;
+  const items = kept.items.map((each) => itemOf(each, owner));
+  return items.every((each) => each !== null) ? { owner, items } : null;
+}
+function onceEach(queues) {
+  const seen = new Map;
+  for (const queue of queues) {
+    for (const item of [...queue.items]) {
+      const other = seen.get(item.id);
+      if (!other) {
+        seen.set(item.id, { queue, item });
+        continue;
+      }
+      const loser = item.updated.at >= other.item.updated.at ? other.queue : queue;
+      loser.items = loser.items.filter((each) => each.id !== item.id);
+      if (loser === other.queue)
+        seen.set(item.id, { queue, item });
+    }
+  }
+  return queues;
+}
+
+class Book {
+  queues = new Map;
+  before = new Map;
+  constructor() {
+    for (const owner of owners())
+      this.load(owner);
+    onceEach([...this.queues.values()]);
+  }
+  load(owner) {
+    let queue = this.queues.get(owner);
+    if (!queue) {
+      queue = readQueue(owner);
+      this.queues.set(owner, queue);
+      this.before.set(owner, JSON.stringify(queue.items));
+    }
+    return queue;
+  }
+  queue(owner) {
+    if (!OWNER2.test(owner) && !this.queues.has(owner)) {
+      const kept = fs67.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
+      if (!kept)
+        throw new Refusal(`${owner}'s Work Queue was kept by a newer Kuvo Code, in a way this one can't read: it's left as it is.`);
+      this.queues.set(owner, kept);
+      this.before.set(owner, JSON.stringify(kept.items));
+    }
+    return this.load(owner);
+  }
+  items() {
+    return [...this.queues.values()].filter((queue) => OWNER2.test(queue.owner)).flatMap((queue) => queue.items);
+  }
+  find(ref) {
+    return this.findAll(ref)[0] ?? null;
+  }
+  findAll(ref) {
+    return matching2(this.items(), ref);
+  }
+  give(item, owner) {
+    const from = this.load(item.owner);
+    from.items = from.items.filter((each) => each.id !== item.id);
+    item.owner = owner;
+    this.load(owner).items.push(item);
+  }
+  save() {
+    let any = false;
+    const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
+    const gained = (owner, queue) => {
+      const had = new Set(JSON.parse(this.before.get(owner) ?? "[]").map((item) => item.id));
+      return queue.items.some((item) => !had.has(item.id));
+    };
+    changed.sort(([a, queueA], [b, queueB]) => Number(gained(b, queueB)) - Number(gained(a, queueA)));
+    for (const [owner, queue] of changed) {
+      any = true;
+      if (!queue.items.length)
+        fs67.rmSync(fileOf2(owner), { force: true });
+      else
+        writePrivate(fileOf2(owner), JSON.stringify({ owner, items: queue.items }));
+      this.before.set(owner, JSON.stringify(queue.items));
+    }
+    return any;
+  }
+}
+function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
+  fs67.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+  migratedToChange();
+  const { value, changed } = locked(LOCK12, () => {
+    let book;
+    try {
+      book = new Book;
+    } catch (error) {
+      if (!(error instanceof UnreadableQueue))
+        throw error;
+      const refused = refusedOver(error, now);
+      if (!onItsOwn || !error.aside)
+        throw refused;
+      console.error(`Work Queue: ${refused.message}`);
+      book = new Book;
+    }
+    const purged = [];
+    for (const queue of owners().map((owner) => book.queue(owner))) {
+      const gone = queue.items.filter((item) => item.removed && now - item.removed.at > KEPT_REMOVED);
+      if (!gone.length)
+        continue;
+      queue.items = queue.items.filter((item) => !gone.includes(item));
+      purged.push(...gone.map((item) => item.id));
+    }
+    const value = work(book);
+    const changed = book.save();
+    for (const id of purged)
+      fs67.rmSync(path71.join(FILES2, id), { recursive: true, force: true });
+    return { value, changed };
+  });
+  if (changed)
+    noteQueuesChanged();
+  return value;
+}
+function noteQueuesChanged() {
+  for (const tell of queueFollowers2)
+    tell();
+}
+function placeIn(items, status, { top = false } = {}) {
+  const orders = items.filter((item) => item.status === status && !item.removed).map((item) => item.order);
+  if (!orders.length)
+    return 0;
+  return top ? Math.min(...orders) - 1 : Math.max(...orders) + 1;
+}
+function placeBeside(items, beside, after, moving) {
+  const others = () => items.filter((item) => item.status === beside.status && !item.removed && item.id !== beside.id && item.id !== moving?.id).map((item) => item.order).sort((a, b) => a - b);
+  const neighbor = () => after ? others().find((order) => order > beside.order) : [...others()].reverse().find((order) => order < beside.order);
+  let next = neighbor();
+  if (next !== undefined && Math.abs(next - beside.order) < 0.000001) {
+    items.filter((item) => item.status === beside.status && !item.removed).sort((a, b) => a.order - b.order).forEach((item, index) => {
+      item.order = index;
+    });
+    next = neighbor();
+  }
+  return next === undefined ? beside.order + (after ? 1 : -1) : (beside.order + next) / 2;
+}
+function noteHanded(item, from, to, at) {
+  item.handedBy ??= from;
+  item.handed = [...item.handed ?? [], { from, to, at }].slice(-MOST_HANDED);
+}
+var WORK_QUEUE2, QUEUES2, FILES2, LOCK12, YOURS = "usr_you", OWNER2, KEPT_OWNER, ITEM_ID, SESSION2, KEPT_REMOVED, MOST_ITEMS = 2000, MOST_TITLE = 200, MOST_BODY = 1e5, MOST_NOTE = 20000, MOST_NOTES = 200, MOST_FILE = 25000000, MOST_FILES = 50, MOST_HANDED_FILES = 4000000, MOST_LINKS = 50, MOST_EVENTS = 50, MOST_HANDED = 20, whoWords = (who) => {
+  const given = who;
+  if (given.user === true)
+    return "the user";
+  if (typeof given.name === "string" && given.name)
+    return given.name;
+  return typeof given.source === "string" && given.source ? given.source : "someone else";
+}, byUser = (who) => who.user === true, assigneeOf = (given) => isObject(given) && (given.kind === "bot" || given.kind === "agent") && typeof given.id === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(given.id) ? { kind: given.kind, id: given.id } : null, dayOf = (given) => {
+  if (typeof given !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(given.trim()))
+    return null;
+  const day = new Date(`${given.trim()}T00:00:00Z`);
+  return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
+}, queueFollowers2, fileOf2 = (owner) => path71.join(QUEUES2, `${owner}.json`), newItemID = () => `wqi_${crypto23.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
+  if (!isObject(given))
+    return null;
+  if (given.user === true)
+    return { user: true };
+  if (typeof given.session === "string" && typeof given.name === "string")
+    return { session: given.session, name: given.name };
+  const kept = Object.fromEntries(Object.entries(given).filter(([key, value]) => key.length <= 40 && (typeof value === "string" ? value.length <= 200 : typeof value === "number" || typeof value === "boolean")).slice(0, 10));
+  return Object.keys(kept).length ? kept : null;
+}, FILE_NAME, KNOWN2, handingOf = (given) => {
+  if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER2.test(given.to) || typeof given.key !== "string" || typeof given.at !== "number")
+    return null;
+  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...typeof given.sent === "number" ? { sent: given.sent } : {}, ...typeof given.missing === "number" ? { missing: given.missing } : {} };
+}, MOST_EVENT = 2000, eventKept = (each) => typeof each.at === "number" && Number.isFinite(each.at) && typeof each.kind === "string" && each.kind.length > 0 && each.kind.length <= 40 && whoOf(each.by) !== null && JSON.stringify(each.by).length <= 500 && JSON.stringify(each).length <= MOST_EVENT, saidUnmoved = false, UnreadableQueue, readQueueOrNone = (owner) => {
+  try {
+    return readQueue(owner);
+  } catch (error) {
+    if (error instanceof UnreadableQueue)
+      return { owner, items: [] };
+    throw error;
+  }
+}, readAll = () => onceEach(owners().map(readQueueOrNone)), allItems = () => readAll().flatMap((queue) => queue.items), Refusal, QueueSetAside, matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf2 = (item) => path71.join(FILES2, item);
+var init_store = __esm(() => {
+  init_files2();
+  init_home();
+  init_sources();
+  init_migrate();
+  init_statuses();
+  WORK_QUEUE2 = path71.join(RUN, "work-queue");
+  QUEUES2 = path71.join(WORK_QUEUE2, "queues");
+  FILES2 = path71.join(WORK_QUEUE2, "files");
+  LOCK12 = path71.join(WORK_QUEUE2, ".lock");
+  OWNER2 = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
+  KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
+  ITEM_ID = /^wqi_[A-Za-z0-9_-]{20}$/;
+  SESSION2 = /^ses_[A-Za-z0-9]{1,60}$/;
+  KEPT_REMOVED = 30 * 86400000;
+  queueFollowers2 = new Set;
+  FILE_NAME = /^(?!\.\.?$)[^/\\\0]{1,200}$/;
+  KNOWN2 = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
+  UnreadableQueue = class UnreadableQueue extends Error {
+    owner;
+    aside;
+    constructor(owner, aside) {
+      super(`${owner}'s Work Queue file can't be read`);
+      this.owner = owner;
+      this.aside = aside;
+    }
+  };
+  Refusal = class Refusal extends Error {
+  };
+  QueueSetAside = class QueueSetAside extends Refusal {
+  };
+});
+
+// box/src/link/work-queue/labels.ts
+import path72 from "node:path";
+function labelOf(given) {
+  if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string")
+    return null;
+  const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
+  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
+}
+function followsBy(says) {
+  follows = says;
+}
+function readKept6() {
+  try {
+    const kept = JSON.parse(textOf(LABELS_FILE2) ?? "null");
+    const seen = new Set;
+    const labels = (isObject(kept) && Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+    const fromPrimary = isObject(kept) && Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each) => typeof each === "string" && LABEL_ID.test(each)) : [];
+    return { labels, fromPrimary, ...isObject(kept) && typeof kept.primary === "string" ? { primary: kept.primary } : {} };
+  } catch {
+    return { labels: [], fromPrimary: [] };
+  }
+}
+function labelNamed(given, among = labels()) {
+  if (typeof given !== "string" || !given.trim())
+    return null;
+  const wanted = given.trim().toLowerCase();
+  return among.find((each) => each.id === wanted) ?? among.find((each) => each.name.toLowerCase() === wanted) ?? null;
+}
+function colorFor(given) {
+  const wanted = typeof given === "string" ? given.trim().toLowerCase() : "";
+  if (wanted === "gray" || wanted === "grey")
+    return "graphite";
+  return COLOR.has(wanted) ? wanted : { refused: `${String(given)} isn't a label's colour: use ${LABEL_COLORS.join(", ")}.` };
+}
+function addLabel(name, color) {
+  const named = plainName(name).slice(0, MOST_NAME);
+  if (!named)
+    return { refused: "Say what the label is called." };
+  const slug = slugOf(named);
+  if (!slug)
+    return { refused: `${named} can't be a label's name: use letters or numbers.` };
+  const wanted = color === undefined || color === null || color === "" ? null : colorFor(color);
+  if (wanted && typeof wanted !== "string")
+    return wanted;
+  return change3((kept) => {
+    if (labelNamed(named, kept.labels))
+      return { refused: `There's a label called ${named} already.` };
+    if (kept.labels.length >= MOST_LABELS)
+      return { refused: `There are ${MOST_LABELS} labels already: remove one first.` };
+    let id = `lbl_${slug}`;
+    for (let n = 2;kept.labels.some((each) => each.id === id); n++)
+      id = `lbl_${slug.slice(0, 36)}-${n}`;
+    const used = (each) => kept.labels.filter((label) => label.color === each).length;
+    const picked = wanted ?? [...LABEL_COLORS.slice(0, -1)].sort((a, b) => used(a) - used(b))[0];
+    const made = { id, name: named, color: picked };
+    kept.labels.push(made);
+    return { done: made };
+  });
+}
+function changeLabel(which, { name, color }) {
+  const named = name === undefined ? undefined : plainName(name).slice(0, MOST_NAME);
+  if (name !== undefined && !named)
+    return { refused: "A label's name can't be empty." };
+  if (named !== undefined && !slugOf(named))
+    return { refused: `${named} can't be a label's name: use letters or numbers.` };
+  const wanted = color === undefined ? undefined : colorFor(color);
+  if (wanted !== undefined && typeof wanted !== "string")
+    return wanted;
+  if (named === undefined && wanted === undefined)
+    return { refused: "Say its new name (name), its new colour (color), or both." };
+  return change3((kept) => {
+    const found = labelNamed(which, kept.labels);
+    if (!found)
+      return { refused: `There's no label ${String(which ?? "")}.` };
+    if (kept.fromPrimary.includes(found.id) && follows())
+      return { refused: thePrimarys(found.name, "Change") };
+    const taken = named !== undefined ? labelNamed(named, kept.labels) : null;
+    if (taken && taken.id !== found.id)
+      return { refused: `There's a label called ${named} already.` };
+    if (named !== undefined)
+      found.name = named;
+    if (wanted !== undefined)
+      found.color = wanted;
+    return { done: found };
+  });
+}
+function removeLabel(which, strip) {
+  const found = labelNamed(which);
+  if (!found)
+    return { refused: `There's no label ${String(which ?? "")}.` };
+  if (readKept6().fromPrimary.includes(found.id) && follows())
+    return { refused: thePrimarys(found.name, "Remove") };
+  try {
+    strip(found.id);
+  } catch (error) {
+    if (error instanceof Refusal)
+      return { refused: error.message };
+    throw error;
+  }
+  return change3((kept) => {
+    const index = kept.labels.findIndex((each) => each.id === found.id);
+    if (index < 0)
+      return { refused: `There's no label ${found.name}.` };
+    kept.labels.splice(index, 1);
+    return { done: found };
+  });
+}
+function keepLabel(given) {
+  const label = labelOf(given);
+  if (!label)
+    return false;
+  if (labels().some((each) => each.id === label.id))
+    return true;
+  return "done" in change3((kept) => {
+    const here = kept.labels.find((each) => each.id === label.id);
+    if (here)
+      return { done: here };
+    if (kept.labels.length >= MOST_LABELS)
+      return { refused: "" };
+    kept.labels.push(label);
+    return { done: label };
+  });
+}
+function takePrimaryLabels(given, used, strip, key) {
+  const theirs = given.slice(0, MOST_LABELS);
+  const ids = new Set(theirs.map((each) => each.id));
+  const removes = (kept) => theirs.length > 0 && (kept.primary === undefined || kept.primary === key) ? kept.fromPrimary.filter((id) => !ids.has(id)) : [];
+  const worked = (kept) => {
+    const gone = new Set(removes(kept));
+    const left = kept.labels.filter((each) => !ids.has(each.id) && !gone.has(each.id));
+    const all = [...theirs, ...left];
+    for (let index = all.length - 1;index >= theirs.length && all.length > MOST_LABELS; index--)
+      if (!used(all[index].id))
+        all.splice(index, 1);
+    return { labels: all, fromPrimary: theirs.map((each) => each.id), primary: key };
+  };
+  const same = (a, b) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
+  const before = readKept6();
+  if (same(worked(before), before))
+    return;
+  try {
+    for (const id of removes(before))
+      strip(id);
+  } catch (error) {
+    if (error instanceof Refusal)
+      return;
+    throw error;
+  }
+  change3((kept) => {
+    const now = worked(kept);
+    if (same(now, kept))
+      return { refused: "" };
+    kept.labels.splice(0, kept.labels.length, ...now.labels);
+    kept.fromPrimary = now.fromPrimary;
+    kept.primary = key;
+    return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
+  });
+}
+var LABELS_FILE2, LOCK13, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, follows = () => true, labels = () => readKept6().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change3 = (work) => {
+  try {
+    migratedToChange();
+  } catch (error) {
+    if (error instanceof Refusal)
+      return { refused: error.message };
+    throw error;
+  }
+  const outcome = locked(LOCK13, () => {
+    const kept = readKept6();
+    const outcome = work(kept);
+    const fromPrimary = kept.fromPrimary.filter((id) => kept.labels.some((each) => each.id === id));
+    if ("done" in outcome)
+      writePrivate(LABELS_FILE2, JSON.stringify({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary } : {}, ...kept.primary ? { primary: kept.primary } : {} }));
+    return outcome;
+  });
+  if ("done" in outcome)
+    noteQueuesChanged();
+  return outcome;
+}, thePrimarys = (name, change) => `${name} is one of the labels this computer takes from your first computer (the one that gives the Work Queue its numbers). ${change} it there, and it's ${change === "Remove" ? "gone" : "changed"} here too.`;
+var init_labels = __esm(() => {
+  init_text();
+  init_files2();
+  init_store();
+  LABELS_FILE2 = path72.join(WORK_QUEUE2, "labels.json");
+  LOCK13 = path72.join(WORK_QUEUE2, ".labels.lock");
+  LABEL_COLORS = ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"];
+  COLOR = new Set(LABEL_COLORS);
+  LABEL_ID = /^(?:lbl|cat)_[a-z0-9-]{1,40}$/;
+});
+
+// box/src/link/work-queue/told.ts
+import fs68 from "node:fs";
+import path73 from "node:path";
+function toldItemOf(given, latest = Infinity) {
+  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
+    return null;
+  const title = words2(given.title, 200);
+  const status = typeof given.status === "string" && STATUS_ID.test(given.status) ? given.status : "todo";
+  const labels = (Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
+  const assignee = assigneeOf(given.assignee);
+  const progress = isObject(given.progress) ? { ...typeof given.progress.value === "number" && given.progress.value >= 0 && given.progress.value <= 1 ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: words2(given.progress.note, 300) } : {} } : undefined;
+  const sessions = (Array.isArray(given.sessions) ? given.sessions : []).filter((each) => isObject(each) && typeof each.session === "string" && SESSION3.test(each.session)).slice(0, 20).map((each) => ({ session: each.session, title: words2(each.title, 200) || "New Session", working: each.working === true }));
+  const lastNote = isObject(given.lastNote) && typeof given.lastNote.text === "string" ? { at: time(given.lastNote.at), by: whoOf2(given.lastNote.by), text: cut(given.lastNote.text, 500) } : undefined;
+  const source = isObject(given.source) && typeof given.source.kind === "string" && typeof given.source.ref === "string" ? Object.fromEntries(Object.entries(given.source).filter(([key, value]) => ["kind", "ref", "url", "host", "id", "name"].includes(key) && typeof value === "string").map(([key, value]) => [key, value.slice(0, 2000)])) : undefined;
+  if (source?.url && /^github/.test(source.kind) && !/^https:\/\/github\.com\//.test(source.url))
+    delete source.url;
+  const seen = source && isObject(given.seen) && typeof given.seen.state === "string" && /^[a-z_]{1,20}$/.test(given.seen.state) ? { state: given.seen.state, at: Math.min(time(given.seen.at), latest), ...typeof given.seen.checked === "number" ? { checked: Math.min(time(given.seen.checked), latest) } : {}, ...given.seen.gone === true ? { gone: true } : {} } : undefined;
+  const keptIn = seen && typeof given.keptIn === "string" && STATUS_ID.test(given.keptIn) ? given.keptIn : undefined;
+  return {
+    id: given.id,
+    ...whole(given.number) ? { number: whole(given.number) } : {},
+    ...whole(given.wanted) ? { wanted: whole(given.wanted) } : {},
+    owner: given.owner,
+    title: title || "Untitled",
+    status,
+    order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
+    priority: typeof given.priority === "string" && PRIORITY_ID.test(given.priority) ? given.priority : "normal",
+    labels,
+    ...assignee ? { assignee: { ...assignee, name: words2(isObject(given.assignee) ? given.assignee.name : "", 100) || assignee.id } } : {},
+    ...dayOf(given.due) ? { due: dayOf(given.due) } : {},
+    ...progress && Object.keys(progress).length ? { progress } : {},
+    sessions,
+    noteCount: count(given.noteCount),
+    ...lastNote ? { lastNote } : {},
+    fileCount: count(given.fileCount),
+    linkCount: count(given.linkCount),
+    ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
+    ...Array.isArray(given.handedFrom) ? { handedFrom: given.handedFrom.filter((each) => typeof each === "string" && OWNER2.test(each)).slice(0, 20) } : {},
+    ...source ? { source } : {},
+    ...seen ? { seen } : {},
+    ...keptIn ? { keptIn } : {},
+    ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER2.test(given.handing.to) ? { handing: { to: given.handing.to, name: words2(given.handing.name, 100) } } : {},
+    created: stamp2(given.created),
+    updated: stamp2(given.updated),
+    ...typeof given.doneAt === "number" ? { doneAt: time(given.doneAt) } : {}
+  };
+}
+function numberingOf(given) {
+  const kind = KIND(given.kind) ?? "machine";
+  const primary = isObject(given.primary) && typeof given.primary.key === "string" && KEY.test(given.primary.key) && KIND(given.primary.kind) ? { key: given.primary.key, kind: KIND(given.primary.kind), ...time(given.primary.since) ? { since: time(given.primary.since) } : {} } : undefined;
+  return { kind, ...time(given.since) ? { since: time(given.since) } : {}, ...whole(given.top) ? { top: whole(given.top) } : {}, ...primary ? { primary } : {}, ...typeof given.shared === "boolean" ? { shared: given.shared } : {} };
+}
+function toldOf(given, now = Date.now()) {
+  if (!isObject(given) || typeof given.id !== "string" || !/^wqt_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.at !== "number" || !Array.isArray(given.items))
+    return null;
+  if (!Array.isArray(given.labels))
+    return null;
+  const seen = new Set;
+  const latest = Math.min(given.at, now);
+  const items = given.items.slice(0, MOST_TOLD).map((each) => toldItemOf(each, latest)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf2).filter((each) => each !== null);
+  const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each) => each !== null);
+  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
+}
+function readTold3(key) {
+  if (!KEY.test(key))
+    return null;
+  try {
+    const kept = JSON.parse(fs68.readFileSync(fileOf3(key), "utf8"));
+    if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items))
+      return null;
+    if (!Array.isArray(kept.labels))
+      return null;
+    return kept;
+  } catch {
+    return null;
+  }
+}
+function keepTold2(key, told, now = Date.now()) {
+  if (!KEY.test(key))
+    return false;
+  fs68.mkdirSync(TOLD, { recursive: true, mode: 448 });
+  return locked(LOCK14, () => {
+    const kept = readTold3(key);
+    if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
+      return false;
+    writePrivate(fileOf3(key), JSON.stringify({ ...told, heard: now }));
+    return true;
+  });
+}
+function patchTold(key, id, item, deleted) {
+  if (!KEY.test(key))
+    return;
+  const fresh = toldItemOf(item);
+  if (!fresh || fresh.id !== id)
+    return;
+  const removed = isObject(item) && isObject(item.removed) && typeof item.removed.at === "number" ? item.removed.at : 0;
+  const answered = Math.max(fresh.updated.at, removed);
+  try {
+    locked(LOCK14, () => {
+      const kept = readTold3(key);
+      if (!kept)
+        return;
+      const before = kept.items.find((each) => each.id === id);
+      if (before && before.updated.at > answered)
+        return;
+      const others = kept.items.filter((each) => each.id !== id);
+      const items = deleted ? others : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...before.progress ? { progress: before.progress } : {}, ...before.handedFrom ? { handedFrom: before.handedFrom } : {} } : fresh];
+      writePrivate(fileOf3(key), JSON.stringify({ ...kept, items }));
+    });
+  } catch {}
+}
+function toldShared(key) {
+  if (!KEY.test(key))
+    return null;
+  let stamp;
+  try {
+    const stat = fs68.statSync(fileOf3(key));
+    stamp = `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    sharedSaid.delete(key);
+    return null;
+  }
+  const kept = sharedSaid.get(key);
+  if (kept?.stamp === stamp)
+    return kept.shared;
+  const told = readTold3(key);
+  if (!told)
+    return null;
+  sharedSaid.set(key, { stamp, shared: told.shared });
+  return told.shared;
+}
+var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path73.join(TOLD, `${key}.json`), SESSION3, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp2 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf2 = (given) => {
+  if (!isObject(given) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
+    return null;
+  const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
+  const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words2(given.bot.name, 100) } : undefined;
+  return { owner: given.owner, kind, title: typeof given.title === "string" ? words2(given.title, 200) : null, ...bot ? { bot } : {}, ...typeof given.startedBy === "string" && SESSION3.test(given.startedBy) ? { startedBy: given.startedBy } : {} };
+}, LOCK14, sharedSaid, toldKeys = () => listOf(TOLD).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY.test(key)), forgetTold = (key) => {
+  if (KEY.test(key))
+    fs68.rmSync(fileOf3(key), { force: true });
+};
+var init_told = __esm(() => {
+  init_text();
+  init_files2();
+  init_known();
+  init_store();
+  init_statuses();
+  init_labels();
+  TOLD = path73.join(WORK_QUEUE2, "peers");
+  SESSION3 = /^ses_[A-Za-z0-9]{1,60}$/;
+  LOCK14 = path73.join(WORK_QUEUE2, ".told.lock");
+  sharedSaid = new Map;
+});
+
+// box/src/link/work-queue/numbers.ts
+import crypto24 from "node:crypto";
+import fs69 from "node:fs";
+import path74 from "node:path";
+function readNumbers(file = NUMBERS_FILE) {
+  try {
+    const kept = JSON.parse(textOf(file) ?? "null");
+    if (!isObject(kept))
+      return { leases: [] };
+    const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number" ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}, ...Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}, ...Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {} } : undefined;
+    return {
+      ...typeof kept.primary === "string" ? { primary: kept.primary } : {},
+      ...typeof kept.since === "number" && Number.isFinite(kept.since) && kept.since > 0 ? { since: kept.since } : {},
+      ...typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {},
+      ...typeof kept.through === "string" ? { through: kept.through } : {},
+      ...typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {},
+      ...isObject(kept.given) ? { given: kept.given } : {},
+      ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
+      leases: cleanRanges(kept.leases),
+      ...Array.isArray(kept.used) ? { used: cleanRanges(kept.used) } : {},
+      ...asking ? { asking } : {}
+    };
+  } catch {
+    return { leases: [] };
+  }
+}
+function primaryOf(link = readLink(), file = NUMBERS_FILE, now = Date.now()) {
+  const setup = followedSetup(link);
+  if (!setup)
+    return rankedPrimary(link, file, now);
+  if (setup.role === "primary")
+    return { self: true };
+  const peer = peersOf(link).find((each) => each.key === setup.primary);
+  return peer?.address ? { peer } : { away: true };
+}
+function rankedPrimary(link = readLink(), file = NUMBERS_FILE, now = Date.now()) {
+  const kept = readNumbers(file);
+  const own = link ? ownKey(link) : null;
+  const gone = goneOf(link, now);
+  const all = candidatesOf(link, kept, own, file, gone);
+  const macs = IS_MAC ? [] : macsOf(link);
+  const choices = macs.length ? all.filter((each) => !each.self) : all;
+  const best = choices.sort(rank)[0];
+  const keptKey = kept.primary === "self" || own && kept.primary === own ? "self" : kept.primary;
+  let current = null;
+  if (keptKey === "self")
+    current = all.find((each) => each.self) ?? null;
+  else if (keptKey && !gone.has(keptKey)) {
+    current = all.find((each) => each.key === keptKey) ?? null;
+    const removed = removedBoxes(link);
+    const through = kept.through ? readTold3(kept.through)?.primary : undefined;
+    const movedOn = Boolean(kept.through && through && through.key !== keptKey && peersOf(link).some((peer) => peer.key === kept.through) && !gone.has(kept.through));
+    if (!current && !movedOn && !removed.has(keptKey) && !(kept.through && removed.has(kept.through)) && !(kept.lost !== undefined && now - kept.lost > LOST_FOR))
+      current = "away";
+  }
+  if (current === "away")
+    return { away: true };
+  if (current?.self && macs.length)
+    current = null;
+  const chosen = current && (!best || !earlier(best, current)) ? current : best;
+  if (!chosen)
+    return keptKey && keptKey !== "self" || macs.length ? { away: true } : { self: true };
+  if (chosen.self)
+    return { self: true };
+  if (chosen.peer?.address)
+    return { peer: chosen.peer };
+  if (chosen.via?.address)
+    return { peer: { key: chosen.key, address: "", kind: chosen.kind, name: chosen.name ?? "" }, via: chosen.via };
+  return { away: true };
+}
+function goneOf(link, now = Date.now()) {
+  const gone = new Set;
+  const reach = readReach();
+  const checked = readReach(PEER_CHECKED);
+  for (const peer of peersOf(link)) {
+    const away = awaySince(peer.key, reach);
+    const last = lastFoundAway(peer.key, checked);
+    if (away !== null && now - away > LOST_FOR && last !== null && now - last < FOUND_AWAY_WITHIN)
+      gone.add(peer.key);
+  }
+  return gone;
+}
+function keptHeardOf(link, kept, file, now) {
+  if (!kept.primary || kept.primary === "self")
+    return true;
+  const own = link ? ownKey(link) : null;
+  return kept.primary === own || candidatesOf(link, kept, own, file, goneOf(link, now)).some((each) => each.key === kept.primary);
+}
+function candidatesOf(link, kept, own, file, gone = goneOf(link, Date.now())) {
+  const all = [{ key: own ?? "self", kind: IS_MAC ? "mac" : "machine", since: kept.since ?? ownSince(Date.now(), file), self: true }];
+  const peers = peersOf(link).filter((peer) => !gone.has(peer.key));
+  for (const peer of peers)
+    all.push({ key: peer.key, kind: peer.kind, since: readTold3(peer.key)?.since ?? Number.MAX_SAFE_INTEGER, peer, name: peer.name });
+  for (const peer of peers) {
+    const named = readTold3(peer.key)?.primary;
+    if (!named || named.key === own || gone.has(named.key))
+      continue;
+    const known = all.find((each) => each.key === named.key);
+    if (known) {
+      if (known.since === Number.MAX_SAFE_INTEGER && named.since)
+        known.since = named.since;
+      continue;
+    }
+    all.push({ key: named.key, kind: named.kind, since: named.since ?? Number.MAX_SAFE_INTEGER, via: peer });
+  }
+  return all;
+}
+function ownSince(now = Date.now(), file = NUMBERS_FILE) {
+  const kept = readNumbers(file).since;
+  if (kept)
+    return kept;
+  let since = now;
+  try {
+    const made = fs69.statSync(RUN).birthtimeMs;
+    if (made > 0 && made < since)
+      since = made;
+  } catch {}
+  for (const item of allItems())
+    if (item.created.at > 0 && item.created.at < since)
+      since = item.created.at;
+  since = Math.floor(since);
+  changeNumbers((numbers) => {
+    numbers.since ??= since;
+  }, file);
+  return readNumbers(file).since ?? since;
+}
+function topOf(kept = readNumbers()) {
+  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...allItems().map((item) => item.number ?? 0));
+}
+function changeNumbers(work, file = NUMBERS_FILE) {
+  fs69.mkdirSync(path74.dirname(file), { recursive: true, mode: 448 });
+  return locked(`${path74.join(path74.dirname(file), "." + path74.basename(file))}.lock`, () => {
+    const kept = readNumbers(file);
+    const before = JSON.stringify(kept);
+    const value = work(kept);
+    if (JSON.stringify(kept) !== before)
+      writePrivate(file, JSON.stringify(kept));
+    return value;
+  });
+}
+function counterOf(kept) {
+  return kept.next ?? Math.max(0, ...allItems().map((item) => item.number ?? 0)) + 1;
+}
+function notePrimary(kept, primary, link, now) {
+  if ("away" in primary) {
+    kept.primary ??= keyOf3(primary, link);
+    return;
+  }
+  const key = keyOf3(primary, link);
+  const through = "peer" in primary ? primary.via?.key : undefined;
+  if (through)
+    kept.through = through;
+  else
+    delete kept.through;
+  if (kept.primary === key)
+    return;
+  const was = kept.primary;
+  kept.primary = key;
+  if (was === "self")
+    kept.asking ??= { id: askID(), count: BLOCK, since: now };
+  else if (key === "self" && was !== undefined)
+    kept.next = Math.max(counterOf(kept), cappedTop(Math.max(topOf(kept), toldTop())) + 1);
+}
+function toldTop() {
+  return Math.max(0, ...toldKeys().map((key) => {
+    const told = readTold3(key);
+    return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
+  }));
+}
+function movePast(top, { file = NUMBERS_FILE } = {}) {
+  if (!Number.isInteger(top) || top <= 0 || top >= MOST_NUMBER)
+    return;
+  top = cappedTop(top);
+  if ((readNumbers(file).next ?? 0) > top)
+    return;
+  changeNumbers((kept) => {
+    if (kept.primary !== "self" && kept.primary !== undefined)
+      return;
+    kept.next = Math.max(counterOf(kept), top + 1);
+  }, file);
+}
+function takeNumber(primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() } = {}) {
+  return changeNumbers((kept) => {
+    notePrimary(kept, primary, link, now);
+    if ("self" in primary) {
+      const number = counterOf(kept);
+      kept.next = number + 1;
+      return number;
+    }
+    const lease = kept.leases[0];
+    let number = null;
+    if (lease) {
+      number = lease[0];
+      if (lease[0] === lease[1])
+        kept.leases.shift();
+      else
+        lease[0]++;
+      kept.used = joined(kept.used ?? [], [[number, number]]).slice(-MOST_RANGES);
+    }
+    if (leftIn(kept.leases) <= LOW)
+      kept.asking ??= { id: askID(), count: BLOCK, since: now };
+    return number;
+  }, file);
+}
+function blocksOf(kept, by, restores) {
+  const given = Object.values(kept.given ?? {});
+  const own = given.filter((each) => each.by === by).map((each) => [each.from, each.to]);
+  const unsaid = restores.length ? given.filter((each) => each.by === undefined) : [];
+  if (!unsaid.length)
+    return joined(own);
+  const told = new Set(toldKeys());
+  const known = new Set([...peersOf(readLink()).map((peer) => peer.key), ...Object.keys(kept.granted ?? {}), ...told]);
+  known.delete(by);
+  known.delete("self");
+  if ([...known].some((key) => !told.has(key)))
+    return joined(own);
+  const others = Math.max(0, ...[...known].map(toldTopOf));
+  const theirs = toldTopOf(by);
+  const old = unsaid.filter((each) => each.from > others && each.to <= theirs).map((each) => [each.from, each.to]);
+  return joined(own, overlap(joined(old), restores));
+}
+function grantOn(kept, by, claims, said = {}) {
+  const before = kept.granted?.[by] ?? [];
+  const next = counterOf(kept);
+  const blocks = by !== "self" && said.own ? blocksOf(kept, by, overlap(said.restores ?? [], claims)) : [];
+  const ranges = joined(overlap(claims, [[next, Math.min(next + CLAIM_REACH, MOST_NUMBER - 1)]]), overlap(claims, before), overlap(claims, blocks));
+  if (ranges.length) {
+    kept.next = Math.max(next, ranges[ranges.length - 1][1] + 1);
+    kept.granted = { ...kept.granted ?? {}, [by]: joined(before, ranges).slice(-MOST_RANGES) };
+  }
+  return ranges;
+}
+function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(), link = readLink(), restores = [] } = {}) {
+  const claims = rangesOf(numbers);
+  if (!claims.length)
+    return { granted: [] };
+  return changeNumbers((kept) => {
+    notePrimary(kept, primary, link, now);
+    if ("self" in primary)
+      return { granted: grantOn(kept, "self", claims) };
+    const highest = claims[claims.length - 1][1];
+    kept.leases = kept.leases.map(([from, to]) => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
+    const back = joined(kept.asking?.restores ?? [], overlap(rangesOf(restores), claims)).slice(-MOST_RANGES);
+    kept.asking = { id: askID(), count: BLOCK, claims: joined(kept.asking?.claims ?? [], claims).slice(-MOST_RANGES), ...back.length ? { restores: back } : {}, since: now };
+    return { granted: null };
+  }, file);
+}
+function askToSend({ file = NUMBERS_FILE, now = Date.now() } = {}) {
+  const asked = changeNumbers((kept) => {
+    const asking = kept.asking;
+    if (!asking || asking.sent !== undefined && now - asking.sent < ASK_AGAIN)
+      return null;
+    asking.sent = now;
+    return { id: asking.id, count: asking.count, ...asking.claims?.length ? { claims: asking.claims, own: true } : {}, ...asking.restores?.length ? { restores: asking.restores } : {} };
+  }, file);
+  if (!asked)
+    return null;
+  const top = topOf(readNumbers(file));
+  return { ...asked, ...top ? { top } : {} };
+}
+function notePrimaryNow(link = readLink(), { file = NUMBERS_FILE, now = Date.now() } = {}) {
+  const before = readNumbers(file);
+  const heard = keptHeardOf(link, before, file, now);
+  if (heard === (before.lost !== undefined))
+    changeNumbers((numbers) => {
+      if (heard)
+        delete numbers.lost;
+      else
+        numbers.lost ??= now;
+    }, file);
+  const primary = primaryOf(link, file, now);
+  const kept = readNumbers(file);
+  if (kept.primary === undefined || "away" in primary || kept.primary === keyOf3(primary, link) && kept.through === ("peer" in primary ? primary.via?.key : undefined))
+    return;
+  changeNumbers((numbers) => notePrimary(numbers, primary, link, now), file);
+}
+function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
+  if (!isObject(ask) || typeof ask.id !== "string" || !ASK_ID.test(ask.id))
+    return null;
+  const count = typeof ask.count === "number" && Number.isInteger(ask.count) ? Math.min(Math.max(ask.count, 1), 200) : BLOCK;
+  const claims = cleanRanges(ask.claims);
+  const top = typeof ask.top === "number" && Number.isInteger(ask.top) && ask.top > 0 && ask.top < MOST_NUMBER ? ask.top : 0;
+  const id = ask.id;
+  return changeNumbers((kept) => {
+    kept.primary ??= "self";
+    if (top && !kept.given?.[id])
+      kept.next = Math.max(counterOf(kept), cappedTop(top) + 1);
+    const given = kept.given?.[id];
+    if (given)
+      return { id, from: given.from, to: given.to, granted: given.granted ?? [] };
+    const granted = grantOn(kept, by, claims, { own: ask.own === true, restores: cleanRanges(ask.restores) });
+    const from = counterOf(kept);
+    const to = from + count - 1;
+    kept.next = to + 1;
+    const all = Object.entries({ ...kept.given ?? {}, [id]: { from, to, granted, at: now, by } });
+    kept.given = Object.fromEntries(all.sort((a, b) => a[1].at - b[1].at).slice(-MOST_GIVEN));
+    return { id, from, to, granted };
+  }, file);
+}
+function takeBlock(give, { file = NUMBERS_FILE } = {}) {
+  if (!isObject(give) || typeof give.id !== "string" || !Number.isInteger(give.from) || !Number.isInteger(give.to))
+    return null;
+  const from = give.from;
+  const to = give.to;
+  if (from < 1 || to < from || to - from > 1000)
+    return null;
+  const granted = cleanRanges(give.granted);
+  return changeNumbers((kept) => {
+    if (kept.asking?.id !== give.id)
+      return null;
+    const claimed = kept.asking?.claims ?? [];
+    kept.asking = undefined;
+    kept.leases = joined(kept.leases, [[from, to]]);
+    return { granted, claimed };
+  }, file);
+}
+function numberWaiting(book, primary, answer, options = {}) {
+  const now = options.now ?? Date.now();
+  const used = [];
+  if (answer) {
+    for (const item of book.items()) {
+      if (item.wanted === undefined || item.backGranted || item.source || !OWNER2.test(item.owner) || !inRanges(answer.claimed, item.wanted))
+        continue;
+      const kept = inRanges(answer.granted, item.wanted);
+      if (item.number !== undefined) {
+        if (kept)
+          item.backGranted = true;
+        else
+          stays(item, `Its own number, #${item.wanted}, couldn't be given back (another of your computers was given it already, or it's far past the numbers in use), so it stays #${item.number}.`, now);
+        continue;
+      }
+      if (kept) {
+        item.number = item.wanted;
+        used.push(item.number);
+      } else {
+        item.notes.push({ at: now, by: { user: true }, text: `Imported as #${item.wanted}, a number that couldn't be kept (another of your computers was given it already, or it's far past the numbers in use), so it has a new one.` });
+        item.importedAs = item.wanted;
+      }
+      delete item.wanted;
+    }
+  }
+  used.push(...restoreNumbers(book, now));
+  if (used.length)
+    changeNumbers((kept) => {
+      kept.used = joined(kept.used ?? [], rangesOf(used)).slice(-MOST_RANGES);
+    }, options.file);
+  const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && !item.source && OWNER2.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
+  for (const item of waiting) {
+    const number = takeNumber(primary, options);
+    if (number === null)
+      return;
+    item.number = number;
+  }
+}
+function stays(item, why, now) {
+  item.notes.push({ at: now, by: { user: true }, text: why });
+  delete item.wanted;
+  delete item.backGranted;
+  item.stays = true;
+}
+function restoreNumbers(book, now) {
+  const back = book.items().filter((item) => item.backGranted && item.wanted !== undefined && item.number !== undefined);
+  if (!back.length)
+    return [];
+  const first = new Map;
+  for (const item of back)
+    if (!first.has(item.wanted))
+      first.set(item.wanted, item);
+  const going = new Set(first.values());
+  const holders = new Map;
+  for (const item of book.items()) {
+    const held = item.number ?? item.wanted;
+    if (held !== undefined)
+      holders.set(held, [...holders.get(held) ?? [], item]);
+  }
+  const blocker = (item) => (first.get(item.wanted) !== item ? first.get(item.wanted) : undefined) ?? (holders.get(item.wanted) ?? []).find((each) => each !== item && !going.has(each));
+  for (let changed = true;changed; ) {
+    changed = false;
+    for (const item of going) {
+      if (!blocker(item))
+        continue;
+      going.delete(item);
+      changed = true;
+    }
+  }
+  for (const item of back) {
+    if (going.has(item))
+      continue;
+    const holder = blocker(item);
+    if (!holder.removed && !holder.stays && holder.number === item.wanted && holder.wanted !== undefined)
+      continue;
+    stays(item, `Its own number, #${item.wanted}, is another item's here, so it stays #${item.number}.`, now);
+  }
+  const used = [];
+  for (const item of going) {
+    item.notes.push({ at: now, by: { user: true }, text: `Has its own number, #${item.wanted}, again (it was #${item.number}).` });
+    used.push(item.wanted);
+    item.number = item.wanted;
+    delete item.wanted;
+    delete item.importedAs;
+    delete item.backGranted;
+  }
+  return used;
+}
+function reclaimWaiting(primary = primaryOf(), options = {}) {
+  const mine = allItems().filter((item) => !item.source && !item.removed && OWNER2.test(item.owner));
+  const waiting = mine.filter((item) => item.number === undefined || item.wanted !== undefined && !item.backGranted);
+  const settling = mine.some((item) => item.backGranted && item.wanted !== undefined);
+  if (!waiting.length && !settling)
+    return false;
+  const kept = readNumbers(options.file);
+  const asked = kept.asking?.claims ?? [];
+  const wanted = waiting.flatMap((item) => item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []);
+  const restores = waiting.flatMap((item) => item.number !== undefined && item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []);
+  if ("self" in primary) {
+    const granted = wanted.length ? claimNumbers(primary, wanted, { ...options, restores }).granted : [];
+    changeQueues((book) => numberWaiting(book, primary, { granted: granted ?? [], claimed: rangesOf(wanted) }, options), undefined, { onItsOwn: true });
+    return true;
+  }
+  if (wanted.length)
+    claimNumbers(primary, wanted, { ...options, restores });
+  else if (!kept.asking && !leftIn(kept.leases) && waiting.some((item) => item.number === undefined))
+    changeNumbers((numbers) => {
+      numbers.asking ??= { id: askID(), count: BLOCK, since: options.now ?? Date.now() };
+    }, options.file);
+  if (leftIn(readNumbers(options.file).leases) || settling)
+    changeQueues((book) => numberWaiting(book, primary, null, options), undefined, { onItsOwn: true });
+  return true;
+}
+function pushNumbers(host, link = readLink()) {
+  if (Date.now() - lookedForWaiting > 60000) {
+    lookedForWaiting = Date.now();
+    try {
+      notePrimaryNow(link);
+    } catch {}
+    try {
+      reclaimWaiting(primaryOf(link));
+    } catch {}
+  }
+  if (!host?.welcomed || !link || !readNumbers().asking)
+    return;
+  const primary = primaryOf(link);
+  if (!("peer" in primary))
+    return;
+  const ask = askToSend();
+  if (!ask)
+    return;
+  const bytes = mailFor(primary.via ?? primary.peer, { workQueue: { ask, ...primary.via ? { to: primary.peer.key } : {} }, at: Date.now() }, link);
+  if (bytes)
+    try {
+      host.send(bytes);
+    } catch {}
+}
+function takeNumbersMail(sender, given, host) {
+  if (!isObject(given))
+    return;
+  const link = readLink();
+  const primary = primaryOf(link);
+  const send = (to, payload) => {
+    const bytes = link && "address" in to && to.address ? mailFor(to, { workQueue: payload, at: Date.now() }, link) : null;
+    if (bytes)
+      try {
+        host?.send(bytes);
+      } catch {}
+  };
+  const peers = peersOf(link);
+  if (isObject(given.ask)) {
+    const asker = typeof given.for === "string" && KEY.test(given.for) ? given.for : sender.key;
+    if ("self" in primary && (given.to === undefined || given.to === ownKey(link ?? {}))) {
+      const block = giveBlock(asker, given.ask);
+      if (block)
+        send(sender, { give: block, ...asker !== sender.key ? { for: asker } : {} });
+      return;
+    }
+    if (given.for === undefined && typeof given.to === "string" && "peer" in primary && !primary.via && primary.peer.key === given.to)
+      send(primary.peer, { ask: given.ask, for: sender.key });
+    return;
+  }
+  if (!isObject(given.give) || !("peer" in primary))
+    return;
+  const route = primary.via ?? primary.peer;
+  if (typeof given.for === "string" && given.for !== ownKey(link ?? {})) {
+    const to = peers.find((each) => each.key === given.for);
+    if (to && !primary.via && sender.key === primary.peer.key)
+      send(to, { give: given.give });
+    return;
+  }
+  if (route.key === sender.key)
+    blockArrived(given.give, primary);
+}
+function blockArrived(give, primary, options = {}) {
+  const answer = takeBlock(give, options);
+  if (!answer)
+    return false;
+  changeQueues((book) => numberWaiting(book, primary, answer, options), undefined, { onItsOwn: true });
+  return true;
+}
+var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOST_RANGES = 400, ASK_ID, MOST_NUMBER = 1e6, CLAIM_REACH = 1e4, isRange = (each) => Array.isArray(each) && each.length === 2 && each.every((n) => Number.isInteger(n) && n > 0 && n < MOST_NUMBER) && each[0] <= each[1], joined = (...all) => {
+  const sorted = all.flat().filter(isRange).map(([from, to]) => [from, to]).sort((a, b) => a[0] - b[0]);
+  const ranges = [];
+  for (const [from, to] of sorted) {
+    const last = ranges[ranges.length - 1];
+    if (last && from <= last[1] + 1)
+      last[1] = Math.max(last[1], to);
+    else
+      ranges.push([from, to]);
+  }
+  return ranges;
+}, rangesOf = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf3 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto24.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+  const told = readTold3(key);
+  return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
+}, lookedForWaiting = 0;
+var init_numbers = __esm(() => {
+  init_home();
+  init_files2();
+  init_known();
+  init_told();
+  init_reach();
+  init_record();
+  init_state();
+  init_store();
+  NUMBERS_FILE = path74.join(WORK_QUEUE2, "numbers.json");
+  ASK_ID = /^wqn_[A-Za-z0-9_-]{8,40}$/;
+  LOST_FOR = 3 * 86400000;
+  TOP_MOST = MOST_NUMBER - 1 - 4 * BLOCK;
+});
+
 // box/src/link/documents/changed.ts
 import fs70 from "node:fs";
 import path75 from "node:path";
@@ -2289,68 +3861,6 @@ var init_changed = __esm(() => {
   DOCS_CHANGED = path75.join(RUN, "docs.changed");
 });
 
-// box/src/link/setup/settle.ts
-function sharedMachine(link) {
-  if (IS_MAC || !link)
-    return false;
-  const macs = macsOf(link);
-  if (macs.length < 2)
-    return false;
-  const setup = link.setup?.role === "member" ? link.setup : null;
-  const doc = setup ? macDoc(link, setup.primary, "peers") ?? setupDoc(link) : null;
-  const named = doc && setup ? new Set([setup.primary, ...macsNamed(doc)]) : new Set;
-  return !macs.every((mac) => named.has(mac));
-}
-function settleSetup(link) {
-  if (IS_MAC)
-    return;
-  const macs = macsOf(link);
-  if (!macs.length) {
-    if (link.setup?.role === "member")
-      delete link.setup;
-    return;
-  }
-  if (link.setup?.role === "primary")
-    delete link.setup;
-  const offers = macs.map((mac) => ({ mac, doc: macDoc(link, mac, "peers") })).map(({ mac, doc }) => ({ mac, doc, setup: ledSetup(doc) })).filter((each) => each.setup && each.setup.primary === each.mac);
-  const kept = link.setup;
-  if (kept && macSign(link, kept.primary))
-    kept.sign = macSign(link, kept.primary);
-  if (kept) {
-    const own = offers.find((each) => each.mac === kept.primary);
-    const doc = macDoc(link, kept.primary, "peers");
-    if (own && (own.setup.id !== kept.id || own.setup.epoch >= kept.epoch)) {
-      if (own.setup.id !== kept.id || own.setup.epoch !== kept.epoch)
-        delete kept.conflict;
-      kept.id = own.setup.id;
-      kept.epoch = own.setup.epoch;
-      delete kept.aside;
-    } else if (doc && !ledSetup(doc))
-      kept.aside = true;
-  } else if (offers.length === 1) {
-    const { setup, doc } = offers[0];
-    link.setup = { id: setup.id, epoch: setup.epoch, primary: setup.primary, sign: doc.origin, role: "member" };
-  }
-  if (link.setup && sharedMachine(link))
-    link.setup.aside = true;
-}
-function noteConflict(link, doc) {
-  const setup = followedSetup(link);
-  const said = ledSetup(doc);
-  if (setup?.role !== "member" || !said || said.id !== setup.id || said.epoch !== setup.epoch || said.primary === setup.primary)
-    return;
-  if (!macsOf(link).includes(said.primary) || macSign(link, said.primary) !== doc.origin)
-    return;
-  setup.conflict = { primary: said.primary, epoch: said.epoch };
-}
-var macsNamed = (doc) => (Array.isArray(doc?.body.boxes) ? doc.body.boxes : []).filter((box) => isObject(box) && box.kind === "mac" && typeof box.key === "string").map((box) => box.key);
-var init_settle = __esm(() => {
-  init_home();
-  init_known();
-  init_state();
-  init_record();
-});
-
 // box/src/link/setup/main-only.ts
 function mainElsewhere(link) {
   const setup = link?.setup;
@@ -2364,13 +3874,14 @@ function macName(link, mac) {
   return String(isObject(named) && typeof named.name === "string" && named.name || link?.macNames?.[mac] || "").slice(0, 100);
 }
 function memberHosts(link) {
-  if (IS_MAC || !mainElsewhere(link) || !link?.relay || sharedMachine(link))
+  if (IS_MAC || !mainElsewhere(link) || !link?.relay)
     return null;
-  const doc = setupDoc(link) ?? (link.setup.aside && macsOf(link).length === 1 ? macDoc(link, link.setup.primary, "peers") : null);
-  if (!doc)
+  const setup = setupDoc(link);
+  const docs = setup ? [setup] : link.setup.aside ? macsOf(link).map((mac) => macDoc(link, mac, "peers")).filter((doc) => doc !== null) : [];
+  if (!docs.length)
     return null;
   const hosts = [];
-  for (const box of Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : []) {
+  for (const box of docs.flatMap((doc) => Array.isArray(doc.body.boxes) ? doc.body.boxes.slice(0, 64) : [])) {
     if (!isObject(box) || box.kind !== "machine" || typeof box.key !== "string" || typeof box.address !== "string" || hosts.some((each) => each.key === box.key))
       continue;
     const name = String(box.name ?? "").slice(0, 100);
@@ -2383,7 +3894,6 @@ var init_main_only = __esm(() => {
   init_home();
   init_known();
   init_record();
-  init_settle();
 });
 
 // box/src/link/phones.ts
@@ -2591,6 +4101,59 @@ var init_phones = __esm(() => {
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 });
 
+// box/src/link/setup/settle.ts
+function settleSetup(link) {
+  if (IS_MAC)
+    return;
+  const macs = macsOf(link);
+  if (!macs.length) {
+    if (link.setup?.role === "member")
+      delete link.setup;
+    return;
+  }
+  if (link.setup?.role === "primary")
+    delete link.setup;
+  const offers = macs.map((mac) => ({ mac, doc: macDoc(link, mac, "peers") })).map(({ mac, doc }) => ({ mac, doc, setup: ledSetup(doc) })).filter((each) => each.setup && each.setup.primary === each.mac);
+  if (link.setup?.aside && !offers.some((each) => each.mac === link.setup.primary) && offers.length)
+    delete link.setup;
+  const kept = link.setup;
+  if (kept && macSign(link, kept.primary))
+    kept.sign = macSign(link, kept.primary);
+  if (kept) {
+    const own = offers.find((each) => each.mac === kept.primary);
+    const doc = macDoc(link, kept.primary, "peers");
+    if (own && (own.setup.id !== kept.id || own.setup.epoch >= kept.epoch)) {
+      if (own.setup.id !== kept.id || own.setup.epoch !== kept.epoch)
+        delete kept.conflict;
+      kept.id = own.setup.id;
+      kept.epoch = own.setup.epoch;
+      delete kept.aside;
+    } else if (doc && !ledSetup(doc))
+      kept.aside = true;
+    return;
+  }
+  const ranked = offers.length > 1 ? rankedPrimary(link) : null;
+  const taken = offers.length === 1 ? offers[0] : offers.find((each) => ranked && ("peer" in ranked) && ranked.peer.key === each.mac);
+  if (taken)
+    link.setup = { id: taken.setup.id, epoch: taken.setup.epoch, primary: taken.setup.primary, sign: taken.doc.origin, role: "member" };
+}
+function noteConflict(link, doc) {
+  const setup = followedSetup(link);
+  const said = ledSetup(doc);
+  if (setup?.role !== "member" || !said || said.id !== setup.id || said.epoch !== setup.epoch || said.primary === setup.primary)
+    return;
+  if (!macsOf(link).includes(said.primary) || macSign(link, said.primary) !== doc.origin)
+    return;
+  setup.conflict = { primary: said.primary, epoch: said.epoch };
+}
+var init_settle = __esm(() => {
+  init_home();
+  init_known();
+  init_state();
+  init_numbers();
+  init_record();
+});
+
 // box/src/link/documents/parts.ts
 import crypto26 from "node:crypto";
 function assemble(parts, from, part, most = MOST_PARTS) {
@@ -2625,7 +4188,7 @@ function takesFrom(link, origin, kind) {
   const macs = macsOf(link).map((mac) => macSign(link, mac)).filter(Boolean);
   const setup = followedSetup(link);
   if (kind === "peers")
-    return setup?.role === "member" ? origin === setup.sign : macs.includes(origin) || IS_MAC && origin === ownSign(link);
+    return macs.includes(origin) || setup?.role === "member" && origin === setup.sign || IS_MAC && origin === ownSign(link);
   return macs.includes(origin) || origin === ownSign(link) || peersOf(link).some((peer) => peer.sign === origin);
 }
 function takenBy(link, to, origin, kind) {
@@ -2633,8 +4196,7 @@ function takenBy(link, to, origin, kind) {
     const peers = peersOf(link);
     return peers.some((peer) => peer.key === to) && (origin === ownSign(link) || kind !== "peers" && peers.some((peer) => peer.sign === origin));
   }
-  const setup = setupDoc(link);
-  for (const doc of setup ? [setup] : macsOf(link).map((mac) => macDoc(link, mac, "peers"))) {
+  for (const { doc } of macDocs(link)) {
     const boxes = Array.isArray(doc?.body.boxes) ? doc.body.boxes : [];
     if (!boxes.some((box) => box?.key === to))
       continue;
@@ -2654,6 +4216,8 @@ function takeDoc(link, envelope) {
   }
   if (lowerEpoch(link, doc))
     return null;
+  if (doc.kind === "peers")
+    noteConflict(link, doc);
   if (doc.origin === ownSign(link)) {
     if (doc.kind === "peers" && !IS_MAC || doc.n > MOST_COUNT)
       return null;
@@ -20702,77 +22266,11 @@ init_files2();
 init_home();
 init_records();
 init_known();
+init_reach();
+init_directory();
 import crypto21 from "node:crypto";
 import fs65 from "node:fs";
 import path69 from "node:path";
-
-// box/src/link/peers/reach.ts
-init_files2();
-init_home();
-init_state();
-init_known();
-import fs63 from "node:fs";
-import path67 from "node:path";
-var PEER_REACH = path67.join(RUN, "peer-reach.json");
-var LOCK8 = path67.join(RUN, ".peer-reach.lock");
-function readReach(file = PEER_REACH) {
-  try {
-    const kept = JSON.parse(fs63.readFileSync(file, "utf8"));
-    return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
-  } catch {
-    return {};
-  }
-}
-var change2 = (edit, file = PEER_REACH) => {
-  try {
-    fs63.mkdirSync(RUN, { recursive: true, mode: 448 });
-    locked(LOCK8, () => {
-      const reach = readReach(file);
-      if (edit(reach))
-        writePrivate(file, JSON.stringify(reach));
-    });
-  } catch {}
-};
-var PEER_CHECKED = path67.join(RUN, "peer-reach-checked.json");
-var CHECKED_EVERY = 300000;
-function noteUnreachable(address, now = Date.now()) {
-  const peer = peersOf(readLink()).find((each) => each.address === address.toString("base64url"));
-  if (!peer)
-    return;
-  if (now - (readReach(PEER_CHECKED)[peer.key] ?? 0) > CHECKED_EVERY)
-    change2((checked) => {
-      checked[peer.key] = now;
-      return true;
-    }, PEER_CHECKED);
-  if (readReach()[peer.key] !== undefined)
-    return;
-  change2((reach) => {
-    if (reach[peer.key] !== undefined)
-      return false;
-    reach[peer.key] = now;
-    return true;
-  });
-}
-function noteHeard(key) {
-  if (readReach(PEER_CHECKED)[key] !== undefined)
-    change2((checked) => delete checked[key], PEER_CHECKED);
-  if (readReach()[key] === undefined)
-    return false;
-  let back = false;
-  change2((reach) => {
-    if (reach[key] === undefined)
-      return false;
-    delete reach[key];
-    back = true;
-    return true;
-  });
-  return back;
-}
-var awaySince = (key, reach = readReach()) => reach[key] ?? null;
-var lastFoundAway = (key, checked = readReach(PEER_CHECKED)) => checked[key] ?? null;
-
-// box/src/link/work/elsewhere.ts
-init_directory();
 
 // box/src/link/work/homes.ts
 import fs64 from "node:fs";
@@ -21148,1584 +22646,8 @@ function rowsBack() {
 }
 var idOf2 = (leads) => "rws_" + crypto21.createHash("sha256").update(JSON.stringify(leads)).digest("base64url").slice(0, 22);
 
-// box/src/link/work-queue/numbers.ts
-init_home();
-init_files2();
-init_known();
-import crypto24 from "node:crypto";
-import fs69 from "node:fs";
-import path74 from "node:path";
-
-// box/src/link/work-queue/told.ts
-init_text();
-init_files2();
-init_known();
-import fs68 from "node:fs";
-import path73 from "node:path";
-
-// box/src/link/work-queue/store.ts
-init_files2();
-init_home();
-import crypto23 from "node:crypto";
-import fs67 from "node:fs";
-import path71 from "node:path";
-
-// box/src/link/work-queue/sources.ts
-var GITHUB_HOST = "github.com";
-var OWNER = "[A-Za-z0-9](?:[A-Za-z0-9_-]{0,38})";
-var REPO = "[A-Za-z0-9_.-]{1,100}";
-var STORED = new RegExp(`^gh:(${OWNER})/(${REPO})#(\\d{1,10})$`);
-var PAGE = new RegExp(`^https?://(?:www\\.)?github\\.com/(${OWNER})/(${REPO})/(?:issues|pull)/(\\d{1,10})(?:[/?#][^\\s]*)?$`, "i");
-function issueAt(given) {
-  if (typeof given !== "string")
-    return null;
-  const text = given.trim();
-  const found = text.match(STORED) ?? text.match(PAGE);
-  if (!found)
-    return null;
-  const [, owner, repo, digits] = found;
-  const number = Number(digits);
-  if (repo === "." || repo === ".." || !(number >= 1 && number <= 2 ** 31 - 1))
-    return null;
-  return { host: GITHUB_HOST, owner, repo, number };
-}
-var refText = (at) => `gh:${at.owner}/${at.repo}#${at.number}`;
-var sourceKey = (at) => `${at.host}/${at.owner}/${at.repo}#${at.number}`.toLowerCase();
-var sourceKeyOf = (source) => {
-  const at = issueAt(source.ref);
-  return at ? sourceKey(at) : `${source.kind}:${source.ref}`.toLowerCase();
-};
-var sameSource = (a, b) => sourceKeyOf(a) === sourceKeyOf(b) || a.id !== undefined && a.id === b.id;
-
-// box/src/link/work-queue/migrate.ts
-init_text();
-init_files2();
-init_home();
-import crypto22 from "node:crypto";
-import fs66 from "node:fs";
-import path70 from "node:path";
-
-// box/src/link/work-queue/statuses.ts
-var STATUSES = [
-  { id: "needs-you", name: "Needs you", closed: false },
-  { id: "in-review", name: "In review", closed: false },
-  { id: "in-progress", name: "In progress", closed: false },
-  { id: "waiting", name: "Waiting", closed: false },
-  { id: "todo", name: "Todo", closed: false },
-  { id: "backlog", name: "Backlog", closed: false },
-  { id: "done", name: "Done", closed: true },
-  { id: "canceled", name: "Canceled", closed: true }
-];
-var PRIORITIES = [
-  { id: "urgent", name: "Urgent" },
-  { id: "high", name: "High" },
-  { id: "normal", name: "Normal" },
-  { id: "low", name: "Low" }
-];
-var STATUS_ID = /^(?:needs-you|in-review|in-progress|waiting|todo|backlog|done|canceled)$/;
-var PRIORITY_ID = /^(?:urgent|high|normal|low)$/;
-var NEEDS_YOU2 = "needs-you";
-var isClosed = (status) => STATUSES.some((each) => each.id === status && each.closed);
-var statusName = (id) => STATUSES.find((each) => each.id === id)?.name ?? id;
-var priorityName = (id) => PRIORITIES.find((each) => each.id === (id ?? "normal"))?.name ?? "Normal";
-var ALSO = {
-  next: "todo",
-  "to do": "todo",
-  later: "backlog",
-  cancelled: "canceled",
-  "waiting on you": "needs-you",
-  "needs user": "needs-you",
-  review: "in-review",
-  "in-review": "in-review",
-  doing: "in-progress",
-  blocked: "waiting"
-};
-function statusNamed(given) {
-  if (typeof given !== "string" || !given.trim())
-    return null;
-  const wanted = given.trim().toLowerCase().replace(/[\s_-]+/g, " ");
-  return STATUSES.find((each) => each.id.replace(/-/g, " ") === wanted || each.name.toLowerCase() === wanted) ?? STATUSES.find((each) => each.id === ALSO[wanted]) ?? null;
-}
-function priorityNamed(given) {
-  if (typeof given !== "string" || !given.trim())
-    return null;
-  const wanted = given.trim().toLowerCase();
-  return PRIORITIES.find((each) => each.id === wanted) ?? (wanted === "medium" || wanted === "none" ? PRIORITIES[2] : null);
-}
-var colorBefore = (id) => ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => sum * 31 + (each.codePointAt(0) ?? 0) & 65535, 0) % 6];
-var PARKED_LABEL = "lbl_parked";
-function fromCategory(category, name) {
-  if (category === "next")
-    return { status: "todo" };
-  if (category === "later")
-    return { status: "backlog" };
-  if (category === "done")
-    return { status: "done" };
-  if (category === "parked")
-    return { status: "backlog", label: PARKED_LABEL };
-  if (typeof category !== "string" || !/^cat_[a-z0-9-]{1,40}$/.test(category))
-    return { status: "todo" };
-  const said = (name ?? category.slice(4).replace(/-/g, " ")).trim().toLowerCase().replace(/[\s_-]+/g, " ");
-  if (said === "waiting on you")
-    return { status: "needs-you" };
-  if (said === "correctness sweep" || said === "edge cases")
-    return { status: "backlog", label: category };
-  return { status: "todo", label: category };
-}
-
-// box/src/link/work-queue/migrate.ts
-var WORK_QUEUE = path70.join(RUN, "work-queue");
-var QUEUES = path70.join(WORK_QUEUE, "queues");
-var CATEGORIES_FILE = path70.join(WORK_QUEUE, "categories.json");
-var LABELS_FILE = path70.join(WORK_QUEUE, "labels.json");
-var LOCK11 = path70.join(WORK_QUEUE, ".lock");
-var MOVING2 = path70.join(WORK_QUEUE, ".moving-to-statuses");
-var MODEL_FILE = path70.join(WORK_QUEUE, "model.json");
-var BEFORE = path70.join(WORK_QUEUE, "before-statuses");
-var MODEL2 = 2;
-var done = false;
-function forgetMigrated() {
-  done = false;
-}
-var jsonOf = (file) => {
-  try {
-    return JSON.parse(fs66.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-};
-var queueFiles2 = (folder) => {
-  try {
-    return fs66.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
-  } catch {
-    return [];
-  }
-};
-function migrateItem(item, name) {
-  if (typeof item.status === "string")
-    return false;
-  const to = (category) => fromCategory(category, typeof category === "string" ? name(category) : undefined);
-  const { status, label } = to(item.category);
-  const sessions = (Array.isArray(item.sessions) ? item.sessions : []).flatMap((each) => isObject(each) && typeof each.session === "string" ? [each.session] : []);
-  const events = Array.isArray(item.events) ? item.events.filter(isObject) : [];
-  const lastWord = (session) => [...events].reverse().find((each) => each.kind === "done" || (each.kind === "started" || each.kind === "stopped") && isObject(each.by) && each.by.session === session);
-  const working = !item.removed && !isClosed(status) && sessions.some((session) => lastWord(session)?.kind === "started");
-  for (const each of events) {
-    if (each.kind !== "moved")
-      continue;
-    for (const side of ["from", "to"]) {
-      if (typeof each[side] !== "string")
-        continue;
-      const now = to(each[side]);
-      each[side] = now.status;
-      if (now.label)
-        each[`${side}Label`] = now.label;
-    }
-  }
-  item.status = status;
-  item.labels = label ? [label] : [];
-  delete item.category;
-  return working;
-}
-var placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2;
-var onDisk = (folder) => {
-  try {
-    const handle = fs66.openSync(folder, "r");
-    try {
-      fs66.fsyncSync(handle);
-    } finally {
-      fs66.closeSync(handle);
-    }
-  } catch {}
-};
-function migrate() {
-  fs66.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
-  const nothing = !queueFiles2(QUEUES).length && !fs66.existsSync(CATEGORIES_FILE);
-  if (nothing && !fs66.existsSync(BEFORE))
-    return void writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now() }));
-  if (!fs66.existsSync(BEFORE)) {
-    for (const name of fs66.readdirSync(WORK_QUEUE))
-      if (name.startsWith("before-statuses."))
-        fs66.rmSync(path70.join(WORK_QUEUE, name), { recursive: true, force: true });
-    const making = path70.join(WORK_QUEUE, `before-statuses.${crypto22.randomBytes(6).toString("hex")}`);
-    fs66.mkdirSync(path70.join(making, "queues"), { recursive: true, mode: 448 });
-    const copy = (from, to) => {
-      fs66.copyFileSync(from, to);
-      const handle = fs66.openSync(to, "r");
-      try {
-        fs66.fsyncSync(handle);
-      } finally {
-        fs66.closeSync(handle);
-      }
-    };
-    for (const name of queueFiles2(QUEUES))
-      copy(path70.join(QUEUES, name), path70.join(making, "queues", name));
-    if (fs66.existsSync(CATEGORIES_FILE))
-      copy(CATEGORIES_FILE, path70.join(making, "categories.json"));
-    onDisk(path70.join(making, "queues"));
-    onDisk(making);
-    fs66.renameSync(making, BEFORE);
-    onDisk(WORK_QUEUE);
-  }
-  if (!fs66.statSync(path70.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
-    throw new Error(`${BEFORE} isn't the copy of what was kept`);
-  const kept = jsonOf(path70.join(BEFORE, "categories.json"));
-  const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : []).filter((each) => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
-  const names = new Map(custom.map((each) => [each.id, each.name]));
-  const customIDs = custom.map((each) => each.id);
-  const was = [];
-  const started = [];
-  for (const name of queueFiles2(path70.join(BEFORE, "queues"))) {
-    const queue = jsonOf(path70.join(BEFORE, "queues", name));
-    if (!isObject(queue) || !Array.isArray(queue.items))
-      continue;
-    for (const each of queue.items) {
-      if (!isObject(each) || typeof each.id !== "string" || typeof each.status === "string")
-        continue;
-      const said = structuredClone(each);
-      if (migrateItem(said, (id) => names.get(id)))
-        started.push(each.id);
-      was.push({ id: each.id, category: each.category, order: typeof each.order === "number" && Number.isFinite(each.order) ? each.order : 0, said });
-    }
-  }
-  const order = new Map;
-  const byStatus = new Map;
-  for (const each of was)
-    byStatus.set(String(each.said.status), [...byStatus.get(String(each.said.status)) ?? [], each]);
-  for (const group of byStatus.values()) {
-    group.sort((a, b) => placeOf(a.category, customIDs) - placeOf(b.category, customIDs) || a.order - b.order || a.id.localeCompare(b.id));
-    group.forEach((each, index) => order.set(each.id, index));
-  }
-  {
-    const used = new Set(was.flatMap((each) => Array.isArray(each.said.labels) ? each.said.labels : []));
-    const becameStatus = (each) => fromCategory(each.id, each.name).label === undefined;
-    const made = [
-      ...custom.filter((each) => !becameStatus(each)).map((each) => ({ id: each.id, name: plainName(each.name).slice(0, 40) || each.id.slice(4), color: colorBefore(each.id) })),
-      ...[...used].filter((id) => id !== PARKED_LABEL && !names.has(id)).sort().map((id) => ({ id, name: id.slice(4).replace(/-/g, " "), color: colorBefore(id) })),
-      ...used.has(PARKED_LABEL) ? [{ id: PARKED_LABEL, name: "Parked", color: "graphite" }] : []
-    ];
-    const kept = jsonOf(LABELS_FILE);
-    const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
-    const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
-    const needed = new Set(queueFiles2(QUEUES).flatMap((name) => {
-      const queue = jsonOf(path70.join(QUEUES, name));
-      return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap((each) => isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : []) : [];
-    }));
-    const more = made.filter((each) => !has.has(each.id) && (kept === null || needed.has(each.id)));
-    if (more.length)
-      writePrivate(LABELS_FILE, JSON.stringify({ ...isObject(kept) ? kept : {}, labels: [...there, ...more] }));
-  }
-  for (const name of queueFiles2(QUEUES)) {
-    const file = path70.join(QUEUES, name);
-    const queue = jsonOf(file);
-    if (!isObject(queue) || !Array.isArray(queue.items))
-      continue;
-    let changed = false;
-    queue.items = queue.items.map((each) => {
-      if (!isObject(each) || typeof each.status === "string")
-        return each;
-      changed = true;
-      migrateItem(each, (id) => names.get(id));
-      const place = typeof each.id === "string" ? order.get(each.id) : undefined;
-      if (place !== undefined)
-        each.order = place;
-      return each;
-    });
-    if (changed)
-      writePrivate(file, JSON.stringify(queue));
-  }
-  fs66.rmSync(CATEGORIES_FILE, { force: true });
-  writePrivate(MODEL_FILE, JSON.stringify({ model: MODEL2, at: Date.now(), ...started.length ? { started } : {} }));
-}
-function startedThen() {
-  const kept = jsonOf(MODEL_FILE);
-  return isObject(kept) && Array.isArray(kept.started) ? kept.started.filter((each) => typeof each === "string") : [];
-}
-function forgetStarted() {
-  const kept = jsonOf(MODEL_FILE);
-  if (!isObject(kept) || kept.started === undefined)
-    return;
-  const { started: _, ...rest } = kept;
-  writePrivate(MODEL_FILE, JSON.stringify(rest));
-}
-function migrateOnce() {
-  if (done)
-    return;
-  const kept = jsonOf(MODEL_FILE);
-  if (isObject(kept) && typeof kept.model === "number" && kept.model >= MODEL2) {
-    done = true;
-    return;
-  }
-  if (!fs66.existsSync(WORK_QUEUE))
-    return;
-  fs66.accessSync(WORK_QUEUE, fs66.constants.W_OK);
-  try {
-    fs66.mkdirSync(MOVING2);
-  } catch (error) {
-    if (error.code !== "EEXIST")
-      throw error;
-    const since = fs66.statSync(MOVING2, { throwIfNoEntry: false })?.mtimeMs ?? 0;
-    if (Date.now() - since < 120000)
-      throw new Error("another process is moving them over now");
-    fs66.rmSync(MOVING2, { recursive: true, force: true });
-    fs66.mkdirSync(MOVING2);
-  }
-  try {
-    locked(LOCK11, () => {
-      const again = jsonOf(MODEL_FILE);
-      if (!(isObject(again) && typeof again.model === "number" && again.model >= MODEL2))
-        migrate();
-    }, { stale: 60000, wait: 1e4 });
-  } finally {
-    fs66.rmSync(MOVING2, { recursive: true, force: true });
-  }
-  done = true;
-}
-
-// box/src/link/work-queue/store.ts
-var WORK_QUEUE2 = path71.join(RUN, "work-queue");
-var QUEUES2 = path71.join(WORK_QUEUE2, "queues");
-var FILES2 = path71.join(WORK_QUEUE2, "files");
-var LOCK12 = path71.join(WORK_QUEUE2, ".lock");
-var YOURS = "usr_you";
-var OWNER2 = /^(?:ses_[A-Za-z0-9]{1,60}|grp_[a-z0-9]{1,60}|usr_you)$/;
-var KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
-var ITEM_ID = /^wqi_[A-Za-z0-9_-]{20}$/;
-var SESSION2 = /^ses_[A-Za-z0-9]{1,60}$/;
-var KEPT_REMOVED = 30 * 86400000;
-var MOST_ITEMS = 2000;
-var MOST_TITLE = 200;
-var MOST_BODY = 1e5;
-var MOST_NOTE = 20000;
-var MOST_NOTES = 200;
-var MOST_FILE = 25000000;
-var MOST_FILES = 50;
-var MOST_HANDED_FILES = 4000000;
-var MOST_LINKS = 50;
-var MOST_EVENTS = 50;
-var MOST_HANDED = 20;
-var whoWords = (who) => {
-  const given = who;
-  if (given.user === true)
-    return "the user";
-  if (typeof given.name === "string" && given.name)
-    return given.name;
-  return typeof given.source === "string" && given.source ? given.source : "someone else";
-};
-var byUser = (who) => who.user === true;
-var assigneeOf = (given) => isObject(given) && (given.kind === "bot" || given.kind === "agent") && typeof given.id === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(given.id) ? { kind: given.kind, id: given.id } : null;
-var dayOf = (given) => {
-  if (typeof given !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(given.trim()))
-    return null;
-  const day = new Date(`${given.trim()}T00:00:00Z`);
-  return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
-};
-var queueFollowers2 = new Set;
-var fileOf2 = (owner) => path71.join(QUEUES2, `${owner}.json`);
-var newItemID = () => `wqi_${crypto23.randomBytes(15).toString("base64url")}`;
-var whoOf = (given) => {
-  if (!isObject(given))
-    return null;
-  if (given.user === true)
-    return { user: true };
-  if (typeof given.session === "string" && typeof given.name === "string")
-    return { session: given.session, name: given.name };
-  const kept = Object.fromEntries(Object.entries(given).filter(([key, value]) => key.length <= 40 && (typeof value === "string" ? value.length <= 200 : typeof value === "number" || typeof value === "boolean")).slice(0, 10));
-  return Object.keys(kept).length ? kept : null;
-};
-var FILE_NAME = /^(?!\.\.?$)[^/\\\0]{1,200}$/;
-var KNOWN2 = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
-var handingOf = (given) => {
-  if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER2.test(given.to) || typeof given.key !== "string" || typeof given.at !== "number")
-    return null;
-  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...typeof given.sent === "number" ? { sent: given.sent } : {}, ...typeof given.missing === "number" ? { missing: given.missing } : {} };
-};
-var MOST_EVENT = 2000;
-var eventKept = (each) => typeof each.at === "number" && Number.isFinite(each.at) && typeof each.kind === "string" && each.kind.length > 0 && each.kind.length <= 40 && whoOf(each.by) !== null && JSON.stringify(each.by).length <= 500 && JSON.stringify(each).length <= MOST_EVENT;
-function itemOf(given, owner) {
-  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.title !== "string")
-    return null;
-  const before = typeof given.status === "string" && given.status ? null : fromCategory(given.category);
-  const labels = before ? before.label ? [before.label] : [] : [...new Set((Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && /^(?:lbl|cat)_[a-z0-9-]{1,40}$/.test(each)))].slice(0, 20);
-  const created = isObject(given.created) && typeof given.created.at === "number" ? { at: given.created.at, by: whoOf(given.created.by) ?? { user: true } } : { at: 0, by: { user: true } };
-  const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
-  const list = (value, keep) => Array.isArray(value) ? value.filter((each) => isObject(each) && keep(each)) : [];
-  const unknown = Object.fromEntries(Object.entries(given).filter(([key]) => !KNOWN2.has(key)));
-  return {
-    ...unknown,
-    id: given.id,
-    ...typeof given.number === "number" && Number.isInteger(given.number) && given.number > 0 ? { number: given.number } : {},
-    owner,
-    title: given.title,
-    body: typeof given.body === "string" ? given.body : "",
-    status: before ? before.status : given.status.slice(0, 40),
-    order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
-    ...typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {},
-    labels,
-    ...assigneeOf(given.assignee) ? { assignee: assigneeOf(given.assignee) } : {},
-    ...dayOf(given.due) ? { due: dayOf(given.due) } : {},
-    ...isObject(given.progress) ? { progress: { ...typeof given.progress.value === "number" ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: given.progress.note } : {} } } : {},
-    notes: list(given.notes, (each) => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
-    ...Array.isArray(given.events) ? { events: list(given.events, eventKept).slice(-MOST_EVENTS) } : {},
-    files: list(given.files, (each) => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
-    links: list(given.links, (each) => typeof each.url === "string"),
-    sessions: list(given.sessions, (each) => typeof each.session === "string" && SESSION2.test(each.session)),
-    ...Array.isArray(given.handed) ? { handed: list(given.handed, (each) => typeof each.from === "string" && typeof each.to === "string") } : {},
-    ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
-    ...typeof given.wanted === "number" && Number.isInteger(given.wanted) && given.wanted > 0 ? { wanted: given.wanted } : {},
-    ...typeof given.importedAs === "number" && Number.isInteger(given.importedAs) && given.importedAs > 0 ? { importedAs: given.importedAs } : {},
-    ...given.backGranted === true ? { backGranted: true } : {},
-    ...given.stays === true ? { stays: true } : {},
-    ...isObject(given.source) && typeof given.source.kind === "string" && typeof given.source.ref === "string" ? { source: given.source } : {},
-    ...handingOf(given.handing) ? { handing: handingOf(given.handing) } : {},
-    created,
-    updated,
-    ...typeof given.doneAt === "number" ? { doneAt: given.doneAt } : {},
-    ...isObject(given.removed) && typeof given.removed.at === "number" ? { removed: { at: given.removed.at, by: whoOf(given.removed.by) ?? { user: true } } } : {}
-  };
-}
-var saidUnmoved = false;
-function migratedToRead() {
-  try {
-    migrateOnce();
-  } catch (error) {
-    if (!saidUnmoved)
-      console.error(`Work Queue: its items couldn't be moved over to statuses yet (${error?.message ?? error}): shown as they are, and tried again.`);
-    saidUnmoved = true;
-  }
-}
-function migratedToChange() {
-  try {
-    migrateOnce();
-  } catch (error) {
-    const why = String(error?.message ?? error);
-    if (/another process/.test(why))
-      throw new Refusal("The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).");
-    throw new Refusal(`The Work Queue's items couldn't be moved over to statuses on this computer (${why}), so nothing was changed. Check ${WORK_QUEUE2} (is the disk full?), then try again.`);
-  }
-}
-
-class UnreadableQueue extends Error {
-  owner;
-  aside;
-  constructor(owner, aside) {
-    super(`${owner}'s Work Queue file can't be read`);
-    this.owner = owner;
-    this.aside = aside;
-  }
-}
-function readQueue(owner) {
-  migratedToRead();
-  const file = fileOf2(owner);
-  let text;
-  try {
-    text = fs67.readFileSync(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return { owner, items: [] };
-    throw new UnreadableQueue(owner, false);
-  }
-  let kept;
-  try {
-    kept = JSON.parse(text);
-  } catch {
-    throw new UnreadableQueue(owner, true);
-  }
-  if (!isObject(kept) || !Array.isArray(kept.items))
-    throw new UnreadableQueue(owner, true);
-  const seen = new Set;
-  const items = kept.items.map((each) => itemOf(each, owner)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
-  return { owner, items };
-}
-function setAside(owner, now = Date.now()) {
-  const aside = path71.join(QUEUES2, "aside", `${owner}-${now}.json`);
-  try {
-    fs67.mkdirSync(path71.dirname(aside), { recursive: true, mode: 448 });
-    fs67.renameSync(fileOf2(owner), aside);
-    return aside;
-  } catch {
-    return null;
-  }
-}
-function refusedOver(error, now) {
-  if (!error.aside)
-    return new QueueSetAside(`${error.message} just now, so nothing was changed: try again.`);
-  const aside = setAside(error.owner, now);
-  return new QueueSetAside(aside ? `${error.message}, so nothing was changed. It's kept at ${aside} for you to look at; try again to carry on with an empty queue for ${error.owner}.` : `${error.message}, so nothing was changed, and it couldn't be moved aside: look at ${fileOf2(error.owner)}.`);
-}
-function readQueueSettingAside(owner, now = Date.now()) {
-  try {
-    return readQueue(owner);
-  } catch (error) {
-    if (!(error instanceof UnreadableQueue) || !error.aside || !setAside(owner, now))
-      throw error;
-    return { owner, items: [] };
-  }
-}
-var readQueueOrNone = (owner) => {
-  try {
-    return readQueue(owner);
-  } catch (error) {
-    if (error instanceof UnreadableQueue)
-      return { owner, items: [] };
-    throw error;
-  }
-};
-function owners() {
-  migratedToRead();
-  return listOf(QUEUES2).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((owner) => OWNER2.test(owner));
-}
-var readAll = () => onceEach(owners().map(readQueueOrNone));
-function readKeptQueue(owner) {
-  if (!KEPT_OWNER.test(owner) || OWNER2.test(owner))
-    return null;
-  let kept;
-  try {
-    kept = JSON.parse(fs67.readFileSync(fileOf2(owner), "utf8"));
-  } catch {
-    return null;
-  }
-  if (!isObject(kept) || !Array.isArray(kept.items))
-    return null;
-  const items = kept.items.map((each) => itemOf(each, owner));
-  return items.every((each) => each !== null) ? { owner, items } : null;
-}
-function onceEach(queues) {
-  const seen = new Map;
-  for (const queue of queues) {
-    for (const item of [...queue.items]) {
-      const other = seen.get(item.id);
-      if (!other) {
-        seen.set(item.id, { queue, item });
-        continue;
-      }
-      const loser = item.updated.at >= other.item.updated.at ? other.queue : queue;
-      loser.items = loser.items.filter((each) => each.id !== item.id);
-      if (loser === other.queue)
-        seen.set(item.id, { queue, item });
-    }
-  }
-  return queues;
-}
-var allItems = () => readAll().flatMap((queue) => queue.items);
-
-class Book {
-  queues = new Map;
-  before = new Map;
-  constructor() {
-    for (const owner of owners())
-      this.load(owner);
-    onceEach([...this.queues.values()]);
-  }
-  load(owner) {
-    let queue = this.queues.get(owner);
-    if (!queue) {
-      queue = readQueue(owner);
-      this.queues.set(owner, queue);
-      this.before.set(owner, JSON.stringify(queue.items));
-    }
-    return queue;
-  }
-  queue(owner) {
-    if (!OWNER2.test(owner) && !this.queues.has(owner)) {
-      const kept = fs67.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
-      if (!kept)
-        throw new Refusal(`${owner}'s Work Queue was kept by a newer Kuvo Code, in a way this one can't read: it's left as it is.`);
-      this.queues.set(owner, kept);
-      this.before.set(owner, JSON.stringify(kept.items));
-    }
-    return this.load(owner);
-  }
-  items() {
-    return [...this.queues.values()].filter((queue) => OWNER2.test(queue.owner)).flatMap((queue) => queue.items);
-  }
-  find(ref) {
-    return this.findAll(ref)[0] ?? null;
-  }
-  findAll(ref) {
-    return matching2(this.items(), ref);
-  }
-  give(item, owner) {
-    const from = this.load(item.owner);
-    from.items = from.items.filter((each) => each.id !== item.id);
-    item.owner = owner;
-    this.load(owner).items.push(item);
-  }
-  save() {
-    let any = false;
-    const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
-    const gained = (owner, queue) => {
-      const had = new Set(JSON.parse(this.before.get(owner) ?? "[]").map((item) => item.id));
-      return queue.items.some((item) => !had.has(item.id));
-    };
-    changed.sort(([a, queueA], [b, queueB]) => Number(gained(b, queueB)) - Number(gained(a, queueA)));
-    for (const [owner, queue] of changed) {
-      any = true;
-      if (!queue.items.length)
-        fs67.rmSync(fileOf2(owner), { force: true });
-      else
-        writePrivate(fileOf2(owner), JSON.stringify({ owner, items: queue.items }));
-      this.before.set(owner, JSON.stringify(queue.items));
-    }
-    return any;
-  }
-}
-function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
-  fs67.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
-  migratedToChange();
-  const { value, changed } = locked(LOCK12, () => {
-    let book;
-    try {
-      book = new Book;
-    } catch (error) {
-      if (!(error instanceof UnreadableQueue))
-        throw error;
-      const refused = refusedOver(error, now);
-      if (!onItsOwn || !error.aside)
-        throw refused;
-      console.error(`Work Queue: ${refused.message}`);
-      book = new Book;
-    }
-    const purged = [];
-    for (const queue of owners().map((owner) => book.queue(owner))) {
-      const gone = queue.items.filter((item) => item.removed && now - item.removed.at > KEPT_REMOVED);
-      if (!gone.length)
-        continue;
-      queue.items = queue.items.filter((item) => !gone.includes(item));
-      purged.push(...gone.map((item) => item.id));
-    }
-    const value = work(book);
-    const changed = book.save();
-    for (const id of purged)
-      fs67.rmSync(path71.join(FILES2, id), { recursive: true, force: true });
-    return { value, changed };
-  });
-  if (changed)
-    noteQueuesChanged();
-  return value;
-}
-
-class Refusal extends Error {
-}
-
-class QueueSetAside extends Refusal {
-}
-function noteQueuesChanged() {
-  for (const tell of queueFollowers2)
-    tell();
-}
-var matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed)));
-var refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source;
-var filesOf2 = (item) => path71.join(FILES2, item);
-function placeIn(items, status, { top = false } = {}) {
-  const orders = items.filter((item) => item.status === status && !item.removed).map((item) => item.order);
-  if (!orders.length)
-    return 0;
-  return top ? Math.min(...orders) - 1 : Math.max(...orders) + 1;
-}
-function placeBeside(items, beside, after, moving) {
-  const others = () => items.filter((item) => item.status === beside.status && !item.removed && item.id !== beside.id && item.id !== moving?.id).map((item) => item.order).sort((a, b) => a - b);
-  const neighbor = () => after ? others().find((order) => order > beside.order) : [...others()].reverse().find((order) => order < beside.order);
-  let next = neighbor();
-  if (next !== undefined && Math.abs(next - beside.order) < 0.000001) {
-    items.filter((item) => item.status === beside.status && !item.removed).sort((a, b) => a.order - b.order).forEach((item, index) => {
-      item.order = index;
-    });
-    next = neighbor();
-  }
-  return next === undefined ? beside.order + (after ? 1 : -1) : (beside.order + next) / 2;
-}
-function noteHanded(item, from, to, at) {
-  item.handedBy ??= from;
-  item.handed = [...item.handed ?? [], { from, to, at }].slice(-MOST_HANDED);
-}
-
-// box/src/link/work-queue/labels.ts
-init_text();
-init_files2();
-import path72 from "node:path";
-var LABELS_FILE2 = path72.join(WORK_QUEUE2, "labels.json");
-var LOCK13 = path72.join(WORK_QUEUE2, ".labels.lock");
-var MOST_LABELS = 60;
-var MOST_LABELS_EACH = 10;
-var MOST_NAME = 40;
-var LABEL_COLORS = ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"];
-var COLOR = new Set(LABEL_COLORS);
-var LABEL_ID = /^(?:lbl|cat)_[a-z0-9-]{1,40}$/;
-function labelOf(given) {
-  if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string")
-    return null;
-  const name = plainName(given.name).slice(0, MOST_NAME) || given.id.slice(4);
-  return { id: given.id, name, color: typeof given.color === "string" && COLOR.has(given.color) ? given.color : "graphite" };
-}
-var follows = () => true;
-function followsBy(says) {
-  follows = says;
-}
-function readKept6() {
-  try {
-    const kept = JSON.parse(textOf(LABELS_FILE2) ?? "null");
-    const seen = new Set;
-    const labels = (isObject(kept) && Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
-    const fromPrimary = isObject(kept) && Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each) => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, fromPrimary, ...isObject(kept) && typeof kept.primary === "string" ? { primary: kept.primary } : {} };
-  } catch {
-    return { labels: [], fromPrimary: [] };
-  }
-}
-var labels = () => readKept6().labels;
-function labelNamed(given, among = labels()) {
-  if (typeof given !== "string" || !given.trim())
-    return null;
-  const wanted = given.trim().toLowerCase();
-  return among.find((each) => each.id === wanted) ?? among.find((each) => each.name.toLowerCase() === wanted) ?? null;
-}
-var slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
-function colorFor(given) {
-  const wanted = typeof given === "string" ? given.trim().toLowerCase() : "";
-  if (wanted === "gray" || wanted === "grey")
-    return "graphite";
-  return COLOR.has(wanted) ? wanted : { refused: `${String(given)} isn't a label's colour: use ${LABEL_COLORS.join(", ")}.` };
-}
-var change3 = (work) => {
-  try {
-    migratedToChange();
-  } catch (error) {
-    if (error instanceof Refusal)
-      return { refused: error.message };
-    throw error;
-  }
-  const outcome = locked(LOCK13, () => {
-    const kept = readKept6();
-    const outcome = work(kept);
-    const fromPrimary = kept.fromPrimary.filter((id) => kept.labels.some((each) => each.id === id));
-    if ("done" in outcome)
-      writePrivate(LABELS_FILE2, JSON.stringify({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary } : {}, ...kept.primary ? { primary: kept.primary } : {} }));
-    return outcome;
-  });
-  if ("done" in outcome)
-    noteQueuesChanged();
-  return outcome;
-};
-function addLabel(name, color) {
-  const named = plainName(name).slice(0, MOST_NAME);
-  if (!named)
-    return { refused: "Say what the label is called." };
-  const slug = slugOf(named);
-  if (!slug)
-    return { refused: `${named} can't be a label's name: use letters or numbers.` };
-  const wanted = color === undefined || color === null || color === "" ? null : colorFor(color);
-  if (wanted && typeof wanted !== "string")
-    return wanted;
-  return change3((kept) => {
-    if (labelNamed(named, kept.labels))
-      return { refused: `There's a label called ${named} already.` };
-    if (kept.labels.length >= MOST_LABELS)
-      return { refused: `There are ${MOST_LABELS} labels already: remove one first.` };
-    let id = `lbl_${slug}`;
-    for (let n = 2;kept.labels.some((each) => each.id === id); n++)
-      id = `lbl_${slug.slice(0, 36)}-${n}`;
-    const used = (each) => kept.labels.filter((label) => label.color === each).length;
-    const picked = wanted ?? [...LABEL_COLORS.slice(0, -1)].sort((a, b) => used(a) - used(b))[0];
-    const made = { id, name: named, color: picked };
-    kept.labels.push(made);
-    return { done: made };
-  });
-}
-function changeLabel(which, { name, color }) {
-  const named = name === undefined ? undefined : plainName(name).slice(0, MOST_NAME);
-  if (name !== undefined && !named)
-    return { refused: "A label's name can't be empty." };
-  if (named !== undefined && !slugOf(named))
-    return { refused: `${named} can't be a label's name: use letters or numbers.` };
-  const wanted = color === undefined ? undefined : colorFor(color);
-  if (wanted !== undefined && typeof wanted !== "string")
-    return wanted;
-  if (named === undefined && wanted === undefined)
-    return { refused: "Say its new name (name), its new colour (color), or both." };
-  return change3((kept) => {
-    const found = labelNamed(which, kept.labels);
-    if (!found)
-      return { refused: `There's no label ${String(which ?? "")}.` };
-    if (kept.fromPrimary.includes(found.id) && follows())
-      return { refused: thePrimarys(found.name, "Change") };
-    const taken = named !== undefined ? labelNamed(named, kept.labels) : null;
-    if (taken && taken.id !== found.id)
-      return { refused: `There's a label called ${named} already.` };
-    if (named !== undefined)
-      found.name = named;
-    if (wanted !== undefined)
-      found.color = wanted;
-    return { done: found };
-  });
-}
-var thePrimarys = (name, change) => `${name} is one of the labels this computer takes from your first computer (the one that gives the Work Queue its numbers). ${change} it there, and it's ${change === "Remove" ? "gone" : "changed"} here too.`;
-function removeLabel(which, strip) {
-  const found = labelNamed(which);
-  if (!found)
-    return { refused: `There's no label ${String(which ?? "")}.` };
-  if (readKept6().fromPrimary.includes(found.id) && follows())
-    return { refused: thePrimarys(found.name, "Remove") };
-  try {
-    strip(found.id);
-  } catch (error) {
-    if (error instanceof Refusal)
-      return { refused: error.message };
-    throw error;
-  }
-  return change3((kept) => {
-    const index = kept.labels.findIndex((each) => each.id === found.id);
-    if (index < 0)
-      return { refused: `There's no label ${found.name}.` };
-    kept.labels.splice(index, 1);
-    return { done: found };
-  });
-}
-function keepLabel(given) {
-  const label = labelOf(given);
-  if (!label)
-    return false;
-  if (labels().some((each) => each.id === label.id))
-    return true;
-  return "done" in change3((kept) => {
-    const here = kept.labels.find((each) => each.id === label.id);
-    if (here)
-      return { done: here };
-    if (kept.labels.length >= MOST_LABELS)
-      return { refused: "" };
-    kept.labels.push(label);
-    return { done: label };
-  });
-}
-function takePrimaryLabels(given, used, strip, key) {
-  const theirs = given.slice(0, MOST_LABELS);
-  const ids = new Set(theirs.map((each) => each.id));
-  const removes = (kept) => theirs.length > 0 && (kept.primary === undefined || kept.primary === key) ? kept.fromPrimary.filter((id) => !ids.has(id)) : [];
-  const worked = (kept) => {
-    const gone = new Set(removes(kept));
-    const left = kept.labels.filter((each) => !ids.has(each.id) && !gone.has(each.id));
-    const all = [...theirs, ...left];
-    for (let index = all.length - 1;index >= theirs.length && all.length > MOST_LABELS; index--)
-      if (!used(all[index].id))
-        all.splice(index, 1);
-    return { labels: all, fromPrimary: theirs.map((each) => each.id), primary: key };
-  };
-  const same = (a, b) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
-  const before = readKept6();
-  if (same(worked(before), before))
-    return;
-  try {
-    for (const id of removes(before))
-      strip(id);
-  } catch (error) {
-    if (error instanceof Refusal)
-      return;
-    throw error;
-  }
-  change3((kept) => {
-    const now = worked(kept);
-    if (same(now, kept))
-      return { refused: "" };
-    kept.labels.splice(0, kept.labels.length, ...now.labels);
-    kept.fromPrimary = now.fromPrimary;
-    kept.primary = key;
-    return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
-  });
-}
-
-// box/src/link/work-queue/told.ts
-var TOLD = path73.join(WORK_QUEUE2, "peers");
-var MOST_TOLD = 1500;
-var MOST_TOLD_DONE = 100;
-var fileOf3 = (key) => path73.join(TOLD, `${key}.json`);
-var SESSION3 = /^ses_[A-Za-z0-9]{1,60}$/;
-var KIND = (value) => value === "mac" || value === "machine" ? value : null;
-var count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
-var time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-var whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined;
-var words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "";
-var whoOf2 = (value) => whoOf(value) ?? { name: "someone else" };
-var stamp2 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) };
-function toldItemOf(given, latest = Infinity) {
-  if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
-    return null;
-  const title = words2(given.title, 200);
-  const status = typeof given.status === "string" && STATUS_ID.test(given.status) ? given.status : "todo";
-  const labels = (Array.isArray(given.labels) ? given.labels : []).filter((each) => typeof each === "string" && LABEL_ID.test(each)).slice(0, 20);
-  const assignee = assigneeOf(given.assignee);
-  const progress = isObject(given.progress) ? { ...typeof given.progress.value === "number" && given.progress.value >= 0 && given.progress.value <= 1 ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: words2(given.progress.note, 300) } : {} } : undefined;
-  const sessions = (Array.isArray(given.sessions) ? given.sessions : []).filter((each) => isObject(each) && typeof each.session === "string" && SESSION3.test(each.session)).slice(0, 20).map((each) => ({ session: each.session, title: words2(each.title, 200) || "New Session", working: each.working === true }));
-  const lastNote = isObject(given.lastNote) && typeof given.lastNote.text === "string" ? { at: time(given.lastNote.at), by: whoOf2(given.lastNote.by), text: cut(given.lastNote.text, 500) } : undefined;
-  const source = isObject(given.source) && typeof given.source.kind === "string" && typeof given.source.ref === "string" ? Object.fromEntries(Object.entries(given.source).filter(([key, value]) => ["kind", "ref", "url", "host", "id", "name"].includes(key) && typeof value === "string").map(([key, value]) => [key, value.slice(0, 2000)])) : undefined;
-  if (source?.url && /^github/.test(source.kind) && !/^https:\/\/github\.com\//.test(source.url))
-    delete source.url;
-  const seen = source && isObject(given.seen) && typeof given.seen.state === "string" && /^[a-z_]{1,20}$/.test(given.seen.state) ? { state: given.seen.state, at: Math.min(time(given.seen.at), latest), ...typeof given.seen.checked === "number" ? { checked: Math.min(time(given.seen.checked), latest) } : {}, ...given.seen.gone === true ? { gone: true } : {} } : undefined;
-  const keptIn = seen && typeof given.keptIn === "string" && STATUS_ID.test(given.keptIn) ? given.keptIn : undefined;
-  return {
-    id: given.id,
-    ...whole(given.number) ? { number: whole(given.number) } : {},
-    ...whole(given.wanted) ? { wanted: whole(given.wanted) } : {},
-    owner: given.owner,
-    title: title || "Untitled",
-    status,
-    order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
-    priority: typeof given.priority === "string" && PRIORITY_ID.test(given.priority) ? given.priority : "normal",
-    labels,
-    ...assignee ? { assignee: { ...assignee, name: words2(isObject(given.assignee) ? given.assignee.name : "", 100) || assignee.id } } : {},
-    ...dayOf(given.due) ? { due: dayOf(given.due) } : {},
-    ...progress && Object.keys(progress).length ? { progress } : {},
-    sessions,
-    noteCount: count(given.noteCount),
-    ...lastNote ? { lastNote } : {},
-    fileCount: count(given.fileCount),
-    linkCount: count(given.linkCount),
-    ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
-    ...Array.isArray(given.handedFrom) ? { handedFrom: given.handedFrom.filter((each) => typeof each === "string" && OWNER2.test(each)).slice(0, 20) } : {},
-    ...source ? { source } : {},
-    ...seen ? { seen } : {},
-    ...keptIn ? { keptIn } : {},
-    ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER2.test(given.handing.to) ? { handing: { to: given.handing.to, name: words2(given.handing.name, 100) } } : {},
-    created: stamp2(given.created),
-    updated: stamp2(given.updated),
-    ...typeof given.doneAt === "number" ? { doneAt: time(given.doneAt) } : {}
-  };
-}
-var ownerOf2 = (given) => {
-  if (!isObject(given) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
-    return null;
-  const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
-  const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words2(given.bot.name, 100) } : undefined;
-  return { owner: given.owner, kind, title: typeof given.title === "string" ? words2(given.title, 200) : null, ...bot ? { bot } : {}, ...typeof given.startedBy === "string" && SESSION3.test(given.startedBy) ? { startedBy: given.startedBy } : {} };
-};
-function numberingOf(given) {
-  const kind = KIND(given.kind) ?? "machine";
-  const primary = isObject(given.primary) && typeof given.primary.key === "string" && KEY.test(given.primary.key) && KIND(given.primary.kind) ? { key: given.primary.key, kind: KIND(given.primary.kind), ...time(given.primary.since) ? { since: time(given.primary.since) } : {} } : undefined;
-  return { kind, ...time(given.since) ? { since: time(given.since) } : {}, ...whole(given.top) ? { top: whole(given.top) } : {}, ...primary ? { primary } : {}, ...typeof given.shared === "boolean" ? { shared: given.shared } : {} };
-}
-function toldOf(given, now = Date.now()) {
-  if (!isObject(given) || typeof given.id !== "string" || !/^wqt_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.at !== "number" || !Array.isArray(given.items))
-    return null;
-  if (!Array.isArray(given.labels))
-    return null;
-  const seen = new Set;
-  const latest = Math.min(given.at, now);
-  const items = given.items.slice(0, MOST_TOLD).map((each) => toldItemOf(each, latest)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
-  const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf2).filter((each) => each !== null);
-  const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each) => each !== null);
-  return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
-}
-function readTold3(key) {
-  if (!KEY.test(key))
-    return null;
-  try {
-    const kept = JSON.parse(fs68.readFileSync(fileOf3(key), "utf8"));
-    if (!isObject(kept) || typeof kept.at !== "number" || !Array.isArray(kept.items))
-      return null;
-    if (!Array.isArray(kept.labels))
-      return null;
-    return kept;
-  } catch {
-    return null;
-  }
-}
-var LOCK14 = path73.join(WORK_QUEUE2, ".told.lock");
-function keepTold2(key, told, now = Date.now()) {
-  if (!KEY.test(key))
-    return false;
-  fs68.mkdirSync(TOLD, { recursive: true, mode: 448 });
-  return locked(LOCK14, () => {
-    const kept = readTold3(key);
-    if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
-      return false;
-    writePrivate(fileOf3(key), JSON.stringify({ ...told, heard: now }));
-    return true;
-  });
-}
-function patchTold(key, id, item, deleted) {
-  if (!KEY.test(key))
-    return;
-  const fresh = toldItemOf(item);
-  if (!fresh || fresh.id !== id)
-    return;
-  const removed = isObject(item) && isObject(item.removed) && typeof item.removed.at === "number" ? item.removed.at : 0;
-  const answered = Math.max(fresh.updated.at, removed);
-  try {
-    locked(LOCK14, () => {
-      const kept = readTold3(key);
-      if (!kept)
-        return;
-      const before = kept.items.find((each) => each.id === id);
-      if (before && before.updated.at > answered)
-        return;
-      const others = kept.items.filter((each) => each.id !== id);
-      const items = deleted ? others : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...before.progress ? { progress: before.progress } : {}, ...before.handedFrom ? { handedFrom: before.handedFrom } : {} } : fresh];
-      writePrivate(fileOf3(key), JSON.stringify({ ...kept, items }));
-    });
-  } catch {}
-}
-var sharedSaid = new Map;
-function toldShared(key) {
-  if (!KEY.test(key))
-    return null;
-  let stamp;
-  try {
-    const stat = fs68.statSync(fileOf3(key));
-    stamp = `${stat.mtimeMs}:${stat.size}`;
-  } catch {
-    sharedSaid.delete(key);
-    return null;
-  }
-  const kept = sharedSaid.get(key);
-  if (kept?.stamp === stamp)
-    return kept.shared;
-  const told = readTold3(key);
-  if (!told)
-    return null;
-  sharedSaid.set(key, { stamp, shared: told.shared });
-  return told.shared;
-}
-var toldKeys = () => listOf(TOLD).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY.test(key));
-var forgetTold = (key) => {
-  if (KEY.test(key))
-    fs68.rmSync(fileOf3(key), { force: true });
-};
-
-// box/src/link/work-queue/numbers.ts
-init_record();
-init_state();
-var NUMBERS_FILE = path74.join(WORK_QUEUE2, "numbers.json");
-var BLOCK = 50;
-var LOW = 15;
-var ASK_AGAIN = 30000;
-var MOST_GIVEN = 500;
-var MOST_RANGES = 400;
-var ASK_ID = /^wqn_[A-Za-z0-9_-]{8,40}$/;
-var MOST_NUMBER = 1e6;
-var CLAIM_REACH = 1e4;
-var isRange = (each) => Array.isArray(each) && each.length === 2 && each.every((n) => Number.isInteger(n) && n > 0 && n < MOST_NUMBER) && each[0] <= each[1];
-var joined = (...all) => {
-  const sorted = all.flat().filter(isRange).map(([from, to]) => [from, to]).sort((a, b) => a[0] - b[0]);
-  const ranges = [];
-  for (const [from, to] of sorted) {
-    const last = ranges[ranges.length - 1];
-    if (last && from <= last[1] + 1)
-      last[1] = Math.max(last[1], to);
-    else
-      ranges.push([from, to]);
-  }
-  return ranges;
-};
-var rangesOf = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n]));
-var overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : [])));
-var inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to);
-var cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [];
-function readNumbers(file = NUMBERS_FILE) {
-  try {
-    const kept = JSON.parse(textOf(file) ?? "null");
-    if (!isObject(kept))
-      return { leases: [] };
-    const asking = isObject(kept.asking) && typeof kept.asking.id === "string" && typeof kept.asking.count === "number" && typeof kept.asking.since === "number" ? { id: kept.asking.id, count: kept.asking.count, since: kept.asking.since, ...typeof kept.asking.sent === "number" ? { sent: kept.asking.sent } : {}, ...Array.isArray(kept.asking.claims) ? { claims: cleanRanges(kept.asking.claims) } : {}, ...Array.isArray(kept.asking.restores) ? { restores: cleanRanges(kept.asking.restores) } : {} } : undefined;
-    return {
-      ...typeof kept.primary === "string" ? { primary: kept.primary } : {},
-      ...typeof kept.since === "number" && Number.isFinite(kept.since) && kept.since > 0 ? { since: kept.since } : {},
-      ...typeof kept.lost === "number" && Number.isFinite(kept.lost) ? { lost: kept.lost } : {},
-      ...typeof kept.through === "string" ? { through: kept.through } : {},
-      ...typeof kept.next === "number" && Number.isInteger(kept.next) && kept.next > 0 ? { next: kept.next } : {},
-      ...isObject(kept.given) ? { given: kept.given } : {},
-      ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
-      leases: cleanRanges(kept.leases),
-      ...Array.isArray(kept.used) ? { used: cleanRanges(kept.used) } : {},
-      ...asking ? { asking } : {}
-    };
-  } catch {
-    return { leases: [] };
-  }
-}
-function primaryOf(link = readLink(), file = NUMBERS_FILE, now = Date.now()) {
-  const setup = followedSetup(link);
-  if (!setup)
-    return rankedPrimary(link, file, now);
-  if (setup.role === "primary")
-    return { self: true };
-  const peer = peersOf(link).find((each) => each.key === setup.primary);
-  return peer?.address ? { peer } : { away: true };
-}
-function rankedPrimary(link = readLink(), file = NUMBERS_FILE, now = Date.now()) {
-  const kept = readNumbers(file);
-  const own = link ? ownKey(link) : null;
-  const gone = goneOf(link, now);
-  const all = candidatesOf(link, kept, own, file, gone);
-  const macs = IS_MAC ? [] : macsOf(link);
-  const choices = macs.length ? all.filter((each) => !each.self) : all;
-  const best = choices.sort(rank)[0];
-  const keptKey = kept.primary === "self" || own && kept.primary === own ? "self" : kept.primary;
-  let current = null;
-  if (keptKey === "self")
-    current = all.find((each) => each.self) ?? null;
-  else if (keptKey && !gone.has(keptKey)) {
-    current = all.find((each) => each.key === keptKey) ?? null;
-    const removed = removedBoxes(link);
-    const through = kept.through ? readTold3(kept.through)?.primary : undefined;
-    const movedOn = Boolean(kept.through && through && through.key !== keptKey && peersOf(link).some((peer) => peer.key === kept.through) && !gone.has(kept.through));
-    if (!current && !movedOn && !removed.has(keptKey) && !(kept.through && removed.has(kept.through)) && !(kept.lost !== undefined && now - kept.lost > LOST_FOR))
-      current = "away";
-  }
-  if (current === "away")
-    return { away: true };
-  if (current?.self && macs.length)
-    current = null;
-  const chosen = current && (!best || !earlier(best, current)) ? current : best;
-  if (!chosen)
-    return keptKey && keptKey !== "self" || macs.length ? { away: true } : { self: true };
-  if (chosen.self)
-    return { self: true };
-  if (chosen.peer?.address)
-    return { peer: chosen.peer };
-  if (chosen.via?.address)
-    return { peer: { key: chosen.key, address: "", kind: chosen.kind, name: chosen.name ?? "" }, via: chosen.via };
-  return { away: true };
-}
-var LOST_FOR = 3 * 86400000;
-function goneOf(link, now = Date.now()) {
-  const gone = new Set;
-  const reach = readReach();
-  const checked = readReach(PEER_CHECKED);
-  for (const peer of peersOf(link)) {
-    const away = awaySince(peer.key, reach);
-    const last = lastFoundAway(peer.key, checked);
-    if (away !== null && now - away > LOST_FOR && last !== null && now - last < FOUND_AWAY_WITHIN)
-      gone.add(peer.key);
-  }
-  return gone;
-}
-var FOUND_AWAY_WITHIN = 3600000;
-function keptHeardOf(link, kept, file, now) {
-  if (!kept.primary || kept.primary === "self")
-    return true;
-  const own = link ? ownKey(link) : null;
-  return kept.primary === own || candidatesOf(link, kept, own, file, goneOf(link, now)).some((each) => each.key === kept.primary);
-}
-var earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since;
-var rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-function candidatesOf(link, kept, own, file, gone = goneOf(link, Date.now())) {
-  const all = [{ key: own ?? "self", kind: IS_MAC ? "mac" : "machine", since: kept.since ?? ownSince(Date.now(), file), self: true }];
-  const peers = peersOf(link).filter((peer) => !gone.has(peer.key));
-  for (const peer of peers)
-    all.push({ key: peer.key, kind: peer.kind, since: readTold3(peer.key)?.since ?? Number.MAX_SAFE_INTEGER, peer, name: peer.name });
-  for (const peer of peers) {
-    const named = readTold3(peer.key)?.primary;
-    if (!named || named.key === own || gone.has(named.key))
-      continue;
-    const known = all.find((each) => each.key === named.key);
-    if (known) {
-      if (known.since === Number.MAX_SAFE_INTEGER && named.since)
-        known.since = named.since;
-      continue;
-    }
-    all.push({ key: named.key, kind: named.kind, since: named.since ?? Number.MAX_SAFE_INTEGER, via: peer });
-  }
-  return all;
-}
-function ownSince(now = Date.now(), file = NUMBERS_FILE) {
-  const kept = readNumbers(file).since;
-  if (kept)
-    return kept;
-  let since = now;
-  try {
-    const made = fs69.statSync(RUN).birthtimeMs;
-    if (made > 0 && made < since)
-      since = made;
-  } catch {}
-  for (const item of allItems())
-    if (item.created.at > 0 && item.created.at < since)
-      since = item.created.at;
-  since = Math.floor(since);
-  changeNumbers((numbers) => {
-    numbers.since ??= since;
-  }, file);
-  return readNumbers(file).since ?? since;
-}
-function topOf(kept = readNumbers()) {
-  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...allItems().map((item) => item.number ?? 0));
-}
-var keyOf3 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined);
-var askID = () => `wqn_${crypto24.randomBytes(12).toString("base64url")}`;
-var leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0);
-function changeNumbers(work, file = NUMBERS_FILE) {
-  fs69.mkdirSync(path74.dirname(file), { recursive: true, mode: 448 });
-  return locked(`${path74.join(path74.dirname(file), "." + path74.basename(file))}.lock`, () => {
-    const kept = readNumbers(file);
-    const before = JSON.stringify(kept);
-    const value = work(kept);
-    if (JSON.stringify(kept) !== before)
-      writePrivate(file, JSON.stringify(kept));
-    return value;
-  });
-}
-function counterOf(kept) {
-  return kept.next ?? Math.max(0, ...allItems().map((item) => item.number ?? 0)) + 1;
-}
-function notePrimary(kept, primary, link, now) {
-  if ("away" in primary) {
-    kept.primary ??= keyOf3(primary, link);
-    return;
-  }
-  const key = keyOf3(primary, link);
-  const through = "peer" in primary ? primary.via?.key : undefined;
-  if (through)
-    kept.through = through;
-  else
-    delete kept.through;
-  if (kept.primary === key)
-    return;
-  const was = kept.primary;
-  kept.primary = key;
-  if (was === "self")
-    kept.asking ??= { id: askID(), count: BLOCK, since: now };
-  else if (key === "self" && was !== undefined)
-    kept.next = Math.max(counterOf(kept), cappedTop(Math.max(topOf(kept), toldTop())) + 1);
-}
-function toldTop() {
-  return Math.max(0, ...toldKeys().map((key) => {
-    const told = readTold3(key);
-    return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
-  }));
-}
-var TOP_MOST = MOST_NUMBER - 1 - 4 * BLOCK;
-var cappedTop = (top) => Math.min(top, TOP_MOST);
-function movePast(top, { file = NUMBERS_FILE } = {}) {
-  if (!Number.isInteger(top) || top <= 0 || top >= MOST_NUMBER)
-    return;
-  top = cappedTop(top);
-  if ((readNumbers(file).next ?? 0) > top)
-    return;
-  changeNumbers((kept) => {
-    if (kept.primary !== "self" && kept.primary !== undefined)
-      return;
-    kept.next = Math.max(counterOf(kept), top + 1);
-  }, file);
-}
-function takeNumber(primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() } = {}) {
-  return changeNumbers((kept) => {
-    notePrimary(kept, primary, link, now);
-    if ("self" in primary) {
-      const number = counterOf(kept);
-      kept.next = number + 1;
-      return number;
-    }
-    const lease = kept.leases[0];
-    let number = null;
-    if (lease) {
-      number = lease[0];
-      if (lease[0] === lease[1])
-        kept.leases.shift();
-      else
-        lease[0]++;
-      kept.used = joined(kept.used ?? [], [[number, number]]).slice(-MOST_RANGES);
-    }
-    if (leftIn(kept.leases) <= LOW)
-      kept.asking ??= { id: askID(), count: BLOCK, since: now };
-    return number;
-  }, file);
-}
-var toldTopOf = (key) => {
-  const told = readTold3(key);
-  return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
-};
-function blocksOf(kept, by, restores) {
-  const given = Object.values(kept.given ?? {});
-  const own = given.filter((each) => each.by === by).map((each) => [each.from, each.to]);
-  const unsaid = restores.length ? given.filter((each) => each.by === undefined) : [];
-  if (!unsaid.length)
-    return joined(own);
-  const told = new Set(toldKeys());
-  const known = new Set([...peersOf(readLink()).map((peer) => peer.key), ...Object.keys(kept.granted ?? {}), ...told]);
-  known.delete(by);
-  known.delete("self");
-  if ([...known].some((key) => !told.has(key)))
-    return joined(own);
-  const others = Math.max(0, ...[...known].map(toldTopOf));
-  const theirs = toldTopOf(by);
-  const old = unsaid.filter((each) => each.from > others && each.to <= theirs).map((each) => [each.from, each.to]);
-  return joined(own, overlap(joined(old), restores));
-}
-function grantOn(kept, by, claims, said = {}) {
-  const before = kept.granted?.[by] ?? [];
-  const next = counterOf(kept);
-  const blocks = by !== "self" && said.own ? blocksOf(kept, by, overlap(said.restores ?? [], claims)) : [];
-  const ranges = joined(overlap(claims, [[next, Math.min(next + CLAIM_REACH, MOST_NUMBER - 1)]]), overlap(claims, before), overlap(claims, blocks));
-  if (ranges.length) {
-    kept.next = Math.max(next, ranges[ranges.length - 1][1] + 1);
-    kept.granted = { ...kept.granted ?? {}, [by]: joined(before, ranges).slice(-MOST_RANGES) };
-  }
-  return ranges;
-}
-function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(), link = readLink(), restores = [] } = {}) {
-  const claims = rangesOf(numbers);
-  if (!claims.length)
-    return { granted: [] };
-  return changeNumbers((kept) => {
-    notePrimary(kept, primary, link, now);
-    if ("self" in primary)
-      return { granted: grantOn(kept, "self", claims) };
-    const highest = claims[claims.length - 1][1];
-    kept.leases = kept.leases.map(([from, to]) => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
-    const back = joined(kept.asking?.restores ?? [], overlap(rangesOf(restores), claims)).slice(-MOST_RANGES);
-    kept.asking = { id: askID(), count: BLOCK, claims: joined(kept.asking?.claims ?? [], claims).slice(-MOST_RANGES), ...back.length ? { restores: back } : {}, since: now };
-    return { granted: null };
-  }, file);
-}
-function askToSend({ file = NUMBERS_FILE, now = Date.now() } = {}) {
-  const asked = changeNumbers((kept) => {
-    const asking = kept.asking;
-    if (!asking || asking.sent !== undefined && now - asking.sent < ASK_AGAIN)
-      return null;
-    asking.sent = now;
-    return { id: asking.id, count: asking.count, ...asking.claims?.length ? { claims: asking.claims, own: true } : {}, ...asking.restores?.length ? { restores: asking.restores } : {} };
-  }, file);
-  if (!asked)
-    return null;
-  const top = topOf(readNumbers(file));
-  return { ...asked, ...top ? { top } : {} };
-}
-function notePrimaryNow(link = readLink(), { file = NUMBERS_FILE, now = Date.now() } = {}) {
-  const before = readNumbers(file);
-  const heard = keptHeardOf(link, before, file, now);
-  if (heard === (before.lost !== undefined))
-    changeNumbers((numbers) => {
-      if (heard)
-        delete numbers.lost;
-      else
-        numbers.lost ??= now;
-    }, file);
-  const primary = primaryOf(link, file, now);
-  const kept = readNumbers(file);
-  if (kept.primary === undefined || "away" in primary || kept.primary === keyOf3(primary, link) && kept.through === ("peer" in primary ? primary.via?.key : undefined))
-    return;
-  changeNumbers((numbers) => notePrimary(numbers, primary, link, now), file);
-}
-function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
-  if (!isObject(ask) || typeof ask.id !== "string" || !ASK_ID.test(ask.id))
-    return null;
-  const count = typeof ask.count === "number" && Number.isInteger(ask.count) ? Math.min(Math.max(ask.count, 1), 200) : BLOCK;
-  const claims = cleanRanges(ask.claims);
-  const top = typeof ask.top === "number" && Number.isInteger(ask.top) && ask.top > 0 && ask.top < MOST_NUMBER ? ask.top : 0;
-  const id = ask.id;
-  return changeNumbers((kept) => {
-    kept.primary ??= "self";
-    if (top && !kept.given?.[id])
-      kept.next = Math.max(counterOf(kept), cappedTop(top) + 1);
-    const given = kept.given?.[id];
-    if (given)
-      return { id, from: given.from, to: given.to, granted: given.granted ?? [] };
-    const granted = grantOn(kept, by, claims, { own: ask.own === true, restores: cleanRanges(ask.restores) });
-    const from = counterOf(kept);
-    const to = from + count - 1;
-    kept.next = to + 1;
-    const all = Object.entries({ ...kept.given ?? {}, [id]: { from, to, granted, at: now, by } });
-    kept.given = Object.fromEntries(all.sort((a, b) => a[1].at - b[1].at).slice(-MOST_GIVEN));
-    return { id, from, to, granted };
-  }, file);
-}
-function takeBlock(give, { file = NUMBERS_FILE } = {}) {
-  if (!isObject(give) || typeof give.id !== "string" || !Number.isInteger(give.from) || !Number.isInteger(give.to))
-    return null;
-  const from = give.from;
-  const to = give.to;
-  if (from < 1 || to < from || to - from > 1000)
-    return null;
-  const granted = cleanRanges(give.granted);
-  return changeNumbers((kept) => {
-    if (kept.asking?.id !== give.id)
-      return null;
-    const claimed = kept.asking?.claims ?? [];
-    kept.asking = undefined;
-    kept.leases = joined(kept.leases, [[from, to]]);
-    return { granted, claimed };
-  }, file);
-}
-function numberWaiting(book, primary, answer, options = {}) {
-  const now = options.now ?? Date.now();
-  const used = [];
-  if (answer) {
-    for (const item of book.items()) {
-      if (item.wanted === undefined || item.backGranted || item.source || !OWNER2.test(item.owner) || !inRanges(answer.claimed, item.wanted))
-        continue;
-      const kept = inRanges(answer.granted, item.wanted);
-      if (item.number !== undefined) {
-        if (kept)
-          item.backGranted = true;
-        else
-          stays(item, `Its own number, #${item.wanted}, couldn't be given back (another of your computers was given it already, or it's far past the numbers in use), so it stays #${item.number}.`, now);
-        continue;
-      }
-      if (kept) {
-        item.number = item.wanted;
-        used.push(item.number);
-      } else {
-        item.notes.push({ at: now, by: { user: true }, text: `Imported as #${item.wanted}, a number that couldn't be kept (another of your computers was given it already, or it's far past the numbers in use), so it has a new one.` });
-        item.importedAs = item.wanted;
-      }
-      delete item.wanted;
-    }
-  }
-  used.push(...restoreNumbers(book, now));
-  if (used.length)
-    changeNumbers((kept) => {
-      kept.used = joined(kept.used ?? [], rangesOf(used)).slice(-MOST_RANGES);
-    }, options.file);
-  const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && !item.source && OWNER2.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
-  for (const item of waiting) {
-    const number = takeNumber(primary, options);
-    if (number === null)
-      return;
-    item.number = number;
-  }
-}
-function stays(item, why, now) {
-  item.notes.push({ at: now, by: { user: true }, text: why });
-  delete item.wanted;
-  delete item.backGranted;
-  item.stays = true;
-}
-function restoreNumbers(book, now) {
-  const back = book.items().filter((item) => item.backGranted && item.wanted !== undefined && item.number !== undefined);
-  if (!back.length)
-    return [];
-  const first = new Map;
-  for (const item of back)
-    if (!first.has(item.wanted))
-      first.set(item.wanted, item);
-  const going = new Set(first.values());
-  const holders = new Map;
-  for (const item of book.items()) {
-    const held = item.number ?? item.wanted;
-    if (held !== undefined)
-      holders.set(held, [...holders.get(held) ?? [], item]);
-  }
-  const blocker = (item) => (first.get(item.wanted) !== item ? first.get(item.wanted) : undefined) ?? (holders.get(item.wanted) ?? []).find((each) => each !== item && !going.has(each));
-  for (let changed = true;changed; ) {
-    changed = false;
-    for (const item of going) {
-      if (!blocker(item))
-        continue;
-      going.delete(item);
-      changed = true;
-    }
-  }
-  for (const item of back) {
-    if (going.has(item))
-      continue;
-    const holder = blocker(item);
-    if (!holder.removed && !holder.stays && holder.number === item.wanted && holder.wanted !== undefined)
-      continue;
-    stays(item, `Its own number, #${item.wanted}, is another item's here, so it stays #${item.number}.`, now);
-  }
-  const used = [];
-  for (const item of going) {
-    item.notes.push({ at: now, by: { user: true }, text: `Has its own number, #${item.wanted}, again (it was #${item.number}).` });
-    used.push(item.wanted);
-    item.number = item.wanted;
-    delete item.wanted;
-    delete item.importedAs;
-    delete item.backGranted;
-  }
-  return used;
-}
-function reclaimWaiting(primary = primaryOf(), options = {}) {
-  const mine = allItems().filter((item) => !item.source && !item.removed && OWNER2.test(item.owner));
-  const waiting = mine.filter((item) => item.number === undefined || item.wanted !== undefined && !item.backGranted);
-  const settling = mine.some((item) => item.backGranted && item.wanted !== undefined);
-  if (!waiting.length && !settling)
-    return false;
-  const kept = readNumbers(options.file);
-  const asked = kept.asking?.claims ?? [];
-  const wanted = waiting.flatMap((item) => item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []);
-  const restores = waiting.flatMap((item) => item.number !== undefined && item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []);
-  if ("self" in primary) {
-    const granted = wanted.length ? claimNumbers(primary, wanted, { ...options, restores }).granted : [];
-    changeQueues((book) => numberWaiting(book, primary, { granted: granted ?? [], claimed: rangesOf(wanted) }, options), undefined, { onItsOwn: true });
-    return true;
-  }
-  if (wanted.length)
-    claimNumbers(primary, wanted, { ...options, restores });
-  else if (!kept.asking && !leftIn(kept.leases) && waiting.some((item) => item.number === undefined))
-    changeNumbers((numbers) => {
-      numbers.asking ??= { id: askID(), count: BLOCK, since: options.now ?? Date.now() };
-    }, options.file);
-  if (leftIn(readNumbers(options.file).leases) || settling)
-    changeQueues((book) => numberWaiting(book, primary, null, options), undefined, { onItsOwn: true });
-  return true;
-}
-var lookedForWaiting = 0;
-function pushNumbers(host, link = readLink()) {
-  if (Date.now() - lookedForWaiting > 60000) {
-    lookedForWaiting = Date.now();
-    try {
-      notePrimaryNow(link);
-    } catch {}
-    try {
-      reclaimWaiting(primaryOf(link));
-    } catch {}
-  }
-  if (!host?.welcomed || !link || !readNumbers().asking)
-    return;
-  const primary = primaryOf(link);
-  if (!("peer" in primary))
-    return;
-  const ask = askToSend();
-  if (!ask)
-    return;
-  const bytes = mailFor(primary.via ?? primary.peer, { workQueue: { ask, ...primary.via ? { to: primary.peer.key } : {} }, at: Date.now() }, link);
-  if (bytes)
-    try {
-      host.send(bytes);
-    } catch {}
-}
-function takeNumbersMail(sender, given, host) {
-  if (!isObject(given))
-    return;
-  const link = readLink();
-  const primary = primaryOf(link);
-  const send = (to, payload) => {
-    const bytes = link && "address" in to && to.address ? mailFor(to, { workQueue: payload, at: Date.now() }, link) : null;
-    if (bytes)
-      try {
-        host?.send(bytes);
-      } catch {}
-  };
-  const peers = peersOf(link);
-  if (isObject(given.ask)) {
-    const asker = typeof given.for === "string" && KEY.test(given.for) ? given.for : sender.key;
-    if ("self" in primary && (given.to === undefined || given.to === ownKey(link ?? {}))) {
-      const block = giveBlock(asker, given.ask);
-      if (block)
-        send(sender, { give: block, ...asker !== sender.key ? { for: asker } : {} });
-      return;
-    }
-    if (given.for === undefined && typeof given.to === "string" && "peer" in primary && !primary.via && primary.peer.key === given.to)
-      send(primary.peer, { ask: given.ask, for: sender.key });
-    return;
-  }
-  if (!isObject(given.give) || !("peer" in primary))
-    return;
-  const route = primary.via ?? primary.peer;
-  if (typeof given.for === "string" && given.for !== ownKey(link ?? {})) {
-    const to = peers.find((each) => each.key === given.for);
-    if (to && !primary.via && sender.key === primary.peer.key)
-      send(to, { give: given.give });
-    return;
-  }
-  if (route.key === sender.key)
-    blockArrived(given.give, primary);
-}
-function blockArrived(give, primary, options = {}) {
-  const answer = takeBlock(give, options);
-  if (!answer)
-    return false;
-  changeQueues((book) => numberWaiting(book, primary, answer, options), undefined, { onItsOwn: true });
-  return true;
-}
+// box/src/link/mac/peers.ts
+init_numbers();
 
 // box/src/link/setup/lead.ts
 init_changed();
@@ -22733,6 +22655,7 @@ init_format();
 init_home();
 init_known();
 init_state();
+init_numbers();
 
 // box/src/link/setup/card.ts
 init_files2();
@@ -22756,23 +22679,14 @@ init_known();
 // box/src/link/setup/held.ts
 init_home();
 init_known();
+init_numbers();
+init_told();
 init_record();
 function heldBy(link, now = Date.now()) {
-  if (!IS_MAC || !link)
+  if (!IS_MAC || !link || followedSetup(link)?.role === "primary")
     return [];
-  const leading = followedSetup(link)?.role === "primary";
-  const reach = readReach();
-  const gone = leading ? null : goneOf(link, now);
-  const isGone = (key) => {
-    if (gone)
-      return gone.has(key);
-    const away = awaySince(key, reach);
-    return away !== null && now - away > LOST_FOR;
-  };
-  return peersOf(link).filter((peer) => {
-    const shared = isGone(peer.key) ? null : toldShared(peer.key);
-    return shared !== null && (leading ? shared === true : shared !== false);
-  }).map((peer) => peer.key);
+  const gone = goneOf(link, now);
+  return peersOf(link).filter((peer) => !gone.has(peer.key) && toldShared(peer.key) === undefined).map((peer) => peer.key);
 }
 
 // box/src/link/setup/welcomed.ts
@@ -23038,6 +22952,7 @@ var ATTACHED_FILE = "app-attached.json";
 init_known();
 init_directory();
 init_state();
+init_store();
 var SETUP_CARD = path78.join(RUN, "setup-card.json");
 function cardNow() {
   const link = readLink();
@@ -23147,7 +23062,10 @@ var computerName = (peer) => peer.kind === "mac" ? plainName(peer.name) || "the 
 // box/src/link/work-queue/across.ts
 init_directory();
 init_known();
+init_reach();
 init_state();
+init_labels();
+init_statuses();
 
 // box/src/link/work-queue/ops.ts
 init_text();
@@ -23156,6 +23074,8 @@ import fs76 from "node:fs";
 import os9 from "node:os";
 import path81 from "node:path";
 import crypto29 from "node:crypto";
+init_labels();
+init_statuses();
 
 // box/src/link/work-queue/assignees.ts
 init_text();
@@ -23171,6 +23091,7 @@ var AGENT_NAMES2 = {
 };
 
 // box/src/link/work-queue/assignees.ts
+init_store();
 var AGENTS = Object.entries(AGENT_NAMES2).map(([id, name]) => ({ kind: "agent", id, name }));
 function assignable() {
   let bots = [];
@@ -23202,6 +23123,15 @@ function assigneeNamed(assignee, all = assignable(), told) {
   const name = here?.name ?? (isObject(told) && typeof told.name === "string" ? plainName(told.name).slice(0, 100) : "") ?? "";
   return { kind: assignee.kind, id: assignee.id, name: name || (assignee.kind === "bot" ? "A bot on another computer" : assignee.id), ...here?.look ? { look: here.look } : {} };
 }
+
+// box/src/link/work-queue/ops.ts
+init_numbers();
+init_store();
+
+// box/src/link/work-queue/view.ts
+init_store();
+init_statuses();
+init_sources();
 
 // box/src/link/work-queue/github.ts
 init_text();
@@ -23536,6 +23466,8 @@ async function readOne(reader, ask, query, valueOf, now = Date.now) {
 }
 
 // box/src/link/work-queue/github.ts
+init_store();
+init_sources();
 var SEEN_FILE2 = path80.join(WORK_QUEUE2, "seen.json");
 var DONE_STATES = new Set(["completed", "not_planned", "merged", "closed"]);
 var STRUCK = new Set(["not_planned", "closed"]);
@@ -29946,6 +29878,9 @@ async function finishGoalTool(caller, args, targets) {
   return bot ? answered2(await finishGoal(bot.bot, args, () => targets)) : refused2(ONLY_BOTS);
 }
 
+// box/src/link/letters/tools.ts
+init_reach();
+
 // box/src/link/letters/start-call.ts
 init_text();
 import fs93 from "node:fs";
@@ -30485,8 +30420,11 @@ init_files2();
 init_home();
 
 // box/src/link/work-queue/moves.ts
+init_labels();
+init_statuses();
 import fs94 from "node:fs";
 import path97 from "node:path";
+init_store();
 function packWorkQueues(owners) {
   const items = owners.flatMap((owner) => OWNER2.test(owner) ? readQueueSettingAside(owner).items : readKeptQueue(owner)?.items ?? []);
   if (!items.length)
@@ -32025,7 +31963,11 @@ async function agentTool(name, args, session, place) {
 // box/src/link/work-queue/hand.ts
 init_records();
 init_known();
+init_reach();
 init_state();
+init_labels();
+init_statuses();
+init_store();
 
 // box/src/link/work-queue/parts.ts
 init_parts();
@@ -32067,6 +32009,8 @@ function takePart(sender, part) {
 }
 
 // box/src/link/work-queue/hand.ts
+init_numbers();
+init_sources();
 var HAND_LIFE = 30 * 86400000;
 var HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
 var SEEN = path104.join(WORK_QUEUE2, "handed.json");
@@ -32367,7 +32311,9 @@ function elsewhereOf2(session, link = readLink()) {
 // box/src/link/work-queue/acts.ts
 import fs102 from "node:fs";
 import path105 from "node:path";
+init_numbers();
 init_records();
+init_store();
 var GITHUB_WAIT = 3000;
 var YOU = { user: true };
 
@@ -32498,9 +32444,11 @@ import fs103 from "node:fs";
 import path106 from "node:path";
 init_directory();
 init_known();
+init_reach();
 init_home();
-init_settle();
 init_state();
+init_store();
+init_told();
 var FORWARD_FEATURE = "work-queue.forward";
 var takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature);
 var AREA_FEATURES = { computers: "computers.manage", devices: "devices.pair" };
@@ -32528,7 +32476,7 @@ var read2 = (file) => {
 };
 async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now()) {
   const peer = peersOf(link).find((each) => each.key === computer.key);
-  if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE) || sharedMachine(link))
+  if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   const here = ownName();
   if (awaySince(peer.key) !== null)
@@ -32558,7 +32506,7 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
 }
 var listed4 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 async function seekElsewhere(named, ref, signal, link = readLink()) {
-  const peers = sharedMachine(link) ? [] : peersOf(link);
+  const peers = peersOf(link);
   if (!peers.length || named.length > 300 || signal?.aborted)
     return { missing: true };
   const here = ownName();
@@ -32770,8 +32718,6 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
     did.set(key, { until: kept.until, answer: value, answered: now });
     return answer(value);
   }
-  if (readTold3(sender.key)?.shared)
-    return answer({ status: 409, value: { message: `${here} doesn't take changes from ${computerName(peer)}, a machine shared with other Macs: change it from ${here}.` } });
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD))
     return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
   const entry = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
@@ -32817,25 +32763,7 @@ init_home();
 init_phones();
 init_main_only();
 init_record();
-init_settle();
 init_state();
-
-// box/src/link/peers/apart.ts
-init_record();
-init_settle();
-init_state();
-init_directory();
-var saysShared = (key, told = readPeerAgents()) => told[key]?.shared === true || toldShared(key) === true;
-function saysApart(key, given, link = readLink()) {
-  const setup = followedSetup(link);
-  return sharedMachine(link) || given.shared === true || toldShared(key) === true || !!setup && typeof given.setup === "string" && given.setup !== setup.id;
-}
-function isApart(key, link = readLink(), told = readPeerAgents()) {
-  const setup = followedSetup(link);
-  return sharedMachine(link) || saysShared(key, told) || !!setup && !!told[key]?.setup && told[key].setup !== setup.id;
-}
-
-// box/src/link/peers/devices.ts
 init_directory();
 init_known();
 var DEVICES_FEATURE = "devices.pair";
@@ -32897,7 +32825,7 @@ async function deviceAct(sender, act) {
   const setup = followedSetup(link);
   if (!link || setup?.role !== "primary")
     return answer2(409, { message: `${here} isn't your setup's main computer, so it adds no devices for your other computers.` });
-  if (sharedMachine(link) || isApart(sender.key, link) || !ownMachines(link).has(sender.key))
+  if (!ownMachines(link).has(sender.key))
     return answer2(409, { message: `Only computers in ${here}'s own setup can add your devices.` });
   return pairHere(device, { key: sender.key, name: peersOf(link).find((peer) => peer.key === sender.key)?.name || "that computer" });
 }
@@ -32906,8 +32834,6 @@ async function pairDeviceFromHere(given, signal) {
   const device = givenDevice(given, link);
   if (!device)
     return answer2(400, NOT_GIVEN);
-  if (sharedMachine(link))
-    return answer2(409, { message: "This computer is shared with another setup, so it can't add your devices by itself." });
   if (switchOff())
     return answer2(409, switchOffWords());
   const main = mainElsewhere(link);
@@ -33425,16 +33351,16 @@ async function* linkRoute(context) {
 
 // box/src/link/peers/manage.ts
 init_main_only();
-init_settle();
 init_phones();
 init_state();
 init_files2();
 init_directory();
 init_known();
+init_reach();
 var MANAGE_FEATURE = "computers.manage";
 var MOST_NAME3 = 100;
 function writerOf(link) {
-  if (!link || sharedMachine(link))
+  if (!link)
     return null;
   const named = (key, name, or) => name || peersOf(link).find((peer) => peer.key === key)?.name || or;
   const main = mainElsewhere(link);
@@ -33448,7 +33374,7 @@ function writerOf(link) {
 function writtenMachines(link, writer) {
   if (!writer)
     return new Set;
-  const boxes = writer.here ? peersOf(link) : namedBoxes(link);
+  const boxes = writer.here ? peersOf(link) : namedBoxes(link, writer.key);
   return new Set(boxes.filter((box) => box.kind === "machine").map((box) => box.key));
 }
 var OLD_APP_GRACE = 60000;
@@ -33469,15 +33395,12 @@ function writerFacts(link = readLink()) {
 function whyNot(computer, what, here, link = readLink(), facts = writerFacts(link)) {
   const name = computer.name || "This computer";
   const { writer } = facts;
-  const mine = writer?.here === true && Boolean(computer.key) && facts.machines.has(computer.key);
-  if ((computer.shared || computer.apart) && !mine)
-    return `${name} is shared with another setup, so it isn't yours to ${what} from here.`;
   if (computer.kind === "mac")
     return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here)
     return `${here} can't remove itself: remove it from another of your computers.`;
   if (!writer)
-    return macsOf(readLink()).length > 1 || sharedMachine(link) ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
+    return macsOf(link).length > 1 ? `${name} was set up by more than one Mac, so no one of them keeps its record: ${what} it from the Mac that added it.` : `No Mac keeps ${name}'s record, so it can't be ${what === "rename" ? "renamed" : "removed"} from here.`;
   if (!facts.reachable)
     return `${here} can't reach ${writer.name}, which keeps your machines' records: ${what} ${name} from there.`;
   if (!computer.key || !facts.machines.has(computer.key))
@@ -33573,11 +33496,7 @@ async function writerAct(sender, act) {
   const writer = writerOf(link);
   if (!writer?.here)
     return answer4(409, { message: `${ownName()} doesn't keep your machines' records.` });
-  if (isApart(sender.key, link))
-    return answer4(409, { message: "Only your own computers can rename and remove your machines." });
   const target = peersOf(link).find((peer) => peer.key === act.item);
-  if (target && isApart(target.key, link))
-    return answer4(409, { message: `${target.name} is shared with another setup: only ${ownName()} itself can ${act.method === "DELETE" ? "remove" : "rename"} it.` });
   if (target && act.method === "DELETE" && oldAppAttached())
     return answer4(409, { message: oldAppWords(ownName(), target.name) });
   if (act.method === "PATCH") {
@@ -33592,7 +33511,9 @@ async function writerAct(sender, act) {
 }
 
 // box/src/link/work-queue/across.ts
-init_settle();
+init_numbers();
+init_store();
+init_told();
 init_files2();
 var QUEUES_FEATURE = "work-queue.elsewhere";
 var takesQueues = (key) => (readPeerAgents()[key]?.features ?? []).includes(QUEUES_FEATURE);
@@ -33608,7 +33529,7 @@ function numberingNow(link) {
     const told = primary.via ? readTold3(primary.via.key)?.primary?.since : readTold3(primary.peer.key)?.since;
     named = { key: primary.peer.key, kind: primary.peer.kind, ...told ? { since: told } : {} };
   }
-  return { kind, since, top: topOf(), ...named ? { primary: named } : {}, shared: sharedMachine(link) };
+  return { kind, since, top: topOf(), ...named ? { primary: named } : {}, shared: false };
 }
 var toldItem = (item, working, titles) => {
   const summary = summaryOf(item, working, titles);
@@ -33951,7 +33872,7 @@ function whatDeleteTakes({ computer, folder, wakes, watching }) {
 var shownName2 = (peer) => peer.kind === "machine" && plainName(peer.name) || computerName(peer);
 function botsElsewhere(link = readLink(), told = readPeerAgents()) {
   const heard = (peer) => told[peer.key]?.heard ?? told[peer.key]?.at ?? 0;
-  const peers = peersOf(link).filter((peer) => told[peer.key] && !isApart(peer.key, link, told));
+  const peers = peersOf(link).filter((peer) => told[peer.key]);
   const bots = (peer) => (told[peer.key]?.list ?? []).filter((agent) => agent.kind === "bot" && agent.id && agent.name);
   const latest = new Map;
   for (const peer of peers) {
@@ -34016,7 +33937,6 @@ init_files2();
 init_home();
 init_directory();
 init_known();
-init_settle();
 init_state();
 var HELD_FEATURE = "bots.held";
 var HELD3 = path112.join(RUN, "bots-held");
@@ -34082,9 +34002,9 @@ function writeHeld(held, link) {
 function allHeld(link = readLink()) {
   return listOf(HELD3).map((name) => /^(bot_[A-Za-z0-9]{1,60})\.json$/.exec(name)?.[1]).filter((bot) => Boolean(bot)).map((bot) => readHeld(bot, link)).filter((held) => Boolean(held)).sort((a, b) => a.since - b.since);
 }
-function keeperOf(bot, on, link = readLink(), except, { ownOnly = true } = {}) {
+function keeperOf(bot, on, link = readLink(), except) {
   const told = readPeerAgents();
-  const peers = peersOf(link).filter((peer) => peer.key !== except && !(ownOnly && isApart(peer.key, link, told)));
+  const peers = peersOf(link).filter((peer) => peer.key !== except);
   const listing = peers.filter((peer) => told[peer.key]?.list?.some((agent) => agent.kind === "bot" && agent.id === bot)).sort((a, b) => (told[b.key]?.heard ?? told[b.key]?.at ?? 0) - (told[a.key]?.heard ?? told[a.key]?.at ?? 0))[0];
   if (listing)
     return listing;
@@ -34159,13 +34079,11 @@ function holdEdit(bot, given, on, { removed = false, now = Date.now() } = {}) {
   if (!BOT_ID2.test(bot))
     return no(404, "That bot isn’t there any more.");
   const link = readLink();
-  const keeper = keeperOf(bot, on, link, undefined, { ownOnly: false });
+  const keeper = keeperOf(bot, on, link);
   const named = removed && on ? plainName(on).slice(0, 200) : "";
   if (!keeper && !named)
     return no(404, "That bot isn’t there any more.");
   const computer = keeper ? shownName2(keeper) : named;
-  if (keeper ? isApart(keeper.key, link) : sharedMachine(link))
-    return no(409, `${ownName()} doesn’t keep changes for ${computer}, which isn’t only yours: change it from ${computer}.`);
   if ("change" in given && isObject(given.change) && "work" in given.change)
     return no(409, `${computer} isn’t connected: change its work settings once it’s back.`);
   const checked = "change" in given ? checkedChange(given.change) : null;
@@ -34380,8 +34298,6 @@ async function takeBotEdit(sender, given, reply, steps, now = Date.now()) {
   const kept = readTaken(now)[key];
   if (kept)
     return answer(kept.status, kept.message);
-  if (isApart(sender.key, link))
-    return answer(403, `${ownName()} doesn’t take changes to its bots from ${computerName(peer)}, which isn’t only yours: change them from ${ownName()}.`);
   taking.add(key);
   try {
     let done;
@@ -34492,6 +34408,8 @@ function sendReachAgain(welcomed, tell, now = Date.now()) {
   }
 }
 // box/src/link/work-queue/started.ts
+init_migrate();
+init_store();
 async function atWorkForSure(signal) {
   const bridge = bridgeTarget();
   const working = new Set(Object.keys(readBackground()));
@@ -34797,7 +34715,6 @@ init_state();
 init_directory();
 init_known();
 init_record();
-init_settle();
 var SEAT_WHOLE = 48000;
 var seatParts = new Map;
 var bridgeClock = {
@@ -34916,28 +34833,20 @@ function seatPeers(link = readLink(), told = readPeerAgents()) {
   const key = link ? ownKey(link) : null;
   const name = plainName(IS_MAC ? macLink.config?.name : link?.name) || os12.hostname();
   const setup = followedSetup(link);
-  const shared = sharedMachine(link);
-  const saysShared2 = (key) => saysShared(key, told);
-  const apart = (key) => isApart(key, link, told);
   return {
     ...key ? { self: { key, name } } : {},
     also: vouchedOf(link, told).map((box) => ({ key: box.key, name: plainName(box.name) || "another computer" })),
-    boxes: peers.map((peer) => ({ key: peer.key, name: plainName(peer.name) || "another computer", seats: (told[peer.key]?.features ?? []).includes("groups.seats"), ...apart(peer.key) ? { apart: true } : {}, ...saysShared2(peer.key) ? { shared: true } : {} })),
+    boxes: peers.map((peer) => ({ key: peer.key, name: plainName(peer.name) || "another computer", seats: (told[peer.key]?.features ?? []).includes("groups.seats") })),
     bots: peers.flatMap((peer) => (told[peer.key]?.list ?? []).filter((agent) => agent.kind === "bot" && agent.id).map((agent) => ({ id: agent.id, name: agent.name, job: agent.about ?? "", box: peer.key, session: agent.session, ...agent.look ? { look: agent.look } : {} }))),
-    ...setup ? { setup: setup.id } : sharedMachine(link) || link?.setup?.aside ? { setup: null } : {},
-    ...shared ? { shared: true } : {}
+    ...setup ? { setup: setup.id } : link?.setup?.aside ? { setup: null } : {}
   };
 }
 var whereSeen;
 function whereChanged(link) {
-  const now = `${followedSetup(link)?.id ?? ""}|${sharedMachine(link)}`;
+  const now = followedSetup(link)?.id ?? "";
   const before = whereSeen;
   whereSeen = now;
   return before !== undefined && before !== now;
-}
-async function tellIfSharingChanged(old, link, ask = bridgeAsk) {
-  if (sharedMachine(old) !== sharedMachine(link))
-    await tellSeatPeers(link, true, ask).catch(() => {});
 }
 var toldSeatPeers = "";
 async function tellSeatPeers(link = readLink(), force = false, ask = bridgeAsk) {
@@ -37269,6 +37178,7 @@ function macLetterAnswer(id, signal, most = LETTER_WAIT, cut) {
 init_records();
 init_directory();
 init_known();
+init_reach();
 init_dropped();
 init_frames();
 init_state();
@@ -42857,6 +42767,7 @@ init_directory();
 init_keys();
 init_known();
 init_text();
+init_reach();
 
 // box/src/link/add/flow.ts
 init_text();
@@ -43027,7 +42938,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "024730282559";
+var BRIDGE_VERSION = "da5007b06c5f";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -46491,7 +46402,7 @@ async function keepUpRound(clock = Date.now) {
     const link = readLink();
     const told = readPeerAgents();
     for (const peer of peersOf(link)) {
-      const at = peer.kind === "machine" && !isApart(peer.key, link, told) ? sshAddressOf(peer.key) : null;
+      const at = peer.kind === "machine" ? sshAddressOf(peer.key) : null;
       if (!at || underWay2(at.destination))
         continue;
       const now = clock();
@@ -46556,7 +46467,7 @@ function keepingUp(computer, here, now = Date.now()) {
   const none = { actions: [] };
   if (computer.here)
     return keepingSelfUp(computer.name || here, computer.working);
-  if (computer.apart || computer.kind !== "machine" || !computer.key)
+  if (computer.kind !== "machine" || !computer.key)
     return none;
   const mine = boxVersion();
   if (!mine)
@@ -46639,7 +46550,6 @@ var fromAPhone = (request) => request.fromMac !== true && request.fromApp !== tr
 
 // box/src/link/areas/computers.ts
 init_state();
-init_settle();
 init_state();
 var COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 var MOST_HERE = 100;
@@ -46731,7 +46641,7 @@ function ownAddress(link) {
   }
 }
 function reachOf(link, address) {
-  if (!link?.relay || !address || !ADDRESS.test(address) || sharedMachine(link))
+  if (!link?.relay || !address || !ADDRESS.test(address))
     return {};
   return { address, relay: link.relay };
 }
@@ -46745,8 +46655,6 @@ function computerWords(computer, here) {
     held: "Needs an update",
     away: "Can’t be reached",
     notPaired: "Hasn’t taken this app yet",
-    shared: "Shared machine",
-    apart: "Another setup’s",
     unreached: "Can’t be reached from this app"
   }, ...notice ? { detail: notice.detail, notice } : {}, ...settingsNotice ? { settingsNotice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
 }
@@ -46774,7 +46682,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     name: ownComputerName(),
     kind: IS_MAC ? "mac" : "machine",
     here: true,
-    shared: sharedMachine(link),
+    shared: false,
     reach: "connected",
     via: "here",
     ...reachOf(link, ownAddress(link)),
@@ -46794,37 +46702,33 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), ...keeping.update ? { update: keeping.update } : {}, actions: [...actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer, here)] };
     });
   };
-  if (sharedMachine(link))
-    return withActions();
   const peers = peersOf(link);
   const reach = readReach();
   const leads = followedSetup(link)?.role === "primary";
-  const apart = new Set(peers.filter((peer) => isApart(peer.key, link, told)).map((peer) => peer.key));
   for (const peer of byName(peers)) {
     const said = told[peer.key];
     const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
-    const mine = said?.computer && !apart.has(peer.key) ? said.computer : undefined;
-    const features = said?.features && !said.featuresCut && !apart.has(peer.key) ? said.features : undefined;
+    const mine = said?.computer;
+    const features = said?.features && !said.featuresCut ? said.features : undefined;
     const blocked = vouchBlockOf(link, peer.key);
     computers.push({
       key: peer.key,
       name: peer.name,
       kind: peer.kind,
       ...peer.id ? { id: peer.id } : {},
-      shared: said?.shared === true,
-      ...apart.has(peer.key) ? { apart: true } : {},
+      shared: false,
       reach: standing,
       via: "relay",
-      ...apart.has(peer.key) ? {} : reachOf(link, peer.address),
+      ...reachOf(link, peer.address),
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {} } : {},
       ...features ? { features } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
       limits: limits.get(peer.key) ?? [],
-      ...leads && blocked && !apart.has(peer.key) ? { vouching: { blocked: true, words: blockedWords(blocked.device, peer.name) } } : {}
+      ...leads && blocked ? { vouching: { blocked: true, words: blockedWords(blocked.device, peer.name) } } : {}
     });
   }
   for (const box of byName(vouchedOf(link, told))) {
-    const through = peers.find((peer) => !apart.has(peer.key) && told[peer.key]?.boxes?.some((each) => each.key === box.key));
+    const through = peers.find((peer) => told[peer.key]?.boxes?.some((each) => each.key === box.key));
     if (!through)
       continue;
     computers.push({ key: box.key, name: box.name, kind: box.kind, shared: false, reach: "unknown", via: "peer", through: through.name, limits: limits.get(box.key) ?? [] });
@@ -46905,7 +46809,7 @@ async function* allowDevices(context, key) {
     return yield* json(409, { message: `${here} isn't your setup's main computer, so no computer adds your devices through it.` });
   if (computer.here)
     return yield* json(409, { message: `${here} is the computer you're asking: it adds its own app itself.` });
-  if (computer.apart || computer.via !== "relay")
+  if (computer.via !== "relay")
     return yield* json(409, { message: `${computer.name} isn't one of ${here}'s own computers, so it adds none of your devices.` });
   updateLink((kept) => kept && allowVouching(kept, key) ? kept : null);
   return yield* json(200, {});
@@ -46942,7 +46846,6 @@ async function* computersRoute(context, match) {
 }
 
 // box/src/link/peers/agents.ts
-init_settle();
 function forgetMacsAgents(mac, link) {
   const keep = new Set(peersOf(link).map((peer) => peer.key));
   locked(PEER_LOCK, () => {
@@ -47049,10 +46952,9 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
   const moved = movedAway(now).map(({ session, key, at }) => ({ session, key, at }));
   const boxes = peersOf(link).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
   const setup = followedSetup(link)?.id;
-  const where = { ...setup ? { setup } : {}, ...sharedMachine(link) ? { shared: true } : {} };
-  const computer = sharedMachine(link) ? null : ownComputer();
-  const zone = sharedMachine(link) ? null : zoneMail();
-  const told = computer || zone ? readPeerAgents() : {};
+  const where = setup ? { setup } : {};
+  const computer = ownComputer();
+  const zone = zoneMail();
   const trash = folderGoes().to;
   const json = JSON.stringify([ownList, moved, boxes, where, computer && { ...computer, working: undefined }, trash, zone]);
   let have = null;
@@ -47067,13 +46969,12 @@ async function announce(host, readEngine, link = readLink(), now = Date.now(), a
     if (have === null)
       have = ask ? false : currentDigest();
     const docs = peer.sign && have ? { docs: { have } } : {};
-    const yours = Boolean(told[peer.key]) && !isApart(peer.key, link, told);
     let bytes = null, sent = [];
-    const zones = zone && yours ? [zone, ...zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : []] : [null];
+    const zones = zone ? [zone, ...zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : []] : [null];
     for (const told of zones) {
       for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
         sent = ownList.slice(0, count);
-        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures2(), moved, boxes: boxes.filter((box) => box.key !== peer.key), trash, ...where, ...computer && yours ? { computer } : {} }, ...told ? { zone: told } : {}, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures2(), moved, boxes: boxes.filter((box) => box.key !== peer.key), trash, ...where, ...computer ? { computer } : {} }, ...told ? { zone: told } : {}, ...docs, at: now, ...ask ? { ask: "agents" } : {} }, link);
         if (bytes)
           break;
       }
@@ -49901,6 +49802,8 @@ function followSeen(then) {
 }
 
 // box/src/link/areas/waiting.ts
+init_store();
+init_statuses();
 var WAITING_ROUTE = /^kuvo\/waiting(\/events)?$/;
 var factsOf3 = (list) => Object.fromEntries(Object.entries(list?.sessions ?? {}).map(([id, entry]) => [id, entry.facts]));
 function botsNowHere(list = keptList(), seen = readSeen2()) {
@@ -54530,7 +54433,7 @@ import fs166 from "node:fs";
 import path177 from "node:path";
 init_directory();
 init_known();
-init_settle();
+init_reach();
 init_state();
 init_home();
 var AT_WORK_ROUTE = /^kuvo\/box\/at-work(\/events)?$/;
@@ -54579,10 +54482,10 @@ function computersOf(here, rings, waitingHere, link = readLinkSafely(), now = Da
     asking: here.asking,
     rings: ringsFor("here")
   }];
-  if (!link || sharedMachine(link))
+  if (!link)
     return computers;
   const told = readPeerAgents();
-  const peers = peersOf(link).filter((peer) => !isApart(peer.key, link, told)).sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+  const peers = [...peersOf(link)].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
   for (const peer of peers) {
     const said = told[peer.key]?.computer;
     const { away, reach } = peerReach(peer.key, told, undefined, undefined, now);
@@ -56108,6 +56011,7 @@ async function rehomeCommand(root, args) {
 }
 
 // box/src/link/main.ts
+init_numbers();
 init_main_only();
 init_link();
 
@@ -56236,9 +56140,9 @@ function macTell(notice) {
 // box/src/link/mac/relay.ts
 import os24 from "node:os";
 // box/src/link/peers/mail.ts
+init_reach();
 init_records();
 init_state();
-init_settle();
 init_directory();
 init_known();
 var answeringAsk = null;
@@ -56252,15 +56156,11 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
         host?.send(bytes);
       } catch {}
   };
-  if (isObject(payload.agents)) {
-    const agents = saysApart(sender.key, payload.agents) ? { ...payload.agents, computer: undefined } : payload.agents;
-    if (takeAgents(sender, agents)) {
-      writeAgents();
-      if (!saysApart(sender.key, payload.agents))
-        noteBotsChanged();
-    }
+  if (isObject(payload.agents) && takeAgents(sender, payload.agents)) {
+    writeAgents();
+    noteBotsChanged();
   }
-  if (isObject(payload.zone) && !sharedMachine(readLink()) && !(isObject(payload.agents) ? saysApart(sender.key, payload.agents) : isApart(sender.key)))
+  if (isObject(payload.zone))
     takeZone(payload.zone);
   if (isObject(payload.docs))
     receiveDocs(sender, payload.docs, host).catch(() => {});
@@ -56363,6 +56263,7 @@ init_phones();
 
 // box/src/link/relay/connection.ts
 init_keys();
+init_reach();
 init_dropped();
 init_frames();
 function fromRelay(host, message, self) {
@@ -57434,7 +57335,6 @@ init_home();
 import fs179 from "node:fs";
 import path190 from "node:path";
 init_main_only();
-init_settle();
 
 // box/src/shared/compaction-words.ts
 function compactionWords(value) {
@@ -58273,9 +58173,16 @@ async function callTool(name, args, caller, signal) {
 
 // box/src/link/work-queue/tools.ts
 init_home();
+init_labels();
+init_statuses();
 
 // box/src/link/work-queue/import.ts
 init_text();
+init_labels();
+init_statuses();
+init_numbers();
+init_told();
+init_store();
 import fs178 from "node:fs";
 var MOST_SKIPPED_SAID = 40;
 function titleOf2(text) {
@@ -58535,7 +58442,11 @@ function importWords(outcome, skipped, names) {
 }
 
 // box/src/link/work-queue/tools.ts
+init_numbers();
+init_store();
+init_sources();
 init_directory();
+init_reach();
 var said7 = (text) => ({ text, isError: false });
 var refused6 = (text) => ({ text, isError: true });
 var ITEM = { type: ["string", "integer"], description: "Like #243 or gh:owner/repo#12." };
@@ -59889,8 +59800,6 @@ async function* memberComputersRoute(context) {
   const hosts = memberHosts(link);
   if (hosts)
     return yield* json(200, hosts);
-  if (sharedMachine(link))
-    return yield* json(503, { message: "This computer is shared with more than one Mac: see your computers on the Mac you paired with." });
   return yield* json(503, { message: "This computer can't list your computers yet. Try again in a moment." });
 }
 
@@ -63239,10 +63148,15 @@ async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
 // box/src/link/areas/work-queue.ts
 import fs189 from "node:fs";
 import path200 from "node:path";
+init_labels();
+init_statuses();
 init_records();
-init_settle();
+init_numbers();
+init_told();
 init_state();
 init_known();
+init_reach();
+init_store();
 var WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
 var YOU2 = { user: true };
 var ALL = "all";
@@ -63283,7 +63197,6 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
   const byPlace = (items) => items.sort((a, b) => (place.get(a.status) ?? 99) - (place.get(b.status) ?? 99) || computerOf(a).localeCompare(computerOf(b)) || a.order - b.order);
   const moving = frozen();
   const who = assignable();
-  const shared = sharedMachine(readLink());
   const summary = (item) => {
     const said = withCan(summaryOf(item, known.working, titles, who), moving);
     return said.labels.every((each) => names.has(each)) ? said : { ...said, labels: said.labels.filter((each) => names.has(each)) };
@@ -63306,7 +63219,7 @@ async function viewOf2(owner, targets, facts, signal, cache, wait = GITHUB_WAIT,
     today: todayHere(),
     items: byPlace([
       ...all.filter((item) => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter((item) => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...overdueOf(item) ? { overdue: true } : {}, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: shared || !takesForwarded(item.computer.key) }) }))
+      ...elsewhere.items.filter((item) => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...overdueOf(item) ? { overdue: true } : {}, labels: item.labels.filter((each) => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key) }) }))
     ]),
     owners: [...owners, ...elsewhere.owners.filter((each) => !named.has(each.owner))],
     removed: all.filter((item) => item.removed && found(item)).sort((a, b) => b.removed.at - a.removed.at).map(summary).filter(kept),
@@ -63494,7 +63407,7 @@ async function* workQueueRoute(context, match) {
       if (whole)
         return yield* json(200, { item: { ...fromThere(whole, far.computer), told: false } });
     }
-    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || sharedMachine(readLink()) || !takesForwarded(far.computer.key) };
+    const cant = { away: awaySince(far.computer.key) !== null, apart: !fromClient(context) || !takesForwarded(far.computer.key) };
     await readSeen([itemElsewhere(ref, readLink(), { asTold: true }) ?? far], GITHUB_WAIT);
     far = itemElsewhere({ id: far.id }) ?? far;
     const { handedFrom: _, ...summary } = far;
@@ -67985,8 +67898,6 @@ function keeperRuns2() {
 }
 
 // box/src/link/areas/settings-pages.ts
-init_settle();
-init_state();
 init_zone();
 var SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
 var COMPUTER = {
@@ -68569,9 +68480,8 @@ async function clockPage(context) {
   if (!here.yours)
     choices.unshift({ id: OWN_CLOCK, title: `${name}'s clock (${zoneTitle(here.zone)})` });
   const unruled = here.yours && !zoneFilesFor(setting).zoneinfo && !hasZoneRules(here.zone);
-  const alone = sharedMachine(readLink());
-  const everywhere = alone ? `on ${name}` : "on all your computers";
-  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : setting?.carried ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it ${everywhere}.` : here.yours ? `Bots' wake-ups and times of day go by it ${everywhere}. It's ${offset} now.` : alone ? `None set yet: ${name} goes by its own clock. Pick one for ${name}.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
+  const everywhere = "on all your computers";
+  const line = unruled ? `${name} has no rules for this time zone, so its wake-ups go by UTC. Install its time zone data (tzdata) to fix it.` : setting?.carried ? `Kept from what your Mac last gave ${name}: its bots' wake-ups go by it. Pick it, or another, to set it ${everywhere}.` : here.yours ? `Bots' wake-ups and times of day go by it ${everywhere}. It's ${offset} now.` : `None set yet: ${name} goes by its own clock. Pick yours, and your other computers take it too.`;
   return {
     id: "clock",
     title: "Clock",
@@ -69024,6 +68934,7 @@ init_files2();
 init_home();
 init_directory();
 init_known();
+init_reach();
 init_main_only();
 init_state();
 init_machines();
@@ -70254,6 +70165,9 @@ init_settle();
 init_record();
 init_directory();
 init_directory();
+init_numbers();
+init_migrate();
+init_reach();
 init_phones();
 init_link();
 scriptIs(fileURLToPath4(import.meta.url));
@@ -70953,7 +70867,6 @@ async function setup() {
     console.log("{}");
     return;
   }
-  await tellIfSharingChanged(old, link);
   let runningVersion = null;
   try {
     runningVersion = fs203.readFileSync(VERSION_FILE, "utf8").trim();
@@ -71605,7 +71518,6 @@ export {
   settleSetup,
   settleWorkRead,
   setupView,
-  sharedMachine,
   showsAll,
   signDoc,
   signInReturn,
@@ -71646,7 +71558,6 @@ export {
   takeSeat,
   takeWorkQueueMail,
   takeZone,
-  tellIfSharingChanged,
   tellQueuesAgain,
   tellSeatPeers,
   tellWorktree,
