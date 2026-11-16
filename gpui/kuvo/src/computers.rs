@@ -28,7 +28,7 @@ use kuvo_ui::{
 
 use crate::areas::{Reading, reading};
 use crate::settings::page::{ConfirmIds, confirm_card, sheet};
-use crate::workspace::{HeldUpdate, UpdateDoes, held_words};
+use crate::workspace::{HeldUpdate, UpdateDoes, behind_words, held_words};
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 720.;
@@ -900,11 +900,6 @@ impl ComputersView {
             let (title, words) = held_words(Some(name), computer.here && self.this_mac);
             return Some(Item::Notice { key: "notice-older".into(), tone: Tone::Attention, title, words, action: None });
         }
-        // (Only behind: used as it is, what it lacks not drawn there.)
-        if computer.is_behind() {
-            let (title, _) = held_words(Some(name), false);
-            return Some(Item::Notice { key: "notice-behind".into(), tone: Tone::Info, title, words: behind_words().into(), action: None });
-        }
         if computer.apart {
             return Some(Item::Notice {
                 key: "notice-apart".into(),
@@ -913,6 +908,12 @@ impl ComputersView {
                 words: "Someone else’s setup shares this machine, so what runs there isn’t shown.".into(),
                 action: None,
             });
+        }
+        // (Only behind, and reached: used as it is, what it lacks not drawn there. Away or being
+        // reached, that comes first, with its way on.)
+        if computer.is_behind() && computer.reach == "connected" {
+            let (title, _) = held_words(Some(name), false);
+            return Some(Item::Notice { key: "notice-behind".into(), tone: Tone::Info, title, words: behind_words().into(), action: None });
         }
         // (Not reached: Try Again, where the box offers to reach it again.)
         let connect = computer.action("connect").map(|action| NoticeAction {
@@ -1488,9 +1489,4 @@ mod tests {
         assert_eq!(reached(&computer(r#"{"name":"mini","via":"peer","through":"devbox"}"#)).as_deref(), Some("Only by devbox’s word"));
         assert_eq!(reached(&computer(r#"{"name":"Studio","here":true,"via":"here"}"#)).as_deref(), Some("Shown in this window"));
     }
-}
-
-/// What's said of a computer whose Kuvo lacks some of what this app shows: it's used as it is.
-pub fn behind_words() -> &'static str {
-    "It works here as it is. What’s new in this app shows there once it’s updated."
 }

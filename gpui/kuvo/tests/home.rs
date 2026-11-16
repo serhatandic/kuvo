@@ -176,7 +176,7 @@ fn update_now_on_a_held_this_mac_names_whats_at_work_before_it_goes(cx: &mut Tes
     let (home, cx) = open(cx, stand_in.clone());
     click(cx, "blocked-action");
     let confirm = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip().and_then(|chip| chip.action).and_then(|action| action.confirm)).expect("asked first");
-    assert_eq!(confirm.message, "“Plan limits” is at work on this Mac. What they’re doing stops as Kuvo restarts. It’s back in a moment.");
+    assert_eq!(confirm.message, "“Plan limits” is at work on this Mac. What it’s doing stops as Kuvo restarts. Kuvo is back in a moment.");
     assert!(shown(cx, "update-confirm"));
     assert!(stand_in.seen_at("POST", "kuvo/update").is_empty());
     click(cx, "update-confirm");

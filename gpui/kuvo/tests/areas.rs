@@ -476,10 +476,10 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
     assert!(bounds(cx, "blocked-held").is_some());
     assert!(bounds(cx, "no-accounts").is_none());
     workspace.read_with(cx, |workspace, _| {
-        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "Update it to use this Mac here.".into())));
+        assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It can’t be used here until it’s updated.".into())));
         assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
         let blocked = workspace.blocked().expect("the view");
-        assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("This Mac’s Kuvo is older than this app", "Update it to use this Mac here."));
+        assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("This Mac’s Kuvo is older than this app", "It can’t be used here until it’s updated."));
         // Never words without a way on: Update Now, here as everywhere.
         assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
     });
@@ -526,7 +526,19 @@ fn a_box_behind_on_a_feature_is_used_as_it_is_with_its_update_offered(cx: &mut T
     assert!(bounds(cx, "held-area").is_none());
     assert!(bounds(cx, "bot-bot_mira").is_some(), "its bots, as it says them");
     let chip = workspace.read_with(cx, |workspace, _| workspace.update_chip()).expect("its update, offered");
+    assert_eq!(chip.detail, kuvo::workspace::behind_words(), "never said to wait while it's in use");
     assert_eq!(chip.action.map(|action| action.label), Some("Update Now".into()));
+    // It updates under the open window (its server new): read again, the chip gone.
+    stand_in.set_lacks(&[]);
+    workspace.update_in(cx, |workspace, _, cx| {
+        workspace.client().connect().unwrap();
+        let mut listing = kuvo_box::Listing::new();
+        listing.take(workspace.client().session_list(None).unwrap());
+        workspace.take_list(kuvo_box::follow::ListUpdate::Listing(listing), cx);
+    });
+    cx.run_until_parked();
+    assert!(workspace.read_with(cx, |workspace, _| workspace.update_chip()).is_none());
+    assert!(bounds(cx, "update-chip").is_none());
 }
 
 #[gpui::test]

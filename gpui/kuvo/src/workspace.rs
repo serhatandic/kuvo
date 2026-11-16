@@ -112,12 +112,21 @@ pub fn held_words(name: Option<&str>, here: bool) -> (String, String) {
     let subject = name.filter(|name| !name.is_empty()).unwrap_or("This computer");
     let title = format!("{subject}’s Kuvo is older than this app");
     let next = if here {
-        "Update it to use this Mac here.".to_owned()
+        "It can’t be used here until it’s updated.".to_owned()
     } else {
         let computer = if subject == "This computer" { "this computer" } else { subject };
-        format!("Kuvo on {computer} needs an update before it can be used here.")
+        format!("Kuvo on {computer}{HELD_ELSEWHERE}")
     };
     (title, next)
+}
+
+/// How the gate's words for another computer end (`held_words`).
+const HELD_ELSEWHERE: &str = " needs an update before it can be used here.";
+
+/// What's said of a computer whose Kuvo lacks some of what this app shows (only behind): it's used
+/// as it is.
+pub fn behind_words() -> &'static str {
+    "It works here as it is. What’s new in this app shows there once it’s updated."
 }
 
 /// What the title bar's update chip says: of the computer the window shows while its box waits for
@@ -192,17 +201,21 @@ pub fn own_update_confirm() -> Confirm {
     }
 }
 
-/// What Update Now asks first where this Mac's list names what's at work here: those
-/// conversations, by their titles, and that what they're doing stops as Kuvo restarts.
-pub fn here_at_work_confirm(at_work: &[kuvo_box::areas::AtWork]) -> Confirm {
-    let titles: Vec<String> = at_work.iter().map(|work| work.title.clone().filter(|title| !title.is_empty()).map(|title| format!("“{title}”")).unwrap_or_else(|| "A conversation".into())).collect();
-    let named = match titles.len() {
-        1 => format!("{} is at work on this Mac.", titles[0]),
-        2 | 3 => format!("{} and {} are at work on this Mac.", titles[..titles.len() - 1].join(", "), titles[titles.len() - 1]),
-        more => format!("{}, {} and {} more are at work on this Mac.", titles[0], titles[1], more - 2),
+/// What Update Now asks first where this Mac's list says `working` conversations are at work
+/// here: those it names (`at_work`, the first few), by their titles, and that what they're doing
+/// stops as Kuvo restarts.
+pub fn here_at_work_confirm(at_work: &[kuvo_box::areas::AtWork], working: usize) -> Confirm {
+    let titles: Vec<String> = at_work.iter().filter_map(|work| work.title.clone().filter(|title| !title.is_empty())).map(|title| format!("“{title}”")).collect();
+    let total = working.max(at_work.len()).max(1);
+    let named = match (total, titles.as_slice()) {
+        (1, [one, ..]) => format!("{one} is at work on this Mac."),
+        (1, []) => "A conversation is at work on this Mac.".to_owned(),
+        (2, [one, two, ..]) => format!("{one} and {two} are at work on this Mac."),
+        (_, [one, ..]) => format!("{one} and {} more are at work on this Mac.", total - 1),
+        (_, []) => format!("{total} conversations are at work on this Mac."),
     };
-    let then = "What they’re doing stops as Kuvo restarts. It’s back in a moment.";
-    Confirm { title: "Update Kuvo on this Mac now?".into(), message: format!("{named} {then}"), label: "Update Now".into() }
+    let then = if total == 1 { "What it’s doing stops as Kuvo restarts." } else { "What they’re doing stops as Kuvo restarts." };
+    Confirm { title: "Update Kuvo on this Mac now?".into(), message: format!("{named} {then} Kuvo is back in a moment."), label: "Update Now".into() }
 }
 
 /// The update chip's card: open, asking first (the box's confirm), sending, or why it couldn't.
@@ -815,7 +828,8 @@ impl Workspace {
         match update {
             ListUpdate::Listing(listing) => {
                 // (The box updated meanwhile, its server new: what it is now, read again.)
-                if self.client.gate() != self.gate_seen && self.client.gate() != kuvo_box::gate::Gate::Unknown {
+                // (Not before the first read is back: that one's still on its way.)
+                if self.gate_seen != kuvo_box::gate::Gate::Unknown && self.client.gate() != self.gate_seen && self.client.gate() != kuvo_box::gate::Gate::Unknown {
                     self.read_info_again(cx);
                 }
                 let was_held = matches!(self.box_state, BoxState::Held);
@@ -949,9 +963,26 @@ impl Workspace {
     /// What the update chip says while the box this window shows waits for its update: none while
     /// it doesn't. Its card always offers what brings it up to date from here, where anything can.
     pub fn held_update(&self) -> Option<HeldUpdate> {
-        if !self.client.gate().is_older() {
+        let gate = self.client.gate();
+        if !gate.is_older() {
             return None;
         }
+        let update = self.older_update()?;
+        if gate.is_held() {
+            return Some(update);
+        }
+        // Only behind: it's in use, so never said to wait; and with nothing to press from here,
+        // nothing's said at all.
+        if update.action.is_none() && !update.updating {
+            return None;
+        }
+        // (The gate's own words say it can't be used: for one in use, what's true instead.)
+        let gates_words = update.detail == held_words(None, true).1 || update.detail.ends_with(HELD_ELSEWHERE);
+        Some(if gates_words { HeldUpdate { detail: behind_words().to_owned(), ..update } } else { update })
+    }
+
+    /// What brings the computer this window shows up to date, held or behind.
+    fn older_update(&self) -> Option<HeldUpdate> {
         let row = self.switching.as_ref().and_then(|switching| switching.shown.as_deref().and_then(|shown| switching.rows.iter().find(|row| row.key() == shown)));
         if let Some(row) = row
             && row.computer.update.is_some()
@@ -1042,16 +1073,18 @@ impl Workspace {
         })
     }
 
+    // COMPAT(0.8 beta update): for a box from before `computers.update.here` (its row says nothing
+    // of its update); goes with `OwnUpdate`.
     /// Update Now for this Mac's own Kuvo where nothing says how its update stands: by the release
     /// this app carries (its installer, `--now`), else by asking the box itself. Asked first only
     /// where its list says something is at work there, naming what.
     fn update_here_now(&self, key: Option<String>, title: String, detail: String) -> HeldUpdate {
         let here = self.switching.as_ref().and_then(|switching| switching.rows.iter().find(|row| row.computer.here));
-        let confirm = match here {
-            // (Not known what's at work: asked first, as before.)
-            None => Some(own_update_confirm()),
-            Some(row) if row.computer.at_work.is_empty() => None,
-            Some(row) => Some(here_at_work_confirm(&row.computer.at_work)),
+        // (Asked first unless its box says nothing's at work: one that never said is asked.)
+        let confirm = match here.map(|row| (&row.computer.at_work, row.computer.working)) {
+            Some((_, Some(0))) => None,
+            Some((at_work, Some(working))) => Some(here_at_work_confirm(at_work, working)),
+            _ => Some(own_update_confirm()),
         };
         let does = if self.carries_release { UpdateDoes::OwnBox { now: true } } else { UpdateDoes::HereNow };
         HeldUpdate {

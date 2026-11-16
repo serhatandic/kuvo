@@ -10,10 +10,18 @@
 mod required;
 pub use required::REQUIRED;
 
-/// What this client can't speak to a box without at all: its session list and sending a message
-/// as fields (a box with `messages.send` has what came before it too, PROTOCOL.md). A box lacking
-/// one of these is held; every other name in [`REQUIRED`] is a feature, drawn where a box has it.
-pub const BASELINE: &[&str] = &["messages.send", "sessions.list"];
+/// What this client can't speak to a box without at all. A box lacking one of these is held;
+/// every other name in [`REQUIRED`] is a feature, drawn where a box has it and drawn without where
+/// it hasn't. A name goes here when a request this client sends *means something else* to a box
+/// without it, never for what's only drawn:
+/// - `sessions.list`, `messages.send`: its session list, and a message sent as fields (a box with
+///   `messages.send` has what came before it too, PROTOCOL.md);
+/// - `messages.commands`: a command's message, read as typed, by its id;
+/// - `sessions.start.empty`: a session started by the box, never by the client itself;
+/// - `clients.kind`: the desktop app says what it is (without it, its messages are taken as a phone's);
+/// - `queue.stop.arriving`: Stop holds what's still on its way (without it, a queued message still
+///   reaches the agent after Stop).
+pub const BASELINE: &[&str] = &["clients.kind", "messages.commands", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"];
 
 /// What `features` lack of [`REQUIRED`], in its order: none when the box is up to date.
 pub fn missing<S: AsRef<str>>(features: &[S]) -> Vec<String> {
@@ -32,7 +40,7 @@ pub fn missing_baseline<S: AsRef<str>>(features: &[S]) -> Vec<String> {
 /// Whether a held box is still asked `path`: what it is (`kuvo/info`), its own update
 /// (`kuvo/update`, `kuvo/box/update`), its Mac's app registering with it (`kuvo/box/app`) and the
 /// keys it holds for that app (`kuvo/box/proof`, as KuvoClient's gate), what's at work there
-/// (`kuvo/box/at-work`, which Update Now names before it asks), your computers' list
+/// (`kuvo/box/at-work`, as the menu bar asks), your computers' list
 /// (`kuvo/computers`, followed at `kuvo/computers/events`, and this app's pairing through it,
 /// `kuvo/devices/pair`: every other computer stays yours whatever this one's version), and what keeps work under way going: its engine (`api/…`), its
 /// coding agents' bridge (`kuvo/agents/…`), its agents' tool calls (`kuvo/agent-tools`), its asks
@@ -114,6 +122,8 @@ mod tests {
         assert_eq!(behind, Gate::Behind { missing: vec!["bots.state".into(), "settings.vault".into()] });
         assert!(!behind.is_held() && behind.is_older());
         assert!(Gate::for_features(Some(&all_but(&["messages.send"]))).is_held());
+        // (Without it the desktop app's messages would be taken as a phone's: never sent so.)
+        assert!(Gate::for_features(Some(&all_but(&["clients.kind"]))).is_held());
         assert!(Gate::for_features::<String>(None).is_held());
         assert_eq!(Gate::for_features(Some(&all_but(&[]))), Gate::Open);
     }
