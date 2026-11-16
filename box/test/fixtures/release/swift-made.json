@@ -1,6 +1,11 @@
 {
-  "about": "What the retired Swift Mac app last wrote into a box's release (`\"Kuvo Code\" --write-box-files`, a build of commit 2fe5710a0, 2026-11-15, whose generators were main's when the box took the release over, #715): each file that isn't built from the box's sources or named for the version, by its SHA-256 and mode, for the engine named here. box/test/release-catalogs.test.ts holds what the box writes for that engine to it, so machines saw no change. When one of these files is changed on purpose in box/src, take its line out of here (and `bin/.kuvo-boot`'s with a keeper file's): what's left still guards the rest.",
+  "about": "What the retired Swift Mac app last wrote into a box's release (`\"Kuvo Code\" --write-box-files`, a build of commit 2fe5710a0, 2026-11-15, whose generators were main's when the box took the release over, #715): each file that isn't built from the box's sources or named for the version, by its SHA-256 and mode, for the engine named here. box/test/release-catalogs.test.ts holds what the box writes for that engine to it, so machines saw no change. When one of these files is changed on purpose in box/src, move its line out of `files` into `changed` (and `bin/.kuvo-boot`'s with a keeper file's): what's left still guards the rest.",
   "engine": "2.2.6",
+  "changed": [
+    "bin/.kuvo-boot",
+    "bin/kuvo-launch",
+    "bin/kuvo-start"
+  ],
   "files": {
     "bin/bot-words.json": {
       "sha256": "e9b95218da3870c67a4f8c8d5ab289318ddb63bfad43ecd623044271b1a0f2a9",
@@ -20,10 +25,6 @@
     },
     "bin/kuvo-setsid": {
       "sha256": "fb82b00f7aba25e650944ea3192381414e9e8196f80817ef8351f21e1a264f3a",
-      "mode": "700"
-    },
-    "bin/kuvo-start": {
-      "sha256": "e9834b6ae35d178aad3a9de191ebf4a68e6be078c9d2f62eefc985aa73967db3",
       "mode": "700"
     },
     "bin/kuvo-wake": {

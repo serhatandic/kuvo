@@ -70,7 +70,7 @@ function sources(engine: string): string {
 // what the box writes is, byte for byte and mode for mode, what the retired Swift Mac app last
 // wrote into a release, for the engine that release had.
 test("a release's files are what the Swift Mac app last wrote, byte for byte, where they haven't been changed on purpose since", () => {
-  const made = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release/swift-made.json"), "utf8")) as { engine: string; files: Record<string, { sha256: string; mode: string }> }
+  const made = JSON.parse(readFileSync(join(import.meta.dir, "fixtures/release/swift-made.json"), "utf8")) as { engine: string; changed: string[]; files: Record<string, { sha256: string; mode: string }> }
   // This checkout's sources, with that release's engine pinned in place of today's.
   const root = sources(made.engine)
   try {
@@ -79,12 +79,13 @@ test("a release's files are what the Swift Mac app last wrote, byte for byte, wh
       const file = files.get(path)
       return [path, file ? { sha256: createHash("sha256").update(file.data).digest("hex"), mode: file.mode.toString(8) } : null]
     }))
-    // (A file changed on purpose in box/src: take its line out of fixtures/release/swift-made.json,
-    // and `bin/.kuvo-boot`'s with a keeper file's. The fixture goes when #713 is done.)
+    // (A file changed on purpose in box/src: move its line in fixtures/release/swift-made.json from
+    // `files` to `changed`, and `bin/.kuvo-boot`'s with a keeper file's. The fixture goes when #713 is done.)
     expect(written).toEqual(made.files)
-    // And nothing a release didn't have then, but what's built or named for the version, and what's
-    // been changed on purpose since (kuvo-launch: its engine given Kuvo Code's own tools).
-    expect([...files.keys()].filter(path => !(path in made.files))).toEqual(["bin/.kuvo-boot", "bin/box-version", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-launch", "bin/kuvo-link.js"])
+    // And nothing a release didn't have then, but what's built or named for the version, and what
+    // was changed on purpose since.
+    expect([...files.keys()].filter(path => !(path in made.files) && !made.changed.includes(path))).toEqual(["bin/box-version", "bin/kuvo-agents.js", "bin/kuvo-browser.js", "bin/kuvo-link.js"])
+    expect(made.changed.filter(path => !files.has(path))).toEqual([])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

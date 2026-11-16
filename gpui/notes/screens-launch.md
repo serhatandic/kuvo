@@ -50,8 +50,8 @@ Read for behaviour only (GPL, nothing copied):
 ## States
 
 Asking (quiet); setting up; moving, with its step and bar; starting (waited for up to a minute);
-refused or failed in the box's words, with Try Again; a move that stopped ("Nothing runs on this
-Mac until this is done."); another move at work; an installer that can't be read; a build that
+refused or failed in the box's words, with Try Again; a move that stopped (where, and why, with
+Try Again); another move at work; an installer that can't be read; a build that
 installs nothing; a narrow window. Permissions: nothing to ask; one to ask; System Settings open
 with the tile; allowed (the tile goes, the next one is asked); Not Now; the box can't take Not
 Now (said, the heads-up stays); a box on another computer (nothing).

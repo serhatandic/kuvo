@@ -1238,10 +1238,9 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
     .into_iter()
     .map(|(step, title)| (step.to_owned(), title.into()))
     .collect();
-    let nothing_runs: gpui::SharedString = "Nothing runs on this Mac until this is done.".into();
     let stuck = "Kuvo Code was moving your sessions to their new place on this Mac and stopped part way. Try again to finish.";
     let two = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
-    let dropped = "New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.";
+    let dropped = "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.";
     for slug in [
         "launch-setting-up", "launch-setting-up-step", "launch-starting", "launch-done", "launch-failed", "launch-failed-narrow", "launch-not-running",
         "launch-moving", "launch-move-getting-ready", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two",
@@ -1264,7 +1263,6 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
             let opens = Opens { waits_within: kuvo::launch::WAITS_WITHIN, installer: Err(OnlyAttaches("This build of Kuvo doesn’t set up a computer. It connects to Kuvo where it’s already set up.".into())), attach };
             let (width, height) = if slug.ends_with("-narrow") { (720., 620.) } else { (1280., 820.) };
             let steps = steps.clone();
-            let nothing_runs = nothing_runs.clone();
             let window = cx.open_window(size(px(width), px(height)), |window, cx| cx.new(|cx| Launch::new(opens, false, window, cx)))?;
             let any = window.into();
             cx.run_until_parked();
@@ -1276,8 +1274,8 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                     "launch-moving" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((4, 11)) }, Moving { steps, at: Some(4), of: Some(11), ..Moving::default() }, None, cx),
                     "launch-move-getting-ready" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: None, at: None }, Moving { steps, title: Some("Downloading the engine".into()), ..Moving::default() }, None, cx),
                     "launch-move-starting" => launch.show_move(Stage::Starting, Moving { steps, at: Some(11), of: Some(11), title: Some("Starting Kuvo on this Mac".into()), finishing: true, ..Moving::default() }, None, cx),
-                    "launch-move-refused" | "launch-move-refused-narrow" => launch.show_move(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(1), of: Some(11), stopped_at: Some(1), ..Moving::default() }, None, cx),
-                    "launch-move-stuck" => launch.show_move(Stage::Stopped { line: "Couldn’t finish moving".into(), message: stuck.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(11), of: Some(11), stopped_at: Some(11), ..Moving::default() }, None, cx),
+                    "launch-move-refused" | "launch-move-refused-narrow" => launch.show_move(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: None }, Moving { steps, at: Some(1), of: Some(11), stopped_at: Some(1), ..Moving::default() }, None, cx),
+                    "launch-move-stuck" => launch.show_move(Stage::Stopped { line: "Couldn’t finish moving".into(), message: stuck.into(), note: None }, Moving { steps, at: Some(11), of: Some(11), stopped_at: Some(11), ..Moving::default() }, None, cx),
                     "launch-move-waiting-long" => launch.show_move(Stage::Stopped { line: "Still moving your sessions".into(), message: "It’s taking longer than expected on this Mac. It goes on by itself: try again in a while.".into(), note: None }, Moving { steps, at: Some(6), of: Some(11), ..Moving::default() }, None, cx),
                     "launch-moved" | "launch-moved-dropped" | "launch-two" => {
                         let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));

@@ -11,6 +11,7 @@ import type { BoxPermissions } from "../shared/routes/box";
 import { writePrivate } from "./files";
 import { HELPER_NAME, helperBundle } from "./helper";
 import { APP_FOLDER, K, recordedKind } from "./home";
+import { appHost, askHost } from "./host-interface";
 import type { AnswerPiece, RouteContext } from "./server/context";
 
 /** Whether a process of yours with that number runs now. (The helper is yours: one this can't
@@ -110,11 +111,31 @@ export function boxPermissions(): BoxPermissions {
   return said(allowed);
 }
 
-/** `GET`: the facts. `POST {later: "<id>"}`: that one put off ("Not Now"), then the facts. Nothing
- * here grants anything: only you do, in System Settings. */
+/** How long a client's ask waits for the helper to look again: past that, the note as it is. */
+const FRESH_WITHIN = 2_000;
+
+/** As `boxPermissions`, the helper asked first to note what macOS allows it now (its host's
+ * `permissions`): its own look is only every minute, and a client asks as you come back from
+ * System Settings. Where it can't be asked (no helper answering, one from before it could), or
+ * doesn't answer within two seconds, the note as it is. */
+export async function freshBoxPermissions(): Promise<BoxPermissions> {
+  const host = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac" ? appHost() : null;
+  if (host) {
+    let waited: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      askHost(host, "permissions", {}, true).catch(() => null),
+      new Promise(resolve => { waited = setTimeout(resolve, FRESH_WITHIN); }),
+    ]);
+    clearTimeout(waited);
+  }
+  return boxPermissions();
+}
+
+/** `GET`: the facts, as the helper sees them now. `POST {later: "<id>"}`: that one put off ("Not
+ * Now"), then the facts. Nothing here grants anything: only you do, in System Settings. */
 export async function* permissionsRoute({ request, json }: RouteContext): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
-  if (method === "GET") return yield* json(200, boxPermissions());
+  if (method === "GET") return yield* json(200, await freshBoxPermissions());
   if (method !== "POST") return yield* json(405, {});
   let asked: unknown;
   try { asked = parsed((request.body ?? Buffer.alloc(0)).toString("utf8")); } catch { asked = null; }

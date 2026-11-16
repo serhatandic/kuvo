@@ -381,7 +381,7 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
   assert.equal(exists(path.join(where.home, "loaded")), true);
   assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals", "passwords"]);
   assert.deepEqual(moved.said.status.owed, []);
-  assert.deepEqual(moved.said.status.dropped, ["Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.", "New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking."]);
+  assert.deepEqual(moved.said.status.dropped, ["Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along."]);
   // The earlier Kuvo Code's folder: every file as it was. Nothing the installer staged is left.
   assert.deepEqual(everything(where.S).map(name => [name, fs.statSync(path.join(where.S, name)).isFile() ? read(path.join(where.S, name)) : ""]), before);
   assert.equal(exists(staging(where)), false);
