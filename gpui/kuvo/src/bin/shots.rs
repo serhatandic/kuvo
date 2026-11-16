@@ -185,6 +185,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-storage-measuring", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage_measuring) },
     Screen { slug: "settings-row-git-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
+    // The rail's rings, each filled with what's left, and a ring's card open beside it.
+    Screen { slug: "rail-ring-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
     // Settings › MCP Servers (`kuvo/settings/mcp`), the first flow section: its servers with how
     // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
@@ -983,6 +985,10 @@ fn spot_of(workspace: &Workspace, needle: &str, end: bool, cx: &gpui::App) -> gp
             view.selection().point_for(&kuvo_ui::selection::UnitId { row: row.clone(), path: unit.path.clone() }, at)
         })
         .unwrap_or_else(|| panic!("{needle:?} isn't drawn"))
+}
+
+fn ring_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_card(0, cx));
 }
 
 fn session_menu_row_hover(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {

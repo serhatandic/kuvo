@@ -86,6 +86,10 @@ export function describePlanLimits(data: unknown, now = Date.now()): string {
     const provider = rows ? (boxes.find(box => box.here === true)?.provider ?? account.provider) : account.provider;
     const name = `${service}${typeof account.label === "string" && account.label ? ` (${account.label})` : ""}${typeof account.plan === "string" && account.plan ? `, ${account.plan}` : ""}${elsewhere.length ? "" : `, provider ${String(provider)}`}${where}`;
     lines.push(`- ${name}:`);
+    if (account.ended === true) {
+      lines.push("  - its plan has ended (not active now): nothing to use on it");
+      continue;
+    }
     const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
     for (const window of windows) {
       const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : undefined;

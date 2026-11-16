@@ -402,7 +402,9 @@ describe("Cursor's usage history", () => {
     const agent = account("key_work") as unknown as Agent
     const limits = limitsOf([agent])
     await limits.refresh()
-    expect(limits.list()[0]!.problem?.message).toBe("No active Cursor subscription.")
+    expect(limits.list()[0]!.problem).toEqual({ kind: "ended", message: "Its Cursor plan isn't active now." })
+    // Ended: a row with no windows and no ring, so no client draws one.
+    expect([limits.rows()[0]!.ended, limits.rows()[0]!.windows, limits.rows()[0]!.rings]).toEqual([true, [], {}])
     expect(limits.identity("cursor@work")).toBe(identityOf("cursor:user_abc"))
     const sources = cursorSources(undefined, (provider) => limits.held(provider), new CursorHistory(undefined, { deadline: instant, log: () => {} }), () => now)
     const usage = new Usage(() => sources([agent]), store(cursorPricing()), (provider) => limits.identity(provider), undefined, () => now)

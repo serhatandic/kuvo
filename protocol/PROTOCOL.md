@@ -5328,8 +5328,11 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   - `problem` `{kind, message, until?}` when the last read didn't work, with `windows` as last
     read (each with its `read`): `rate-limited` (its maker turned the read away; `until`, when it's
     read again), `expired` (its sign-in lapsed or was turned away: its agent renews it the next
-    time it runs), `unreadable` (the sign-in can run the agent but not read its plan's limits) or
-    `failed`. Show `message` as it is.
+    time it runs), `unreadable` (the sign-in can run the agent but not read its plan's limits),
+    `ended` (its maker says the account has no plan now, a subscription that ended: Cursor's
+    "no active subscription", xAI's billing with no period; `windows`, `balance` and `extras` are
+    then none, `plan` as last read, and it's read again every half hour) or `failed`. Show
+    `message` as it is.
 - `POST kuvo/agents/api/kuvo/limits/refresh` reads now each account read over a minute ago, as
   often as its maker allows and never inside a hold (nor one a peer read within its time between
   reads), then asks a computer that reads it for each account this box doesn't read itself (one
@@ -5429,7 +5432,9 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     (each computer it's on, `{key, name, provider, agent?, account?, label?, checked?, here?,
     away?}`: `here`, the box that answered; `away`, a peer not heard from for 25 minutes, whose
     word stays as it was) and `away: true` when every computer it's on is away: its numbers are as
-    of their `read`, never live, however recent. A row a box can't say who it is (no `identity`) is
+    of their `read`, never live, however recent; `ended: true` when its `problem` is `ended`
+    (every computer that read it says its plan isn't active): it has no `rings`, and a client draws
+    no ring or bar for it, listing it only where it lists accounts, as a plan that ended. A row a box can't say who it is (no `identity`) is
     never merged by its numbers: two accounts can read alike (a personal plan and a team's, each
     at 12%).
   - **Rings and levels** (`limits.rings`, #711): in a row (never in `accounts`, nor in what peers

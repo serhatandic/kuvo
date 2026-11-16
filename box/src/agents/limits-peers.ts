@@ -86,7 +86,7 @@ const MOST_BYTES = 40_000
 
 /** A service as a newer box may name one this box doesn't know yet: kept as its name. */
 const SERVICE = /^[a-z0-9][a-z0-9-]{0,39}$/
-const PROBLEMS = new Set(["rate-limited", "expired", "unreadable", "failed"])
+const PROBLEMS = new Set(["rate-limited", "expired", "unreadable", "failed", "ended"])
 
 export class LimitsPeers {
   private peers = new Map<string, Kept>()

@@ -798,7 +798,7 @@ fn windows(key: &str, meters: &[Meter], now: f64, cx: &App) -> AnyElement {
             // Its colour is the box's level, as the rail's rings.
             let color = crate::rail::level_color(meter.level, cx);
             let calm = matches!(meter.level, Level::Calm | Level::Unknown);
-            let resets = meter.resets_at.map(|at| format!("Starts over in {}", time::until(at, now)));
+            let resets = meter.resets_at.map(|at| format!("Resets in {}", time::until(at, now)));
             div()
                 .debug_selector(move || selector)
                 .flex()

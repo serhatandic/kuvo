@@ -7636,6 +7636,10 @@ function describePlanLimits(data, now = Date.now()) {
     const provider = rows ? boxes.find((box) => box.here === true)?.provider ?? account.provider : account.provider;
     const name = `${service}${typeof account.label === "string" && account.label ? ` (${account.label})` : ""}${typeof account.plan === "string" && account.plan ? `, ${account.plan}` : ""}${elsewhere.length ? "" : `, provider ${String(provider)}`}${where}`;
     lines.push(`- ${name}:`);
+    if (account.ended === true) {
+      lines.push("  - its plan has ended (not active now): nothing to use on it");
+      continue;
+    }
     const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
     for (const window of windows) {
       const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : undefined;
@@ -42001,7 +42005,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f37d04e4fb5f";
+var BRIDGE_VERSION = "063e178e1073";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -53278,6 +53282,8 @@ async function ringsOf(bridge, signal) {
   const rows = isObject(limits) && Array.isArray(limits.rows) ? limits.rows : [];
   return rows.flatMap((row) => {
     if (!isObject(row) || typeof row.service !== "string" || typeof row.title !== "string")
+      return [];
+    if (row.ended === true)
       return [];
     const rings = isObject(row.rings) ? row.rings : {};
     const short = ringOf(rings.short);

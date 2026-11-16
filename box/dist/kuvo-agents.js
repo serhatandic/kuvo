@@ -10133,6 +10133,11 @@ function limitRows(boxes, now) {
     };
     if (members.every((member) => member.box.away))
       row.away = true;
+    if (row.problem?.kind === "ended") {
+      Object.assign(row, { ended: true, windows: [], rings: {} });
+      delete row.level;
+      delete row.bar;
+    }
     withResetsOn(row, members);
     return row;
   });
@@ -10960,6 +10965,14 @@ class Limits {
           entry.extras = undefined;
           entry.next = at + NOTHING_AGAIN;
           break;
+        case "ended":
+          entry.windows = [];
+          entry.partialMissing = undefined;
+          entry.balance = undefined;
+          entry.extras = undefined;
+          entry.failures = 0;
+          entry.next = at + Math.max(source.every, NOTHING_AGAIN);
+          break;
         case "expired":
         case "unreadable":
           entry.signIn = source.signIn?.();
@@ -11030,7 +11043,7 @@ class Limits {
         this.entries.set(provider, entry);
       }
       this.switched(entry, source);
-      if (entry.problem?.kind === "none" || !source.read)
+      if (entry.problem?.kind === "none" || entry.problem?.kind === "ended" || !source.read)
         entry.problem = undefined;
       const before = entry.windows.find((each) => each.id === window.id);
       const heard = {
@@ -11439,6 +11452,11 @@ var BILLING_PERIOD_MS = 30 * DAY_MS;
 var WEEK_MS = 7 * DAY_MS;
 
 class CursorPlanError extends Error {
+  ended;
+  constructor(message, ended = false) {
+    super(message);
+    this.ended = ended;
+  }
 }
 var ORG = new Set(["enterprise", "team"]);
 var text3 = (value) => typeof value === "string" ? value : undefined;
@@ -11545,7 +11563,7 @@ function mapUsage(usage, planName, creditGrants, stripeBalanceCents) {
   const facts = planFacts(usage);
   const planUsage = object(usage.planUsage);
   if (!facts.isEnabled || !planUsage)
-    throw new CursorPlanError("No active Cursor subscription.");
+    throw new CursorPlanError("No active Cursor subscription.", true);
   const normalizedPlan = planName?.trim().toLowerCase() ?? "";
   if (!facts.hasLimit && !facts.hasTotalUsagePercent && !facts.hasModelPools)
     throw new CursorPlanError("Total usage limit missing from API response.");
@@ -11904,7 +11922,7 @@ async function readCursorPlan(client, now = Date.now) {
     return { mapped, ...identity ? { identity } : {} };
   } catch (error) {
     if (error instanceof CursorPlanError)
-      throw new LimitsProblem("failed", error.message);
+      throw new LimitsProblem(error.ended ? "ended" : "failed", error.ended ? "Its Cursor plan isn't active now." : error.message);
     throw error;
   }
 }
@@ -20774,6 +20792,9 @@ function whamWindows(limit, prefix, model, now) {
 async function readGrok(secret, _credential, now) {
   const body = await fetched(engineEndpoints.grok, { Authorization: `Bearer ${secret}`, "X-XAI-Token-Auth": "xai-grok-cli" }, now, "xAI");
   const period = body?.config?.currentPeriod;
+  const config = body?.config;
+  if (config && typeof config === "object" && !Array.isArray(config) && !Object.keys(config).some((key) => /period|percent|limit/i.test(key)))
+    throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.");
   const start = date(period?.start);
   const end = date(period?.end);
   if (!start || !end || end <= start)
@@ -36103,7 +36124,7 @@ var HEARD_EVERY = MINUTE6;
 var SKEW2 = MINUTE6;
 var MOST_BYTES3 = 40000;
 var SERVICE2 = /^[a-z0-9][a-z0-9-]{0,39}$/;
-var PROBLEMS = new Set(["rate-limited", "expired", "unreadable", "failed"]);
+var PROBLEMS = new Set(["rate-limited", "expired", "unreadable", "failed", "ended"]);
 
 class LimitsPeers {
   limits;
@@ -36875,4 +36896,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 6e2d9208f20a2548d207e19fc293114e83e488cfcfe9620cb905e9a3900d3572
+// Built from Packages/Box/src/agents b00669acb518535c97afb74842adcc836d309e7e6e7ee52c5df359a605d12419

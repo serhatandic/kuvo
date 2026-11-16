@@ -73,6 +73,8 @@ const rows = [
   { service: "claude", title: "Claude", rings: { short: { window: "five_hour", used: 0.62, level: "calm" }, long: { window: "week", used: 0.34, level: "calm" } } },
   { service: "codex", title: "Codex · Work", rings: { short: { window: "five_hour", used: 1.4, level: "over" } } },
   { service: "ollama", title: "Ollama", rings: {} },
+  // A plan that ended: no ring in the menu bar.
+  { service: "cursor", title: "Cursor", ended: true, rings: {}, problem: { kind: "ended", message: "Its Cursor plan isn't active now." } },
   // One this can't read is left out, and a ring it can't read leaves its account the other.
   { service: "grok" },
   { service: "gemini", title: "Gemini", rings: { short: { used: "most" }, long: { window: "w", used: 0.1, level: "dire" } } },
