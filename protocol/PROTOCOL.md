@@ -8122,8 +8122,9 @@ was named Kuvo Code Box, in no release.)
   - `bundle`: that program on the Mac (a full path to `bin/Kuvo Helper.app` in the box's home),
     what you drag into a list in System Settings; null where it doesn't apply.
   - `list`: each permission in words, for a client to draw without naming any itself:
-    `[{id, name, allowed, settings, byHand, asks}]`. `id` is `screenRecording` or `accessibility`;
-    `name` what System Settings calls it; `allowed` as above; `settings` the address that opens
+    `[{id, name, line, allowed, settings, byHand, asks}]`. `id` is `screenRecording` or `accessibility`;
+    `name` what System Settings calls it; `line` what agents need it for, in a sentence (a client
+    draws it under the name; one from an older box may be missing it); `allowed` as above; `settings` the address that opens
     its list in System Settings (`x-apple.systempreferences:…`), which only an app on that Mac
     can open; `byHand`: macOS asks nothing for it, you add the program to the list yourself (both,
     today: the helper never asks); `asks`: whether a client brings it up now, true while it's

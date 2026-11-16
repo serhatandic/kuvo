@@ -673,8 +673,8 @@ const update = (more: Record<string, unknown> = {}) => ({ setUp: true, version: 
 const allowed = (screenRecording: boolean | null, accessibility: boolean | null) => ({
   applies: true, name: "Kuvo Helper", known: screenRecording !== null, screenRecording, accessibility, bundle: "/Users/sam/.kuvo-code/bin/Kuvo Helper.app",
   list: [
-    { id: "screenRecording" as const, name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: screenRecording === false },
-    { id: "accessibility" as const, name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: accessibility === false },
+    { id: "screenRecording" as const, name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: screenRecording === false },
+    { id: "accessibility" as const, name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: accessibility === false },
   ],
 })
 /** A Mac's own box, as its helper keeps it, with its link's switch kept by the test. */

@@ -268,8 +268,8 @@ test("kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running
   // Each permission in words: what System Settings calls it, the address of its list there, that
   // you add the helper to it by hand, and whether a client brings it up now.
   const listed = (screenRecording, accessibility, asks = {}) => [
-    { id: "screenRecording", name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: asks.screenRecording ?? screenRecording === false },
-    { id: "accessibility", name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: asks.accessibility ?? accessibility === false },
+    { id: "screenRecording", name: "Screen Recording", line: "For agents that look at the screen.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: asks.screenRecording ?? screenRecording === false },
+    { id: "accessibility", name: "Accessibility", line: "For agents that click and type in other apps.", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: asks.accessibility ?? accessibility === false },
   ];
   const unknown = { applies: true, name: "Kuvo Helper", known: false, screenRecording: null, accessibility: null, bundle, list: listed(null, null) };
   // No helper has said: it applies here, and nothing's known (so nothing's brought up).

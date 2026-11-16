@@ -642,10 +642,10 @@ const computerHere = (context: RouteContext): string =>
   context.request.fromApp === true ? (process.platform === "darwin" ? "this Mac" : "this computer") : context.info.name || "this computer";
 
 const LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
-/** What each permission is for, and what's missing without it. */
-const ALLOWS: Record<string, { allowed: string; not: string }> = {
-  screenRecording: { allowed: "For agents that look at the screen.", not: "Not allowed. Agents can’t look at the screen." },
-  accessibility: { allowed: "For agents that click and type in other apps.", not: "Not allowed. Agents can’t click or type in other apps." },
+/** What's missing without each permission (what it's for is the permission's own `line`). */
+const NOT_ALLOWED: Record<string, string> = {
+  screenRecording: "Not allowed. Agents can’t look at the screen.",
+  accessibility: "Not allowed. Agents can’t click or type in other apps.",
 };
 
 async function computerPage(context: RouteContext): Promise<SettingsPage> {
@@ -716,7 +716,7 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
         : row({ id: "login-items", title: "Login Items", line: `Off, so Kuvo on ${where} doesn’t start at login.`, tone: "warning", kind: "actions", value: "Off", actions: [opensHere("open-login-items", "Open Login Items", LOGIN_ITEMS)] }));
     }
     for (const each of permissions.list) {
-      const words = ALLOWS[each.id] ?? { allowed: "", not: "Not allowed." };
+      const words = { allowed: each.line, not: NOT_ALLOWED[each.id] ?? "Not allowed." };
       if (each.allowed === false) allows.push(row({ id: `allows-${each.id}`, title: each.name, line: words.not, tone: "warning", kind: "actions", value: "Not allowed", actions: [opensHere(`open-${each.id}`, "Open System Settings", each.settings)] }));
       else allows.push(row({ id: `allows-${each.id}`, title: each.name, line: each.allowed ? words.allowed : `${helper} hasn’t said yet. ${words.allowed}`.trim(), kind: "status", value: each.allowed ? "Allowed" : "Not known yet" }));
     }
