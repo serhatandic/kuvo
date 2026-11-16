@@ -1,4 +1,4 @@
-import { compactionPage } from "../../shared/compaction-words";
+import { compactionFeed, compactionPage } from "../../shared/compaction-words";
 // Forwarding to the engine
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
 // a phone's prompts with who they name told, and that they're from a phone.
@@ -219,11 +219,19 @@ export async function* forward(target: Target, path: string, request: LinkReques
   yield { head: { status: response.status, headers: out } };
   if (!response.body) return;
   const reader = response.body.getReader();
+  // The live feed: a compaction event carries the box's words, the engine's own too, as the
+  // messages read above do (clients draw them, and the phone needs them to take the event).
+  const feed = method === "GET" && response.ok && url.pathname === "/api/event" ? compactionFeed() : null;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return;
-      yield { body: Buffer.from(value) };
+      if (done) {
+        const rest = feed?.rest();
+        if (rest?.length) yield { body: rest };
+        return;
+      }
+      const body = feed ? feed.push(value) : Buffer.from(value);
+      if (body.length) yield { body };
     }
   } finally {
     reader.cancel().catch(() => {});

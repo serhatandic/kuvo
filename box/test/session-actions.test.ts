@@ -364,7 +364,7 @@ test("Archived Settings events follow archive, unarchive and delete routes", asy
   const events = follow(handler, "kuvo/settings/archived/events")
   try {
     const empty = await events.next()
-    expect(empty.notes[0].words).toBe("None yet. Right-click a session in the sidebar and choose Archive to put it away.")
+    expect(empty.notes[0].words).toBe("None yet. Archive a session from its menu to put it away.")
     await ask(handler, "POST", "kuvo/sessions/ses_plan/archive", { archived: true })
     let page = await events.next()
     expect(archivedRow(page, "session-ses_plan")).toBeDefined()

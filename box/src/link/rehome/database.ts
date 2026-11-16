@@ -95,7 +95,7 @@ export function schemaRefusal(folder: string): string | null {
       return `The engine's database (${path.basename(file)}) can't be read: ${(error as Error).message}`;
     }
     if (mark !== null && !KNOWN_SCHEMAS.includes(mark)) {
-      return `The engine's database (${path.basename(file)}) is of a version this box can't move yet (${mark}): it moves once the box updates.`;
+      return `The engine's database (${path.basename(file)}) is of a version Kuvo on this computer can't move yet (${mark}): it moves once Kuvo updates.`;
     }
   }
   return null;

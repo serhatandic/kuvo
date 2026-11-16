@@ -62,6 +62,8 @@ export interface ClientSteps {
   plan?: "toggle" | "on";
   toggleAutopilot?: true;
   compact?: true;
+  /** A line to show under the composer once the client did its step: the box's words for it. */
+  said?: string;
   shell?: string;
   command?: { name: string; arguments: string };
   send?: { text: string; typed?: string; quoted?: true; steer?: true };
@@ -83,6 +85,7 @@ export const GOALS_NOT_RUNNING = "Goals run in the agents bridge beside the engi
 export const KEYWORD_UNAVAILABLE = "This runs in the agents bridge beside the engine on this conversation’s computer, and it isn’t running now. Try again in a moment.";
 export const LOOP_NO_SCHEDULE = "Can’t tell how often from that. Start with one like “every 30 min” or “weekdays at 9”, or pick one from the list after /loop.";
 export const LOOP_NO_MESSAGE = "Write what to do each time after how often, like “/loop every morning at 9 sum up the new issues”.";
+export const COMPACT_ASKED = "Asked to summarize the conversation.";
 export const REVIEW_PICK = "Pick who reads it from the list, or write a model’s name after “with”.";
 export const REVIEW_FINISH = "Finish the model’s name, or pick it from the list.";
 
@@ -161,7 +164,7 @@ function decideKeyword(keyword: Keyword, rest: string, written: string, facts: F
       if (!rest && !facts.files) return { toggleAutopilot: true };
       return { box: { do: "autopilot" }, failed: writtenBack(written), ...(rest ? { send: { text: rest, typed: "/autopilot" } } : {}) };
     case "compact":
-      return { compact: true };
+      return { compact: true, said: COMPACT_ASKED };
     case "loop": {
       // "/loop <how often> <what to do>": the message sent now for one every so long (and then each
       // time), and a wake-up on its computer that sends it again, by its clock.

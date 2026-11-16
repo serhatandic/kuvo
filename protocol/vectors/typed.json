@@ -1312,7 +1312,8 @@
    },
    "decision": {
     "keyword": "compact",
-    "compact": true
+    "compact": true,
+    "said": "Asked to summarize the conversation."
    }
   },
   {

@@ -3858,7 +3858,7 @@ function schemaRefusal(folder) {
       return `The engine's database (${path163.basename(file)}) can't be read: ${error.message}`;
     }
     if (mark !== null && !KNOWN_SCHEMAS.includes(mark)) {
-      return `The engine's database (${path163.basename(file)}) is of a version this box can't move yet (${mark}): it moves once the box updates.`;
+      return `The engine's database (${path163.basename(file)}) is of a version Kuvo on this computer can't move yet (${mark}): it moves once Kuvo updates.`;
     }
   }
   return null;
@@ -43765,8 +43765,9 @@ function reachOf(link, address) {
 }
 function computerWords(computer, here) {
   const { reach, name, through, working } = computer;
-  const title = { connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: "Not reached directly" }[reach];
+  const title = { connected: "Connected", connecting: "Connecting", away: "Can’t be reached", unknown: through ? `Known through ${through}` : "Not reached directly" }[reach];
   const notice = reach === "away" ? { title: `${name} can’t be reached`, detail: `${here} hasn’t heard from it for a while: it may be asleep, off, or offline. It shows here again by itself once it’s back, with what it runs.` } : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `${here} hasn’t heard from it yet.` } : reach === "unknown" ? { title: `Known through ${through ?? "another computer"}`, detail: `${here} doesn’t reach ${name} itself, so how it stands and what it runs can’t be said here.` } : undefined;
+  const settingsNotice = reach === "away" ? { title: `${name} can’t be reached`, detail: `Its settings are kept on ${name}, so they can’t be read or changed until ${here} hears from it again. They show here by themselves once it’s back.` } : reach === "connecting" ? { title: `Connecting to ${name}…`, detail: `Its settings show here once ${here} hears from it.` } : reach === "unknown" ? { title: `${name}’s settings can’t be shown here`, detail: `${here} doesn’t reach ${name} itself, so its settings can’t be read or changed from here.` } : undefined;
   return { title, reachTitles: {
     connecting: "Connecting…",
     held: "Needs an update",
@@ -43775,7 +43776,7 @@ function computerWords(computer, here) {
     shared: "Shared machine",
     apart: "Another setup’s",
     unreached: "Can’t be reached from this app"
-  }, ...notice ? { detail: notice.detail, notice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
+  }, ...notice ? { detail: notice.detail, notice } : {}, ...settingsNotice ? { settingsNotice } : {}, ...working !== undefined ? { workingTitle: `${working} ${working === 1 ? "session" : "sessions"} at work` } : {} };
 }
 function peerReach(key, told = readPeerAgents(), reach = readReach(), tries = readTries(), now = Date.now()) {
   const said = told[key];
@@ -51754,7 +51755,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8ef781b39943";
+var BRIDGE_VERSION = "153dc40d8a22";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -55198,6 +55199,50 @@ function compactionPage(value) {
     return value;
   return { ...value, data: Array.isArray(value.data) ? value.data.map(compactionWords) : compactionWords(value.data) };
 }
+function compactionEventWords(type, data) {
+  const status = type === "session.compaction.started" ? "running" : type === "session.compaction.ended" ? "completed" : type === "session.compaction.failed" ? "failed" : undefined;
+  if (!status)
+    return data;
+  const message = compactionWords({ type: "compaction", status });
+  if (!isObject(message))
+    return data;
+  return { ...data, title: message.title, ...message.workingTitle ? { workingTitle: message.workingTitle } : {} };
+}
+function compactionFeed() {
+  let held = Buffer.alloc(0);
+  return {
+    push(chunk) {
+      const all = held.length ? Buffer.concat([held, chunk]) : Buffer.from(chunk);
+      const end = all.lastIndexOf(10) + 1;
+      held = all.subarray(end);
+      const whole = all.subarray(0, end);
+      if (!whole.includes("session.compaction."))
+        return whole;
+      return Buffer.from(whole.toString("utf8").split(`
+`).map(feedLine).join(`
+`));
+    },
+    rest() {
+      const left = held;
+      held = Buffer.alloc(0);
+      return left;
+    }
+  };
+}
+function feedLine(line) {
+  if (!line.startsWith("data:") || !line.includes("session.compaction."))
+    return line;
+  const end = line.endsWith("\r") ? "\r" : "";
+  try {
+    const event = JSON.parse(line.slice(5));
+    if (!isObject(event) || typeof event.type !== "string" || !isObject(event.data))
+      return line;
+    const data = compactionEventWords(event.type, event.data);
+    return data === event.data ? line : `data: ${JSON.stringify({ ...event, data })}${end}`;
+  } catch {
+    return line;
+  }
+}
 
 // box/src/link/server/forward.ts
 init_home();
@@ -55460,12 +55505,19 @@ async function* forward(target, path, request, signal, allows, naming = null, do
   if (!response.body)
     return;
   const reader = response.body.getReader();
+  const feed = method === "GET" && response.ok && url.pathname === "/api/event" ? compactionFeed() : null;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done)
+      if (done) {
+        const rest = feed?.rest();
+        if (rest?.length)
+          yield { body: rest };
         return;
-      yield { body: Buffer.from(value) };
+      }
+      const body = feed ? feed.push(value) : Buffer.from(value);
+      if (body.length)
+        yield { body };
     }
   } finally {
     reader.cancel().catch(() => {});
@@ -61381,6 +61433,7 @@ var GOALS_NOT_RUNNING = "Goals run in the agents bridge beside the engine on thi
 var KEYWORD_UNAVAILABLE = "This runs in the agents bridge beside the engine on this conversation’s computer, and it isn’t running now. Try again in a moment.";
 var LOOP_NO_SCHEDULE = "Can’t tell how often from that. Start with one like “every 30 min” or “weekdays at 9”, or pick one from the list after /loop.";
 var LOOP_NO_MESSAGE = "Write what to do each time after how often, like “/loop every morning at 9 sum up the new issues”.";
+var COMPACT_ASKED = "Asked to summarize the conversation.";
 var REVIEW_PICK = "Pick who reads it from the list, or write a model’s name after “with”.";
 var REVIEW_FINISH = "Finish the model’s name, or pick it from the list.";
 function writtenBack(written) {
@@ -61452,7 +61505,7 @@ function decideKeyword(keyword, rest, written, facts) {
         return { toggleAutopilot: true };
       return { box: { do: "autopilot" }, failed: writtenBack(written), ...rest ? { send: { text: rest, typed: "/autopilot" } } : {} };
     case "compact":
-      return { compact: true };
+      return { compact: true, said: COMPACT_ASKED };
     case "loop": {
       const loop = parseLoop(rest);
       if (!loop.schedule)
@@ -62303,7 +62356,9 @@ var SETTINGS_PAGE_ROUTES = [
 
 // box/src/shared/artifact-budget.ts
 function fileSizeUnit(bytes) {
-  const scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0;
+  let scale = bytes > 0 ? Math.min(4, Math.max(0, Math.floor(Math.log10(bytes) / 3))) : 0;
+  if (scale < 4 && Math.round(bytes / 1000 ** scale * 10) / 10 >= 1000)
+    scale += 1;
   return { name: ["bytes", "KB", "MB", "GB", "TB"][scale], factor: 1000 ** scale, decimals: 1, rounding: "nearest" };
 }
 function fileSize(bytes) {
@@ -62474,7 +62529,7 @@ var SECTIONS = [
     id: "clock",
     title: "Clock",
     group: "General",
-    icon: "settings",
+    icon: "clock",
     line: "Your time zone, which bots' wake-ups and times of day go by on all your computers.",
     keywords: ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"]
   },
@@ -62999,9 +63054,9 @@ async function archivedPage(context) {
   const projects = readProjects();
   const projectTitle = (project) => chats.has(project) ? "Chats" : read.value.projects[project]?.name ?? projects.find((each) => each.directory === project)?.name ?? path199.basename(project);
   return { id: "archived", title: "Archived Sessions", groups: [
-    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "Archived sessions show here." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
+    { id: "archive-controls", rows: [row({ id: "delete-all", title: "Archived Sessions", kind: "actions", value: states, actions: [{ id: "delete-all", title: "Delete All…", style: "destructive", can: held ? { why: held } : states.length ? true : { why: "None yet. Archive a session from its menu to put it away." }, ...all ? { confirm: { title: all.value.title, body: all.value.message, button: all.value.label } } : {} }] })] },
     ...[...groups].map(([project, items]) => ({ id: `project-${project}`, title: projectTitle(project), rows: [row({ id: `archived-${project}`, title: projectTitle(project), kind: "list", items, search: { placeholder: "Search archived sessions", empty: "No archived session matches “{query}”." } })] }))
-  ], ...states.length ? {} : { notes: [{ words: "Archived sessions show here.", tone: "quiet" }] } };
+  ], ...states.length ? {} : { notes: [{ words: "None yet. Archive a session from its menu to put it away.", tone: "quiet" }] } };
 }
 async function archivedAct(context, at, action) {
   if (at.id === "delete-all" && action.id === "delete-all") {
@@ -63859,7 +63914,7 @@ async function openApp(signal, ways = OPEN_WAYS) {
       } catch (error) {
         if (error?.code === "EEXIST")
           continue;
-        return couldntOpen(`its box couldn't note the opening: ${error?.message ?? error}`);
+        return couldntOpen(`Kuvo on this Mac couldn't note the opening: ${error?.message ?? error}`);
       }
       return await openAndWait(mine, ways);
     }

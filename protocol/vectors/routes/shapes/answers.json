@@ -4518,6 +4518,12 @@
            "detail": "string"
           }
          },
+         "settingsNotice?": {
+          "object": {
+           "title": "string",
+           "detail": "string"
+          }
+         },
          "workingTitle?": "string",
          "shared": "bool",
          "apart?": {
@@ -4668,6 +4674,12 @@
          },
          "detail?": "string",
          "notice?": {
+          "object": {
+           "title": "string",
+           "detail": "string"
+          }
+         },
+         "settingsNotice?": {
           "object": {
            "title": "string",
            "detail": "string"

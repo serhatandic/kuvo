@@ -202,7 +202,7 @@ export async function openApp(signal?: AbortSignal, ways: OpenWays = OPEN_WAYS):
       } catch (error) {
         // Another took it at the same moment: waited on. Anything else is said.
         if ((error as NodeJS.ErrnoException)?.code === "EEXIST") continue;
-        return couldntOpen(`its box couldn't note the opening: ${(error as Error)?.message ?? error}`);
+        return couldntOpen(`Kuvo on this Mac couldn't note the opening: ${(error as Error)?.message ?? error}`);
       }
       return await openAndWait(mine, ways);
     }
