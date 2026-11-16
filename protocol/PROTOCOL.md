@@ -3198,6 +3198,17 @@ in every client (gpui's `kuvo_box` too), so every client holds the same boxes; a
 there as it drops its fallback for a box without it, or its words that such a box needs a newer
 Kuvo Code.
 
+- **Capabilities, not versions** (the desktop app; the phone still holds on the whole list): a box
+  lacking some of those names is only *behind*. It's used as it is, each feature drawn where it has
+  it and drawn without where it hasn't (an older box simply shows no bot states), and its update
+  is offered (the title bar's chip). A box is *held* only where a client can't speak to it at
+  all: lacking the baseline, `sessions.list` and `messages.send` (gpui's `gate::BASELINE`), or
+  answering no `kuvo/info`. A held box's view always carries what brings it up (Update Now: for
+  this Mac's own, by the release the app carries, else `kuvo/update {now}` on that box, asked
+  first only where its `kuvo/computers` row names what's at work).
+- **Every computer is independent**: a held box still answers your computers' list
+  (`kuvo/computers`, `kuvo/computers/events`), what's at work there (`kuvo/box/at-work`) and the
+  app's pairing (`kuvo/devices/pair`), so one computer's version never hides or holds another.
 - **Held**: a client sends a held box nothing but `kuvo/info`, `kuvo/update` and `kuvo/box/update`,
   its Mac's app's own registration (`kuvo/box/app`, "This Mac's app") and the keys it holds for
   that app (`kuvo/box/proof`, "This Mac's box: its keys, for its app"),
