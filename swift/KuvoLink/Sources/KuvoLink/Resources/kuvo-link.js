@@ -43022,7 +43022,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "75ce03368852";
+var BRIDGE_VERSION = "cd1a35740ee9";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -68581,6 +68581,7 @@ var computerFacts = {
   permissions: () => freshBoxPermissions(),
   update: updateStatus,
   offerHeld: () => offerHeld(),
+  offerChangesEngine: () => offerChangesEngine(),
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
   devices: () => macLink.config?.phones ?? null,
@@ -68633,12 +68634,14 @@ async function computerPage(context) {
   else if (!update.setUp || update.blocked)
     rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...update.blocked ? { tone: "warning" } : {} }));
   else if (ready)
-    rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs when nothing’s at work, or now.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: ready, actions: [now("Update Now")] }));
+    rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs by itself at night, or now.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: ready, actions: [now("Update Now")] }));
   else if (update.offered && newerVersion(update.offered, update.version)) {
     const held = computerFacts.offerHeld();
-    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...held ? { line: held, kind: "status" } : { line: "It installs once nothing’s at work, or now.", kind: "actions", actions: [now("Update Now")] }, value: update.offered }));
+    const engine = computerFacts.offerChangesEngine();
+    const action = engine ? now("Update Now") : { id: "update", title: "Update Now" };
+    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...held ? { line: held, kind: "status" } : { line: engine ? "It installs once nothing’s at work, or now." : "It installs in a moment, or now.", kind: "actions", actions: [action] }, value: update.offered }));
   } else
-    rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself when nothing’s at work.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: update.version, actions: [now("Check Now")] }));
+    rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself at night.", ...failed ? { tone: "warning" } : {}, kind: "actions", value: update.version, actions: [now("Check Now")] }));
   const devices = computerFacts.devices();
   const reach = `Your phone and other computers reach ${where}, end to end encrypted.`;
   if (kind === "machine")

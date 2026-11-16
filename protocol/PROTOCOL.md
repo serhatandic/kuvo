@@ -1964,12 +1964,9 @@ machines; a client that wants every computer's facts asks the box that has it as
   it found of each, by key), for each machine it set up (`kind: "machine"`, not `apart`, not
   `away`) whose version, as it said it with its agents, is older than this box's (or that says
   none: then `bin/box-version` there tells; until a look says otherwise, one heard from that says
-  none counts as older, being from before boxes said it), it waits while the machine says it has sessions at
-  work; otherwise it looks over SSH, changing nothing, at what's at work there (its engine's and
-  its coding agents' bridge's `api/session/active`, each whose record names a process of that
-  program, as a box asks its own before updating itself). Found at work, or where that can't be
-  told, it waits, and looks again a round later, then twice as long each time, two hours apart at
-  most (your SSH agent may ask you at each look). Once nothing is, it runs Set Up Again's steps
+  none counts as older, being from before boxes said it), it brings it up whatever is at work
+  there, as nothing there is cut short: where its version isn't said, it looks over SSH first,
+  changing nothing (`bin/box-version`, and what's at work there, noted). Then it runs Set Up Again's steps
   (all but copying keys and sign-ins) as a try of kind `update` ("Updating Kuvo on <name>…"), which
   leave its running engine alone and its coding agents' bridge to make way at a quiet moment ("A
   new version while it works"). Begun by the box itself, a try that would ask you something (a
@@ -1989,9 +1986,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     <name>. Make sure it’s on and connected, then Try Again.", whatever another address said (what
     each said goes to the log).
   - `update` says what's true now (`title`) and, where there's one, the next step (`detail`):
-    "Kuvo on <name> updates once nothing’s at work there" ("Or now with Update Now: what’s at work
-    there keeps going."), "… updates in a moment", "… hasn’t been free for a day" (`long`; "It
-    updates once nothing’s at work there, or now with Update Now."), "Couldn’t reach <name>" and
+    "Kuvo on <name> updates in a moment", "Couldn’t reach <name>" and
     "Couldn’t update Kuvo on <name>" (`failed`: why in words, then "Kuvo also tries again by itself
     later."), "Couldn’t check <name>" (reached, but what's at work there couldn't be told),
     "Updating Kuvo on <name>…" (`updating`), and, where this box can't bring it up, "Kuvo on <name>
@@ -1999,10 +1994,7 @@ machines; a client that wants every computer's facts asks the box that has it as
     (`canAdd`'s words, nothing to press), or set it up over SSH from here once (`add`). A Linux box
     and a member of another Mac's setup say nothing (they never bring machines up): a client draws
     what the box that lists your computers says instead, as it does wherever the box it shows offers
-    nothing to press and that one does. Its action is "Update Now", or "Try Again" after a failure or a miss. Update Now's `confirm` names how many
-    sessions are at work there (the more of what the machine said and what the last look found), or
-    that something may be: they keep going, and the machine may be out of reach for a moment as its
-    link restarts.
+    nothing to press and that one does. Its action is "Update Now", or "Try Again" after a failure or a miss, with no `confirm`: nothing at work there stops.
   - `POST kuvo/computers/<key>/update` → `202 {try}`: Update Now, the same try begun now (one that
     rested is tried at once), with nobody's work waited for: a client asks first where the action
     has a `confirm`. One as new already ends with each step "It’s up to date already". `404` for a
@@ -3013,21 +3005,24 @@ did: the box keeps working as itself ("For released Macs").
     with the same files ("with these same files"), or older than what's offered already; 422 when it can't be read, isn't a release, isn't signed with a pinned key, or
     its pack isn't what it says. Other methods answer 405.
   - It's taken the update way, in a process of its own (`kuvo-link.js update --offered`, as Update
-    Now's), at once if nothing runs, else as soon as nothing does (looked at every 20 seconds while
-    one waits, and at each ten-minute round), whatever its age and the hour (the Kuvo Code it came with is there already). It waits, untouched,
-    while the box is blocked, its engine is stopped on purpose, an update runs or is on trial, or
-    something runs. Taken, or no longer newer than the box, the offer goes. One that fails goes too,
+    Now's), at the next look (every 20 seconds while one waits, and at each ten-minute round),
+    whatever is at work, its age and the hour (the Kuvo Code it came with is there already); one with
+    another engine than the one running waits until nothing runs. It waits, untouched, while the box
+    is blocked, its engine is stopped on purpose, or an update runs or is on trial. Taken, or no longer newer than the box, the offer goes. One that fails goes too,
     and its version rests a day (`offerFailed` in `run/update.json`; offered again sooner, it's
-    refused with 409), as it does when the keeper took an update to it back (its new bridge never
-    said it was well), so a release that never comes up isn't tried at every offer. One that failed
+    refused with 409), as it does when its judge took an update to it back (below), so a release
+    that never runs well isn't tried at every offer. One that failed
     before anything changed (its engine's download, offline) stays, and is tried again an hour on,
     then a day after each next failure (`offerFailed.tries`); offered again meanwhile, it's there
     already (202).
   - Its engine, when the box doesn't have it yet, still comes from the manifest's URL.
 - **When**: the night's window, 02:00 to 05:00 in your time zone ("Your time zone"), once a night, always (there's no
   switch: a machine keeps up with the Macs and phones that use it), for a release at least three
-  days old. Or now (Update Now, `POST kuvo/update {now: true}`), whatever its age, and whatever is
-  at work there (a client asks first, saying what stops: the engine restarts). Where a release
+  days old. Or now (Update Now, `POST kuvo/update {now: true}`), whatever its age. Either way, whatever is
+  at work there: an update stops nothing. Only a release with another engine than the one running
+  restarts the engine (step 6 of the update design makes even that wait without stopping work):
+  that one waits until nothing runs, or Update Now, which a client asks about first, saying what
+  stops (`keepingSelfUp` gives the words; a release that keeps the engine has no question). Where a release
   Kuvo Code here offered waits, newer than the box, Update Now takes that one
   (`computers.update.here`), however it rested after failing; `409` with words to show where it
   can't even so (its engine stopped on purpose, its last update not yet said to be well).
@@ -3044,7 +3039,8 @@ did: the box keeps working as itself ("For released Macs").
     update is still being checked: try again in a few minutes." What it kept to go back to stays as
     it was; how the last update went (`last`) stays, and the night's is tried again that night (as
     when something is at work);
-  - while a conversation works there or a browser ask waits, but on your word (Update Now);
+  - with another engine than the one running, while a conversation works there or a browser ask
+    waits, but on your word (Update Now);
   - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`;
   - while a Mac with Kuvo Code 0.7 or before connected in the last 30 days, since the box was last
     marked ("For released Macs").
@@ -3054,8 +3050,10 @@ did: the box keeps working as itself ("For released Macs").
   2. It tries the new engine (`--version`), the new bridge with it (`selftest`), and the new
      keeper (`sh -n`).
   3. With another engine version, it first checks there's room to keep the engine's data. It keeps
-     each file it replaces in `updates/rollback`, writes `restore.sh` and `run/update-trial`, and
-     only then stops the engine: its keeper's `stop`, run (as its `start` and `restore.sh` are)
+     each file it replaces in `updates/rollback`, and writes `restore.sh` and `run/update-trial`.
+     Nothing is stopped, but with another engine version: then only the engine, its keeper's
+     `engine-stop` (a keeper from before that has none: `stop`, which ends its bridge too), run (as
+     its `start` and `restore.sh` are)
      with HOME spelled as the running engine's command line has it, so a keeper of any age knows
      that engine as its own (any run of slashes taken as one); an engine its record names that's
      still running then, its command line this box's engine's, the update ends it itself (TERM,
@@ -3072,17 +3070,18 @@ did: the box keeps working as itself ("For released Macs").
        the older engine may not read what the newer one wrote; before that, the old engine goes
        back with the rest. So it does when the update itself takes it back because the new engine
        never answered and the data is as it was copied (each file's size and time).
-     - The keeper started meanwhile (or again) counts the trial's twenty minutes from its start,
-       unless it tried `restore.sh` already: a Mac asleep right after a good update isn't taken
-       back as it wakes.
+     - Putting back stops nothing either, as an update doesn't: but a newer engine that never
+       started goes (`engine-stop`), and the old one starts; and a keeper put back from before the
+       keeper kept the coding agents' bridge (one without `bridge)`) gets the whole box stopped and
+       started again, as its bridge only ever starts with its engine.
      - Never two engines on one box's data: each engine start (`kuvo-launch`) notes its engine's
        pid in `run/engines/<pid>`; a start that finds no noted engine running (`run/engine.json`)
        first stops each noted one still running as that box's engine (`…/engine/…/opencode serve
        --port`), by that pid, never by name; the keeper's stop drops the note of the engine it
        stopped. Engines started before this note existed aren't known, and are left alone.
      - A rollback an update from before kept with the engine's data in it (`updates/rollback/data`,
-       which its `restore.sh` would put back): the keeper moves that data to `updates/backups`
-       first, and runs `restore.sh` only once it has; the keeper that puts back starts the engine
+       which its `restore.sh` would put back): `kuvo-start rollback` moves that data to
+       `updates/backups` first, and runs `restore.sh` only once it has; the keeper that puts back starts the engine
        that ran meanwhile (`run/engine.json`'s `version`) where that's newer than its own `V`.
   4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last, with copies of the
      release's tools in `bin/.own` (kept for a rollback as the rest is). A bundle goes whole, in
@@ -3090,27 +3089,59 @@ did: the box keeps working as itself ("For released Macs").
      (`<name>.app.old`), the new renamed in, the old removed. The box doesn't restart a program
      running from the old one: what keeps it running does. `restore.sh` puts a kept bundle back the
      same way, and takes one away that wasn't there before. On Linux a release's bundles are left
-     out. Then it starts again.
+     out. Then, with another engine, it starts that (`kuvo-start start`); otherwise it only makes
+     sure the keeper runs (`kuvo-start box`).
      One update runs at a time, by its process (`run/.updating/pid`, the link's), always one of its
      own (`kuvo-link.js update …`), never the server or bridge that asked, so stopping that one
-     meanwhile doesn't stop the update. While it runs, `setup` doesn't restart the bridge, and the
-     keeper doesn't run `restore.sh`.
-  5. Once the engine answers as the new version (and the coding agents' bridge, if it ran), the
-     old bridge goes and the keeper starts the new one. The new bridge confirms the update after
-     the relay's welcome or three minutes: what was kept, and other engines, go. On a Mac's own box
-     its server (`serve`, which Kuvo Helper starts and starts again when it ends) confirms it, once
-     it runs on the version on trial: as soon as it answers, and every 30 seconds while one is
-     (taking away a copy of the data past its 30 days too, as a Mac runs no bridge). A `serve`
-     whose files (`bin/box-version`, `bin/kuvo-link.js`) aren't what it started on any more, no
-     update being under way, leaves as when its app goes, for its helper to start the new one.
-     One from before this (an update into it, taken by the box before it) does neither: while an
-     update is on trial, a Mac's keeper ends the `serve` that `run/serve.json` names, only while
-     that number runs `kuvo-link.js serve` (not `--kept`) and started before `bin/kuvo-link.js`
-     was written, for its helper to start the new one, which confirms it.
-  6. If the new version doesn't come up, `restore.sh` puts back what was there. The keeper runs
-     it too when `run/update-trial` is twenty minutes old, five minutes apart (`run/update-restore`).
-     After six failed tries it gives up and starts what's there. Without a bridge to start again
-     (no phones, no peers), `kuvo-link.js update` confirms it itself.
+     meanwhile doesn't stop the update. While it runs, `setup` doesn't restart the bridge, and
+     nothing runs `restore.sh` or judges it.
+  5. Each piece takes the new code by itself, nothing cut short:
+     - Kuvo's server for clients (`serve`, a Mac's, which Kuvo Helper keeps running; `serve --kept`,
+       a machine's, which its keeper keeps), and its link (`run`) hold no turn: each looks every 30
+       seconds at the code in place (`bin/box-version`, the SHA-256 of `bin/kuvo-link.js`) against
+       what it loaded, and once they differ, no update being under way, it leaves, and what keeps it
+       running starts it again on the new code. Clients reconnect. (Only one started from the box's
+       own `bin/kuvo-link.js`; an app's own box is started by its app.)
+     - The coding agents' bridge makes way for the new build ("A new version while it works"),
+       never cutting a turn, and the keeper starts the new one.
+     - The keeper (`kuvo-start keep`) starts itself again on its new script (`bin/.kuvo-boot`).
+     - Kuvo Helper looks at its bundle every ten seconds (its program, `Info.plist` and
+       `_CodeSignature/CodeResources`, hashed): a new build in its place, no update under way, it
+       stops what it started (the engine and bridge run on, detached) and exits 75, which its launch
+       agent's `KeepAlive` (`SuccessfulExit` false) has launchd start again, on the new build. It
+       exits cleanly (0) only when it's stopped on purpose: the box turned off (`run/off`), Stop Kuvo
+       on this Mac (`run/paused`), launchd or you quitting it, another copy running, or a refusal
+       only you can clear. A crash is restarted too.
+     - A `serve` from before this (an update into it, taken by the box before it) doesn't leave by
+       itself: while an update is on trial, a Mac's keeper ends the `serve` that `run/serve.json`
+       names, only while that number runs `kuvo-link.js serve` (not `--kept`) and started before
+       `bin/kuvo-link.js` was written, for its helper to start the new one.
+  6. **One health rule** judges it, the same on every box. The judge is the updater's own process,
+     which stays once it has swapped (the installer's, which an app waits on, starts one of its own:
+     `kuvo-link.js update --settle`), holding `run/update-judge.pid`. When an update is on trial and
+     no judge runs (its updater went: the machine went down, or the update was taken by a box from
+     before this), the keeper starts `update --settle`, which takes the judging up where it was
+     (`trial.judged` in `run/update.json`); three of those that never got to look
+     (`run/update-settle.tries`) and the keeper puts the code back itself (`kuvo-start rollback`).
+     Every ten seconds it looks at:
+     - `kuvo/info` from the new files (`box route`, run on the keeper's engine): it answers, and
+       its `features` hold every feature the box said before (`trial.features`);
+     - Kuvo's server, where one is wanted (a Mac's own box; `run/serve.needed`): it runs, and one
+       started since the swap answers `kuvo/info` (one from before is waiting, not unwell);
+     - its link, where it's wanted (`run/link.needed`): it runs;
+     - the engine: it answers `api/session?limit=1`, or is starting (its log grows), or it's
+       stopped on purpose (`run/stopped`, `paused`, `off`);
+     - the coding agents' bridge, while the engine runs where the keeper keeps it: it answers
+       (whichever build: one making way is waiting);
+     - none of these started again more than three times while it's judged.
+     Well, once all of them hold through five minutes of the judge's own running time (a computer
+     asleep doesn't count it down: two looks' time at most counts between looks): `trial.healthy`,
+     then confirmed: what was kept and other engines go, `last` says it updated, and what waited
+     for that goes on (integrations' keys no longer needed). Unwell, once a piece fails three looks
+     in a row over a minute at least, or starts again more than three times: `kuvo-start rollback`
+     puts the code back (never the data), `last` says it failed and went back, in words, and the
+     version rests a day (`offerFailed`). Nothing else says an update is well: not the relay's
+     welcome, not a server, not a timer.
   7. It notes what it installed (`updates/installed.json`, its `files`, never its bundles). Each
      night it checks the files against that note. A Mac notes `run/mac-installing` while it puts its files in place, and marking the
      box clears it. Drift seen on two checks, and not while a Mac is installing, means a Mac with an
@@ -3119,7 +3150,8 @@ did: the box keeps working as itself ("For released Macs").
   - What the new engine did during a trial that's rolled back is kept: data is never put back.
   - The coding agents' own data (`agents`) isn't kept for a rollback.
 - **State**: `run/update.json` holds `{latest, checked, last: {at, result, message?, from?, to?},
-  running?, trial?, night?, offerFailed?: {version, at, takenBack, tries?, message?}}`.
+  running?, trial?, night?, offerFailed?: {version, at, takenBack, tries?, message?}}`. `trial` is
+  `{from, to, at, swapped?, features?, dataKept?, judged?, healthy?}` (the judging so far, as above).
 - `kuvo/update`:
   - `GET` answers `{setUp, version, engine, latest, last, updating, blocked}`.
     `updating` is the step under way (`checking`, `downloading`, `downloading the engine`,
@@ -3168,7 +3200,9 @@ new version without cutting a turn:
     start that ended before it said where it listens has none, so two are spare; a log it can't
     read counts as full). Its parent is that loop (`kuvo-agents`, `-lt 5` in its command line,
     read once a minute at most); started by anything else it doesn't go; where the command line
-    can't be read, it counts as one from before. Otherwise it waits for a restart
+    can't be read, it counts as one from before. One its keeper keeps (`KUVO_AGENTS_KEPT=1`, below)
+    always may: the keeper starts it again whenever it ends, on the engine the keeper starts, so it
+    doesn't wait for that engine either, and checks the bundle on it. Otherwise it waits for a restart
     (`waits: "restart"`), holding nothing. Each renewal is one of those runs. A check that couldn't
     run (it couldn't start, a signal ended it, a minute went by) is tried again at the next look.
 
@@ -3202,8 +3236,19 @@ new version without cutting a turn:
   - A group chat held on another computer whose discussion this bridge's bot is in isn't known
     here: going between that bot's turns, and back after more than 45 seconds, that computer goes
     on without it for that discussion.
-  - Only on a machine, whose bridge its launch keeps. This Mac's own bridge comes in its app: the
-    app's keeper starts the whole box again from a newer app once nothing runs on it.
+  - On every box in a home of its own (a machine's, a Mac's), whose keeper keeps its bridge. A Mac's
+    box in the app's folder: the app's keeper starts the whole box again from a newer app once
+    nothing runs on it.
+- **The bridge apart from the engine**: the keeper keeps the bridge running (`kuvo-start bridge`,
+  each round while the engine runs and no bridge does, with the engine's backoff: one that ran
+  under ten minutes makes it wait longer). It starts it through `kuvo-launch` with `KUVO_BRIDGE=1`,
+  in the environment the engine gets, a port and password of its own (`KUVO_AGENTS_PORT`,
+  `KUVO_AGENTS_PASSWORD`), `KUVO_AGENTS_KEPT=1`, and notes it in `run/agents.pid`. The bridge
+  follows the engine by `run/engine.json` (looked at every two seconds), so an engine started again
+  (a crash, a hang ended, an update's new engine) never ends it or a turn on it; the engine's launch
+  neither starts nor ends it, and `engine.json` no longer names it (`bridge.json` does). The
+  keeper's `stop`, `restart`, `pause` and `off` still end it with the engine. A bridge a launch
+  from before started beside its engine runs on, never ending with it.
 - **The link** (`kuvo-link.js run`) has no turns: `setup`, which a Mac runs as it connects, starts
   a newer one over the one running, as before.
 - **The engine** isn't ours to hold turns in. A Mac starts a newer one only when it connects and
@@ -3277,7 +3322,7 @@ Kuvo Code.
   shows nothing from it ("Plan limits", "Usage history").
 - **A Mac, its machines** (always over SSH): connecting puts this app's files on an older box
   ("Updates"), so its link answers as this version at once. Since boxes add machines (#636), the box
-  that set a machine up does this itself, once nothing is at work there ("Computers", Keeping them
+  that set a machine up does this itself, whatever is at work there ("Computers", Keeping them
   up to date), and a client draws its `update` for that machine while the gate holds it (the
   desktop app in a chip at its title bar's right, as Zed shows its own update), with Update Now where it's offered. The connection's last step reads
   `kuvo/info`; a machine still older isn't used, and its connection fails, saying why ("Kuvo Code

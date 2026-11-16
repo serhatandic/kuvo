@@ -709,7 +709,7 @@ const allowed = (screenRecording: boolean | null, accessibility: boolean | null)
 function thisMac(more: Partial<typeof computerFacts> = {}) {
   const mac = { devices: true as boolean | null, restarted: 0 }
   Object.assign(computerFacts, realFacts, {
-    kind: () => "ownMac", restarts: () => true, running: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false,
+    kind: () => "ownMac", restarts: () => true, running: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false, offerChangesEngine: () => false,
     restart: async () => { mac.restarted++; return { status: 202 } }, devices: () => mac.devices, letDevices: async (on: boolean) => { mac.devices = on; return true },
     ...more,
   })
@@ -727,7 +727,7 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
   expect(shown.groups.map((group: any) => [group.title, group.rows.map((row: any) => [row.title, row.line, row.value])])).toEqual([
     [undefined, [
       ["Running", "Kuvo Helper keeps it running, and starts it at login.", true],
-      ["Kuvo Code 1.0.0", "Up to date. It updates itself when nothing’s at work.", "1.0.0"],
+      ["Kuvo Code 1.0.0", "Up to date. It updates itself at night.", "1.0.0"],
       ["Let my devices connect", "Your phone and other computers reach this Mac, end to end encrypted.", true],
     ]],
     ["What macOS Allows Kuvo Helper", [
@@ -748,13 +748,19 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   expect(rowOf(shown, "login-items")).toMatchObject({ tone: "warning", line: "Off, so Kuvo on this Mac doesn’t start at login.", actions: [{ id: "open-login-items", title: "Open Login Items", opens: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" }] })
   expect(rowOf(shown, "allows-screenRecording")).toMatchObject({ tone: "warning", line: "Not allowed. Agents can’t look at the screen.", actions: [{ title: "Open System Settings", opens: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" }] })
   expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet" })
-  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs when nothing’s at work, or now." })
+  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself at night, or now." })
   // Work under way is said before it's stopped.
   expect(rowOf(shown, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
   expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
 
-  // The release Kuvo Code here carries, offered and waiting for work to end: Update Now takes it now.
+  // The release Kuvo Code here carries, offered: one that keeps the engine stops nothing, so it's
+  // taken in a moment, and Update Now asks nothing.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true })
+  const offeredSame = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
+  expect(offeredSame).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs in a moment, or now.", kind: "actions" })
+  expect(offeredSame.actions[0]).toEqual({ id: "update", title: "Update Now" })
+  // One that brings another engine waits for work to end: Update Now takes it now, asked first.
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerChangesEngine: () => true })
   const offered = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
   expect(offered).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs once nothing’s at work, or now.", kind: "actions" })
   expect(offered.actions[0]).toMatchObject({ id: "update", title: "Update Now", confirm: { button: "Update Now" } })
