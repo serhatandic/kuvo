@@ -262,6 +262,9 @@ pub struct Workspace {
     own_update: Option<OwnUpdate>,
     /// Whether this app carries a release it brings this Mac's own Kuvo up to (its installer).
     carries_release: bool,
+    /// How the gate stood when `kuvo/info` was last taken: one that changes since (the box updated,
+    /// its server started again on new code) has `kuvo/info` read again.
+    gate_seen: kuvo_box::gate::Gate,
     /// The title bar's update chip's card.
     update_card: UpdateCard,
     /// Its box is being reached again, on your word (Try Again).
@@ -453,6 +456,7 @@ impl Workspace {
             lister: None,
             own_update: None,
             carries_release: false,
+            gate_seen: kuvo_box::gate::Gate::Unknown,
             update_card: UpdateCard::default(),
             live,
             info: None,
@@ -639,6 +643,7 @@ impl Workspace {
     /// What `kuvo/info` said, or why it couldn't be read.
     pub fn connected(&mut self, result: kuvo_box::Result<BoxInfo>, cx: &mut Context<Self>) {
         let was_held = matches!(self.box_state, BoxState::Held);
+        self.gate_seen = self.client.gate();
         match result {
             Ok(info) => {
                 self.info = Some(info);
@@ -810,6 +815,10 @@ impl Workspace {
     pub fn take_list(&mut self, update: ListUpdate, cx: &mut Context<Self>) {
         match update {
             ListUpdate::Listing(listing) => {
+                // (The box updated meanwhile, its server new: what it is now, read again.)
+                if self.client.gate() != self.gate_seen && self.client.gate() != kuvo_box::gate::Gate::Unknown {
+                    self.read_info_again(cx);
+                }
                 let was_held = matches!(self.box_state, BoxState::Held);
                 let previous_listing = std::mem::replace(&mut self.listing, listing);
                 self.lists = Lists::Ready;
@@ -1344,6 +1353,22 @@ impl Workspace {
                 this.connected(result, cx);
             })
             .ok();
+        }));
+    }
+
+    /// Reads `kuvo/info` again, quietly (the box changed under the window: updated, or started
+    /// again): what it has now, its update chip with it.
+    fn read_info_again(&mut self, cx: &mut Context<Self>) {
+        self.gate_seen = self.client.gate();
+        let client = self.client.clone();
+        if !self.live {
+            let result = client.connect();
+            return self.connected(result, cx);
+        }
+        let task = cx.background_executor().spawn(async move { client.connect() });
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| this.connected(result, cx)).ok();
         }));
     }
 
