@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Your Mac's Kuvo now stays on the version it updated to. Before, an update on a Mac was undone twenty minutes later, taking back the conversations written in between, and tried again the next day. Kuvo's server on your Mac now starts again on the new version by itself.
+- An update that goes wrong puts back only Kuvo's own program, never your conversations. A copy of your conversations from before an engine change is kept for 30 days in `~/.kuvo-code/updates/backups`, only for a manual restore.
 - Kuvo no longer leaves extra copies of its engine running on your computer after an update or restart went wrong: the next start stops the ones it started before.
 - If Kuvo Helper on your Mac had stopped (after Kuvo was turned off, or the app was replaced by hand), opening the desktop app or clicking **Try Again** starts it again, instead of waiting for a Kuvo that never answers.
 - In the desktop app, a computer whose Kuvo is a little older than the app works as it is: what it doesn't have yet (like bots' new states) simply isn't shown there, and **Update Now** waits in the title bar. Only a computer the app truly can't talk to is held, and its view always has **Update Now**. Your other computers stay listed and usable whatever this Mac's Kuvo is.

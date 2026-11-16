@@ -182,9 +182,9 @@ keep)
     return 1
   }
   mine
-  # COMPAT(0.7 keeper): the watchdogs an older Mac start brings. Goes 3 months after 0.8.0.
-  # The watchdogs engines had before, one each: this keeper does their work now.
-  pkill -f "watchdog [0-9]+ $R" 2>/dev/null
+  # (The watchdog an engine from 0.7 had, which an older Mac's start brings, isn't stopped here:
+  # nothing kills by a pattern, and it noted no pid to stop it by. It ends by itself once the
+  # engine it watched isn't the one in run/engine.json any more.)
   fails=0; next=0; started=; round=0
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
@@ -235,6 +235,17 @@ keep)
     else
       rm -f "$R/engine.retry"
     fi
+    # COMPAT(0.7 keeper): the watchdog an older Mac's start brings stops its engine once that Mac's
+    # mark (run/attached) is a day old. Nothing kills it by a pattern: a mark 23 hours old is taken
+    # away instead, so it never does (it ends by itself once its engine isn't the one in
+    # run/engine.json), its moment kept where the box counts such a Mac's visits (run/older-mac),
+    # when it came after the box was last marked. Goes 3 months after 0.8.0.
+    if [ -n "$(find "$R/attached" -mmin +1380 2>/dev/null)" ]; then
+      if [ "$R/attached" -nt "$K/bin/box-version" ] && { [ ! -e "$R/older-mac" ] || [ "$R/attached" -nt "$R/older-mac" ]; }; then
+        cp -p "$R/attached" "$R/older-mac.new" 2>/dev/null && mv -f "$R/older-mac.new" "$R/older-mac"
+      fi
+      rm -f "$R/attached"
+    fi
     # An update whose new link never said it's well (it doesn't start, the machine went
     # down halfway): after twenty minutes, back to what was there (PROTOCOL.md, "Updates").
     # Five minutes between tries; after six, it gives up and starts what's there.
@@ -245,8 +256,16 @@ keep)
       if [ $((now - tried)) -gt 1200 ] && [ $((now - last)) -gt 300 ]; then
         if [ "$tries" -lt 6 ]; then
           echo $((tries + 1)) >"$R/update-restore"
-          # (In a session of its own: `off` ending this keeper with its group never cuts it midway.)
-          "$S" sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 && rm -f "$R/update-restore"
+          # COMPAT(0.8 rollback data): a rollback an update from before rollbacks were code only
+          # kept holds the engine's data (updates/rollback/data), which its restore.sh would put
+          # back over everything written since: moved aside first, to updates/backups (the latest
+          # only), where nothing puts it back; its restore.sh then puts back code only. Unmoved, it
+          # isn't run. Goes once no box has such a rollback (each is gone when its trial ends).
+          b="$K/updates/rollback/data"; n="$K/updates/backups/$(date +%Y-%m-%d)-kept-for-a-rollback"
+          if [ ! -e "$b" ] || { mkdir -p "$K/updates/backups" && chmod 700 "$K/updates/backups" && rm -rf "$n" && mv "$b" "$n" && { for o in "$K/updates/backups"/* "$K/updates/backups"/.[!.]*; do [ ! -e "$o" ] || [ "$o" = "$n" ] || rm -rf "$o"; done; true; }; }; then
+            # (In a session of its own: `off` ending this keeper with its group never cuts it midway.)
+            "$S" sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 && rm -f "$R/update-restore"
+          fi
         else
           rm -f "$R/update-trial" "$R/update-restore" "$R/stopped"
         fi
@@ -273,10 +292,6 @@ keep)
     # beside this loop, which a slow watch never holds up, one round at a time.
     round=$((round + 1))
     if [ $((round % 4)) -eq 0 ] && up && ! is "${waking-}" kuvo-wake; then
-      # COMPAT(0.7 keeper): the watchdogs an older Mac start brings, stopped. Goes 3 months after 0.8.0.
-      # (Not beside the watchdog an older Mac's start brings, which would also stop the
-      # engine after a day without that Mac.)
-      pkill -f "watchdog [0-9]+ $R" 2>/dev/null
       # (With the box's own command, which a wake-up due in a conversation you stopped is
       # handed to, to wait there.)
       (environment; cd "$K/workspace" 2>/dev/null || cd "$K"

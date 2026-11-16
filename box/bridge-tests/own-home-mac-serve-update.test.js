@@ -1,0 +1,117 @@
+// This Mac's own box after an update (PROTOCOL.md, "Updates"): its server (`serve`, which Kuvo Helper
+// starts from the box's `bin/kuvo-link.js` and starts again only when it ends) says the update it
+// runs on is well, so the keeper doesn't take it back twenty minutes on; and it goes once an update
+// changed the box's files under it, for its helper to start the new ones. The real box script, run
+// from a home of the test's own laid out as a Mac's; its helper and keeper are stand-ins.
+//
+// Run with `node --test box/bridge-tests/own-home-mac-serve-update.test.js`.
+import "./test-safety.js";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { atEnd, removeAtEnd } from "./at-end.js";
+
+const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-own-home-serve-update-")));
+removeAtEnd(home);
+const K = path.join(home, ".kuvo-code");
+const write = (file, text, mode = 0o600) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text, { mode });
+  fs.chmodSync(file, mode);
+};
+const readJSON = file => JSON.parse(fs.readFileSync(file, "utf8"));
+const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+
+// A Mac's box in a home of its own, on 0.10.0, its update to it on trial and up (the update saw its
+// engine and bridge answer), your phones paired: what the update had kept to put back, there.
+write(path.join(K, "box", "kind"), "mac\n");
+write(path.join(K, "bin", "box-version"), "0.10.0");
+write(path.join(K, "bin", "kuvo-link.js"), fs.readFileSync(built, "utf8"));
+write(path.join(K, "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n", 0o755);
+write(path.join(K, "run", "link.json"), JSON.stringify({ phones: [{ key: "phone-key", name: "iPhone" }] }));
+write(path.join(K, "run", "update.json"), JSON.stringify({ trial: { from: "0.9.0", to: "0.10.0", at: Date.now(), healthy: true } }));
+write(path.join(K, "run", "update-trial"), "0.10.0");
+write(path.join(K, "updates", "rollback", "restore.sh"), "#!/bin/sh\n");
+
+Object.assign(process.env, { HOME: home, KUVO_HOME: K, TMPDIR: home });
+delete process.env.KUVO_BOX;
+const link = await import(built);
+
+// The box's server, as its helper starts it (`kuvo-start serve`: the box's own script), looking at
+// its files as often as a test's says.
+const running = new Set();
+atEnd(() => { for (const child of running) child.kill(); });
+async function serve() {
+  const child = spawn(process.execPath, [path.join(K, "bin", "kuvo-link.js"), "serve"], {
+    env: { ...process.env, OPENCODE_PASSWORD: "box-pw", KUVO_TEST_SERVE_EVERY: "100", KUVO_TEST_NO_PEERS: "1" },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  running.add(child);
+  let out = "", err = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", chunk => { err += chunk; });
+  const exited = new Promise(resolve => child.once("exit", code => { running.delete(child); resolve(code); }));
+  await new Promise((resolve, reject) => {
+    child.stdout.on("data", chunk => {
+      out += chunk;
+      if (out.includes("\n")) resolve();
+    });
+    exited.then(code => reject(new Error(`serve exited ${code}: ${err}`)));
+  });
+  return { exited, said: () => err };
+}
+
+let served;
+async function until(check, what) {
+  for (let i = 0; i < 300; i++) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail(`never: ${what}`);
+}
+
+test("a Mac's box's server says the update it runs on is well once it's up: the keeper has nothing to take back", async () => {
+  served = await serve();
+  await until(() => !fs.existsSync(path.join(K, "run", "update-trial")), "said to be well");
+  assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), false, "no longer on trial");
+  assert.equal(fs.existsSync(path.join(K, "updates", "rollback")), false, "what was kept to put back goes");
+  const state = readJSON(path.join(K, "run", "update.json"));
+  assert.equal(state.trial, undefined);
+  assert.equal(state.last.result, "updated");
+  assert.equal(state.last.to, "0.10.0");
+});
+
+test("only an update to the version a server started on, up and not under way, is said to be well by it", () => {
+  const trial = { from: "0.9.0", to: "0.10.0", at: 0, healthy: true };
+  const files = { version: "0.10.0", link: "abc" };
+  const check = (started, options) => link.serveCheck(started, { leaves: false, updating: () => false, trial: () => trial, ...options });
+  assert.equal(check(files), "confirm");
+  // The server from before the update (its helper hasn't started the new one yet): not its to say.
+  assert.equal(check({ version: "0.9.0", link: "old" }), "stay");
+  assert.equal(check(files, { trial: () => ({ ...trial, healthy: undefined }) }), "stay", "not yet seen to come up");
+  assert.equal(check(files, { trial: () => undefined }), "stay", "none on trial");
+  assert.equal(check(files, { updating: () => true }), "stay", "an update under way");
+});
+
+test("a server whose files an update changed goes, once no update is under way, for its helper to start the new ones", { timeout: 60_000 }, async () => {
+  const started = { version: "0.10.0", link: "abc" };
+  const after = { version: "0.11.0", link: "def" };
+  const check = options => link.serveCheck(started, { updating: () => false, now: () => after, trial: () => undefined, ...options });
+  assert.equal(check(), "leave");
+  // Not while an update changes them (it may yet put them back), nor for a file missing a moment.
+  assert.equal(check({ updating: () => true }), "stay");
+  assert.equal(check({ now: () => ({ version: null, link: "def" }) }), "stay");
+  assert.equal(check({ now: () => started }), "stay", "the same files: it stays");
+  assert.equal(check({ leaves: false }), "stay", "one its app starts (an app's own box) stays");
+
+  // The real one: an update put a new version in place, and is done.
+  write(path.join(K, "bin", "box-version"), "0.11.0");
+  assert.equal(await served.exited, 0, "it ends cleanly, as its helper starts it again");
+  assert.match(served.said(), /files changed under it/);
+  assert.equal(fs.existsSync(path.join(K, "run", "serve.json")), false, "where it answered goes with it");
+});
