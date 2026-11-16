@@ -1420,7 +1420,7 @@ fn a_form_whose_thing_changed_meanwhile_stays_open_with_what_was_typed(cx: &mut 
     stand_in.with_mcp(|settings| settings.mcp.servers[0].entry["disabled"] = json!(true));
     click(cx, "settings-form-submit");
     assert!(shown(cx, "settings-form"), "kept open");
-    assert_eq!(view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).refused().map(str::to_owned))).as_deref(), Some("It changed since you read it."));
+    assert_eq!(view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).refused().map(str::to_owned))).as_deref(), Some("It changed since you opened it. Close this and open it again to see it as it is now."));
     let typed = view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["command"].clone());
     assert_eq!(typed, json!("npx -y files-server --readonly"));
 }
@@ -1640,10 +1640,11 @@ fn a_kept_value_isnt_read_where_this_app_cant_make_sure_its_you(cx: &mut TestApp
     click(cx, "settings-form-password-show");
     assert!(stand_in.with_vault(|vault| vault.shown.is_empty()), "nothing read from the vault");
     assert_eq!(form_text(&view, cx, "password").as_deref(), Some(""));
+    // What's typed shows.
     click(cx, "settings-form-password-field");
     cx.simulate_input("a-new-password");
-    click(cx, "settings-form-password-show");
     assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).reveals("password")));
+    assert_eq!(form_text(&view, cx, "password").as_deref(), Some("a-new-password"));
     assert!(stand_in.with_vault(|vault| vault.shown.is_empty()));
 }
 
@@ -1678,8 +1679,10 @@ fn a_kept_value_shows_after_its_you_and_goes_with_the_sheet(cx: &mut TestAppCont
     assert!(vault_sent(&stand_in).is_empty());
 }
 
+/// Where this app can't make sure it's you, taking access away is still done here, asking nothing;
+/// letting something use it more isn't sent.
 #[gpui::test]
-fn who_can_use_it_is_shown_and_not_changed_where_this_app_cant_make_sure_its_you(cx: &mut TestAppContext) {
+fn who_can_use_it_is_only_taken_away_where_this_app_cant_make_sure_its_you(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.show_vault();
     let (workspace, cx) = open(cx, stand_in.clone());
@@ -1687,14 +1690,20 @@ fn who_can_use_it_is_shown_and_not_changed_where_this_app_cant_make_sure_its_you
     let github = vault_item("GitHub");
     click(cx, &format!("row-{github}-menu"));
     click(cx, "menu-item-Who Can Use It…");
-    assert!(shown(cx, "settings-form-bot-bot_scout"));
-    // (Scout uses it on its own; picking another choice does nothing here.)
+    // (Scout uses it on its own: No takes that away.)
     click(cx, "settings-form-bot-bot_scout-no");
-    assert_eq!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["bot-bot_scout"].clone()), json!("own"));
-    assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).field_why("bot-bot_scout")).is_some_and(|why| why.contains("Touch ID") && !why.contains("iPhone")));
-    // Nothing on it can be changed here: said once, with nothing to send.
-    assert!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).all_locked()));
-    assert!(!shown(cx, "settings-form-submit") && shown(cx, "settings-form-cancel"));
+    assert_eq!(view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["bot-bot_scout"].clone()), json!("no"));
+    click(cx, "settings-form-submit");
+    let sent = stand_in.with_vault(|vault| vault.sent.clone());
+    assert_eq!((sent.len(), sent[0].1.as_str(), sent[0].2["bot-bot_scout"].clone()), (1, "who", json!("no")));
+    assert!(!shown(cx, "settings-form"), "done: the sheet closes");
+    // Letting another bot use it: nothing's sent, and the sheet stays open.
+    click(cx, &format!("row-{github}-menu"));
+    click(cx, "menu-item-Who Can Use It…");
+    click(cx, "settings-form-add-bot-bot_ranger");
+    click(cx, "settings-form-submit");
+    assert_eq!(vault_sent(&stand_in).len(), 1);
+    assert!(shown(cx, "settings-form"));
 }
 
 /// On a Mac: taking access away asks nothing; letting a bot use it asks Touch ID or the Mac's

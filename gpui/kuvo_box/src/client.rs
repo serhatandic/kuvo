@@ -472,9 +472,11 @@ mod confirms_you_tests {
     #[test]
     fn a_settings_request_says_this_app_makes_sure_its_you_and_no_other_does() {
         set_confirms_you(true);
-        let page = said(&Request::get("kuvo/settings/vault"));
+        let page = Request::get("kuvo/settings/vault");
+        let page = said(&page);
         assert!(page.headers.contains(&("x-kuvo-confirms-you".to_owned(), "1".to_owned())));
-        let act = said(&Request::post("kuvo/settings/vault/ask-q_1/always", json!({ "was": "r" })));
+        let act = Request::post("kuvo/settings/vault/ask-q_1/always", json!({ "was": "r" }));
+        let act = said(&act);
         assert_eq!(act.headers.iter().filter(|(name, _)| name == "x-kuvo-confirms-you").count(), 1);
         assert!(said(&Request::get("kuvo/vault/items/v_abcdefghij/values")).headers.is_empty());
         assert!(said(&Request::get("api/session")).headers.is_empty());

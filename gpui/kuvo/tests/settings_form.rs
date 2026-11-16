@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, px, size};
+use gpui::{Entity, Modifiers, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point, px, size};
 use kuvo::settings::form::{FormSheet, Target};
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo_box::BoxClient;
@@ -123,6 +123,13 @@ fn shown(cx: &mut VisualTestContext, selector: &str) -> bool {
     cx.debug_bounds(Box::leak(selector.to_owned().into_boxed_str())).is_some()
 }
 
+/// Scrolls the sheet's fields to their end, as the wheel over them would.
+fn scroll_fields(cx: &mut VisualTestContext) {
+    let at = cx.debug_bounds("settings-form-password-field").expect("the sheet's fields").center();
+    cx.simulate_event(ScrollEvent { position: at, delta: ScrollDelta::Pixels(point(px(0.), px(-1000.))), ..Default::default() });
+    cx.run_until_parked();
+}
+
 fn value(sheet: &Entity<FormSheet>, cx: &mut VisualTestContext, field: &str) -> Value {
     sheet.read_with(cx, |sheet, cx| sheet.values(cx).get(field).cloned().unwrap_or_default())
 }
@@ -145,8 +152,9 @@ fn checks_get_dots_and_a_files_size_and_the_action_gets_what_was_typed(cx: &mut 
     click(cx, "settings-form-env-value-0");
     cx.simulate_input("abc123");
     sheet.update(cx, |sheet, cx| sheet.chose_file("key", "id.pem", b"PRIVATE".to_vec(), cx));
-    // More than four choices: a menu.
+    // More than four choices: a menu (further down the sheet, scrolled to as you would).
     assert!(!shown(cx, "settings-form-model-b"));
+    scroll_fields(cx);
     click(cx, "settings-form-model-menu");
     click(cx, "menu-item-Epsilon");
     assert_eq!(value(&sheet, cx, "model"), json!("e"));
