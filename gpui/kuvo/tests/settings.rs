@@ -346,6 +346,13 @@ fn every_kind_of_row_is_drawn_from_the_boxs_description(cx: &mut TestAppContext)
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!(last(&stand_in)["value"], json!(14.0));
+    // A replacement typed, then Cancel (or leaving it): nothing's sent, and it isn't kept.
+    click(cx, "row-token-replace");
+    click(cx, "row-token-field");
+    cx.simulate_input("wrong-paste");
+    click(cx, "settings-whose");
+    click(cx, "row-token-cancel");
+    assert!(bodies(&stand_in, "PATCH", "kuvo/settings/samples").iter().all(|sent| sent["row"] != json!("token")));
     // A secret that's set shows no field until Replace; what's typed is sent and never drawn again.
     assert!(!shown(cx, "row-token-field"));
     click(cx, "row-token-replace");
@@ -1461,7 +1468,8 @@ fn fields_save_as_theyre_left_and_instructions_are_full_width(cx: &mut TestAppCo
     cx.simulate_input("oops");
     cx.simulate_keystrokes("escape");
     let text = view.read_with(cx, |view, cx| view.field("row-branch-prefix").unwrap().read(cx).text().to_owned());
-    assert_eq!(text, sent[0]["value"].as_str().map(|_| "sam/").unwrap_or_default());
+    let shown_value = view.read_with(cx, |view, _| view.row_value("row-branch-prefix"));
+    assert_eq!(Some(text), shown_value);
 }
 
 /// Storage as the box describes it: the whole as one bar with each part's name and size, a

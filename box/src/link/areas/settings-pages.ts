@@ -482,9 +482,7 @@ async function worktreesAct(context: RouteContext, at: SettingItem, action: Sett
 async function storagePage(context: RouteContext): Promise<SettingsPage> {
   const here = context.request.fromApp === true && IS_MAC;
   const where = computerHere(context);
-  const config = await asked(context, settingsRoute, "GET", "kuvo/config");
-  const chosen = config.status === 200 && typeof config.value.worktree?.directory === "string" ? [config.value.worktree.directory as string] : [];
-  void measureSizes(false, chosen);
+  void measureSizes();
   const sizes = readSizes();
   const measuring = isMeasuring();
   const problem = measureProblem();
@@ -506,7 +504,8 @@ async function storagePage(context: RouteContext): Promise<SettingsPage> {
     })] },
     { id: "folders", title: "Storage by Folder", rows: [
       folderRow("home-folder", "Kuvo’s folder", K, sizes?.home),
-      ...(sizes?.outside ?? []).map((each, ix) => folderRow(`worktree-folder-${ix}`, "Worktree folder", each.path, each.bytes)),
+      // (Worktrees kept outside it, by the folder they're in: theirs alone, not the folder's.)
+      ...(sizes?.outside ?? []).map((each, ix) => folderRow(`worktree-folder-${ix}`, `${each.trees} ${each.trees === 1 ? "worktree" : "worktrees"} in`, each.path, each.bytes)),
     ] },
   ];
   const notes: { words: string; tone: "quiet" | "warning" }[] = [];
@@ -544,10 +543,8 @@ async function storageChange(context: RouteContext, at: SettingItem, value: unkn
 
 async function storageAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
   if (at.id === "used" && action.id === "refresh") {
-    const config = await asked(context, settingsRoute, "GET", "kuvo/config");
-    const chosen = config.status === 200 && typeof config.value.worktree?.directory === "string" ? [config.value.worktree.directory as string] : [];
     // (Begun, not waited for: the page says it's measuring, and shows the sizes once they're in.)
-    void measureSizes(true, chosen);
+    void measureSizes(true);
     return null;
   }
   if (at.id !== "older-copies" || action.id !== "clear") return noActions();

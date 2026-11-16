@@ -292,9 +292,15 @@ impl HeadsUp {
         self.asked += 1;
         self.run(
             move |client| {
+                // (The first one refused stops it, and says so: none is put off unseen.)
                 let mut said = None;
                 for id in &ids {
-                    said = Some(client.permission_later(id));
+                    let answer = client.permission_later(id);
+                    let refused = answer.is_err();
+                    said = Some(answer);
+                    if refused {
+                        break;
+                    }
                 }
                 said
             },

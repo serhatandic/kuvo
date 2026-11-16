@@ -253,3 +253,48 @@ test("Storage measures what Kuvo keeps: the whole as parts, Kuvo's folder, Refre
   await measureSizes()
   expect(row(await shown(), "used").parts.find((p: any) => p.id === "browser").value).toBeGreaterThanOrEqual(500_000)
 })
+
+test("Storage counts a worktree kept outside Kuvo's folder by itself, never the rest of the folder it's in", async () => {
+  const { measureSizes, SIZES_FILE } = await import("../src/link/areas/storage-sizes")
+  const { WORKTREES_FILE } = await import("../src/link/areas/worktree-records")
+  const { mkdirSync } = await import("node:fs")
+  const projects = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-projects-")))
+  try {
+    mkdirSync(join(projects, "tree"), { recursive: true })
+    writeFileSync(join(projects, "tree", "work"), Buffer.alloc(200_000))
+    // Your own project beside it, in the same folder: not Kuvo's.
+    mkdirSync(join(projects, "mine"), { recursive: true })
+    writeFileSync(join(projects, "mine", "big"), Buffer.alloc(3_000_000))
+    mkdirSync(join(WORKTREES_FILE, ".."), { recursive: true })
+    writeFileSync(WORKTREES_FILE, JSON.stringify({ worktrees: [{ root: join(projects, "tree"), project: projects, branch: "topic" }] }))
+    await measureSizes()
+    rmSync(SIZES_FILE, { force: true })
+    await measureSizes(true)
+    const page = await shown()
+    const outside = row(page, "worktree-folder-0")
+    expect([outside.title, outside.line]).toEqual(["1 worktree in", projects])
+    expect(outside.value).toBeGreaterThanOrEqual(200_000)
+    expect(outside.value).toBeLessThan(1_000_000)
+    expect(row(page, "used").parts.find((p: any) => p.id === "worktrees").value).toBeLessThan(3_000_000 + 1_000_000)
+  } finally {
+    rmSync(WORKTREES_FILE, { force: true })
+    rmSync(projects, { recursive: true, force: true })
+  }
+})
+
+test("Storage tries a measure that failed again only when it's old, or Refresh is pressed", async () => {
+  const { measureSizes, measureProblem, readSizes, SIZES_FILE } = await import("../src/link/areas/storage-sizes")
+  const { K } = await import("../src/link/home")
+  await measureSizes()
+  rmSync(SIZES_FILE, { force: true })
+  let asked = 0
+  await measureSizes(true, K, () => { asked += 1; throw new Error("The records couldn't be read.") })
+  expect([asked, measureProblem()]).toEqual([1, "The records couldn't be read."])
+  // Read again (the page, each second): not begun again, and the problem stays said.
+  await measureSizes(false, K, () => { asked += 1; return [] })
+  expect([asked, readSizes()]).toEqual([1, null])
+  expect((await shown()).groups[0].rows[0].line).toBe("It couldn’t be measured just now: The records couldn't be read.")
+  // Refresh begins it again.
+  await measureSizes(true, K, () => { asked += 1; return [] })
+  expect([asked, measureProblem(), readSizes() !== null]).toEqual([2, null, true])
+})

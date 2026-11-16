@@ -8924,15 +8924,15 @@ The sections now:
 
 - **Storage** (`storage`): first the computer (its group titled as `computer`'s page is, “What Kuvo
   keeps on this Mac.”): `used`, a `meter` titled “1.2 GB used by Kuvo” with `parts` (`sessions`,
-  the engine's data, chats and attachments without worktrees; `worktrees`, the default folder and
-  one chosen, inside Kuvo's folder or not; `made`, `~/.kuvo-code/artifacts`; `browser`; `other`, the
+  the engine's data, chats and attachments without worktrees; `worktrees`, the engine's default folder and
+  each worktree the box keeps a record of elsewhere, each measured by itself, never a whole folder it's in; `made`, `~/.kuvo-code/artifacts`; `browser`; `other`, the
   rest of Kuvo's folder, its `parts` each of its folders by name), `busy` “Measuring…” while it's
   measured, and `refresh` (measures again; answered at once, the page following). Measured with
-  `du` off the event loop as the page is first read and again once it's an hour old, kept in
+  `du` (folders followed where a link points; one taking past ten minutes stopped and said) off the event loop as the page is first read and again once it's an hour old (a failed one too, unless Refresh), kept in
   `run/storage-sizes.json` so every process of the box shows the last one; until the first is in,
   the row has no `parts` and says it's measuring. Storage by Folder: `home-folder` (Kuvo's folder,
-  `~`-shortened, its size as a number with `unit`) and `worktree-folder-<n>` for a chosen worktree
-  folder outside it; to the app beside a Mac's box, each with Show in Finder (`opens` its
+  `~`-shortened, its size as a number with `unit`) and `worktree-folder-<n>` (“2 worktrees in”) for each
+  folder outside it with recorded worktrees, their size alone; to the app beside a Mac's box, each with Show in Finder (`opens` its
   `file://` address), else a `status`. Then What Agents Made: copies (status in bytes),
   older-budget (number in bytes, with decimal suggestions of 0.25, 0.5, 1, 2, 5 and 10 GB and confirmation when
   lowering below what older copies take), and older-copies (Clear…, with confirmation); then
