@@ -11400,6 +11400,11 @@ can go three months after 0.8.0 ships.
 - Its keeper's box, still running after an update until the work under way ends, and a machine's
   box from before #660, are held by the update gate ("The update gate"): no client of this version
   runs Kuvo Code's own tools, git or a file walk itself for them any more.
+- A copy of Kuvo Code from before #783 (built from main, never a release) treats a machine more
+  than one Mac set up as someone else's, and leads its setup only once that machine says it isn't:
+  a box says `shared: false` in its work queue numbering, and on every computer `kuvo/computers`
+  lists. Nothing reads it otherwise; it goes on the user's word, once no Mac from before 1.0 connects.
+  <!-- compat: beta.1 shared-false -->
 
 ### Antigravity conversation history
 
