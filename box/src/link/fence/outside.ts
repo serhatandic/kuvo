@@ -14,6 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
+import { titled, type ToolWords } from "../../shared/message-words";
 import type { SandboxAsk, SandboxStop } from "../../shared/routes/sandbox";
 import { cut, oneLine } from "../../shared/text";
 import { IS_MAC } from "../home";
@@ -44,7 +45,7 @@ export const answerSandboxAsk = book.answer;
 /** Asks every client, as `sandbox_ask` does once it has what to ask (a test asks it directly). */
 export const askSandbox = book.ask;
 
-export const SANDBOX_TOOLS = [
+const DEFINED = [
   {
     name: "sandbox_ask",
     description: "Ask the user to run a command outside the sandbox, when the sandbox stopped one the task needs (\"Operation not permitted\" or \"Permission denied\" outside the folders you may write, or a refused connection or app). They allow it once or say no, and where it was stopped writing in one folder, can let your commands write there from now on. Allowed, it runs in your project's folder, and you get its output. Waits for their answer. Never use it to get around a rule you were told, nor for a command you haven't tried in the sandbox.",
@@ -61,6 +62,13 @@ export const SANDBOX_TOOLS = [
     },
   },
 ] as const;
+
+/** Its words: its title, and what a step of it says done and while it runs. */
+export const SANDBOX_WORDS: Record<(typeof DEFINED)[number]["name"], ToolWords> = {
+  sandbox_ask: { title: "Ask to run outside the sandbox", done: "Asked to run a command outside the sandbox", doing: "Asking to run a command outside the sandbox" },
+};
+
+export const SANDBOX_TOOLS = titled(DEFINED, SANDBOX_WORDS);
 
 export const SANDBOX_TOOL_NAMES: readonly string[] = SANDBOX_TOOLS.map(tool => tool.name);
 

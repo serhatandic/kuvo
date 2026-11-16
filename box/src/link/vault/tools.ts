@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
+import { titled, type ToolWords } from "../../shared/message-words";
 import { cut, oneLine } from "../../shared/text";
 import type { VaultItem } from "../../shared/routes/vault";
 import { homeFolder, IS_MAC, RUN } from "../home";
@@ -27,8 +28,7 @@ export interface ToolAnswer {
 
 const failed = (text: string): ToolAnswer => ({ text, isError: true });
 
-/** The tools, as both tool servers list them (`tools/list`). */
-export const VAULT_TOOLS = [
+const DEFINED = [
   {
     name: "vault_items",
     description: "List the vault items you may use (sign-ins, keys, files and notes) by name, with where each may be used and whether the user is asked each time. You never see a value: you name an item, and Kuvo Code fills it in (browser_sign_in, browser_fill) or hands it to a command (vault_run).",
@@ -64,6 +64,16 @@ export const VAULT_TOOLS = [
     },
   },
 ] as const;
+
+/** Each tool's words: its title, and what a step of it says done and while it runs. */
+export const VAULT_WORDS: Record<(typeof DEFINED)[number]["name"], ToolWords> = {
+  vault_items: { title: "List vault items", done: "Listed the vault's items", doing: "Listing the vault's items" },
+  vault_ask: { title: "Ask for a vault item", done: "Asked for a vault item", doing: "Asking for a vault item" },
+  vault_run: { title: "Run with vault values", done: "Ran a command with vault values", doing: "Running a command with vault values" },
+};
+
+/** The tools, as both tool servers list them (`tools/list`). */
+export const VAULT_TOOLS = titled(DEFINED, VAULT_WORDS);
 
 export const VAULT_TOOL_NAMES: readonly string[] = VAULT_TOOLS.map(tool => tool.name);
 

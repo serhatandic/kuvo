@@ -1,0 +1,420 @@
+{
+  "about": "The box's words on a conversation's messages (PROTOCOL.md, \"Tool steps\" and \"Its sessions' news\"), as it adds them to every page of them it forwards: each case is a message as the engine keeps it (`message`) and as a client reads it (`read`), on a box whose engine has the MCP servers in `servers` (the settings' `mcp.servers` names). The box's test (message-words.test.ts) holds itself to these; a client draws `title`/`doing` and `metadata.kuvo.news` as they are.",
+  "servers": [
+    "kuvo-browser",
+    "linear",
+    "notion",
+    "my-server"
+  ],
+  "cases": [
+    {
+      "name": "one of Kuvo Code's own tools, done",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_1",
+            "name": "kuvo-browser_start_session",
+            "state": {
+              "status": "completed",
+              "input": {
+                "task": "Write the tests"
+              }
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_1",
+            "name": "kuvo-browser_start_session",
+            "state": {
+              "status": "completed",
+              "input": {
+                "task": "Write the tests"
+              }
+            },
+            "title": "Started a session",
+            "doing": "Starting a session"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a message to another agent, named from the call",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_2",
+            "name": "kuvo-browser_send_message",
+            "state": {
+              "status": "running",
+              "input": {
+                "to": "Mira",
+                "text": "Done?"
+              }
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_2",
+            "name": "kuvo-browser_send_message",
+            "state": {
+              "status": "running",
+              "input": {
+                "to": "Mira",
+                "text": "Done?"
+              }
+            },
+            "title": "Sent a message to Mira",
+            "doing": "Sending a message to Mira"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a message to an address names no one",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_3",
+            "name": "kuvo-browser_send_message",
+            "state": {
+              "status": "completed",
+              "input": {
+                "to": "ses_abc123",
+                "text": "Done?"
+              }
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_3",
+            "name": "kuvo-browser_send_message",
+            "state": {
+              "status": "completed",
+              "input": {
+                "to": "ses_abc123",
+                "text": "Done?"
+              }
+            },
+            "title": "Sent a message",
+            "doing": "Sending a message"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a call still streaming, with no input yet",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_4",
+            "name": "kuvo-browser_read_conversation",
+            "state": {
+              "status": "pending"
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_4",
+            "name": "kuvo-browser_read_conversation",
+            "state": {
+              "status": "pending"
+            },
+            "title": "Read a conversation",
+            "doing": "Reading a conversation"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an integration's tool: its name and the tool's",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_5",
+            "name": "linear_list_issues",
+            "state": {
+              "status": "completed",
+              "input": {}
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_5",
+            "name": "linear_list_issues",
+            "state": {
+              "status": "completed",
+              "input": {}
+            },
+            "title": "Linear · List issues",
+            "doing": "Linear · List issues"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a server's name said again in its tool's is left out",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_6",
+            "name": "notion_notion-search",
+            "state": {
+              "status": "running",
+              "input": {
+                "query": "plans"
+              }
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_6",
+            "name": "notion_notion-search",
+            "state": {
+              "status": "running",
+              "input": {
+                "query": "plans"
+              }
+            },
+            "title": "Notion · Search",
+            "doing": "Notion · Search"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a server of yours, by its own name",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_7",
+            "name": "my-server_get_report",
+            "state": {
+              "status": "completed",
+              "input": {}
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_7",
+            "name": "my-server_get_report",
+            "state": {
+              "status": "completed",
+              "input": {}
+            },
+            "title": "My server · Get report",
+            "doing": "My server · Get report"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a tool of no server this box knows: its whole name",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_8",
+            "name": "acme_fetch_report",
+            "state": {
+              "status": "completed",
+              "input": {}
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_8",
+            "name": "acme_fetch_report",
+            "state": {
+              "status": "completed",
+              "input": {}
+            },
+            "title": "Acme fetch report",
+            "doing": "Acme fetch report"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the engine's own tools are left for clients to word",
+      "message": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_9",
+            "name": "shell",
+            "state": {
+              "status": "completed",
+              "input": {
+                "command": "ls"
+              }
+            }
+          }
+        ]
+      },
+      "read": {
+        "type": "assistant",
+        "id": "msg_1",
+        "content": [
+          {
+            "type": "tool",
+            "id": "call_9",
+            "name": "shell",
+            "state": {
+              "status": "completed",
+              "input": {
+                "command": "ls"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a note telling a lead of its sessions carries each one's news",
+      "message": {
+        "type": "user",
+        "id": "msg_2",
+        "text": "[Session finished] \"Sign-in\" in web (address ses_one), after 3 min:\nThe sign-in works now.\n\n[Session asks] \"Deploy\" in web (address ses_two) asks to run git push (ask per_1). Answer with answer_ask if it's yours to allow, or tell the user in a line and carry on.",
+        "metadata": {
+          "kuvo": {
+            "note": {
+              "from": "Its sessions",
+              "line": "2 updates from its sessions"
+            }
+          }
+        }
+      },
+      "read": {
+        "type": "user",
+        "id": "msg_2",
+        "text": "[Session finished] \"Sign-in\" in web (address ses_one), after 3 min:\nThe sign-in works now.\n\n[Session asks] \"Deploy\" in web (address ses_two) asks to run git push (ask per_1). Answer with answer_ask if it's yours to allow, or tell the user in a line and carry on.",
+        "metadata": {
+          "kuvo": {
+            "note": {
+              "from": "Its sessions",
+              "line": "2 updates from its sessions"
+            },
+            "news": [
+              {
+                "session": "ses_one",
+                "title": "Sign-in",
+                "status": "finished",
+                "said": "The sign-in works now."
+              },
+              {
+                "session": "ses_two",
+                "title": "Deploy",
+                "status": "asks",
+                "said": "Asks to run git push."
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "one written before notes were marked, stopped and failed",
+      "message": {
+        "type": "user",
+        "id": "msg_3",
+        "text": "[Session stopped] \"Cleanup\" in web (address ses_three) was stopped by the user. Nothing more comes from it unless it's written to again: don't start it or its work again unless the user asks.\n\n[Session failed] \"\" in web (address ses_four) stopped with an error: The model is overloaded. Read it with read_conversation, then start it again, try another way, or tell the user."
+      },
+      "read": {
+        "type": "user",
+        "id": "msg_3",
+        "text": "[Session stopped] \"Cleanup\" in web (address ses_three) was stopped by the user. Nothing more comes from it unless it's written to again: don't start it or its work again unless the user asks.\n\n[Session failed] \"\" in web (address ses_four) stopped with an error: The model is overloaded. Read it with read_conversation, then start it again, try another way, or tell the user.",
+        "metadata": {
+          "kuvo": {
+            "news": [
+              {
+                "session": "ses_three",
+                "title": "Cleanup",
+                "status": "stopped by you",
+                "said": "You stopped it."
+              },
+              {
+                "session": "ses_four",
+                "title": "New Session",
+                "status": "stopped",
+                "said": "Stopped with an error: The model is overloaded."
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -4,6 +4,7 @@
 // only pass calls on, so they're the same on every box. A call runs only while the conversation it
 // names is making it, as the vault's do.
 
+import { titled, type ToolWords } from "../../shared/message-words";
 import { HERE } from "../home";
 import { listBots } from "../bots/list";
 import { placeOfSession } from "../letters/letter";
@@ -51,8 +52,7 @@ const PROGRESS_NOTE = { type: ["string", "null"], description: "What's being don
 const WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays as it is)." };
 const NAMES = { type: "array", items: { type: "string" } };
 
-/** The tools, as a tool server lists them. */
-export const QUEUE_TOOLS = [
+const DEFINED = [
   {
     name: "queue_list",
     description: "List your Work Queue (and those of sessions you oversee) by status: open items, unless done.",
@@ -154,7 +154,23 @@ export const QUEUE_TOOLS = [
       }, required: ["number", "title"] } },
     }, required: ["items"], additionalProperties: false },
   },
-];
+] as const;
+
+/** Each tool's words: its title, and what a step of it says done and while it runs. */
+export const QUEUE_WORDS: Record<(typeof DEFINED)[number]["name"], ToolWords> = {
+  queue_list: { title: "List the Work Queue", done: "Listed the Work Queue", doing: "Listing the Work Queue" },
+  queue_show: { title: "Read a Work Queue item", done: "Read a Work Queue item", doing: "Reading a Work Queue item" },
+  queue_add: { title: "Add to the Work Queue", done: "Added to the Work Queue", doing: "Adding to the Work Queue",
+    target: { field: "title", done: "Added {} to the Work Queue", doing: "Adding {} to the Work Queue", quoted: true } },
+  queue_update: { title: "Update a Work Queue item", done: "Updated a Work Queue item", doing: "Updating a Work Queue item" },
+  queue_hand: { title: "Hand off a Work Queue item", done: "Handed off a Work Queue item", doing: "Handing off a Work Queue item" },
+  queue_remove: { title: "Remove a Work Queue item", done: "Removed a Work Queue item", doing: "Removing a Work Queue item" },
+  queue_labels: { title: "Manage labels", done: "Managed the Work Queue's labels", doing: "Managing the Work Queue's labels" },
+  queue_import: { title: "Import items", done: "Imported items into the Work Queue", doing: "Importing items into the Work Queue" },
+};
+
+/** The tools, as a tool server lists them. */
+export const QUEUE_TOOLS = titled(DEFINED, QUEUE_WORDS);
 
 export const QUEUE_TOOL_NAMES: readonly string[] = QUEUE_TOOLS.map(tool => tool.name);
 

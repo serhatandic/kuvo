@@ -1,4 +1,5 @@
 import { compactionFeed, compactionPage } from "../../shared/compaction-words";
+import { messageWordsPage } from "../../shared/message-words";
 // Forwarding to the engine
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
 // a phone's prompts with who they name told, and that they're from a phone.
@@ -15,6 +16,7 @@ import { pause } from "../../shared/wait";
 import { stopIfWaiting } from "../work/answers";
 import { FROM_PHONE, withPartsOf } from "../messages/parts";
 import { attachedIn } from "./attached";
+import { knownTools } from "./known-tools";
 import type { ModelInput } from "./attached";
 import { namedIn, namingHere } from "./naming";
 import { forgetSent, sentKey, sentOnce } from "./sent-once";
@@ -210,7 +212,8 @@ export async function* forward(target: Target, path: string, request: LinkReques
     }
   }
   if (method === "GET" && response.ok && /^\/?api\/session\/[^/]+\/message(?:\/[^/?]+)?(?:\?|$)/.test(path)) {
-    const body = Buffer.from(JSON.stringify(compactionPage(await response.json())));
+    // With the box's words: compaction's, its tool steps' and its sessions' news (shared/message-words.ts).
+    const body = Buffer.from(JSON.stringify(messageWordsPage(compactionPage(await response.json()), knownTools())));
     delete out["content-length"];
     yield { head: { status: response.status, headers: out } };
     yield { body };

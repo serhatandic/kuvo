@@ -1407,6 +1407,21 @@ Any step whose `metadata.files` holds a patch opens to it, whatever its name. A 
 `running` (or `streaming`, `pending`) opens to nothing; one `failed` (`error`) says its `error`'s
 first line under its row. A long output folds to its first lines.
 
+**Every other step's words are the box's** (`messages.tool-titles`): each page of messages a box
+forwards (`GET api/session/<id>/message…`, the engine's and the coding agents' alike) gives each
+step that isn't one of the engine's own (above, and `subagent`, `execute`, `context`, `skill`,
+`question`, `todoread`, `codesearch`, `lsp`, `batch`, `invalid`, `plan_enter`, `plan_exit`) two
+strings on the step itself: `title`, what it did ("Started a session", "Sent a message to Mira",
+"Linear · List issues"), and `doing`, the same while it runs ("Starting a session"). A client draws
+them as they are, never the step's `name`, which is an MCP tool's id (`kuvo-browser_start_session`,
+`linear_list_issues`) or a bridge's kind (`sleep`, `generate_image`). Kuvo Code's own tools say what
+they did in their own words, kept beside each one's definition (which also gives its MCP `title`
+in `tools/list`), with the agent named where the call's input has a name (never an address); another
+MCP server's are `<server> · <tool>`, the server by its integration's or catalog's name, or its
+own made readable, the tool's name made readable without the server's name again; a name of no
+server the box knows is made readable whole. The live feed carries none of these: a client reads the
+messages again as a step arrives. Samples: `protocol/vectors/message-words.json`.
+
 ### Mentions
 
 What "@" and "&" suggest as you type in a conversation (`sessions.mentions`), ranked by the box as
@@ -4978,7 +4993,15 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   and words for the lead; for `asks`, `asks to <what> (ask <id>).` or `asks: <question> (ask <id>).`
   and words for the lead; for `stopped`, `was stopped by the user.` and words for the lead (show
   "You stopped it.", with “<title>” stopped by you). Show what it said, never the words for the
-  lead. `still working` shows nothing, old ones included. A goal started or resumed is a word in the next reply's footer; the
+  lead. `still working` shows nothing, old ones included. **Its sessions' news** (`messages.session-news`):
+  each page of messages a box forwards reads such a note for the client (marked, or from before it
+  was) and adds `metadata.kuvo.news`, one `{session, title, status, said}` a session it tells of, in
+  order: `session` its address, `title` its title ("New Session" for none), `status` a word or two
+  beside its name (`finished`, `asks`, `stopped`, `stopped by you`, `not summarized`), and `said`
+  the card's words (its reply, or "It ended without a reply."; why it stopped; what it asks; "You
+  stopped it."), none of the words for the lead. A client draws those as they are and reads no
+  text: `[]` for one that only says a session's still working (nothing to show), and no `news` for
+  one in words its box doesn't read (show its text whole). A goal started or resumed is a word in the next reply's footer; the
   rest show nothing. The same goes for the engine's and the bridge's notes (`synthetic`, `system`):
   they're for the model and show nothing, but what changed (the model or its effort, the mode, a
   summary, the project's folders) is said in a word beside the next reply's time (`ReplyChanges`).
@@ -7045,6 +7068,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open; a box in a home of its own answers all of it itself, "Machines") |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
 | `messages.commands` | A command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("A command shows as typed", #668) |
+| `messages.session-news` | `metadata.kuvo.news` on a note telling a lead of its sessions, in every message page ("Messages in a session", "Its sessions' news") |
+| `messages.tool-titles` | `title` and `doing` on every tool step that isn't the engine's own, in every message page ("Tool steps") |
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
 | `models.offered.folder` | `kuvo/models/offered?folder=<path>`: what's offered in a project's folder, its own settings' models too ("The models offered") |
