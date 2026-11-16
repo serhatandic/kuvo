@@ -267,20 +267,26 @@ impl Backoff {
 /// A passing drop, taken quietly: once a follow has come through, the first failure to reach its
 /// box after it (the link dropped, a session ended under it) is tried again at once, unsaid; only
 /// one that fails again is said (PROTOCOL.md, "When a client says a computer isn't connected").
+/// Only after it held a while: one that drops again right after it's back is said, not retried
+/// over and over.
 #[derive(Default)]
 struct Quiet {
-    came: bool,
+    /// Since when it's come through, this time.
+    since: Option<std::time::Instant>,
 }
+
+/// How long it must have held for a drop to be taken quietly.
+const HELD_AWHILE: Duration = Duration::from_secs(10);
 
 impl Quiet {
     /// It came through.
     fn came(&mut self) {
-        self.came = true;
+        self.since.get_or_insert_with(std::time::Instant::now);
     }
     /// Whether this failure is the one taken quietly (then tried again at once).
     fn takes(&mut self, error: &Error) -> bool {
-        let quiet = self.came && matches!(error, Error::Unreachable(_));
-        self.came = false;
+        let quiet = matches!(error, Error::Unreachable(_)) && self.since.is_some_and(|since| since.elapsed() >= HELD_AWHILE);
+        self.since = None;
         quiet
     }
 }

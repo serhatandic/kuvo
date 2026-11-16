@@ -302,7 +302,9 @@ impl ConversationView {
     /// Replies to `text`: it goes into the composer as a quote, the keyboard there to answer it.
     pub fn quote(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.composer.update(cx, |composer, cx| composer.quote(text, cx));
-        let focus = self.composer.focus_handle(cx);
+        // (Into its answer, under it, as 0.7's.)
+        let composer = self.composer.read(cx);
+        let focus = composer.answer_focus(cx).unwrap_or_else(|| composer.focus_handle(cx));
         window.focus(&focus, cx);
     }
 
@@ -1017,7 +1019,7 @@ impl ConversationView {
                             d.child(div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("edit-{}", item.id)), IconName::Pencil, "Edit").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(edit_id.clone(), true, cx)))))
                         })
                         // (Another's isn't yours to edit: its room kept, so every row's buttons line up.)
-                        .when(!item.is_yours(), |d| d.child(div().opacity(0.).child(Button::icon_only(SharedString::from(format!("edit-room-{}", item.id)), IconName::Pencil, "").size(ButtonSize::Small).disabled(true))))
+                        .when(!item.is_yours(), |d| d.child(div().flex_none().size(px(24.))))
                         .child({
                             let selector = format!("remove-{}", item.id);
                             div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))))

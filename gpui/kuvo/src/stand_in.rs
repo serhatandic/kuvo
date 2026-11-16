@@ -1922,7 +1922,7 @@ impl StandIn {
                 answer(200, json!({ "paused": state.paused.contains(*session), "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default() }))
             }
             // Steer: for the agent's next step (one on the box, or with nothing running, goes now).
-            // Send Now: to the agent at once. Either sets a stopped queue going.
+            // Send Now: to the agent at once, setting a stopped queue going.
             ("POST", ["kuvo", "sessions", session, "queue", item, how @ ("steer" | "now")]) => {
                 let session = (*session).to_owned();
                 let running = state.running.contains(&session);
@@ -1938,7 +1938,10 @@ impl StandIn {
                     queue[at]["delivery"] = json!("steer");
                 }
                 state.queue_asked.push(format!("{how} {item}"));
-                state.paused.remove(&session);
+                // (Steer lets only that one go: a stopped queue stays stopped.)
+                if goes_now {
+                    state.paused.remove(&session);
+                }
                 state.told(&session, Followed::Queue);
                 answer(200, json!({ "paused": false, "held": [] }))
             }

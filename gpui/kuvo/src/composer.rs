@@ -121,6 +121,16 @@ impl Outgoing {
     }
 }
 
+/// Your answer to a quote, under it: its own field, shown while it has words or once it's opened
+/// (the quote added, or clicked), as 0.7's `QuoteList`.
+struct QuoteAnswer {
+    field: Entity<TextField>,
+    open: bool,
+    /// Whether it had the keyboard when last drawn: an empty one closes as it lets go of it.
+    had_focus: bool,
+    _events: Subscription,
+}
+
 /// What the chips show, as the box says it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Models {
@@ -196,8 +206,10 @@ pub struct Composer {
     noted: String,
     /// Files and pictures that go with what's written, in the order they were added.
     attached: Vec<PathBuf>,
-    /// What you're replying to (a message, or a part of one), ahead of your words as it's sent.
+    /// What you're replying to (a message, or a part of one), ahead of your words as it's sent,
+    /// each with your answer to it in a field of its own (`answers`, in the same order), as 0.7's.
     quotes: Vec<Quote>,
+    answers: Vec<QuoteAnswer>,
     /// What "@" or "&" suggests for the mention being typed (the box's: `sessions.mentions`, or in a
     /// group chat `groups.mentions`), and which mention that was; which read of them is the latest.
     mentions: Vec<Mention>,
@@ -306,6 +318,7 @@ impl Composer {
             noted: String::new(),
             attached: Vec::new(),
             quotes: Vec::new(),
+            answers: Vec::new(),
             mentions: Vec::new(),
             mentions_for: None,
             mention_reads: 0,
@@ -461,11 +474,6 @@ impl Composer {
     pub fn set_running(&mut self, running: bool, cx: &mut Context<Self>) {
         if self.running != running {
             self.running = running;
-            // (0.7's words while the agent works: what's sent goes into its task.)
-            if matches!(self.target, Target::Session { .. }) && !self.client.gate().is_held() {
-                let placeholder: SharedString = if running { WHILE_RUNNING.into() } else { self.placeholder.clone() };
-                self.field.update(cx, |field, _| field.set_placeholder(placeholder));
-            }
             cx.notify();
         }
     }
@@ -901,9 +909,13 @@ impl Composer {
             return;
         }
         let mut draft = Draft::new(BoxClient::new_id(), text.clone());
-        let queues = how == SendAs::Queue && self.can_queue();
-        draft.delivery = if queues { Delivery::Queue } else { Delivery::Steer };
-        let now = how == SendAs::Now && self.running;
+        // How it goes is its box's to work out from what it asks: for after the run (its box sends
+        // it at once with nothing to wait for), or now, the step under way stopped for it.
+        draft.delivery = match how {
+            SendAs::Steer => Delivery::Steer,
+            SendAs::Queue => Delivery::Queue,
+            SendAs::Now => Delivery::Now,
+        };
         // (Its files go with it as its box takes them, read as it goes: `go`.)
         let files = std::mem::take(&mut self.attached);
         // The agents picked from "&"'s list that are still named in it.
@@ -948,7 +960,9 @@ impl Composer {
                 draft.place = self.place_known.then_some(place);
                 // What it replies to goes ahead of its words: a plain message's now (so it shows so
                 // at once), a typed one's as its box says it sends (`send_draft`'s `quote`).
+                self.sync_answers(cx);
                 let quotes = std::mem::take(&mut self.quotes);
+                self.answers.clear();
                 // A plain message shows in the conversation at once, as you wrote it ("/" and "!"
                 // texts are the box's to say what they are; one kept for a model that can't run
                 // goes back to the composer, saying why).
@@ -959,7 +973,7 @@ impl Composer {
                     self.outgoing.push(Outgoing { id: draft.id.clone(), words: text.clone(), files: files.clone(), failed: None, taken: false, arrived: false, draft: draft.clone() });
                     cx.emit(ComposerEvent::Outgoing);
                 }
-                self.go(id, draft, text, files, quotes, shows, now, cx);
+                self.go(id, draft, text, files, quotes, shows, cx);
             }
             Target::New(place) => {
                 let model = self.picked.clone();
@@ -1007,9 +1021,7 @@ impl Composer {
     /// Sends `draft` to conversation `session` (`send` or Retry): one at a time, Stop taking it as
     /// it goes. `shows`: it's drawn in the conversation (`outgoing`), which says what became of it;
     /// else what was written goes back to the composer if it couldn't go.
-    /// `now`: Send Now, once its box has it (the step under way stopped for it).
-    #[allow(clippy::too_many_arguments)]
-    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, shows: bool, now: bool, cx: &mut Context<Self>) {
+    fn go(&mut self, session: String, draft: Draft, text: String, files: Vec<PathBuf>, quotes: Vec<Quote>, shows: bool, cx: &mut Context<Self>) {
         // (One at a time: `send` and Retry refuse another while this one's on its way.)
         debug_assert!(self.on_its_way.is_none(), "a second send while one was on its way");
         self.sending = true;
@@ -1025,13 +1037,7 @@ impl Composer {
             draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
             let quote = |words: &str| quoting::message(&quotes, words);
             let quote: Option<&dyn Fn(&str) -> String> = if quotes.is_empty() { None } else { Some(&quote) };
-            let sent = client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())?;
-            // Send Now: its box has it; the step under way stops for it. (Taken by the agent
-            // meanwhile, it's no longer waiting: that's as good.)
-            if now && let Sent::Message { id } = &sent {
-                let _ = client.send_queued_now(&session, id);
-            }
-            Ok(sent)
+            client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())
         };
         self.spawn(cx, work, move |this, result, cx| {
             this.sending = false;
@@ -1047,8 +1053,9 @@ impl Composer {
                     this.attach(files, cx);
                     // (What it replied to goes back with it.)
                     let mut quotes = kept_quotes;
+                    this.sync_answers(cx);
                     quotes.append(&mut this.quotes);
-                    this.quotes = quotes;
+                    this.set_quotes(quotes, cx);
                     this.put_back(&text, Some(why), cx)
                 }
             }
@@ -1096,7 +1103,7 @@ impl Composer {
         outgoing.failed = None;
         let (draft, text, files) = (outgoing.draft.clone(), outgoing.words.clone(), outgoing.files.clone());
         cx.emit(ComposerEvent::Outgoing);
-        self.go(session, draft, text, files, Vec::new(), true, false, cx);
+        self.go(session, draft, text, files, Vec::new(), true, cx);
         cx.notify();
     }
 
@@ -1281,47 +1288,172 @@ impl Composer {
 
     /// Replies to `text` (a message, or what's selected in one): it goes above what you write, and
     /// ahead of it as it's sent. The same quoted twice is there once.
+    /// Its answer field opens under it, to take the keyboard (`answer_focus`).
     pub fn quote(&mut self, text: &str, cx: &mut Context<Self>) {
         let text = text.trim();
         if text.is_empty() || matches!(self.target, Target::Group { .. }) || self.quotes.iter().any(|quote| quote.text == text) {
             return;
         }
         self.quotes.push(Quote::new(text));
+        let answer = self.answer("", true, cx);
+        self.answers.push(answer);
         cx.notify();
     }
 
-    /// What you're replying to, in order.
-    pub fn quotes(&self) -> &[Quote] {
-        &self.quotes
+    /// Quote `at`'s answer field (for shots).
+    pub fn answer_field(&self, at: usize) -> Option<Entity<TextField>> {
+        self.answers.get(at).map(|answer| answer.field.clone())
+    }
+
+    /// The field of the last quote's answer, which takes the keyboard as the quote is added.
+    pub fn answer_focus(&self, cx: &App) -> Option<FocusHandle> {
+        self.answers.last().map(|answer| answer.field.focus_handle(cx))
+    }
+
+    /// An answer's field: Return sends the message, as the composer's own field does.
+    fn answer(&mut self, response: &str, open: bool, cx: &mut Context<Self>) -> QuoteAnswer {
+        let field = cx.new(|cx| {
+            let mut field = TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder("Your answer to this…");
+            field.set_text(response, cx);
+            field
+        });
+        let events = cx.subscribe(&field, |this: &mut Composer, _, event: &TextFieldEvent, cx| match event {
+            TextFieldEvent::Submit(_) => this.send(cx),
+            TextFieldEvent::Changed | TextFieldEvent::Cancel => cx.notify(),
+        });
+        QuoteAnswer { field, open: open || !response.trim().is_empty(), had_focus: false, _events: events }
+    }
+
+    /// The answers as their fields hold them, into the quotes.
+    fn sync_answers(&mut self, cx: &App) {
+        for (quote, answer) in self.quotes.iter_mut().zip(&self.answers) {
+            quote.response = answer.field.read(cx).text().to_owned();
+        }
+    }
+
+    /// `quotes` in place of what's there, each answer in its field.
+    fn set_quotes(&mut self, quotes: Vec<Quote>, cx: &mut Context<Self>) {
+        self.answers = quotes.iter().map(|quote| self.answer(&quote.response, false, cx)).collect();
+        self.quotes = quotes;
+        cx.notify();
+    }
+
+    /// What you're replying to, in order, each with your answer as written.
+    pub fn quotes(&self, cx: &App) -> Vec<Quote> {
+        self.quotes.iter().zip(&self.answers).map(|(quote, answer)| Quote { text: quote.text.clone(), response: answer.field.read(cx).text().to_owned() }).collect()
     }
 
     pub fn unquote(&mut self, at: usize, cx: &mut Context<Self>) {
         if at < self.quotes.len() {
             self.quotes.remove(at);
+            self.answers.remove(at);
             cx.notify();
         }
     }
 
-    /// What you're replying to, above the field: each quote's first lines, with × to take it off.
-    fn quote_cards(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// Every quote taken off (Remove All).
+    pub fn unquote_all(&mut self, cx: &mut Context<Self>) {
+        self.quotes.clear();
+        self.answers.clear();
+        cx.notify();
+    }
+
+    /// Opens a quote's answer, with the keyboard in it (a click on the quote).
+    fn open_answer(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(answer) = self.answers.get_mut(at) {
+            answer.open = true;
+            let focus = answer.field.focus_handle(cx);
+            window.focus(&focus, cx);
+            cx.notify();
+        }
+    }
+
+    /// What you're replying to, above the field, as 0.7's `QuoteList`: each quote's first lines
+    /// ("Replying to" over it while it's the only one), × to take it off, and your answer to it
+    /// under it while it has words or is opened (click the quote to answer it); with several, how
+    /// many and Remove All. A long list scrolls.
+    fn quote_cards(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.quotes.is_empty() {
             return None;
         }
+        // An empty answer closes once the keyboard goes on to write somewhere else (the composer's
+        // own field, or another answer): not as a button takes it, which a closing answer would
+        // move before it's let go.
+        let writing_elsewhere = self.field.focus_handle(cx).is_focused(window) || self.answers.iter().any(|answer| answer.field.focus_handle(cx).is_focused(window));
+        for answer in &mut self.answers {
+            let focused = answer.field.focus_handle(cx).is_focused(window);
+            if answer.had_focus && !focused && writing_elsewhere && answer.field.read(cx).text().trim().is_empty() {
+                answer.open = false;
+            }
+            if focused || writing_elsewhere {
+                answer.had_focus = focused;
+            }
+        }
         let c = cx.theme().colors.clone();
-        let cards = self.quotes.iter().enumerate().map(|(at, quote)| {
+        let single = self.quotes.len() == 1;
+        let cards = self.quotes.iter().zip(&self.answers).enumerate().map(|(at, (quote, answer))| {
             let selector = format!("quote-{at}");
-            div()
+            let card = div()
+                .id(("quote-card", at))
                 .debug_selector(move || selector)
                 .flex()
                 .items_start()
                 .gap(space::S2)
-                .pl(space::S2)
-                .border_l_2()
-                .border_color(c.accent)
-                .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text_muted).line_clamp(3).child(quote.text.clone()))
-                .child(Button::icon_only(("unquote", at), IconName::Close, "Remove Quote").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unquote(at, cx))))
+                .py(space::S1_5)
+                .px(space::S2)
+                .rounded(radius::NAV)
+                .bg(c.sunken)
+                .cursor_pointer()
+                // (As it's pressed: an empty answer that closes as the keyboard leaves it would move the
+                // quote under the pointer before it's let go.)
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                    window.prevent_default();
+                    this.open_answer(at, window, cx);
+                }))
+                .child(div().flex_none().w(px(3.)).h(px(18.)).mt(px(1.)).rounded(px(2.)).bg(c.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(space::S0_5)
+                        .when(single, |d| d.child(div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child("Replying to")))
+                        .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).line_clamp(3).child(quote.text.clone())),
+                )
+                .child(Button::icon_only(("unquote", at), IconName::Close, "Don’t Reply to This").ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.unquote(at, cx);
+                })));
+            let shows = answer.open || !answer.field.read(cx).text().trim().is_empty();
+            let selector = format!("quote-answer-{at}");
+            div()
+                .flex()
+                .flex_col()
+                .gap(space::S1_5)
+                .child(card)
+                .when(shows, |d| d.child(div().debug_selector(move || selector).pl(space::S3).child(answer.field.clone())))
         });
-        Some(div().debug_selector(|| "quotes".into()).flex().flex_col().gap(space::S1_5).children(cards).into_any_element())
+        let header = (!single).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .text_ui(TypeSize::Small)
+                .text_color(c.text_muted)
+                .child(format!("{} quotes", self.quotes.len()))
+                .child(div().debug_selector(|| "quotes-remove-all".into()).child(Button::new("quotes-remove-all", "Remove All").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.unquote_all(cx)))))
+        });
+        Some(
+            div()
+                .debug_selector(|| "quotes".into())
+                .flex()
+                .flex_col()
+                .gap(space::S1)
+                .children(header)
+                .child(div().id("quote-list").max_h(px(260.)).overflow_y_scroll().flex().flex_col().gap(space::S2).children(cards))
+                .into_any_element(),
+        )
     }
 
     /// Takes a file off the message, and a picture's name with it (the later ones a number down).
@@ -1990,7 +2122,8 @@ impl Composer {
     fn send_choices(&self, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity();
         let can_queue = self.can_queue();
-        let trigger = Button::icon_only("send-choices", IconName::ChevronDown, "More ways to send").ghost().size(ButtonSize::Small);
+        // (Kept in place while one's on its way, so Send doesn't move.)
+        let trigger = Button::icon_only("send-choices", IconName::ChevronDown, "More ways to send").ghost().size(ButtonSize::Small).disabled(self.sending);
         div()
             .debug_selector(|| "send-choices".into())
             .child(PopoverMenu::new("send-choices-menu", trigger, move |_, cx| Self::send_menu(this.clone(), can_queue, cx)).with_handle(self.send_menu.clone()).align_right())
@@ -2017,7 +2150,7 @@ impl Composer {
 }
 
 impl Render for Composer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let held = self.client.gate().is_held();
         if self.field_held != held {
             self.field_held = held;
@@ -2030,6 +2163,13 @@ impl Render for Composer {
                 field.set_placeholder(placeholder);
                 field.set_disabled(held, cx);
             });
+        }
+        // (0.7's words while the agent works: what's sent goes into its task.)
+        if !held {
+            let wanted: SharedString = if self.running && matches!(self.target, Target::Session { .. }) { WHILE_RUNNING.into() } else { self.placeholder.clone() };
+            if self.field.read(cx).placeholder_text() != wanted.as_ref() {
+                self.field.update(cx, |field, _| field.set_placeholder(wanted));
+            }
         }
         let theme = cx.theme().clone();
         let c = &theme.colors;
@@ -2055,7 +2195,7 @@ impl Render for Composer {
                 .on_click(cx.listener(|this, _, _, cx| this.send(cx)))
         };
         // The other ways to send while the agent works, beside Send.
-        let choices = (self.running && !empty && !self.sending && matches!(self.target, Target::Session { .. })).then(|| self.send_choices(cx));
+        let choices = (self.running && !empty && matches!(self.target, Target::Session { .. })).then(|| self.send_choices(cx));
         let note = self.note.clone().map(|note| {
             div()
                 .px(space::S2)
@@ -2081,7 +2221,7 @@ impl Render for Composer {
             .shadow(theme.card_shadow())
             .when(!offers.is_empty(), |d| d.child(self.slash_list(&offers, cx)))
             .children(self.full_access_question(cx))
-            .children(self.quote_cards(cx))
+            .children(self.quote_cards(window, cx))
             .children(self.attachments(cx))
             .children(keyword.map(|chip| div().flex().child(chip)))
             .child(div().pt(space::S1).pr(space::S1).child(self.field.clone()))

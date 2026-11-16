@@ -97,14 +97,16 @@ fn while_it_works_return_steers_and_cmd_return_queues_for_after_the_run(cx: &mut
 }
 
 #[gpui::test]
-fn with_nothing_running_or_waiting_cmd_return_sends_at_once(cx: &mut TestAppContext) {
+fn with_nothing_running_or_waiting_cmd_return_goes_at_once(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     open_session(&workspace, "ses_recipes", cx);
     cx.simulate_input("Something with lentils?");
     cx.simulate_keystrokes("cmd-enter");
     cx.run_until_parked();
-    assert_eq!(sent(&stand_in, "ses_recipes"), vec![("Something with lentils?".into(), "steer".into())], "nothing to wait for");
+    // Asked for after the run; its box, with nothing to wait for, sends it at once.
+    assert_eq!(sent(&stand_in, "ses_recipes"), vec![("Something with lentils?".into(), "queue".into())]);
+    assert!(stand_in.queue_of("ses_recipes").is_empty(), "nothing to wait for: it didn't");
     assert!(bounds(cx, "send-choices").is_none(), "no other way to send while nothing runs");
 }
 
@@ -119,10 +121,8 @@ fn the_menu_beside_send_queues_or_sends_now(cx: &mut TestAppContext) {
     click(cx, "send-choices");
     assert!(bounds(cx, "menu-item-Queue for After This Run").is_some());
     click(cx, "menu-item-Send Now");
-    // Send Now: sent, then the step under way stopped for it.
-    let id = stand_in.seen_at("POST", "kuvo/sessions/ses_signup/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
-    assert_eq!(sent(&stand_in, "ses_signup"), vec![("Stop and use the new copy instead".into(), "steer".into())]);
-    assert_eq!(stand_in.seen_at("POST", &format!("kuvo/sessions/ses_signup/queue/{id}/now")).len(), 1);
+    // Send Now: one send its box takes as that (for the next step, the step under way stopped for it).
+    assert_eq!(sent(&stand_in, "ses_signup"), vec![("Stop and use the new copy instead".into(), "now".into())]);
 }
 
 #[gpui::test]

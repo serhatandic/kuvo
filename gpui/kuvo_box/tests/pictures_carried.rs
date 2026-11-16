@@ -49,3 +49,27 @@ fn a_retina_screenshot_goes_to_another_computer_as_a_smaller_jpeg_and_a_small_pi
     assert!(files[1].uri.starts_with("data:image/png;base64,"));
     assert_eq!(decoded(&files[1].uri), std::fs::read(&small).unwrap());
 }
+
+#[test]
+fn what_a_big_picture_leaves_see_through_arrives_white_not_black() {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("window shot.png");
+    // A window's screenshot: noisy where the window is, see-through around it (its shadow's room).
+    let mut seed: u32 = 0x1234_5678;
+    let picture = image::RgbaImage::from_fn(2560, 1640, |_, y| {
+        if y < 900 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            image::Rgba([seed as u8, (seed >> 8) as u8, (seed >> 16) as u8, 255])
+        } else {
+            image::Rgba([0, 0, 0, 0])
+        }
+    });
+    picture.save_with_format(&path, image::ImageFormat::Png).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() as usize > PICTURE_KEPT_MOST);
+    let files = carried(&[path], false, &|_| false).unwrap();
+    let sent = image::load_from_memory(&decoded(&files[0].uri)).unwrap().to_rgb8();
+    let corner = sent.get_pixel(10, sent.height() - 10).0;
+    assert!(corner.iter().all(|channel| *channel > 240), "white, not black: {corner:?}");
+}

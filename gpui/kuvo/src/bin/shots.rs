@@ -47,6 +47,17 @@ struct Screen {
 
 type Panel = fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
 
+/// Two quotes over the composer: the first answered, the second's answer open, with the keyboard.
+fn quotes_answered(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = workspace.conversation().expect("the conversation").clone();
+    view.update(cx, |view, cx| view.quote("Moving reset() into the success path keeps what was typed.", window, cx));
+    let composer = view.read(cx).composer().clone();
+    if let Some(field) = composer.read(cx).answer_field(0) {
+        field.update(cx, |field, cx| field.set_text("Yes, do that, and keep the focus on the email field.", cx));
+    }
+    view.update(cx, |view, cx| view.quote("The 409 now sets the error on the email field.", window, cx));
+}
+
 /// The menu beside Send open, as a click opens it.
 fn send_menu_open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
@@ -63,6 +74,8 @@ const SCREENS: &[Screen] = &[
     // While the agent works (#776): a message written, the way beside Send, and the queue with one
     // steered in, one queued and another agent's letter; then the menu beside Send open.
     Screen { slug: "send-while-working", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    // Replying to two parts of a conversation, each with its answer (0.7's `QuoteList`).
+    Screen { slug: "quotes-answers", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Then run the sign-up tests again"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(quotes_answered) },
     Screen { slug: "send-while-working-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(send_menu_open) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.

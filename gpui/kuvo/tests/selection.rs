@@ -328,7 +328,7 @@ fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_a
     right_click_at(to, cx);
     choose("Add to Chat", cx);
     let composer = view.read_with(cx, |view, _| view.composer().clone());
-    assert_eq!(composer.read_with(cx, |composer, _| composer.quotes().iter().map(|quote| quote.text.clone()).collect::<Vec<_>>()), ["When the server answers 409 (the email is taken)"]);
+    assert_eq!(composer.read_with(cx, |composer, cx| composer.quotes(cx).iter().map(|quote| quote.text.clone()).collect::<Vec<_>>()), ["When the server answers 409 (the email is taken)"]);
     assert!(cx.debug_bounds("quote-0").is_some(), "shown above the field");
 
     // Answered and sent: the quote ahead of the answer, as Markdown, as every app writes it; the
@@ -341,13 +341,13 @@ fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_a
         _ => None,
     }));
     assert_eq!(sent.as_deref(), Some("> When the server answers 409 (the email is taken)\n\nShould it keep the email?"));
-    assert!(composer.read_with(cx, |composer, _| composer.quotes().is_empty()));
+    assert!(composer.read_with(cx, |composer, cx| composer.quotes(cx).is_empty()));
 
     // Nothing selected: the message under the pointer is quoted whole.
     let mine = at(&view, "msg_s1", &[0], "completely", false, cx);
     clicks(mine, 1, cx);
     right_click_at(mine, cx);
     choose("Reply", cx);
-    let quoted = composer.read_with(cx, |composer, _| composer.quotes().first().map(|quote| quote.text.clone()));
+    let quoted = composer.read_with(cx, |composer, cx| composer.quotes(cx).first().map(|quote| quote.text.clone()));
     assert!(quoted.is_some_and(|text| text.contains("completely wiped if the email is already taken")));
 }

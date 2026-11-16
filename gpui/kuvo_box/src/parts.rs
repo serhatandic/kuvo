@@ -202,11 +202,25 @@ pub fn smaller_picture(bytes: &[u8], mime: &str) -> Option<Vec<u8>> {
     if bytes.len() <= PICTURE_KEPT_MOST && matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif | image::ImageFormat::WebP) {
         return None;
     }
-    let picture = image::load_from_memory_with_format(bytes, format).ok()?;
+    // Upright, as it's shown (a camera's photo says how it's turned), and what's see-through on white.
+    let mut decoder = image::ImageReader::with_format(std::io::Cursor::new(bytes), format).into_decoder().ok()?;
+    let orientation = image::ImageDecoder::orientation(&mut decoder).unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut picture = image::DynamicImage::from_decoder(decoder).ok()?;
+    picture.apply_orientation(orientation);
+    let picture = if picture.color().has_alpha() { image::DynamicImage::ImageRgb8(on_white(&picture.to_rgba8())) } else { picture };
     let picture = if picture.width().max(picture.height()) > PICTURE_SIDE_MOST { picture.resize(PICTURE_SIDE_MOST, PICTURE_SIDE_MOST, image::imageops::FilterType::Triangle) } else { picture };
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, PICTURE_QUALITY).encode_image(&picture.to_rgb8()).ok()?;
     Some(out)
+}
+
+/// `picture` laid on white: what's see-through shows white, as on a page, not black.
+fn on_white(picture: &image::RgbaImage) -> image::RgbImage {
+    image::RgbImage::from_fn(picture.width(), picture.height(), |x, y| {
+        let [r, g, b, a] = picture.get_pixel(x, y).0;
+        let over = |channel: u8| ((channel as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
+        image::Rgb([over(r), over(g), over(b)])
+    })
 }
 
 /// `name` as a JPEG's: its extension `.jpg`.
@@ -258,8 +272,12 @@ impl Notes {
 pub enum Delivery {
     /// To the agent now, read at its next step.
     Steer,
-    /// After the run under way ends.
+    /// After the run under way ends: with nothing running and nothing waiting, its box sends it at
+    /// once.
     Queue,
+    /// Send Now: for the agent's next step, the step under way stopped for it once its box has it
+    /// (a box from before reads it as `steer`).
+    Now,
 }
 
 /// What a client sends: what was written and what goes with it, as fields; the box writes the text
