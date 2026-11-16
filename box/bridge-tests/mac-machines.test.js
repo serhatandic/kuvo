@@ -187,9 +187,19 @@ test("with the app closed, what needs it says so at once", async () => {
   app.state = "closed";
   saved([{ destination: "lab" }]);
   const plainly = { status: 503, json: { message: "Kuvo Code isn’t open on Studio. Open it there, then try again." } };
-  for (const [method, route] of [["POST", "kuvo/machines"], ["POST", "kuvo/machines/lab/connect"], ["POST", "kuvo/machines/lab/uninstall"], ["DELETE", "kuvo/machines/lab"], ["DELETE", "kuvo/machines/lab/addresses/lab.tail"], ["POST", "kuvo/machines/lab/home"], ["DELETE", "kuvo/hosts/lab"]]) {
+  for (const [method, route] of [["POST", "kuvo/machines"], ["POST", "kuvo/machines/lab/connect"], ["POST", "kuvo/machines/lab/uninstall"], ["DELETE", "kuvo/machines/lab"], ["DELETE", "kuvo/machines/lab/addresses/lab.tail"], ["DELETE", "kuvo/hosts/lab"]]) {
     assert.deepEqual(await phone.request(method, route), plainly, `${method} ${route}`);
   }
+});
+
+test("removed machine actions stay absent with the app open or closed", async () => {
+  for (const state of ["open", "closed"]) {
+    app.state = state;
+    for (const action of ["home", "same-as"]) {
+      assert.equal((await phone.request("POST", `kuvo/machines/lab/${action}`)).status, 404);
+    }
+  }
+  app.state = "closed";
 });
 
 test("with the app open its answers go as they are, the page's button and all, and what changes something reaches it", async () => {

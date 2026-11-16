@@ -1823,7 +1823,11 @@ machines; a client that wants every computer's facts asks the box that has it as
   - **What it does**, in order: connects with the keys and agent of the box's computer (never a
     password; refused, it tries once through an agent of its own that offers the first few SSH keys
     in the vault, "Vault"); probes the computer, changing nothing (its system and kind, what the engine needs,
-    its `machine-id` where it has one, what Kuvo Code it has); puts its own release's files there, each checked by its
+    its `machine-id` where it has one, what Kuvo Code it has); refuses a Mac with an earlier Kuvo
+    Code's data its installer would move (`app-07`, `app-box`: updated to Kuvo there first),
+    unless that Mac has a box of its own (`box/kind` says `mac`; the probe doesn't look at the
+    data then) or a machine's, judged from the probe by the rule the installer judges one by
+    (`machineBoxIn`), where its installer leaves that data as it is; puts its own release's files there, each checked by its
     SHA-256 before it's put in place, unless they're there already or the computer has a newer
     Kuvo Code, which is left as it is; the engine, its own binary where the two are the same
     kind, else the pinned package fetched and checked on the box's computer (the computer added
@@ -4135,15 +4139,10 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     client to show how far. One whose box said who else uses it has `alsoUsedBy` (`{macs: [name],
     phones}`, this Mac left out), for Remove's dialog to name whom Uninstall would stop it for.
   - A machine another Mac runs has `home` (`{"name"?}`, that Mac's name where its start noted
-    one, as `kuvo/info`'s `home` says it); one this Mac runs has none. `POST kuvo/machines/<id>/home` makes this Mac its home, as Make This Mac Its Home does:
-    the engine starts again there as this Mac's, with this Mac's accounts; its sessions, bots and
-    settings stay. `200 {"machine"}`, or `409 {"message"}` when this Mac runs it already, its
-    agents are at work, or its box was set up by a newer Kuvo Code.
+    one, as `kuvo/info`'s `home` says it); one this Mac runs has none.
   - `DELETE kuvo/machines/<id>/addresses/<address>` stops using one of its other addresses (`404`
-    for its name, or one it doesn't have); `POST kuvo/machines/<id>/same-as {"other"}` makes it one
-    of `other`'s addresses, as Same Computer As does: `200 {"machine"}`, the other; `404` when
-    `other` isn't another of the Mac's machines; `409 {"message"}` when the two told Kuvo Code
-    different names and stay two machines.
+    for its name, or one it doesn’t have).
+  - The removed `/home` and `/same-as` actions answer `404`.
   - The list isn't only the app's: it's `machines.json` in this Mac's box's folder, which the box
     writes as it adds, sets up and removes computers itself ("Computers", Adding one), and the
     Mac app before 1.0 wrote while attached (bridge 0.9.201). With the app closed, stuck (no answer
@@ -4160,8 +4159,7 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     - `GET kuvo/machines/events` is one stream over both: the app's lines while it's there, the box's
       while it isn't, looking for the app again every ten seconds. It ends if the list stops reading,
       and the next try answers `503`, as a read does.
-    - Anything else (adding one, its button, removing or uninstalling it, its addresses, same-as,
-      Make This Mac Its Home) answers `503 {"message": "Kuvo Code isn’t open on Studio. Open it there,
+    - Anything else (adding one, its button, removing or uninstalling it, its addresses) answers `503 {"message": "Kuvo Code isn’t open on Studio. Open it there,
       then try again."}` as soon as the box hears the app isn't open. An app that's open and stuck
       isn't answered for here, as a change can't be said not to have happened: it waits for the app,
       or for the phone to stop waiting.
@@ -4192,10 +4190,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       refusals and words. `POST kuvo/machines/<id>/uninstall` is the box's own uninstall, waited
       for: `200 {}`, or `502 {"message"}` when it couldn't (out of reach: nothing is kept to try
       later); `409` for `box route`. `DELETE kuvo/machines/<id>/addresses/<address>` as before.
-    - `POST kuvo/machines/<id>/connect`, `/disconnect`, `/start`, `/home` and `/same-as` answer
-      `409 {"message"}` saying why: the box holds no connection to a machine, which runs by itself
-      and is met through the relay; none has a home Mac (your setup's main computer is who adds
-      and removes); and the same computer under two addresses is told by its own id as it's added.
+    - `POST kuvo/machines/<id>/connect`, `/disconnect` and `/start` answer
+      `409 {"message"}` saying why: the computer runs by itself and is met through the relay.
+      The removed `/home` and `/same-as` actions answer `404`.
     - `GET kuvo/hosts` as above; `DELETE kuvo/hosts/<id>` takes one this Mac removed out of
       `phone-link.json` (`404` for one it doesn't keep, `409 {"message"}` for one still on its
       list). One your computers still count among theirs is removed first as `DELETE
@@ -7651,7 +7648,16 @@ above. Only on a Mac.
   has is left as it is; one under four characters, which the vault keeps none of, is said
   (`dropped`); a site the earlier Kuvo Code let agents sign in to alone, with that account,
   stays so (`POST kuvo/vault/grants`, everyone, `own`: asked again at a later run where the
-  sign-in is there without it). Never written to a file, by either.
+  sign-in is there without it). Each password is checked against the vault's
+  (`POST kuvo/vault/items/<id>/same`, which shows nothing and notes nothing in its activity)
+  before `kuvo-keys delete-originals --password <site> --account <account>` removes its
+  Keychain original (the verified password arrives on stdin). One the vault keeps differently
+  (it had another password for that site and account) or refuses (`400`: a site it can't keep),
+  those the Keychain has more than one of for a site and account and one not valid UTF-8 (said
+  with U+FFFD in its place; neither is given to the vault), and one `delete-originals` finds
+  changed (`copy-missing`) keep their originals, are counted in `dropped`, and the rest go on; a vault that can't answer the check, or a Keychain that won't
+  remove one, leaves the step owed, verified again at the next run. Short passwords stay in
+  the Keychain. Never written to a file, by either.
 - **What the move carries** (the `upgrade` step; each reads the app's folder and its
   preferences, `~/Library/Preferences/<ID>.plist`, asked of the system for Kuvo Code itself, and
   writes only in staging; each leaves what a box already had as it is; preferences that are
@@ -8234,7 +8240,7 @@ was named Kuvo Code Box, in no release.)
     started it (a pipe or a socket pair; a terminal or a file is exit 2): `{"v": 1, "logins":
     [{host, account, password, modified?}]}`, `modified` in milliseconds. The box's move reads
     them into memory and gives each to its vault ("Moving this Mac's box", Saved sign-ins).
-    Never written to a file. The Keychain's own stay; one it lists but won't give out stops it
+    Never written to a file. Verified vault copies replace their Keychain originals; one it lists but won't give out stops it
     with nothing said.
   One line of JSON; exit 0 once done; 1 with `{"error", "reason"}` (and the error on stderr) where
   it wasn't, `reason` one of `refused` (the Keychain won't without asking: locked, say),

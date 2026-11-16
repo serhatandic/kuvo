@@ -27,6 +27,9 @@ import Security
 ///   under the helper's names, trusting only that helper (`KeychainMove.copy`).
 /// - `kuvo-keys delete-originals --home <box>`: the app's own taken away, once the move can't go
 ///   back and each copy is there (`KeychainMove.deleteOriginals`).
+/// - `kuvo-keys delete-originals --home <box> --password <site> --account <account>`:
+///   removes only that saved sign-in after its vault password is read back; the expected password
+///   is sent on stdin, and a changed original stays. Missing already is a successful retry.
 /// - `kuvo-keys passwords --home <box>`: the sign-ins Kuvo Code 0.7 kept before the vault, said
 ///   down a pipe to the move, which gives them to the box's vault. Never written to a file.
 ///
@@ -47,6 +50,8 @@ public enum KeysTool {
         }
         let given = option("--home")
         let helperBundle = option("--helper")
+        let passwordHost = option("--password")
+        let passwordAccount = option("--account")
         var keychain = HostKeychain()
         #if DEBUG
         // Tests alone: a keychain file of their own, and the app they stand for (a debug build is
@@ -97,7 +102,23 @@ public enum KeysTool {
                 }
                 say(["copied": copied], 0)
             case ["delete-originals"]:
-                try move.deleteOriginals()
+                if let passwordHost, let passwordAccount {
+                    let data = FileHandle.standardInput.readDataToEndOfFile()
+                    guard let given = try JSONSerialization.jsonObject(with: data) as? [String: String], let password = given["password"] else {
+                        usage("Removing a saved sign-in needs its verified password on stdin.")
+                    }
+                    switch keychain.internetPassword(server: passwordHost, account: passwordAccount, creator: creator) {
+                    case .missing: break // A previous try already removed it.
+                    case .refused(let status): throw KeychainMove.Failure.refused("saved sign-in", status)
+                    case .found(let original):
+                        guard original == Data(password.utf8) else { throw KeychainMove.Failure.copyMissing("saved sign-in changed") }
+                        let status = keychain.deleteInternetPassword(server: passwordHost, account: passwordAccount, creator: creator, verified: Data(password.utf8))
+                        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainMove.Failure.unchanged("saved sign-in", status) }
+                    }
+                } else {
+                    guard passwordHost == nil && passwordAccount == nil else { usage("Name both the saved sign-in's site and account.") }
+                    try move.deleteOriginals()
+                }
                 say([:], 0)
             case ["passwords"]:
                 guard saysDownAPipe else { usage("kuvo-keys says your saved sign-ins only down a pipe to the move that runs it.") }
