@@ -51705,7 +51705,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "598b3bc50683";
+var BRIDGE_VERSION = "1418af3142f0";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63526,6 +63526,8 @@ async function* ownMachinesRoute(context) {
     return yield* computersRoute({ ...context, route: path, request: { ...request, path } }, path.match(COMPUTERS_ROUTE));
   }
   if (method === "POST" && action === "uninstall" && parts.length === 4) {
+    if (request.fromMac)
+      return yield* json(409, { message: ONCE });
     if (!peer)
       return yield* json(409, { message: `${here} never finished setting ${name} up, so there’s nothing of its own to uninstall there. Remove it instead.` });
     const can = canAdd();
@@ -63564,6 +63566,8 @@ async function* add3(context, here) {
   const problem = addressProblem(destination);
   if (problem)
     return yield* json(400, { message: problem });
+  if (request.fromMac)
+    return yield* json(409, { message: ONCE });
   const can = canAdd();
   if (!can.can)
     return yield* json(can.status, { message: can.message, ...can.primary ? { primary: can.primary } : {} });

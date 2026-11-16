@@ -13,6 +13,7 @@ import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginUninstall, canAdd, takenAddresses } from "../add/flow";
 import { type Running, stopTry, tryFollowers, underWay } from "../add/tries";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
+import { ONCE } from "../areas/computers-add";
 import { writePrivate } from "../files";
 import { followedLive } from "../follow";
 import { LINK_FILE } from "../home";
@@ -138,6 +139,8 @@ export async function* ownMachinesRoute(context: RouteContext): AsyncGenerator<A
     return yield* computersRoute({ ...context, route: path, request: { ...request, path } }, path.match(COMPUTERS_ROUTE)!);
   }
   if (method === "POST" && action === "uninstall" && parts.length === 4) {
+    // (As `kuvo/computers/<key>/uninstall`: never for `box route`, a single request anything here could run.)
+    if (request.fromMac) return yield* json(409, { message: ONCE });
     if (!peer) return yield* json(409, { message: `${here} never finished setting ${name} up, so there’s nothing of its own to uninstall there. Remove it instead.` });
     const can = canAdd();
     if (!can.can) return yield* json(can.status, { message: can.message });
@@ -171,6 +174,8 @@ async function* add(context: RouteContext, here: string): AsyncGenerator<AnswerP
   if (!destination) return yield* json(400, { message: "Give the machine’s SSH host: a Host from ~/.ssh/config, or user@host." });
   const problem = addressProblem(destination);
   if (problem) return yield* json(400, { message: problem });
+  // (As `kuvo/computers/add`: never for `box route`, a single request anything here could run.)
+  if (request.fromMac) return yield* json(409, { message: ONCE });
   const can = canAdd();
   if (!can.can) return yield* json(can.status, { message: can.message, ...(can.primary ? { primary: can.primary } : {}) });
   const before = underWay(destination);

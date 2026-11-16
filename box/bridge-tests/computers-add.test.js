@@ -714,6 +714,11 @@ test("a member of a setup, and a request that can't stay, are told where to add 
   const pieces = [];
   for await (const piece of handle({ method: "POST", path: "kuvo/computers/add", headers: {}, fromMac: true, body: Buffer.from(JSON.stringify({ destination: "gpu" })) }, undefined)) pieces.push(piece);
   assert.equal(pieces.find(each => each.head).head.status, 409);
+  // (Nor by the old route's name.)
+  const old = [];
+  for await (const piece of handle({ method: "POST", path: "kuvo/machines", headers: {}, fromMac: true, body: Buffer.from(JSON.stringify({ destination: "gpu" })) }, undefined)) old.push(piece);
+  assert.equal(old.find(each => each.head).head.status, 409);
+  assert.equal((await ask("GET", "kuvo/computers/add")).body.tries.some(each => each.destination === "gpu" && each.state === "working"), false);
   // The old app attached keeps its own list of machines: adding waits for it to be quit.
   link.macLink.appSaid = Date.now();
   try {
