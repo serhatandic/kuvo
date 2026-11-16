@@ -20,6 +20,7 @@ pub mod home;
 pub mod keeper;
 mod landing;
 pub mod launch;
+pub mod notifications;
 pub mod panel;
 pub mod permissions;
 pub mod queue;
@@ -33,6 +34,7 @@ pub mod time;
 pub mod title_bar;
 pub mod work_bars;
 pub mod workspace;
+pub mod yours;
 
 use gpui::{App, KeyBinding, actions};
 
