@@ -5895,8 +5895,6 @@ function said5({ S, prefs, dropped }) {
     dropped.push("The earlier Kuvo Code had set aside a list it couldn't read. It's still in its folder (a file named …unreadable…json).");
   if (["openrouter.json", "zai.json", "proxy.json"].some((name) => exists4(path139.join(S, "Usage", name))))
     dropped.push("API keys or a proxy you set up by hand for the usage panel (files in the earlier Kuvo Code's Usage folder) aren't brought along.");
-  if (prefs.toolApproval !== "askFirst")
-    dropped.push("New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.");
 }
 function runUpgrades(run, move) {
   const made = new Set;
@@ -41748,7 +41746,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "cda0aad80e93";
+var BRIDGE_VERSION = "334571f78fa0";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -42025,6 +42023,7 @@ var BESIDE_WHOLE = [["bots.json", "bots.json"], ["opencode-files", "opencode-fil
 var APP_ATTACHMENTS = "Attachments";
 var PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|update-(trial|restore))$/;
 var SERVED_FILE = "served.json";
+var DESKTOP = "desktop";
 var RELEASE_HELPER = path141.join("bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
 function releaseRefusal(release) {
   const fileAt = (file) => {
@@ -42176,7 +42175,7 @@ function planBack({ appFolder, home }, merged = []) {
       placements.push({ from, to, staged: stage(path141.basename(from)), ...run ? { run: true } : {} });
   };
   for (const name of listOf(home).sort()) {
-    if (name === "bin")
+    if (name === "bin" || name === DESKTOP)
       continue;
     if (name === "updates" || name === "trash") {
       for (const each of listOf(path141.join(home, name)).sort()) {
@@ -42440,7 +42439,7 @@ async function carryOn2(journal, rewriter) {
     stepTo(journal, "install");
     if (journal.way === "move") {
       const aside = path141.join(home, "trash", `earlier-box-${stamp3(journal.began)}`);
-      const there = listOf(home).filter((name) => name !== "updates").map((name) => path141.join(home, name)).concat(listOf(path141.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path141.join(home, "updates", name)));
+      const there = listOf(home).filter((name) => name !== "updates" && name !== DESKTOP).map((name) => path141.join(home, name)).concat(listOf(path141.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path141.join(home, "updates", name)));
       for (const file of there.sort()) {
         if (file === path141.join(home, "trash") || !exists6(file))
           continue;
@@ -42790,7 +42789,7 @@ async function rehomeNew(folders, options = {}) {
     for (const scratch of ["bin.new", "engine.new"])
       fs132.rmSync(path141.join(home, scratch), { recursive: true, force: true });
     const aside = path141.join(home, "trash", `earlier-box-${stamp3(now)}`);
-    const there = listOf(home).filter((name) => name !== "updates" && name !== "trash").map((name) => path141.join(home, name)).concat(listOf(path141.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path141.join(home, "updates", name))).concat(listOf(path141.join(home, "trash")).filter((name) => !name.startsWith("earlier-box-")).map((name) => path141.join(home, "trash", name)));
+    const there = listOf(home).filter((name) => name !== "updates" && name !== "trash" && name !== DESKTOP).map((name) => path141.join(home, name)).concat(listOf(path141.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path141.join(home, "updates", name))).concat(listOf(path141.join(home, "trash")).filter((name) => !name.startsWith("earlier-box-")).map((name) => path141.join(home, "trash", name)));
     for (const file of there.sort()) {
       fs132.mkdirSync(path141.dirname(path141.join(aside, path141.relative(home, file))), { recursive: true, mode: 448 });
       fs132.renameSync(file, path141.join(aside, path141.relative(home, file)));
@@ -63330,6 +63329,7 @@ import { spawnSync as spawnSync19 } from "node:child_process";
 import fs192 from "node:fs";
 import path199 from "node:path";
 init_home();
+init_host_interface();
 function runs(pid) {
   try {
     process.kill(pid, 0);
@@ -63410,10 +63410,25 @@ function boxPermissions() {
   }
   return said(allowed);
 }
+var FRESH_WITHIN = 2000;
+async function freshBoxPermissions() {
+  const host = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac" ? appHost() : null;
+  if (host) {
+    let waited;
+    await Promise.race([
+      askHost(host, "permissions", {}, true).catch(() => null),
+      new Promise((resolve) => {
+        waited = setTimeout(resolve, FRESH_WITHIN);
+      })
+    ]);
+    clearTimeout(waited);
+  }
+  return boxPermissions();
+}
 async function* permissionsRoute({ request, json }) {
   const method = request.method.toUpperCase();
   if (method === "GET")
-    return yield* json(200, boxPermissions());
+    return yield* json(200, await freshBoxPermissions());
   if (method !== "POST")
     return yield* json(405, {});
   let asked;
@@ -64041,7 +64056,7 @@ var computerFacts = {
     }
   },
   atLogin: helperAtLogin,
-  permissions: boxPermissions,
+  permissions: () => freshBoxPermissions(),
   update: updateStatus,
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
@@ -64121,7 +64136,7 @@ async function computerPage(context) {
       ...devices ? { confirm: { title: "Stop letting your devices connect?", body: `Your phone, and Kuvo Code on your other computers, can’t reach ${where} until you turn this on again.`, button: "Turn Off" } } : {}
     }));
   const groups = [{ id: "computer", rows }];
-  const permissions = computerFacts.permissions();
+  const permissions = await computerFacts.permissions();
   if (permissions.applies) {
     const helper = permissions.name ?? HELPER_NAME2;
     const allows = [];
