@@ -1422,6 +1422,19 @@ own made readable, the tool's name made readable without the server's name again
 server the box knows is made readable whole. The live feed carries none of these: a client reads the
 messages again as a step arrives. Samples: `protocol/vectors/message-words.json`.
 
+**How a client groups them** (the desktop app's; a view, so every client does the same): the
+steps between two blocks of the agent's words, thinking included and across its messages, are one
+group. Anything else that shows (your message, a note, a turn's end, a step's error) ends it, and
+so do words. A group of two tool steps or more folds to one line until it's opened: each kind
+once, in the order it first came, counted ("Read 4 files, ran 2 commands, searched twice"): files
+read or edited counted once each by their target, `shell` as commands, `grep`, `glob`, `list`, `ls`
+and `websearch` as searches ("once", "twice", "3 times"), `webfetch` as web pages, `task` and
+`subagent` as subagents, `todowrite` as "updated its plan", a step with a `title` by its title
+(`×2` when it repeats), and any other as tools; past four kinds, "and N more steps". While a step
+is under way, the line says it as that step's does, then the rest. Folded, a step that `failed`
+still shows under the line, and so does the last one under way in the conversation's last group
+while the conversation waits on you (an ask), with "Waiting for you".
+
 ### Mentions
 
 What "@" and "&" suggest as you type in a conversation (`sessions.mentions`), ranked by the box as
@@ -7068,9 +7081,9 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open; a box in a home of its own answers all of it itself, "Machines") |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
 | `messages.commands` | A command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("A command shows as typed", #668) |
+| `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `messages.session-news` | `metadata.kuvo.news` on a note telling a lead of its sessions, in every message page ("Messages in a session", "Its sessions' news") |
 | `messages.tool-titles` | `title` and `doing` on every tool step that isn't the engine's own, in every message page ("Tool steps") |
-| `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
 | `models.offered.folder` | `kuvo/models/offered?folder=<path>`: what's offered in a project's folder, its own settings' models too ("The models offered") |
 | `models.offered.free` | `free` on each model in `kuvo/models/offered` that needs no account ("The models offered", #733) |
