@@ -18,8 +18,8 @@ import type { ItemSummary, OwnerFacts } from "./view";
 export const TOLD = path.join(WORK_QUEUE, "peers");
 
 /** How a computer numbers: its kind, when it was set up, the highest number it used or holds, the
- * primary it numbers from (`self` for itself), and whether it's a machine Macs share that aren't in
- * one setup (PROTOCOL.md, "Your setup": then none of them leads one; an older box says neither). */
+ * primary it numbers from (`self` for itself), and `shared`, which a box that knows setups says
+ * (false now; an older box said true for a machine more than one Mac set up, or says neither). */
 export interface Numbering {
   kind: "mac" | "machine";
   since?: number;

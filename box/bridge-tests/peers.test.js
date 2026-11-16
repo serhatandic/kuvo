@@ -564,13 +564,12 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   const { target } = await engine(t);
   // A peer says what it is; another hasn't been heard from yet.
   link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500) } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
-  // What it tells its peers of itself, with its agents: only one that has said what it is (its
-  // first word says whether it's a shared machine, or of another setup), never one it knows nothing of yet.
+  // What it tells its peers of itself, with its agents: each of them, all your own computers.
   const sent = [];
   // (Asked for, as a box just connected: told whatever it told before.)
   await link.announce({ send: bytes => sent.push(bytes) }, () => target, link.readLink(), Date.now(), true);
   const saidTo = each => opened(sent.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.agents.computer;
-  assert.equal(saidTo(mac), undefined);
+  assert.equal(saidTo(mac).working, 0);
   assert.equal(saidTo(second).working, 0);
   assert.match(saidTo(second).system, process.platform === "darwin" ? /^macOS/ : /\S/);
   const handle = link.engineHandler(() => target, { name: "devbox" });
@@ -583,7 +582,7 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   assert.equal(status, 200);
   const [own, ...others] = body.computers;
   // (Where a client of your own reaches each: its box's address, and this box's relay.)
-  const reachTitles = { connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached", notPaired: "Hasn’t taken this app yet", shared: "Shared machine", apart: "Another setup’s", unreached: "Can’t be reached from this app" };
+  const reachTitles = { connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached", notPaired: "Hasn’t taken this app yet", unreached: "Can’t be reached from this app" };
   const reached = address => ({ address, relay: link.readLink().relay, reachTitles });
   assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [] });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
@@ -611,43 +610,43 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   ({ body } = await ask());
   assert.equal(body.computers[2].reach, "away");
 
-  // A peer that isn't one of your own computers (it says it's a machine Macs of different setups
-  // share): listed as apart, what it says it runs not kept, and told nothing of what this one runs;
-  // and the box only it vouches for (the other person's Mac) isn't among your computers.
-  const theirs = box("mac");
+  // A peer an earlier Kuvo Code says is shared (another of your Macs set it up too, #783): one of
+  // your own computers all the same, what it runs kept, and told what this one runs; the Mac it
+  // vouches for is among your computers, known through it.
+  const theirs = box("mac", "MacBook");
   const takeMail = (sender, payload) => link.peerMail(sender, payload, null);
-  link.receiveMail(mailFrom(second, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], shared: true, boxes: [theirs.peer], computer: { version: "9.9.9", system: "Theirs", working: 5 } } }), undefined, takeMail);
-  // (One of your own vouches for a box: listed by name, with nothing said of its reach.)
+  link.receiveMail(mailFrom(second, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], shared: true, setup: "set_BBBBBBBBBBBBBBBBBBBBBB", boxes: [theirs.peer], computer: { version: "9.9.9", system: "Ubuntu", working: 5 } } }), undefined, takeMail);
   const yours = box("machine", "attic");
   link.receiveMail(mailFrom(mac, { at: Date.now() + 1, agents: { at: Date.now() + 1, list: [], boxes: [yours.peer], computer: { version: "1.0.0", working: 1 } } }), undefined, takeMail);
   ({ body } = await ask());
-  assert.deepEqual(body.computers.slice(1).map(each => [each.name, each.apart, each.version, each.working, each.reach, each.through]), [
-    ["mac", undefined, "1.0.0", 1, "connected", undefined],
-    ["second", true, undefined, undefined, "connected", undefined],
-    ["attic", undefined, undefined, undefined, "unknown", "mac"],
+  assert.deepEqual(body.computers.slice(1).map(each => [each.name, each.apart, each.shared, each.version, each.working, each.reach, each.through]), [
+    ["mac", undefined, false, "1.0.0", 1, "connected", undefined],
+    ["second", undefined, false, "9.9.9", 5, "connected", undefined],
+    ["attic", undefined, false, undefined, undefined, "unknown", "mac"],
+    ["MacBook", undefined, false, undefined, undefined, "unknown", "second"],
   ]);
   const again = [];
   await link.announce({ send: bytes => again.push(bytes) }, () => target, link.readLink(), Date.now(), true);
   const tells = each => opened(again.find(bytes => k(bytes.subarray(1, 17)) === each.address), each).payload.agents.computer;
-  assert.deepEqual([typeof tells(mac), tells(second)], ["object", undefined]);
+  assert.deepEqual([typeof tells(mac), typeof tells(second)], ["object", "object"]);
 
-  // A machine Macs of different setups share lists itself alone, and tells no one what it runs:
-  // the others there aren't all one person's computers.
+  // A machine two of your Macs set up lists your computers as any box does, and tells each what it
+  // runs, never that it's shared.
   const other = box("mac");
   fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   ({ body } = await ask());
-  assert.deepEqual(body.computers.map(each => [each.name, each.shared]), [["devbox", true]]);
-  const shared = [];
-  await link.announce({ send: bytes => shared.push(bytes) }, () => target, link.readLink(), Date.now(), true);
-  assert.ok(shared.length > 0);
-  for (const bytes of shared) {
+  assert.deepEqual(body.computers.map(each => [each.name, each.shared, each.apart]), [["devbox", false, undefined], ["mac", false, undefined], ["second", false, undefined]]);
+  const told = [];
+  await link.announce({ send: bytes => told.push(bytes) }, () => target, link.readLink(), Date.now(), true);
+  assert.ok(told.length > 0);
+  for (const bytes of told) {
     const to = [mac, second].find(each => k(bytes.subarray(1, 17)) === each.address);
     const agents = opened(bytes, to).payload.agents;
-    assert.deepEqual([agents.shared, agents.computer], [true, undefined]);
+    assert.deepEqual([agents.shared, typeof agents.computer], [undefined, "object"]);
   }
 });
 
-test("a box tells its peers the setup it follows, or that it's a machine two people's Macs share, so they count it as one of your own computers only within one setup (#701)", async t => {
+test("a box tells its peers the setup it follows; a machine two of your Macs set up never says it's shared (#783)", async t => {
   const air = box("mac", "air");
   const { target } = await engine(t);
   const readEngine = () => target;
@@ -663,14 +662,15 @@ test("a box tells its peers the setup it follows, or that it's a machine two peo
   assert.deepEqual(await said({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } }), { setup: undefined, shared: undefined });
   // In a setup: it says which.
   assert.deepEqual(await said({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } }, setup: { id: "set_AAAAAAAAAAAAAAAAAAAAAA", epoch: 1, primary: mac.pub, sign: mac.pub, role: "member" } }), { setup: "set_AAAAAAAAAAAAAAAAAAAAAA", shared: undefined });
-  // Two people's Macs set it up: it says it's shared.
-  assert.deepEqual(await said({ macs: [mac.pub, air.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer] }, [air.pub]: { at: 1, peers: [air.peer] } } }), { setup: undefined, shared: true });
+  // Two of your Macs set it up: nothing more to say.
+  assert.deepEqual(await said({ macs: [mac.pub, air.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer] }, [air.pub]: { at: 1, peers: [air.peer] } } }), { setup: undefined, shared: undefined });
 });
 
 // Your time zone (PROTOCOL.md, "Your time zone"): one for your own computers in a setup, carried in
 // their agents' mail, the change counted highest winning, so a machine set up later, or one whose
-// Mac app is gone, wakes its bots on your clock. Never across a shared machine or another setup (#701).
-test("your time zone reaches your other computers: a change on one box reaches the others, a box joining takes theirs, and a shared machine neither takes nor sends it", async t => {
+// Mac app is gone, wakes its bots on your clock. A machine more than one of your Macs set up is one
+// of your computers like any other (#783).
+test("your time zone reaches your other computers: a change on one box reaches the others, a box joining takes theirs, and a machine two of your Macs set up takes and sends it too", async t => {
   fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const zoneFile = path.join(home, "box", "time-zone.json"), bots = path.join(home, "bots");
   fs.rmSync(zoneFile, { force: true });
@@ -735,19 +735,16 @@ test("your time zone reaches your other computers: a change on one box reaches t
   assert.ok(n > 5);
   assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n }, second: { zone: "Pacific/Auckland", n } });
 
-  // A peer that says it's a machine two people's Macs share, or of another setup: its zone isn't
-  // taken, and it isn't told this one.
+  // A peer an earlier Kuvo Code says is shared: one of your computers, its zone taken.
   mail(second, { zone: "UTC", n: n + 1 }, { shared: true });
-  assert.deepEqual(zone(), ["Pacific/Auckland", n]);
-  assert.deepEqual(await toldTo(), { mac: { zone: "Pacific/Auckland", n }, second: undefined });
+  assert.deepEqual(zone(), ["UTC", n + 1]);
 
-  // This box a machine two people's Macs share: it takes no one's zone, and tells none.
+  // This box a machine two of your Macs set up: it takes your zone, and tells it.
   const other = box("mac");
   fresh({ macs: [mac.pub, other.pub], peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
-  mail(mac, { zone: "UTC", n: n + 1 });
-  assert.deepEqual(zone(), ["Pacific/Auckland", n]);
-  mail(second, null);
-  assert.deepEqual(await toldTo(), { mac: undefined, second: undefined });
+  mail(mac, { zone: "Asia/Tokyo", n: n + 2 });
+  assert.deepEqual(zone(), ["Asia/Tokyo", n + 2]);
+  assert.deepEqual(await toldTo(), { mac: { zone: "Asia/Tokyo", n: n + 2 }, second: { zone: "Asia/Tokyo", n: n + 2 } });
 });
 
 test("this box's agents worked out twice at once: the one begun last is kept, so an agent made meanwhile isn't dropped by the older", async t => {

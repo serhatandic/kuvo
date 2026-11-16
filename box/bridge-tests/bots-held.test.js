@@ -337,16 +337,13 @@ test("some of a held change taken, some not: let go, and what wasn't is said", a
   assert.equal(list.refused[0].message, "lab didn’t take all the changes you made while it was away. There’s no personality “preset.gone”.");
 });
 
-test("only between your own computers: a machine that isn't only yours neither holds edits for one nor has them done here", async () => {
-  // Lab says it's a machine two people's Macs share.
+// #783: a machine more than one of your Macs set up is yours, never "someone else's": what an
+// earlier Kuvo Code says of it being shared changes nothing.
+test("a machine an earlier Kuvo Code says is shared has its edits done here, as any of your computers", async () => {
   agentsTold({ labFeatures: ["bots.held"] });
   const told = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
   told[lab.pub].shared = true;
   write(path.join(run, "peer-agents.json"), told);
-  const held = await route("PATCH", `kuvo/bots/${wren}`, { name: "Wren II" });
-  assert.equal(held.status, 409);
-  assert.match(held.body.message, /change it from lab/);
-  // Nor does this box take one from it.
   write(path.join(bots, "kit.json"), kit);
   const folder = path.join(bots, "bot_scout00001");
   write(path.join(folder, "session"), "ses_scout");
@@ -356,12 +353,12 @@ test("only between your own computers: a machine that isn't only yours neither h
   for (;;) {
     const [mail] = mailTo(lab);
     if (mail) {
-      assert.equal(mail.botEdited.status, 403);
+      assert.equal(mail.botEdited.status, 200);
       break;
     }
     await new Promise(resolve => setImmediate(resolve));
   }
-  assert.equal(JSON.parse(fs.readFileSync(path.join(folder, "bot.json"), "utf8")).name, "Scout");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(folder, "bot.json"), "utf8")).name, "Taken");
 });
 
 test("when a bot's fields last changed goes with it to another computer, and the clock of the computer that held an edit doesn't count", async () => {
@@ -384,19 +381,6 @@ test("when a bot's fields last changed goes with it to another computer, and the
   }
   assert.equal(JSON.parse(fs.readFileSync(path.join(folder, "bot.json"), "utf8")).name, "Scout Moved", "the newer name stays");
   assert.ok(JSON.parse(fs.readFileSync(path.join(folder, "edited.json"), "utf8")).name <= Date.now(), "never a time ahead of this clock");
-});
-
-test("a computer that isn't only yours is never where a held edit goes, whatever its list says", async () => {
-  await route("PATCH", `kuvo/bots/${wren}`, { name: "Wren II" });
-  const [toLab] = mailTo(lab);
-  // Lab says it isn't there; the Mac lists it, but says it's a machine two people's Macs share.
-  agentsTold({ labBots: [], macBots: [{ session: "ses_wren", name: "Wren", kind: "bot", id: wren }] });
-  const told = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
-  told[mac.pub].shared = true;
-  write(path.join(run, "peer-agents.json"), told);
-  receive(lab, { botEdited: { id: toLab.botEdit.id, bot: wren, status: 404, message: "That bot isn’t there any more." } });
-  assert.equal((await listed()).held[0].computer, "lab");
-  assert.deepEqual(mailTo(mac), []);
 });
 
 test("a held change its computer can't do now (its engine starting) waits on, rather than being refused for a field it can't take", async () => {
@@ -502,23 +486,18 @@ test("the bots of your other computers are listed by the box asked, as each last
   assert.match((await listed()).elsewhere[0].deletes[1].words, /or to Kuvo Code’s trash folder there/);
 });
 
-test("nothing is listed from a computer of another setup, nor by a machine two people's Macs share", async () => {
-  // This box follows one setup; lab says it follows another.
+test("bots are listed from each of your computers: one in another setup, one an earlier Kuvo Code says is shared, and on a machine two of your Macs set up (#783)", async () => {
   const setup = id => `set_${id.repeat(22)}`;
   link.writeLink({ ...link.readLink(), setup: { id: setup("a"), role: "member", primary: mac.pub } });
   const told = JSON.parse(fs.readFileSync(path.join(run, "peer-agents.json"), "utf8"));
   told[lab.pub].setup = setup("b");
+  told[lab.pub].shared = true;
   told[lab.pub].list = [labWren];
   write(path.join(run, "peer-agents.json"), told);
-  assert.deepEqual((await listed()).elsewhere, []);
-  told[lab.pub].setup = setup("a");
-  write(path.join(run, "peer-agents.json"), told);
-  assert.deepEqual((await listed()).elsewhere.map(each => each.id), [wren], "the same setup: one of yours");
-  // This box set up by two people's Macs: none of its peers is only yours.
-  fresh();
+  assert.deepEqual((await listed()).elsewhere.map(each => each.id), [wren]);
   const other = box("mac", "Other");
-  link.writeLink({ ...link.readLink(), macs: [mac.pub, other.pub] });
-  assert.deepEqual((await listed()).elsewhere, []);
+  link.writeLink({ ...link.readLink(), setup: undefined, macs: [mac.pub, other.pub] });
+  assert.deepEqual((await listed()).elsewhere.map(each => each.id), [wren]);
 });
 
 test("a bot two computers list (it's moving) is the one's that said so last; one that lives here is this box's own", async () => {
@@ -533,14 +512,6 @@ test("a bot two computers list (it's moving) is the one's that said so last; one
   write(path.join(bots, wren, "session"), "ses_wren");
   const list = await listed();
   assert.deepEqual([list.bots.map(each => each.id), list.elsewhere], [[wren], []]);
-});
-
-test("nothing is listed from a computer that isn't only yours, whatever its list says", async () => {
-  write(path.join(run, "peer-agents.json"), {
-    [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: [labWren], features: ["bots.held"], shared: true },
-    [mac.pub]: { at: 1, heard: Date.now(), kind: "mac", list: [], features: ["bots.held"] },
-  });
-  assert.deepEqual((await listed()).elsewhere, []);
 });
 
 test("a peer's agents' mail changes the list at once for those following this box's bots", async () => {

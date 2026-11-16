@@ -23,8 +23,6 @@ import { mailFor, movedOf, peersOf } from "./known";
 import { tellSeatPeers } from "./seats";
 import { followedSetup } from "../setup/record";
 import { ownComputer } from "../areas/computers";
-import { isApart } from "./apart";
-import { sharedMachine } from "../setup/settle";
 import { zoneMail } from "../zone/setting";
 import type { DigestEntry } from "../documents/work";
 import type { EngineSession } from "../engine/sessions";
@@ -161,20 +159,14 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   const moved = movedAway(now).map(({ session, key, at }) => ({ session, key, at }));
   // And the boxes it knows: each peer may take plan limits from those it doesn't know itself.
   const boxes = peersOf(link).map(({ key, address, kind, name }) => ({ key, address, kind, name }));
-  // And the setup it follows, or that it's a machine two people's Macs share: a peer counts it as
-  // one of your own computers for plan limits' resets and usage totals only within one setup.
+  // And the setup it follows (the usage panel's settings go between the boxes of one setup).
   const setup = followedSetup(link)?.id;
-  const where = { ...(setup ? { setup } : {}), ...(sharedMachine(link) ? { shared: true as const } : {}) };
+  const where = setup ? { setup } : {};
   // And what it is and runs, and which of its sessions are at work ("Computers"): told again at
   // once (each round) as one starts or stops working, else with the rest (every ten minutes).
-  // Only between your own computers: a machine Macs of different setups share tells none, and no
-  // box tells a peer that isn't one of yours (`isApart`), nor one that hasn't said what it is yet
-  // (its first word says whether it's shared, or of another setup).
-  const computer = sharedMachine(link) ? null : ownComputer();
-  // And your time zone, by the same rule: one for your own computers in a setup, carried box to box
-  // (`zone/setting.ts`), never to or from a shared machine or another setup's.
-  const zone = sharedMachine(link) ? null : zoneMail();
-  const told = computer || zone ? readPeerAgents() : {};
+  const computer = ownComputer();
+  // And your time zone, carried box to box (`zone/setting.ts`).
+  const zone = zoneMail();
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that
   // lists this one's bots says what deleting one takes with it as this computer would.
   const trash = folderGoes().to;
@@ -188,15 +180,14 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
     // Not as it connects: `docsChanged` greets each with its digest then.
     if (have === null) have = ask ? false : currentDigest();
     const docs = peer.sign && have ? { docs: { have } } : {};
-    const yours = Boolean(told[peer.key]) && !isApart(peer.key, link, told);
     // As many as fit in one mail: the first (bots, then the latest sessions) first.
     let bytes: Buffer | null = null, sent: ListedAgent[] = [];
     // (Your zone with its rules where they fit, else without them: the peer's own, if it has them.)
-    const zones = zone && yours ? [zone, ...(zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : [])] : [null];
+    const zones = zone ? [zone, ...(zone.zoneinfo ? [{ zone: zone.zone, n: zone.n }] : [])] : [null];
     for (const told of zones) {
       for (const count of [ownList.length, Math.floor(ownList.length / 2), Math.floor(ownList.length / 4)]) {
         sent = ownList.slice(0, count);
-        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer && yours ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
+        bytes = mailFor(peer, { agents: { at: now, list: sent, features: ownFeatures(), moved, boxes: boxes.filter(box => box.key !== peer.key), trash, ...where, ...(computer ? { computer } : {}) }, ...(told ? { zone: told } : {}), ...docs, at: now, ...(ask ? { ask: "agents" } : {}) }, link);
         if (bytes) break;
       }
       if (bytes) break;

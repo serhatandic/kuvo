@@ -190,7 +190,7 @@ test("a peers document a box forges, alters or replays is turned away; only its 
 const setupID = name => `set_${crypto.createHash("sha256").update(name).digest().subarray(0, 16).toString("base64url")}`;
 const leads = (by, epoch, id = setupID("one")) => ({ setup: { id, epoch, primary: by.entry.key } });
 
-test("a machine follows the setup its Mac leads; a lower epoch of it is never taken, nor a Mac's word on its boxes when the setup names that Mac as a member; another main computer at its epoch is noted, never taken", () => {
+test("a machine follows the setup its Mac leads; a lower epoch of it is never taken; another of its Macs' word on its boxes is taken beside it; another main computer at its epoch is noted, never taken", () => {
   const main = mac("MacBook"), member = mac("iMac"), b = machine("b"), c = machine("c"), rogue = machine("rogue");
   const net = relay([b, c]);
   const first = main.peers([b, c, member], leads(main, 2));
@@ -208,12 +208,12 @@ test("a machine follows the setup its Mac leads; a lower epoch of it is never ta
   assert.equal(b.state.link.setup.epoch, 2);
   assert.equal(names(b).includes("rogue"), false);
 
-  // iMac, which the setup names as one of its Macs, set b up too: its word on b's boxes isn't taken.
+  // iMac set b up too: one of your Macs, so its word on b's boxes counts beside the setup's, and b
+  // still follows MacBook's setup.
   setUp(b, member, [member.peers([b, rogue])]);
-  assert.deepEqual(names(b), ["MacBook", "c", "iMac"]);
-  assert.equal(b.state.link.docs[`${member.entry.sign} peers`], undefined);
-  assert.equal(link.sharedMachine(b.state.link), false, "both its Macs are in its setup");
-  assert.equal(b.state.link.setup.aside, undefined);
+  assert.deepEqual(names(b), ["MacBook", "c", "iMac", "rogue"].sort());
+  assert.ok(b.state.link.docs[`${member.entry.sign} peers`]);
+  assert.deepEqual([b.state.link.setup.primary, b.state.link.setup.aside], [main.entry.key, undefined]);
 
   // iMac says it's the main computer of the same setup, at the same epoch: kept as it was, and noted.
   net.give(member, [b], [member.peers([b], leads(member, 2))]);
@@ -236,7 +236,7 @@ async function asked(box, method, route) {
   return { status: parts[0].head.status, json: text ? JSON.parse(text) : undefined };
 }
 
-test("only a member's own Mac's list goes to a phone: set aside by its one Mac, it lists that Mac's; shared with a second Mac's setup, it lists none and pairs none; its main computer let go, it pairs, until it takes the other Mac's", async () => {
+test("only a member's own Mac's list goes to a phone: set aside by its one Mac, it lists that Mac's; set up by a second Mac that leads a setup too, it stays in the one it has; its main computer let go, it pairs, until it takes the other Mac's", async () => {
   const studio = mac("Studio"), other = mac("Other"), b = machine("b"), c = machine("c"), d = machine("d");
   // Studio's setup: b lists its machines from it, by name, with the ids Studio gave them.
   setUp(b, studio, [studio.peers([c, b], leads(studio, 1))]);
@@ -250,11 +250,11 @@ test("only a member's own Mac's list goes to a phone: set aside by its one Mac, 
   assert.deepEqual([c.state.link.setup.primary, c.state.link.setup.aside], [studio.entry.key, true]);
   assert.deepEqual(await asked(c, "GET", "kuvo/hosts"), { status: 200, json: { hosts: [row(b), row(c)] } });
 
-  // Other set b up too, and leads a setup of its own: b is set aside, still Studio's.
+  // Other (another of your Macs) set b up too, and leads a setup of its own for now: b stays in
+  // Studio's, which it lists and pairs from.
   setUp(b, other, [other.peers([b, d], leads(other, 1, setupID("two")))]);
-  assert.deepEqual([b.state.link.setup.primary, b.state.link.setup.aside], [studio.entry.key, true]);
-  // A phone of Other's gets neither Mac's machines from b, nor a link to pair with it.
-  assert.deepEqual(await asked(b, "GET", "kuvo/hosts"), { status: 503, json: { message: "This computer is shared with more than one Mac: see your computers on the Mac you paired with." } });
+  assert.deepEqual([b.state.link.setup.primary, b.state.link.setup.aside], [studio.entry.key, undefined]);
+  assert.deepEqual(await asked(b, "GET", "kuvo/hosts"), { status: 200, json: { hosts: [row(b), row(c)] } });
   assert.deepEqual(await asked(b, "POST", "kuvo/phones/pair"), { status: 409, json: { message: "Pair new phones from Studio.", primary: studio.entry.key } });
 
   // Studio let go (`kuvo-link.js leave`): b is in no setup, and pairs phones itself.
@@ -295,23 +295,52 @@ test("a machine's Mac sets it up again signing with a new key: it follows that M
   assert.deepEqual(names(b), ["MacBook", "c"]);
 });
 
-test("a machine Macs share that aren't in one setup follows none: it takes each Mac's word on its boxes, as before, and says it's shared; once one lets it go, it follows the other's setup again", () => {
+// #783: a machine two of your Macs set up (one leading a setup, the other leading one too, or an
+// older Mac leading none) is yours, never someone else's: it follows one setup, and takes each Mac's
+// word on its boxes, so both Macs and their machines are among its computers.
+test("a machine a second Mac of yours sets up stays in the setup it follows, never set aside as shared, and has both Macs' boxes; once one lets it go, it keeps the other's", () => {
   const first = mac("MacBook"), second = mac("iMac"), b = machine("b"), c = machine("c"), d = machine("d");
   setUp(b, first, [first.peers([b, c], leads(first, 1))]);
   assert.equal(b.state.link.setup.role, "member");
   setUp(b, second, [second.peers([b, d], leads(second, 1, setupID("two")))]);
-  assert.equal(b.state.link.setup.aside, true);
-  assert.equal(link.followedSetup(b.state.link), null);
-  assert.equal(link.sharedMachine(b.state.link), true);
-  assert.deepEqual(names(b), ["MacBook", "c", "d", "iMac"]);
-  assert.equal(link.setupView(b.state.link).setup, null);
-  assert.deepEqual(link.setupView(b.state.link).you, { key: b.entry.key, role: null });
+  assert.deepEqual([b.state.link.setup.primary, b.state.link.setup.aside], [first.entry.key, undefined]);
+  assert.equal(link.followedSetup(b.state.link)?.primary, first.entry.key);
+  assert.deepEqual(names(b), ["MacBook", "c", "d", "iMac"].sort());
+  assert.equal(link.setupView(b.state.link).setup, setupID("one"));
+  assert.deepEqual(link.setupView(b.state.link).you, { key: b.entry.key, role: "member" });
   // iMac removes it.
   link.docsWork(b.state, second.entry, { give: [second.peers([d], { left: [b.entry.key], ...leads(second, 1, setupID("two")) })] });
   assert.deepEqual(b.state.link.macs, [first.entry.key]);
-  assert.equal(link.sharedMachine(b.state.link), false);
   assert.equal(link.followedSetup(b.state.link)?.primary, first.entry.key);
   assert.deepEqual(names(b), ["MacBook", "c"]);
+});
+
+test("a machine an older Mac set up first (leading no setup) and a newer Mac set up since follows the newer Mac's setup, with the older Mac's boxes too", () => {
+  const old = mac("MacBook"), mini = mac("mini-local"), lokum = machine("lokum"), vps = machine("vps");
+  // 0.7's Mac signs who its boxes are, and names no setup.
+  setUp(lokum, old, [old.peers([lokum, vps])]);
+  assert.equal(lokum.state.link.setup, undefined);
+  setUp(lokum, mini, [mini.peers([lokum], leads(mini, 1, setupID("mini")))]);
+  assert.deepEqual([lokum.state.link.setup.primary, lokum.state.link.setup.role, lokum.state.link.setup.aside], [mini.entry.key, "member", undefined]);
+  assert.deepEqual(names(lokum), ["MacBook", "mini-local", "vps"].sort());
+});
+
+test("a machine set aside as shared by an earlier Kuvo Code follows its setup again once its main computer names it, and another Mac's if that one never does", () => {
+  const mini = mac("mini-local"), macbook = mac("MacBook"), lokum = machine("lokum");
+  setUp(lokum, mini, [mini.peers([lokum], leads(mini, 1, setupID("mini")))]);
+  setUp(lokum, macbook, [macbook.peers([lokum])]);
+  // As an earlier Kuvo Code left it: set aside as shared, and mini-local stepped aside, naming none.
+  lokum.state.link.setup.aside = true;
+  link.docsWork(lokum.state, mini.entry, { give: [mini.peers([lokum])] });
+  assert.equal(lokum.state.link.setup.aside, true);
+  // mini-local leads again (lokum now says it isn't shared): followed at once.
+  link.docsWork(lokum.state, mini.entry, { give: [mini.peers([lokum], leads(mini, 1, setupID("mini")))] });
+  assert.deepEqual([lokum.state.link.setup.primary, lokum.state.link.setup.aside], [mini.entry.key, undefined]);
+  // Set aside again, and it's MacBook that leads one now: lokum follows MacBook's.
+  link.docsWork(lokum.state, mini.entry, { give: [mini.peers([lokum])] });
+  assert.equal(lokum.state.link.setup.aside, true);
+  link.docsWork(lokum.state, macbook.entry, { give: [macbook.peers([lokum], leads(macbook, 1, setupID("macbook")))] });
+  assert.deepEqual([lokum.state.link.setup.primary, lokum.state.link.setup.id, lokum.state.link.setup.aside], [macbook.entry.key, setupID("macbook"), undefined]);
 });
 
 test("a machine no Mac set up leads a setup of its own; once a Mac sets it up, it follows the Mac's (an empty setup joins); its Mac stops naming a setup, and it follows none, keeping the epoch it had", () => {

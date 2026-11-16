@@ -1,14 +1,12 @@
 // The bots of your other computers, as each last told this box (`elsewhere` in `kuvo/bots`,
 // PROTOCOL.md, `bots.elsewhere`): what a box already hears from its peers (their agents, "Peers"),
 // as a list a client can draw, and change through this box (`PATCH` and `DELETE kuvo/bots/<id>`,
-// "Held for another computer"). Only from your own computers: nothing from one that isn't only
-// yours (`isApart`), whatever its list says.
+// "Held for another computer").
 
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { LOOKS } from "../../shared/routes/bots";
 import { computerName } from "../peers/computer-name";
-import { isApart } from "../peers/apart";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
 import { readLink } from "../state";
@@ -37,7 +35,7 @@ export type ListedElsewhere = BotElsewhere & { session: string; name: string; ki
  * each listed its own. */
 export function botsElsewhere(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents()): ListedElsewhere[] {
   const heard = (peer: Peer): number => told[peer.key]?.heard ?? told[peer.key]?.at ?? 0;
-  const peers = peersOf(link).filter(peer => told[peer.key] && !isApart(peer.key, link, told));
+  const peers = peersOf(link).filter(peer => told[peer.key]);
   // (One its computer gave no name isn't listed by it: nothing to show it by.)
   const bots = (peer: Peer) => (told[peer.key]?.list ?? []).filter(agent => agent.kind === "bot" && agent.id && agent.name);
   const latest = new Map<string, Peer>();

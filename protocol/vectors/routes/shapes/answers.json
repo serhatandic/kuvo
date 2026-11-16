@@ -5194,9 +5194,6 @@
          },
          "workingTitle?": "string",
          "shared": "bool",
-         "apart?": {
-          "literal": true
-         },
          "reach": {
           "oneOf": [
            {
@@ -5386,9 +5383,6 @@
          },
          "workingTitle?": "string",
          "shared": "bool",
-         "apart?": {
-          "literal": true
-         },
          "reach": {
           "oneOf": [
            {
