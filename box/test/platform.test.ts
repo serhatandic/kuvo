@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { cpuSeconds, loginPath, macUse, processRuns, processUse, promptedFolders } from "../src/shared/platform"
+import { cpuSeconds, engineRole, loginPath, macUse, processRuns, processUse, promptedFolders } from "../src/shared/platform"
 
 // Where macOS and Linux differ, each side tested on whichever system runs this: a box tells its own
 // programs from whatever took their process's number after a crash (Linux by /proc, a stand-in
@@ -88,6 +88,16 @@ test("this Mac's app's box: a process that's alive is taken as the program it's 
 test("on both: no number, or the system's own, is never a program of the box's", () => {
   const none = join(root, "no-proc")
   for (const pid of [undefined, null, "123", 1.5, 0, 1, -4]) expect(processRuns(pid, "kuvo-agents", none)).toBe(false)
+})
+
+test("on both: a box's engine is known by its folder however HOME wrote it (Kuvo Helper's \"/Users/you/\" too), and no other box's is", () => {
+  const role = engineRole("/Users/you/.kuvo-code")
+  expect(role.test("/Users/you/.kuvo-code/engine/2.2.6/opencode serve --port 1")).toBe(true)
+  expect(role.test("/Users/you//.kuvo-code/engine/2.2.6/opencode serve --port 1")).toBe(true)
+  expect(engineRole("/Users/you//.kuvo-code/").test("/Users/you/.kuvo-code/engine/2.2.6/opencode serve")).toBe(true)
+  expect(role.test("/Users/you/.kuvo-code-demo/engine/2.2.6/opencode serve")).toBe(false)
+  expect(role.test("/Users/youx/.kuvo-code/engine/2.2.6/opencode serve")).toBe(false)
+  expect(role.test("/Users/you/.kuvo-codeXengine/2.2.6/opencode serve")).toBe(false)
 })
 
 test("a Mac asks before an app looks into Desktop, Documents and the rest; Linux asks about none", () => {

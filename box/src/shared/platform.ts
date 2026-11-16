@@ -75,6 +75,14 @@ export function runsAs(pid: unknown, role: RegExp, proc = "/proc"): boolean {
   return line !== undefined && role.test(line);
 }
 
+/** A box's engine's command line, by the box's engine folder (`<root>/engine/`), for `runsAs`: any
+ * slash in it may be written twice, as a HOME written with a slash at its end gives ("/Users/you/",
+ * as Kuvo Helper gave its keeper, which started its engine as "/Users/you//.kuvo-code/engine/…"). */
+export function engineRole(root: string): RegExp {
+  const folder = path.join(path.resolve(root), "engine").replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\/+/g, "/+");
+  return new RegExp(`${folder}/+`);
+}
+
 /**
  * The folders in a home folder that the system asks you about before an app looks into them:
  * on a Mac, its privacy prompts (so a folder list from the home folder doesn't look inside

@@ -390,6 +390,7 @@ private final class InTheTests {}
         case "$1" in
         keep)
           echo $$ >"$R/box.pid"
+          printf '%s\n' "$HOME" >"$HOME/keep.home"
           echo "$PPID" >"$HOME/keep.parent"
           trap 'echo term >>"$HOME/keep.log"; exit 0' TERM
           i=0; while [ $i -lt 1200 ] && [ ! -f "$HOME/keep.end" ]; do /bin/sleep 0.1; i=$((i + 1)); done
@@ -466,6 +467,9 @@ private final class InTheTests {}
         let keeper = try #require(Int32(text(run.appending(path: "box.pid")).trimmingCharacters(in: .whitespacesAndNewlines)))
         #expect(text(home.appending(path: "keep.parent")).trimmingCharacters(in: .whitespacesAndNewlines) == "\(helper.process.processIdentifier)")
         #expect(getsid(keeper) == keeper)
+        // Given HOME as a shell writes it, no slash at its end: its engine runs as
+        // ".../.kuvo-code/engine/...", the path an update run from Kuvo Code stops.
+        #expect(text(home.appending(path: "keep.home")).trimmingCharacters(in: .newlines) == home.standardizedFileURL.path(percentEncoded: false).replacing(/\/$/, with: ""))
         // Its server, given its password and the vault's secrets on stdin (a box that never had a
         // vault key gets one made).
         let given = try #require(try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: String])

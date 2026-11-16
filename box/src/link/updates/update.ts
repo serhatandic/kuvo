@@ -19,7 +19,7 @@ import { isObject, parsed } from "../../shared/json";
 import { nightOf } from "../../shared/night";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
-import { alive, processRuns as runs } from "../../shared/platform";
+import { alive, engineRole, processRuns as runs, runsAs } from "../../shared/platform";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { LastUpdate, UpdateStatus, UpdateStep } from "../../shared/routes/box";
 import { quote } from "../../shared/text";
@@ -372,11 +372,26 @@ interface BoxFiles {
   bundles?: Record<string, Record<string, string>>;
 }
 
-// Whether the last `update` failed as a download broke off (the release, its files or its engine):
-// what's passing, which the installer's update tries once more by itself (`main.ts`), unlike a
-// check that would fail again (what it got isn't what it says, no room, a self-test).
-let brokeOff = false;
-export const failedDownloading = (): boolean => brokeOff;
+// Whether the last `update` failed in a way that's passing, before anything changed: a download
+// that broke off (the release, its files or its engine), or its engine that couldn't be stopped
+// (a start of it under way): what the installer's update tries once more by itself (`main.ts`),
+// unlike a check that would fail again (what it got isn't what it says, no room, a self-test).
+let brokeOff = false, stopFailed = false;
+export const failedInPassing = (): boolean => brokeOff || stopFailed;
+
+// The engine `pid` names (its record, as the update found it), when its command line says it's this
+// box's: ended, as the keeper's stop ends it (ten seconds to go, then killed), and waited for.
+async function stopEngine(pid: number): Promise<void> {
+  if (!runsAs(pid, engineRole(K))) return;
+  const gone = async (within: number): Promise<boolean> => {
+    for (const began = Date.now(); Date.now() - began < within; await sleep(100)) if (!alive(pid)) return true;
+    return !alive(pid);
+  };
+  try { process.kill(pid, "SIGTERM"); } catch {}
+  if (await gone(10_000)) return;
+  try { process.kill(pid, "SIGKILL"); } catch {}
+  await gone(5_000);
+}
 
 // Updates the box to the newest release, when it's newer: `now` (Update Now) takes it whatever its
 // age. What happened: `{result: "updated" | "current" | "waiting" | "busy" | "off" | "blocked" |
@@ -393,7 +408,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
   let fetching = false;
-  brokeOff = false;
+  brokeOff = stopFailed = false;
   const download = async <T>(get: () => Promise<T>): Promise<T> => {
     fetching = true;
     const got = await get();
@@ -478,7 +493,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       const build = (process.platform === "darwin" ? manifest.darwin : manifest.linux)?.[kind];
       if (!build?.url || !/^sha512-/.test(build.integrity ?? "")) throw new Error("The release has no engine for this machine.");
       step("downloading the engine");
-      const tarball = await download(() => fetchedPatiently(build.url, 400_000_000, 900_000));
+      const engineURL = build.url;
+      const tarball = await download(() => fetchedPatiently(engineURL, 400_000_000, 900_000));
       if (crypto.createHash("sha512").update(tarball).digest("base64") !== build.integrity!.slice(7)) throw new Error("The engine isn't what the release says.");
       fs.writeFileSync(path.join(stage, "engine.tgz"), tarball, { mode: 0o600 });
       fs.mkdirSync(path.join(stage, "engine"), { mode: 0o700 });
@@ -512,7 +528,16 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     trial = true;
     stopped = true;
     const stop = ran("sh", [path.join(K, "bin", "kuvo-start"), "stop"], {}, 300_000);
-    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) throw new Error("Its engine couldn't be stopped to update it.");
+    // COMPAT(0.8 beta update): an older keeper (one that doesn't take a run of slashes as one) knows
+    // its engine only by the path it started it with, spelled as its HOME spelled it: one Kuvo Helper
+    // started (HOME "/Users/you/") a stop run from Kuvo Code (HOME "/Users/you") left running.
+    // Stopped here by its record, once its command line says it's this box's engine. Goes with
+    // `update --installer`.
+    if (stop.status === 0 && previous?.pid) await stopEngine(previous.pid);
+    if (stop.status !== 0 || (previous?.pid && alive(previous.pid))) {
+      stopFailed = true;
+      throw new Error("Its engine couldn't be stopped to update it, so nothing changed and it runs as before. Try again in a few minutes.");
+    }
     if (otherEngine) keepData();
     swapped = true;
     swapping();

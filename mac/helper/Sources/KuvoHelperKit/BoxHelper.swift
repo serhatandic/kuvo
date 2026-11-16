@@ -317,11 +317,19 @@ public final class BoxHelper {
         }
         try? FileManager.default.removeItem(at: run.appending(path: "helper-trouble"))
         var environment = childEnvironment(ProcessInfo.processInfo.environment)
-        environment["HOME"] = home.deletingLastPathComponent().path(percentEncoded: false)
+        environment["HOME"] = Self.homeAround(home)
         let helper = BoxHelper(home: home, host: BoxHelperHost(home: home, keychain: keychain, prefix: prefix, app: app), environment: environment)
         helper.allowed = allowed
         helper.begin()
         return helper
+    }
+
+    /// The folder around the box, as its children's HOME: written as a shell writes it, with no slash
+    /// at its end ("/Users/you", never "/Users/you/"), so the box's keeper starts its engine as
+    /// "/Users/you/.kuvo-code/engine/…", the path anything else that stops it looks for.
+    nonisolated static func homeAround(_ box: URL) -> String {
+        let folder = box.deletingLastPathComponent().standardizedFileURL.path(percentEncoded: false)
+        return folder.count > 1 && folder.hasSuffix("/") ? String(folder.dropLast()) : folder
     }
 
     /// Why the box shouldn't run now, or nil: a move of it under way (its journal not done), or its

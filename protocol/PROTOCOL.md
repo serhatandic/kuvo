@@ -1690,8 +1690,9 @@ machines; a client that wants every computer's facts asks the box that has it as
     there's nothing to bring up, and on every other box. On this box's own row
     (`computers.update.here`): how its own update to a release Kuvo Code here offered stands,
     "Kuvo on <name> updates once your sessions there finish." / "… updates as soon as nothing’s at
-    work there." (`waiting`; `update-here` always asks first), "Updating Kuvo on <name>…" (`updating`), "… couldn’t be updated. It tries again
-    later." (`failed`); left out while none waits, or while it can't update (blocked, its engine
+    work there." (`waiting`; `update-here` always asks first), "Updating Kuvo on <name>…" (`updating`), "… tries its update
+    again in a while." (`waiting`: one try failed with nothing changed), "… couldn’t be updated.
+    It tries again later." (`failed`: it failed again, or was put in place and taken back); left out while none waits, or while it can't update (blocked, its engine
     stopped on purpose, an update on trial). On an older machine this box could add but didn't set
     up over SSH (`add`, above): "Kuvo on <name> needs an update. Set it up over SSH from <this box>
     to update it." (`waiting`).
@@ -2899,8 +2900,10 @@ did: the box keeps working as itself ("For released Macs").
      keeper (`sh -n`).
   3. With another engine version, it first checks there's room to keep the engine's data. It keeps
      each file it replaces in `updates/rollback`, writes `restore.sh` and `run/update-trial`, and
-     only then stops the engine. It goes on only once the engine has stopped; if it can't stop it,
-     nothing has changed, and it starts the engine again. With another engine version, it keeps
+     only then stops the engine (its keeper's `stop`; an engine its record names that's still
+     running then, its command line this box's engine's, any run of slashes in it taken as one,
+     the update ends itself: TERM, then KILL after ten seconds). It goes on only once the engine
+     has stopped; if it can't stop it, nothing has changed, and it starts the engine again. With another engine version, it keeps
      the engine's data (`opencode.db` with its `-wal` and `-shm`) whole or not at all
      (`data.partial`, renamed once copied).
      - `restore.sh` checks each step and keeps what was kept until it's all back.
@@ -7919,7 +7922,9 @@ gone (the box takes the offered release itself then). With `--now`, an update th
 already is waited for first. With `--now` it doesn't
 wait. Then `{"step": "updating", "title"}`, and last the update's answer (`{"result": "updated" |
 "current" | "blocked" | "busy" | "off" | "failed", "message"?}`, exit 0 for `updated` and
-`current`, else 1). Updated, the running bridge goes for the keeper to start the new one.
+`current`, else 1). A try that failed before anything changed in a way that passes (a download
+that broke off, the engine not stopped) is made once more 15 seconds on; only a second failure is
+said. Updated, the running bridge goes for the keeper to start the new one.
 
 It writes only in `K/updates/install`, which goes once a box is made from it. Beside a box
 that's there already (`ours`, `machine`, `two`, nothing to run), the engine it fetched goes once

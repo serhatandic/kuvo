@@ -14,7 +14,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { runsAs } from "../shared/platform";
+import { engineRole, runsAs } from "../shared/platform";
 import { allWakes } from "./areas/wakes";
 import { listBots } from "./bots/list";
 import { APP_FOLDER, IN_TEST_FOLDER, K, REAL_BOX, RUN, accountHome, homeFolder, located, recordedKind } from "./home";
@@ -59,11 +59,10 @@ function starts() {
   };
 }
 
-const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /** What runs of the box, each by its record in `run` and the command line it runs with. */
 const RECORDS: [file: string, role: RegExp, what: string][] = [
   ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
-  ["engine.json", new RegExp(`${escaped(path.join(K, "engine"))}/`), "engine"],
+  ["engine.json", engineRole(K), "engine"],
   ["agents.pid", /kuvo-agents/, "coding agents"],
   ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
   ["serve.json", SERVE_ROLE, "server"],

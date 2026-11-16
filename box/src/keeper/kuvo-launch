@@ -32,7 +32,9 @@ mkdir -p "$K/data" "$K/config" "$K/state" "$K/cache" "$K/workspace" "$K/integrat
 find "$K/tmp" -mindepth 1 -maxdepth 1 -mtime +3 -exec rm -rf {} + 2>/dev/null
 R="$K/run"; mkdir -p "$R"; chmod 700 "$R"
 began=
-kuvo_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1; if [ -d /proc/self ]; then grep -q -- "$2" "/proc/$1/cmdline" 2>/dev/null; else ps -ww -o command= -p "$1" 2>/dev/null | grep -q -- "$2"; fi; }
+# (Any run of slashes taken as one, as kuvo-start's: an engine started with HOME written with a
+# slash at its end is still known.)
+kuvo_runs() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1; if [ -d /proc/self ]; then tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null; else ps -ww -o command= -p "$1" 2>/dev/null; fi | tr -s / | grep -q -- "$(printf '%s\n' "$2" | tr -s /)"; }
 S=setsid; command -v setsid >/dev/null 2>&1 || S="$K/bin/kuvo-setsid"
 # One launch at a time; one whose holder is gone goes (`launchLock`: a launch takes three
 # minutes at most). Never one without it.
