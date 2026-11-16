@@ -5469,14 +5469,17 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
   always, since only boxes read it): a client shows those from here, and anything else from where
   it had them before; a client never adds to it. An account is listed exactly while it's signed
   in here (#778): a coding agent's as its agent says, the same word Settings › Accounts shows
-  (`api/integration`'s `connections`; asked again at each sign-in and sign-out here, whenever
-  Accounts lists them, and every five minutes), the engine's while the engine lists its sign-in.
-  One signed in is listed at once, read or not yet (no `windows` until it's read, or until a turn
+  (`api/integration`'s `connections`; taken whenever Accounts or the models are listed, at each
+  sign-in and sign-out here and each `integration.updated` the bridge tells, and asked again only
+  when the sign-in its limits are read with changes, or once where there's none to look at:
+  Codex's; a check that fails or doesn't answer leaves it as it was, never a sign-out), the
+  engine's while the engine lists its sign-in (`services` still names each coding agent's
+  service, signed in or not). One signed in is listed at once, read or not yet (no `windows` until it's read, or until a turn
   tells of it: a Mac's Claude); one signed out goes at once, and what was read of it with it, so
   a reading is never older than its account's sign-in. Until every agent has said once (the
   bridge just started), only what's signed in by then is listed, never what was kept from
-  before. One with no plan limits to read (an API key, a Mac's Claude with an Anthropic Console
-  sign-in) isn't.
+  before. One with no sign-in its plan limits could be read with (an API key, a Mac's Claude
+  with an Anthropic Console sign-in) isn't.
   Each `account`:
   - `title` (`limits.titles`, #668): its name, the same in every client: its coding agent's
     ("Claude", "Codex", "Grok", "Cursor", "Antigravity"), else its plan's (the engine's sign-ins:

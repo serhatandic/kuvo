@@ -1,71 +1,101 @@
 // Which coding agents' accounts are signed in on this computer, as each agent last said (its
 // `account()`): what Settings › Accounts shows (`api/integration`, server.ts), and so the only
 // agents' accounts whose plan limits are listed (limits.ts), the rings. One record, written
-// wherever an agent says it (Accounts asked, a sign-in or sign-out here, the limits' own rounds),
-// read by both, so a ring is never for an account Accounts says isn't signed in.
+// wherever an agent says it (Accounts or the models listed, a sign-in or sign-out here, an
+// `integration.updated` the bridge tells), read by both, so a ring is never for an account
+// Accounts says isn't signed in.
+//
+// Nothing is asked of an agent in the background beyond that: each limits round only looks at
+// each account's sign-in as its limits read it (`LimitsSource.signIn`, a file's fingerprint), and
+// asks the agent only when that changed, or once where it has none to look at (Codex). One with no
+// sign-in to read its limits with has none to show, whatever else it's signed in with (an API key).
 //
 // Platform: the same on macOS and Linux (each agent says its own sign-in either way).
 
 import type { Account, Agent } from "./agent"
 
-/** How often the limits' rounds ask every agent again (an account signed out outside Kuvo Code, in
- * Terminal): what a sign-in or sign-out here, or Accounts asked, says comes at once. */
-export const SIGN_INS_AGAIN = 5 * 60_000
+/** The longest an agent is waited on to say how its account stands. */
+const ASK_WITHIN = 20_000
 
 export class SignIns {
   private said = new Map<string, boolean>()
-  private askedAt = -Infinity
-  private asking?: Promise<void>
+  /** Each account's sign-in (`LimitsSource.signIn`) when its agent was last asked by a round. */
+  private seen = new Map<string, string | undefined>()
+  /** Accounts with no sign-in to read their limits with now: none listed. */
+  private none = new Set<string>()
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** `within`: the longest an agent is waited on to say (a test's shorter). */
+  constructor(private readonly within = ASK_WITHIN) {}
 
   /** Told when an account's sign-in changed (signed in, or out), with the account. */
   changed?: (provider: string) => void
 
   /** Whether this account is signed in, as its agent last said; undefined until it has said. */
   signedIn(provider: string): boolean | undefined {
-    return this.said.get(provider)
+    return this.none.has(provider) ? false : this.said.get(provider)
   }
 
-  /** Whether each of `agents` has said once (until then, none counts as gone). */
+  /** Whether each of `agents` has said once, or has no sign-in to say of (until then, none counts as gone). */
   allSaid(agents: Agent[]): boolean {
-    return agents.every((agent) => this.said.has(agent.providerID))
+    return agents.every((agent) => this.signedIn(agent.providerID) !== undefined)
   }
 
-  /** What an agent said of its account (one whose check failed: not signed in, as Accounts shows it). */
+  /** What an agent said of its account: told where that changed it. */
   record(provider: string, account: Pick<Account, "signedIn">) {
-    const before = this.said.get(provider)
-    this.said.set(provider, account.signedIn)
-    if (before !== undefined && before !== account.signedIn) this.changed?.(provider)
+    this.telling(provider, () => this.said.set(provider, account.signedIn))
+  }
+
+  /** Does `change`, telling `changed` where it changed whether the account counts as signed in. */
+  private telling(provider: string, change: () => void) {
+    const before = this.signedIn(provider)
+    change()
+    if (before !== undefined && before !== this.signedIn(provider)) this.changed?.(provider)
   }
 
   /**
-   * Asks every agent how its account stands (each as its own `account()` keeps it a while) and
-   * records it, every `SIGN_INS_AGAIN`, or at once while one hasn't said yet: the limits' rounds.
+   * The limits' round: each agent whose sign-in (as its limits read it) changed since it last said,
+   * or that hasn't said yet, is asked; one with no such sign-in now has none listed, unasked.
    */
-  round(agents: Agent[]): Promise<void> {
-    if (this.allSaid(agents) && this.now() - this.askedAt < SIGN_INS_AGAIN) return this.asking ?? Promise.resolve()
-    if (this.asking) return this.asking
-    const asking: Promise<void> = Promise.all(agents.map((agent) => this.ask(agent, false)))
-      .then(() => void (this.askedAt = this.now()))
-      .finally(() => {
-        if (this.asking === asking) this.asking = undefined
-      })
-    this.asking = asking
-    return asking
+  async round(agents: Agent[]): Promise<void> {
+    await Promise.all(
+      agents.map(async (agent) => {
+        const provider = agent.providerID
+        const source = agent.limits
+        const signIn = source?.signIn?.()
+        if (source?.signIn && signIn === undefined) return this.telling(provider, () => this.none.add(provider))
+        if (this.said.has(provider) && !this.none.has(provider) && this.seen.get(provider) === signIn) return
+        this.seen.set(provider, signIn)
+        const account = await this.answer(agent, false)
+        this.telling(provider, () => {
+          this.none.delete(provider)
+          if (account) this.said.set(provider, account.signedIn)
+        })
+      }),
+    )
   }
 
   /** Asks one agent now (`fresh`: its own answer, not what it kept) and records it: signed in or out here. */
   async ask(agent: Agent, fresh = true): Promise<void> {
-    // (As `api/integration` takes it: a check that fails says not signed in.)
-    const account = await agent.account(fresh).catch((): Pick<Account, "signedIn"> => ({ signedIn: false }))
-    this.record(agent.providerID, account)
+    const account = await this.answer(agent, fresh)
+    if (account) this.record(agent.providerID, account)
   }
 
-  /** Forgets every account (a test's). */
-  clear() {
-    this.said.clear()
-    this.askedAt = -Infinity
+  /**
+   * What an agent says of its account: none where its check failed or didn't answer in time, so
+   * it stays as last said (a computer offline isn't signed out, and no round waits on one long).
+   */
+  private async answer(agent: Agent, fresh: boolean): Promise<Account | undefined> {
+    let late: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      agent.account(fresh).then(
+        (account) => account,
+        () => undefined,
+      ),
+      new Promise<undefined>((resolve) => {
+        late = setTimeout(resolve, this.within)
+        late.unref?.()
+      }),
+    ]).finally(() => clearTimeout(late))
   }
 }
 

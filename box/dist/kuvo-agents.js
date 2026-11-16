@@ -10791,9 +10791,10 @@ class Limits {
     return new Set(this.accounts().filter((account) => account.limits.read).map((account) => account.provider));
   }
   services() {
-    return [...new Set([...this.accounts().map((account) => account.service), ...this.alsoServices])];
+    return [...new Set([...this.accounts().map((account) => account.service), ...this.covers(), ...this.alsoServices])];
   }
   alsoServices = [];
+  covers = () => [];
   async refresh(only) {
     const at = this.now();
     for (const account of this.accounts()) {
@@ -35756,48 +35757,66 @@ class LinkDirectory {
 }
 
 // box/src/agents/sign-ins.ts
-var SIGN_INS_AGAIN = 5 * 60000;
+var ASK_WITHIN = 20000;
 
 class SignIns {
-  now;
+  within;
   said = new Map;
-  askedAt = -Infinity;
-  asking;
-  constructor(now = Date.now) {
-    this.now = now;
+  seen = new Map;
+  none = new Set;
+  constructor(within = ASK_WITHIN) {
+    this.within = within;
   }
   changed;
   signedIn(provider) {
-    return this.said.get(provider);
+    return this.none.has(provider) ? false : this.said.get(provider);
   }
   allSaid(agents) {
-    return agents.every((agent) => this.said.has(agent.providerID));
+    return agents.every((agent) => this.signedIn(agent.providerID) !== undefined);
   }
   record(provider, account) {
-    const before = this.said.get(provider);
-    this.said.set(provider, account.signedIn);
-    if (before !== undefined && before !== account.signedIn)
+    this.telling(provider, () => this.said.set(provider, account.signedIn));
+  }
+  telling(provider, change) {
+    const before = this.signedIn(provider);
+    change();
+    if (before !== undefined && before !== this.signedIn(provider))
       this.changed?.(provider);
   }
-  round(agents) {
-    if (this.allSaid(agents) && this.now() - this.askedAt < SIGN_INS_AGAIN)
-      return this.asking ?? Promise.resolve();
-    if (this.asking)
-      return this.asking;
-    const asking = Promise.all(agents.map((agent) => this.ask(agent, false))).then(() => void (this.askedAt = this.now())).finally(() => {
-      if (this.asking === asking)
-        this.asking = undefined;
-    });
-    this.asking = asking;
-    return asking;
+  async round(agents) {
+    await Promise.all(agents.map(async (agent) => {
+      const provider = agent.providerID;
+      const source = agent.limits;
+      const signIn = source?.signIn?.();
+      if (source?.signIn && signIn === undefined)
+        return this.telling(provider, () => this.none.add(provider));
+      if (this.said.has(provider) && !this.none.has(provider) && this.seen.get(provider) === signIn)
+        return;
+      this.seen.set(provider, signIn);
+      const account = await this.answer(agent, false);
+      this.telling(provider, () => {
+        this.none.delete(provider);
+        if (account)
+          this.said.set(provider, account.signedIn);
+      });
+    }));
   }
   async ask(agent, fresh = true) {
-    const account = await agent.account(fresh).catch(() => ({ signedIn: false }));
-    this.record(agent.providerID, account);
+    const account = await this.answer(agent, fresh);
+    if (account)
+      this.record(agent.providerID, account);
   }
-  clear() {
-    this.said.clear();
-    this.askedAt = -Infinity;
+  async answer(agent, fresh) {
+    let late;
+    return Promise.race([
+      agent.account(fresh).then((account) => account, () => {
+        return;
+      }),
+      new Promise((resolve) => {
+        late = setTimeout(resolve, this.within);
+        late.unref?.();
+      })
+    ]).finally(() => clearTimeout(late));
   }
 }
 var signIns = new SignIns;
@@ -35853,10 +35872,12 @@ async function maintainedSoon(agent, fresh) {
 }
 async function integration(agent, fresh = false, auto) {
   const [account, maintained] = await Promise.all([
-    agent.account(fresh).catch((error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
+    agent.account(fresh).then((account) => {
+      signIns.record(agent.providerID, account);
+      return account;
+    }, (error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
     maintainedSoon(agent, fresh)
   ]);
-  signIns.record(agent.providerID, account);
   const before = lastSeen.get(agent.providerID);
   const label = account.signedIn ? account.label ?? before?.label : undefined;
   lastSeen.set(agent.providerID, { installed: account.installed, signedIn: account.signedIn, label });
@@ -35901,6 +35922,7 @@ async function models(agents, hidden = false) {
   const lists = await Promise.all(agents.map(async (agent) => {
     try {
       const account = await agent.account();
+      signIns.record(agent.providerID, account);
       return account.signedIn ? await agent.models(hidden ? { hidden } : undefined) : [];
     } catch {
       return [];
@@ -37524,10 +37546,22 @@ var reviews = new Reviews(join42(home3, "reviews.json"), places5);
 var voice = new VoiceWords(places5);
 var engineAccounts = new EngineAccounts(() => link4.request("GET", "/api/credential"));
 var limits = new Limits(() => [...agentAccounts(signedInAgents(roster.all())), ...engineAccounts.accounts()], join42(home3, "limits.json"), Date.now, async () => void await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())]), () => engineAccounts.answered && signIns.allSaid(roster.all()));
-signIns.changed = () => {
+signIns.changed = (provider) => {
+  if (signIns.signedIn(provider))
+    return void limits.readAgain(provider).catch(() => {});
   limits.ownChanged();
   limits.tick();
 };
+subscribe((event) => {
+  if (event.type !== "integration.updated")
+    return;
+  const agent = roster.all().find((each) => each.providerID === event.data?.integrationID);
+  if (agent)
+    signIns.ask(agent, false);
+  else
+    limits.ownChanged();
+});
+limits.covers = () => agentAccounts(roster.all()).map((account) => account.service);
 limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES];
 peers.limits = new LimitsPeers(limits, post, directory, join42(home3, "limits-peers.json"));
 peers.resets = new LimitResets(limits, join42(home3, "limits-resets.json"), Date.now, post, directory);
@@ -37750,4 +37784,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents d3a4923543d00389e39bf8c1f1951028287b558807dea024f4f45cb94a16d0d7
+// Built from Packages/Box/src/agents 488b7a06140a88d389519e92d6e5bef5c53c495c81e729b75ada9f78f2d1b94a

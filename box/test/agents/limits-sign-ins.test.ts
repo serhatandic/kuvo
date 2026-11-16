@@ -39,7 +39,11 @@ afterEach(() => {
  * would answer the agent (`turnedDown`: Cursor said no, though the key is still in its folder). */
 class TestCursor extends CursorAgent {
   turnedDown = false
+  /** Its check fails (Cursor out of reach), or never answers. */
+  failing: "throws" | "hangs" | undefined
   override async account(): Promise<Account> {
+    if (this.failing === "throws") throw new Error("Couldn't reach Cursor.")
+    if (this.failing === "hangs") return new Promise(() => {})
     if (!existsSync(join(this.folder, "auth.json"))) return { installed: true, signedIn: false, message: "Sign in with your Cursor account." }
     return this.turnedDown ? { installed: true, signedIn: false, message: "Cursor turned the sign-in down. Sign in again." } : { installed: true, signedIn: true, label: "you@example.com" }
   }
@@ -117,7 +121,7 @@ test("signed out of Cursor in Accounts, its ring is gone at once, and what was r
   // Signed in again, nothing of before comes back before it's read: Cursor turns this read away.
   await limits.tick()
   cursor.keys.set("key_again", "auth0|user_free")
-  cursor.usageAnswers = [500]
+  cursor.usageAnswers = [500, 500]
   writeFileSync(join(agent.folder, "auth.json"), JSON.stringify({ version: 1, backendUrl: "https://api2.cursor.sh", apiKey: "key_again", createdAtMs: 2 }))
   await record.ask(agent)
   await limits.readAgain(agent.providerID)
@@ -201,4 +205,26 @@ test("each ring has its own provider's windows only: Cursor's own Grok Bot week 
   await limits.tick()
   const listed = Object.fromEntries((await rows(limits)).map((row) => [row.title, row.windows.map((window: any) => window.title)]))
   expect(listed).toEqual({ Cursor: ["Total usage", "Cursor Models", "Other Models", "On-demand", "Grok Bot usage"], Grok: ["Weekly"] })
+})
+
+test("a sign-in check that fails (offline) isn't a sign-out: the ring and its readings stay", async () => {
+  cursor.keys.set("key_free", "auth0|user_free")
+  const agent = cursorAgent(mkdtempSync(join(base, "box-")), "key_free")
+  const record = new SignIns()
+  const limits = limitsOf([agent], record)
+  await limits.tick()
+  agent.failing = "throws"
+  await record.ask(agent)
+  await limits.tick()
+  expect((await rows(limits)).map((row) => [row.title, row.windows.length > 0])).toEqual([["Cursor", true]])
+})
+
+test("an agent that never says how its sign-in stands holds up no reading: the others are read, and it's as it was", async () => {
+  cursor.keys.set("key_free", "auth0|user_free")
+  const hung = cursorAgent(mkdtempSync(join(base, "box-")), "key_free")
+  const grok: LimitedAccount = { provider: "grok", service: "grok", agent: { kind: "grok", account: "default" }, limits: { every: 600_000, read: async () => ({ windows: [{ id: "week", used: 0.4, minutes: 10_080 }] }) } }
+  hung.failing = "hangs"
+  const limits = limitsOf([hung], new SignIns(1), undefined, () => [grok])
+  await limits.tick()
+  expect((await rows(limits)).map((row) => row.title)).toEqual(["Grok"])
 })

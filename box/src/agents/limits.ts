@@ -625,11 +625,14 @@ export class Limits {
 
   /** The services whose limits this box reads (`claude`, `codex`…), so a client knows what it covers. */
   services(): LimitsService[] {
-    return [...new Set([...this.accounts().map((account) => account.service), ...this.alsoServices])]
+    return [...new Set([...this.accounts().map((account) => account.service), ...this.covers(), ...this.alsoServices])]
   }
 
   /** Services read here though none may be signed in now (the engine's, and `BOX_ONLY_SERVICES`). */
   alsoServices: LimitsService[] = []
+
+  /** Services read here whether or not one is signed in now (each coding agent's, signed in or out). */
+  covers: () => LimitsService[] = () => []
 
   /**
    * Reads now each account read longer ago than a minute, unless its maker said to wait or it was

@@ -139,11 +139,16 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
   const [account, maintained] = await Promise.all([
     // A check that fails is its program's (each agent says itself when it isn't installed): it's
     // there, and says why, rather than offering its installer again.
-    agent.account(fresh).catch((error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
+    agent.account(fresh).then(
+      (account) => {
+        // (The rings follow what Accounts shows, sign-ins.ts: a check that failed isn't a sign-out there.)
+        signIns.record(agent.providerID, account)
+        return account
+      },
+      (error): Account => ({ installed: true, signedIn: false, message: String(error?.message ?? error) }),
+    ),
     maintainedSoon(agent, fresh),
   ])
-  // (The rings follow what Accounts shows: sign-ins.ts.)
-  signIns.record(agent.providerID, account)
   const before = lastSeen.get(agent.providerID)
   // Who's signed in, as last said (one not said yet, or not now, is no other account).
   const label = account.signedIn ? (account.label ?? before?.label) : undefined
@@ -201,6 +206,7 @@ async function models(agents: Agent[], hidden = false): Promise<Model[]> {
     agents.map(async (agent) => {
       try {
         const account = await agent.account()
+        signIns.record(agent.providerID, account)
         return account.signedIn ? await agent.models(hidden ? { hidden } : undefined) : []
       } catch {
         return []

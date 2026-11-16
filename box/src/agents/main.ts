@@ -304,10 +304,21 @@ const limits = new Limits(
   async () => void (await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())])),
   () => engineAccounts.answered && signIns.allSaid(roster.all()),
 )
-signIns.changed = () => {
+// Signed in: read now (what was kept of it went as it signed out). Signed out: told at once.
+signIns.changed = (provider) => {
+  if (signIns.signedIn(provider)) return void limits.readAgain(provider).catch(() => {})
   limits.ownChanged()
   void limits.tick()
 }
+// A sign-in the bridge hears of itself (Claude ending one in a run, an account removed): asked again.
+subscribe((event) => {
+  if (event.type !== "integration.updated") return
+  const agent = roster.all().find((each) => each.providerID === (event.data as { integrationID?: unknown } | undefined)?.integrationID)
+  if (agent) void signIns.ask(agent, false)
+  else limits.ownChanged()
+})
+// (Each coding agent's service is covered here, whether or not one is signed in now.)
+limits.covers = () => agentAccounts(roster.all()).map((account) => account.service)
 // (And Antigravity's, which only boxes read: covered here signed in or not.)
 limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES]
 // Shared with your other computers' boxes: each account read once across them, and listed on each.
