@@ -7153,11 +7153,11 @@ async function takeSeed(input, engine = readEngineFile) {
 
 // box/src/link/main.ts
 init_text();
-import { spawn as spawn21 } from "node:child_process";
+import { spawn as spawn22 } from "node:child_process";
 import crypto69 from "node:crypto";
-import fs203 from "node:fs";
+import fs204 from "node:fs";
 import os26 from "node:os";
-import path215 from "node:path";
+import path216 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // box/src/shared/hang.ts
@@ -14369,6 +14369,10 @@ function keepForRollback(files, engine, bundles = new Set) {
 `);
 }
 var ENGINE_STARTED = path40.join(ROLLBACK, "engine-started");
+function newEngineUnused(trial) {
+  if (trial.dataKept !== undefined && dataNow() === trial.dataKept)
+    fs37.rmSync(ENGINE_STARTED, { force: true });
+}
 var BACKUPS = path40.join(UPDATES, "backups");
 var BACKUP_DAYS = 30 * 86400000;
 function dropOldBackups(now = Date.now()) {
@@ -14423,30 +14427,6 @@ function roomForData() {
 `).pop()?.trim().split(/\s+/)[3];
   return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200000000;
 }
-async function cameUp(version, withAgents, timeout = 120000, answered = () => {}, readEngine = readEngineFile, readBridge = readBridgeFile) {
-  const began = Date.now();
-  while (Date.now() - began < timeout) {
-    await sleep(Math.min(2000, timeout / 10));
-    let engine = null;
-    try {
-      engine = readEngine();
-    } catch {}
-    if (engine?.version !== version)
-      continue;
-    if (!await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))
-      continue;
-    answered();
-    if (!withAgents)
-      return true;
-    let bridge = null;
-    try {
-      bridge = readBridge();
-    } catch {}
-    if (bridge?.port && await asked(bridge, "GET", "api/session/active").then(() => true, () => false))
-      return true;
-  }
-  return false;
-}
 var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
 var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
 function differsHere(box, root = K) {
@@ -14498,7 +14478,7 @@ async function stopEngine(pid) {
     } catch {}
   await gone(5000);
 }
-async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120000, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
+async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
   if (!keys.length)
     return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked)
@@ -14513,7 +14493,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   if (!takeUpdateLock())
     return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage = null;
-  let dataKept = null, newAnswered = false;
+  let dataKept = null;
   let keeperEnv = {};
   let checkedEngine = null;
   let fetching = false;
@@ -14647,7 +14627,6 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const home = previous?.pid ? engineHome(previous.pid, K) : undefined;
     if (home)
       keeperEnv = { HOME: home };
-    const withAgents = Boolean(previous?.agentsPort) && fs37.existsSync(path40.join(stage, "files", "bin", "kuvo-agents.js"));
     const otherEngine = previous?.version !== manifest.engine;
     if (otherEngine && !roomForData())
       throw new Error("There isn't room on it to keep its data while it updates.");
@@ -14687,12 +14666,8 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       writePrivate(ENGINE_STARTED, manifest.engine);
     ran("sh", [path40.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
-    if (!await cameUp(manifest.engine, withAgents, upWithin, () => {
-      newAnswered = true;
-    }))
-      throw new Error("The new version didn't come up.");
     writePrivate(path40.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: Date.now(), ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -14706,7 +14681,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (stage)
       fs37.rmSync(stage, { recursive: true, force: true });
     if (swapped) {
-      if (!newAnswered && dataKept !== null && dataNow() === dataKept)
+      if (dataKept !== null && dataNow() === dataKept)
         fs37.rmSync(ENGINE_STARTED, { force: true });
       ran("sh", [path40.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600000);
     } else {
@@ -43027,7 +43002,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "024730282559";
+var BRIDGE_VERSION = "c25d8d596457";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -70109,16 +70084,240 @@ function servedFiles(root = K) {
   } catch {}
   return { version: boxVersion(), link };
 }
-function serveCheck(started, { leaves = true, updating = isUpdating, now = servedFiles, trial = () => updateOnTrial() ? updateState().trial : undefined } = {}) {
-  if (updating())
+function serveCheck(started, { leaves = true, updating = isUpdating, now = servedFiles } = {}) {
+  if (updating() || !leaves)
     return "stay";
-  if (leaves) {
-    const files = now();
-    if (files.version && files.link && (files.version !== started.version || files.link !== started.link))
-      return "leave";
+  const files = now();
+  return files.version && files.link && (files.version !== started.version || files.link !== started.link) ? "leave" : "stay";
+}
+
+// box/src/link/updates/health.ts
+init_engines();
+import { spawn as spawn21, spawnSync as spawnSync20 } from "node:child_process";
+import fs203 from "node:fs";
+import path214 from "node:path";
+import { performance as performance2 } from "node:perf_hooks";
+init_files2();
+init_home();
+var PIECES = ["info", "serve", "run", "engine", "bridge"];
+var HEALTH = { window: 5 * 60000, every: 1e4, fails: 3, failingFor: 60000, restarts: 3 };
+if (!REAL_BOX) {
+  if (Number(process.env.KUVO_TEST_HEALTH_WINDOW) > 0)
+    HEALTH.window = Number(process.env.KUVO_TEST_HEALTH_WINDOW);
+  if (Number(process.env.KUVO_TEST_HEALTH_EVERY) > 0)
+    HEALTH.every = Number(process.env.KUVO_TEST_HEALTH_EVERY);
+}
+var JUDGE_FILE = path214.join(RUN, "update-judge.pid");
+var SETTLE_TRIES = path214.join(RUN, "update-settle.tries");
+function judging2() {
+  let pid = 0;
+  try {
+    pid = Number(fs203.readFileSync(JUDGE_FILE, "utf8"));
+  } catch {}
+  return pid > 0 && pid !== process.pid && processRuns(pid, "kuvo-link");
+}
+var featuresNow = () => IS_MAC ? macFeatures() : [...FEATURES];
+var readJSON4 = (file) => {
+  try {
+    return JSON.parse(fs203.readFileSync(file, "utf8"));
+  } catch {
+    return null;
   }
-  const open = trial();
-  return open?.healthy && started.version && open.to === started.version ? "confirm" : "stay";
+};
+var mtime5 = (file) => {
+  try {
+    return fs203.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+};
+var size = (file) => {
+  try {
+    return fs203.statSync(file).size;
+  } catch {
+    return -1;
+  }
+};
+function infoFromFiles() {
+  const version = keeperEngine(K);
+  const runtime = version ? path214.join(K, "engine", version, "opencode") : null;
+  const script = path214.join(K, "bin", "kuvo-link.js");
+  if (!runtime || !fs203.existsSync(runtime) || !fs203.existsSync(script))
+    return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let out = "", done = false;
+    const finish = (value) => {
+      if (!done) {
+        done = true;
+        resolve(value);
+      }
+    };
+    let child;
+    try {
+      child = spawn21(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
+    } catch {
+      return finish(null);
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      finish(null);
+    }, 60000);
+    child.stdout.on("data", (chunk) => {
+      out += chunk;
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      finish(null);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      try {
+        const said = JSON.parse(out.trim().split(`
+`).pop());
+        const body = typeof said.body === "string" ? JSON.parse(said.body) : said.body;
+        finish({ status: Number(said.status), features: Array.isArray(body?.features) ? body.features : [] });
+      } catch {
+        finish(null);
+      }
+    });
+    child.stdin.end(JSON.stringify({ method: "GET", path: "kuvo/info" }));
+  });
+}
+var answers2 = (target, route) => asked(target, "GET", route).then(() => true, () => false);
+async function lookAtPieces(trial, since, last = {}) {
+  const info = await infoFromFiles();
+  const had = trial.features ?? [];
+  const infoOK = info !== null && info.status === 200 && had.every((feature) => info.features.includes(feature));
+  const servedRecord = readJSON4(path214.join(RUN, "serve.json"));
+  const servePid = servedRecord?.pid && runsAs(servedRecord.pid, servedRecord.kept ? /kuvo-link\.js serve --kept(\s|$)/ : /kuvo-link\.js serve(\s|$)/) ? servedRecord.pid : null;
+  const serveWanted = OWN_HOME_MAC || fs203.existsSync(path214.join(RUN, "serve.needed"));
+  let serveOK = !serveWanted;
+  if (servePid) {
+    const fresh = mtime5(path214.join(RUN, "serve.json")) >= since;
+    serveOK = !fresh || !!servedRecord.port && !!servedRecord.password && await answers2({ port: servedRecord.port, password: servedRecord.password }, "kuvo/info");
+  }
+  let linkPid = null;
+  try {
+    linkPid = Number(fs203.readFileSync(PID_FILE, "utf8")) || null;
+  } catch {}
+  if (linkPid && !processRuns(linkPid, "kuvo-link"))
+    linkPid = null;
+  const runOK = linkPid !== null || !fs203.existsSync(NEEDED_FILE);
+  const engine = readJSON4(ENGINE_FILE);
+  const enginePid = engine?.pid && engineRuns(engine.pid, K) ? engine.pid : null;
+  const log = size(path214.join(RUN, "engine.log"));
+  let engineOK;
+  if (enginePid)
+    engineOK = await answers2(engine, "api/session?limit=1") || last.engineLog !== undefined && log > last.engineLog;
+  else
+    engineOK = ["stopped", "paused", "off"].some((mark) => fs203.existsSync(path214.join(RUN, mark)));
+  last.engineLog = log;
+  const bridge = readJSON4(BRIDGE_FILE);
+  const bridgePid = bridge?.pid && processRuns(bridge.pid, "kuvo-agents") ? bridge.pid : null;
+  const bridgeWanted = fs203.existsSync(path214.join(K, "bin", "kuvo-agents.js")) && enginePid !== null && !!engine?.agentsPort;
+  let bridgeOK = !bridgeWanted;
+  if (bridgePid)
+    bridgeOK = !!bridge.port && !!bridge.password && await answers2(bridge, "api/info");
+  return {
+    info: { ok: infoOK },
+    serve: { ok: serveOK, pid: servePid },
+    run: { ok: runOK, pid: linkPid },
+    engine: { ok: engineOK, pid: enginePid },
+    bridge: { ok: bridgeOK, pid: bridgePid }
+  };
+}
+function rollBackCode() {
+  const start = path214.join(K, "bin", "kuvo-start");
+  if (!fs203.existsSync(start))
+    return false;
+  const ran = spawnSync20("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
+  return ran.status === 0 && !updateOnTrial();
+}
+async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
+  if (!updateOnTrial() || isUpdating() || judging2())
+    return "none";
+  const opened = updateState().trial;
+  let to = opened?.to;
+  if (!to)
+    try {
+      to = fs203.readFileSync(path214.join(RUN, "update-trial"), "utf8").trim();
+    } catch {}
+  if (!to)
+    return "none";
+  const trial = opened ?? { from: "", to, at: mtime5(path214.join(RUN, "update-trial")) };
+  const since = trial.swapped ?? trial.at;
+  writePrivate(JUDGE_FILE, String(process.pid));
+  const lastLook = {};
+  const looking = look ?? ((open, swapped) => lookAtPieces(open, swapped, lastLook));
+  const judged = { well: 0, fails: {}, failing: {}, pids: {}, ...trial.judged ?? {} };
+  judged.failing = {};
+  const stillOpen = () => updateOnTrial() && boxVersion() === to && !isUpdating();
+  try {
+    let before = clock();
+    for (;; ) {
+      if (!stillOpen())
+        return "none";
+      const looked = await looking(trial, since);
+      fs203.rmSync(SETTLE_TRIES, { force: true });
+      if (!stillOpen())
+        return "none";
+      const now = clock();
+      const passed = Math.max(0, Math.min(now - before, 2 * every));
+      before = now;
+      let unwell = null;
+      for (const piece of PIECES) {
+        const { ok, pid } = looked[piece];
+        if (ok) {
+          judged.fails[piece] = 0;
+          delete judged.failing[piece];
+        } else {
+          judged.fails[piece] = (judged.fails[piece] ?? 0) + 1;
+          judged.failing[piece] ??= now;
+          if (judged.fails[piece] >= HEALTH.fails && now - judged.failing[piece] >= Math.min(HEALTH.failingFor, 2 * every * HEALTH.fails))
+            unwell = piece;
+        }
+        if (pid) {
+          const seen = judged.pids[piece] ?? [];
+          if (!seen.includes(pid))
+            seen.push(pid);
+          judged.pids[piece] = seen.slice(-(HEALTH.restarts + 2));
+          if (seen.length > HEALTH.restarts + 1)
+            unwell = piece;
+        }
+      }
+      if (looked.engine.ok && looked.engine.pid)
+        judged.engineAnswered = true;
+      if (unwell) {
+        noteUpdate({ trial: { ...trial, judged } });
+        if (!judged.engineAnswered)
+          newEngineUnused(trial);
+        const back = rollBack();
+        const message = back ? `${to} didn't run well here (${unwell === "info" ? "Kuvo didn't answer" : `its ${unwell === "run" ? "link" : unwell} didn't`}), so it went back to ${trial.from || "what it had"}. Your conversations stay as they are.` : `${to} didn't run well here, and couldn't go back to ${trial.from || "what it had"}.`;
+        noteUpdate({ trial: back ? null : { ...trial, judged }, last: { at: Date.now(), result: "failed", message, from: trial.from, to }, ...back ? { offerFailed: { version: to, at: Date.now(), takenBack: true, message } } : {} });
+        return "unwell";
+      }
+      judged.well = PIECES.every((piece) => looked[piece].ok) ? judged.well + passed : 0;
+      noteUpdate({ trial: { ...trial, judged } });
+      if (judged.well >= window) {
+        noteUpdate({ trial: { ...trial, judged, healthy: true } });
+        if (!confirmUpdate())
+          return "none";
+        await Promise.resolve(well()).catch(() => {});
+        return "well";
+      }
+      await wait(every);
+    }
+  } finally {
+    try {
+      if (Number(fs203.readFileSync(JUDGE_FILE, "utf8")) === process.pid)
+        fs203.rmSync(JUDGE_FILE, { force: true });
+    } catch {}
+  }
+}
+function startSettling() {
+  spawn21(process.execPath, [...OWN_RUNTIME, SCRIPT, "update", "--settle"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
 }
 
 // box/src/link/areas/group-settings.ts
@@ -70202,7 +70401,7 @@ init_format();
 init_home();
 
 // box/src/link/places.ts
-import path214 from "node:path";
+import path215 from "node:path";
 init_home();
 init_machines();
 init_home();
@@ -70220,11 +70419,11 @@ function boxPlaces() {
     updates: UPDATES,
     search: SEARCH,
     apps: APPS,
-    browser: path214.join(K, "browser"),
-    trash: path214.join(K, "trash"),
-    temporary: path214.join(K, "t"),
+    browser: path215.join(K, "browser"),
+    trash: path215.join(K, "trash"),
+    temporary: path215.join(K, "t"),
     engineData: ENGINE_DATA,
-    engineConfig: ENGINE_CONFIG ?? path214.join(K, "config"),
+    engineConfig: ENGINE_CONFIG ?? path215.join(K, "config"),
     settingsFile: CONFIG_FILE,
     engineLayerFile: ENGINE_LAYER_FILE,
     defaultsPlugin: DEFAULTS_PLUGIN,
@@ -70282,9 +70481,9 @@ onLinkWritten((link) => {
   if (liveHost)
     setTimeout(() => liveHost?.keepOnly(new Set((readLink()?.phones ?? []).map((phone) => phone.key))), 200).unref?.();
   if (needed(link))
-    fs203.writeFileSync(NEEDED_FILE, "", { mode: 384 });
+    fs204.writeFileSync(NEEDED_FILE, "", { mode: 384 });
   else
-    fs203.rmSync(NEEDED_FILE, { force: true });
+    fs204.rmSync(NEEDED_FILE, { force: true });
 });
 var liveHost = null;
 function machineWelcomed(host) {
@@ -70292,7 +70491,6 @@ function machineWelcomed(host) {
   try {
     docsChanged(host, { greet: true });
   } catch {}
-  updateIsWell();
 }
 var runningEngine = () => {
   try {
@@ -70301,33 +70499,27 @@ var runningEngine = () => {
     return null;
   }
 };
-function updateIsWell() {
-  try {
-    if (confirmUpdate()) {
-      upgradeIntegrations().catch(() => {});
-      if (KEYS_ON_HOST)
-        keepBotsOwnKeysGone(runningEngine);
-      else
-        dropBotsOwnKeys(runningEngine).catch(() => {});
-    }
-  } catch {}
+async function updateIsWell() {
+  await upgradeIntegrations().catch(() => {});
+  if (!KEYS_ON_HOST)
+    await dropBotsOwnKeys(runningEngine).catch(() => {});
 }
 async function run7() {
   let old = null;
   try {
-    old = Number(fs203.readFileSync(PID_FILE, "utf8"));
+    old = Number(fs204.readFileSync(PID_FILE, "utf8"));
     if (isBridge2(old))
       process.kill(old, "SIGTERM");
   } catch {}
-  fs203.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs204.mkdirSync(RUN, { recursive: true, mode: 448 });
   clearNotesLocks();
-  fs203.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
-  fs203.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
+  fs204.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
+  fs204.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
-    process.env.PATH = joinPath(path215.join(K, "bin"), saved);
+    process.env.PATH = joinPath(path216.join(K, "bin"), saved);
   for (const folder of ["present", "connected"])
-    fs203.rmSync(path215.join(RUN, folder), { recursive: true, force: true });
+    fs204.rmSync(path216.join(RUN, folder), { recursive: true, force: true });
   try {
     keepJobs();
   } catch {}
@@ -70343,8 +70535,8 @@ async function run7() {
   });
   const cleanUp = () => {
     try {
-      if (fs203.readFileSync(PID_FILE, "utf8") === String(process.pid))
-        fs203.unlinkSync(PID_FILE);
+      if (fs204.readFileSync(PID_FILE, "utf8") === String(process.pid))
+        fs204.unlinkSync(PID_FILE);
     } catch {}
     process.exit(0);
   };
@@ -70355,7 +70547,7 @@ async function run7() {
   setInterval(() => {
     let owner = null;
     try {
-      owner = Number(fs203.readFileSync(PID_FILE, "utf8"));
+      owner = Number(fs204.readFileSync(PID_FILE, "utf8"));
     } catch {}
     const link = readLink();
     if (!needed(link)) {
@@ -70372,7 +70564,7 @@ async function run7() {
     await sleep(50);
   let held = [];
   try {
-    held = JSON.parse(fs203.readFileSync(HELD_FILE, "utf8"));
+    held = JSON.parse(fs204.readFileSync(HELD_FILE, "utf8"));
   } catch {}
   const hold = new NoticeHold({
     send: tellPhones,
@@ -70382,7 +70574,7 @@ async function run7() {
         if (entries.length)
           writePrivate(HELD_FILE, JSON.stringify(entries));
         else
-          fs203.rmSync(HELD_FILE, { force: true });
+          fs204.rmSync(HELD_FILE, { force: true });
       } catch {}
     }
   });
@@ -70411,7 +70603,6 @@ async function run7() {
   let lastWelcomed = Date.now();
   refreshOwn(readEngineFile).catch(() => {});
   keepZone();
-  setTimeout(updateIsWell, 180000);
   const nightly = () => {
     noteLauncher();
     noteOlderMacs();
@@ -70458,7 +70649,7 @@ async function run7() {
     }, 50);
   };
   try {
-    fs203.mkdirSync(SENDING, { recursive: true, mode: 448 });
+    fs204.mkdirSync(SENDING, { recursive: true, mode: 448 });
   } catch {}
   let outboxWatch = watchFolders([SENDING], leftNow, { recursive: false });
   const forwardNow = () => {
@@ -70468,7 +70659,7 @@ async function run7() {
   };
   forwardsSoon.send = forwardNow;
   try {
-    fs203.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
+    fs204.mkdirSync(FORWARDS, { recursive: true, mode: 448 });
   } catch {}
   let forwardsWatch = watchFolders([FORWARDS], forwardNow, { recursive: false });
   const heldNow = () => {
@@ -70607,7 +70798,7 @@ async function box(command) {
         return say({ status: 409, message: "It's updating already." });
       if (updateOnTrial())
         return say({ status: 409, message: ON_TRIAL });
-      spawn21(process.execPath, [...OWN_RUNTIME, fileURLToPath4(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
+      spawn22(process.execPath, [...OWN_RUNTIME, fileURLToPath4(import.meta.url), "update", "--now", "--free"], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
       return say({ status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route": {
@@ -70711,11 +70902,11 @@ async function keptServe() {
     console.error(`The box's server already runs (${other.pid}).`);
     return;
   }
-  if (!fs203.existsSync(SERVE_NEEDED())) {
+  if (!fs204.existsSync(SERVE_NEEDED())) {
     console.error("No client wants the box's server here (run/serve.needed).");
     return;
   }
-  fs203.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs204.mkdirSync(RUN, { recursive: true, mode: 448 });
   const password = crypto69.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os26.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
@@ -70728,7 +70919,7 @@ async function keptServe() {
   } catch {}
   const mine = () => {
     try {
-      return JSON.parse(fs203.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
+      return JSON.parse(fs204.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid;
     } catch {
       return false;
     }
@@ -70736,7 +70927,7 @@ async function keptServe() {
   const leave = () => {
     try {
       if (mine())
-        fs203.rmSync(SERVE_FILE(), { force: true });
+        fs204.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -70746,7 +70937,7 @@ async function keptServe() {
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
   setInterval(() => {
-    if (!fs203.existsSync(SERVE_NEEDED()) || !mine())
+    if (!fs204.existsSync(SERVE_NEEDED()) || !mine())
       leave();
   }, every);
 }
@@ -70765,9 +70956,9 @@ async function serve() {
     console.error('serve answers only with a password: on its stdin, {"password"}, or in OPENCODE_PASSWORD.');
     process.exit(2);
   }
-  fs203.mkdirSync(RUN, { recursive: true, mode: 448 });
+  fs204.mkdirSync(RUN, { recursive: true, mode: 448 });
   const started = servedFiles();
-  const leaves = !APP_FOLDER && path215.resolve(fileURLToPath4(import.meta.url)) === path215.resolve(servedLink());
+  const leaves = !APP_FOLDER && path216.resolve(fileURLToPath4(import.meta.url)) === path216.resolve(servedLink());
   clearNotesLocks();
   if (IS_MAC)
     addMacDefaults();
@@ -70838,7 +71029,7 @@ async function serve() {
     } catch {}
   try {
     if (APP_FOLDER)
-      writePrivate(path215.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+      writePrivate(path216.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
     else
       clearKept(K);
   } catch {}
@@ -70856,8 +71047,8 @@ async function serve() {
     if ((macLink.host?.unsent?.() ?? 0) > 0)
       console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
     try {
-      if (OWN_HOME_MAC && JSON.parse(fs203.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
-        fs203.rmSync(SERVE_FILE(), { force: true });
+      if (OWN_HOME_MAC && JSON.parse(fs204.readFileSync(SERVE_FILE(), "utf8"))?.pid === process.pid)
+        fs204.rmSync(SERVE_FILE(), { force: true });
     } catch {}
     process.exit(0);
   };
@@ -70869,10 +71060,7 @@ async function serve() {
     try {
       dropOldBackups();
     } catch {}
-    const check = serveCheck(started, { leaves });
-    if (check === "confirm")
-      updateIsWell();
-    if (check !== "leave")
+    if (serveCheck(started, { leaves }) !== "leave")
       return;
     leaving = true;
     console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
@@ -70956,7 +71144,7 @@ async function setup() {
   await tellIfSharingChanged(old, link);
   let runningVersion = null;
   try {
-    runningVersion = fs203.readFileSync(VERSION_FILE, "utf8").trim();
+    runningVersion = fs204.readFileSync(VERSION_FILE, "utf8").trim();
   } catch {}
   const restart = old?.relay !== link.relay || old?.name !== link.name || runningVersion !== BRIDGE_VERSION;
   if (!isUpdating()) {
@@ -71045,7 +71233,7 @@ function selftest() {
   const ok = said.toString() === "hello" && payload.toString() === "welcome" && echoed.toString() === "ping" && mail.toString() === "mail" && responder.rs.equals(publicOf(phone)) && typeof WebSocket === "function" && typeof fetch === "function";
   return ok;
 }
-var main = process.argv[1] && fs203.realpathSync(process.argv[1]) === fs203.realpathSync(fileURLToPath4(import.meta.url));
+var main = process.argv[1] && fs204.realpathSync(process.argv[1]) === fs204.realpathSync(fileURLToPath4(import.meta.url));
 if (main) {
   const [mode, argument] = process.argv.slice(2);
   if (mode === "run")
@@ -71092,13 +71280,15 @@ if (main) {
     if (found?.PATH)
       saveLoginPath(K, found.PATH);
     process.stdout.write(found?.PATH ? launchFromLogin(found) : "");
+  } else if (mode === "update" && process.argv.includes("--settle")) {
+    console.log(JSON.stringify({ settled: await settleUpdate({ well: updateIsWell }) }));
   } else if (mode === "update") {
     const args = process.argv.slice(3);
     const option = (name) => args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined;
     const from = option("--from");
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")], blocked: null } : {};
-    const installer = args.includes("--installer") && !!from && path215.isAbsolute(from);
+    const installer = args.includes("--installer") && !!from && path216.isAbsolute(from);
     const now = args.includes("--now");
     let told = false;
     const step = (running) => {
@@ -71120,7 +71310,7 @@ if (main) {
         if (process.ppid === 1)
           process.exit(0);
       }
-      outcome = offered ? await takeOffer({ now, step, ...test }) : from && !path215.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, swapping: () => {
+      outcome = offered ? await takeOffer({ now, step, features: featuresNow(), ...test }) : from && !path216.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => {
         swapped = true;
       }, ...test });
       if (installer && !now && outcome?.result === "busy")
@@ -71142,15 +71332,16 @@ if (main) {
       if (pid)
         process.kill(pid, "SIGTERM");
       stopKeptServe();
-      if (!needed(readLink())) {
-        confirmUpdate();
-        await upgradeIntegrations().catch(() => {});
-        await dropBotsOwnKeys(runningEngine).catch(() => {});
-      }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current")
       process.exitCode = 1;
+    if (outcome?.result === "updated") {
+      if (installer)
+        startSettling();
+      else
+        await settleUpdate({ well: updateIsWell });
+    }
   } else if (mode === "browser") {
     const args = process.argv.slice(3);
     if (argument === "install") {
@@ -71202,6 +71393,7 @@ export {
   FIRST_LOOK,
   FROM_PHONE,
   Frame,
+  HEALTH,
   IKInitiator,
   IKResponder,
   INTEGRATIONS_FILE,
@@ -71417,6 +71609,7 @@ export {
   listWakes,
   listedAsk,
   lookAtGoals,
+  lookAtPieces,
   lookAtWork,
   macAppAnswers,
   macDocsChanged,
@@ -71603,6 +71796,7 @@ export {
   settleOwnSetup,
   settleStarted as settleQueueStarted,
   settleSetup,
+  settleUpdate,
   settleWorkRead,
   setupView,
   sharedMachine,

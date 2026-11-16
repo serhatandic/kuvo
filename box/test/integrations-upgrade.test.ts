@@ -301,17 +301,19 @@ test("while an update is on trial a key stays, as the version before may come ba
   expect(kept(FIGMA)).toBe(false)
 })
 
-test("an update on trial, its bridge welcomed by the relay: confirmed, and what waited for that is done", async () => {
-  const { settings, figmaKept } = await machineStarts(oldServers(MACHINE), {
-    before: home => {
-      writeFileSync(join(home, "run", "update-trial"), "9.9.9")
-      writeFileSync(join(home, "bin", "box-version"), "9.9.9")
-      writeFileSync(join(home, "run", "update.json"), JSON.stringify({ trial: { from: "9.9.8", to: "9.9.9", healthy: true } }))
+test("an update on trial, its link welcomed by the relay: still on trial (only its judge says it's well), and the key the version before may need stays", async () => {
+  let home = ""
+  const { figmaKept } = await machineStarts(oldServers(MACHINE), {
+    before: folder => {
+      home = folder
+      writeFileSync(join(folder, "run", "update-trial"), "9.9.9")
+      writeFileSync(join(folder, "bin", "box-version"), "9.9.9")
+      writeFileSync(join(folder, "run", "update.json"), JSON.stringify({ trial: { from: "9.9.8", to: "9.9.9", at: Date.now(), healthy: true } }))
     },
-    until: now => now.mcp.servers.figma.url !== undefined,
   })
-  expect(settings.mcp.servers).toEqual(upToDate(MACHINE))
-  expect(figmaKept).toBe(false)
+  expect(existsSync(join(home, "run", "update-trial"))).toBe(true)
+  expect(JSON.parse(readFileSync(join(home, "run", "update.json"), "utf8")).last).toBeUndefined()
+  expect(figmaKept).toBe(true)
 }, SPAWNS)
 
 test("a machine's engine about to start, with no bridge and no Mac: its settings are up to date before it reads them", async () => {

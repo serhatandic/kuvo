@@ -4,8 +4,8 @@
 // a key pinned here signed, only in a machine's own ~/.kuvo-code (not a test's or a demo's), and
 // only while every Mac that started its engine lately leaves a newer box as it is. It checks what
 // it got, tries the new engine and bridge, keeps what it had, swaps its files one by one and
-// starts again; if that doesn't come up well, or the new bridge never says it's well (the keeper
-// waits twenty minutes), it goes back to what it had. A release can come from a folder on this
+// starts again; then it's judged by the one health rule (updates/health.ts), and goes back to the
+// code it had (never the data) when that finds it unwell. A release can come from a folder on this
 // computer too (`kuvo/box/update {from}`: the one an app carries, for it to offer as it updates),
 // checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
 // (the box's helper), swapped whole.
@@ -133,11 +133,19 @@ export interface UpdateOutcome {
   message?: string;
 }
 
-/** An update being tried (`trial`): from and to which version, since when, and whether it came up well. */
+/** An update being tried (`trial`): from and to which version, since when, when its files were
+ * put in place (`swapped`), the features the box said before (what it must still say), how its
+ * judging stands (`updates/health.ts`), and whether it was judged well. */
 export interface UpdateTrial {
   from: string;
   to: string;
   at: number;
+  swapped?: number;
+  features?: string[];
+  judged?: import("./health").Judged;
+  /** How the engine's data was as a newer engine took it (`keepData`), to tell later whether that
+   * engine wrote to it. */
+  dataKept?: string;
   healthy?: boolean;
 }
 
@@ -309,6 +317,13 @@ function keepForRollback(files: string[], engine: string | null, bundles: Readon
 // keeps that engine (`keepForRollback`).
 const ENGINE_STARTED = path.join(ROLLBACK, "engine-started");
 
+/** Before the update on trial is put back: a newer engine it started that never answered and wrote
+ * nothing to the data since it was copied (`trial.dataKept`) goes back with the rest, the old engine
+ * reading only what it wrote itself. */
+export function newEngineUnused(trial: UpdateTrial): void {
+  if (trial.dataKept !== undefined && dataNow() === trial.dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
+}
+
 /** Where a copy of the engine's data is kept as an update changes its engine (`updates/backups`):
  * never put back by anything, a last resort to restore by hand; only the latest, for 30 days. */
 export const BACKUPS = path.join(UPDATES, "backups");
@@ -363,26 +378,6 @@ function roomForData(): boolean {
   return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200_000_000;
 }
 
-// Whether the engine came up as `version` and answers, and the coding agents' bridge with it when
-// it ran before, within `timeout` ms.
-// `answered`: told once the engine of `version` answered, whatever came of the bridge.
-async function cameUp(version: string, withAgents: boolean, timeout = 120_000, answered: () => void = () => {}, readEngine: () => EngineRecord = readEngineFile, readBridge: () => BridgeRecord = readBridgeFile): Promise<boolean> {
-  const began = Date.now();
-  while (Date.now() - began < timeout) {
-    await sleep(Math.min(2000, timeout / 10));
-    let engine: EngineRecord | null = null;
-    try { engine = readEngine(); } catch {}
-    if (engine?.version !== version) continue;
-    if (!(await asked(engine, "GET", "api/session?limit=1").then(() => true, () => false))) continue;
-    answered();
-    if (!withAgents) return true;
-    let bridge: BridgeRecord | null = null;
-    try { bridge = readBridge(); } catch {}
-    if (bridge?.port && (await asked(bridge, "GET", "api/session/active").then(() => true, () => false))) return true;
-  }
-  return false;
-}
-
 // COMPAT(0.7 files): `bin/.own`, the box's own copies of the tools an older Mac puts its own over. Goes on the user's word, once no Mac from before 1.0 connects.
 // The box's tools that an older Kuvo Code on a Mac (0.7 and before) puts its own over as it
 // connects: the box keeps copies of its own (`bin/.own`), which its keeper puts back.
@@ -403,7 +398,8 @@ export interface UpdateOptions {
   blocked?: string | null;
   clock?: () => number;
   step?: (running: UpdateStep) => void;
-  upWithin?: number;
+  /** The features the box says now (`kuvo/info`): what the new files must still say. */
+  features?: string[];
   /** Told as it starts putting the new version in place (from there, a failure is taken back). */
   swapping?: () => void;
   /** Told the version of the release it takes, once it's checked its signature. */
@@ -476,7 +472,7 @@ async function stopEngine(pid: number): Promise<void> {
 // "failed", version?, message?}`; once "updated", the bridge goes for the keeper to start the new
 // one. `from`: a release in a folder here, taken whatever its age (the Kuvo Code it came with is
 // here already). `keys` and `url`: a test's (a test's folder only).
-export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, upWithin = 120_000, swapping = () => {}, taking = () => {}, whileBusy = now }: UpdateOptions = {}): Promise<UpdateOutcome> {
+export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now }: UpdateOptions = {}): Promise<UpdateOutcome> {
   if (!keys.length) return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked) return { result: "blocked", message: blocked };
   // COMPAT(0.7 engine-stop): no update while an older Mac's Stop holds the engine down. Goes on the user's word, once no Mac from before 1.0 connects.
@@ -487,9 +483,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
-  // The engine's data as it was copied before a newer engine ran (`keepData`), and whether that
-  // engine ever answered: one that never did and wrote nothing goes back with the rest.
-  let dataKept: string | null = null, newAnswered = false;
+  // The engine's data as it was copied before a newer engine ran (`keepData`): a newer engine that
+  // wrote nothing to it by the time a failed swap is put back goes back with the rest.
+  let dataKept: string | null = null;
   // The box's keeper, as the update runs it (its stop, its start, putting back what was there): with
   // HOME spelled as the running engine was started with, so a keeper of any age knows that engine
   // as its own, never starting a second beside it (Kuvo Helper gave its keeper "/Users/you/", and
@@ -620,7 +616,6 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     try { previous = readEngineFile(); } catch {}
     const home = previous?.pid ? engineHome(previous.pid, K) : undefined;
     if (home) keeperEnv = { HOME: home };
-    const withAgents = Boolean(previous?.agentsPort) && fs.existsSync(path.join(stage, "files", "bin", "kuvo-agents.js"));
     const otherEngine = previous?.version !== manifest.engine;
     if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
     // What's there kept, and how to put it back, before the engine stops: a stop the update
@@ -663,11 +658,12 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (newerEngine) writePrivate(ENGINE_STARTED, manifest.engine);
     ran("sh", [path.join(K, "bin", "kuvo-start"), "start"], keeperEnv);
     step("starting");
-    if (!(await cameUp(manifest.engine, withAgents, upWithin, () => { newAnswered = true; }))) throw new Error("The new version didn't come up.");
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
     // (Not its bundles: the helper's own keeper may put its own back, which is never drift.)
     writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), healthy: true } });
+    // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
+    // it's done here, or by the judge the keeper starts should this one go first.
+    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: Date.now(), ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -686,7 +682,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       // engine reading only what it wrote itself. (The keeper's own rollback, later, keeps the new.)
       // (Looked at before restore.sh stops it: a commit it lands in that moment goes unseen. A narrow
       // window, taken as it is: an engine that hasn't answered in two minutes is still starting.)
-      if (!newAnswered && dataKept !== null && dataNow() === dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
+      if (dataKept !== null && dataNow() === dataKept) fs.rmSync(ENGINE_STARTED, { force: true });
       ran("sh", [path.join(ROLLBACK, "restore.sh")], { ...keeperEnv, KUVO_UPDATER: String(process.pid) }, 600_000);
     } else {
       // Nothing changed: what was kept goes, and the engine starts again if it was stopped.

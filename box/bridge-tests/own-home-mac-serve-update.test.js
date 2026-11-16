@@ -1,7 +1,7 @@
 // This Mac's own box after an update (PROTOCOL.md, "Updates"): its server (`serve`, which Kuvo Helper
-// starts from the box's `bin/kuvo-link.js` and starts again only when it ends) says the update it
-// runs on is well, so the keeper doesn't take it back twenty minutes on; and it goes once an update
-// changed the box's files under it, for its helper to start the new ones. The real box script, run
+// starts from the box's `bin/kuvo-link.js` and starts again only when it ends) goes once an update
+// changed the box's files under it, for its helper to start the new ones; whether the update is well
+// is its judge's to say, never a server's. The real box script, run
 // from a home of the test's own laid out as a Mac's; its helper and keeper are stand-ins.
 //
 // Run with `node --test box/bridge-tests/own-home-mac-serve-update.test.js`.
@@ -80,36 +80,19 @@ async function until(check, what) {
   assert.fail(`never: ${what}`);
 }
 
-test("a Mac's box's server says the update it runs on is well as soon as it's up: the keeper has nothing to take back", async () => {
-  // (Its next look an hour away: what's below comes of its first, as it starts.)
-  const first = await serve(3_600_000);
-  await until(() => !fs.existsSync(path.join(K, "run", "update-trial")), "said to be well");
-  assert.deepEqual(fs.readdirSync(path.join(K, "updates", "backups")), [], "the copy past its 30 days, gone");
+test("a Mac's box's server never says an update is well (its judge does, by the one health rule): the trial stays open while it runs; the old copy of the data goes", async () => {
+  const first = await serve(100);
+  await until(() => fs.readdirSync(path.join(K, "updates", "backups")).length === 0, "the copy past its 30 days, gone");
   await first.stop();
-  assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), false, "no longer on trial");
-  assert.equal(fs.existsSync(path.join(K, "updates", "rollback")), false, "what was kept to put back goes");
-  const state = readJSON(path.join(K, "run", "update.json"));
-  assert.equal(state.trial, undefined);
-  assert.equal(state.last.result, "updated");
-  assert.equal(state.last.to, "0.10.0");
-});
-
-test("only an update to the version a server started on, up and not under way, is said to be well by it", () => {
-  const trial = { from: "0.9.0", to: "0.10.0", at: 0, healthy: true };
-  const files = { version: "0.10.0", link: "abc" };
-  const check = (started, options) => link.serveCheck(started, { leaves: false, updating: () => false, trial: () => trial, ...options });
-  assert.equal(check(files), "confirm");
-  // The server from before the update (its helper hasn't started the new one yet): not its to say.
-  assert.equal(check({ version: "0.9.0", link: "old" }), "stay");
-  assert.equal(check(files, { trial: () => ({ ...trial, healthy: undefined }) }), "stay", "not yet seen to come up");
-  assert.equal(check(files, { trial: () => undefined }), "stay", "none on trial");
-  assert.equal(check(files, { updating: () => true }), "stay", "an update under way");
+  assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), true, "still on trial");
+  assert.equal(fs.existsSync(path.join(K, "updates", "rollback", "restore.sh")), true, "what was kept to put back stays");
+  assert.equal(readJSON(path.join(K, "run", "update.json")).last, undefined);
 });
 
 test("a server whose files an update changed goes, once no update is under way, for its helper to start the new ones", { timeout: 60_000 }, async () => {
   const started = { version: "0.10.0", link: "abc" };
   const after = { version: "0.11.0", link: "def" };
-  const check = options => link.serveCheck(started, { updating: () => false, now: () => after, trial: () => undefined, ...options });
+  const check = options => link.serveCheck(started, { updating: () => false, now: () => after, ...options });
   assert.equal(check(), "leave");
   // Not while an update changes them (it may yet put them back), nor for a file missing a moment.
   assert.equal(check({ updating: () => true }), "stay");

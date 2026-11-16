@@ -71,6 +71,7 @@ noted() { sed -n 's/.*"pid":\\([0-9]*\\).*/\\1/p' "$R/engine.json" 2>/dev/null; 
 case "$1" in
 stop) touch "$R/stopped"; pid=$(noted); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; fi; rm -f "$R/engine.json" ;;
 start) rm -f "$R/stopped"; old=$(noted); if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then exit 0; fi; ${breaks ? `mkdir -p "$K/data/opencode"; echo "the new engine's journal" > "$K/data/opencode/opencode.db-wal"` : `"$K/engine/$V/opencode" serve >/dev/null 2>&1 & pid=$!; until [ "$(noted)" = "$pid" ]; do kill -0 "$pid" 2>/dev/null || exit 3; sleep 0.1; done`} ;;
+rollback) [ -f "$R/update-trial" ] || exit 0; sh "$K/updates/rollback/restore.sh" ;;
 esac
 `;
 
@@ -194,11 +195,18 @@ function release({ version = "0.10.0", released = new Date(Date.now() - 10 * 86_
   return { folder };
 }
 
-const update = (options = {}) => link.update({ now: true, keys: [pinned], url: `${base}/boxes.json`, blocked: null, upWithin: 5000, ...options });
+const update = (options = {}) => link.update({ now: true, keys: [pinned], url: `${base}/boxes.json`, blocked: null, ...options });
+// The update on trial judged by the one health rule (updates/health.ts), its looks the real ones,
+// its clock the test's: a look a second, all holding three seconds of it.
+let ticks = 0, looks = 0;
+const settle = (options = {}) => link.settleUpdate({ clock: () => ticks, every: 1000, window: 3000, wait: async () => { ticks += 1000; }, ...options, look: async (...args) => { looks++; return (options.look ?? link.lookAtPieces)(...args); } });
+// A judge of its own (\`update --settle\`), as the keeper starts it, and the update command's: quick here.
+process.env.KUVO_TEST_HEALTH_WINDOW = "600";
+process.env.KUVO_TEST_HEALTH_EVERY = "150";
 // A release from a folder here (`kuvo/box/update {from}`): what Kuvo Code carries, offered as it
 // updates, checked as a downloaded one is, and taken at a quiet moment.
 const offer = (folder, options = {}) => link.offerUpdate(folder, { keys: [pinned], blocked: null, ...options });
-const take = (options = {}) => link.takeOffer({ keys: [pinned], blocked: null, upWithin: 5000, ...options });
+const take = (options = {}) => link.takeOffer({ keys: [pinned], blocked: null, ...options });
 const offered = path.join(home, "updates", "offered");
 const boxVersion = () => fs.readFileSync(path.join(home, "bin", "box-version"), "utf8");
 
@@ -262,16 +270,89 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   assert.ok(fs.existsSync(path.join(home, "run", "update-trial")));
   assert.equal(fs.readdirSync(path.join(home, "updates")).sort().join(), "backups,installed.json,rollback", "what was downloaded goes; what it put there is noted; its engine changed, a copy of the data from before is kept aside");
 
-  // The new link, well: what was kept, and the old engine, go.
-  assert.equal(link.confirmUpdate(), true);
+  // Judged well: what was kept, and the old engine, go.
+  assert.equal(await settle(), "well");
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
   assert.deepEqual(fs.readdirSync(path.join(home, "engine")), ["1.1.0"]);
   assert.deepEqual(read(path.join(home, "run", "update.json")).last.to, "0.10.0");
-  assert.equal(link.confirmUpdate(), false, "once");
+  assert.equal(await settle(), "none", "once");
 
   // The same release again: nothing to do.
   assert.equal((await update()).result, "current");
+});
+
+test("a well update, with no link running and no relay, is judged well by a judge of its own (as the keeper starts it), on any box", async () => {
+  machine();
+  release();
+  assert.equal((await update()).result, "updated");
+  engines.add(read(engineFile).pid);
+  assert.equal(fs.existsSync(path.join(home, "run", "link.needed")), false, "nothing for a link to answer");
+  const judged = spawnSync(process.execPath, [script, "update", "--settle"], { env: process.env, encoding: "utf8", timeout: 60_000 });
+  assert.deepEqual(JSON.parse(judged.stdout.trim().split("\n").at(-1)), { settled: "well" }, judged.stderr);
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+  assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
+  assert.equal(read(path.join(home, "run", "update.json")).last.to, "0.10.0");
+  assert.equal(fs.existsSync(path.join(home, "run", "update-judge.pid")), false, "its mark goes with it");
+});
+
+test("a judge cut off midway is taken up again where it was; time the computer slept doesn't count", async () => {
+  machine();
+  release();
+  assert.equal((await update()).result, "updated");
+  engines.add(read(engineFile).pid);
+  // Cut off after its second look (the machine went down).
+  let waits = 0;
+  ticks = 0;
+  await assert.rejects(settle({ wait: async () => { ticks += 1000; if (++waits === 2) throw new Error("cut off"); } }));
+  assert.equal(read(path.join(home, "run", "update.json")).trial.judged.well, 1000, "what held so far is kept");
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), true);
+  // The next judge needs only the rest: three looks, where a fresh one takes four.
+  looks = 0;
+  assert.equal(await settle(), "well");
+  assert.equal(looks, 3);
+
+  // Asleep an hour between looks: two looks' time at most counts each time.
+  machine();
+  release();
+  assert.equal((await update()).result, "updated");
+  engines.add(read(engineFile).pid);
+  looks = 0;
+  assert.equal(await settle({ wait: async () => { ticks += 3_600_000; } }), "well");
+  assert.equal(looks, 3, "not well at its second look, an hour on");
+});
+
+test("a new server that starts again and again is unwell: the code from before is put back, never the data", async () => {
+  machine();
+  release();
+  write(path.join(home, "run", "serve.needed"), "");
+  assert.equal((await update()).result, "updated");
+  engines.add(read(engineFile).pid);
+  write(path.join(home, "data", "opencode", "opencode.db"), "a conversation after the update");
+  // Its server for clients, ending each time it starts (the keeper starting it again each round).
+  let serving = null;
+  const restart = () => {
+    if (serving) serving.kill("SIGKILL");
+    serving = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e6)", path.join(home, "bin", "kuvo-link.js"), "serve", "--kept"], { stdio: "ignore" });
+    write(path.join(home, "run", "serve.json"), JSON.stringify({ pid: serving.pid, port: 1, password: "pw", kept: true }));
+  };
+  atEnd(() => serving?.kill("SIGKILL"));
+  looks = 0;
+  ticks = 0;
+  const settled = await settle({ look: async (...args) => { restart(); await waitFor(() => serving.pid, "it runs"); return link.lookAtPieces(...args); }, window: 60_000 });
+  assert.equal(settled, "unwell");
+  assert.ok(looks <= 5, `seen as starting again and again by its fifth look (${looks})`);
+  assert.equal(boxVersion(), "0.9.0", "the code from before");
+  assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
+  assert.equal(fs.readFileSync(path.join(home, "data", "opencode", "opencode.db"), "utf8"), "a conversation after the update", "never the data");
+  const state = read(path.join(home, "run", "update.json"));
+  assert.equal(state.trial, undefined);
+  assert.equal(state.last.result, "failed");
+  assert.match(state.last.message, /0\.10\.0 didn't run well here \(its serve didn't\), so it went back to 0\.9\.0/);
+  assert.equal(fs.existsSync(path.join(home, "run", "update-trial")), false);
+  await waitFor(() => fs.existsSync(engineFile), "an engine runs again");
+  engines.add(read(engineFile).pid);
+  fs.rmSync(path.join(home, "run", "serve.needed"));
 });
 
 test("an agent's browser waiting on you (a sign-in) holds an update the box begins itself: nothing is stopped or swapped", async t => {
@@ -288,9 +369,8 @@ test("an agent's browser waiting on you (a sign-in) holds an update the box begi
 test("a new engine that never answers, and wrote nothing, goes back with the rest: the old keeper starts the old engine, on the data as it was", async () => {
   machine();
   release({ engineBreaks: "silent" });
-  const outcome = await update();
-  assert.equal(outcome.result, "failed");
-  assert.match(outcome.message, /didn't come up/);
+  assert.equal((await update()).result, "updated");
+  assert.equal(await settle(), "unwell", "its engine never runs");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
   assert.equal(fs.readFileSync(path.join(home, "bin", ".own", "kuvo-wake"), "utf8"), "# the old wake-ups\n", "the box's own tools as they were");
@@ -306,8 +386,8 @@ test("a new engine that never answers, and wrote nothing, goes back with the res
 test("a new engine that wrote to the data before it failed stays: the rollback puts back code only, never the data", async () => {
   machine();
   release({ engineBreaks: "writes" });
-  const outcome = await update();
-  assert.equal(outcome.result, "failed");
+  assert.equal((await update()).result, "updated");
+  assert.equal(await settle(), "unwell");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
   // The keeper put back starts the new engine: the old one may not read what the new one wrote.
@@ -360,7 +440,7 @@ test("no update goes over one still on trial, whichever way it's asked for: what
   assert.equal(await take({ now: true }), null, "the offered one, on your word");
   assert.deepEqual(keptThen(), before, "what it kept to go back to, untouched");
   assert.equal(boxVersion(), "0.10.0");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
   fs.rmSync(offered, { recursive: true, force: true });
 });
 
@@ -381,7 +461,7 @@ test("the night's update while the last is on trial: tried again that night, and
   assert.deepEqual(after.last, before.last, "how the last went, as it was");
   assert.deepEqual(after.trial, before.trial);
   assert.equal(boxVersion(), "0.10.0");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 });
 
 test("never an older engine than the one running: refused, from GitHub or a folder here", async () => {
@@ -421,7 +501,7 @@ test("the copy of the data from before an engine change is kept 30 days, then go
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
   engines.add(read(engineFile).pid);
   const backups = path.join(home, "updates", "backups");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
   assert.equal(fs.readdirSync(backups).length, 1, "kept as the update's said to be well");
   link.dropOldBackups(Date.now() + 29 * 86_400_000);
   assert.equal(fs.readdirSync(backups).length, 1, "within 30 days");
@@ -464,7 +544,7 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   assert.equal((await update()).result, "updated");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
   engines.add(read(engineFile).pid);
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 
   // An older Mac puts its own link back: seen twice (not a Mac's install under way), the box
   // doesn't update itself for a while, and says why; its version mark stays.
@@ -648,7 +728,7 @@ test("a release offered from a folder here is checked, kept, and taken at the ne
   engines.add(read(engineFile).pid);
   assert.equal(fs.existsSync(offered), false, "taken, it goes");
   assert.equal(link.updateStatus().offered, undefined);
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
   assert.equal(read(path.join(home, "run", "update.json")).latest, undefined, "only GitHub's says what the newest release is");
   assert.equal(await take(), null, "nothing more to take");
 });
@@ -714,7 +794,7 @@ test("a release of the box's own version from a folder here is taken when its fi
   assert.equal(read(engineFile).version, "1.1.0", "the release's engine runs");
   assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /^V=1\.1\.0$/m, "with the release's files");
   assert.equal(fs.existsSync(offered), false, "taken, it goes");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 
   // The same release offered again (the app reconnects), or taken from its folder: the files in
   // place are its own, so there's nothing to take.
@@ -757,7 +837,7 @@ test("an offered release waits while something runs, and is taken once nothing d
   assert.deepEqual(fs.existsSync(path.join(home, "run", "update.json")) ? read(path.join(home, "run", "update.json")).last : undefined, last);
   assert.equal((await take()).result, "updated");
   engines.add(read(engineFile).pid);
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 });
 
 test("Update Now takes the offered release whatever is at work, and this box's own row says how its update stands until then", async t => {
@@ -791,7 +871,7 @@ test("Update Now takes the offered release whatever is at work, and this box's o
   assert.equal(fs.existsSync(offered), false, "taken, it goes");
   assert.equal(link.offerWaits(), false);
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), { actions: [] });
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 });
 
 test("`kuvo-link.js update --installer` (the installer Kuvo Code carries) waits for nothing to be at work, saying so once, then updates; with --now it doesn't wait", async t => {
@@ -829,6 +909,9 @@ test("`kuvo-link.js update --installer` (the installer Kuvo Code carries) waits 
   ]);
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.10.0");
+  // (Judged by a judge of its own, the installer's process gone: well, once it's said so.)
+  await waitFor(() => !fs.existsSync(path.join(home, "run", "update-trial")), "the update judged well", 300);
+  assert.equal(read(path.join(home, "run", "update.json")).last.to, "0.10.0");
 
   // A newer one, with something at work: --now takes it at once; and once the box has it, a run
   // that would wait has nothing to wait for.
@@ -839,6 +922,7 @@ test("`kuvo-link.js update --installer` (the installer Kuvo Code carries) waits 
   assert.deepEqual(now.lines.map(line => line.step ?? line.result), ["updating", "updated"]);
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.11.0");
+  await waitFor(() => !fs.existsSync(path.join(home, "run", "update-trial")), "the update judged well", 300);
   const again = run("--from", newer);
   assert.equal(await again.closed, 0);
   assert.deepEqual(again.lines, [{ result: "current", version: "0.11.0" }]);
@@ -908,8 +992,8 @@ test("`kuvo-link.js update --installer` tries once more by itself, a little late
 test("an offered release that doesn't come up is taken back and goes; one the box has caught up with goes untaken", async () => {
   machine();
   assert.equal(offer(release({ breaks: true }).folder).status, 202);
-  const outcome = await take();
-  assert.equal(outcome.result, "failed");
+  assert.equal((await take()).result, "updated");
+  assert.equal(await settle(), "unwell", "its keeper starts no engine");
   assert.equal(boxVersion(), "0.9.0");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs again, under the old code (a rollback puts back code only)");
   engines.add(read(engineFile).pid);
@@ -980,7 +1064,7 @@ test("an offered release that fails before anything changes (its engine's downlo
   engines.add(read(engineFile).pid);
   assert.equal(fs.existsSync(offered), false);
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed, undefined, "forgotten once it's taken");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 });
 
 test("a download that breaks off on the way (a dropped connection, a server failing) is tried again a moment later, and the update goes through", async t => {
@@ -994,7 +1078,7 @@ test("a download that breaks off on the way (a dropped connection, a server fail
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.10.0");
   assert.deepEqual(breaksOnce, {}, "each broke off once");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 
   // What's answered for good (it isn't there) isn't asked again: it fails as it did.
   machine();
@@ -1023,7 +1107,7 @@ test("a release's bundle (the box's helper) is swapped whole on a Mac, and left 
     assert.equal(fs.readFileSync(path.join(bundle, "Contents", "Info.plist"), "utf8"), "<plist>the old helper</plist>\n", "a Mac's alone");
   }
   assert.deepEqual(fs.readdirSync(path.join(home, "bin")).filter(name => name.includes(".app")), ["Kuvo Helper.app"], "no copy left beside it");
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
   assert.equal(link.checkDrift(), false, "what's there is what it installed");
 });
 
@@ -1031,7 +1115,8 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   machine();
   const bundle = oldHelper();
   assert.equal(offer(release({ breaks: true, bundle: helper }).folder).status, 202);
-  assert.equal((await take()).result, "failed");
+  assert.equal((await take()).result, "updated");
+  assert.equal(await settle(), "unwell");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs again, under the old code (a rollback puts back code only)");
   engines.add(read(engineFile).pid);
   assert.equal(fs.readFileSync(path.join(bundle, "Contents", "Info.plist"), "utf8"), "<plist>the old helper</plist>\n");
@@ -1046,7 +1131,8 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   fs.rmSync(bundle, { recursive: true });
   let when = later();
   assert.equal(offer(release({ breaks: true, bundle: helper }).folder, when).status, 202);
-  assert.equal((await take(when)).result, "failed");
+  assert.equal((await take(when)).result, "updated");
+  assert.equal(await settle(), "unwell");
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs again, under the old code (a rollback puts back code only)");
   engines.add(read(engineFile).pid);
   assert.equal(fs.existsSync(bundle), false);
@@ -1227,7 +1313,7 @@ test("scripts/box-release.sh packs the box's release from its sources with its h
     const verified = spawnSync("codesign", ["--verify", "--strict", "--deep", path.join(home, "bin", "Kuvo Helper.app")], { encoding: "utf8" });
     assert.equal(verified.status, 0, `signed as it was, in the box: ${verified.stderr}`);
   }
-  assert.equal(link.confirmUpdate(), true);
+  assert.equal(await settle(), "well");
 
   // A bundle a box couldn't take (a link in it) isn't packed.
   fs.symlinkSync("/etc/hosts", path.join(bundle, "Contents", "hosts"));

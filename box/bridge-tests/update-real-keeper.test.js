@@ -40,6 +40,16 @@ const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
 const engineFile = path.join(home, "run", "engine.json");
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const command = pid => spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+// The coding agents' bridge, a stand-in: it answers where its keeper said, notes itself as the real
+// one does (run/bridge.json), and says where it answers, as the launcher waits to read.
+const bridgeStandIn = `import fs from "node:fs"; import http from "node:http"; import path from "node:path";
+const port = Number(process.env.KUVO_AGENTS_PORT), password = process.env.KUVO_AGENTS_PASSWORD;
+http.createServer((request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ pid: process.pid })); }).listen(port, "127.0.0.1", () => {
+  fs.writeFileSync(path.join(process.env.KUVO_HOME, "run", "bridge.json"), JSON.stringify({ pid: process.pid, port, password }));
+  console.log(JSON.stringify({ url: "http://127.0.0.1:" + port }));
+});
+setInterval(() => { if (!fs.existsSync(process.env.KUVO_HOME)) process.exit(0); }, 300);
+`;
 const realKeeper = (...args) => spawnSync("sh", [path.join(home, "bin", "kuvo-start"), ...args], { env: process.env, encoding: "utf8", timeout: 120_000 });
 
 // The engine, as the real launcher starts it (`opencode serve --port <port> --hostname 127.0.0.1`):
@@ -159,7 +169,7 @@ test("a box takes a release with the real keeper: it starts the release's engine
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
   }
   write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
-  write(path.join(root, "box/dist/kuvo-agents.js"), `import fs from "node:fs";\nconsole.log(JSON.stringify({ url: "http://127.0.0.1:" + process.env.KUVO_AGENTS_PORT }));\nsetInterval(() => { if (!fs.existsSync(process.env.KUVO_HOME)) process.exit(0); }, 300);\n`);
+  write(path.join(root, "box/dist/kuvo-agents.js"), bridgeStandIn);
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.1.0", linux: builds, darwin: builds }));
   const out = path.join(scratch, "box-release");
   const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out], {
@@ -169,7 +179,7 @@ test("a box takes a release with the real keeper: it starts the release's engine
 
   // Taken from the folder, as a box takes the release an app on its computer carries.
   assert.deepEqual(link.offerUpdate(out, { keys: [pinned], blocked: null }), { status: 202, version: "0.10.0" });
-  const taken = await link.takeOffer({ keys: [pinned], blocked: null, upWithin: 30_000 });
+  const taken = await link.takeOffer({ keys: [pinned], blocked: null });
   assert.equal(taken.result, "updated", JSON.stringify(taken));
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
   assert.equal(alive(before), false, "the engine before, stopped");
@@ -193,7 +203,9 @@ test("a box takes a release with the real keeper: it starts the release's engine
   // Only your own to read, as the launcher leaves them.
   assert.equal((fs.statSync(engineFile).mode & 0o777).toString(8), "600");
   assert.equal(fs.existsSync(path.join(home, "run", ".launching")), false, "the start's lock let go");
-  assert.equal(link.confirmUpdate(), true);
+  // Judged well by the one health rule (its clock the test's: a look a second, three seconds in all).
+  let ticks = 0;
+  assert.equal(await link.settleUpdate({ clock: () => ticks, every: 1000, window: 3000, wait: async () => { ticks += 1000; } }), "well");
 
   // Stop: the engine and the bridge go, and it stays stopped; Start: a new engine, noted anew.
   const stopped = realKeeper("stop");

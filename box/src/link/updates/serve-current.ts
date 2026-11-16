@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { K } from "../home";
-import { boxVersion, isUpdating, updateOnTrial, updateState, type UpdateTrial } from "./update";
+import { boxVersion, isUpdating } from "./update";
 
 /** The box's files a server runs on: its version (`bin/box-version`) and its link's SHA-256
  * (`bin/kuvo-link.js`), null for one that can't be read. */
@@ -25,21 +25,16 @@ export function servedFiles(root = K): ServedFiles {
   return { version: boxVersion(), link };
 }
 
-/** What a server that started on `started` does now: "confirm" an update to the version it runs
- * that's on trial and came up well (the keeper would otherwise take it back); "leave" once the files
- * it runs aren't what it started on any more, no update being under way (one under way changes them
- * as it goes, and may put them back); otherwise "stay". `leaves`: whether it may go (one whose
- * helper starts it again). The rest: a test's. */
+/** What a server that started on `started` does now: "leave" once the files it runs aren't what it
+ * started on any more, no update being under way (one under way changes them as it goes, and may
+ * put them back); otherwise "stay". `leaves`: whether it may go (one whose helper starts it again).
+ * The rest: a test's. Whether an update is well isn't a server's to say (updates/health.ts). */
 export function serveCheck(
   started: ServedFiles,
-  { leaves = true, updating = isUpdating, now = servedFiles, trial = () => (updateOnTrial() ? updateState().trial : undefined) }: { leaves?: boolean; updating?: () => boolean; now?: () => ServedFiles; trial?: () => UpdateTrial | undefined } = {},
-): "confirm" | "leave" | "stay" {
-  if (updating()) return "stay";
-  if (leaves) {
-    const files = now();
-    // (A file missing for a moment, as one is swapped in: not a change yet.)
-    if (files.version && files.link && (files.version !== started.version || files.link !== started.link)) return "leave";
-  }
-  const open = trial();
-  return open?.healthy && started.version && open.to === started.version ? "confirm" : "stay";
+  { leaves = true, updating = isUpdating, now = servedFiles }: { leaves?: boolean; updating?: () => boolean; now?: () => ServedFiles } = {},
+): "leave" | "stay" {
+  if (updating() || !leaves) return "stay";
+  const files = now();
+  // (A file missing for a moment, as one is swapped in: not a change yet.)
+  return files.version && files.link && (files.version !== started.version || files.link !== started.link) ? "leave" : "stay";
 }

@@ -115,7 +115,8 @@ import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
 import { keepMachinesUp } from "./add/keep-up";
 import { serveCheck, servedFiles, servedLink } from "./updates/serve-current";
-import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, confirmUpdate, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { featuresNow, settleUpdate, startSettling } from "./updates/health";
+import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -191,6 +192,7 @@ export { botPersonalities, changePersonalities, mergePersonalities, personalitie
 export { keyFilesWait, syncKeyFiles } from "./keys";
 export { KEEP_UP_FILE, keepUpRound, keepingSelfUp } from "./add/keep-up";
 export { serveCheck, servedFiles } from "./updates/serve-current";
+export { HEALTH, lookAtPieces, settleUpdate } from "./updates/health";
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
@@ -321,26 +323,20 @@ let liveHost: LinkHost | null = null;
 // ---- The commands ----
 
 // What a machine's link does once the relay's welcomed it: your other computers hear who's here,
-// and it tells who's there; a new bridge an update put here says it's well.
+// and it tells who's there.
 function machineWelcomed(host: LinkHost): void {
   announce(host, readEngineFile, undefined, undefined, true).catch(() => {});
   try { docsChanged(host, { greet: true }); } catch {}
-  updateIsWell();
 }
 
 /** This box's engine while it runs, for what's put right in a conversation open there. */
 const runningEngine = (): EngineRecord | null => { try { return readEngineFile(); } catch { return null; } };
 
-// An update on trial is here to stay, if it's well: what waited for that goes on.
-function updateIsWell(): void {
-  try {
-    if (confirmUpdate()) {
-      upgradeIntegrations().catch(() => {});
-      // (Where this Mac's app keeps its keys, tried again while they can't be reached.)
-      if (KEYS_ON_HOST) keepBotsOwnKeysGone(runningEngine);
-      else dropBotsOwnKeys(runningEngine).catch(() => {});
-    }
-  } catch {}
+// An update judged well (updates/health.ts) is here to stay: what waited for that goes on. (Where
+// this Mac's helper keeps its keys, its server, started again on the new code, does that.)
+async function updateIsWell(): Promise<void> {
+  await upgradeIntegrations().catch(() => {});
+  if (!KEYS_ON_HOST) await dropBotsOwnKeys(runningEngine).catch(() => {});
 }
 
 async function run(): Promise<void> {
@@ -466,10 +462,8 @@ async function run(): Promise<void> {
   refreshOwn(readEngineFile).catch(() => {});
   // Your time zone in its bots' and conversations' folders, kept so as it runs.
   keepZone();
-  // Updates: the new bridge, once one put it here, says it's well (after the relay's welcome, or
-  // three minutes); each night's window, one, when nothing runs; a release Kuvo Code here offered,
-  // at the first round nothing runs (PROTOCOL.md, "Updates").
-  setTimeout(updateIsWell, 180_000);
+  // Updates: each night's window, one; a release Kuvo Code here offered, at the next round
+  // (PROTOCOL.md, "Updates"). Whether one is well is its judge's to say (updates/health.ts).
   const nightly = () => {
     noteLauncher();
     noteOlderMacs();
@@ -936,9 +930,7 @@ async function serve(): Promise<void> {
   const look = (): void => {
     if (leaving) return;
     try { dropOldBackups(); } catch {}
-    const check = serveCheck(started, { leaves });
-    if (check === "confirm") updateIsWell();
-    if (check !== "leave") return;
+    if (serveCheck(started, { leaves }) !== "leave") return;
     leaving = true;
     console.error("The box's files changed under it (an update): it goes, for its helper to start the new ones.");
     void leave();
@@ -1218,6 +1210,11 @@ if (main) {
     if (found?.PATH) saveLoginPath(K, found.PATH);
     process.stdout.write(found?.PATH ? launchFromLogin(found) : "");
   }
+  // The update on trial judged (`update --settle`), as the keeper starts it when nothing judges it
+  // (its updater went first: the machine went down, or an update from before this rule).
+  else if (mode === "update" && process.argv.includes("--settle")) {
+    console.log(JSON.stringify({ settled: await settleUpdate({ well: updateIsWell }) }));
+  }
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or
     // `update --offered` (the one Kuvo Code here offered, `kuvo/box/update`, when it's due: nothing
@@ -1258,10 +1255,10 @@ if (main) {
         if (process.ppid === 1) process.exit(0);
       }
       outcome = offered
-        ? await takeOffer({ now, step, ...test })
+        ? await takeOffer({ now, step, features: featuresNow(), ...test })
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
-          : await update({ now, whileBusy: now && !args.includes("--free"), from, step, swapping: () => { swapped = true; }, ...test });
+          : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });
       // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
       if (installer && !now && outcome?.result === "busy") continue;
       if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
@@ -1283,15 +1280,15 @@ if (main) {
       if (pid) process.kill(pid, "SIGTERM");
       // And the server kept for clients, which the keeper starts again, new (serve-kept.ts).
       stopKeptServe();
-      // No bridge to start again (nothing for it to answer): the new version came up, so it's done.
-      if (!needed(readLink())) {
-        confirmUpdate();
-        await upgradeIntegrations().catch(() => {});
-        await dropBotsOwnKeys(runningEngine).catch(() => {});
-      }
     }
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
+    // Judged here, by the one health rule (updates/health.ts), this process staying until it's well
+    // or put back; the installer's, which an app waits on, has a judge of its own do it.
+    if (outcome?.result === "updated") {
+      if (installer) startSettling();
+      else await settleUpdate({ well: updateIsWell });
+    }
   }
   // The browser agents use here (PROTOCOL.md, "The browser on a machine"): `browser install [--now]
   // [--repair]` sets it up, as the keeper starts it (one at a time); `browser start [--now]

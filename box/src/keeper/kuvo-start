@@ -5,6 +5,7 @@
 #   kuvo-start start     starts the engine, after a stop
 #   kuvo-start stop      stops the engine until it's started again
 #   kuvo-start restart   starts the engine over
+#   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
 K="$HOME/.kuvo-code"; R="$K/run"
 mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether process $1 runs and is $2 (in its command line), with any run of slashes in either taken
@@ -187,9 +188,6 @@ keep)
   # (The watchdog an engine from 0.7 had, which an older Mac's start brings, isn't stopped here:
   # nothing kills by a pattern, and it noted no pid to stop it by. It ends by itself once the
   # engine it watched isn't the one in run/engine.json any more.)
-  # An update on trial, nothing put back yet: its twenty minutes count from this keeper's start (a
-  # Mac asleep right after a good update isn't taken back as it wakes, before its server could say so).
-  [ -f "$R/update-trial" ] && [ ! -f "$R/update-restore" ] && touch "$R/update-trial"
   fails=0; next=0; started=; round=0
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
@@ -252,10 +250,10 @@ keep)
       rm -f "$R/attached"
     fi
     # COMPAT(0.8 beta update): an update into this release taken by a Mac's box from before it,
-    # whose server (`serve`, its helper's) runs on with the code from before and never says the
-    # update is well: that one server, by the number it noted (run/serve.json), and only while it's
+    # whose server (`serve`, its helper's) runs on with the code from before and never leaves for
+    # the new: that one server, by the number it noted (run/serve.json), and only while it's
     # that server and started before the new link was put there, is ended, for its helper to start
-    # the new one, which says so. Goes once no Mac's box is from before beta.31.
+    # the new one. Goes once no Mac's box is from before beta.31.
     if [ -f "$R/update-trial" ] && own_mac; then
       s=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)
       if is "$s" "$K/bin/kuvo-link.js serve" && ! is "$s" --kept; then
@@ -269,39 +267,20 @@ keep)
         if [ -n "$e" ] && [ -n "$m" ] && [ $(($(date +%s) - e)) -le $((m + 1)) ]; then kill -TERM "$s" 2>/dev/null; fi
       fi
     fi
-    # An update whose new link never said it's well (it doesn't start, the machine went
-    # down halfway): after twenty minutes, back to what was there (PROTOCOL.md, "Updates").
-    # Five minutes between tries; after six, it gives up and starts what's there.
-    if [ -f "$R/update-trial" ] && [ -f "$K/updates/rollback/restore.sh" ]; then
-      tried=$(stat -c %Y "$R/update-trial" 2>/dev/null || stat -f %m "$R/update-trial" 2>/dev/null || echo "$now")
-      last=$(stat -c %Y "$R/update-restore" 2>/dev/null || stat -f %m "$R/update-restore" 2>/dev/null || echo 0)
-      tries=$(cat "$R/update-restore" 2>/dev/null || echo 0)
-      if [ $((now - tried)) -gt 1200 ] && [ $((now - last)) -gt 300 ]; then
-        if [ "$tries" -lt 6 ]; then
-          echo $((tries + 1)) >"$R/update-restore"
-          # COMPAT(0.8 rollback data): a rollback an update from before rollbacks were code only
-          # kept holds the engine's data (updates/rollback/data), which its restore.sh would put
-          # back over everything written since: moved aside first, to updates/backups (the latest
-          # only), where nothing puts it back; its restore.sh then puts back code only. Unmoved, it
-          # isn't run. The keeper it puts back starts the engine that ran meanwhile where that's newer
-          # than its own (an older one never opens what a newer one wrote). Goes once no box has
-          # such a rollback (each is gone when its trial ends).
-          b="$K/updates/rollback/data"; n="$K/updates/backups/$(date +%Y-%m-%d)-kept-for-a-rollback"
-          if [ ! -e "$b" ] || { mkdir -p "$K/updates/backups" && chmod 700 "$K/updates/backups" && rm -rf "$n" && mv "$b" "$n" && { for o in "$K/updates/backups"/* "$K/updates/backups"/.[!.]*; do [ ! -e "$o" ] || [ "$o" = "$n" ] || rm -rf "$o"; done; true; }; }; then
-            kept="$K/updates/rollback/files/bin/kuvo-start"
-            ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
-            # (None running now, stopped meanwhile: the newest there, as V falls back to.)
-            [ -n "$ran" ] || ran=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-            was=$(sed -n 's/^V=//p' "$kept" 2>/dev/null | head -n 1)
-            if grep -q 'data/opencode.db' "$K/updates/rollback/restore.sh" 2>/dev/null && [ -n "$ran" ] && [ -n "$was" ] && [ "$ran" != "$was" ] && [ "$(printf '%s\n%s\n' "$was" "$ran" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$ran" ]; then
-              sed "s/^V=.*/V=$ran/" "$kept" >"$kept.new" && chmod 700 "$kept.new" && mv -f "$kept.new" "$kept"
-            fi
-            # (In a session of its own: `off` ending this keeper with its group never cuts it midway.)
-            "$S" sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 && rm -f "$R/update-restore"
-          fi
-        else
-          rm -f "$R/update-trial" "$R/update-restore" "$R/stopped"
-        fi
+    # An update on trial that nothing judges (its updater went: the machine went down, or it was
+    # from before the one health rule): a judge of its own, `update --settle`, which takes the
+    # judging up where it was (PROTOCOL.md, "Updates"). Not while an update runs. One that never
+    # gets to look, three times in a row (the new link doesn't run at all), and the code from before
+    # is put back by this keeper itself.
+    if [ -f "$R/update-trial" ] && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && ! is "$(cat "$R/update-judge.pid" 2>/dev/null)" kuvo-link && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; then
+      tries=$(cat "$R/update-settle.tries" 2>/dev/null || echo 0)
+      if [ "$tries" -lt 3 ]; then
+        echo $((tries + 1)) >"$R/update-settle.tries"
+        (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" update --settle >/dev/null 2>&1 </dev/null &)
+      else
+        rm -f "$R/update-settle.tries"
+        # (In a session of its own: `off` ending this keeper with its group never cuts it midway.)
+        "$S" sh "$me" rollback >/dev/null 2>&1
       fi
     fi
     # The browser agents use here: the box sets it up itself (PROTOCOL.md, "The browser on a
@@ -392,6 +371,33 @@ restart)
   sh "$K/bin/kuvo-start" engine
   sh "$K/bin/kuvo-start" box
   up
+  ;;
+rollback)
+  # The update on trial judged unwell (or its judge never ran): the code it replaced put back, as
+  # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
+  [ -f "$R/update-trial" ] || exit 0
+  [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
+  # COMPAT(0.8 rollback data): a rollback an update from before rollbacks were code only kept holds
+  # the engine's data (updates/rollback/data), which its restore.sh would put back over everything
+  # written since: moved aside first, to updates/backups (the latest only), where nothing puts it
+  # back; its restore.sh then puts back code only. Unmoved, it isn't run. The keeper it puts back
+  # starts the engine that ran meanwhile where that's newer than its own (an older one never opens
+  # what a newer one wrote). Goes once no box has such a rollback (each is gone when its trial ends).
+  b="$K/updates/rollback/data"; n="$K/updates/backups/$(date +%Y-%m-%d)-kept-for-a-rollback"
+  if [ -e "$b" ]; then
+    { mkdir -p "$K/updates/backups" && chmod 700 "$K/updates/backups" && rm -rf "$n" && mv "$b" "$n" && { for o in "$K/updates/backups"/* "$K/updates/backups"/.[!.]*; do [ ! -e "$o" ] || [ "$o" = "$n" ] || rm -rf "$o"; done; true; }; } || exit 1
+  fi
+  kept="$K/updates/rollback/files/bin/kuvo-start"
+  ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
+  # (None running now, stopped meanwhile: the newest there, as V falls back to.)
+  [ -n "$ran" ] || ran=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  was=$(sed -n 's/^V=//p' "$kept" 2>/dev/null | head -n 1)
+  if grep -q 'data/opencode.db' "$K/updates/rollback/restore.sh" 2>/dev/null && [ -n "$ran" ] && [ -n "$was" ] && [ "$ran" != "$was" ] && [ "$(printf '%s\n%s\n' "$was" "$ran" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$ran" ]; then
+    sed "s/^V=.*/V=$ran/" "$kept" >"$kept.new" && chmod 700 "$kept.new" && mv -f "$kept.new" "$kept"
+  fi
+  sh "$K/updates/rollback/restore.sh" >/dev/null 2>&1 || exit 1
+  rm -f "$R/update-restore" "$R/update-settle.tries"
+  [ ! -f "$R/update-trial" ]
   ;;
 pause)
   # A Mac's own box stopped until it next starts (Stop Kuvo on this Mac, in its helper's menu):
