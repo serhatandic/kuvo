@@ -272,6 +272,40 @@ fn earlier_messages_go_above_without_moving_what_youre_reading(cx: &mut TestAppC
     assert!(matches!(entries[0], Entry::Earlier));
 }
 
+/// An earlier page that ends in the middle of what the agent did: the steps at the top of what was
+/// shown go into the group the page started, and the reader stays where they were reading.
+#[gpui::test]
+fn an_earlier_page_that_starts_a_group_keeps_the_readers_place(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    open_session(&workspace, "ses_signup", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let step = |id: &str, at: f64, content: serde_json::Value| json!({ "type": "assistant", "id": id, "time": { "created": at, "completed": at + 1.0 }, "content": content });
+    let read = |id: &str, file: &str| json!({ "type": "tool", "id": id, "name": "read", "state": { "status": "completed", "input": { "filePath": file } } });
+    let words: String = (0..40).map(|n| format!("Line {n} of what it found.\n\n")).collect();
+    let messages = |list: serde_json::Value| -> Vec<Message> {
+        let mut newest_first: Vec<Message> = serde_json::from_value(list).unwrap();
+        newest_first.reverse();
+        newest_first
+    };
+    let mut conversation = kuvo_box::Conversation::new("ses_signup", Where::Engine);
+    conversation.catch_up(messages(json!([step("b", 20.0, json!([read("c2", "/p/b.ts"), read("c3", "/p/c.ts")])), step("c", 30.0, json!([{ "type": "text", "text": words }]))])), Some("cursor".into()), &[], Some(false));
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation.clone()), cx));
+    cx.run_until_parked();
+    // Reading up, at the top.
+    view.read_with(cx, |view, _| view.list().list_state().scroll_to(gpui::ListOffset { item_ix: 1, offset_in_item: px(0.) }));
+    view.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |view, _| view.list().is_following()));
+    // The page before: its step's tool goes on with the ones shown, as one group.
+    conversation.take_earlier(messages(json!([step("a", 10.0, json!([{ "type": "text", "text": "Looking." }, read("c1", "/p/a.ts")]))])), None);
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation), cx));
+    cx.run_until_parked();
+    let (keys, items) = view.read_with(cx, |view, _| (view.entries().iter().map(|entry| entry.key().to_owned()).collect::<Vec<_>>(), view.list().item_count()));
+    assert_eq!(keys, ["a", "a#1", "c"]);
+    assert_eq!(items, 3);
+    assert!(!view.read_with(cx, |view, _| view.list().is_following()), "not thrown to the end");
+}
+
 #[gpui::test]
 fn a_run_streams_into_the_conversation_and_its_end_shows(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));

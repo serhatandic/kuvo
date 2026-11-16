@@ -467,6 +467,15 @@ impl ConversationView {
             entries.iter().zip(revisions).filter(|(entry, _)| !matches!(entry, Entry::Earlier)).map(|(entry, revision)| (entry.key(), *revision)).collect()
         }
         let (old_messages, new_messages) = (messages(&old[..old.len() - old_tail], &old_revisions), messages(&new[..new.len() - new_tail], &self.revisions));
+        // The first rows shown may have gone into one an earlier page put ahead of them: what the
+        // agent did at the top of what was shown goes on a group the page started. They go, and
+        // that group comes with the page.
+        let gone = old_messages.iter().take_while(|(key, _)| !new_messages.iter().any(|(now, _)| now == key)).count();
+        if gone > 0 && gone == old_messages.len() {
+            self.list.reset(new.len());
+            return;
+        }
+        let old_messages = &old_messages[gone..];
         // Where what was shown sits among what's shown now.
         let ahead = match old_messages.first() {
             None => 0,
@@ -495,6 +504,11 @@ impl ConversationView {
             state.splice(0..1, 0);
             had_earlier = false;
             count -= 1;
+        }
+        if gone > 0 {
+            let offset = usize::from(had_earlier);
+            state.splice(offset..offset + gone, 0);
+            count -= gone;
         }
         if had_tail && (!same_tail || added > 0) {
             state.splice(count - old_tail..count, 0);
@@ -745,7 +759,7 @@ impl Render for ConversationView {
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
                 let bars = this.bars.clone();
-                let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() };
+                let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix) };
                 entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A

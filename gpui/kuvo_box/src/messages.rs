@@ -111,6 +111,20 @@ impl UserMessage {
         let Some(news) = self.metadata.as_ref().and_then(|metadata| metadata.get("kuvo")?.get("news")?.as_array().cloned()) else { return Vec::new() };
         news.into_iter().filter_map(|each| serde_json::from_value(each).ok()).collect()
     }
+
+    /// The text of a note of its sessions' news its box couldn't read into `kuvo.news` (worded as a
+    /// newer box words it): shown whole, rather than lost.
+    pub fn unread_news(&self) -> Option<String> {
+        let kuvo = self.metadata.as_ref()?.get("kuvo")?;
+        let from = kuvo.get("note")?.get("from")?.as_str()?;
+        (from == "Its sessions" && kuvo.get("news").is_none() && !self.text.trim().is_empty()).then(|| self.text.trim().to_owned())
+    }
+
+    /// Whether it's drawn as a message from other agents: another agent wrote it, or it's the box's
+    /// note of a lead's sessions' news.
+    pub fn is_letter(&self) -> bool {
+        !self.news().is_empty() || self.unread_news().is_some() || self.parts().mail.is_some()
+    }
 }
 
 /// One of a lead's sessions telling it what it did: which session (its address, "" where it isn't

@@ -965,7 +965,7 @@ fn signup(now: f64) -> Vec<Value> {
         user("msg_s4", t + 120_000.0, "Keep what they typed, and say which field is wrong", Some("/plan")),
         json!({ "type": "assistant", "id": "msg_s5", "time": { "created": t + 121_000.0 }, "agent": "build", "model": { "providerID": "anthropic", "id": "claude-opus-5-5" }, "content": [
             // Kuvo Code's own tool, by the title its box gives it.
-            json!({ "type": "tool", "id": "call_k1", "name": "kuvo-browser_read_conversation", "title": "Read another session’s conversation", "doing": "Reading another session’s conversation", "state": { "status": "completed", "input": { "session": "ses_sub" } } }),
+            json!({ "type": "tool", "id": "call_k1", "name": "kuvo-browser_read_conversation", "title": "Read Check the other forms’s conversation", "doing": "Reading Check the other forms’s conversation", "state": { "status": "completed", "input": { "of": "Check the other forms" } } }),
             tool("call_r2", "read", "completed", json!({ "filePath": "web/src/signup/Form.tsx" })),
             tool_with("call_3", "edit", "completed", json!({ "filePath": "web/src/signup/Form.tsx" }), json!({ "metadata": { "files": [{ "file": "web/src/signup/Form.tsx", "additions": 4, "deletions": 2, "status": "modified", "patch": SIGNUP_PATCH }] } })),
             tool_with("call_t1", "shell", "failed", json!({ "command": "npx tsc --noEmit" }), json!({ "error": "error TS2304: Cannot find name 'setFieldError'.\nFound 1 error." })),

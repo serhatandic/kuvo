@@ -104,7 +104,7 @@ pub fn entries(mut conversation: Conversation) -> (Vec<Entry>, Vec<u64>) {
         }
         let row = match &message {
             // Its sessions' news shows, as messages from them; the box's other notes don't.
-            Message::User(user) if !user.news().is_empty() => Some(Entry::Message(Box::new(message))),
+            Message::User(user) if !user.news().is_empty() || user.unread_news().is_some() => Some(Entry::Message(Box::new(message))),
             Message::User(user) if user.is_box_note() => None,
             Message::User(user) => {
                 asked_at.get_or_insert(user.time.created);
@@ -259,7 +259,7 @@ pub fn render(
             outgoing(ix, words, files, failed.as_deref(), sel, own, cx)
         }
         Entry::Message(message) => match &**message {
-            Message::User(user) if !user.news().is_empty() || user.parts().mail.is_some() => {
+            Message::User(user) if user.is_letter() => {
                 let sel = |base: &[u32]| Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), base);
                 from_agents(&user.id, &letters(user), user.time.created, open, toggle, around, &sel, cx)
             }
@@ -324,7 +324,7 @@ pub fn frame(ix: usize, key: &str, body: AnyElement, last: bool) -> AnyElement {
 pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
     match entry {
         Entry::Message(message) => match &**message {
-            Message::User(user) if !user.news().is_empty() || user.parts().mail.is_some() => letters(user)
+            Message::User(user) if user.is_letter() => letters(user)
                 .iter()
                 .enumerate()
                 .filter(|(n, letter)| letter.opens(open, &user.id, *n))
@@ -618,12 +618,14 @@ fn shown_in_group(key: &str, items: &[(Rc<Step>, usize)], at: usize, open: &Hash
     }
     let (step, n) = &items[at];
     match &step.content[*n] {
-        Content::Tool { state, .. } => {
-            let (busy, failed) = call_status(state);
-            failed || (busy && waiting)
-        }
+        Content::Tool { state, .. } => call_status(state).1 || (waiting && waiting_at(items) == Some(at)),
         _ => false,
     }
+}
+
+/// The step of a group the conversation waits on you for, while it does: its last one under way.
+fn waiting_at(items: &[(Rc<Step>, usize)]) -> Option<usize> {
+    items.iter().rposition(|(step, n)| matches!(&step.content[*n], Content::Tool { state, .. } if call_status(state).0))
 }
 
 /// Whether a group folds to a line: it holds more than one tool step.
@@ -636,12 +638,14 @@ fn folds(items: &[(Rc<Step>, usize)]) -> bool {
 /// failed, or that waits on you, shows under it even while it's folded.
 fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, waiting: bool, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
+    // What it waits on you for: its last step under way.
+    let waits_at = waiting.then(|| waiting_at(items)).flatten();
     let lines = |only: &dyn Fn(usize) -> bool| -> Vec<AnyElement> {
         items
             .iter()
             .enumerate()
             .filter(|(at, _)| only(*at))
-            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waiting, sel, cx))
+            .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), sel, cx))
             .collect()
     };
     if !folds(items) {
@@ -656,7 +660,8 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
             _ => None,
         })
         .collect();
-    let under_way = calls.iter().rev().find(|call| call_status(call.state).0);
+    // (While it waits on you, that step shows under the line, and the line sums up the rest.)
+    let under_way = calls.iter().rev().find(|call| call_status(call.state).0).filter(|_| waits_at.is_none());
     let thinking = items.iter().any(|(step, n)| matches!(step.content[*n], Content::Reasoning { done: false, .. }));
     let id = SharedString::from(format!("group-{key}"));
     let leading: AnyElement = if under_way.is_some() || thinking {
@@ -826,6 +831,10 @@ impl Letter {
 /// The letters a message of another agent's, or the box's note of its sessions' news, is: one for
 /// each session it tells of, or the one from the agent that wrote it.
 pub fn letters(user: &kuvo_box::messages::UserMessage) -> Vec<Letter> {
+    // Its sessions' news its box couldn't read: whole, from them, rather than lost.
+    if let Some(text) = user.unread_news() {
+        return vec![Letter { from: "Its sessions".into(), status: None, said: text, session: None }];
+    }
     let news: Vec<News> = user.news();
     if !news.is_empty() {
         return news
@@ -889,7 +898,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             .text_ui(TypeSize::Small)
             .child(div().flex().flex_none().w(px(16.)).justify_center().child(Icon::new(IconName::Send).size(IconSize::Nav).color(c.accent)))
             .child(div().flex().flex_1().min_w_0().child(from))
-            .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::clock(at)))
+            .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, time::now_ms())))
             .children(open_it)
             .when(letter.folds(), |d| d.child(Icon::new(if whole { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint)));
         let said: AnyElement = if whole {
@@ -1090,6 +1099,15 @@ pub fn tool_label(name: &str, state: &Value, busy: bool) -> (IconName, SharedStr
         "websearch" => (IconName::Globe, "Searched the web for", "Searching the web for", text("query")),
         "task" | "subagent" => (IconName::Bot, "Asked a subagent", "Asking a subagent", text("description")),
         "execute" => (IconName::Terminal, "Ran code", "Running code", None),
+        "skill" => (IconName::Sparkle, "Used the skill", "Using the skill", text("name")),
+        "question" => (IconName::Question, "Asked you", "Asking you", None),
+        "codesearch" => (IconName::Search, "Searched code for", "Searching code for", text("query")),
+        "lsp" => (IconName::Search, "Looked up code", "Looking up code", file()),
+        "batch" => (IconName::Sliders, "Ran steps together", "Running steps together", None),
+        "plan_enter" => (IconName::Check, "Started planning", "Starting to plan", None),
+        "plan_exit" => (IconName::Check, "Finished planning", "Finishing planning", None),
+        "context" => (IconName::File, "Read its context", "Reading its context", None),
+        "invalid" => (IconName::Warning, "Tried a tool it doesn’t have", "Trying a tool it doesn’t have", None),
         "todowrite" | "todoread" => (IconName::Check, "Updated its plan", "Updating its plan", None),
         // (Named by its box, as `call_label` says; never by its id, which reads as code.)
         _ => (IconName::Sliders, "Used a tool", "Using a tool", None),
@@ -1434,11 +1452,18 @@ mod tests {
                 { "type": "user", "id": "m1", "time": { "created": 1 }, "text": "[From &Mira] Done", "metadata": { "kuvo": { "parts": { "words": "Done.\n\nAll green.", "mail": { "name": "Mira", "session": "ses_m" } } } } },
                 { "type": "user", "id": "m2", "time": { "created": 2 }, "text": "[Session asks] …", "metadata": { "kuvo": { "note": { "from": "Its sessions", "line": "x" }, "news": [{ "session": "ses_a", "title": "Sign-in", "status": "asks", "said": "May I run npm i?" }] } } },
                 { "type": "user", "id": "m3", "time": { "created": 3 }, "text": "[Goal started]", "metadata": { "kuvo": { "note": { "from": "Goal", "line": "Goal started" } } } },
+                // Only one still working: nothing to show.
+                { "type": "user", "id": "m4", "time": { "created": 4 }, "text": "[Session still working] …", "metadata": { "kuvo": { "note": { "from": "Its sessions", "line": "x" }, "news": [] } } },
+                // Worded in a way its box couldn't read: whole, rather than lost.
+                { "type": "user", "id": "m5", "time": { "created": 5 }, "text": "[Session dreamed] \"Sign-in\" saw sheep.", "metadata": { "kuvo": { "note": { "from": "Its sessions", "line": "x" } } } },
             ]),
             false,
             None,
         ));
-        assert_eq!(keys(&rows), ["m1", "m2"]);
+        assert_eq!(keys(&rows), ["m1", "m2", "m5"]);
+        let Entry::Message(message) = &rows[2] else { panic!() };
+        let Message::User(user) = &**message else { panic!() };
+        assert_eq!(letters(user)[0].said, "[Session dreamed] \"Sign-in\" saw sheep.");
         let Entry::Message(message) = &rows[0] else { panic!() };
         let Message::User(user) = &**message else { panic!() };
         let mail = letters(user);
