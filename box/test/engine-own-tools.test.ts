@@ -7,9 +7,9 @@
 
 import "./safety"
 import { afterAll, expect, test } from "bun:test"
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { kuvoTools, setToolProgram } from "../src/agents/kuvotools"
 
 const here = import.meta.dir
@@ -107,8 +107,32 @@ test("the retired Mac app's box, which gives its engine the app's own tools, get
   expect(config.mcp).toBeUndefined()
 }, SPAWNS)
 
-test("kuvo-launch asks for them", () => {
-  // (Its whole start needs an engine; what it runs for the engine's settings is this line.)
-  const launch = readFileSync(join(here, "../src/keeper/kuvo-launch"), "utf8")
-  expect(launch).toMatch(/"\$K\/bin\/kuvo-link\.js" engine-config tools /)
-})
+test("a Mac's own box's start (kuvo-launch) gives its engine them", async () => {
+  const { home, env } = macBox()
+  const checkout = join(here, "../..")
+  const keeper = join(checkout, "box/src/keeper")
+  copyFileSync(join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), join(home, "bin", "kuvo-link.js"))
+  for (const file of ["kuvo-launch", "kuvo-setsid"]) {
+    copyFileSync(join(keeper, file), join(home, "bin", file))
+    chmodSync(join(home, "bin", file), 0o755)
+  }
+  // The engine: this test's Bun for the box's scripts, as the engine's own runtime runs them; started
+  // to serve, it notes what it was started with, says it's listening, and is done.
+  const startedWith = join(home, "engine-started-with")
+  const engine = join(home, "engine", "test", "opencode")
+  mkdirSync(join(home, "engine", "test"), { recursive: true })
+  writeFileSync(engine, `#!/bin/sh
+if [ "$1" = serve ]; then printf '%s' "$OPENCODE_CONFIG_CONTENT" >${JSON.stringify(startedWith)}; echo "server listening on http://127.0.0.1:$3"; exit 0; fi
+exec ${JSON.stringify(process.execPath)} "$@"
+`)
+  chmodSync(engine, 0o755)
+  // As the keeper starts it: what it's given on its first lines (launch.env), the desktop app giving
+  // the engine no settings of its own.
+  const given = ["KUVO_PORT=1", 'KUVO_RECORD="port":1,"password":"x"}', "KUVO_VERSION=test", "OPENCODE_CLIENT=desktop", ""].join("\n")
+  const start = Bun.spawn(["sh", join(home, "bin", "kuvo-launch")], { env: { PATH: env.PATH, HOME: dirname(home), TMPDIR: env.TMPDIR }, stdin: new TextEncoder().encode(given), stdout: "pipe", stderr: "pipe" })
+  const said = await new Response(start.stderr).text()
+  expect({ exit: await start.exited, said }).toEqual({ exit: 0, said: "" })
+  const server = JSON.parse(readFileSync(startedWith, "utf8")).mcp.servers["kuvo-browser"]
+  expect(server.command.slice(-2)).toEqual([join(home, "bin", "kuvo-browser.js"), "mcp"])
+  expect(await listed(server, env)).toContain("make_project")
+}, SPAWNS)

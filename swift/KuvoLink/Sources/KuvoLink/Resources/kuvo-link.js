@@ -51789,7 +51789,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1cc32fa25acd";
+var BRIDGE_VERSION = "ed9c8cb3f9a9";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -64618,7 +64618,7 @@ var OPEN_WITHIN = 25000;
 var GONE3 = "Kuvo Code isn't where it was installed on this Mac any more (it was moved or deleted), so its browser can't be opened. Ask the user to open Kuvo Code, then try again.";
 var couldntOpen = (why) => `Kuvo Code couldn't be opened in the background on this Mac for its browser (${why.trim()}). Ask the user to open Kuvo Code, then try again.`;
 var NOT_READY = `Kuvo Code was opened in the background on this Mac, but its browser wasn't ready within ${WAIT / 1000} seconds. Try again in a few minutes; if it still isn't ready, ask the user to open Kuvo Code.`;
-var NEEDS_APP = "This tool needs Kuvo Code open on this Mac, and it isn't open now. Ask the user to open Kuvo Code, then try again.";
+var NEEDS_APP = "Kuvo Code on this Mac has no browser for agents yet, so this tool can't run here. Use webfetch to read a page instead, or tell the user what you'd need to do in a browser.";
 var NO_OPENER = "nothing that opens it is running on this Mac";
 function readJSON3(file) {
   try {
