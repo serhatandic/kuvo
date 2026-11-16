@@ -68,6 +68,7 @@ var onMacBox = onMachine && !!machineHome && (() => {
 })();
 var yourHomes = !onMachine || onMacBox;
 var groupsMemoryKey = process.env.KUVO_GROUPS_MEMORY_KEY || (onMacBox ? "kuvo.groups" : undefined);
+var formerGroupsMemoryKey = onMacBox ? "kuvo.groups.machine" : undefined;
 var ownFolders = {};
 function takeOwnFolders() {
   for (const key of Object.keys(process.env)) {
@@ -31574,6 +31575,7 @@ class GroupRunner {
   get peers() {
     return this.context.peers;
   }
+  formerKeyGone = new Set;
   get memoryKey() {
     return this.context.memoryKey ?? memoryKey;
   }
@@ -32694,6 +32696,11 @@ class GroupRunner {
     const api = this.ownAPI(bot);
     if (!api)
       return;
+    const former = this.context.formerMemoryKey;
+    if (former && former !== this.memoryKey && !this.formerKeyGone.has(bot.sessionID)) {
+      this.formerKeyGone.add(bot.sessionID);
+      await api.removeInstruction(bot.sessionID, former).catch(() => {});
+    }
     const folder = bot.folder + "/groups";
     if (options.forgetting)
       this.context.store.removeFile(`${folder}/${options.forgetting}.md`);
@@ -36550,6 +36557,7 @@ if (groupFolders) {
       listen: (session, listener) => link4.listen(session, listener),
       place: onMachine ? "this machine" : undefined,
       memoryKey: groupMemoryKey,
+      formerMemoryKey: formerGroupsMemoryKey,
       agentAccount: async (provider) => {
         const agent = roster.find(provider);
         if (!agent)
@@ -36817,4 +36825,4 @@ if (onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 8ebdd33fef40d541d366fa6a75a094d326e8afb6e90f916fc82ba156fc42acf6
+// Built from Packages/Box/src/agents 7dedd0bbc9eb2c591740fadec59ac09d16850f6a47e59ae8480a0b08fcf53f7a

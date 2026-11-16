@@ -7184,8 +7184,9 @@ function commandEnv(from = process.env) {
   return env;
 }
 var NOT_FROM_LOGIN = /^(DYLD_|BUN_|KUVO_|OPENCODE_)|^(NODE_OPTIONS|PWD|OLDPWD|SHLVL|_)$/;
+var SHELLS_OWN = /^(BASH|BASHOPTS|BASHPID|BASH_[A-Z_]+|SHELLOPTS|POSIXLY_CORRECT|ENV|IFS|CDPATH|UID|EUID|PPID|PS[1-4]|OPTIND|OPTARG|LINENO|RANDOM|SECONDS|FUNCNAME|GROUPS|HOME)$/;
 function launchFromLogin(found) {
-  return Object.entries(found).filter(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (name === "BUN_INSTALL" || !NOT_FROM_LOGIN.test(name)) && !/[\r\n\0]/.test(value)).map(([name, value]) => `${name}=${value}
+  return Object.entries(found).filter(([name, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (name === "BUN_INSTALL" || !NOT_FROM_LOGIN.test(name)) && !SHELLS_OWN.test(name) && !/[\r\n\0]/.test(value)).map(([name, value]) => `${name}=${value}
 `).join("");
 }
 var LOGIN_READ_FOR = 60000;
@@ -40713,7 +40714,7 @@ function stillOff(agents) {
   return gap ? notOnWords() : null;
 }
 async function runOutside(command, folder, seconds, signal) {
-  const { output, code, timedOut } = await runCommand(command, folder, commandEnv(), seconds * 1000, signal);
+  const { output, code, timedOut } = await runCommand(command, folder, await askedEnv(), seconds * 1000, signal);
   const shown = output.length > MOST_OUTPUT ? "…" + output.slice(-MOST_OUTPUT).replace(/^[^\n]*\n/, "") : output;
   return { shown, code, timedOut };
 }
@@ -41894,7 +41895,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ef498319c7b8";
+var BRIDGE_VERSION = "e159a873974c";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -58227,7 +58228,7 @@ async function runWith(caller, args, signal) {
     allowed.set(item.id, may.how);
   }
   const scratch = path191.join(RUN_FOLDER, crypto61.randomBytes(8).toString("hex"));
-  const env = commandEnv();
+  const env = await askedEnv();
   const hidden = [];
   try {
     fs179.mkdirSync(scratch, { recursive: true, mode: 448 });
