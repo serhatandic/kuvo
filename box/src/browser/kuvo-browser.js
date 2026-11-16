@@ -2780,6 +2780,9 @@ function boxRoute(request, { timeout = 30_000, cancelled = () => false, once = f
         resolve(null);
       }
     });
+    // A script that ends before reading what it's asked (one that couldn't start) answers nothing:
+    // its closed input is that, never an error that ends every tool with this process.
+    child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(request));
   });
 }
@@ -2906,6 +2909,8 @@ function vaultRoute(request, call, timeout = 60_000) {
         done(null);
       }
     });
+    // (As boxRoute: a script that ended unread answers nothing.)
+    child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(request));
   });
 }

@@ -1,4 +1,4 @@
-// kuvo-browser 0b173396124d97d1
+// kuvo-browser 32dba7c4eaa1d61f
 // Built from box/src/browser by scripts/build-browser.sh: change those, then run it. Never edit this file.
 // One capture class's clock and digest; pure so its backoff is tested without sleeps.
 export function framePolicy() {
@@ -102,7 +102,7 @@ const TAB_IDLE = Number(process.env.KUVO_BROWSER_TAB_IDLE || 3600) * 1000;
 // branch bumps it by hand. The keeper of the file that's in place now replaces a different one
 // that's running (its pages close, its sign-ins stay); a process whose file has been replaced since
 // it started never replaces one (`replacesKeeper`).
-const KEEPER = "3f5955b61bd5";
+const KEEPER = "a080f624e6f1";
 // COMPAT(0.7 keeper-number): what a keeper says it is to processes from before KEEPER was a hash. Goes 3 months after 0.8.0.
 // Those compare numbers, raised by hand to 50, and replace a keeper whose number is lower than
 // theirs: every keeper since says 51, so none of them replaces it.
@@ -2799,6 +2799,9 @@ function boxRoute(request, { timeout = 30_000, cancelled = () => false, once = f
         resolve(null);
       }
     });
+    // A script that ends before reading what it's asked (one that couldn't start) answers nothing:
+    // its closed input is that, never an error that ends every tool with this process.
+    child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(request));
   });
 }
@@ -2925,6 +2928,8 @@ function vaultRoute(request, call, timeout = 60_000) {
         done(null);
       }
     });
+    // (As boxRoute: a script that ended unread answers nothing.)
+    child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify(request));
   });
 }
