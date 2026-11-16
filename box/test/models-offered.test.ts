@@ -152,12 +152,13 @@ test("the route offers an API-key provider and refreshes its models when credent
 
 test("bridge bots offer provider models too; engine bots explain choosing a coding agent in Edit Bot", async () => {
   let sessionOnBridge = false
+  let botSession = true
   const serve = (agents: boolean) => Bun.serve({ port: 0, fetch(request) {
     const route = new URL(request.url).pathname
     if (route.startsWith("/api/session/") && sessionOnBridge !== agents) return new Response("", { status: 404 })
     const provider = agents ? "claude-code" : "opencode-go"
     const data = route.startsWith("/api/session/")
-      ? { id: "bot-session", metadata: { kuvo: { bot: "bot-one" } } }
+      ? { id: "bot-session", metadata: botSession ? { kuvo: { bot: "bot-one" } } : {} }
       : route === "/api/provider" ? [{ id: provider }]
       : route === "/api/model" ? [listed(provider, "model", "Model", [])]
       : route === "/api/integration" ? [{ id: provider, name: provider, methods: [{ type: "key" }], connections: [{}], metadata: { modelsComplete: true } }]
@@ -186,5 +187,9 @@ test("bridge bots offer provider models too; engine bots explain choosing a codi
     const answer = await read(false)
     expect(answer.models.map((model: any) => model.providerID)).toEqual(["opencode-go"])
     expect(answer.note).toBe("To use a coding agent in this bot, change its model in Edit Bot.")
+    botSession = false
+    const ordinary = await read(false)
+    expect(ordinary.models.map((model: any) => model.providerID)).toEqual(["opencode-go"])
+    expect(ordinary.note).toContain("This conversation uses provider models")
   } finally { engine.stop(true); agents.stop(true); forgetModelLists() }
 })
