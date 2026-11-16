@@ -6952,6 +6952,53 @@
       },
       "dropped?": {
        "list": "string"
+      },
+      "steps?": {
+       "list": {
+        "object": {
+         "step": {
+          "oneOf": [
+           {
+            "literal": "plan"
+           },
+           {
+            "literal": "install"
+           },
+           {
+            "literal": "keys"
+           },
+           {
+            "literal": "clone"
+           },
+           {
+            "literal": "upgrade"
+           },
+           {
+            "literal": "database"
+           },
+           {
+            "literal": "rewrite"
+           },
+           {
+            "literal": "check"
+           },
+           {
+            "literal": "place"
+           },
+           {
+            "literal": "fix"
+           },
+           {
+            "literal": "clear"
+           },
+           {
+            "literal": "done"
+           }
+          ]
+         },
+         "title": "string"
+        }
+       }
       }
      }
     }
@@ -7230,6 +7277,53 @@
       },
       "dropped?": {
        "list": "string"
+      },
+      "steps?": {
+       "list": {
+        "object": {
+         "step": {
+          "oneOf": [
+           {
+            "literal": "plan"
+           },
+           {
+            "literal": "install"
+           },
+           {
+            "literal": "keys"
+           },
+           {
+            "literal": "clone"
+           },
+           {
+            "literal": "upgrade"
+           },
+           {
+            "literal": "database"
+           },
+           {
+            "literal": "rewrite"
+           },
+           {
+            "literal": "check"
+           },
+           {
+            "literal": "place"
+           },
+           {
+            "literal": "fix"
+           },
+           {
+            "literal": "clear"
+           },
+           {
+            "literal": "done"
+           }
+          ]
+         },
+         "title": "string"
+        }
+       }
       }
      }
     }
