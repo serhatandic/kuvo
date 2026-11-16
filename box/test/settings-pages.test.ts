@@ -63,6 +63,7 @@ test("the box lists its sections, each with what a sidebar and search show", asy
     ["clock", "Clock", "General", "settings"],
     ["permissions", "Permissions", "Agents & Tools", "shield"],
     ["browser", "Browser", "System", "globe"],
+    ["computer", process.platform === "darwin" ? "This Mac" : "This Computer", "System", "computer"],
     ["git", "Git", "Projects", "branch"],
     ["worktrees", "Worktrees", "Projects", "folder"],
     ["storage", "Storage", "System", "drive"],
@@ -652,4 +653,124 @@ test("Worktree folder changes refuse a config edit after the page read", async (
   expect(await worktreesChange(context, original, "")).toMatchObject({ status: 409, stale: true })
   expect(await worktreesChange(context, { ...original, id: "unexpected" }, "")).toMatchObject({ status: 400 })
   expect(kept(CONFIG_FILE)).toBe(before)
+})
+
+// This computer's own page (PROTOCOL.md, "A box's settings", This computer): how it stands, its
+// version and update, "Let my devices connect", and on a Mac what macOS allows Kuvo Helper. What
+// only a Mac can say (launchd, its helper, its link) is the test's own here; the page, its words
+// and what each row does are the box's.
+const { computerFacts } = await import("../src/link/areas/settings-pages")
+const realFacts = { ...computerFacts }
+const fromApp = (method: string, path: string, body?: unknown) => ask(handler, method, path, body)
+/** Asked as a phone or another computer's app asks (not the app beside this box). */
+async function fromAway(path: string): Promise<any> {
+  let text = ""
+  for await (const piece of handler({ method: "GET", path, headers: {} }, undefined)) if ("body" in piece) text += Buffer.from(piece.body).toString()
+  return JSON.parse(text)
+}
+const update = (more: Record<string, unknown> = {}) => ({ setUp: true, version: "1.0.0", engine: "2.2.6", latest: "1.0.0", last: null, updating: null, blocked: null, ...more })
+const allowed = (screenRecording: boolean | null, accessibility: boolean | null) => ({
+  applies: true, name: "Kuvo Helper", known: screenRecording !== null, screenRecording, accessibility, bundle: "/Users/sam/.kuvo-code/bin/Kuvo Helper.app",
+  list: [
+    { id: "screenRecording" as const, name: "Screen Recording", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", byHand: true, allowed: screenRecording, asks: screenRecording === false },
+    { id: "accessibility" as const, name: "Accessibility", settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", byHand: true, allowed: accessibility, asks: accessibility === false },
+  ],
+})
+/** A Mac's own box, as its helper keeps it, with its link's switch kept by the test. */
+function thisMac(more: Partial<typeof computerFacts> = {}) {
+  const mac = { devices: true as boolean | null, restarted: 0 }
+  Object.assign(computerFacts, realFacts, {
+    kind: () => "ownMac", restarts: () => true, running: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false,
+    restart: async () => { mac.restarted++; return { status: 202 } }, devices: () => mac.devices, letDevices: async (on: boolean) => { mac.devices = on; return true },
+    ...more,
+  })
+  return mac
+}
+afterAll(() => { Object.assign(computerFacts, realFacts) })
+const onMac = process.platform === "darwin"
+
+test.if(onMac)("This Mac's page says how it stands in its rows' titles: running, its version, and your devices let in, with what macOS allows its helper", async () => {
+  thisMac()
+  const sections = (await fromApp("GET", "kuvo/settings")).json.sections
+  expect(sections.find((section: any) => section.id === "computer").title).toBe("This Mac")
+  const shown = (await fromApp("GET", "kuvo/settings/computer")).json
+  expect(shown.title).toBe("This Mac")
+  expect(shown.groups.map((group: any) => [group.title, group.rows.map((row: any) => [row.title, row.line, row.value])])).toEqual([
+    [undefined, [
+      ["Running", "Kuvo Helper keeps it running, and starts it at login.", true],
+      ["Kuvo Code 1.0.0", "Up to date. It updates itself when nothing’s at work.", "1.0.0"],
+      ["Let my devices connect", "Your phone and other computers reach this Mac, end to end encrypted.", true],
+    ]],
+    ["What macOS Allows Kuvo Helper", [
+      ["Login Items", "Kuvo starts when you log in to this Mac.", "On"],
+      ["Screen Recording", "For agents that look at the screen.", "Allowed"],
+      ["Accessibility", "For agents that click and type in other apps.", "Allowed"],
+      ["Files and Folders", "macOS asks when an agent first opens Desktop, Documents or Downloads.", "Asked when needed"],
+    ]],
+  ])
+  // No word of a box or a core anywhere on it.
+  expect(JSON.stringify(shown)).not.toMatch(/\bbox\b|Kuvo Core/i)
+})
+
+test.if(onMac)("what needs you on This Mac is a warning with the way to it: Login Items off, a permission not allowed, an update that's ready", async () => {
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ latest: "1.0.1" }), working: async () => true })
+  const shown = (await fromApp("GET", "kuvo/settings/computer")).json
+  expect(rowOf(shown, "state").line).toBe("Kuvo Helper keeps it running.")
+  expect(rowOf(shown, "login-items")).toMatchObject({ tone: "warning", line: "Off, so Kuvo on this Mac doesn’t start at login.", actions: [{ id: "open-login-items", title: "Open Login Items", opens: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" }] })
+  expect(rowOf(shown, "allows-screenRecording")).toMatchObject({ tone: "warning", line: "Not allowed. Agents can’t look at the screen.", actions: [{ title: "Open System Settings", opens: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" }] })
+  expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet" })
+  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs when nothing’s at work, or now." })
+  // Work under way is said before it's stopped.
+  expect(rowOf(shown, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
+  expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
+
+  // From your phone the same page names the Mac, and what opens only on it says so instead.
+  const away = await fromAway("kuvo/settings/computer")
+  expect(away.title).toBe("devbox")
+  expect(rowOf(away, "devices").line).toBe("Your phone and other computers reach devbox, end to end encrypted.")
+  // (A device that turned it off would cut itself off: it's switched on the Mac itself.)
+  expect(rowOf(away, "devices").can).toEqual({ why: "Change it in Kuvo Code on devbox itself." })
+  expect(rowOf(away, "login-items").actions[0]).toEqual({ id: "open-login-items", title: "Open Login Items", can: { why: "Open it on devbox itself." } })
+  expect(rowOf(away, "allows-screenRecording").actions[0].opens).toBeUndefined()
+})
+
+test.if(onMac)("Let my devices connect is switched on This Mac's page, asked first as it's turned off, and Restart restarts it", async () => {
+  const mac = thisMac()
+  let shown = (await fromApp("GET", "kuvo/settings/computer")).json
+  expect(rowOf(shown, "devices")).toMatchObject({ kind: "switch", value: true, can: true, confirm: { title: "Stop letting your devices connect?", button: "Turn Off" } })
+  shown = (await ask(handler, "PATCH", "kuvo/settings/computer", { row: "devices", value: false, was: rowOf(shown, "devices").revision })).json
+  expect([mac.devices, rowOf(shown, "devices").value, rowOf(shown, "devices").confirm]).toEqual([false, false, undefined])
+  // (Read before it changed: refused, with the page as it is.)
+  const stale = await ask(handler, "PATCH", "kuvo/settings/computer", { row: "devices", value: true, was: "before" })
+  expect([stale.status, mac.devices]).toEqual([409, false])
+
+  const restarted = await ask(handler, "POST", "kuvo/settings/computer/state/restart", { was: rowOf(shown, "state").revision })
+  expect([restarted.status, mac.restarted]).toEqual([200, 1])
+  // One that can't be restarted from here says why, and isn't.
+  thisMac({ kind: () => "appMac", restarts: () => false, restart: async () => { mac.restarted++; return { status: 202 } } })
+  shown = (await fromApp("GET", "kuvo/settings/computer")).json
+  expect(rowOf(shown, "state").actions[0].can).toEqual({ why: "Kuvo Code on devbox restarts it: restart it there." })
+  expect((await ask(handler, "POST", "kuvo/settings/computer/state/restart", { was: rowOf(shown, "state").revision })).status).toBe(403)
+  expect(mac.restarted).toBe(1)
+})
+
+test("a computer you added has the same page without a Mac's rows: no helper, nothing of macOS, and devices always let in", async () => {
+  Object.assign(computerFacts, realFacts, { update: () => update({ setUp: false }), working: async () => false })
+  // (No engine in this test's home, as on a computer whose engine is down: said, with the way out.)
+  const shown = await fromAway("kuvo/settings/computer")
+  expect(shown.groups.map((group: any) => group.id)).toEqual(["computer"])
+  expect(shown.groups[0].rows.map((row: any) => [row.id, row.kind, row.line])).toEqual([
+    ["state", "actions", "Its engine isn’t running, so no agent works here. Restart starts it again."],
+    ["version", "status", "Updates aren’t set up for devbox yet."],
+    ["devices", "status", "Your phone and other computers reach devbox, end to end encrypted. A computer you added always lets them in."],
+  ])
+})
+
+test.if(onMac)("Check Now says it's looking, not installing, and an engine that's down is said where Running would be", async () => {
+  thisMac({ update: () => update({ updating: "checking" }), running: () => false })
+  const shown = (await fromApp("GET", "kuvo/settings/computer")).json
+  expect(rowOf(shown, "version")).toMatchObject({ line: "Looking for a newer version.", busy: "Checking…" })
+  expect(rowOf(shown, "state")).toMatchObject({ title: "Not running", tone: "warning" })
+  thisMac({ update: () => update({ updating: "installing" }) })
+  expect(rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")).toMatchObject({ line: "A newer version is being installed.", busy: "Updating…" })
 })

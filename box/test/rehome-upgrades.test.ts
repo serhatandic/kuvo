@@ -104,6 +104,8 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
   expect(readJSON(join(K, "box", "work.json"))).toEqual({ keepsAwake: false })
   expect(readJSON(join(K, "box", "approval.json"))).toEqual({ last: "askFirst" })
   expect(readFileSync(join(K, "box", "defaults-added"), "utf8")).toBe("websearch\n")
+  // Someone who used an earlier Kuvo Code has had the first run: they land in their sessions.
+  expect(existsSync(join(K, "run", "welcomed.json"))).toBe(true)
   // "Let my devices connect" was never set on this Mac: the box starts with its own (on).
   expect(existsSync(join(K, "run", "mac-link.json"))).toBe(false)
   // This Mac's bot, as the box reads one; the list beside the bots' folder, naming where they are now.

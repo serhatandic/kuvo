@@ -304,6 +304,14 @@ function link({ prefs, staged, home }: Upgrade): void {
   writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
 }
 
+/** Someone who used an earlier Kuvo Code has had its first run: the box they move into says so
+ * (`run/welcomed.json`, "Your setup"), so they land in their sessions, not in the Welcome's steps. */
+function welcomed({ staged }: Upgrade): void {
+  const file = staged("run/welcomed.json");
+  // (No time in it: a move run again writes the same file, and only its being there is read.)
+  if (!exists(file)) writeWhole(file, JSON.stringify({ moved: true }));
+}
+
 // Bots, personalities, group chats
 
 interface OldBot { id: string; name: string; job: string; instructions: string; look: unknown; machine?: string; project?: string; folder: string; sessionID: string; created: string; model?: unknown; personality?: string; agents?: boolean; updated?: string }
@@ -596,7 +604,7 @@ export function runUpgrades(run: RunPlan, move: MoveContext): string[] {
   const places = ["box", "run", "bots", "groups", "agents"];
   const madeHere = places.filter(name => !exists(upgrade.staged(name)));
   for (const name of places) fs.mkdirSync(upgrade.staged(name), { recursive: true, mode: 0o700 });
-  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, bots, personalities, groupChats, letters, usage, said]) each(upgrade);
+  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, welcomed, bots, personalities, groupChats, letters, usage, said]) each(upgrade);
   enginePlugin(run.release, upgrade);
   // (A place nothing was written in isn't made: a Mac with no bots gets no bots' folder from this.)
   for (const name of madeHere) if (name !== "box") try { fs.rmdirSync(upgrade.staged(name)); } catch {}

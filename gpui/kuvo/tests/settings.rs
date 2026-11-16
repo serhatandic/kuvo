@@ -1176,3 +1176,78 @@ fn matching_list_heading_puts_search_first_without_a_duplicate_heading_row(cx: &
     assert!(shown(cx, "row-sessions-field"));
     assert!(shown(cx, "row-alpha"));
 }
+
+/// Settings › This Mac is the box's page of how Kuvo stands on this computer: drawn from its
+/// description, each row's title saying how it stands, with no word of a box anywhere.
+#[gpui::test]
+fn this_mac_says_how_kuvo_stands_here_and_what_macos_allows_its_helper(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions { accessibility: true, later: vec!["screenRecording".into()], ..kuvo::stand_in::permissions::Permissions::nothing_allowed() });
+    stand_in.set_computer(|computer| computer.at_login = false);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Computer");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("This Mac"));
+    assert!(shown(cx, "row-state") && shown(cx, "row-version") && shown(cx, "row-devices-switch"));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-state")).as_deref(), Some("Kuvo Helper keeps it running."));
+    // What needs you is there to look up, each with its way to it, though "Not Now" put the
+    // heads-up off: Login Items off, and a permission that isn't allowed.
+    assert!(!shown(cx, "permission-heads-up"));
+    assert!(shown(cx, "row-login-items-open-login-items") && shown(cx, "row-allows-screenRecording-open-system-settings"));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-allows-screenRecording")).as_deref(), Some("Not allowed. Agents can’t look at the screen."));
+    // One that's allowed, and one macOS asks about itself, offer nothing.
+    assert!(shown(cx, "row-allows-accessibility") && !shown(cx, "row-allows-accessibility-open-system-settings") && shown(cx, "row-allows-files"));
+    // Login Items opens its own pane in System Settings.
+    click(cx, "row-login-items-open-login-items");
+    assert_eq!(cx.opened_url().as_deref(), Some("x-apple.systempreferences:com.apple.LoginItems-Settings.extension"));
+}
+
+#[gpui::test]
+fn let_my_devices_connect_is_asked_first_as_its_turned_off_and_restart_says_what_stops(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_computer(|computer| computer.working = true);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Computer");
+    // On for a new Mac. Turning it off is asked first, in the box's words; Cancel sends nothing.
+    assert!(stand_in.computer().devices);
+    click(cx, "row-devices-switch");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()).map(|(title, _, button)| (title, button)), Some(("Stop letting your devices connect?".into(), "Turn Off".into())));
+    assert!(bodies(&stand_in, "PATCH", "kuvo/settings/computer").is_empty());
+    click(cx, "confirm-go");
+    assert!(!stand_in.computer().devices);
+    // Back on, with nothing to ask.
+    click(cx, "row-devices-switch");
+    assert!(stand_in.computer().devices && !shown(cx, "settings-confirm"));
+
+    // Restart says agents are at work before it stops them.
+    click(cx, "row-state-restart");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Restart Kuvo on this Mac?".into(), "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.".into(), "Restart".into())));
+    assert_eq!(stand_in.computer().restarted, 0);
+    click(cx, "confirm-go");
+    assert_eq!(stand_in.computer().restarted, 1);
+}
+
+#[gpui::test]
+fn a_newer_version_is_said_in_the_rows_title_and_update_now_takes_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_computer(|computer| computer.ready = Some("1.0.1".into()));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Computer");
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-version")).as_deref(), Some("It installs when nothing’s at work, or now."));
+    // (Nothing at work: nothing to ask first.)
+    click(cx, "row-version-update-now");
+    assert_eq!(stand_in.computer().asked_to_update, 1);
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-version")).as_deref(), Some("Up to date. It updates itself when nothing’s at work."));
+}
+
+/// From another computer's app, This Mac's page reads the same under that Mac's name, and what
+/// opens only on that Mac says so instead of offering it.
+#[gpui::test]
+fn another_computers_page_is_named_for_it_and_opens_nothing_of_its_own_here(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_elsewhere(true);
+    stand_in.set_permissions(|permissions| *permissions = kuvo::stand_in::permissions::Permissions::nothing_allowed());
+    let (workspace, cx) = open(cx, stand_in);
+    let view = section(&workspace, cx, "Computer");
+    assert_ne!(title(&workspace, cx).as_deref(), Some("This Mac"));
+    assert!(view.read_with(cx, |view, _| view.row_why("row-allows-screenRecording")).is_some_and(|why| why.starts_with("Open it on ")));
+}

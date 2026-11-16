@@ -199,3 +199,27 @@ fn another_computer_s_permissions_arent_brought_up_here(cx: &mut TestAppContext)
     assert!(!shown(cx, "permission-heads-up"));
     assert!(stand_in.seen_at("GET", "kuvo/box/permissions").is_empty());
 }
+
+/// After "Not Now" the heads-up stays away, and Settings › This Mac is where a permission is
+/// looked up and allowed: its row opens System Settings with the same tile to drag.
+#[gpui::test]
+fn after_not_now_settings_this_mac_opens_the_permission_with_the_tile(cx: &mut TestAppContext) {
+    let stand_in = nothing_allowed();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "permission-later");
+    click(cx, "permission-later");
+    assert!(!shown(cx, "permission-heads-up") && cx.opened_url().is_none());
+    click(cx, "rail-settings");
+    if !shown(cx, "setting-computer") {
+        click(cx, "settings-foot");
+    }
+    click(cx, "setting-computer");
+    click(cx, "row-allows-accessibility-open-system-settings");
+    assert_eq!(cx.opened_url().as_deref(), Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"));
+    assert!(tile_open(&workspace, cx));
+    assert_eq!(heads_up(&workspace, cx).read_with(cx, |heads_up, _| heads_up.asking().map(str::to_owned)).as_deref(), Some("accessibility"));
+    // Allowed in System Settings: the box says so, the tile goes, and the row says Allowed.
+    stand_in.set_permissions(|permissions| permissions.accessibility = true);
+    wait(cx, Duration::from_secs(1));
+    assert!(!tile_open(&workspace, cx));
+}

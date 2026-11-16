@@ -53,6 +53,34 @@ pub struct Settings {
     more_sections: Vec<(Value, Value)>,
     /// Its sections can't be read now (`503`).
     pub pages_down: bool,
+    /// How this computer stands (`kuvo/settings/computer`).
+    pub computer: Computer,
+}
+
+/// How the stand-in's computer stands, as its own settings page says it. All made up.
+#[derive(Clone, Debug)]
+pub struct Computer {
+    /// "Let my devices connect".
+    pub devices: bool,
+    /// Whether Kuvo Helper is on in Login Items.
+    pub at_login: bool,
+    pub version: String,
+    /// A newer version it knows of.
+    pub ready: Option<String>,
+    pub updating: bool,
+    /// Whether agents are at work.
+    pub working: bool,
+    /// How many times Restart and its update's button were pressed.
+    pub restarted: u32,
+    pub asked_to_update: u32,
+    /// What macOS allows its helper (the stand-in's own, as `kuvo/box/permissions` says it).
+    pub permissions: super::permissions::Permissions,
+}
+
+impl Default for Computer {
+    fn default() -> Computer {
+        Computer { devices: true, at_login: true, version: "1.0.0".into(), ready: None, updating: false, working: false, restarted: 0, asked_to_update: 0, permissions: super::permissions::Permissions::default() }
+    }
 }
 
 /// A section with a row of every kind a box may describe (PROTOCOL.md, "A box's settings"), for
@@ -178,6 +206,7 @@ impl Default for Settings {
             when: BTreeMap::new(),
             more_sections: Vec::new(),
             pages_down: false,
+            computer: Computer::default(),
         }
     }
 }

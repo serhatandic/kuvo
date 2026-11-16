@@ -45,15 +45,26 @@ export function macNeeded(link: LinkState | null | undefined, now = Date.now()):
 // keeper's host interface as through the app's.
 export const MAC_LINK_FILE = path.join(RUN, "mac-link.json");
 
-export function saveMacConfig(config: MacLinkConfig): void {
+/** `own`: the box's own settings with only the switch yours (Settings › This Mac, no app telling
+ * it): the relay and this Mac's name are worked out again at each start, the switch kept. */
+export function saveMacConfig(config: MacLinkConfig, own = false): void {
   const { phones, relay, name, app } = config;
-  try { writePrivate(MAC_LINK_FILE, JSON.stringify({ phones, relay, name, app })); } catch (error) {
+  try { writePrivate(MAC_LINK_FILE, JSON.stringify({ phones, relay, name, app, ...(own ? { own: true } : {}) })); } catch (error) {
     console.error(`This Mac's link settings couldn't be kept: ${(error as Error).message}`);
   }
 }
 
+/** Whether what's kept is the box's own settings (none kept yet, or kept with only the switch
+ * yours), not what an app said. */
+export function keepsOwnConfig(file = MAC_LINK_FILE): boolean {
+  let kept: unknown;
+  try { kept = JSON.parse(fs.readFileSync(file, "utf8")); } catch { return !fs.existsSync(file); }
+  return isObject(kept) && kept.own === true;
+}
+
 /** What the app last said, as kept, with whether there are machines now: null for none kept (or
- * what isn't what it keeps). */
+ * what isn't what it keeps). Kept as the box's own (`own`), it's the box's own settings now with
+ * the switch as you left it. */
 export function savedMacConfig(file = MAC_LINK_FILE): MacLinkConfig | null {
   let kept: unknown;
   try { kept = JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
@@ -63,6 +74,8 @@ export function savedMacConfig(file = MAC_LINK_FILE): MacLinkConfig | null {
   } catch {
     return null;
   }
+  const own = kept.own === true ? ownMacConfig() : null;
+  if (own) return { ...own, phones: kept.phones };
   return { phones: kept.phones, machines: anyMachines(), relay: kept.relay, name: typeof kept.name === "string" ? kept.name : "Mac",
     app: MAC_APP_VERSION ?? (typeof kept.app === "string" ? kept.app : "") };
 }

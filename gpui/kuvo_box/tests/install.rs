@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use kuvo_box::install::stand_in::Bundle;
-use kuvo_box::install::{End, Installer, Outcome, Progress, Step, Verb};
+use kuvo_box::install::{End, Installer, MoveFacts, Outcome, Progress, Step, Verb};
 
 const TRIAL: &str = "run.kuvo.code.trial713.p5";
 const ROOT: &str = ".kuvo-trial713-p5";
@@ -48,7 +48,7 @@ fn a_new_mac_is_set_up_and_its_steps_are_handed_on() {
         drawn,
         vec![
             Progress::Asking,
-            Progress::Running { verb: Verb::New, verdict: Some("fresh".into()) },
+            Progress::Running { verb: Verb::New, verdict: Some("fresh".into()), moved: MoveFacts::default() },
             Progress::Step(Step { step: "checking".into(), ..Step::default() }),
             Progress::Step(Step { step: "engine".into(), title: Some("Downloading the engine".into()), ..Step::default() }),
         ]
@@ -90,7 +90,7 @@ fn an_earlier_kuvo_code_s_data_is_handed_to_move_and_its_refusal_said() {
         bundle.says("move", None, 1, &[&format!(r#"{{"result":"refused","message":"{refusal}","verdict":"{verdict}","verb":"move","status":{{}}}}"#)]);
         let (outcome, drawn) = set_up(&installer);
         assert_eq!(outcome, Outcome::new(End::Stopped, Some(verdict.into()), Some(Verb::Move), Some(refusal.into())), "{verdict}");
-        assert_eq!(drawn.last(), Some(&Progress::Running { verb: Verb::Move, verdict: Some(verdict.into()) }));
+        assert_eq!(drawn.last(), Some(&Progress::Running { verb: Verb::Move, verdict: Some(verdict.into()), moved: MoveFacts::default() }));
     }
     // A move that's done starts Kuvo, as a new one does; each of its steps is handed on in the
     // box's words, with its place among them.
@@ -98,6 +98,23 @@ fn an_earlier_kuvo_code_s_data_is_handed_to_move_and_its_refusal_said() {
     let (outcome, drawn) = set_up(&installer);
     assert_eq!(outcome.end, End::Started);
     assert_eq!(drawn.last(), Some(&Progress::Step(Step { step: "clone".into(), title: Some("Copying your sessions and settings".into()), index: Some(3), of: Some(12) })));
+}
+
+/// What the box says of a move besides where it is, handed on as it said it: every step ahead of
+/// it in its words, the step it stopped at, and what it didn't carry over.
+#[test]
+fn a_move_s_steps_where_it_stopped_and_what_it_dropped_are_handed_on() {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = bundle(made.path());
+    let steps = r#""steps":[{"step":"plan","title":"Checking this Mac"},{"step":"clone","title":"Copying your sessions and settings"},{"step":"clear","title":"Finishing up"}]"#;
+    bundle.says("status", None, 0, &[&format!(r#"{{"verdict":"app-07","verb":"move","status":{{{steps}}}}}"#)]);
+    // (An answer that lists no steps keeps the ones listed before it ran.)
+    bundle.says("move", None, 1, &[r#"{"result":"failed","message":"No.","verdict":"app-07","status":{"failed":{"at":1,"step":"clone","message":"No."},"dropped":["A bot may be missing."]}}"#]);
+    let (outcome, drawn) = set_up(&installer);
+    let listed = vec![("plan".to_owned(), "Checking this Mac".to_owned()), ("clone".to_owned(), "Copying your sessions and settings".to_owned()), ("clear".to_owned(), "Finishing up".to_owned())];
+    assert_eq!(drawn.last(), Some(&Progress::Running { verb: Verb::Move, verdict: Some("app-07".into()), moved: MoveFacts { steps: listed.clone(), ..MoveFacts::default() } }));
+    assert_eq!(outcome.moved, MoveFacts { steps: listed, stopped_at: Some("clone".into()), dropped: vec!["A bot may be missing.".into()] });
+    assert_eq!(outcome.moved.place_of("clone"), Some(2));
 }
 
 #[test]

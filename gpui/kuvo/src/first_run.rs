@@ -1283,6 +1283,16 @@ impl Render for FirstRun {
 /// window moved by it), one card in the middle, and the steps' dots under it. Setting up this
 /// Mac draws in it too ([`crate::launch`]), so the welcome that follows is the same card.
 pub(crate) fn card_frame(card: Vec<AnyElement>, dot: usize, cx: &App) -> gpui::Div {
+    framed(card, Some(dot), cx)
+}
+
+/// The same frame for a card that isn't one of the first run's steps (a move from an earlier
+/// Kuvo Code, ahead of the Welcome): no dots under it.
+pub(crate) fn card_alone(card: Vec<AnyElement>, cx: &App) -> gpui::Div {
+    framed(card, None, cx)
+}
+
+fn framed(card: Vec<AnyElement>, dot: Option<usize>, cx: &App) -> gpui::Div {
     let c = cx.theme().colors.clone();
     let width: Pixels = px(CARD);
     div()
@@ -1327,7 +1337,7 @@ pub(crate) fn card_frame(card: Vec<AnyElement>, dot: usize, cx: &App) -> gpui::D
                         .shadow(cx.theme().elevated_shadow())
                         .children(card),
                 )
-                .child(step_dots(dot, cx)),
+                .children(dot.map(|dot| step_dots(dot, cx))),
         )
 }
 

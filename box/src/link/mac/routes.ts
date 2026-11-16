@@ -21,7 +21,7 @@ import { PEER_LOCK, readPeerAgents } from "../peers/directory";
 import { cleanMoved, cleanPeer, fitsPeer, KEY, MOST_PEERS, ownKey, peersOf } from "../peers/known";
 import { readPersonalities } from "../personalities/library";
 import { macLink, readLink, updateLink } from "../state";
-import { macKeys, macLinkCheck, saveMacConfig, tellGone } from "./link";
+import { keepsOwnConfig, macKeys, macLinkCheck, saveMacConfig, tellGone } from "./link";
 import { noteKeyNow } from "../setup/lead";
 import { addElsewhere, mainElsewhere } from "../setup/main-only";
 import { macSendOutbox } from "./peers";
@@ -131,6 +131,25 @@ export async function setupGift(again: string | null): Promise<{ mac: string | n
   });
   if (!link) return null;
   return { mac: ownKey(link), macSign: ownSign(link), docs, replaces: link.keysBefore ?? [] };
+}
+
+/** "Let my devices connect" switched on this Mac's box itself (Settings › This Mac: PROTOCOL.md, "A
+ * box's settings"), as `kuvo/link/config`'s `phones` switches it: kept (`run/mac-link.json`), the
+ * devices it had open let go where it's off, and the link brought up or down. False where this box
+ * has no link's settings to change (a copy given no relay). */
+export async function letDevicesConnect(on: boolean): Promise<boolean> {
+  const before = macLink.config;
+  if (!before) return false;
+  if (before.phones === on) return true;
+  const own = keepsOwnConfig();
+  macLink.config = { ...before, phones: on };
+  saveMacConfig(macLink.config, own);
+  if (!on) macLink.host?.keepOnly(new Set());
+  await macKeys();
+  macLinkCheck();
+  macLink.wake?.();
+  macDocsChanged();
+  return true;
 }
 
 // `kuvo/link/…`, for this Mac's app.

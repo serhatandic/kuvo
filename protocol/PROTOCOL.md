@@ -308,6 +308,8 @@ computer. Changing the main computer and joining two setups come later: #183.)
   welcome you again. **`POST kuvo/setup/welcomed {"welcomed": true | false}`** sets it (`false`:
   the first run is to be had again), from any client of the box, and answers `{"welcomed"}`
   (`kuvo/setup/events` says it too); `400` without a yes or no, `405` for anything but `POST`.
+  A Mac moved from an earlier Kuvo Code counts as welcomed: its move writes the file ("Moving this
+  Mac's box", What the move carries), so you land in your sessions, not in the first run.
   **`GET kuvo/setup/ready`** (`setup.ready`): whether a first run has anything to ask about your
   accounts on this box → `{"ready", "runs", "needsYou": [<account id>], "pending": ["engine" |
   "agents"]}`. The box decides it, so no client keeps the rule: `runs`, a model that needs an
@@ -7445,7 +7447,7 @@ coding agents' default accounts stay yours, in your home (`~/.claude`, `~/.codex
 the app's box keeps them: only on a machine are they in the bridge's folder (`<agent>/home`).
 
 `kuvo/box/rehome`: `GET` answers `{state, way, step, tries, nextTry, waitingSince, overdue,
-failed, movedAt, keptUntil, owed, asked, from, to, progress?, dropped?}`. `state`: null before anything, `waiting`,
+failed, movedAt, keptUntil, owed, asked, from, to, progress?, dropped?, steps?}`. `state`: null before anything, `waiting`,
 `moving` or `clearing` (under way, at `step`, or a journal that can't be read: `plan`, `install`, `keys`, `clone`, `upgrade`, `database`, `rewrite`, `check`,
 `place`, `fix`, `clear`, `done`; `keys`, `upgrade` and `database` only in a move the box runs whole itself), `done`, `failed` (gone back; `failed` (cleared as a move begins: while one's under way, why it's stuck) says `{at, step,
 message}`), or `back`; `way`, `move` or `back`; `nextTry`, `waitingSince`, `movedAt` and
@@ -7453,7 +7455,10 @@ message}`), or `back`; `way`, `move` or `back`; `nextTry`, `waitingSince`, `move
 move the box runs itself is under way, `{step, title, index, of}`: the step, what's happening in
 words a client shows as they are (the box's own: a client keeps none of its own for a step),
 which step it is (from 1) and of how many, else null; and `dropped`, what that move didn't carry
-of what an earlier Kuvo Code kept, each in words a client shows once (none: `[]`). The app's box in its folder
+of what an earlier Kuvo Code kept, each in words a client shows once (none: `[]`); and `steps`,
+every step of a move the box runs itself, in order, each `{step, title}` in the same words, so a
+client lists them ahead of where the move is (`progress.index` counts into it, from 1; where it
+stopped is `failed.step`). The app's box in its folder
 answers for the `~/.kuvo-code` it moves to (the real app's folder alone, `run.kuvo.code`; a copy,
 only for the home `KUVO_MACHINE_ROOT` names, else nothing: it never reads or asks the real one's); a box in a home of its own, for its own. `POST
 {now: true}` asks for Move Now and `{back: true}` (once it's moved) for Move Back, answering the
@@ -7557,6 +7562,8 @@ above. Only on a Mac.
   preferences, `~/Library/Preferences/<ID>.plist`, asked of the system for Kuvo Code itself, and
   writes only in staging; each leaves what a box already had as it is; preferences that are
   there and can't be read stop the move, which goes back, never taken for none):
+  - that you've had the first run (`run/welcomed.json`, "Your setup"): always, since anyone with
+    an earlier Kuvo Code's sessions has;
   - your projects (`projectFolders`, `projectSettings`: order, names, extra folders, Run
     commands) → `box/projects.json`; never a bot's folder or a machine's (`ssh://…`); one kept
     only for its settings stays removed;
@@ -7626,8 +7633,9 @@ decides nothing itself.
   The script checks this first, from the bundle's ID, before it writes anything: either mismatch,
   or no app, is `{"result": "refused", "message"}` (exit 1) with nothing made, not even the
   folder. (The link checks it again.) Linux has no bundle to tell a copy by.
-- It prints JSON lines: `{"step": "checking" | "engine"}` while it works (the pack being checked
-  and unpacked; the engine being fetched), then one answer, last. Exit 0; 1 refused or failed,
+- It prints JSON lines: `{"step": "checking" | "engine", "title"}` while it works (the pack being checked
+  and unpacked, "Getting ready"; the engine being fetched, "Downloading the engine": `title` is
+  words an app shows as they are), then one answer, last. Exit 0; 1 refused or failed,
   with `message` in words to show as they are; 4 when another move holds the lock (`result`
   `"waits"`). Exit 2 when it isn't asked as above: a usage line on standard error and no JSON
   line (an app's mistake, never a user's). What the shell's part refuses or fails itself (the
@@ -7662,9 +7670,11 @@ that's there already (`ours`, `machine`, `two`, nothing to run), the engine it f
 that box has the same engine itself, and the installer runs on the box's own from then on; the
 unpacked release (a few megabytes) stays, one at a time, so it isn't unpacked at each ask.
 
-**`status`** → `{"verdict", "verb", "status"}`: what this computer holds, from its folders alone;
+**`status`** → `{"verdict", "verb", "status", "message"?}`: what this computer holds, from its folders alone;
 `verb` is what to run next (`"new"`, `"move"` or null), and `status` is how a move stands
-(`kuvo/box/rehome`'s answer), for its step to be drawn. It changes nothing of a box or of an
+(`kuvo/box/rehome`'s answer), for its step to be drawn (and every step ahead of it, `status.steps`).
+`message`, for `two` alone: words an app shows as they are before it goes on, since the earlier
+Kuvo Code's sessions stay where they are, unseen. It changes nothing of a box or of an
 earlier Kuvo Code's data: only what the installer stages in `K/updates/install`, as above. The
 two refusals above (no app named on a Mac; a copy and the real one mixed) say nothing of what's
 there.
@@ -8140,8 +8150,10 @@ relay everyone's on (`wss://kuvolink.porigam.com.tr`, the retired app's default)
 connect" on, as a machine's box always has it (so too a Mac moved over from 0.7, which never
 kept the switch in its link: your choice, 2026-11-15). Nothing connects until you pair a device or add a
 computer. Its keys come from its helper as ever (`link/identity`, made in your Keychain the first
-time they're asked for). What an app said before is kept instead, its switch as you left it; the
-box's own settings are never written to `mac-link.json`. Adding a computer asks for the keys
+time they're asked for). What an app said before is kept instead, its switch as you left it. The
+switch changed on the box itself (Settings › This Mac, `kuvo/settings/computer`'s `devices`: "A
+box's settings") is kept there too, marked the box's own (`mac-link.json`'s `own: true`): the
+relay and this Mac's name are then worked out again at each start, and only the switch is kept. Adding a computer asks for the keys
 whether or not anything else wants the link yet (`kuvo/link/setup`, and the box's own add). A
 test's or a demo copy's folder never takes the real relay by itself: only one it's given
 (`KUVO_TEST_RELAY`), else none: the box's own relay is for your account's own `~/.kuvo-code` alone. A Linux box has no settings of its own for this: its relay comes
@@ -8590,7 +8602,8 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
+  `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
@@ -8678,6 +8691,29 @@ The sections now:
   (`can` says so); `help` and `softwareUpdate` open their page), and Also Allowed (`allowed`, a `list` of `allowed-<id>`, each
   with `remove`). Rules for particular commands or files, approvals saved with Always and blocks
   aren't on it yet.
+- **This computer** (`computer`, #713): how Kuvo stands on this computer, each row's title saying
+  it. No row says "box": the computer is named ("this Mac" to the app beside it, its name to any
+  other client). `state` ("Running", or "Not running" as a warning while its engine is down, who keeps it in its line; `restart`, asked first, saying
+  whether agents are at work: `kuvo/engine/restart`'s own restart, on a computer you added and on
+  a Mac's own box in a home of its own; the retired Mac app's box says to restart it there).
+  `version` ("Kuvo Code 1.0.0", or "Kuvo Code 1.0.1 is ready" once `kuvo/update` knows a newer
+  one; `update`, titled Check Now or Update Now, is `POST kuvo/update {now: true}`, asked first
+  unless nothing is at work; a `status` with no button while updates aren't set up or are held,
+  saying why, and while a release the app offered waits for a quiet moment; `busy` while it
+  looks for one ("Checking…") or installs it ("Updating…")). `devices` ("Let my devices connect": on a Mac's own box a `switch`, the link's
+  `phones` ("The relay, on this Mac's box"), asked first as it's turned off, `409` on a copy with
+  no relay, and changed only from the app beside it (`can: {why}` to any other client, which
+  would cut itself off); on a computer you added a `status`, always on; on the retired app's box, changed
+  there). On a Mac's own box, a second group, What macOS Allows Kuvo Helper
+  (`kuvo/box/permissions`' facts, the place to look them up after "Not Now"): `login-items`
+  (whether Kuvo Helper is on in Login Items, `launchctl print-disabled`; off, a warning with Open
+  Login Items; left out where launchd can't be asked, a copy's home, or its launch agent isn't in place), `allows-<id>` for each
+  permission (`Allowed`; not allowed, a warning with Open System Settings, which `opens` the
+  address of its list; not known while the helper hasn't said), and `allows-files`, which macOS
+  asks about by itself. What opens only on that Mac is given to the app beside it alone (`can:
+  {why}` elsewhere). A client that has a way to help with a permission added by hand (the desktop
+  app's drag tile) matches the address it opens to `kuvo/box/permissions`' `list`. Linux has no
+  helper and nothing macOS allows: that group isn't there.
 - **Browser** (`browser`): `search-engine` (a `choice`), `tidies` and `offers` (`switch`es), and
   Never Offered (`never`, a `list` of `never-<site>`, each with `offer-again`, which takes that one
   site out and leaves the rest as they are then): `kuvo/browser/settings`,
