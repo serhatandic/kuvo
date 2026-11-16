@@ -86,8 +86,14 @@ pub struct ConversationView {
     tasks: Vec<Task<()>>,
     /// Yours on its way, drawn again as the composer says it changed.
     _outgoing: Subscription,
-    /// Its pictures as read, by where their bytes are (each read once).
+    /// Whether a run is under way, as its box last said: one of yours its box took waits for the
+    /// agent's next step meanwhile.
+    running: bool,
+    /// Its pictures as read, by their ids (each read once).
     pictures: HashMap<String, Read>,
+    /// Each row's pictures, found as it changed (its revision, and which of its steps were open),
+    /// not at each drawing: finding them copies what a message carries.
+    row_pictures: HashMap<String, (u64, Vec<usize>, Vec<Picture>)>,
     /// The picture opened over it, by its id, and the keyboard for it (← →, Escape).
     viewing: Option<String>,
     viewer_focus: FocusHandle,
@@ -141,7 +147,9 @@ impl ConversationView {
             _queue_follow: None,
             tasks: Vec::new(),
             _outgoing: outgoing,
+            running: false,
             pictures: HashMap::new(),
+            row_pictures: HashMap::new(),
             viewing: None,
             viewer_focus: cx.focus_handle(),
         };
@@ -342,7 +350,8 @@ impl ConversationView {
     /// run under way, which stays last).
     fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
         let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
-        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().filter(|outgoing| !outgoing.arrived).map(Entry::outgoing).unzip();
+        let running = self.running;
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().filter(|outgoing| !outgoing.arrived).map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);
         (rows, revisions)
@@ -378,6 +387,8 @@ impl ConversationView {
                         if let Some(items) = this.queue.items.as_mut() {
                             items.retain(|each| each.id != item);
                         }
+                        // (One of yours waiting in the conversation goes from it too.)
+                        this.composer.update(cx, |composer, cx| composer.let_go(&item, cx));
                         if let (true, Some(removed)) = (edit, removed) {
                             this.composer.update(cx, |composer, cx| composer.restore(&removed.draft, &removed.files, cx));
                         }
@@ -465,9 +476,11 @@ impl ConversationView {
                     })
                     .collect();
                 self.composer.update(cx, |composer, cx| composer.arrived(|id| has.get(id).copied(), cx));
+                self.running = running;
                 let (rows, revisions) = entries::entries(conversation);
                 let (rows, revisions) = self.with_outgoing(rows, revisions, cx);
                 self.show(rows, revisions);
+                self.find_pictures();
                 self.read_pictures(cx);
                 self.composer.update(cx, |composer, cx| {
                     composer.set_running(running, cx);
@@ -607,14 +620,42 @@ impl ConversationView {
 
     /// Every picture it shows, in order: what one opened goes among.
     pub fn all_pictures(&self) -> Vec<Picture> {
-        self.entries.iter().flat_map(|entry| Self::pictures_of(entry, &self.open)).collect()
+        self.entries.iter().filter_map(|entry| self.row_pictures.get(entry.key())).flat_map(|(_, _, pictures)| pictures.iter().cloned()).collect()
+    }
+
+    /// Each row's pictures found again where it changed (or a step of it was opened or closed).
+    fn find_pictures(&mut self) {
+        let mut found = HashMap::new();
+        for (entry, revision) in self.entries.iter().zip(&self.revisions) {
+            if !matches!(entry, Entry::Message(_)) {
+                continue;
+            }
+            let key = entry.key().to_owned();
+            let opened: Vec<usize> = self.open.iter().filter_map(|fold| match fold {
+                Fold::Step(step, n) if *step == key => Some(*n),
+                _ => None,
+            }).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            let kept = self.row_pictures.remove(&key).filter(|(was, folds, _)| was == revision && *folds == opened);
+            let row = kept.unwrap_or_else(|| (*revision, opened, Self::pictures_of(entry, &self.open)));
+            found.insert(key, row);
+        }
+        self.row_pictures = found;
+    }
+
+    /// The rows showing picture `id`, drawn again (it was read, or is read again).
+    fn picture_changed(&self, id: &str) {
+        for (ix, entry) in self.entries.iter().enumerate() {
+            if self.row_pictures.get(entry.key()).is_some_and(|(_, _, pictures)| pictures.iter().any(|picture| picture.id == id)) {
+                self.list.changed(ix);
+            }
+        }
     }
 
     /// Reads the pictures shown that aren't read yet, each once, off the UI thread: from the
     /// message, or from the computer the conversation runs on. Their rows are drawn again as they come.
     fn read_pictures(&mut self, cx: &mut Context<Self>) {
         for picture in self.all_pictures() {
-            let key = picture.source.key().to_owned();
+            let key = picture.id.clone();
             if self.pictures.contains_key(&key) {
                 continue;
             }
@@ -626,11 +667,7 @@ impl ConversationView {
                 let read = task.await;
                 this.update(cx, |this, cx| {
                     this.pictures.insert(key.clone(), read);
-                    for (ix, entry) in this.entries.iter().enumerate() {
-                        if Self::pictures_of(entry, &this.open).iter().any(|picture| picture.source.key() == key) {
-                            this.list.changed(ix);
-                        }
-                    }
+                    this.picture_changed(&key);
                     cx.notify();
                 })
                 .ok();
@@ -643,11 +680,7 @@ impl ConversationView {
         if matches!(self.pictures.get(key), Some(Read::Failed { .. })) {
             self.pictures.remove(key);
             self.read_pictures(cx);
-            for (ix, entry) in self.entries.iter().enumerate() {
-                if Self::pictures_of(entry, &self.open).iter().any(|picture| picture.source.key() == key) {
-                    self.list.changed(ix);
-                }
-            }
+            self.picture_changed(key);
             cx.notify();
         }
     }
@@ -684,8 +717,8 @@ impl ConversationView {
 
     /// The picture opened, over the whole conversation.
     fn picture_viewer(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let all = self.all_pictures();
         let id = self.viewing.as_ref()?;
+        let all = self.all_pictures();
         let at = all.iter().position(|picture| &picture.id == id)?;
         let picture = &all[at];
         Some(
@@ -703,7 +736,7 @@ impl ConversationView {
                     _ => {}
                 }))
                 .on_click(cx.listener(|this, _, window, cx| this.close_picture(window, cx)))
-                .child(pictures::viewer(picture, at, all.len(), self.pictures.get(picture.source.key()), window))
+                .child(pictures::viewer(picture, at, all.len(), self.pictures.get(picture.id.as_str()), window))
                 .child(
                     div()
                         .absolute()
@@ -726,6 +759,7 @@ impl ConversationView {
             self.list.changed(ix);
         }
         // (A step opened shows what it brought back for itself.)
+        self.find_pictures();
         self.read_pictures(cx);
         cx.notify();
     }
@@ -742,7 +776,6 @@ impl ConversationView {
         cx.notify();
     }
 
-    /// The top row, while there are earlier messages: they're read as it comes into view.
     /// Under your message whose box's copy came without the files you sent with it: their names,
     /// until a copy with its own comes (never dropped from sight in between).
     fn files_kept(&self, id: &str, cx: &App) -> AnyElement {
@@ -761,6 +794,24 @@ impl ConversationView {
                 let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
                 div().flex().items_center().gap(space::S1).px(space::S2).py(space::S0_5).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::File).size(IconSize::Nav).color(c.text_faint)).child(name)
             }))
+            .into_any_element()
+    }
+
+    /// Under one of yours waiting for the agent's next step (its box holds it): Edit takes it back to
+    /// the composer, Remove takes it back for good, as the queue offers them.
+    fn waiting_actions(&self, id: &str, view: &Entity<ConversationView>) -> AnyElement {
+        let (edit, remove) = (view.clone(), view.clone());
+        let (edit_id, remove_id) = (id.to_owned(), id.to_owned());
+        let (edit_selector, remove_selector) = (format!("edit-waiting-{id}"), format!("remove-waiting-{id}"));
+        div()
+            .flex()
+            .gap(space::S1)
+            .child(div().debug_selector(move || edit_selector).child(Button::new(SharedString::from(format!("edit-waiting-{id}")), "Edit").ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
+                edit.update(cx, |this, cx| this.unqueue(edit_id.clone(), true, cx));
+            })))
+            .child(div().debug_selector(move || remove_selector).child(Button::new(SharedString::from(format!("remove-waiting-{id}")), "Remove").ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
+                remove.update(cx, |this, cx| this.unqueue(remove_id.clone(), false, cx));
+            })))
             .into_any_element()
     }
 
@@ -784,6 +835,7 @@ impl ConversationView {
             .into_any_element()
     }
 
+    /// The top row, while there are earlier messages: they're read as it comes into view.
     fn earlier_row(&self, cx_view: &Entity<ConversationView>, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
         if let Some(error) = &self.earlier_failed {
@@ -947,12 +999,14 @@ impl Render for ConversationView {
                 let own = match entry {
                     Entry::Earlier => this.earlier_row(&list_view, cx),
                     Entry::Outgoing { id, failed: Some(_), .. } => this.unsent_actions(id, cx),
+                    Entry::Outgoing { id, waits: true, .. } => this.waiting_actions(id, &list_view),
                     Entry::Message(message) => this.files_kept(message.id(), cx),
                     _ => div().into_any_element(),
                 };
                 let toggle_view = list_view.clone();
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
-                let looks = Looks { read: &this.pictures, open: open.clone(), again: again.clone() };
+                let shown = this.row_pictures.get(entry.key()).map(|(_, _, pictures)| pictures.as_slice()).unwrap_or(&[]);
+                let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone() };
                 entries::render(ix, entry, &this.open, toggle, own, &this.selection, &looks, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A

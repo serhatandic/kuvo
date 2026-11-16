@@ -4,8 +4,8 @@
 //! otherwise be huge. Named like the system's screenshots: "Pasted Image 2026-11-16 at 15.32.10".
 //!
 //! They're kept in the app's own folder (`~/.kuvo-code/desktop/Pasted`), so they go when it does,
-//! and each is let go a week after it was pasted: by then its message has long been sent, and the
-//! engine keeps its own copy.
+//! and each is let go a week after it was pasted: a message carries its pictures' bytes (as to
+//! another computer: `parts::carried`), never a path to one here, so its box keeps its own copy.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -102,11 +102,12 @@ fn let_old_go(folder: &Path, now: SystemTime) {
     }
 }
 
-/// Whether `path` is in another app's data (`~/Library`: Notes' pictures, Mail's, Messages'),
-/// which macOS asks you about when Kuvo reads it later.
+/// Whether `path` is in another app's own data (its container: Notes' pictures, Mail's), which
+/// macOS asks you about when Kuvo reads it later. (Not iCloud Drive's or a cloud drive's files in
+/// `~/Library`, which are yours.)
 pub fn is_another_apps(path: &Path) -> bool {
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else { return false };
-    path.starts_with(home.join("Library"))
+    path.starts_with(home.join("Library/Containers")) || path.starts_with(home.join("Library/Group Containers"))
 }
 
 /// A copy of `path` kept in `folder` (a folder of its own there, so it keeps its name), read now,
@@ -234,6 +235,7 @@ mod tests {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap();
         assert!(is_another_apps(&home.join("Library/Group Containers/group.com.apple.notes/x.png")));
         assert!(!is_another_apps(&home.join("Desktop/x.png")));
+        assert!(!is_another_apps(&home.join("Library/Mobile Documents/com~apple~CloudDocs/x.png")), "iCloud Drive is yours");
     }
 
     #[test]

@@ -909,12 +909,12 @@ impl Composer {
             Target::New(place) => {
                 let model = self.picked.clone();
                 let how = StartHow { worktree: self.starts_in_worktree(), approval: self.picked_approval.clone() };
-                let (paths, here) = (files.clone(), client.here());
+                let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
                 self.spawn(
                     cx,
                     move || {
                         // (Its files read first: one that can't go starts nothing.)
-                        draft.files = kuvo_box::parts::carried(&paths, here)?;
+                        draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
                         let started = client.start_session(&place, model.as_ref(), &how).map_err(|error| error.to_string())?;
                         let sent = client.send_draft(&started.session, &draft, None).map_err(|error| error.to_string());
                         Ok::<_, String>((started, sent))
@@ -961,10 +961,11 @@ impl Composer {
         self.on_its_way = Some(id.clone());
         // Its files as its box takes them: where they are, for this computer's; with their bytes,
         // for another's, which keeps them there (`parts::carried`). One that can't go: not sent.
-        let (paths, here) = (files.clone(), client.here());
+        let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
+        let kept_quotes = quotes.clone();
         let work = move || {
             let mut draft = draft;
-            draft.files = kuvo_box::parts::carried(&paths, here)?;
+            draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
             let quote = |words: &str| quoting::message(&quotes, words);
             let quote: Option<&dyn Fn(&str) -> String> = if quotes.is_empty() { None } else { Some(&quote) };
             client.send_draft(&session, &draft, quote).map_err(|error| error.to_string())
@@ -981,6 +982,10 @@ impl Composer {
                 Err(why) if shows => this.mark(&id, |outgoing| outgoing.failed = Some(why), cx),
                 Err(why) => {
                     this.attach(files, cx);
+                    // (What it replied to goes back with it.)
+                    let mut quotes = kept_quotes;
+                    quotes.append(&mut this.quotes);
+                    this.quotes = quotes;
                     this.put_back(&text, Some(why), cx)
                 }
             }
@@ -1047,6 +1052,11 @@ impl Composer {
             change(outgoing);
             cx.emit(ComposerEvent::Outgoing);
         }
+    }
+
+    /// One taken back from its box (Edit or Remove while it waited): it isn't on its way any more.
+    pub fn let_go(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.forget(id, cx);
     }
 
     fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -1154,10 +1164,21 @@ impl Composer {
     /// folder at once, while you hand it over: read later, by the box, macOS would say Kuvo is
     /// accessing another app's data.
     pub fn attach_named(&mut self, paths: impl IntoIterator<Item = PathBuf>, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
+        if !paths.iter().any(|path| crate::pasted::is_another_apps(path)) {
+            return self.name_attached(paths, cx);
+        }
+        // (Copied off the UI thread; in the order they came.)
         let folder = crate::pasted::folder(cx);
+        let copy = move || {
+            paths.into_iter().map(|path| if crate::pasted::is_another_apps(&path) { crate::pasted::keep_copy(&path, &folder, std::time::SystemTime::now()).unwrap_or(path) } else { path }).collect::<Vec<_>>()
+        };
+        self.spawn(cx, copy, |this, paths, cx| this.name_attached(paths, cx));
+    }
+
+    fn name_attached(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         let mut names = Vec::new();
         for path in paths {
-            let path = if crate::pasted::is_another_apps(&path) { crate::pasted::keep_copy(&path, &folder, std::time::SystemTime::now()).unwrap_or(path) } else { path };
             if path.is_dir() || self.attached.contains(&path) {
                 continue;
             }
@@ -1246,8 +1267,11 @@ impl Composer {
             let number = is_picture(&self.attached[at]).then(|| self.attached[..=at].iter().filter(|each| is_picture(each)).count());
             self.attached.remove(at);
             if let Some(number) = number {
-                let words = image_names::removing(number, &self.text(cx));
-                self.field.update(cx, |field, cx| field.set_text(words, cx));
+                let (now, words) = (self.text(cx), image_names::removing(number, &self.text(cx)));
+                // (Only where a name changes: the words, their undo and the caret stay otherwise.)
+                if words != now {
+                    self.field.update(cx, |field, cx| field.set_text(words, cx));
+                }
             }
             cx.notify();
         }

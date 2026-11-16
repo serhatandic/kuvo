@@ -421,7 +421,6 @@ impl TextField {
         cx.notify();
     }
 
-    /// Selects a range of the text, in bytes (clamped to the text and to character bounds).
     /// Writes `words` where you're writing (in place of what's selected), set apart from the words
     /// beside them by a space, the caret after them: as a picture attached names itself.
     pub fn write(&mut self, words: &str, cx: &mut Context<Self>) {
@@ -433,6 +432,7 @@ impl TextField {
         self.edit(range, &format!("{lead}{words}{trail}"), EditKind::Other, cx);
     }
 
+    /// Selects a range of the text, in bytes (clamped to the text and to character bounds).
     pub fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
         let clamp = |mut ix: usize| {
             ix = ix.min(self.content.len());

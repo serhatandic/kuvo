@@ -638,6 +638,20 @@ test("`kuvo-link.js update --installer` tries once more by itself, a little late
   engines.add(read(engineFile).pid);
   assert.equal(boxVersion(), "0.10.0");
 
+  // A check that would fail again (what it got isn't what it says): said at once, not tried again.
+  machine();
+  const tampered = release({ version: "0.10.0", tamper: true }).folder;
+  const checked = await (async () => {
+    const ran = spawn(process.execPath, [script, "update", "--installer", "--now", "--from", tampered, "--key", pinned], { env: { ...process.env, KUVO_TEST_FETCH_WAIT: "20" }, stdio: ["ignore", "pipe", "inherit"] });
+    let said = "";
+    ran.stdout.setEncoding("utf8");
+    ran.stdout.on("data", chunk => { said += chunk; });
+    await new Promise(resolve => ran.once("close", resolve));
+    return said.split("\n").filter(line => line.trim()).map(line => JSON.parse(line));
+  })();
+  assert.equal(checked.at(-1).result, "failed");
+  assert.equal(checked.filter(line => line.step === "updating").length, 1, "tried once");
+
   // Refused every time: said once both tries failed, and nothing changed.
   machine();
   release({ version: "0.11.0" });

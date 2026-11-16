@@ -29,22 +29,15 @@ pub struct Picture {
     pub caption: Option<String>,
 }
 
-/// Where a picture's bytes are.
+/// Where a picture's bytes are. (Each picture is read by its own id: the same path shown again
+/// later, changed since, is read again.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// In the message itself: a `data:` address, or its base64 alone.
-    Inline(String),
+    /// In the message itself: a `data:` address, or its base64 alone (shared, not copied: a photo's
+    /// is megabytes).
+    Inline(std::sync::Arc<str>),
     /// A file on the conversation's computer: its `file://` address.
     File(String),
-}
-
-impl Source {
-    /// Its key among pictures read: one file read once, wherever it shows.
-    pub fn key(&self) -> &str {
-        match self {
-            Source::Inline(data) | Source::File(data) => data,
-        }
-    }
 }
 
 /// The extensions read as pictures.
@@ -85,8 +78,8 @@ pub fn of_user(user: &UserMessage) -> Vec<Picture> {
             continue;
         }
         let source = match (text(file, "data"), uri) {
-            (Some(data), _) => Source::Inline(if mime.is_empty() { data } else { format!("data:{mime};base64,{data}") }),
-            (None, Some(uri)) if uri.starts_with("data:") => Source::Inline(uri),
+            (Some(data), _) => Source::Inline(if mime.is_empty() { data.into() } else { format!("data:{mime};base64,{data}").into() }),
+            (None, Some(uri)) if uri.starts_with("data:") => Source::Inline(uri.into()),
             (None, Some(uri)) if uri.starts_with("file://") => Source::File(uri),
             _ => continue,
         };
@@ -128,7 +121,7 @@ pub fn of_step(step: &str, name: &str, state: &Value) -> Vec<Picture> {
 /// a path from nowhere), which isn't read.
 pub fn of_address(id: String, url: &str, alt: &str) -> Option<Picture> {
     let source = if url.starts_with("data:image/") {
-        Source::Inline(url.to_owned())
+        Source::Inline(url.into())
     } else if url.starts_with("file:///") {
         Source::File(url.to_owned())
     } else if url.starts_with('/') {
@@ -150,8 +143,17 @@ pub fn of_step_own(step: &str, name: &str, state: &Value) -> Vec<Picture> {
     outputs(step, state, None)
 }
 
+/// Whether a step brought back pictures for itself (`of_step_own`), without reading them.
+pub fn has_own(name: &str, state: &Value) -> bool {
+    !is_made(name, state)
+        && matches!(state.get("status").and_then(Value::as_str), Some("completed" | "failed" | "error"))
+        && state.get("content").or_else(|| state.get("attachments")).and_then(Value::as_array).is_some_and(|parts| {
+            parts.iter().any(|part| part.get("mime").and_then(Value::as_str).is_some_and(|mime| mime.to_ascii_lowercase().starts_with("image/")))
+        })
+}
+
 fn outputs(step: &str, state: &Value, caption: Option<String>) -> Vec<Picture> {
-    let parts = state.get("content").or_else(|| state.get("attachments")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let Some(parts) = state.get("content").or_else(|| state.get("attachments")).and_then(Value::as_array) else { return Vec::new() };
     parts
         .iter()
         .enumerate()
@@ -161,7 +163,7 @@ fn outputs(step: &str, state: &Value, caption: Option<String>) -> Vec<Picture> {
             if !mime.starts_with("image/") {
                 return None;
             }
-            let source = if uri.starts_with("data:") { Source::Inline(uri) } else if uri.starts_with("file://") { Source::File(uri) } else { return None };
+            let source = if uri.starts_with("data:") { Source::Inline(uri.into()) } else if uri.starts_with("file://") { Source::File(uri) } else { return None };
             Some(Picture { id: format!("{step}-{n}"), source, name: text(part, "name").or_else(|| text(part, "filename")), caption: caption.clone() })
         })
         .collect()

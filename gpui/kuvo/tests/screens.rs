@@ -1175,6 +1175,42 @@ fn files_attached_go_with_the_message_and_show_on_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn sent_while_the_agent_works_it_waits_for_its_next_step_and_can_be_taken_back(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    open_session(&workspace, "ses_recipes", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    // The agent at work: what's said of the conversation before the box hands it what's sent.
+    let mut working = read_now(&client, "ses_recipes").unwrap();
+    working.running = true;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    cx.run_until_parked();
+
+    cx.simulate_input("Also check the oven");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
+    // Its box holds it for the agent's next step: the conversation says so (not "Sending…"), and
+    // the queue over the composer doesn't list it twice.
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
+    view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [{ "id": id, "words": "Also check the oven", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }] })).unwrap(), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "at-next-step").is_some());
+    assert!(bounds(cx, "sending").is_none());
+    assert!(bounds(cx, "queue").is_none(), "shown once, in the conversation");
+    // The rows before it stay as they were, and it sits before the run under way.
+    let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
+    assert_eq!(keys[keys.len() - 2..], [id.clone(), "working".to_owned()]);
+
+    // Remove asks its box to take it back, as the queue's Remove does.
+    let remove = bounds(cx, &format!("remove-waiting-{id}")).expect("Remove");
+    cx.simulate_click(remove.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.seen_at("DELETE", &format!("kuvo/sessions/ses_recipes/queue/{id}")).len(), 1);
+}
+
+#[gpui::test]
 fn files_sent_to_a_conversation_on_another_computer_go_with_their_bytes_and_pictures_are_named(cx: &mut TestAppContext) {
     let png = |width: u32| {
         let mut out = std::io::Cursor::new(Vec::new());
