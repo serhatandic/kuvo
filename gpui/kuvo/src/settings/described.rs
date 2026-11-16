@@ -11,12 +11,13 @@ use super::rows::{Act, At, Block, Control, FlowDrawn, Layout, Meter, Part, Push,
 /// What draws a row whose kind this app has nothing for yet.
 const NEWER: &str = "A newer Kuvo changes this";
 const NOT_YET: &str = "Not in the desktop app yet";
-/// Why what makes sure it's you first (`verified`) isn't done here: this app can't yet.
-pub(super) const VERIFIED_ELSEWHERE: &str = "Do this in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet.";
+/// Why what makes sure it's you first (`verified`) isn't done here: this app can't ask for it on
+/// this computer (it does on a Mac).
+pub(super) const VERIFIED_ELSEWHERE: &str = "This needs Touch ID or your computer’s password, which this app can’t ask for here yet.";
 
 /// Why one action that makes sure it's you first can't be pressed here, by its name.
 pub(super) fn verified_elsewhere(title: &str) -> String {
-    format!("{} is done in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet.", title.trim_end_matches('…'))
+    format!("{} needs Touch ID or your computer’s password, which this app can’t ask for here yet.", title.trim_end_matches('…'))
 }
 
 /// How a page is drawn from here.
@@ -29,6 +30,9 @@ pub struct Drawing<'a> {
     /// Whether the box is on the computer this app runs on.
     pub here: bool,
     pub filters: &'a std::collections::HashMap<String, String>,
+    /// Whether this app makes sure it's you (Touch ID, or the computer's password) before what
+    /// lets something use what's yours from now on (`verified`): it's offered only then.
+    pub confirms: bool,
     /// The rows whose breakdown is open, by key.
     pub expanded: &'a [String],
 }
@@ -73,7 +77,7 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
             // A list alone in a group with no heading (or whose heading matches the group) names the group; else it heads its items.
             let mut adds = described.add.as_ref().map(|add| push(described, add, drawing));
             // (An add that makes sure it's you first says why it can't be pressed here, under it.)
-            let add_why = described.add.as_ref().filter(|add| add.verified).map(|_| VERIFIED_ELSEWHERE.to_owned());
+            let add_why = described.add.as_ref().filter(|add| add.verified && !drawing.confirms).map(|add| verified_elsewhere(&add.title));
             // Its add, where the list names its group: a button of its own at the card's end.
             let mut add_last = None;
             if group.rows.len() == 1 && (label.is_empty() || label == described.title) {
@@ -262,6 +266,7 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
     // One that makes sure it's you first is drawn, and can't be pressed here: its row says why,
     // naming it (the row's other actions work here).
     if why.is_none()
+        && !drawing.confirms
         && let Some(action) = described.actions.iter().chain(described.add.iter()).find(|action| action.verified)
     {
         why = Some(verified_elsewhere(&action.title));
@@ -302,7 +307,7 @@ fn opens(address: &str, here: bool) -> bool {
 /// One of a row's actions as a button: it opens its address itself, or asks the box.
 fn push(described: &Described, action: &Action, drawing: &Drawing) -> Push {
     let act = match (&action.opens, action.why_not()) {
-        _ if action.verified => None,
+        _ if action.verified && !drawing.confirms => None,
         (_, Some(_)) => None,
         (Some(address), None) => opens(address, drawing.here).then(|| Act::Open(address.clone())),
         (None, None) => Some(match &action.form {
@@ -332,7 +337,7 @@ mod tests {
         ] }] }))
         .unwrap();
         let filters = std::collections::HashMap::new();
-        let drawing = Drawing { section: "asks", busy: &[], replacing: &[], here: true, filters: &filters, expanded: &[] };
+        let drawing = Drawing { section: "asks", busy: &[], replacing: &[], here: true, filters: &filters, expanded: &[], confirms: false };
         match blocks(&page, &drawing).into_iter().next() {
             Some(Block::Group(_, _, mut rows)) => rows.remove(0).control,
             _ => panic!("no group"),
@@ -366,10 +371,15 @@ mod tests {
         ] }] }))
         .unwrap();
         let filters = std::collections::HashMap::new();
-        let drawing = Drawing { section: "things", busy: &[], replacing: &[], here: true, filters: &filters, expanded: &[] };
+        let drawing = Drawing { section: "things", busy: &[], replacing: &[], here: true, filters: &filters, expanded: &[], confirms: false };
         let Some(Block::Group(_, _, rows)) = blocks(&page, &drawing).into_iter().next() else { panic!("no group") };
         let Control::Buttons(pushes) = &rows[0].control else { panic!("not buttons") };
         assert!(pushes[0].act.is_none() && pushes[1].act.is_some());
-        assert_eq!(rows[0].why.as_deref(), Some("Let It Use is done in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet."));
+        assert_eq!(rows[0].why.as_deref(), Some("Let It Use needs Touch ID or your computer’s password, which this app can’t ask for here yet."));
+        // Where the app asks (on a Mac): offered, and nothing said.
+        let drawing = Drawing { confirms: true, ..drawing };
+        let Some(Block::Group(_, _, rows)) = blocks(&page, &drawing).into_iter().next() else { panic!("no group") };
+        let Control::Buttons(pushes) = &rows[0].control else { panic!("not buttons") };
+        assert!(pushes[0].act.is_some() && rows[0].why.is_none());
     }
 }

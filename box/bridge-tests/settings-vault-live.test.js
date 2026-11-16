@@ -50,8 +50,8 @@ async function start() {
     exited.then(code => reject(new Error(`serve exited ${code}: ${err}`)));
   });
   const headers = { authorization: `Basic ${Buffer.from("opencode:box-pw").toString("base64")}`, "content-type": "application/json", "x-kuvo-from": "app" };
-  const app = async (method, route, body) => {
-    const response = await fetch(`${url}/${route}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const app = async (method, route, body, more = {}) => {
+    const response = await fetch(`${url}/${route}`, { method, headers: { ...headers, ...more }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : {}, text };
   };
@@ -104,7 +104,7 @@ test("a machine's vault is described, changed and followed as a settings page, a
   assert.ok(info.json.features.includes("settings.vault"));
   // No vault yet: the page says where its first item is added (its key kept there).
   let items = rowOf(await page(), "items");
-  assert.match(items.add.can.why, /Add its first item in Kuvo on your iPhone/);
+  assert.match(items.add.can.why, /This app can’t make one/);
   // A client makes it, and keeps its key.
   const { json: { key } } = await box.app("POST", "kuvo/vault/key", {});
   assert.ok(key);
@@ -142,12 +142,18 @@ test("a machine's vault is described, changed and followed as a settings page, a
   }
   assert.equal((await box.app("GET", password.shows.route)).json.values.password, NEW_SECRET);
 
-  // Who Can Use It: Scout may use it, then on its own.
+  // Who Can Use It: letting Scout use it is refused to an app that doesn't make sure it's you
+  // first, and done by one that does (it asks Touch ID or the Mac's password before it sends).
   row = rowOf(await page(), row.id);
-  assert.equal((await act(row, "who", { ...opening(row, "who"), "add-bot": "bot_scout" })).status, 200);
-  row = rowOf(await page(), row.id);
+  assert.equal((await act(row, "who", { ...opening(row, "who"), "add-bot": "bot_scout" })).status, 403);
+  const confirming = { "x-kuvo-confirms-you": "1" };
+  const pageAs = async () => (await box.app("GET", "kuvo/settings/vault", undefined, confirming)).json;
+  const actAs = (row, action, values) => box.app("POST", `kuvo/settings/vault/${encodeURIComponent(row.id)}/${action}`, { was: actionOf(row, action)?.form?.revision ?? row.revision, values }, confirming);
+  row = rowOf(await pageAs(), row.id);
+  assert.equal((await actAs(row, "who", { ...opening(row, "who"), "add-bot": "bot_scout" })).status, 200);
+  row = rowOf(await pageAs(), row.id);
   assert.deepEqual(row.badge, { words: "Asks", tone: "quiet" });
-  assert.equal((await act(row, "who", { ...opening(row, "who"), "bot-bot_scout": "own" })).status, 200);
+  assert.equal((await actAs(row, "who", { ...opening(row, "who"), "bot-bot_scout": "own" })).status, 200);
   const grants = (await box.app("GET", "kuvo/vault/grants")).json.grants;
   assert.deepEqual(grants.map(grant => [grant.who.bot, grant.how]), [["bot_scout", "own"]]);
 

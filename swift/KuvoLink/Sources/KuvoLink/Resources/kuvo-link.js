@@ -41747,7 +41747,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ce39bea74d32";
+var BRIDGE_VERSION = "40cdffddea30";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -62426,7 +62426,7 @@ function revised(row) {
     can: can(each.can),
     opens: each.opens,
     confirm: each.confirm,
-    form: each.form?.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: can(field.can) }))
+    form: each.form?.fields.map(safeField).map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: can(field.can) }))
   };
   const governs = {
     confirmBelow: row.confirmBelow,
@@ -62447,14 +62447,34 @@ function revised(row) {
     flow: row.flow && { id: row.flow.id, state: row.flow.state }
   };
   const revision = hashed2(governs);
-  const withForm = (each) => each.form ? { ...each, form: { ...each.form, revision: formRevision(each.form) } } : each;
+  const withForm = (each) => {
+    if (!each.form)
+      return each;
+    const form = { ...each.form, fields: each.form.fields.map(safeField) };
+    return { ...each, form: { ...form, revision: formRevision(form) } };
+  };
   const add = row.add;
   return {
     ...row,
     revision,
     ...row.actions ? { actions: row.actions.map(withForm) } : {},
-    ...add ? { add: withForm(add) } : {}
+    ...add ? { add: withForm(add) } : {},
+    ...row.flow ? { flow: { ...row.flow, actions: row.flow.actions.map(withForm) } } : {}
   };
+}
+var SHOWS_ROUTE = /^kuvo\/vault\/items\/v_[a-z0-9]{10}\/values$/;
+function safeField(field) {
+  const { value, shows, ...rest } = field;
+  if (field.kind === "secret")
+    return { ...rest, ...shows && SHOWS_ROUTE.test(shows.route) ? { shows } : {} };
+  if (field.kind === "pairs" && field.secret) {
+    return { ...rest, value: Array.isArray(value) ? value.map((pair) => ({ key: typeof pair?.key === "string" ? pair.key : "", value: "" })) : [] };
+  }
+  if (field.kind === "file") {
+    const name = value !== null && typeof value === "object" && typeof value.name === "string" ? value.name : undefined;
+    return { ...rest, ...name ? { value: { name } } : {} };
+  }
+  return { ...rest, ...value !== undefined ? { value } : {} };
 }
 var hashed2 = (value) => crypto63.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16);
 var formRevision = (form) => hashed2(form.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true })));
@@ -63231,19 +63251,19 @@ var capitalized2 = (words) => words.charAt(0).toUpperCase() + words.slice(1);
 var atStart = (words) => words.startsWith("this ") ? capitalized2(words) : words;
 var whose = (computer) => `${computer}’s`;
 var ACTIVITY_SHOWN = 50;
-async function facts2(context) {
+async function facts2(context, activity = true) {
   const vault = await asked8(context, vaultRoute, "GET", "kuvo/vault");
   if (vault.status !== 200)
     return vault;
   const state = vault.value.state;
   const asks = await asked8(context, vaultRoute, "GET", "kuvo/vault/asks");
-  const activity = state.locked || !state.made ? null : await asked8(context, vaultRoute, "GET", `kuvo/vault/activity?limit=${ACTIVITY_SHOWN}`);
+  const lines = !activity || state.locked || !state.made ? null : await asked8(context, vaultRoute, "GET", `kuvo/vault/activity?limit=${ACTIVITY_SHOWN}`);
   return {
     state,
     items: [...vault.value.items].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
     grants: vault.value.grants,
     asks: asks.status === 200 ? asks.value.asks : [],
-    activity: activity?.status === 200 ? activity.value.entries : [],
+    activity: lines?.status === 200 ? lines.value.entries : [],
     bots: listBots().map((bot) => ({ id: bot.id, name: bot.name })).sort((a, b) => a.name.localeCompare(b.name))
   };
 }
@@ -63304,7 +63324,7 @@ function itemFields(each) {
   }
   return fields;
 }
-var keptWords = (state, computer) => state.store === "keychain" ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.` : `Kept on ${computer}, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
+var keptWords = (state, computer) => state.store === "keychain" ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.` : `Kept on ${computer}, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
 var addForm = (known, computer) => ({ title: "Add Item", submit: "Add", fields: itemFields(null), note: keptWords(known.state, computer) });
 var editForm = (each) => ({ title: each.name, submit: "Save", fields: itemFields(each), note: "A value left empty stays as it is." });
 var text8 = (value) => typeof value === "string" ? value : "";
@@ -63420,15 +63440,27 @@ function readForm2(known, each, values, submit = false) {
 }
 var whoId = (who) => who.bot ? `bot-${who.bot}` : who.project ? `project-${who.project}` : "everyone";
 var HOWS = [{ id: "own", title: "On Its Own" }, { id: "ask", title: "Asks Each Time" }, { id: "no", title: "No" }];
-function whoForm(known, each) {
+var RANK2 = { no: 0, ask: 1, own: 2 };
+var confirmsYou = (context) => context.request.headers["x-kuvo-confirms-you"] === "1";
+var CANT_CONFIRM = "This needs Touch ID or your Mac’s password. Update Kuvo to do it here.";
+function whoForm(known, each, confirms) {
   const grants = known.grants.filter((grant) => grant.item === each.id);
   const how = (who) => grants.find((grant) => whoId(grant.who) === whoId(who))?.how ?? "no";
   const listedBots = known.bots.filter((bot) => grants.some((grant) => grant.who.bot === bot.id));
   const projects = grants.flatMap((grant) => grant.who.project ? [grant.who.project] : []);
+  const choice = (id, title, now, line) => ({
+    id,
+    title,
+    kind: "choice",
+    value: now,
+    choices: confirms ? HOWS.map((each) => RANK2[each.id] > RANK2[now] ? { ...each, verified: true } : each) : HOWS.filter((each) => RANK2[each.id] <= RANK2[now]),
+    ...line ? { line } : {},
+    ...!confirms && now === "no" ? { can: { why: CANT_CONFIRM } } : {}
+  });
   const fields = [
-    ...listedBots.map((bot) => ({ id: `bot-${bot.id}`, title: bot.name, kind: "choice", value: how({ bot: bot.id }), choices: HOWS, verified: true })),
-    ...projects.map((project) => ({ id: `project-${project}`, title: path199.basename(project) || project, line: project, kind: "choice", value: how({ project }), choices: HOWS, verified: true })),
-    { id: "everyone", title: listedBots.length || projects.length ? "Other sessions and bots" : "Every agent", kind: "choice", value: how({ everyone: true }), choices: HOWS, verified: true }
+    ...listedBots.map((bot) => choice(`bot-${bot.id}`, bot.name, how({ bot: bot.id }))),
+    ...projects.map((project) => choice(`project-${project}`, path199.basename(project) || project, how({ project }), project)),
+    choice("everyone", listedBots.length || projects.length ? "Other sessions and bots" : "Every agent", how({ everyone: true }))
   ];
   const others = known.bots.filter((bot) => !listedBots.includes(bot));
   if (others.length) {
@@ -63437,9 +63469,9 @@ function whoForm(known, each) {
       title: "Let a Bot Use It",
       kind: "choice",
       value: "none",
-      verified: true,
-      choices: [{ id: "none", title: "No One Else" }, ...others.map((bot) => ({ id: bot.id, title: bot.name }))],
-      line: "It asks you each time, until you choose On Its Own."
+      ...confirms ? {} : { can: { why: CANT_CONFIRM } },
+      line: "It asks you each time, until you choose On Its Own.",
+      choices: [{ id: "none", title: "No One Else" }, ...others.map((bot) => ({ id: bot.id, title: bot.name, verified: true }))]
     });
   }
   const note = each.kind === "login" ? `Only on ${each.sites.join(", ")}. Agents never see the password: Kuvo fills it in.` : "Agents never see it: Kuvo fills it in, or hands it to a command they run.";
@@ -63447,7 +63479,7 @@ function whoForm(known, each) {
 }
 var askerOf = (ask) => ask.botName ?? ask.sessionName ?? "An agent";
 var mayAlways = (ask) => !ask.group && ask.always !== false;
-function askRow(ask, known) {
+function askRow(ask, known, confirms) {
   const asker = askerOf(ask);
   const title = ask.kind === "use" ? `${asker} wants to use “${ask.itemName ?? "an item"}”` : `${asker} needs ${ask.need ?? "something from your vault"}`;
   const line = [ask.why, ask.site ? `On ${ask.site}` : undefined].filter(Boolean).join(" · ") || undefined;
@@ -63457,6 +63489,7 @@ function askRow(ask, known) {
       id: "always",
       title: "Always Allow…",
       verified: true,
+      ...confirms ? {} : { can: { why: CANT_CONFIRM } },
       confirm: { title: `Let ${asker} use “${ask.itemName ?? "it"}” on its own?`, body: "From now on it uses it without asking you. Change that in its Who Can Use It.", button: "Always Allow" }
     }] : [];
     return item({ id: `ask-${ask.id}`, title, ...line ? { line } : {}, kind: "actions", actions: [no, { id: "once", title: "Allow Once" }, ...always] });
@@ -63469,7 +63502,14 @@ function askRow(ask, known) {
       submit: "Give",
       fields: [
         { id: "item", title: "Item", kind: "choice", value: "", choices: known.items.map((each) => ({ id: each.id, title: each.name, line: lineOf3(each) })) },
-        ...mayAlways(ask) ? [{ id: "how", title: "For", kind: "choice", value: "once", verified: true, choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On" }] }] : []
+        ...mayAlways(ask) ? [{
+          id: "how",
+          title: "For",
+          kind: "choice",
+          value: "once",
+          choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On", verified: true }],
+          ...confirms ? {} : { can: { why: CANT_CONFIRM } }
+        }] : []
       ],
       ...ask.need ? { note: `It needs ${ask.need}.` } : {}
     }
@@ -63558,15 +63598,15 @@ function sentence(entry) {
   }
   return `${who}: ${what} ${thing}`;
 }
-async function vaultPage(context) {
-  const known = await facts2(context);
+async function vaultPage(context, quiet = false) {
+  const known = await facts2(context, !quiet);
   const computer = computerHere2(context);
   if (!("state" in known))
     return unreadPage("vault", TITLE2, known.status === 403 ? { status: 403, value: { message: `Only Kuvo on your devices can open ${whose(computer)} vault.` } } : known);
   const { state } = known;
   const notes = [];
   if (state.locked) {
-    notes.push({ words: `${atStart(whose(computer))} vault is locked since it started again. Its agents can’t use it until you unlock it in Kuvo on your iPhone, which keeps its key.`, tone: "warning" });
+    notes.push({ words: `${atStart(whose(computer))} vault is locked since it started again, so its agents can’t use it. Unlocking it takes the key it was made with, which this app doesn’t keep.`, tone: "warning" });
     return { id: "vault", title: TITLE2, groups: [], notes };
   }
   if (state.tampered)
@@ -63576,7 +63616,7 @@ async function vaultPage(context) {
   }
   const groups = [];
   if (known.asks.length)
-    groups.push({ id: "asks", title: "Waiting for You", rows: known.asks.map((ask) => askRow(ask, known)) });
+    groups.push({ id: "asks", title: "Waiting for You", rows: known.asks.map((ask) => askRow(ask, known, confirmsYou(context))) });
   const items = known.items.map((each) => {
     const grants = known.grants.filter((grant) => grant.item === each.id);
     const badge = badgeOf2(grants);
@@ -63587,13 +63627,13 @@ async function vaultPage(context) {
       kind: "actions",
       actions: [
         { id: "edit", title: "Edit…", form: editForm(each) },
-        { id: "who", title: "Who Can Use It…", form: whoForm(known, each) },
+        { id: "who", title: "Who Can Use It…", form: whoForm(known, each, confirmsYou(context)) },
         { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from the vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } }
       ]
     });
     return { ...kept, ...badge ? { badge } : {} };
   });
-  const add = { id: "add", title: "Add Item…", form: addForm(known, computer), ...state.made ? {} : { can: { why: `There’s no vault on ${computer} yet. Add its first item in Kuvo on your iPhone, which keeps the key that unlocks it after ${computer} restarts.` } } };
+  const add = { id: "add", title: "Add Item…", form: addForm(known, computer), ...state.made ? {} : { can: { why: `There’s no vault on ${computer} yet. This app can’t make one: it doesn’t keep the key that unlocks a vault after its computer restarts.` } } };
   groups.push({
     id: "items",
     title: "Items",
@@ -63664,7 +63704,7 @@ function itemRefused(answer, kind) {
 }
 var ID4 = /^v_[a-z0-9]{10}$/;
 async function vaultAct(context, at, action, values) {
-  const known = await facts2(context);
+  const known = await facts2(context, false);
   if (!("state" in known))
     return refusal5(known) ?? { status: 503, message: said9(known, "This computer's vault couldn't be read.") };
   if (at.id === "items" && action.id === "add") {
@@ -63688,13 +63728,19 @@ async function vaultAct(context, at, action, values) {
       case "always":
         if (!mayAlways(ask))
           return { status: 403, message: "This one can only be allowed once." };
+        if (!confirmsYou(context))
+          return { status: 403, message: CANT_CONFIRM };
         return staleOr404(await answer({ answer: "always" }));
       case "give": {
         const given = text8(values?.item);
         if (!known.items.some((each) => each.id === given))
           return { status: 400, message: "Pick an item to give.", fields: [{ id: "item", words: "Pick an item to give.", tone: "warning" }] };
-        const how = values?.how === "always" && mayAlways(ask) ? "always" : "once";
-        return staleOr404(await answer({ answer: how, item: given }));
+        const always = values?.how === "always";
+        if (always && !mayAlways(ask))
+          return { status: 403, message: "This one can only be given once." };
+        if (always && !confirmsYou(context))
+          return { status: 403, message: CANT_CONFIRM };
+        return staleOr404(await answer({ answer: always ? "always" : "once", item: given }));
       }
     }
     return { status: 404, message: "That isn't something it does." };
@@ -63755,11 +63801,15 @@ async function vaultAct(context, at, action, values) {
           return { status: 400, message: "That isn't someone it can be given to." };
         if (who.bot && !known.bots.some((bot) => bot.id === who.bot))
           return STALE;
+        if (RANK2[value] > RANK2[now(who)] && !confirmsYou(context))
+          return { status: 403, message: CANT_CONFIRM };
         if (now(who) !== value)
           wanted.push({ who, how: value });
       }
       const more = text8(values?.["add-bot"]);
       if (more && more !== "none") {
+        if (!confirmsYou(context))
+          return { status: 403, message: CANT_CONFIRM };
         if (!known.bots.some((bot) => bot.id === more))
           return STALE;
         if (now({ bot: more }) === "no" && !wanted.some((each) => each.who.bot === more))
@@ -63779,7 +63829,7 @@ async function vaultAct(context, at, action, values) {
 }
 var staleOr404 = (answer) => answer.status === 404 ? STALE : refusal5(answer);
 async function vaultCheck(context, at, action, values) {
-  const known = await facts2(context);
+  const known = await facts2(context, false);
   if (!("state" in known))
     return { fields: [], ready: false };
   if (at.id === "items" && action.id === "add") {
@@ -63819,7 +63869,7 @@ init_shape();
 var SETTING_KINDS = ["switch", "choice", "text", "number", "folder", "secret", "status", "actions", "list", "meter", "open", "steps", "custom"];
 var SETTING_CAN = oneOf(literal(true), object({ why: string }));
 var SETTING_CONFIRM = object({ title: string, body: string, button: string });
-var SETTING_CHOICE = object({ id: string, title: string, "line?": string });
+var SETTING_CHOICE = object({ id: string, title: string, "line?": string, "verified?": bool });
 var SETTING_FOLDER = object({ choose: string, clear: string, prompt: string, message: string });
 var SETTING_FIELD_KINDS = ["text", "lines", "choice", "switch", "folder", "pairs", "secret", "file"];
 var SETTING_FIELD_SHOWS = object({ route: string, field: string });

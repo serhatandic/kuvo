@@ -6,7 +6,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { sortedJSON } from "../../shared/json";
-import type { SettingAction, SettingCan, SettingFieldWords, SettingItem, SettingRow, SettingsChecked, SettingsPage } from "../../shared/routes/settings-pages";
+import type { SettingAction, SettingCan, SettingField, SettingFieldWords, SettingItem, SettingRow, SettingsChecked, SettingsPage } from "../../shared/routes/settings-pages";
 import { CHANGED_SINCE } from "./config";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -20,7 +20,7 @@ export function revised<Row extends Omit<SettingItem, "revision"> & { items?: re
   const can = (value: SettingCan | undefined) => (value === undefined ? undefined : value === true);
   const action = (each: SettingAction | undefined) => each && {
     id: each.id, can: can(each.can), opens: each.opens, confirm: each.confirm,
-    form: each.form?.fields.map(field => ({ id: field.id, kind: field.kind, value: field.value, can: can(field.can) })),
+    form: each.form?.fields.map(safeField).map(field => ({ id: field.id, kind: field.kind, value: field.value, can: can(field.can) })),
   };
   const governs = {
     confirmBelow: row.confirmBelow, min: row.min, max: row.max,
@@ -32,13 +32,38 @@ export function revised<Row extends Omit<SettingItem, "revision"> & { items?: re
     flow: row.flow && { id: row.flow.id, state: row.flow.state },
   };
   const revision = hashed(governs);
-  const withForm = (each: SettingAction) => (each.form ? { ...each, form: { ...each.form, revision: formRevision(each.form) } } : each);
+  const withForm = (each: SettingAction) => {
+    if (!each.form) return each;
+    const form = { ...each.form, fields: each.form.fields.map(safeField) };
+    return { ...each, form: { ...form, revision: formRevision(form) } };
+  };
   const add = (row as { add?: SettingAction }).add;
   return {
     ...row, revision,
     ...(row.actions ? { actions: row.actions.map(withForm) } : {}),
     ...(add ? { add: withForm(add) } : {}),
+    ...(row.flow ? { flow: { ...row.flow, actions: row.flow.actions.map(withForm) } } : {}),
   };
+}
+
+/** Where a `secret` field's kept value may be read (Show): the vault's own values route, which
+ * notes that it was shown, and nothing else. */
+export const SHOWS_ROUTE = /^kuvo\/vault\/items\/v_[a-z0-9]{10}\/values$/;
+
+/** A form's field as any section may send it: what's secret never in it, whatever the section put
+ * there. A `secret` opens with no value; a `secret` pairs' values are empty (their names stay); a
+ * `file` opens with its name alone; and `shows` names only the vault's values route. */
+export function safeField(field: SettingField): SettingField {
+  const { value, shows, ...rest } = field;
+  if (field.kind === "secret") return { ...rest, ...(shows && SHOWS_ROUTE.test(shows.route) ? { shows } : {}) };
+  if (field.kind === "pairs" && field.secret) {
+    return { ...rest, value: Array.isArray(value) ? value.map(pair => ({ key: typeof pair?.key === "string" ? pair.key : "", value: "" })) : [] };
+  }
+  if (field.kind === "file") {
+    const name = value !== null && typeof value === "object" && typeof (value as { name?: unknown }).name === "string" ? (value as { name: string }).name : undefined;
+    return { ...rest, ...(name ? { value: { name } } : {}) };
+  }
+  return { ...rest, ...(value !== undefined ? { value } : {}) };
 }
 
 const hashed = (value: unknown): string => crypto.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16);

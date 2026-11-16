@@ -54,18 +54,19 @@ interface Facts {
 /** The most activity the page lists. */
 const ACTIVITY_SHOWN = 50;
 
-async function facts(context: RouteContext): Promise<Facts | { status: number; value: any }> {
+/** (`activity`: its lines too; a check and an action need none.) */
+async function facts(context: RouteContext, activity = true): Promise<Facts | { status: number; value: any }> {
   const vault = await asked(context, vaultRoute, "GET", "kuvo/vault");
   if (vault.status !== 200) return vault;
   const state = vault.value.state as VaultState;
   const asks = await asked(context, vaultRoute, "GET", "kuvo/vault/asks");
-  const activity = state.locked || !state.made ? null : await asked(context, vaultRoute, "GET", `kuvo/vault/activity?limit=${ACTIVITY_SHOWN}`);
+  const lines = !activity || state.locked || !state.made ? null : await asked(context, vaultRoute, "GET", `kuvo/vault/activity?limit=${ACTIVITY_SHOWN}`);
   return {
     state,
     items: [...(vault.value.items as VaultItem[])].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
     grants: vault.value.grants as VaultGrant[],
     asks: asks.status === 200 ? asks.value.asks : [],
-    activity: activity?.status === 200 ? activity.value.entries : [],
+    activity: lines?.status === 200 ? lines.value.entries : [],
     bots: listBots().map(bot => ({ id: bot.id, name: bot.name })).sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
@@ -144,7 +145,7 @@ function itemFields(each: VaultItem | null): SettingField[] {
 /** Where its values are kept, in a sentence. */
 const keptWords = (state: VaultState, computer: string) => state.store === "keychain"
   ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.`
-  : `Kept on ${computer}, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
+  : `Kept on ${computer}, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
 
 const addForm = (known: Facts, computer: string): SettingForm => ({ title: "Add Item", submit: "Add", fields: itemFields(null), note: keptWords(known.state, computer) });
 const editForm = (each: VaultItem): SettingForm => ({ title: each.name, submit: "Save", fields: itemFields(each), note: "A value left empty stays as it is." });
@@ -270,23 +271,43 @@ function readForm(known: Facts, each: VaultItem | null, values: Record<string, u
 /** Who may use an item: the bots and projects listed by name, then everyone (others). */
 const whoId = (who: VaultWho): string => (who.bot ? `bot-${who.bot}` : who.project ? `project-${who.project}` : "everyone");
 const HOWS = [{ id: "own", title: "On Its Own" }, { id: "ask", title: "Asks Each Time" }, { id: "no", title: "No" }];
+/** How much each lets it: what's more than it can now is widening it. */
+const RANK: Record<string, number> = { no: 0, ask: 1, own: 2 };
 
-function whoForm(known: Facts, each: VaultItem): SettingForm {
+/** Whether the client asking makes sure it's you (Touch ID, or its computer's password) before
+ * what lets something use what's yours from now on (`x-kuvo-confirms-you: 1`, PROTOCOL.md "A
+ * box's settings"). Only such a client is offered it (marked `verified`, so it asks first); any
+ * other gets it unavailable, with why, and is refused it. (The box can't see the check itself, as
+ * it can't for `kuvo/vault/grants`: what a client says of itself, so one that doesn't check never
+ * offers it.) */
+export const confirmsYou = (context: RouteContext): boolean => context.request.headers["x-kuvo-confirms-you"] === "1";
+/** Why not, to a client that doesn't: an older app, which a newer one does it in. */
+export const CANT_CONFIRM = "This needs Touch ID or your Mac’s password. Update Kuvo to do it here.";
+
+function whoForm(known: Facts, each: VaultItem, confirms: boolean): SettingForm {
   const grants = known.grants.filter(grant => grant.item === each.id);
   const how = (who: VaultWho) => grants.find(grant => whoId(grant.who) === whoId(who))?.how ?? "no";
   const listedBots = known.bots.filter(bot => grants.some(grant => grant.who.bot === bot.id));
   const projects = grants.flatMap(grant => (grant.who.project ? [grant.who.project] : []));
+  // Taking access away is done anywhere, without asking. Letting it be used more makes sure it's
+  // you first: to a client that does, those choices are `verified` (it asks before one is sent);
+  // to any other, only what it is now and less.
+  const choice = (id: string, title: string, now: string, line?: string): SettingField => ({
+    id, title, kind: "choice", value: now,
+    choices: confirms ? HOWS.map(each => (RANK[each.id]! > RANK[now]! ? { ...each, verified: true } : each)) : HOWS.filter(each => RANK[each.id]! <= RANK[now]!),
+    ...(line ? { line } : {}), ...(!confirms && now === "no" ? { can: { why: CANT_CONFIRM } } : {}),
+  });
   const fields: SettingField[] = [
-    // (Each lets someone use what's yours: a client makes sure it's you first.)
-    ...listedBots.map(bot => ({ id: `bot-${bot.id}`, title: bot.name, kind: "choice" as const, value: how({ bot: bot.id }), choices: HOWS, verified: true })),
-    ...projects.map(project => ({ id: `project-${project}`, title: path.basename(project) || project, line: project, kind: "choice" as const, value: how({ project }), choices: HOWS, verified: true })),
-    { id: "everyone", title: listedBots.length || projects.length ? "Other sessions and bots" : "Every agent", kind: "choice", value: how({ everyone: true }), choices: HOWS, verified: true },
+    ...listedBots.map(bot => choice(`bot-${bot.id}`, bot.name, how({ bot: bot.id }))),
+    ...projects.map(project => choice(`project-${project}`, path.basename(project) || project, how({ project }), project)),
+    choice("everyone", listedBots.length || projects.length ? "Other sessions and bots" : "Every agent", how({ everyone: true })),
   ];
   const others = known.bots.filter(bot => !listedBots.includes(bot));
   if (others.length) {
     fields.push({
-      id: "add-bot", title: "Let a Bot Use It", kind: "choice", value: "none", verified: true, choices: [{ id: "none", title: "No One Else" }, ...others.map(bot => ({ id: bot.id, title: bot.name }))],
+      id: "add-bot", title: "Let a Bot Use It", kind: "choice", value: "none", ...(confirms ? {} : { can: { why: CANT_CONFIRM } }),
       line: "It asks you each time, until you choose On Its Own.",
+      choices: [{ id: "none", title: "No One Else" }, ...others.map(bot => ({ id: bot.id, title: bot.name, verified: true }))],
     });
   }
   const note = each.kind === "login"
@@ -301,14 +322,14 @@ const askerOf = (ask: VaultAsk) => ask.botName ?? ask.sessionName ?? "An agent";
 /** Whether you may answer it for good: never from a seat, nor where the box said it'd only be once. */
 const mayAlways = (ask: VaultAsk) => !ask.group && ask.always !== false;
 
-function askRow(ask: VaultAsk, known: Facts): SettingItem {
+function askRow(ask: VaultAsk, known: Facts, confirms: boolean): SettingItem {
   const asker = askerOf(ask);
   const title = ask.kind === "use" ? `${asker} wants to use “${ask.itemName ?? "an item"}”` : `${asker} needs ${ask.need ?? "something from your vault"}`;
   const line = [ask.why, ask.site ? `On ${ask.site}` : undefined].filter(Boolean).join(" · ") || undefined;
   const no: SettingAction = { id: "no", title: "Don’t Allow" };
   if (ask.kind === "use") {
     const always: SettingAction[] = mayAlways(ask) ? [{
-      id: "always", title: "Always Allow…", verified: true,
+      id: "always", title: "Always Allow…", verified: true, ...(confirms ? {} : { can: { why: CANT_CONFIRM } }),
       confirm: { title: `Let ${asker} use “${ask.itemName ?? "it"}” on its own?`, body: "From now on it uses it without asking you. Change that in its Who Can Use It.", button: "Always Allow" },
     }] : [];
     return item({ id: `ask-${ask.id}`, title, ...(line ? { line } : {}), kind: "actions", actions: [no, { id: "once", title: "Allow Once" }, ...always] });
@@ -319,7 +340,11 @@ function askRow(ask: VaultAsk, known: Facts): SettingItem {
       title: `Give ${asker} an Item`, submit: "Give",
       fields: [
         { id: "item", title: "Item", kind: "choice", value: "", choices: known.items.map(each => ({ id: each.id, title: each.name, line: lineOf(each) })) },
-        ...(mayAlways(ask) ? [{ id: "how", title: "For", kind: "choice" as const, value: "once", verified: true, choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On" }] }] : []),
+        // (From now on is a grant, which makes sure it's you first.)
+        ...(mayAlways(ask) ? [{
+          id: "how", title: "For", kind: "choice" as const, value: "once", choices: [{ id: "once", title: "This Once" }, { id: "always", title: "From Now On", verified: true }],
+          ...(confirms ? {} : { can: { why: CANT_CONFIRM } }),
+        }] : []),
       ],
       ...(ask.need ? { note: `It needs ${ask.need}.` } : {}),
     },
@@ -391,8 +416,9 @@ export function sentence(entry: VaultActivity): string {
 
 // MARK: The page
 
-async function vaultPage(context: RouteContext): Promise<SettingsPage> {
-  const known = await facts(context);
+async function vaultPage(context: RouteContext, quiet = false): Promise<SettingsPage> {
+  // (Read quietly for a form's check: no activity, which no form shows.)
+  const known = await facts(context, !quiet);
   const computer = computerHere(context);
   // (Anything but your devices and the app beside it: an agent's command, say.)
   if (!("state" in known)) return unreadPage("vault", TITLE, known.status === 403 ? { status: 403, value: { message: `Only Kuvo on your devices can open ${whose(computer)} vault.` } } : known);
@@ -400,7 +426,8 @@ async function vaultPage(context: RouteContext): Promise<SettingsPage> {
   const notes: { words: string; tone: "quiet" | "warning" }[] = [];
   if (state.locked) {
     // (Only a client that kept its key unlocks it, and a page can't carry one.)
-    notes.push({ words: `${atStart(whose(computer))} vault is locked since it started again. Its agents can’t use it until you unlock it in Kuvo on your iPhone, which keeps its key.`, tone: "warning" });
+    // (Only a client that kept its key unlocks it, and this one keeps none.)
+    notes.push({ words: `${atStart(whose(computer))} vault is locked since it started again, so its agents can’t use it. Unlocking it takes the key it was made with, which this app doesn’t keep.`, tone: "warning" });
     return { id: "vault", title: TITLE, groups: [], notes };
   }
   if (state.tampered) notes.push({ words: "Its files were changed outside Kuvo, so it uses none of them, and every agent’s use is paused. Add its items again.", tone: "warning" });
@@ -409,7 +436,7 @@ async function vaultPage(context: RouteContext): Promise<SettingsPage> {
   }
 
   const groups: SettingGroup[] = [];
-  if (known.asks.length) groups.push({ id: "asks", title: "Waiting for You", rows: known.asks.map(ask => askRow(ask, known)) });
+  if (known.asks.length) groups.push({ id: "asks", title: "Waiting for You", rows: known.asks.map(ask => askRow(ask, known, confirmsYou(context))) });
 
   const items = known.items.map(each => {
     const grants = known.grants.filter(grant => grant.item === each.id);
@@ -418,7 +445,7 @@ async function vaultPage(context: RouteContext): Promise<SettingsPage> {
       id: `item-${each.id}`, title: each.name, line: lineOf(each), kind: "actions",
       actions: [
         { id: "edit", title: "Edit…", form: editForm(each) },
-        { id: "who", title: "Who Can Use It…", form: whoForm(known, each) },
+        { id: "who", title: "Who Can Use It…", form: whoForm(known, each, confirmsYou(context)) },
         { id: "delete", title: "Delete…", style: "destructive", confirm: { title: `Delete “${each.name}” from the vault?`, body: "Agents can’t use it any more. The account or service it’s for isn’t affected.", button: "Delete" } },
       ],
     });
@@ -426,7 +453,7 @@ async function vaultPage(context: RouteContext): Promise<SettingsPage> {
   });
   // (A machine's vault is made with its first item, and its key kept by the client that made it:
   // a page can't carry that key, so the first item is added where it's kept.)
-  const add: SettingAction = { id: "add", title: "Add Item…", form: addForm(known, computer), ...(state.made ? {} : { can: { why: `There’s no vault on ${computer} yet. Add its first item in Kuvo on your iPhone, which keeps the key that unlocks it after ${computer} restarts.` } }) };
+  const add: SettingAction = { id: "add", title: "Add Item…", form: addForm(known, computer), ...(state.made ? {} : { can: { why: `There’s no vault on ${computer} yet. This app can’t make one: it doesn’t keep the key that unlocks a vault after its computer restarts.` } }) };
   groups.push({
     id: "items", title: "Items", note: keptWords(state, computer),
     rows: [row({
@@ -492,7 +519,7 @@ function itemRefused(answer: { status: number; value: any }, kind: Kind): Refuse
 const ID = /^v_[a-z0-9]{10}$/;
 
 async function vaultAct(context: RouteContext, at: SettingItem, action: SettingAction, values?: Record<string, unknown>): Promise<Refused | null> {
-  const known = await facts(context);
+  const known = await facts(context, false);
   if (!("state" in known)) return refusal(known) ?? { status: 503, message: said(known, "This computer's vault couldn't be read.") };
 
   if (at.id === "items" && action.id === "add") {
@@ -512,12 +539,15 @@ async function vaultAct(context: RouteContext, at: SettingItem, action: SettingA
       case "once": return staleOr404(await answer({ answer: "once" }));
       case "always":
         if (!mayAlways(ask)) return { status: 403, message: "This one can only be allowed once." };
+        if (!confirmsYou(context)) return { status: 403, message: CANT_CONFIRM };
         return staleOr404(await answer({ answer: "always" }));
       case "give": {
         const given = text(values?.item);
         if (!known.items.some(each => each.id === given)) return { status: 400, message: "Pick an item to give.", fields: [{ id: "item", words: "Pick an item to give.", tone: "warning" }] };
-        const how = values?.how === "always" && mayAlways(ask) ? "always" : "once";
-        return staleOr404(await answer({ answer: how, item: given }));
+        const always = values?.how === "always";
+        if (always && !mayAlways(ask)) return { status: 403, message: "This one can only be given once." };
+        if (always && !confirmsYou(context)) return { status: 403, message: CANT_CONFIRM };
+        return staleOr404(await answer({ answer: always ? "always" : "once", item: given }));
       }
     }
     return { status: 404, message: "That isn't something it does." };
@@ -570,13 +600,17 @@ async function vaultAct(context: RouteContext, at: SettingItem, action: SettingA
           : null;
         if (!who || !HOWS.some(choice => choice.id === value)) return { status: 400, message: "That isn't someone it can be given to." };
         if (who.bot && !known.bots.some(bot => bot.id === who.bot)) return STALE;
+        // (Only less than it has now, against the grants as they are now, whatever was read before.)
+        if (RANK[value as string]! > RANK[now(who)]! && !confirmsYou(context)) return { status: 403, message: CANT_CONFIRM };
         if (now(who) !== value) wanted.push({ who, how: value as string });
       }
       const more = text(values?.["add-bot"]);
       if (more && more !== "none") {
+        if (!confirmsYou(context)) return { status: 403, message: CANT_CONFIRM };
         if (!known.bots.some(bot => bot.id === more)) return STALE;
         if (now({ bot: more }) === "no" && !wanted.some(each => each.who.bot === more)) wanted.push({ who: { bot: more }, how: "ask" });
       }
+      // (All checked before any is written: one refused leaves none half done.)
       for (const each of wanted) {
         const done = refusal(await vault(context, "POST", "kuvo/vault/grants", { item: id, who: each.who, how: each.how === "no" ? null : each.how }));
         if (done) return done;
@@ -593,7 +627,7 @@ async function vaultAct(context: RouteContext, at: SettingItem, action: SettingA
 const staleOr404 = (answer: { status: number; value: any }): Refused | null => (answer.status === 404 ? STALE : refusal(answer));
 
 async function vaultCheck(context: RouteContext, at: SettingItem, action: SettingAction, values: Record<string, unknown>): Promise<SettingsChecked> {
-  const known = await facts(context);
+  const known = await facts(context, false);
   if (!("state" in known)) return { fields: [], ready: false };
   if (at.id === "items" && action.id === "add") {
     const { fields, ready } = readForm(known, null, values);

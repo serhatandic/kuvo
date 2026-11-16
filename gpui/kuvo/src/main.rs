@@ -29,6 +29,8 @@ fn main() {
     }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
+        // Touch ID, or this Mac's password, before what lets something use what's yours from now on.
+        kuvo::confirm_you::init(cx);
         // Your settings, kept in the app's own folder (none for the made-up box: kept while it runs).
         kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
         // Who its notifications are from (macOS takes it from the bundle; Linux from this).

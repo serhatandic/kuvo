@@ -66,10 +66,10 @@ export function offShape(method: string, requestPath: string, status: number, va
 type Handler = (request: { method: string; path: string; headers: Record<string, string>; body?: Buffer; fromApp?: boolean }, phone: undefined, signal?: AbortSignal) => AsyncGenerator<any>
 
 /** `method path` asked of `handler` as a client asks it, its answer held to its route's shape. */
-export async function ask(handler: Handler, method: string, path: string, body?: unknown, { fromApp = true }: { fromApp?: boolean } = {}): Promise<{ status: number; json: any }> {
+export async function ask(handler: Handler, method: string, path: string, body?: unknown, { fromApp = true, headers = {} }: { fromApp?: boolean; headers?: Record<string, string> } = {}): Promise<{ status: number; json: any }> {
   let status = 0
   let text = ""
-  for await (const piece of handler({ method, path, headers: {}, ...(fromApp ? { fromApp: true } : {}), ...(body !== undefined ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) {
+  for await (const piece of handler({ method, path, headers, ...(fromApp ? { fromApp: true } : {}), ...(body !== undefined ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, undefined)) {
     if ("head" in piece) status = piece.head.status
     if ("body" in piece) text += Buffer.from(piece.body).toString()
   }

@@ -30,14 +30,19 @@ function bot(id: string, name: string) {
 }
 
 beforeEach(() => {
+  client = {}
   rmSync(VAULT_FOLDER, { recursive: true, force: true })
   rmSync(BOTS, { recursive: true, force: true })
   store.forgetKeys()
   for (const each of asks.listAsks()) asks.answer(each.id, { answer: "no" })
 })
 
+/** The client asking: one that says it makes sure it's you first (Touch ID) before what lets
+ * something use what's yours from now on, or (as it starts each test) one that doesn't. */
+const CONFIRMS = { "x-kuvo-confirms-you": "1" }
+let client: Record<string, string> = {}
 const page = async (fromApp = true) => {
-  const { status, json } = await ask(handler, "GET", "kuvo/settings/vault", undefined, { fromApp })
+  const { status, json } = await ask(handler, "GET", "kuvo/settings/vault", undefined, { fromApp, headers: client })
   expect(status).toBe(200)
   expect(JSON.stringify(json)).not.toContain(SECRET)
   return json
@@ -45,9 +50,9 @@ const page = async (fromApp = true) => {
 const rowOf = (shown: any, id: string): any => shown.groups.flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])])).find((row: any) => row.id === id)
 const actionOf = (row: any, id: string) => [...(row.actions ?? []), ...(row.add ? [row.add] : [])].find((each: any) => each.id === id)
 const act = (row: any, action: string, values?: unknown, was = actionOf(row, action)?.form?.revision ?? row.revision) =>
-  ask(handler, "POST", `kuvo/settings/vault/${encodeURIComponent(row.id)}/${action}`, { was, ...(values === undefined ? {} : { values }) })
-const check = (row: any, action: string, values: unknown) => ask(handler, "POST", `kuvo/settings/vault/${encodeURIComponent(row.id)}/${action}/check`, { was: actionOf(row, action).form.revision, values })
-const change = (row: any, value: unknown, was = row.revision) => ask(handler, "PATCH", "kuvo/settings/vault", { row: row.id, value, was })
+  ask(handler, "POST", `kuvo/settings/vault/${encodeURIComponent(row.id)}/${action}`, { was, ...(values === undefined ? {} : { values }) }, { headers: client })
+const check = (row: any, action: string, values: unknown) => ask(handler, "POST", `kuvo/settings/vault/${encodeURIComponent(row.id)}/${action}/check`, { was: actionOf(row, action).form.revision, values }, { headers: client })
+const change = (row: any, value: unknown, was = row.revision) => ask(handler, "PATCH", "kuvo/settings/vault", { row: row.id, value, was }, { headers: client })
 const opening = (row: any, action: string) => Object.fromEntries(actionOf(row, action).form.fields.filter((field: any) => "value" in field).map((field: any) => [field.id, field.value]))
 /** What a client sends in a check for a secret: a dot for each character. */
 const masked = (text: string) => "•".repeat(Array.from(text).length)
@@ -67,7 +72,7 @@ test("it's one of this computer's sections, and before there's a vault it says w
   expect(items).toMatchObject({ kind: "list", items: [], empty: "Nothing yet. Add a sign-in, a key, a file or a note for your agents to use." })
   // A page can't carry the key a machine's new vault is unlocked with: its first item is added
   // where that key is kept, and adding it here is refused as the page says.
-  expect(items.add.can.why).toBe("There’s no vault on this Mac yet. Add its first item in Kuvo on your iPhone, which keeps the key that unlocks it after this Mac restarts.".replaceAll("this Mac", here))
+  expect(items.add.can.why).toBe(`There’s no vault on ${here} yet. This app can’t make one: it doesn’t keep the key that unlocks a vault after its computer restarts.`)
   expect(rowOf(shown, "pause")).toBeUndefined()
   const refused = await act(items, "add", { kind: "note", name: "Contact", text: "Call me maybe" })
   expect(refused.status).toBe(403)
@@ -88,7 +93,7 @@ test("the items are listed by name with what each is and how it's used, and neve
     ["GitHub", "Sign-in · octo · github.com", "On its own"],
   ])
   expect(items.items[2].actions.map((each: any) => each.title)).toEqual(["Edit…", "Who Can Use It…", "Delete…"])
-  expect(shown.groups.find((group: any) => group.id === "items").note).toContain("encrypted, with a key that Kuvo on your iPhone keeps")
+  expect(shown.groups.find((group: any) => group.id === "items").note).toContain("encrypted, with a key only the Kuvo that made it keeps")
   expect(rowOf(shown, "pause")).toMatchObject({ kind: "switch", value: false, can: true })
   for (const secret of ["key-value-1", "issuer-1", "a note to read"]) expect(JSON.stringify(shown)).not.toContain(secret)
 })
@@ -181,37 +186,43 @@ test("Edit… opens empty for each value, shows one only through the vault's val
   expect(store.itemByID(github.id)!.name).toBe("GitHub Work")
 })
 
-test("Who Can Use It… lists who may, lets another bot use it, and takes it away", async () => {
+test("Who Can Use It… takes access away from any client, and lets it be used more only from one that makes sure it's you", async () => {
   const github = await made()
   bot("bot_scout", "Scout")
   bot("bot_ranger", "Ranger")
+  store.setGrant(github.id, { bot: "bot_scout" }, "ask")
   let row = rowOf(await page(), `item-${github.id}`)
   let who = actionOf(row, "who").form
-  expect(who.fields.map((field: any) => [field.id, field.title, field.value])).toEqual([
-    ["everyone", "Every agent", "no"],
-    ["add-bot", "Let a Bot Use It", "none"],
+  // A client that doesn't: what each is now and less; more says why, and is refused.
+  expect(who.fields.map((field: any) => [field.id, field.value, field.choices.map((choice: any) => choice.id), field.can?.why ?? null])).toEqual([
+    ["bot-bot_scout", "ask", ["ask", "no"], null],
+    ["everyone", "no", ["no"], "This needs Touch ID or your Mac’s password. Update Kuvo to do it here."],
+    ["add-bot", "none", ["none", "bot_ranger"], "This needs Touch ID or your Mac’s password. Update Kuvo to do it here."],
   ])
-  expect(who.fields[1].choices.map((choice: any) => choice.title)).toEqual(["No One Else", "Ranger", "Scout"])
   expect(who.note).toBe("Only on github.com. Agents never see the password: Kuvo fills it in.")
-  // Each lets someone use what's yours: a client makes sure it's you first.
-  expect(who.fields.every((field: any) => field.verified === true)).toBe(true)
-
-  expect((await act(row, "who", { ...opening(row, "who"), "add-bot": "bot_scout" })).status).toBe(200)
-  expect(store.readGrants()).toMatchObject([{ item: github.id, who: { bot: "bot_scout" }, how: "ask" }])
-  row = rowOf(await page(), `item-${github.id}`)
-  expect(row.badge).toEqual({ words: "Asks", tone: "quiet" })
-  who = actionOf(row, "who").form
-  expect(who.fields.map((field: any) => [field.id, field.title, field.value])).toEqual([
-    ["bot-bot_scout", "Scout", "ask"],
-    ["everyone", "Other sessions and bots", "no"],
-    ["add-bot", "Let a Bot Use It", "none"],
-  ])
-  expect((await act(row, "who", { ...opening(row, "who"), "bot-bot_scout": "own" })).status).toBe(200)
-  expect(store.readGrants()).toMatchObject([{ who: { bot: "bot_scout" }, how: "own" }])
-  row = rowOf(await page(), `item-${github.id}`)
+  expect((await act(row, "who", { ...opening(row, "who"), "bot-bot_scout": "own" })).json.message).toBe("This needs Touch ID or your Mac’s password. Update Kuvo to do it here.")
+  expect((await act(row, "who", { ...opening(row, "who"), "add-bot": "bot_ranger" })).status).toBe(403)
+  expect(store.readGrants()).toMatchObject([{ who: { bot: "bot_scout" }, how: "ask" }])
+  // Taken away: from anywhere.
   expect((await act(row, "who", { ...opening(row, "who"), "bot-bot_scout": "no" })).status).toBe(200)
   expect(store.readGrants()).toEqual([])
-  expect(activity().map((each: any) => each.what).slice(-3)).toEqual(["granted", "granted", "ungranted"])
+
+  // A client that makes sure it's you: every choice, those that let it be used more `verified`
+  // (it asks before one is sent; taking access away asks nothing).
+  client = CONFIRMS
+  row = rowOf(await page(), `item-${github.id}`)
+  who = actionOf(row, "who").form
+  expect(who.fields.map((field: any) => [field.id, field.title, field.can ?? null, field.choices.map((choice: any) => [choice.id, choice.verified ?? false])])).toEqual([
+    ["everyone", "Every agent", null, [["own", true], ["ask", true], ["no", false]]],
+    ["add-bot", "Let a Bot Use It", null, [["none", false], ["bot_ranger", true], ["bot_scout", true]]],
+  ])
+  expect(who.fields[1].choices.map((choice: any) => choice.title)).toEqual(["No One Else", "Ranger", "Scout"])
+  expect((await act(row, "who", { ...opening(row, "who"), "add-bot": "bot_scout" })).status).toBe(200)
+  row = rowOf(await page(), `item-${github.id}`)
+  expect(row.badge).toEqual({ words: "Asks", tone: "quiet" })
+  expect((await act(row, "who", { ...opening(row, "who"), "bot-bot_scout": "own" })).status).toBe(200)
+  expect(store.readGrants()).toMatchObject([{ who: { bot: "bot_scout" }, how: "own" }])
+  expect(activity().map((each: any) => each.what).slice(-3)).toEqual(["ungranted", "granted", "granted"])
   // Someone it can't name is refused.
   row = rowOf(await page(), `item-${github.id}`)
   expect((await act(row, "who", { everyone: "always" })).status).toBe(400)
@@ -243,7 +254,7 @@ test("Delete… takes the item away with its values and grants", async () => {
   expect(rowOf(done.json, `item-${github.id}`)).toBeUndefined()
 })
 
-test("what agents wait on you for is answered from the page: once, always after asking, or an item given", async () => {
+test("what agents wait on you for is answered from the page: once from any client, always and from now on only from one that makes sure it's you", async () => {
   const github = await made()
   const using = asks.ask({ kind: "use", item: github.id, itemName: "GitHub", bot: "bot_scout", botName: "Scout", why: "To open a pull request", always: true })
   const seat = asks.ask({ kind: "use", item: github.id, itemName: "GitHub", botName: "Scout", group: "grp_1" })
@@ -258,15 +269,27 @@ test("what agents wait on you for is answered from the page: once, always after 
   ])
   expect(group.rows[0].actions.map((action: any) => action.verified ?? false)).toEqual([false, false, true])
   expect(group.rows[0].actions[2].confirm).toEqual({ title: "Let Scout use “GitHub” on its own?", body: "From now on it uses it without asking you. Change that in its Who Can Use It.", button: "Always Allow" })
+  // To a client that doesn't make sure it's you: there, with why, and refused.
+  expect(group.rows[0].actions[2].can).toEqual({ why: "This needs Touch ID or your Mac’s password. Update Kuvo to do it here." })
+  expect((await act(group.rows[0], "always")).status).toBe(403)
+  let give = rowOf(await page(), group.rows[2].id)
+  expect(actionOf(give, "give").form.fields[1]).toMatchObject({ id: "how", can: { why: "This needs Touch ID or your Mac’s password. Update Kuvo to do it here." } })
+  expect((await act(give, "give", { item: github.id, how: "always" })).status).toBe(403)
+  expect(asks.listAsks().length).toBe(3)
 
-  expect((await act(group.rows[0], "always")).status).toBe(200)
+  // To one that does: offered, and done.
+  client = CONFIRMS
+  const offered = rowOf(await page(), group.rows[0].id)
+  expect(offered.actions[2].can).toBeUndefined()
+  expect((await act(offered, "always")).status).toBe(200)
   expect(await using).toMatchObject({ answer: "always", client: "Mac" })
   // A seat's is only ever once.
-  expect((await act(group.rows[1], "always", undefined, group.rows[1].revision)).status).toBe(404)
-  expect((await act(group.rows[1], "once")).status).toBe(200)
+  const seatRow = rowOf(await page(), group.rows[1].id)
+  expect((await act(seatRow, "always", undefined, seatRow.revision)).status).toBe(404)
+  expect((await act(seatRow, "once")).status).toBe(200)
   expect(await seat).toMatchObject({ answer: "once" })
-  const give = rowOf(await page(), group.rows[2].id)
-  expect(actionOf(give, "give").form.fields.map((field: any) => [field.id, field.value, field.verified ?? false])).toEqual([["item", "", false], ["how", "once", true]])
+  give = rowOf(await page(), group.rows[2].id)
+  expect(actionOf(give, "give").form.fields.map((field: any) => [field.id, field.value, field.choices.map((choice: any) => choice.verified ?? false)])).toEqual([["item", "", [false]], ["how", "once", [false, true]]])
   expect((await act(give, "give", { item: github.id, how: "always" })).status).toBe(200)
   expect(await needing).toMatchObject({ answer: "always", item: github.id })
   // One answered elsewhere meanwhile is gone from the page: refused, nothing answered.
@@ -306,7 +329,7 @@ test("a locked vault says so and shows nothing else; a request that isn't a clie
   store.forgetKeys()
   const shown = await page()
   expect(shown.groups).toEqual([])
-  expect(shown.notes).toEqual([{ words: `${here.charAt(0).toUpperCase() + here.slice(1)}’s vault is locked since it started again. Its agents can’t use it until you unlock it in Kuvo on your iPhone, which keeps its key.`, tone: "warning" }])
+  expect(shown.notes).toEqual([{ words: `${here.charAt(0).toUpperCase() + here.slice(1)}’s vault is locked since it started again, so its agents can’t use it. Unlocking it takes the key it was made with, which this app doesn’t keep.`, tone: "warning" }])
   // An agent's command on this computer, say: not a client.
   const outside = await page(false)
   expect(outside.groups).toEqual([])
@@ -326,5 +349,45 @@ test("the page followed is sent again as the vault changes, without a value", as
     expect(JSON.stringify(next)).not.toContain("another-secret-9")
   } finally {
     followed.stop()
+  }
+})
+
+test("no section's form can carry what's secret, nor read a value but through the vault's own route", async () => {
+  const { safeField, SHOWS_ROUTE, item: kitItem } = await import("../src/link/areas/settings-kit")
+  // Whatever a section puts there.
+  const hostile = kitItem({
+    id: "thing", title: "Thing", kind: "actions",
+    actions: [{ id: "edit", title: "Edit…", form: { title: "Edit", submit: "Save", fields: [
+      { id: "key", title: "Key", kind: "secret", value: SECRET, shows: { route: "kuvo/config", field: "key" } },
+      { id: "kept", title: "Kept", kind: "secret", shows: { route: "kuvo/vault/items/v_abcdefghij/values", field: "password" } },
+      { id: "env", title: "Env", kind: "pairs", secret: true, value: [{ key: "TOKEN", value: SECRET }] },
+      { id: "file", title: "File", kind: "file", value: { name: "a.p8", data: Buffer.from(SECRET).toString("base64") } },
+    ] } }],
+  })
+  const fields = hostile.actions![0]!.form!.fields
+  expect(JSON.stringify(hostile)).not.toContain(SECRET)
+  expect(JSON.stringify(hostile)).not.toContain(Buffer.from(SECRET).toString("base64"))
+  expect(fields.map(field => [field.id, field.value ?? null, field.shows?.route ?? null])).toEqual([
+    ["key", null, null], ["kept", null, "kuvo/vault/items/v_abcdefghij/values"], ["env", [{ key: "TOKEN", value: "" }], null], ["file", { name: "a.p8" }, null],
+  ])
+  expect(safeField({ id: "name", title: "Name", kind: "text", value: "kept as it is" }).value).toBe("kept as it is")
+
+  // And every section this box describes, as a client that makes sure it's you reads it (the most it's offered).
+  await made()
+  bot("bot_scout", "Scout")
+  void asks.ask({ kind: "item", botName: "Scout", need: "a token" })
+  client = CONFIRMS
+  const { json: listed } = await ask(handler, "GET", "kuvo/settings", undefined, { headers: client })
+  for (const section of listed.sections) {
+    const { json: shown } = await ask(handler, "GET", `kuvo/settings/${section.id}`, undefined, { headers: client })
+    const rows = (shown.groups ?? []).flatMap((group: any) => group.rows.flatMap((row: any) => [row, ...(row.items ?? [])]))
+    const forms = rows.flatMap((row: any) => [...(row.actions ?? []), ...(row.add ? [row.add] : []), ...(row.flow?.actions ?? [])]).flatMap((action: any) => (action.form ? [action.form] : []))
+    for (const field of forms.flatMap((form: any) => form.fields)) {
+      if (field.kind === "secret") expect("value" in field).toBe(false)
+      if (field.kind === "pairs" && field.secret) expect((field.value ?? []).every((pair: any) => pair.value === "")).toBe(true)
+      if (field.kind === "file") expect(Object.keys(field.value ?? {}).every(key => key === "name")).toBe(true)
+      if (field.shows) expect(field.shows.route).toMatch(SHOWS_ROUTE)
+    }
+    expect(JSON.stringify(shown)).not.toContain(SECRET)
   }
 })

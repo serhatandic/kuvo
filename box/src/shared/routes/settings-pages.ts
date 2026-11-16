@@ -16,8 +16,9 @@ export const SETTING_CAN = oneOf(literal(true), object({ why: string }));
 /** What's asked before a change or an action, in the box's words. */
 export const SETTING_CONFIRM = object({ title: string, body: string, button: string });
 
-/** One of a `choice` row's choices (and a form's `choice` field's). */
-export const SETTING_CHOICE = object({ id: string, title: string, "line?": string });
+/** One of a `choice` row's choices (and a form's `choice` field's). `verified` (a form's): picking
+ * it lets something use what's yours more, so a client makes sure it's you first. */
+export const SETTING_CHOICE = object({ id: string, title: string, "line?": string, "verified?": bool });
 
 /** A folder picker’s words, including how to clear the choice. */
 export const SETTING_FOLDER = object({ choose: string, clear: string, prompt: string, message: string });

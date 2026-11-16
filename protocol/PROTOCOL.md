@@ -8803,11 +8803,18 @@ so a client still on those (the phone) sees every change kept just as they keep 
     one is kept, sent back as it is when none is chosen. A secret's value, a `secret` pairs' values
     and a file's bytes go only with the action itself: a check gets each as `•` once a character (a
     file as `{name, size}`), so the box can say what's missing or short without seeing it, and no
-    words the box says hold one. A client that can make sure it's you (Touch ID) does so before
-    Show. `verified` (on a field, or on an action): it lets something use what's yours from now
-    on (a vault's grant), so a client makes sure it's you first; one that can't draws it,
-    unavailable, and says to do it where it can (the desktop app: "in Kuvo on your iPhone"). The
-    box can't check that, as it can't for `kuvo/vault/grants` itself. `shown: {field,
+    words the box says hold one. Whatever a section puts there, the box sends no `secret`'s value,
+    no `secret` pairs' values, only a `file`'s `name`, and `shows` only for the vault's values
+    route (`kuvo/vault/items/<id>/values`); a client reads only that route for Show. A client that
+    makes sure it's you (Touch ID, or its computer's password) says so with each settings request
+    (`x-kuvo-confirms-you: 1`: the desktop app on a Mac); one that doesn't never reads what a
+    secret keeps. `verified` (on an action, or on a `choice`'s choice): it lets something use
+    what's yours more (a vault's grant), so a client asks that first, and sends nothing if it
+    isn't you. Only a client that says it makes sure is offered such an action or choice; to any
+    other it's `can: {why}` ("This needs Touch ID or your Mac’s password. Update Kuvo to do it
+    here.") and refused (`403`) if sent. Taking access away asks nothing. (The box can't see the
+    check itself, as it can't for `kuvo/vault/grants`: it relies on what a client says of itself,
+    so a client that doesn't check is never offered it.) `shown: {field,
     is}` draws it only while that `choice` field is one of `is` (values typed in a field hidden
     meanwhile are kept while the sheet is open, and sent). `can: {why}`: drawn, not changed. The
     values a form opens with are part of its row's revision, and the form has its own (`revision`,
@@ -8823,7 +8830,9 @@ so a client still on those (the phone) sees every change kept just as they keep 
   - `POST kuvo/settings/<section>/<row>/<action> {was, values}` for an action with a form: the
     page (`200`, the sheet closes), or `400 {message, fields?}` (the sheet stays, each field's
     words under it); without `values`, `400`; `409 {page}` where what it shows changed (the sheet
-    stays with what was typed, says so, and is sent again from the form's revision in `page`).
+    stays with what was typed and says so, but isn't sent again: its values are what it opened
+    with, and sent from the new revision they'd put back what changed; it's closed and opened
+    again).
   - A flow the box leads for a row: `flow: {id, state, title, line, opens?, code?, actions}`,
     `state` `waiting`, `done` or `failed`, with the box's `line` (why, once failed). Started by an
     action (Sign In…), kept by the box (`run/settings-flows.json`, so whichever of its processes
@@ -8999,12 +9008,14 @@ The sections now:
   changed through its own routes ("Vault") as the client asking reads them, so only your clients
   see it (anything else gets the page with a note, nothing listed) and the vault's rules, refusals
   and activity are its own. Locked (a machine's, after a restart): a note alone, saying it's
-  unlocked in Kuvo on your iPhone, which keeps its key (a page can't carry it). Notes for files
+  unlocked with the key it was made with, which a page can't carry and the desktop app doesn't
+  keep. Notes for files
   changed outside Kuvo and for agents that can't use it yet. Waiting for You (`asks`, while agents
   wait): each `ask-<id>` an `actions` row, its title "<who> wants to use “<item>”" or "<who> needs
   <need>", its line why and where; `no` (Don't Allow), `once` (Allow Once) and, where Always would
-  give it for good, `always` (Always Allow…, asked first); an `item` ask has `no` and `give`
-  (Give…: `item`, a choice of the items, and `how`, This Once or From Now On), answered through
+  give it for good, `always` (Always Allow…, asked first, `verified`); an `item` ask has `no` and
+  `give` (Give…: `item`, a choice of the items, and `how`, This Once or From Now On, `verified`),
+  answered through
   `kuvo/vault/asks/<id>`; one answered elsewhere meanwhile is no longer on the page (`404`), and
   the page followed drops it. Items (`items`, a `list` of
   `item-<id>` by name, its line what it is and its sites, user or file, its `badge` On its own or
@@ -9014,14 +9025,17 @@ The sections now:
   an API key, `file` for a file, `text`
   (`multi`) and `readable` for a note; each kept value with `shows`), `who` (Who Can Use It…:
   `bot-<id>` and `project-<folder>` for each one listed, `everyone`, each On Its Own, Asks Each
-  Time or No, and `add-bot`, Let a Bot Use It, which asks each time) and `delete` (Delete…, asked
-  first). Edit writes only what changed (a value typed as it's kept, asked with `/same`, isn't).
+  Time or No, and `add-bot`, Let a Bot Use It, which asks each time; each choice that lets it be
+  used more `verified`, and to a client that doesn't make sure it's you, only what each is now and
+  less, checked against the grants as they are when it's saved, all before any is written) and
+  `delete` (Delete…, asked first). Edit writes only what changed (a value typed as it's kept, asked with `/same`, isn't).
   The list's `add` is Add Item's form, the same fields with `kind` first and each shown for its
   kind, checked for a name taken, a site, and each value's presence and length; before a machine
-  has a vault it can't be pressed here (`can`: its first item is added in Kuvo on your iPhone,
-  which keeps the key it makes). Then `pause` (a `switch`, Pause Agents' Use) and `paused-<who>`
+  has a vault it can't be pressed here (`can`: the key a new vault makes, which unlocks it after
+  its computer restarts, would be lost, as a page can't carry it). Then `pause` (a `switch`, Pause Agents' Use) and `paused-<who>`
   for each bot or conversation paused (`go-on`, Let Go On); and Activity (`activity`, its newest
-  50 as `status` rows, each a sentence, the client's own said plainly, a refusal a warning).
+  50 as `status` rows, each a sentence, the client's own said plainly, a refusal a warning; a
+  form's check reads none).
   Its events follow the vault's files, the bots, and, in the process that holds it, what's asked.
   It's for the clients the vault answers (your devices over the relay, the app beside the box): a
   `box route` reads it as anything else on the computer does, with a note and nothing listed.

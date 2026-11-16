@@ -28,7 +28,7 @@
     "title": "Waiting for You",
     "rows": [
      {
-      "id": "ask-q_4ovh4p7qy6",
+      "id": "ask-q_5zosfa6vuf",
       "title": "Scout wants to use “App Store Connect”",
       "line": "To upload the build to TestFlight",
       "kind": "actions",
@@ -55,7 +55,7 @@
       "revision": "GMR_g8mPjGi0wsDn"
      },
      {
-      "id": "ask-q_2mn2caggb5",
+      "id": "ask-q_nk6aye49nu",
       "title": "Ranger needs a Sentry token",
       "line": "To read the crash reports",
       "kind": "actions",
@@ -75,41 +75,39 @@
            "id": "item",
            "title": "Item",
            "kind": "choice",
-           "value": "",
            "choices": [
             {
-             "id": "v_fzrf6moozn",
+             "id": "v_idt55yz0nj",
              "title": "App Review Contact",
              "line": "Note · Bots may read it"
             },
             {
-             "id": "v_nhcev84v8y",
+             "id": "v_p4be04q0vz",
              "title": "App Store Connect",
              "line": "API Key · issuer_id, value"
             },
             {
-             "id": "v_s17qb9tk0x",
+             "id": "v_xlyqzvmol8",
              "title": "GitHub",
              "line": "Sign-in · octo@example.com · github.com"
             },
             {
-             "id": "v_nw0zsylxkn",
+             "id": "v_surknqheuf",
              "title": "npm Token",
              "line": "API Key · registry.npmjs.org"
             },
             {
-             "id": "v_yeg339wph9",
+             "id": "v_3emxslx91c",
              "title": "Signing Key",
              "line": "File · AuthKey_ABC123.p8"
             }
-           ]
+           ],
+           "value": ""
           },
           {
            "id": "how",
            "title": "For",
            "kind": "choice",
-           "value": "once",
-           "verified": true,
            "choices": [
             {
              "id": "once",
@@ -117,9 +115,11 @@
             },
             {
              "id": "always",
-             "title": "From Now On"
+             "title": "From Now On",
+             "verified": true
             }
-           ]
+           ],
+           "value": "once"
           }
          ],
          "note": "It needs a Sentry token.",
@@ -134,7 +134,7 @@
    {
     "id": "items",
     "title": "Items",
-    "note": "Kept on lokum, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
+    "note": "Kept on lokum, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
     "rows": [
      {
       "id": "items",
@@ -142,7 +142,7 @@
       "kind": "list",
       "items": [
        {
-        "id": "item-v_fzrf6moozn",
+        "id": "item-v_idt55yz0nj",
         "title": "App Review Contact",
         "line": "Note · Bots may read it",
         "kind": "actions",
@@ -158,8 +158,8 @@
              "id": "name",
              "title": "Name",
              "kind": "text",
-             "value": "App Review Contact",
-             "placeholder": "What it’s for, like GitHub"
+             "placeholder": "What it’s for, like GitHub",
+             "value": "App Review Contact"
             },
             {
              "id": "text",
@@ -168,7 +168,7 @@
              "multi": true,
              "placeholder": "Unchanged. Type here to replace it.",
              "shows": {
-              "route": "kuvo/vault/items/v_fzrf6moozn/values",
+              "route": "kuvo/vault/items/v_idt55yz0nj/values",
               "field": "text"
              }
             },
@@ -176,8 +176,8 @@
              "id": "readable",
              "title": "Bots May Read It",
              "kind": "switch",
-             "value": true,
-             "line": "For what isn’t a secret, like a contact for App Review."
+             "line": "For what isn’t a secret, like a contact for App Review.",
+             "value": true
             }
            ],
            "note": "A value left empty stays as it is.",
@@ -195,29 +195,29 @@
              "id": "everyone",
              "title": "Every agent",
              "kind": "choice",
-             "value": "no",
              "choices": [
               {
                "id": "own",
-               "title": "On Its Own"
+               "title": "On Its Own",
+               "verified": true
               },
               {
                "id": "ask",
-               "title": "Asks Each Time"
+               "title": "Asks Each Time",
+               "verified": true
               },
               {
                "id": "no",
                "title": "No"
               }
              ],
-             "verified": true
+             "value": "no"
             },
             {
              "id": "add-bot",
              "title": "Let a Bot Use It",
              "kind": "choice",
-             "value": "none",
-             "verified": true,
+             "line": "It asks you each time, until you choose On Its Own.",
              "choices": [
               {
                "id": "none",
@@ -225,14 +225,16 @@
               },
               {
                "id": "bot_ranger",
-               "title": "Ranger"
+               "title": "Ranger",
+               "verified": true
               },
               {
                "id": "bot_scout",
-               "title": "Scout"
+               "title": "Scout",
+               "verified": true
               }
              ],
-             "line": "It asks you each time, until you choose On Its Own."
+             "value": "none"
             }
            ],
            "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
@@ -253,7 +255,7 @@
         "revision": "EtNugjIHBrBV7bZ-"
        },
        {
-        "id": "item-v_nhcev84v8y",
+        "id": "item-v_p4be04q0vz",
         "title": "App Store Connect",
         "line": "API Key · issuer_id, value",
         "kind": "actions",
@@ -269,15 +271,15 @@
              "id": "name",
              "title": "Name",
              "kind": "text",
-             "value": "App Store Connect",
-             "placeholder": "What it’s for, like GitHub"
+             "placeholder": "What it’s for, like GitHub",
+             "value": "App Store Connect"
             },
             {
              "id": "hosts",
              "title": "Hosts",
              "kind": "text",
-             "value": "",
-             "placeholder": "api.example.com (optional)"
+             "placeholder": "api.example.com (optional)",
+             "value": ""
             },
             {
              "id": "value",
@@ -285,7 +287,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_nhcev84v8y/values",
+              "route": "kuvo/vault/items/v_p4be04q0vz/values",
               "field": "value"
              }
             },
@@ -295,7 +297,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_nhcev84v8y/values",
+              "route": "kuvo/vault/items/v_p4be04q0vz/values",
               "field": "issuer_id"
              }
             },
@@ -303,7 +305,6 @@
              "id": "remove",
              "title": "Remove a Field",
              "kind": "choice",
-             "value": "none",
              "choices": [
               {
                "id": "none",
@@ -313,19 +314,20 @@
                "id": "issuer_id",
                "title": "Issuer Id"
               }
-             ]
+             ],
+             "value": "none"
             },
             {
              "id": "more",
              "title": "Add Fields",
              "kind": "pairs",
              "secret": true,
-             "value": [],
              "pairs": {
               "key": "field_name",
               "value": "Value"
              },
-             "line": "For a key with more than one part, like an issuer ID."
+             "line": "For a key with more than one part, like an issuer ID.",
+             "value": []
             }
            ],
            "note": "A value left empty stays as it is.",
@@ -343,29 +345,29 @@
              "id": "everyone",
              "title": "Every agent",
              "kind": "choice",
-             "value": "no",
              "choices": [
               {
                "id": "own",
-               "title": "On Its Own"
+               "title": "On Its Own",
+               "verified": true
               },
               {
                "id": "ask",
-               "title": "Asks Each Time"
+               "title": "Asks Each Time",
+               "verified": true
               },
               {
                "id": "no",
                "title": "No"
               }
              ],
-             "verified": true
+             "value": "no"
             },
             {
              "id": "add-bot",
              "title": "Let a Bot Use It",
              "kind": "choice",
-             "value": "none",
-             "verified": true,
+             "line": "It asks you each time, until you choose On Its Own.",
              "choices": [
               {
                "id": "none",
@@ -373,14 +375,16 @@
               },
               {
                "id": "bot_ranger",
-               "title": "Ranger"
+               "title": "Ranger",
+               "verified": true
               },
               {
                "id": "bot_scout",
-               "title": "Scout"
+               "title": "Scout",
+               "verified": true
               }
              ],
-             "line": "It asks you each time, until you choose On Its Own."
+             "value": "none"
             }
            ],
            "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
@@ -401,7 +405,7 @@
         "revision": "ikH_JPfRatBzshVY"
        },
        {
-        "id": "item-v_s17qb9tk0x",
+        "id": "item-v_xlyqzvmol8",
         "title": "GitHub",
         "line": "Sign-in · octo@example.com · github.com",
         "kind": "actions",
@@ -417,23 +421,23 @@
              "id": "name",
              "title": "Name",
              "kind": "text",
-             "value": "GitHub",
-             "placeholder": "What it’s for, like GitHub"
+             "placeholder": "What it’s for, like GitHub",
+             "value": "GitHub"
             },
             {
              "id": "site",
              "title": "Site",
              "kind": "text",
-             "value": "github.com",
              "placeholder": "github.com",
-             "line": "It’s filled in only on this site and those under it."
+             "line": "It’s filled in only on this site and those under it.",
+             "value": "github.com"
             },
             {
              "id": "username",
              "title": "Username",
              "kind": "text",
-             "value": "octo@example.com",
-             "placeholder": "Email or username"
+             "placeholder": "Email or username",
+             "value": "octo@example.com"
             },
             {
              "id": "password",
@@ -441,7 +445,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_s17qb9tk0x/values",
+              "route": "kuvo/vault/items/v_xlyqzvmol8/values",
               "field": "password"
              }
             },
@@ -449,8 +453,8 @@
              "id": "signInOnly",
              "title": "Only for Signing In",
              "kind": "switch",
-             "value": true,
-             "line": "Agents sign in with it in the browser, and can’t hand it to a command."
+             "line": "Agents sign in with it in the browser, and can’t hand it to a command.",
+             "value": true
             }
            ],
            "note": "A value left empty stays as it is.",
@@ -468,7 +472,6 @@
              "id": "bot-bot_scout",
              "title": "Scout",
              "kind": "choice",
-             "value": "own",
              "choices": [
               {
                "id": "own",
@@ -483,35 +486,35 @@
                "title": "No"
               }
              ],
-             "verified": true
+             "value": "own"
             },
             {
              "id": "everyone",
              "title": "Other sessions and bots",
              "kind": "choice",
-             "value": "no",
              "choices": [
               {
                "id": "own",
-               "title": "On Its Own"
+               "title": "On Its Own",
+               "verified": true
               },
               {
                "id": "ask",
-               "title": "Asks Each Time"
+               "title": "Asks Each Time",
+               "verified": true
               },
               {
                "id": "no",
                "title": "No"
               }
              ],
-             "verified": true
+             "value": "no"
             },
             {
              "id": "add-bot",
              "title": "Let a Bot Use It",
              "kind": "choice",
-             "value": "none",
-             "verified": true,
+             "line": "It asks you each time, until you choose On Its Own.",
              "choices": [
               {
                "id": "none",
@@ -519,10 +522,11 @@
               },
               {
                "id": "bot_ranger",
-               "title": "Ranger"
+               "title": "Ranger",
+               "verified": true
               }
              ],
-             "line": "It asks you each time, until you choose On Its Own."
+             "value": "none"
             }
            ],
            "note": "Only on github.com. Agents never see the password: Kuvo fills it in.",
@@ -547,7 +551,7 @@
         }
        },
        {
-        "id": "item-v_nw0zsylxkn",
+        "id": "item-v_surknqheuf",
         "title": "npm Token",
         "line": "API Key · registry.npmjs.org",
         "kind": "actions",
@@ -563,15 +567,15 @@
              "id": "name",
              "title": "Name",
              "kind": "text",
-             "value": "npm Token",
-             "placeholder": "What it’s for, like GitHub"
+             "placeholder": "What it’s for, like GitHub",
+             "value": "npm Token"
             },
             {
              "id": "hosts",
              "title": "Hosts",
              "kind": "text",
-             "value": "registry.npmjs.org",
-             "placeholder": "api.example.com (optional)"
+             "placeholder": "api.example.com (optional)",
+             "value": "registry.npmjs.org"
             },
             {
              "id": "value",
@@ -579,7 +583,7 @@
              "kind": "secret",
              "placeholder": "Unchanged",
              "shows": {
-              "route": "kuvo/vault/items/v_nw0zsylxkn/values",
+              "route": "kuvo/vault/items/v_surknqheuf/values",
               "field": "value"
              }
             },
@@ -588,12 +592,12 @@
              "title": "Add Fields",
              "kind": "pairs",
              "secret": true,
-             "value": [],
              "pairs": {
               "key": "field_name",
               "value": "Value"
              },
-             "line": "For a key with more than one part, like an issuer ID."
+             "line": "For a key with more than one part, like an issuer ID.",
+             "value": []
             }
            ],
            "note": "A value left empty stays as it is.",
@@ -611,11 +615,11 @@
              "id": "everyone",
              "title": "Every agent",
              "kind": "choice",
-             "value": "ask",
              "choices": [
               {
                "id": "own",
-               "title": "On Its Own"
+               "title": "On Its Own",
+               "verified": true
               },
               {
                "id": "ask",
@@ -626,14 +630,13 @@
                "title": "No"
               }
              ],
-             "verified": true
+             "value": "ask"
             },
             {
              "id": "add-bot",
              "title": "Let a Bot Use It",
              "kind": "choice",
-             "value": "none",
-             "verified": true,
+             "line": "It asks you each time, until you choose On Its Own.",
              "choices": [
               {
                "id": "none",
@@ -641,14 +644,16 @@
               },
               {
                "id": "bot_ranger",
-               "title": "Ranger"
+               "title": "Ranger",
+               "verified": true
               },
               {
                "id": "bot_scout",
-               "title": "Scout"
+               "title": "Scout",
+               "verified": true
               }
              ],
-             "line": "It asks you each time, until you choose On Its Own."
+             "value": "none"
             }
            ],
            "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
@@ -673,7 +678,7 @@
         }
        },
        {
-        "id": "item-v_yeg339wph9",
+        "id": "item-v_3emxslx91c",
         "title": "Signing Key",
         "line": "File · AuthKey_ABC123.p8",
         "kind": "actions",
@@ -689,21 +694,21 @@
              "id": "name",
              "title": "Name",
              "kind": "text",
-             "value": "Signing Key",
-             "placeholder": "What it’s for, like GitHub"
+             "placeholder": "What it’s for, like GitHub",
+             "value": "Signing Key"
             },
             {
              "id": "file",
              "title": "File",
              "kind": "file",
-             "value": {
-              "name": "AuthKey_ABC123.p8"
-             },
              "file": {
               "choose": "Choose File…",
               "none": "No file chosen"
              },
-             "line": "At most about 700 KB."
+             "line": "At most about 700 KB.",
+             "value": {
+              "name": "AuthKey_ABC123.p8"
+             }
             }
            ],
            "note": "A value left empty stays as it is.",
@@ -721,29 +726,29 @@
              "id": "everyone",
              "title": "Every agent",
              "kind": "choice",
-             "value": "no",
              "choices": [
               {
                "id": "own",
-               "title": "On Its Own"
+               "title": "On Its Own",
+               "verified": true
               },
               {
                "id": "ask",
-               "title": "Asks Each Time"
+               "title": "Asks Each Time",
+               "verified": true
               },
               {
                "id": "no",
                "title": "No"
               }
              ],
-             "verified": true
+             "value": "no"
             },
             {
              "id": "add-bot",
              "title": "Let a Bot Use It",
              "kind": "choice",
-             "value": "none",
-             "verified": true,
+             "line": "It asks you each time, until you choose On Its Own.",
              "choices": [
               {
                "id": "none",
@@ -751,14 +756,16 @@
               },
               {
                "id": "bot_ranger",
-               "title": "Ranger"
+               "title": "Ranger",
+               "verified": true
               },
               {
                "id": "bot_scout",
-               "title": "Scout"
+               "title": "Scout",
+               "verified": true
               }
              ],
-             "line": "It asks you each time, until you choose On Its Own."
+             "value": "none"
             }
            ],
            "note": "Agents never see it: Kuvo fills it in, or hands it to a command they run.",
@@ -790,7 +797,6 @@
           "id": "kind",
           "title": "Kind",
           "kind": "choice",
-          "value": "login",
           "choices": [
            {
             "id": "login",
@@ -808,20 +814,20 @@
             "id": "note",
             "title": "Note"
            }
-          ]
+          ],
+          "value": "login"
          },
          {
           "id": "name",
           "title": "Name",
           "kind": "text",
-          "value": "",
-          "placeholder": "What it’s for, like GitHub"
+          "placeholder": "What it’s for, like GitHub",
+          "value": ""
          },
          {
           "id": "site",
           "title": "Site",
           "kind": "text",
-          "value": "",
           "placeholder": "github.com",
           "line": "It’s filled in only on this site and those under it.",
           "shown": {
@@ -829,20 +835,21 @@
            "is": [
             "login"
            ]
-          }
+          },
+          "value": ""
          },
          {
           "id": "username",
           "title": "Username",
           "kind": "text",
-          "value": "",
           "placeholder": "Email or username",
           "shown": {
            "field": "kind",
            "is": [
             "login"
            ]
-          }
+          },
+          "value": ""
          },
          {
           "id": "password",
@@ -859,27 +866,27 @@
           "id": "signInOnly",
           "title": "Only for Signing In",
           "kind": "switch",
-          "value": true,
           "line": "Agents sign in with it in the browser, and can’t hand it to a command.",
           "shown": {
            "field": "kind",
            "is": [
             "login"
            ]
-          }
+          },
+          "value": true
          },
          {
           "id": "hosts",
           "title": "Hosts",
           "kind": "text",
-          "value": "",
           "placeholder": "api.example.com (optional)",
           "shown": {
            "field": "kind",
            "is": [
             "key"
            ]
-          }
+          },
+          "value": ""
          },
          {
           "id": "value",
@@ -897,7 +904,6 @@
           "title": "Other Fields",
           "kind": "pairs",
           "secret": true,
-          "value": [],
           "pairs": {
            "key": "field_name",
            "value": "Value"
@@ -908,7 +914,8 @@
            "is": [
             "key"
            ]
-          }
+          },
+          "value": []
          },
          {
           "id": "file",
@@ -942,17 +949,17 @@
           "id": "readable",
           "title": "Bots May Read It",
           "kind": "switch",
-          "value": false,
           "line": "For what isn’t a secret, like a contact for App Review.",
           "shown": {
            "field": "kind",
            "is": [
             "note"
            ]
-          }
+          },
+          "value": false
          }
         ],
-        "note": "Kept on lokum, encrypted, with a key that Kuvo on your iPhone keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
+        "note": "Kept on lokum, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.",
         "revision": "qKui_W5ZgL_5bCqO"
        }
       },
@@ -999,14 +1006,14 @@
       "empty": "Nothing used yet.",
       "items": [
        {
-        "id": "activity-a_cqz3yteo5a",
+        "id": "activity-a_xy1y6o4sck",
         "title": "You, on your Mac, looked at “npm Token”",
         "line": "Nov 16, 2026 at 2:30 PM",
         "kind": "status",
         "revision": "Z7DBrqSCZsqW7cs6"
        },
        {
-        "id": "activity-a_pt5cffmxxu",
+        "id": "activity-a_twihbga0mh",
         "title": "Refused “App Store Connect” on evil.example: not one of its sites. Ranger was paused",
         "line": "Nov 16, 2026 at 2:00 PM",
         "kind": "status",
@@ -1014,14 +1021,14 @@
         "revision": "Z7DBrqSCZsqW7cs6"
        },
        {
-        "id": "activity-a_chvwmqqips",
+        "id": "activity-a_om3rhi3kxt",
         "title": "Scout used “GitHub” on github.com",
         "line": "Nov 16, 2026 at 1:00 PM",
         "kind": "status",
         "revision": "Z7DBrqSCZsqW7cs6"
        },
        {
-        "id": "activity-a_c9kilafjy9",
+        "id": "activity-a_tez07cw498",
         "title": "Added “GitHub”",
         "line": "Nov 16, 2026 at 12:00 PM",
         "kind": "status",
@@ -1046,7 +1053,7 @@
   "groups": [],
   "notes": [
    {
-    "words": "lokum’s vault is locked since it started again. Its agents can’t use it until you unlock it in Kuvo on your iPhone, which keeps its key.",
+    "words": "lokum’s vault is locked since it started again, so its agents can’t use it. Unlocking it takes the key it was made with, which this app doesn’t keep.",
     "tone": "warning"
    }
   ]
@@ -1093,10 +1100,10 @@
   }
  },
  "items": {
-  "item-v_fzrf6moozn": "App Review Contact",
-  "item-v_nhcev84v8y": "App Store Connect",
-  "item-v_s17qb9tk0x": "GitHub",
-  "item-v_nw0zsylxkn": "npm Token",
-  "item-v_yeg339wph9": "Signing Key"
+  "item-v_idt55yz0nj": "App Review Contact",
+  "item-v_p4be04q0vz": "App Store Connect",
+  "item-v_xlyqzvmol8": "GitHub",
+  "item-v_surknqheuf": "npm Token",
+  "item-v_3emxslx91c": "Signing Key"
  }
 }

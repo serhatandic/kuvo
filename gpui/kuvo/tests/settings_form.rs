@@ -2,8 +2,10 @@
 //! typed, a note's lines, names whose values are hidden, a file of this computer's and a pick of
 //! many. Each check the box gets carries dots and a file's name and size, never what was typed or
 //! the file's bytes; what's sent with the action is what was typed. Show reads a secret's kept value
-//! from the box only when asked, and hides it again. (Nothing here knows what the form is for: the
-//! fields are made up, as a box could describe them.)
+//! from the vault's own route only when asked, after Touch ID or the computer's password, and hides
+//! it again; a field that lets something use what's yours more asks the same before it's sent. A
+//! form that changed since it opened isn't sent again. (Nothing here knows what the form is for:
+//! the fields are made up, as a box could describe them.)
 
 use std::sync::{Arc, Mutex};
 
@@ -18,7 +20,8 @@ use serde_json::{Value, json};
 
 const NOW: f64 = 1_794_650_000_000.0;
 const FORM: &str = "kuvo/settings/things/one/edit";
-const SHOWN: &str = "kuvo/things/one/shown";
+const SHOWN: &str = "kuvo/vault/items/v_abcdefghij/values";
+const GONE: &str = "kuvo/vault/items/v_0000000000/values";
 
 /// The stand-in box (its `kuvo/info`, so the client's gate opens), answering this form's routes
 /// itself and keeping every request it's sent.
@@ -26,6 +29,8 @@ const SHOWN: &str = "kuvo/things/one/shown";
 struct ThingsBox {
     stand_in: StandIn,
     seen: Arc<Mutex<Vec<Request>>>,
+    /// The form's row changed meanwhile: its action answers `409` with the page.
+    stale: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn answer(status: u16, body: Value) -> kuvo_box::Result<Response> {
@@ -37,6 +42,7 @@ impl Transport for ThingsBox {
         self.seen.lock().unwrap().push(request.clone());
         match (request.method.as_str(), request.route()) {
             ("POST", route) if route == format!("{FORM}/check") => answer(200, json!({ "fields": [], "ready": true })),
+            ("POST", FORM) if self.stale.load(std::sync::atomic::Ordering::Relaxed) => answer(409, json!({ "message": "It changed since you read it.", "page": { "id": "things", "title": "Things", "groups": [] } })),
             ("POST", FORM) => answer(200, json!({ "id": "things", "title": "Things", "groups": [] })),
             ("GET", SHOWN) => answer(200, json!({ "values": { "password": "kept pass", "other": "never shown" } })),
             _ => self.stand_in.send(request),
@@ -65,24 +71,37 @@ impl ThingsBox {
 fn form() -> Form {
     serde_json::from_value(json!({ "title": "Edit Thing", "submit": "Save", "fields": [
         { "id": "password", "title": "Password", "kind": "secret", "placeholder": "Unchanged", "shows": { "route": SHOWN, "field": "password" } },
-        { "id": "pin", "title": "PIN", "kind": "secret", "placeholder": "Unchanged", "shows": { "route": "kuvo/things/one/gone", "field": "pin" } },
+        { "id": "pin", "title": "PIN", "kind": "secret", "placeholder": "Unchanged", "shows": { "route": GONE, "field": "pin" } },
         { "id": "note", "title": "Note", "kind": "secret", "multi": true, "placeholder": "Unchanged" },
         { "id": "env", "title": "Values", "kind": "pairs", "secret": true, "pairs": { "key": "NAME", "value": "value" } },
         { "id": "key", "title": "Key file", "kind": "file", "value": { "name": "old.pem" }, "file": { "choose": "Choose…", "none": "No file" } },
         { "id": "who", "title": "Who can use it", "kind": "text", "value": "Only me", "verified": true },
         { "id": "model", "title": "Model", "kind": "choice", "value": "a", "choices": [
             { "id": "a", "title": "Alpha" }, { "id": "b", "title": "Beta" }, { "id": "c", "title": "Gamma" }, { "id": "d", "title": "Delta" }, { "id": "e", "title": "Epsilon" }
-        ] }
+        ] },
+        { "id": "share", "title": "Shared with", "kind": "choice", "value": "me", "choices": [{ "id": "me", "title": "Me" }, { "id": "all", "title": "Everyone", "verified": true }] }
     ] }))
     .unwrap()
 }
 
 fn open(cx: &mut TestAppContext) -> (ThingsBox, Entity<FormSheet>, &mut VisualTestContext) {
+    open_where(cx, None)
+}
+
+/// Opened where the app asks Touch ID or the computer's password (`it_is_you`: how a test answers
+/// it), its asks kept; none: where it can't ask.
+fn open_where(cx: &mut TestAppContext, it_is_you: Option<(bool, Arc<Mutex<Vec<String>>>)>) -> (ThingsBox, Entity<FormSheet>, &mut VisualTestContext) {
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
         kuvo::bind_keys(cx);
+        if let Some((answer, asked)) = it_is_you {
+            cx.set_global(kuvo::confirm_you::ConfirmYou(Arc::new(move |reason: &str| {
+                asked.lock().unwrap().push(reason.to_owned());
+                answer
+            })));
+        }
     });
-    let the_box = ThingsBox { stand_in: StandIn::at(Replies::Never, NOW), seen: Arc::default() };
+    let the_box = ThingsBox { stand_in: StandIn::at(Replies::Never, NOW), seen: Arc::default(), stale: Arc::default() };
     let client = BoxClient::new(the_box.clone());
     let target = Target { section: "things".into(), row: "one".into(), was: "r1".into(), action: "edit".into() };
     let window = cx.add_window(move |_, cx| FormSheet::new(client, false, target, form(), cx));
@@ -166,10 +185,10 @@ fn a_file_not_chosen_goes_as_it_opened_and_one_too_big_by_its_name_and_size(cx: 
     assert_eq!(value(&sheet, cx, "key"), json!({ "name": "huge.bin", "size": 1_000_001 }));
 }
 
-/// What a secret keeps isn't read here (that asks a client to make sure it's you first, which this
-/// app can't yet): its eye shows only what's typed, and the sheet says where to see what's kept.
+/// Where the app can't make sure it's you, what a secret keeps isn't read: its eye shows only
+/// what's typed, and the sheet says why.
 #[gpui::test]
-fn show_reads_nothing_kept_and_shows_only_whats_typed(cx: &mut TestAppContext) {
+fn show_reads_nothing_kept_where_the_app_cant_make_sure_its_you(cx: &mut TestAppContext) {
     let (the_box, sheet, cx) = open(cx);
     click(cx, "settings-form-password-show");
     assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN), "nothing read");
@@ -178,16 +197,86 @@ fn show_reads_nothing_kept_and_shows_only_whats_typed(cx: &mut TestAppContext) {
     cx.simulate_input("1234");
     click(cx, "settings-form-pin-show");
     assert!(sheet.read_with(cx, |sheet, _| sheet.reveals("pin")));
-    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN && seen.route() != "kuvo/things/one/gone"));
+    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN && seen.route() != GONE));
+}
+
+/// Where it can: Show asks first, then reads the kept value through the vault's own route and
+/// keeps only its field's; not you, nothing's read.
+#[gpui::test]
+fn show_asks_its_you_then_reads_only_its_own_kept_value(cx: &mut TestAppContext) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (the_box, sheet, cx) = open_where(cx, Some((true, asked.clone())));
+    click(cx, "settings-form-password-show");
+    assert_eq!(asked.lock().unwrap().as_slice(), ["show what “Password” keeps".to_owned()]);
+    assert_eq!(the_box.seen.lock().unwrap().iter().filter(|seen| seen.route() == SHOWN).count(), 1);
+    assert_eq!(value(&sheet, cx, "password"), json!("kept pass"), "the kept value, and only its own");
+    // What's shown is still checked as dots.
+    let checks = the_box.bodies("POST", &format!("{FORM}/check"));
+    assert!(!serde_json::to_string(&checks).unwrap().contains("kept pass") && !serde_json::to_string(&checks).unwrap().contains("never shown"));
+    // Hide: dots again, nothing asked again.
+    click(cx, "settings-form-password-show");
+    assert!(!sheet.read_with(cx, |sheet, _| sheet.reveals("password")));
+    assert_eq!(asked.lock().unwrap().len(), 1);
+}
+
+#[gpui::test]
+fn show_reads_nothing_when_it_isnt_you(cx: &mut TestAppContext) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (the_box, sheet, cx) = open_where(cx, Some((false, asked.clone())));
+    click(cx, "settings-form-password-show");
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert!(the_box.seen.lock().unwrap().iter().all(|seen| seen.route() != SHOWN), "nothing read");
+    assert_eq!(value(&sheet, cx, "password"), json!(""));
+    assert!(sheet.read_with(cx, |sheet, _| sheet.refused().is_some_and(|said| said.contains("wasn’t confirmed"))));
 }
 
 #[gpui::test]
 fn a_field_that_makes_sure_its_you_first_says_why_and_goes_as_it_opened(cx: &mut TestAppContext) {
     let (the_box, sheet, cx) = open(cx);
-    assert_eq!(sheet.read_with(cx, |sheet, _| sheet.field_why("who")).as_deref(), Some("Do this in Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet."));
+    assert_eq!(sheet.read_with(cx, |sheet, _| sheet.field_why("who")).as_deref(), Some("This needs Touch ID or your computer’s password, which this app can’t ask for here yet."));
     assert_eq!(sheet.read_with(cx, |sheet, _| sheet.field_why("password")), None);
     click(cx, "settings-form-who-field");
     cx.simulate_input("Everyone");
     click(cx, "settings-form-submit");
     assert_eq!(the_box.bodies("POST", FORM)[0]["values"]["who"], json!("Only me"));
+}
+
+/// Where the app can ask: a field, or a choice, that lets something use what's yours more asks
+/// before it's sent; what doesn't asks nothing; not you, nothing's sent.
+#[gpui::test]
+fn what_lets_it_be_used_more_asks_its_you_before_its_sent(cx: &mut TestAppContext) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let (the_box, sheet, cx) = open_where(cx, Some((false, asked.clone())));
+    // Nothing more: sent, nothing asked.
+    click(cx, "settings-form-submit");
+    assert!(asked.lock().unwrap().is_empty());
+    assert_eq!(the_box.bodies("POST", FORM).len(), 1);
+    // Everyone (a verified choice): asked; not you, not sent.
+    sheet.update(cx, |sheet, cx| sheet.pick("share", json!("all"), cx));
+    cx.run_until_parked();
+    click(cx, "settings-form-submit");
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert_eq!(the_box.bodies("POST", FORM).len(), 1, "not you: nothing sent");
+    assert!(sheet.read_with(cx, |sheet, _| sheet.refused().is_some_and(|said| said.contains("wasn’t confirmed"))));
+}
+
+/// A form that changed since it opened (another device changed the item meanwhile) isn't sent
+/// again from what it opened with, which would put back what changed: it says to open it again.
+#[gpui::test]
+fn a_form_that_changed_since_it_opened_isnt_sent_again(cx: &mut TestAppContext) {
+    let (the_box, sheet, cx) = open(cx);
+    the_box.stale.store(true, std::sync::atomic::Ordering::Relaxed);
+    click(cx, "settings-form-submit");
+    assert!(sheet.read_with(cx, |sheet, _| sheet.is_stale()));
+    assert!(sheet.read_with(cx, |sheet, _| sheet.refused().is_some_and(|said| said.contains("open it again"))));
+    assert!(!sheet.read_with(cx, |sheet, _| sheet.is_ready()));
+    click(cx, "settings-form-submit");
+    the_box.stale.store(false, std::sync::atomic::Ordering::Relaxed);
+    sheet.update(cx, |sheet, cx| sheet.submit(cx));
+    cx.run_until_parked();
+    assert_eq!(the_box.bodies("POST", FORM).len(), 1, "sent once: never again from what it opened with");
+    // Typing keeps saying so.
+    click(cx, "settings-form-pin-field");
+    cx.simulate_input("12345");
+    assert!(sheet.read_with(cx, |sheet, _| sheet.refused().is_some_and(|said| said.contains("open it again"))));
 }

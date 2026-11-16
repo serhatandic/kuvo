@@ -29,13 +29,12 @@ use kuvo_box::accounts::said;
 /// The most choices a `choice` field shows side by side; more are a menu.
 const MOST_SEGMENTS: usize = 4;
 
-/// Whether Show reads what a secret field keeps (`shows`). Not yet: reading a kept value asks a
-/// client to make sure it's you first (Touch ID, as the old Mac app did), which this app can't yet;
-/// until it can, Show only shows what's typed, and the sheet says where to see what's kept.
-const READS_KEPT: bool = false;
+/// Why what a secret keeps isn't shown here: showing it makes sure it's you first (Touch ID, or
+/// the computer's password, as the old Mac app did), which this app can't ask for on this computer.
+const KEPT_ELSEWHERE: &str = "Seeing what’s kept needs Touch ID or your computer’s password, which this app can’t ask for here yet.";
 
-/// Where to see what's kept meanwhile.
-const KEPT_ELSEWHERE: &str = "To see what’s kept, use Kuvo on your iPhone, which makes sure it’s you first: this app can’t yet.";
+/// What's said when a form changed since it opened: sent again, it would put back what changed.
+const OPEN_AGAIN: &str = "It changed since you opened it. Close this and open it again to see it as it is now.";
 
 /// How long after the last key the values are checked.
 const SETTLE: Duration = Duration::from_millis(300);
@@ -79,6 +78,13 @@ pub struct FormSheet {
     sending: bool,
     checking: Option<Task<()>>,
     work: Option<Task<()>>,
+    /// What makes sure it's you (Touch ID, or the computer's password) before Show reads a kept
+    /// value, or a `verified` field's change is sent; none where this app can't ask.
+    confirm: Option<crate::confirm_you::ConfirmYou>,
+    /// The `verified` fields, by id, with the values they opened with: a change to one asks first.
+    verified: HashMap<String, Value>,
+    /// What it shows changed since it opened: not sent again (it would put back what changed).
+    stale: bool,
     /// A secret's kept value being read (Show), or a file being chosen and read.
     showing: Option<Task<()>>,
     picking: Option<Task<()>>,
@@ -113,8 +119,20 @@ fn pairs_of(value: Option<&Value>) -> Vec<(String, String)> {
 }
 
 impl FormSheet {
-    pub fn new(client: BoxClient, live: bool, target: Target, form: Form, cx: &mut Context<Self>) -> FormSheet {
+    pub fn new(client: BoxClient, live: bool, target: Target, mut form: Form, cx: &mut Context<Self>) -> FormSheet {
+        // Where this app can make sure it's you, a `verified` field is changed here, asked first.
+        let confirm = crate::confirm_you::ConfirmYou::of(cx);
+        let mut verified = HashMap::new();
+        if confirm.is_some() {
+            for field in form.fields.iter_mut().filter(|field| field.verified && field.why_not().is_none()) {
+                verified.insert(field.id.clone(), field.value.clone().unwrap_or(Value::Null));
+                field.verified = false;
+            }
+        }
         let mut sheet = FormSheet {
+            confirm,
+            verified,
+            stale: false,
             client,
             live,
             target,
@@ -244,7 +262,7 @@ impl FormSheet {
             cx.notify();
             return;
         }
-        let Some(shows) = field.shows.clone().filter(|_| READS_KEPT && entity.read(cx).text().is_empty()) else {
+        let Some(shows) = field.shows.clone().filter(|_| self.confirm.is_some() && entity.read(cx).text().is_empty()) else {
             if !field.multi {
                 entity.update(cx, |text, cx| text.set_masked(false, cx));
                 self.revealed.insert(id.to_owned());
@@ -252,8 +270,14 @@ impl FormSheet {
             }
             return;
         };
-        let client = self.client.clone();
-        let work = move || client.shown_secret(&shows);
+        // Touch ID, or the computer's password, first: not it, nothing's read.
+        let (client, confirm, reason) = (self.client.clone(), self.confirm.clone(), format!("show what “{}” keeps", field.title));
+        let work = move || {
+            if !confirm.as_ref().is_some_and(|confirm| (confirm.0)(&reason)) {
+                return Err(crate::settings::not_confirmed());
+            }
+            client.shown_secret(&shows)
+        };
         let id = id.to_owned();
         let then = move |this: &mut FormSheet, done: kuvo_box::Result<String>, cx: &mut Context<FormSheet>| {
             match done {
@@ -331,12 +355,20 @@ impl FormSheet {
     }
 
     pub fn is_ready(&self) -> bool {
-        !self.sending && self.checked.as_ref().is_some_and(|checked| checked.ready)
+        !self.sending && !self.stale && self.checked.as_ref().is_some_and(|checked| checked.ready)
+    }
+
+    /// Whether what it shows changed since it opened: it's closed and opened again, not sent.
+    pub fn is_stale(&self) -> bool {
+        self.stale
     }
 
     /// Something typed: checked a moment after the last key (at once, where there's no waiting).
     fn changed(&mut self, cx: &mut Context<Self>) {
-        self.refused = None;
+        // (One that changed since it opened keeps saying so: it isn't sent again.)
+        if !self.stale {
+            self.refused = None;
+        }
         if !self.live {
             self.check_now(cx);
             return;
@@ -359,7 +391,9 @@ impl FormSheet {
                     }
                     this.checked = Some(checked);
                 }
-                Err(error) => this.refused = Some(said(&error)),
+                // (One stale already says to open it again.)
+                Err(error) if !this.stale => this.refused = Some(said(&error)),
+                Err(_) => {}
             }
             cx.notify();
         };
@@ -395,17 +429,27 @@ impl FormSheet {
         }
         self.sending = true;
         let values = self.values(cx);
-        let (client, target) = (self.client.clone(), self.target.clone());
-        let work = move || client.setting_form_at(&target.section, &target.row, &target.was, &target.action, &values);
+        // A `verified` field changed (more let use what's yours): Touch ID, or the computer's
+        // password, first; not it, nothing's sent.
+        let picked = |field: &Field| values.get(&field.id).and_then(Value::as_str).filter(|now| Some(*now) != field.value.as_ref().and_then(Value::as_str));
+        let asks = self.verified.iter().any(|(id, opened)| values.get(id).is_some_and(|now| now != opened))
+            || self.form.fields.iter().any(|field| picked(field).is_some_and(|now| field.choices.iter().any(|choice| choice.verified && choice.id == now)));
+        let (client, target, confirm, reason) = (self.client.clone(), self.target.clone(), self.confirm.clone(), format!("save {}", self.form.title));
+        let work = move || {
+            if asks && !confirm.as_ref().is_some_and(|confirm| (confirm.0)(&reason)) {
+                return Err(crate::settings::not_confirmed());
+            }
+            client.setting_form_at(&target.section, &target.row, &target.was, &target.action, &values)
+        };
         let then = |this: &mut FormSheet, done: kuvo_box::Result<Sent>, cx: &mut Context<FormSheet>| {
             this.sending = false;
             match done {
-                Ok(Sent::Changed(Changed::Stale { message, page })) => {
-                    // Kept open with what was typed, said; sent again, it goes from what's there now.
-                    if let Some(revision) = page.row(&this.target.row).and_then(|row| row.actions.iter().chain(row.add.iter()).find(|action| action.id == this.target.action)).and_then(|action| action.form.as_ref()).and_then(|form| form.revision.clone()) {
-                        this.target.was = revision;
-                    }
-                    this.refused = Some(message);
+                Ok(Sent::Changed(Changed::Stale { message: _, page })) => {
+                    // Kept open with what was typed, and said; never sent again from what it
+                    // opened with, which would put back what changed meanwhile (the page under it
+                    // is the box's now: opened again, it shows that).
+                    this.stale = true;
+                    this.refused = Some(OPEN_AGAIN.into());
                     cx.emit(FormEvent::Stale(page));
                 }
                 Ok(Sent::Changed(changed)) => cx.emit(FormEvent::Done(changed)),
@@ -493,7 +537,7 @@ impl Render for FormSheet {
         let ready = self.is_ready();
         // (Nothing here can be changed from this app: its one reason, once, and nothing to send.)
         let all_locked = self.all_locked();
-        let kept_elsewhere = (!READS_KEPT && self.form.fields.iter().any(|field| field.shows.is_some())).then_some(KEPT_ELSEWHERE);
+        let kept_elsewhere = (self.confirm.is_none() && self.form.fields.iter().any(|field| field.shows.is_some())).then_some(KEPT_ELSEWHERE);
         let footer_note = if all_locked { self.form.fields.first().and_then(why_of) } else { [self.form.note.as_deref(), kept_elsewhere].into_iter().flatten().collect::<Vec<_>>().join(" ").into() };
         let footer_note = footer_note.filter(|note| !note.is_empty());
         div()
@@ -759,7 +803,7 @@ impl FormSheet {
                 Some(entity) => {
                     let revealed = self.revealed.contains(&id);
                     // (A note's lines show as they are: its eye is there only to read what's kept.)
-                    let eye = !disabled && (!field.multi || (READS_KEPT && field.shows.is_some() && entity.read(cx).text().is_empty()));
+                    let eye = !disabled && (!field.multi || (self.confirm.is_some() && field.shows.is_some() && entity.read(cx).text().is_empty()));
                     let (icon, label) = if revealed { (IconName::EyeOff, "Hide") } else { (IconName::Eye, "Show") };
                     let id = id.clone();
                     div()

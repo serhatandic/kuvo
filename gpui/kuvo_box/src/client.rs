@@ -17,6 +17,28 @@ use crate::parts::{self, Comment, Delivery, File, Notes, Parts, Sending};
 use crate::typed::{self, Answer, Ask, ModelRef, Offers};
 use crate::{ids, place};
 
+/// Whether this app makes sure it's you (Touch ID, or the computer's password) before what lets
+/// something use what's yours from now on: said to each box with its settings requests
+/// (`x-kuvo-confirms-you: 1`, PROTOCOL.md "A box's settings"), so it offers those; one that doesn't
+/// say so is refused them. Set once as the app starts, where it can ask.
+static CONFIRMS_YOU: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_confirms_you(on: bool) {
+    CONFIRMS_YOU.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn confirms_you() -> bool {
+    CONFIRMS_YOU.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A request as it goes: a settings request says whether this app makes sure it's you first.
+fn said(request: &Request) -> std::borrow::Cow<'_, Request> {
+    if confirms_you() && request.route().starts_with("kuvo/settings") && !request.headers.iter().any(|(name, _)| name == "x-kuvo-confirms-you") {
+        return std::borrow::Cow::Owned(request.clone().header("x-kuvo-confirms-you", "1"));
+    }
+    std::borrow::Cow::Borrowed(request)
+}
+
 /// One box's routes. Cheap to clone: clones share the box's transport and its gate.
 #[derive(Clone)]
 pub struct BoxClient {
@@ -200,14 +222,14 @@ impl BoxClient {
     /// Sends `request` (behind the gate) and reads its whole answer, whatever its status.
     pub fn send(&self, request: &Request) -> Result<Response> {
         self.check_gate(&request.path)?;
-        self.transport.send(request)
+        self.transport.send(&said(request))
     }
 
     /// Opens a followed route (behind the gate). `hold` gets what closes it, before its answer
     /// comes (see [`Transport::open`]).
     pub fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
         self.check_gate(&request.path)?;
-        self.transport.open(request, hold)
+        self.transport.open(&said(request), hold)
     }
 
     /// Its answer, read as `T`; what the box refuses, as it said it.
@@ -439,4 +461,22 @@ pub(crate) fn decode<T: DeserializeOwned>(response: &Response) -> Result<T> {
         return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
     }
     serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(format!("The answer couldn't be read: {error}")))
+}
+
+#[cfg(test)]
+mod confirms_you_tests {
+    use super::*;
+
+    /// (Only ever turned on here, as the app does where it can ask: a test that turned it off
+    /// could race another's.)
+    #[test]
+    fn a_settings_request_says_this_app_makes_sure_its_you_and_no_other_does() {
+        set_confirms_you(true);
+        let page = said(&Request::get("kuvo/settings/vault"));
+        assert!(page.headers.contains(&("x-kuvo-confirms-you".to_owned(), "1".to_owned())));
+        let act = said(&Request::post("kuvo/settings/vault/ask-q_1/always", json!({ "was": "r" })));
+        assert_eq!(act.headers.iter().filter(|(name, _)| name == "x-kuvo-confirms-you").count(), 1);
+        assert!(said(&Request::get("kuvo/vault/items/v_abcdefghij/values")).headers.is_empty());
+        assert!(said(&Request::get("api/session")).headers.is_empty());
+    }
 }

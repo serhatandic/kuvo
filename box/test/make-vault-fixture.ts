@@ -1,5 +1,5 @@
 // Writes the desktop app's stand-in Vault (gpui/kuvo/src/stand_in/settings/vault.json) from the
-// box's own code: a machine's vault (lokum), as Kuvo on your other devices reads it, with sample
+// box's own code: a machine's vault (lokum), as Kuvo on your other devices reads it (the desktop app on a Mac, which makes sure it's you first), with sample
 // items, a bot that may use one, one paused, what agents wait for, and some activity; the page
 // locked; and what its forms' checks answer. Never a value: the stand-in makes up its own for Show.
 //
@@ -21,7 +21,8 @@ const phone = { key: Buffer.alloc(32, 7) }
 
 async function asked(method: string, path: string, body?: unknown) {
   let status = 0, text = ""
-  for await (const piece of handler({ method, path, headers: {}, ...(body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) }) }, phone as any)) {
+  // (As the desktop app on a Mac asks: it makes sure it's you first, so it's offered what does.)
+  for await (const piece of handler({ method, path, headers: { "x-kuvo-confirms-you": "1" }, ...(body === undefined ? {} : { body: Buffer.from(JSON.stringify(body)) }) }, phone as any)) {
     if ("head" in piece) status = piece.head.status
     if ("body" in piece) text += Buffer.from(piece.body).toString()
   }

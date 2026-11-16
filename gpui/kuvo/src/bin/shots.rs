@@ -1091,6 +1091,9 @@ fn main() -> anyhow::Result<()> {
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(Assets), gpui_platform::current_headless_renderer);
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
+        // Drawn as on a Mac, which asks Touch ID or its password before what lets something use
+        // what's yours more (never asked here: nothing is pressed).
+        cx.set_global(kuvo::confirm_you::ConfirmYou(std::sync::Arc::new(|_: &str| false)));
         bind_keys(cx);
     });
     for screen in SCREENS {

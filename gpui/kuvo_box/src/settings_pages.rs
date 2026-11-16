@@ -262,6 +262,13 @@ pub struct FileWords {
     pub none: String,
 }
 
+/// Whether `route` is the vault's values route for one item (`kuvo/vault/items/v_<10>/values`),
+/// the only place a `secret` field's kept value is read from.
+pub fn is_values_route(route: &str) -> bool {
+    let Some(id) = route.strip_prefix("kuvo/vault/items/").and_then(|rest| rest.strip_suffix("/values")) else { return false };
+    id.len() == 12 && id.starts_with("v_") && id[2..].bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
 /// The most of a chosen file a form sends; one bigger is sent as its name and size alone.
 pub const MOST_FILE_BYTES: usize = 1_000_000;
 
@@ -459,6 +466,10 @@ pub struct Choice {
     pub title: String,
     #[serde(default)]
     pub line: Option<String>,
+    /// (A form's.) Picking it lets something use what's yours more: a client makes sure it's you
+    /// first.
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// One of a `meter` row's windows.
@@ -717,7 +728,12 @@ impl BoxClient {
     /// The value a `secret` field keeps, read only when you ask to see it (`shows`): `GET route`'s
     /// `values[field]`, the rest of the answer dropped as it's read. (Never in an error's words.)
     pub fn shown_secret(&self, shows: &Shows) -> Result<String> {
-        let mut answer: Value = self.value(&Request::get(shows.route.trim_start_matches('/')))?;
+        // Only the vault's own values route, which notes that it was shown: no other, whatever a
+        // box's page names.
+        if !is_values_route(&shows.route) {
+            return Err(Error::BadAnswer("That can't be shown here.".into()));
+        }
+        let mut answer: Value = self.value(&Request::get(shows.route.as_str()))?;
         let value = answer.get_mut("values").and_then(|values| values.get_mut(&shows.field)).map(Value::take);
         drop(answer);
         match value {
@@ -842,6 +858,14 @@ mod form_field_tests {
             { "id": "who", "title": "Who can use it", "kind": "choice", "verified": true, "choices": [] }
         ] }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_kept_value_is_read_only_from_the_vaults_values_route() {
+        assert!(is_values_route("kuvo/vault/items/v_abcdefghij/values"));
+        for route in ["kuvo/config", "/kuvo/vault/items/v_abcdefghij/values", "kuvo/vault/items/v_abcdefghij/values?x=1", "kuvo/vault/items/v_ABCDEFGHIJ/values", "kuvo/vault/items/v_abc/values", "kuvo/vault/items/../values", "kuvo/vault/items/v_abcdefghij/same"] {
+            assert!(!is_values_route(route), "{route}");
+        }
     }
 
     #[test]

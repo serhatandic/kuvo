@@ -36,6 +36,11 @@ use crate::areas::Reading;
 
 pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
 use form::{FormEvent, FormSheet};
+
+/// What's said when you didn't confirm it was you: nothing was sent.
+pub(crate) fn not_confirmed() -> kuvo_box::Error {
+    kuvo_box::Error::Refused(kuvo_box::Refusal { status: 403, message: "It wasn’t confirmed, so nothing was done.".into(), reason: None, older_box: false })
+}
 use sign_in::SignIn;
 
 /// The widest a page's cards grow.
@@ -158,6 +163,9 @@ pub struct SettingsView {
     /// They're being asked for now.
     reading_sections: bool,
     pages: HashMap<String, Reading<Page>>,
+    /// What makes sure it's you (Touch ID, or the computer's password) before what lets something
+    /// use what's yours from now on (`verified`); none where this app can't ask.
+    confirm: Option<crate::confirm_you::ConfirmYou>,
     /// The page open, followed as it changes (where the app runs against a box that streams).
     follow: Option<(String, Follow<Followed<Page>>)>,
     search: Entity<TextField>,
@@ -285,6 +293,7 @@ impl SettingsView {
             sections: Reading::NotYet,
             reading_sections: false,
             pages: HashMap::new(),
+            confirm: crate::confirm_you::ConfirmYou::of(cx),
             follow: None,
             search,
             query: String::new(),
@@ -627,7 +636,7 @@ impl SettingsView {
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
-                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters, expanded: &self.expanded }),
+                Some(Reading::Ready(page)) => described::blocks(page, &described::Drawing { section: &entry.id, busy: &self.busy, replacing: &self.replacing, here: self.client.as_ref().is_some_and(BoxClient::here), filters: &self.list_filters, expanded: &self.expanded, confirms: self.confirm.is_some() }),
                 Some(Reading::Failed(why)) => vec![Block::Note { key: "note-page".into(), words: format!("{} couldn’t be read: {why}", entry.title), busy: false, warning: true }],
                 _ => vec![rows::note("note-page", format!("Reading {}…", entry.title), true)],
             },
@@ -1247,12 +1256,22 @@ impl SettingsView {
                     self.ask(asks.title, asks.body, asks.button, Act::Do { at, action, confirm, asked: true });
                 } else {
                     let key = described::key(&at.row);
+                    // What lets something use what's yours from now on: Touch ID, or the
+                    // computer's password, first; not it, nothing's sent.
+                    let verify = self.verified_action(&at.section, &at.row, &action).map(|title| (title, crate::confirm_you::ConfirmYou::of(cx)));
                     self.set_busy(&key, "Working…");
                     let to = at.clone();
                     let flow_before = self.flow_of(&at.section, &at.row);
                     self.run(
                         key.clone(),
-                        move |client| client.setting_action_at(&to.section, &to.row, &to.revision, &action),
+                        move |client| {
+                            if let Some((title, confirm)) = &verify
+                                && !confirm.as_ref().is_some_and(|confirm| (confirm.0)(&format!("confirm {title} in Settings")))
+                            {
+                                return Err(not_confirmed());
+                            }
+                            client.setting_action_at(&to.section, &to.row, &to.revision, &action)
+                        },
                         move |this, done, cx| {
                             this.done(&key);
                             // A flow this started: its page opened here, once (any other client
@@ -1534,6 +1553,14 @@ impl SettingsView {
             Some(Reading::Ready(page)) => page.row(row).and_then(|row| row.flow.as_ref()).map(|flow| flow.id.clone()),
             _ => None,
         }
+    }
+
+    /// The title of what `row` offers as `action` on the page `section` as read, where it makes
+    /// sure it's you first (`verified`).
+    fn verified_action(&self, section: &str, row: &str, action: &str) -> Option<String> {
+        let Some(Reading::Ready(page)) = self.pages.get(section) else { return None };
+        let row = page.row(row)?;
+        row.actions.iter().chain(row.add.iter()).chain(row.flow.iter().flat_map(|flow| flow.actions.iter())).find(|each| each.id == action && each.verified).map(|each| each.title.trim_end_matches('…').to_owned())
     }
 
     // MARK: Forms
