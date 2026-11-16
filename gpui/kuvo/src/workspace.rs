@@ -1994,9 +1994,14 @@ impl Workspace {
         self.switching.as_ref().and_then(|switching| switching.shown.clone()).unwrap_or_else(|| "nearest".into())
     }
 
+    fn queue_needs_you_count(&self) -> usize {
+        if self.queue_badge_loaded { crate::yours::queue_badge(&self.queue_badge_items, None) }
+        else { self.queue_waiting.unwrap_or(0) }
+    }
+
     fn queue_opened(&mut self, cx: &mut Context<Self>) {
         let at = crate::yours::queue_watermark(&self.queue_badge_items);
-        crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+        crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at, self.queue_needs_you_count()), cx);
         self.queue_badge_open_pending = true;
     }
 
@@ -2006,15 +2011,17 @@ impl Workspace {
         if self.queue_badge_open_pending {
             self.queue_badge_open_pending = false;
             let at = crate::yours::queue_watermark(&self.queue_badge_items);
-            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at, self.queue_needs_you_count()), cx);
         }
         cx.notify();
     }
 
     pub fn queue_badge(&self, cx: &App) -> usize {
         if self.queue_badge_open_pending { return 0; }
-        if !self.queue_badge_loaded { return self.queue_waiting.unwrap_or(0); }
         let yours = crate::yours::now(cx);
+        if !self.queue_badge_loaded {
+            return crate::yours::queue_count_badge(self.queue_waiting.unwrap_or(0), yours.queue_opened_count.get(&self.queue_computer()).copied());
+        }
         let opened = yours.queue_last_opened.get(&self.queue_computer()).copied();
         crate::yours::queue_badge(&self.queue_badge_items, opened)
     }
@@ -2079,7 +2086,7 @@ impl Workspace {
         }
         if area == Area::Queue {
             let at = crate::yours::queue_watermark(&self.queue_badge_items);
-            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at), cx);
+            crate::yours::change(crate::yours::Change::QueueOpened(self.queue_computer(), at, self.queue_needs_you_count()), cx);
         }
         self.toggle_sidebar(window, cx);
     }

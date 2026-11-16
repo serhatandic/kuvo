@@ -199,6 +199,7 @@ pub struct Spot {
 /// All of your settings, a field a page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Yours {
+    pub queue_opened_count: std::collections::BTreeMap<String, usize>,
     pub queue_last_opened: std::collections::BTreeMap<String, f64>,
     pub appearance: Appearance,
     pub general: General,
@@ -221,7 +222,7 @@ pub enum Change {
     Dock(bool),
     ShareAnonymousUsage(bool),
     QuitNoteSeen,
-    QueueOpened(String, f64),
+    QueueOpened(String, f64, usize),
 }
 
 /// A move of the window's, kept in [`Place`].
@@ -244,7 +245,7 @@ impl Change {
             Change::Sound(on) => yours.notifications.sound = on,
             Change::Dock(on) => yours.notifications.dock = on,
             Change::ShareAnonymousUsage(on) => yours.privacy.share_anonymous_usage = on,
-            Change::QueueOpened(computer, at) => { yours.queue_last_opened.insert(computer, at); }
+            Change::QueueOpened(computer, at, count) => { yours.queue_opened_count.insert(computer.clone(), count); yours.queue_last_opened.insert(computer, at); }
             Change::QuitNoteSeen => yours.quit_note_seen = true,
         }
     }
@@ -279,7 +280,7 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
+        let now = Yours { queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
         let place: Place = page(&value, "place");
         Store { path, now, place: place.into(), file: file.into(), problem: None.into() }
     }
@@ -338,6 +339,7 @@ impl Store {
                 }
             }
         }
+        file.insert("queueOpenedCount".into(), serde_json::to_value(&self.now.queue_opened_count).unwrap());
         file.insert("queueLastOpened".into(), serde_json::to_value(&self.now.queue_last_opened).unwrap());
         file.insert("place".into(), serde_json::to_value(&*self.place.borrow()).unwrap());
         if self.now.quit_note_seen {
@@ -621,7 +623,7 @@ mod queue_badge_tests {
         assert_eq!(queue_watermark(&[]), 0.);
         let before = items.clone();
         assert_eq!(queue_badge(&items, None), 2);
-        store.change(Change::QueueOpened("one".into(), queue_watermark(&items)));
+        store.change(Change::QueueOpened("one".into(), queue_watermark(&items), queue_badge(&items, None)));
         let restarted = Store::read(Some(path.clone()));
         let opened = restarted.now().queue_last_opened.get("one").copied();
         assert_eq!(queue_badge(&items, opened), 0);
@@ -631,4 +633,9 @@ mod queue_badge_tests {
         assert_eq!(queue_badge(&items, opened), 1);
         std::fs::remove_file(path).unwrap();
     }
+}
+
+/// Before item stamps arrive, only the increase since opening is known.
+pub fn queue_count_badge(waiting: usize, opened_count: Option<usize>) -> usize {
+    waiting.saturating_sub(opened_count.unwrap_or(0))
 }

@@ -555,3 +555,22 @@ fn shortcuts_come_from_the_running_keymap_and_can_be_searched(cx: &mut TestAppCo
     cx.run_until_parked();
     assert!(!shown(cx, "row-shortcut-0"));
 }
+
+#[test]
+fn opening_the_queue_keeps_its_needs_you_count_across_restarts() {
+    let (_folder, path) = kept();
+    let items: Vec<kuvo_box::work_queue::Item> = serde_json::from_value(json!([
+        {"id":"a", "status":"needs-you", "updated":{"at":10}},
+        {"id":"b", "status":"needs-you", "updated":{"at":20}},
+        {"id":"c", "status":"todo", "updated":{"at":30}}
+    ])).unwrap();
+    let mut store = Store::read(Some(path.clone()));
+    store.change(yours::Change::QueueOpened("nearest".into(), yours::queue_watermark(&items), yours::queue_badge(&items, None)));
+    let restarted = Store::read(Some(path));
+    let opened = restarted.now().queue_opened_count.get("nearest").copied();
+    assert_eq!(restarted.now().queue_last_opened.get("nearest"), Some(&30.));
+    assert_eq!(yours::queue_count_badge(2, opened), 0);
+    assert_eq!(yours::queue_count_badge(3, opened), 1);
+    assert_eq!(yours::queue_count_badge(1, opened), 0);
+    assert_eq!(yours::queue_count_badge(2, restarted.now().queue_opened_count.get("other").copied()), 2);
+}
