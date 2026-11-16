@@ -200,3 +200,35 @@ fn only_changes_below_the_view_count_as_new(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.read(|cx| view.read(cx).list.has_unseen()));
 }
+
+#[gpui::test]
+fn the_jump_button_shows_whenever_you_are_away_from_the_end_with_nothing_new(cx: &mut TestAppContext) {
+    // A long conversation: most of its messages, far up, aren't measured until they come into view.
+    let (view, cx) = conversation(cx, vec![300.; 60]);
+    let shown = |cx: &mut VisualTestContext| cx.debug_bounds("jump-to-latest").is_some();
+    assert!(!shown(cx), "at the end, no button");
+
+    // Scrolled up a little, nothing arriving: the button is there.
+    wheel(cx, 450.);
+    assert!(!cx.read(|cx| view.read(cx).list.has_unseen()));
+    assert!(shown(cx), "away from the end");
+
+    // Further up still: it stays.
+    wheel(cx, 3000.);
+    assert!(shown(cx));
+
+    // It takes you back, and goes.
+    let at = cx.debug_bounds("jump-to-latest").unwrap().center();
+    cx.simulate_click(at, Default::default());
+    cx.run_until_parked();
+    assert_eq!(item_bottom(&view, 59, cx), Some(px(400.)));
+    assert!(!shown(cx));
+
+    // Scrolled back down to the end by hand, it goes too.
+    wheel(cx, 600.);
+    assert!(shown(cx));
+    wheel(cx, -5000.);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(!shown(cx), "back at the end");
+}

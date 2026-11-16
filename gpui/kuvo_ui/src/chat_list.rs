@@ -28,9 +28,6 @@ use crate::{
 pub struct ChatListState {
     list: ListState,
     unseen: Rc<Cell<bool>>,
-    /// Whether the reader was last seen away from the bottom. The list can't say while a new
-    /// message is still unmeasured, so the last answer stands until it can.
-    away: Rc<Cell<bool>>,
     /// Measures the messages again when the text size changes, while the list is kept.
     _sized: Rc<gpui::Subscription>,
 }
@@ -51,7 +48,7 @@ impl ChatListState {
             }
             view.update(cx, |_, cx| cx.notify()).ok();
         });
-        Self { list, unseen, away: Rc::new(Cell::new(false)), _sized: sized }
+        Self { list, unseen, _sized: sized }
     }
 
     /// Messages were added at the end.
@@ -80,7 +77,6 @@ impl ChatListState {
 
     pub fn jump_to_latest(&self) {
         self.unseen.set(false);
-        self.away.set(false);
         self.list.set_follow_mode(FollowMode::Tail);
     }
 
@@ -128,13 +124,27 @@ impl ChatListState {
         }
     }
 
+    /// Whether the reader isn't at the end: following it, they are; else, where every message's
+    /// height is known, the list says; where some aren't (a long conversation, whose messages far
+    /// up are measured only as they come into view), by where the last message is: not laid out
+    /// at all (far below), or its end below the view's. (Asked of the whole list alone, a long
+    /// conversation never knew, and the button only came with something new.)
     fn away_from_latest(&self) -> bool {
         if self.list.is_following_tail() {
-            self.away.set(false);
-        } else if let Some(at_end) = self.list.is_scrolled_to_end() {
-            self.away.set(!at_end);
+            return false;
         }
-        self.away.get()
+        if let Some(at_end) = self.list.is_scrolled_to_end() {
+            return !at_end;
+        }
+        let count = self.list.item_count();
+        if count == 0 {
+            return false;
+        }
+        let view = self.list.viewport_bounds();
+        match self.list.bounds_for_item(count - 1) {
+            Some(last) => last.bottom() > view.bottom() + px(1.),
+            None => true,
+        }
     }
 }
 
@@ -182,6 +192,7 @@ impl RenderOnce for ChatList {
                 .child(
                     div()
                         .id("jump-holder")
+                        .debug_selector(|| "jump-to-latest".into())
                         .rounded_full()
                         .bg(surface)
                         .shadow(shadow)
