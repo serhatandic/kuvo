@@ -645,7 +645,7 @@ mod tests {
         assert!(item.at_work() && item.created.by.user && item.overdue);
         assert_eq!((item.status.as_str(), item.priority.as_str(), item.labels.len(), item.due.as_deref()), ("in-progress", "high", 2, Some("2026-11-30")));
         assert_eq!(item.assignee.as_ref().map(|assignee| (assignee.kind.as_str(), assignee.name.as_str(), assignee.look.as_ref().map(|look| look.color.as_str()))), Some(("bot", "Mira", Some("sky"))));
-        assert_eq!(item.can, Can { edit: true, set: true, assign: true, close: true, delete: true, restore: false, why: None });
+        assert_eq!(item.can, Can { edit: true, set: true, assign: true, close: true, delete: true, restore: false, attach: false, why: None });
         assert_eq!((item.updated.by.name.as_deref(), item.progress.as_ref().and_then(|progress| progress.value)), (Some("Mira"), Some(0.4)));
 
         // An issue is named by GitHub's name for it, never its old number; one waiting for a number

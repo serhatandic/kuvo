@@ -111,7 +111,7 @@ fn a_bot_is_drawn_as_its_box_says_and_a_change_plays_on_screen(cx: &mut TestAppC
     assert_eq!(drawn(cx, "bot_release"), Some(State::Thinking));
     let (drew, _) = run_for(cx, 1.5);
     assert!(drew > 10, "the change plays: its blink, the symbol coming in ({drew} frames)");
-    let symbol = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_release", 28., cx)).unwrap();
+    let symbol = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_release", 40., cx)).unwrap();
     assert!(symbol.glyph_amt > 0.9, "the orbit's in");
 }
 
@@ -145,7 +145,7 @@ fn reduce_motion_shows_still_poses_and_schedules_nothing(cx: &mut TestAppContext
     box_says(&stand_in, &workspace, cx, "bot_release", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "limit", "state": "blocked", "since": NOW }));
     let (drew, _) = run_for(cx, 2.);
     assert_eq!(drew, 0);
-    let pose = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_release", 28., cx)).unwrap();
+    let pose = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_release", 40., cx)).unwrap();
     assert_eq!(pose.glyph_amt, 1., "the bar at once");
     assert!(bounds(cx, "bot-bot_release").is_some());
 }
@@ -195,7 +195,7 @@ fn nothing_replays_on_a_later_copy_or_a_reconnect(cx: &mut TestAppContext) {
     box_says(&stand_in, &workspace, cx, "bot_release", json!({ "working": 0, "asking": 0, "finished": NOW, "state": "done", "since": NOW }));
     let celebrating = |cx: &mut VisualTestContext, size: f32| cx.update(|_, cx| kuvo::bot_face::pose_of("bot_release", size, cx).map(|pose| pose.burst > 0. || pose.spin.abs() > 0.01).unwrap_or(false));
     run_for(cx, 0.5);
-    assert!(celebrating(cx, 28.), "seen finishing in the sidebar: it celebrates");
+    assert!(celebrating(cx, 40.), "seen finishing in the sidebar: it celebrates");
     run_for(cx, 2.);
     click(cx, "bot-chat");
     assert!(bounds(cx, "bot-chat-strip").is_some());
@@ -216,7 +216,7 @@ fn nothing_replays_on_a_later_copy_or_a_reconnect(cx: &mut TestAppContext) {
     assert_eq!(drawn(cx, "bot_docs"), Some(State::Done));
     for _ in 0..90 {
         run_for(cx, 1. / 60.);
-        let docs = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_docs", 28., cx).unwrap());
+        let docs = cx.update(|_, cx| kuvo::bot_face::pose_of("bot_docs", 40., cx).unwrap());
         assert!(docs.burst == 0. && docs.spin.abs() < 0.01 && docs.y.abs() < 0.05, "back from offline: no celebration replayed");
     }
 }

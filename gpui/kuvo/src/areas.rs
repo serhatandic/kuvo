@@ -812,14 +812,14 @@ impl AreaView {
                     .items_center()
                     .gap(space::S2)
                     .px(space::S2)
-                    .py(space::S1_5)
+                    .py(space::S2)
                     .mb(space::S0_5)
                     .rounded(radius::NAV)
                     .cursor_pointer()
                     .when(selected, |r| r.bg(selected_bg))
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key, cx))
-                    .child(bot_face(&bot.id, &bot.look, px(28.)))
+                    .child(bot_face(&bot.id, &bot.look, px(BOT_FACE)))
                     .child(two_lines(bot.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx)), &c))
                     .into_any_element(),
             );
@@ -843,8 +843,8 @@ impl AreaView {
                     format!("On {computer}")
                 };
                 let face = match &there.look {
-                    Some(look) => bot_face(&there.id, look, px(28.)),
-                    None => div().flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
+                    Some(look) => bot_face(&there.id, look, px(BOT_FACE)),
+                    None => div().flex().flex_none().items_center().justify_center().size(px(BOT_FACE)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
                 rows.push(
                     div()
@@ -854,7 +854,7 @@ impl AreaView {
                         .items_center()
                         .gap(space::S2)
                         .px(space::S2)
-                        .py(space::S1_5)
+                        .py(space::S2)
                         .mb(space::S0_5)
                         .rounded(radius::NAV)
                         .cursor_pointer()
@@ -1144,6 +1144,10 @@ pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
         },
     })
 }
+
+/// A bot's face in the Bots sidebar, in points: its rows are this plus even padding above and
+/// below. Other places keep their own sizes (the header's 22, a mention's 16).
+const BOT_FACE: f32 = 40.;
 
 /// A two-line row's words: its name over the line under it, set as the type ramp says
 /// (`TextRole::RowTitle` over `RowDetail`).

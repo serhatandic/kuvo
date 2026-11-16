@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- In the desktop app, the bots in the Bots sidebar are bigger (40 points, with taller rows), so their faces and moods read at a glance. Bots elsewhere (the header, mentions, pickers) keep their sizes.
+
 - In the desktop app, menus and cards open from what you clicked, as on macOS: a button's menu right under it, lined up with its edge; the composer's menus just above their control; a usage ring's card to its right, level with its top; a right-click menu at the pointer. Near the window's edge, a menu opens up or to the left instead of covering what opened it, and always stays fully in the window.
 
 - First run is remembered on this desktop device. Switching computers opens the app directly, including computers without projects, and Get Started now visits each setup step in order.
