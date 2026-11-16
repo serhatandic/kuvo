@@ -19,7 +19,7 @@ import type { PromptFile } from "../server/attached";
 import { answerHeaders, modelInput } from "../server/forward";
 import { everyoneFor, listedAgents } from "../server/naming";
 import { REQUEST_HEADERS } from "../server/paths";
-import { holdQueue, keepWaitingHeld, type Outgoing } from "../engine/queue";
+import { holdQueue, keepWaiting, keepWaitingHeld, type Outgoing } from "../engine/queue";
 import { answering, BUSY, sentKey, sentOnce } from "../server/sent-once";
 import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
@@ -149,6 +149,11 @@ async function* sending(context: RouteContext, session: string): AsyncGenerator<
         ? { name: command, text: message.text, ...(message.files.length ? { files: message.files } : {}), ...(delivery ? { delivery } : {}), ...(typed && toAgents ? { metadata: withParts(undefined, typed) } : {}) }
         : { id: id ?? messageID(), text: message.text, ...(message.files.length ? { files: message.files } : {}), delivery, metadata: message.metadata };
       if (held && id && keepWaitingHeld(session, { ...body, id, delivery: "queue" } as Outgoing & { id: string }, typeof given.words === "string" ? given.words : fields?.words)) {
+        return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
+      }
+      // For after this run while its queue is paused (a Stop, from any client): it waits on the box,
+      // as what arrives then does (the engine would run all it holds with the next thing it had).
+      if (!command && delivery === "queue" && keepWaiting(session, body as Outgoing & { id: string }, { words: (typeof given.words === "string" ? given.words : fields?.words ?? message.text).trim() })) {
         return { status: 200, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ waits: true })) };
       }
       const post = async (): Promise<SentAnswer> => {

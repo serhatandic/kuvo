@@ -309,7 +309,9 @@ fn outgoing(ix: usize, words: &str, files: &[String], failed: Option<&str>, wait
         .flex_col()
         .items_end()
         .gap(space::S1_5)
-        .child(user_message(ix, &parts, sel, cx))
+        // The bubble across the row's width, as a sent one's is: its width (and where its words
+        // wrap) the same Sending as Sent, its state on its own line under it.
+        .child(div().w_full().child(user_message(ix, &parts, sel, cx)))
         .when(!files.is_empty(), |d| d.child(div().flex().flex_wrap().justify_end().gap(space::S1).children(names)))
         .child(status)
         .into_any_element()
@@ -385,6 +387,7 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
                 .when(!words.is_empty() || has_quotes, |d| {
                     d.child(
                         div()
+                            .debug_selector(move || format!("bubble-{ix}"))
                             .px(space::S4)
                             .py(px(10.))
                             .rounded(radius::CARD)

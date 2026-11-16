@@ -597,9 +597,17 @@ impl LinkClient {
     fn check(&self, address: &Address, token: u64) -> Result<()> {
         let timing = self.inner.timing;
         let mut state = self.state();
+        // What was sent is still going out (a picture, on a slow connection): its answer can't have
+        // come yet, and the box isn't asked whether it's there behind it.
+        let sending = matches!(&state.connection, Connection::Up { out, .. } if out.busy());
         let Some(session) = state.sessions.get_mut(address).filter(|session| session.token == token) else {
             return Err(Error::Unreachable(words::CLOSED.into()));
         };
+        if sending {
+            session.heard = Instant::now();
+            session.checking = None;
+            return Ok(());
+        }
         match session.checking {
             Some(since) if since.elapsed() >= timing.check => {
                 self.end(&mut state, address, Error::Unreachable(words::TIMED_OUT.into()), true);

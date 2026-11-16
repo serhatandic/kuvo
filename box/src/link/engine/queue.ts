@@ -576,6 +576,26 @@ export async function sendNow(target: Target, session: string, item: string): Pr
   return true;
 }
 
+/** Steer: `item`, queued, to the agent at its next step in the run under way, without stopping it
+ * (the engine takes it then; the coding agents' bridge hands it to an agent that takes one partway,
+ * Claude Code's and Codex's, else it goes next, once the turn ends). One waiting on the box, or
+ * with nothing running, goes as Send Now sends it. `toAgents`: `target` is the bridge. False when
+ * it isn't waiting. */
+export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
+  const entry = (await inboxFor(target, session)).find(each => each.id === item);
+  if (!entry || !(await isRunning(target, session))) return sendNow(target, session, item);
+  changeQueue(session, state => ({ ...state, paused: false, held: state.held.filter(id => id !== item), resumed: Date.now() }));
+  if (entry.delivery === "steer" && !toAgents) return true;
+  try {
+    await asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery: "steer", ...(toAgents ? { into: true } : {}) });
+  } catch (error) {
+    // (The agent took it meanwhile.)
+    if (/ 404\.$/.test(String((error as Error | null)?.message))) return false;
+    throw error;
+  }
+  return true;
+}
+
 /** An event, as far as the queue reads it. */
 export interface QueueEvent {
   type: string;

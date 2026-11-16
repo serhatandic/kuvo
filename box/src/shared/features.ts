@@ -147,6 +147,7 @@ export const FEATURES = [
   "queue.items",
   "queue.once",
   "queue.removed.keyword",
+  "queue.steer",
   "queue.stop.arriving",
   "queue.waits",
   "reviews",
