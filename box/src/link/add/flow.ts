@@ -186,6 +186,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
     const probe = probed(answer.stdout);
     if (probe.updating) throw new Failed(`${name} is updating Kuvo Code itself right now. Try again in a few minutes.`);
+    if (/^app-(?:07|box)$/m.test(answer.stdout)) throw new Failed(`${name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`, false);
     const link = readLink();
     const judged = judgeComputer(foundOf(probe.lines), oursNow(link), appsOf(probe.lines));
     if (judged.verdict === "self") throw new Failed(`That’s ${ownName()} itself. Add another computer.`, false);

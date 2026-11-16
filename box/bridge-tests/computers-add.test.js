@@ -619,6 +619,23 @@ const nothingOfOurs = folder => {
   }
 };
 
+test("a Mac with earlier Kuvo Code data must update before being added; nothing there is changed", async () => {
+  for (const [destination, file] of [["old07", "opencode/opencode.db"], ["oldkeeper", "box/run/keeper.json"]]) {
+    const folder = path.join(base, destination);
+    fs.mkdirSync(folder, { recursive: true });
+    write(path.join(fake, `home-${destination}`), folder);
+    const oldFile = path.join(folder, "Library", "Application Support", "run.kuvo.code", file);
+    write(oldFile, "kept exactly");
+    const before = fs.readdirSync(folder, { recursive: true }).sort();
+    const done = await added(destination);
+    assert.equal(done.state, "failed");
+    assert.equal(done.failure.message, `${destination} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`);
+    assert.deepEqual(fs.readdirSync(folder, { recursive: true }).sort(), before);
+    assert.equal(fs.readFileSync(oldFile, "utf8"), "kept exactly");
+    assert.equal(fs.existsSync(path.join(folder, ".kuvo-code")), false);
+  }
+});
+
 test("a Mac that has Kuvo Code's app is someone's already: it's added, and none of this box's keys or sign-ins are copied there", async () => {
   // Only the app's folder, no box of a machine's: judged free, and added with no question.
   fs.mkdirSync(path.join(homes.macbook, "Library", "Application Support", "run.kuvo.code"), { recursive: true });

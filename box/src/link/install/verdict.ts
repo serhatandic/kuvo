@@ -11,7 +11,7 @@ import path from "node:path";
 import { recordedKind } from "../home";
 import { makingCutShort, runningIn } from "../rehome/move";
 import { forwardOnly, heldByAnother, readJournal, readRecord, rehomeStatus } from "../rehome/state";
-import { foundAt, OWN_BOX_RAN, runsAt } from "../setup/judge";
+import { foundAt, runsAt } from "../setup/judge";
 import type { RehomeStatus } from "../../shared/routes/box";
 
 export type InstallVerdict = "fresh" | "ours" | "app-07" | "app-box" | "moving" | "stuck" | "waits" | "back" | "machine" | "two";
@@ -19,30 +19,9 @@ export type InstallVerdict = "fresh" | "ours" | "app-07" | "app-box" | "moving" 
  * attaches, waits, or says how things stand). */
 export type InstallVerb = "new" | "move" | null;
 
-/** What's in the old app's folder that isn't anyone's data: its engine's download and caches, the
- * desktop app's own folder there (window state, `gpui/kuvo`), and its box's folder, judged apart. */
-const NOT_DATA = new Set(["engine", "box", "desktop", "Caches", "cache", "tmp", "logs", "Logs"]);
-const listOf = (folder: string): string[] => { try { return fs.readdirSync(folder); } catch { return []; } };
+export { appBoxThere, appDataThere } from "./app-data";
+import { appBoxThere, appDataThere } from "./app-data";
 const exists = (file: string): boolean => { try { fs.lstatSync(file); return true; } catch { return false; } };
-
-/** Whether a box of the old app's own ran in its folder (`<app folder>/box`, a keeper build's). */
-export const appBoxThere = (appFolder: string): boolean => OWN_BOX_RAN.some(file => exists(path.join(appFolder, "box", "run", file)));
-
-/** Whether the old app left anything of yours in its folder: any entry but what's never data. The
- * engine's own folder (`opencode`) counts only for more than its cache. Broad on purpose: taking a
- * Mac with data for a new one would start a box beside it and leave the data behind. */
-export function appDataThere(appFolder: string): boolean {
-  for (const name of listOf(appFolder)) {
-    if (name.startsWith(".") || NOT_DATA.has(name)) continue;
-    if (name === "opencode") {
-      if (listOf(path.join(appFolder, name)).some(inner => !inner.startsWith(".") && inner !== "cache")) return true;
-      continue;
-    }
-    return true;
-  }
-  // (What the app kept in its box's folder with no box of its own running there: its lists.)
-  return listOf(path.join(appFolder, "box")).some(name => !name.startsWith(".") && name !== "run" && name !== "bin");
-}
 
 /** The installer's mark while it makes a machine's box on Linux (in what it staged, gone with it
  * once the box has started): what's there under it was cut short, and is made again. */

@@ -5,6 +5,7 @@
 // Platform: each handles a Mac and Linux in the one script (the tools' names, `launchd` beside cron).
 // The computer's folder is always `~/.kuvo-code` there: its keeper names no other.
 
+import { appDataProbe } from "../install/app-data";
 import { quote } from "../../shared/text";
 import { LAUNCH_AGENT, REBOOT_TAG } from "../marks";
 
@@ -56,6 +57,12 @@ echo "kuvo version $(cat "$K/bin/box-version" 2>/dev/null | tr -cd '0-9a-z.-')"
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
 ${FOUND}
+A="$HOME/Library/Application Support/run.kuvo.code"
+${appDataProbe()}
+# A current Mac keeps its old folder for going back, just as the installer permits.
+if [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
+  old_app_verdict
+fi
 true`;
 
 /** Whether the computer has `files` already, each as it is here (`same`), or not (`differs`). */
