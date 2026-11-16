@@ -143,6 +143,199 @@ pub struct Action {
     /// Absent: it can be done.
     #[serde(default)]
     pub can: Option<Can>,
+    /// What it asks for before it's done (`settings.flows`).
+    #[serde(default)]
+    pub form: Option<Form>,
+}
+
+/// A form an action asks to be filled in first: its sheet's title, its button's words, its fields
+/// in order and a line under them.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Form {
+    pub title: String,
+    pub submit: String,
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub fields: Vec<Field>,
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Its own revision, sent back as `was` with its values and checks (a box from before forms had
+    /// theirs: the row's).
+    #[serde(default)]
+    pub revision: Option<String>,
+}
+
+/// What a form's field is drawn as; one this client doesn't know is `Unknown` (its title is drawn,
+/// with words that a newer Kuvo Code changes it, and its value is sent as it came).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FieldKind {
+    Text,
+    Lines,
+    Choice,
+    Switch,
+    Folder,
+    Pairs,
+    #[serde(other)]
+    Unknown,
+}
+
+/// One of a form's fields.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Field {
+    pub id: String,
+    pub title: String,
+    pub kind: FieldKind,
+    #[serde(default)]
+    pub line: Option<String>,
+    #[serde(default)]
+    pub value: Option<Value>,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub mono: bool,
+    #[serde(default)]
+    pub folder: Option<Folder>,
+    #[serde(default)]
+    pub pairs: Option<PairWords>,
+    #[serde(default)]
+    pub shown: Option<Shown>,
+    #[serde(default)]
+    pub can: Option<Can>,
+}
+
+impl Field {
+    /// Whether it's drawn with these values: always, or while the field it follows is one of its own.
+    pub fn is_shown(&self, values: &serde_json::Map<String, Value>) -> bool {
+        self.shown.as_ref().is_none_or(|shown| values.get(&shown.field).and_then(Value::as_str).is_some_and(|value| shown.is.iter().any(|each| each == value)))
+    }
+
+    pub fn why_not(&self) -> Option<&str> {
+        match &self.can {
+            Some(Can::No(why)) => Some(why),
+            _ => None,
+        }
+    }
+}
+
+/// A `pairs` field's placeholders, for a name and its value.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PairWords {
+    pub key: String,
+    pub value: String,
+}
+
+/// When a field is drawn: while `field` is one of `is`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Shown {
+    pub field: String,
+    #[serde(default)]
+    pub is: Vec<String>,
+}
+
+/// How a thing stands, beside its title.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Badge {
+    pub words: String,
+    #[serde(default)]
+    pub tone: BadgeTone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BadgeTone {
+    Good,
+    Busy,
+    Warning,
+    Failed,
+    /// (And one a newer box names.)
+    #[default]
+    #[serde(other)]
+    Quiet,
+}
+
+/// One more line under a row, set apart.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Notice {
+    pub words: String,
+    #[serde(default)]
+    pub tone: Tone,
+}
+
+/// A flow the box leads for a row (a sign-in in the browser).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Flow {
+    pub id: String,
+    pub state: FlowState,
+    pub title: String,
+    #[serde(default)]
+    pub line: String,
+    /// The page to finish it on: opened by the client that started it, once.
+    #[serde(default)]
+    pub opens: Option<String>,
+    /// Where the page you end on is pasted back, and the action that takes it.
+    #[serde(default)]
+    pub code: Option<FlowCode>,
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub actions: Vec<Action>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FlowState {
+    Waiting,
+    Done,
+    #[serde(other)]
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FlowCode {
+    pub title: String,
+    pub placeholder: String,
+    pub action: String,
+}
+
+/// The box's words under one of a form's fields.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FieldWords {
+    pub id: String,
+    pub words: String,
+    #[serde(default)]
+    pub tone: WordsTone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WordsTone {
+    Good,
+    Warning,
+    /// (And one a newer box names.)
+    #[default]
+    #[serde(other)]
+    Quiet,
+}
+
+/// A form's values checked as they're typed: each field's words, whether it can be sent, and
+/// values the box fills in.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Checked {
+    #[serde(default, deserialize_with = "crate::accounts::readable")]
+    pub fields: Vec<FieldWords>,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub values: Option<serde_json::Map<String, Value>>,
+}
+
+/// What a form sent came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sent {
+    /// Done, or stale: as a change.
+    Changed(Changed),
+    /// Its values refused: why, and each field's words (the form stays).
+    Refused { message: String, fields: Vec<FieldWords> },
 }
 
 impl Action {
@@ -271,6 +464,13 @@ pub struct Row {
     pub add: Option<Action>,
     #[serde(default)]
     pub empty: Option<String>,
+    /// How it stands, beside its title (`settings.flows`).
+    #[serde(default)]
+    pub badge: Option<Badge>,
+    #[serde(default)]
+    pub notice: Option<Notice>,
+    #[serde(default)]
+    pub flow: Option<Flow>,
 }
 
 impl Row {
@@ -373,8 +573,44 @@ impl BoxClient {
     }
 }
 
+impl BoxClient {
+    /// Does what the row `row` offers (`action`) with its form's values (or a flow's code), from
+    /// the revision (`was`) it was read at.
+    pub fn setting_form_at(&self, section: &str, row: &str, was: &str, action: &str, values: &serde_json::Map<String, Value>) -> Result<Sent> {
+        let path = format!("{}/{}/{}", page_route(section), segment(row), segment(action));
+        let request = Request::post(path, json!({ "was": was, "values": values }));
+        let response = self.send(&request)?;
+        if response.status == 400 {
+            #[derive(Deserialize)]
+            struct Refused {
+                #[serde(default)]
+                message: String,
+                #[serde(default, deserialize_with = "crate::accounts::readable")]
+                fields: Vec<FieldWords>,
+            }
+            if let Ok(refused) = serde_json::from_slice::<Refused>(&response.body) {
+                return Ok(Sent::Refused { message: refused.message, fields: refused.fields });
+            }
+        }
+        answered(response).map(Sent::Changed)
+    }
+
+    /// A form's values checked as they're typed, changing nothing.
+    pub fn check_setting_form(&self, section: &str, row: &str, was: &str, action: &str, values: &serde_json::Map<String, Value>) -> Result<Checked> {
+        let path = format!("{}/{}/{}/check", page_route(section), segment(row), segment(action));
+        let response = self.send(&Request::post(path, json!({ "was": was, "values": values })))?;
+        if !response.is_success() {
+            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        }
+        serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(format!("The answer couldn't be read: {error}")))
+    }
+}
+
 fn changed(client: &BoxClient, request: &Request) -> Result<Changed> {
-    let response = client.send(request)?;
+    answered(client.send(request)?)
+}
+
+fn answered(response: crate::transport::Response) -> Result<Changed> {
     // (A 409 without the page is the route underneath refusing, a settings file that can't be
     // used: a refusal in its words, like any other.)
     if response.status == 409 {

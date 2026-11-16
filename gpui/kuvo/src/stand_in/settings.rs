@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod mcp;
 mod pages;
 
 use serde_json::{Map, Value, json};
@@ -55,6 +56,8 @@ pub struct Settings {
     pub pages_down: bool,
     /// How this computer stands (`kuvo/settings/computer`).
     pub computer: Computer,
+    /// Its MCP servers (`kuvo/settings/mcp`), listed once it's on.
+    pub mcp: mcp::Mcp,
 }
 
 /// How the stand-in's computer stands, as its own settings page says it. All made up.
@@ -207,6 +210,7 @@ impl Default for Settings {
             more_sections: Vec::new(),
             pages_down: false,
             computer: Computer::default(),
+            mcp: mcp::Mcp::default(),
         }
     }
 }

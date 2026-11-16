@@ -6,7 +6,7 @@ use kuvo_box::areas::Level;
 use kuvo_box::settings_pages::{Action, Can, Kind, Page, Row as Described, Tone as Said};
 use serde_json::{Value, json};
 
-use super::rows::{Act, At, Block, Control, Meter, Push, Row};
+use super::rows::{Act, At, Block, Control, FlowDrawn, Meter, Push, Row, Tone};
 
 /// What draws a row whose kind this app has nothing for yet.
 const NEWER: &str = "A newer Kuvo changes this";
@@ -41,14 +41,17 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
                 continue;
             }
             // A list alone in a group with no heading (or whose heading matches the group) names the group; else it heads its items.
-            let adds = described.add.as_ref().map(|add| push(described, add, drawing));
-            if group.rows.len() == 1 && adds.is_none() && (label.is_empty() || label == described.title) {
+            let mut adds = described.add.as_ref().map(|add| push(described, add, drawing));
+            // Its add, where the list names its group: a button of its own at the card's end.
+            let mut add_last = None;
+            if group.rows.len() == 1 && (label.is_empty() || label == described.title) {
                 if label.is_empty() {
                     label = described.title.clone();
                 }
                 if words.is_empty() {
                     words = described.line.clone().unwrap_or_default();
                 }
+                add_last = adds.take();
             } else {
                 rows.push(Row::new(if described.search.is_some() { format!("{}-heading", key(&described.id)) } else { key(&described.id) }, described.title.clone(), described.line.clone().unwrap_or_default(), adds.map_or(Control::None, |add| Control::Buttons(vec![add]))));
             }
@@ -62,6 +65,9 @@ pub fn blocks(page: &Page, drawing: &Drawing) -> Vec<Block> {
             rows.extend(items.iter().map(|item| row(item, drawing)));
             if items.is_empty() {
                 rows.push(Row::new(format!("{}-empty", key(&described.id)), String::new(), if query.is_empty() { described.empty.clone().unwrap_or_else(|| "None yet.".into()) } else { described.search.as_ref().map(|search| search.empty.replace("{query}", &query)).unwrap_or_default() }, Control::None));
+            }
+            if let Some(add) = add_last {
+                rows.push(Row::new(format!("{}-add", key(&described.id)), String::new(), String::new(), Control::Buttons(vec![add])));
             }
         }
         blocks.push(Block::Group(label, words, rows));
@@ -84,6 +90,16 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
         Control::Busy(words)
     } else {
         match described.kind {
+            Kind::Switch if !described.actions.is_empty() => {
+                // A thing in a list (a server): what it offers now as buttons, what asks first
+                // (a form, a confirm) in its "…" menu, then its switch.
+                let (asks, now): (Vec<&Action>, Vec<&Action>) = described.actions.iter().partition(|action| action.form.is_some() || action.confirm.is_some());
+                Control::Thing {
+                    buttons: now.into_iter().map(|action| push(described, action, drawing)).collect(),
+                    menu: asks.into_iter().map(|action| push(described, action, drawing)).collect(),
+                    switch: Some((described.is_on(), can.then(|| change(json!(!described.is_on()))))),
+                }
+            }
             Kind::Switch => Control::Switch { on: described.is_on(), act: can.then(|| change(json!(!described.is_on()))) },
             Kind::Choice => {
                 let shown = described.chosen().map(|choice| choice.title.clone()).or_else(|| described.words().map(str::to_owned)).unwrap_or_default();
@@ -155,7 +171,25 @@ fn row(described: &Described, drawing: &Drawing) -> Row {
             Kind::Unknown => Control::Text(NEWER.into()),
         }
     };
-    Row::new(key, described.title.clone(), described.line.clone().unwrap_or_default(), control).warning(described.tone == Said::Warning).why(why)
+    let mut drawn = Row::new(key, described.title.clone(), described.line.clone().unwrap_or_default(), control).warning(described.tone == Said::Warning).why(why);
+    drawn.badge = described.badge.as_ref().map(|badge| (badge.words.clone(), badge.tone));
+    drawn.notice = described.notice.as_ref().map(|notice| (notice.words.clone(), if notice.tone == Said::Warning { Tone::Warning } else { Tone::Quiet }));
+    drawn.flow = described.flow.as_ref().map(|flow| {
+        let at = At::of(drawing.section, described);
+        // (The action that takes a pasted address is drawn beside its field, not as a button.)
+        let taken = flow.code.as_ref().map(|code| code.action.as_str());
+        FlowDrawn {
+            state: flow.state,
+            title: flow.title.clone(),
+            line: flow.line.clone(),
+            buttons: flow.actions.iter().filter(|action| Some(action.id.as_str()) != taken).map(|action| push(described, action, drawing)).collect(),
+            code: flow.code.as_ref().map(|code| {
+                let title = flow.actions.iter().find(|action| action.id == code.action).map_or_else(|| "Send".to_owned(), |action| action.title.clone());
+                (code.placeholder.clone(), title, Act::Code { at, action: code.action.clone() })
+            }),
+        }
+    });
+    drawn
 }
 
 /// A web page is opened at any box's word; anything else only at the word of the box on this
@@ -169,7 +203,10 @@ fn push(described: &Described, action: &Action, drawing: &Drawing) -> Push {
     let act = match (&action.opens, action.why_not()) {
         (_, Some(_)) => None,
         (Some(address), None) => opens(address, drawing.here).then(|| Act::Open(address.clone())),
-        (None, None) => Some(Act::Do { at: At::of(drawing.section, described), action: action.id.clone(), confirm: action.confirm.clone(), asked: false }),
+        (None, None) => Some(match &action.form {
+            Some(form) => Act::Form { at: At::of(drawing.section, described), action: action.id.clone(), form: Box::new(form.clone()) },
+            None => Act::Do { at: At::of(drawing.section, described), action: action.id.clone(), confirm: action.confirm.clone(), asked: false },
+        }),
     };
     Push { label: action.title.clone(), act }
 }

@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Settings › **MCP Servers** is in the desktop app: each server says how it's doing (Connected, Needs sign-in, Couldn’t connect) with its error under it; **Add Server…** and **Edit…** open a form that says as you type what the name will be, whether the computer has the command's program and whether a URL is one (paste a server's setup from its README into the name and the rest fills in); and **Sign In…** shows how it's going under the server until it's done. It's the same for each of your computers, picked at the top of Settings.
 - The desktop archived sidebar and Settings › Archived Sessions show the same archived sessions in the same groups and order, including archived bot sessions.
 
 - A Mac with the desktop app answers your iPhone by itself for what the old Mac app had to be open for: the Mac's machines (add one, remove it, uninstall from it, forget one it removed), **While Agents Work** (keeping the Mac awake, and whether Kuvo starts when you log in) and **Restart Engine**. Adding a machine whose key the Mac hasn't seen before is finished on the Mac, which shows the key to check. **Connect**, **Disconnect**, **Make This Mac Its Home** and **Same Computer As** no longer apply there, and say why: each computer runs Kuvo by itself now.

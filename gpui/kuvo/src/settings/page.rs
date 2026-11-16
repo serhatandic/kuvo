@@ -17,7 +17,8 @@ use kuvo_ui::{
     theme::{radius, space},
 };
 
-use super::rows::{Act, Control, Leading, Meter, Push, Row, Tone};
+use super::rows::{Act, Control, FlowDrawn, Leading, Meter, Push, Row, Tone};
+use kuvo_box::settings_pages::{BadgeTone, FlowState};
 use super::{AddMachine, Drawn, Item, PAGE_WIDTH, Pick, SettingsView, Side, Standing, box_key, yours_key};
 use crate::areas::computer_line;
 use crate::time;
@@ -241,7 +242,7 @@ impl SettingsView {
 
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let Row { key, leading, title, detail, tone, why, control } = row;
+        let Row { key, leading, title, detail, tone, why, control, badge, notice, flow } = row;
         let (mark, letter) = (format!("{key}-mark"), format!("{key}-initial"));
         let leading: Option<AnyElement> = match leading {
             Leading::None => None,
@@ -267,6 +268,21 @@ impl SettingsView {
                 .child(div().py(space::S3).when(!last, |d| d.border_b_1().border_color(c.border)).child(control))
                 .into_any_element();
         }
+        let badge = badge.map(|(words, tone)| badge_of(&key, words, tone, cx));
+        let notice = notice.map(|(words, tone)| {
+                                let selector = format!("{key}-notice");
+                                div()
+                                    .debug_selector(move || selector)
+                                    .pt(space::S0_5)
+                                    .flex()
+                                    .items_start()
+                                    .gap(space::S1_5)
+                                    .text_ui(TypeSize::Small)
+                                    .text_color(c.text_muted)
+                                    .child(div().pt(px(2.)).child(Icon::new(if tone == Tone::Warning { IconName::Warning } else { IconName::Info }).size(IconSize::Nav).color(if tone == Tone::Warning { c.warning } else { c.text_faint })))
+                                    .child(div().flex_1().min_w_0().line_clamp(3).child(words))
+                            });
+        let flow = flow.map(|flow| self.flow(&key, flow, cx));
         let control = self.control(&key, control, cx);
         let selector = key.clone();
         let why_selector = format!("{key}-why");
@@ -294,7 +310,17 @@ impl SettingsView {
                             .flex()
                             .flex_col()
                             .gap(space::S0_5)
-                            .when(!title.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title)))
+                            .when(!title.is_empty() || badge.is_some(), |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(space::S2)
+                                        .min_w_0()
+                                        .child(div().min_w_0().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
+                                        .children(badge),
+                                )
+                            })
                             .when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(detail)))
                             // Why it can't be changed from here, in the box's words: drawn, never hidden.
                             .children(why.map(|why| {
@@ -308,10 +334,77 @@ impl SettingsView {
                                     .text_color(c.text_faint)
                                     .child(div().pt(px(2.)).child(Icon::new(IconName::Info).size(IconSize::Nav).color(c.text_faint)))
                                     .child(div().flex_1().min_w_0().child(why))
-                            })),
+                            }))
+                            .children(notice)
+                            .children(flow),
                     )
                     .child(div().flex_none().max_w(px(340.)).child(control)),
             )
+            .into_any_element()
+    }
+
+    /// A flow the box leads for a row, under it: a spinner and the box's words while it waits, a
+    /// check once done, a warning once failed; its buttons; and where it has one, the field to
+    /// paste the address its page ended on.
+    fn flow(&mut self, key: &str, flow: FlowDrawn, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let selector = format!("{key}-flow");
+        let state: AnyElement = match flow.state {
+            FlowState::Waiting => spinner(SharedString::from(format!("{key}-flow-spinner")), IconSize::Nav, c.text_muted).into_any_element(),
+            FlowState::Done => Icon::new(IconName::Check).size(IconSize::Nav).color(c.success).into_any_element(),
+            FlowState::Failed => Icon::new(IconName::Warning).size(IconSize::Nav).color(c.warning).into_any_element(),
+        };
+        let code = flow.code.clone().and_then(|(_, title, act)| self.code_field(key).cloned().map(|field| (field, title, act)));
+        let buttons = self.buttons(&format!("{key}-flow"), flow.buttons, cx);
+        div()
+            .debug_selector(move || selector)
+            .mt(space::S2)
+            .p(space::S3)
+            .rounded(radius::NAV)
+            .bg(c.sunken)
+            .flex()
+            .flex_col()
+            .gap(space::S2)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(space::S2)
+                    .child(div().pt(px(2.)).flex_none().child(state))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(space::S0_5)
+                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(flow.title))
+                            .when(!flow.line.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(flow.line))),
+                    ),
+            )
+            .children(code.map(|(field, title, act)| {
+                let go = SharedString::from(format!("{key}-flow-code-go"));
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(30.))
+                            .px(space::S3)
+                            .flex()
+                            .items_center()
+                            .rounded(radius::NAV)
+                            .border_1()
+                            .border_color(c.border_strong)
+                            .bg(c.card)
+                            .child(div().flex_1().min_w_0().child(field)),
+                    )
+                    .child(Button::new(go, title).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))))
+            }))
+            .when(!buttons.is_empty(), |d| d.child(div().flex().flex_wrap().gap(space::S2).children(buttons)))
             .into_any_element()
     }
 
@@ -456,8 +549,36 @@ impl SettingsView {
                 .into_any_element()
             }
             Control::Windows(meters) => windows(key, &meters, self.now.unwrap_or_else(time::now_ms), cx),
+            Control::Thing { buttons, menu, switch } => {
+                let menu = (!menu.is_empty()).then(|| self.control(key, Control::Menu { shown: None, choices: menu.into_iter().map(|push| (push.label, None, push.act, false)).collect() }, cx));
+                let switch = switch.map(|(on, act)| self.control(key, Control::Switch { on, act }, cx));
+                div().flex().items_center().gap(space::S2).children(self.buttons(key, buttons, cx)).children(menu).children(switch).into_any_element()
+            }
         }
     }
+}
+
+/// How a thing stands, beside its name: a dot of its tone and the box's words.
+fn badge_of(key: &str, words: String, tone: BadgeTone, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    let selector = format!("{key}-badge");
+    let dot = match tone {
+        BadgeTone::Good => c.success,
+        BadgeTone::Warning => c.warning,
+        BadgeTone::Failed => c.danger,
+        BadgeTone::Busy | BadgeTone::Quiet => c.text_faint,
+    };
+    div()
+        .debug_selector(move || selector)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(space::S1)
+        .text_ui(TypeSize::Small)
+        .text_color(c.text_muted)
+        .child(if tone == BadgeTone::Busy { spinner(SharedString::from(format!("{key}-badge-busy")), IconSize::Nav, c.text_muted).into_any_element() } else { kuvo_ui::small::status_dot(dot).into_any_element() })
+        .child(words)
+        .into_any_element()
 }
 
 fn initial(name: &str, cx: &App) -> AnyElement {
@@ -632,6 +753,7 @@ impl Render for SettingsView {
             };
             let ready = picker.folder.is_some();
             let at = picker.at;
+            let for_form = picker.for_form.clone();
             let path = picker.path.clone();
             let card = div()
                 .id("settings-folder-picker")
@@ -677,13 +799,20 @@ impl Render for SettingsView {
                         })))
                         .child(Button::new("settings-folder-choose", picker.words.prompt).primary().disabled(!ready).on_click(cx.listener(move |this, _, _, cx| {
                             this.folder_picker = None;
-                            this.act(Act::Change { at: at.clone(), value: serde_json::json!(path), asked: false }, cx);
+                            match (&for_form, this.form().cloned()) {
+                                (Some(field), Some(form)) => form.update(cx, |form, cx| form.chose_folder(field, &path, cx)),
+                                // (Its form closed meanwhile: nothing to put it in.)
+                                (Some(_), None) => {}
+                                (None, _) => this.act(Act::Change { at: at.clone(), value: serde_json::json!(path), asked: false }, cx),
+                            }
+                            cx.notify();
                         }))),
                 )
                 .into_any_element();
             sheet(card, cx)
         });
         let sign_in = self.sign_in.clone().map(|sheet_view| sheet(sheet_view.into_any_element(), cx));
+        let form = self.form().cloned().map(|form| sheet(form.into_any_element(), cx));
         div()
             .id("settings-page")
             .debug_selector(|| "settings-page".into())
@@ -693,6 +822,7 @@ impl Render for SettingsView {
             .child(div().size_full().flex().flex_col().children(problem).child(div().flex_1().min_h_0().child(page)))
             .children(confirm)
             .children(sign_in)
+            .children(form)
             .children(folder_picker)
     }
 }

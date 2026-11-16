@@ -7019,6 +7019,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.start` | `POST kuvo/sessions`: a session started with a task (bridge 0.9.100) |
 | `sessions.start.empty` | `POST kuvo/sessions` from a client without a task, `agent`, `model` as `{providerID, id, variant?}`, and `info` and `worktree` in its answer (#341) |
 | `settings` | `kuvo/settings`, `kuvo/settings/<section>`, `…/events`, a row changed with `PATCH` and an action done with `POST …/<row>/<action>`: the box's settings as it describes them, General, Permissions, Browser, Git, Worktrees, Storage and Archived Sessions ("A box's settings", #727) |
+| `settings.flows` | In `kuvo/settings`: an action's `form`, checked as it's typed (`POST …/<row>/<action>/check`) and sent as `values`; a row's `badge`, `notice` and `flow` (a sign-in the box leads); and the MCP Servers section built with them ("A box's settings", #727) |
 | `setup` | `kuvo/setup`, `…/events`: your setup and its main computer ("Your setup") |
 | `setup.mainOnly` | a member refuses pairing and adding with `409 {message, primary}`, and answers `GET kuvo/hosts` from its setup ("Your setup", Only the main computer adds and pairs) |
 | `setup.ready` | `GET kuvo/setup/ready`: whether a first run has anything to ask about your accounts here, decided by the box ("Your setup") |
@@ -8703,7 +8704,7 @@ so a client still on those (the phone) sees every change kept just as they keep 
   `user`, `clock`, `sparkle`, `bot`, `terminal`, `link`, `computer`, `branch`, `folder`, `bell`,
   `file`, `message`, `pencil`, `mic`, `sliders`, `drive`, `archive`; one a client hasn't, it draws
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
-  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage` and `archived`; the rest come page by page.
+  Archived Sessions and Storage under `System`. Today `clock`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived` and `mcp`; the rest come page by page.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
@@ -8741,6 +8742,49 @@ so a client still on those (the phone) sees every change kept just as they keep 
   and what governs whether it can be changed (its value, `can`, its choices' and actions' ids, a
   list's items' revisions; a `secret`'s, whether one is set; whether `can` holds, not its why; action confirmations, so a growing destructive warning makes a reading stale), never its display words: the same value set
   again, a computer renamed or a line reworded leaves it.
+- **Things in a list, forms and flows** (`settings.flows`): what a section that's a flow (a list
+  of things you add, edit, remove, turn on and off, and sign in to) is described with, so a client
+  draws it without knowing what any of them is.
+  - A row (mostly a list's item) may say how it stands, beside its title: `badge: {words, tone}`,
+    `tone` one of `quiet`, `good`, `busy`, `warning`, `failed` (a dot of that tone and the words);
+    and one more line under it, set apart: `notice: {words, tone}` (`quiet` or `warning`, the error
+    a server failed with). Neither is part of its `revision`, nor are actions that follow from how
+    it stands (Try Again): the engine says them from moment to moment. A `switch` row may have
+    `actions` too, drawn before its switch.
+  - An action may ask for values first: `form: {title, submit, fields, note?}`, drawn as a sheet
+    with the box's title, its fields in order, `note` under them, Cancel and `submit`'s words. A
+    field is `{id, title, kind, line?, value?, placeholder?, choices?, mono?, folder?, pairs?,
+    shown?, can?}`; its kinds: `text` (a line), `lines` (several; `mono` in a typeface that keeps a
+    command's flags apart), `choice` (a segmented pick of `choices`), `switch`, `folder` (the box's
+    picker, with its `folder` words; clearing it sends empty text) and `pairs` (names and values,
+    `pairs: {key, value}` its placeholders, its value `[{key, value}]` in order). `shown: {field,
+    is}` draws it only while that `choice` field is one of `is` (values typed in a field hidden
+    meanwhile are kept while the sheet is open, and sent). `can: {why}`: drawn, not changed. The
+    values a form opens with are part of its row's revision, and the form has its own (`revision`,
+    of those values alone), which its checks and its values are sent with as `was`: a form goes
+    stale only when what it shows changed, never because another thing in its list did. A flow's
+    state is part of its row's revision, its actions (which differ by who asks) aren't.
+  - `POST kuvo/settings/<section>/<row>/<action>/check {was?, values}` → `{fields, ready,
+    values?}`: the values checked as they're typed, changing nothing: the box's words under each
+    field (`{id, words, tone}`, `tone` `quiet`, `good` or `warning`), whether its button can be
+    pressed (`ready`), and values the box fills in (a server's setup pasted into a field), which
+    the client puts in its fields. A client asks a moment after typing stops, and as it opens.
+    `409 {page}` where the row changed since, `404` for an action with no form.
+  - `POST kuvo/settings/<section>/<row>/<action> {was, values}` for an action with a form: the
+    page (`200`, the sheet closes), or `400 {message, fields?}` (the sheet stays, each field's
+    words under it); without `values`, `400`; `409 {page}` where what it shows changed (the sheet
+    stays with what was typed, says so, and is sent again from the form's revision in `page`).
+  - A flow the box leads for a row: `flow: {id, state, title, line, opens?, code?, actions}`,
+    `state` `waiting`, `done` or `failed`, with the box's `line` (why, once failed). Started by an
+    action (Sign In…), kept by the box (`run/settings-flows.json`, so whichever of its processes
+    reads the page states it) and followed by it as the page is read, until it ends; one that ended
+    is shown two minutes more. The client that did the action opens `opens` itself, once; any
+    other draws its actions, one of which `opens` it. `code: {title, placeholder, action}` where the
+    page you finish on ends at an address on the box's computer that the client's browser can't
+    reach (offered to every client but the app beside the box): what's pasted is sent as
+    `values.code` with `action`, which the client draws beside the field rather than as a button
+    of its own. Its other actions (Cancel, Try Again, OK) are done as any other; a list's `add`
+    and a flow's actions are a row's actions too.
 - `PATCH kuvo/settings/<section> {row, value, was, confirmed?}`: one row changed, `was` its `revision` as read.
   For a row with `confirmBelow`, a numeric value strictly below `confirmBelow.value` requires
   `confirmed: true`, sent only after accepting `confirmBelow.confirm` in the box's words.
@@ -8859,6 +8903,31 @@ The sections now:
   covering its settings, copies and live disk usage. An unavailable bridge gives no rows and a warning.
   The native Mac-only measurement, session cleanup links and log/download deletion groups have
   no box routes and are not included here.
+
+- **MCP Servers** (`mcp`, group `Agents & Tools`, the first flow section): Servers (`servers`, a
+  `list` of `server-<name>`, your servers in the engine's settings' `mcp.servers`: not Kuvo's own
+  `kuvo-browser`, nor an integration's, which Integrations keeps). Each a `switch` (on: its
+  `disabled` taken away; off: `disabled: true`), its line its command or URL, its `badge` from the
+  engine's `api/mcp` (Connected, Connecting…, Needs sign-in, Couldn't connect, Off, Not started;
+  none while the engine isn't running, the page's note saying so), its error as a `notice`; its
+  actions `sign-in` (Sign In…, while it needs a sign-in the engine names an integration for),
+  `try-again` (connected again everywhere its engine runs one), `edit` (Edit…, a form) and
+  `remove` (Remove…, asked first). The list's `add` is Add Server…'s form: `name` (a paste of a
+  server's setup from a README, Claude Desktop's, Cursor's, VS Code's, opencode's, Zed's or a
+  `claude mcp add` line, fills the rest in), `runs` (`local` or `remote`), `command`, `cwd`,
+  `environment` (local), `url`, `oauth`, `headers` (remote) and `codemode`; checked for a name
+  taken, Kuvo's or an integration's, the command's program on this computer (`kuvo/programs`), and
+  a web address (one without a scheme gets https, or http for this computer's own). Each writes
+  through `kuvo/config` with the server's settings as read (`was`): what the form doesn't show (a
+  timeout of its own, a sign-in set up by hand) stays. A server's sign-in is the engine's
+  (`api/integration/<id>/connect/oauth`), led as a `flow`; once done, the server is connected
+  again. Its page is kept only as an http(s) address, and a pasted address its page turns down
+  is refused in words (`400`). Then the popular servers (`kuvo/mcp/catalog`, not an integration's) in groups by what
+  they need (`popular-signIn`, `popular-open`, `popular-local`), each `popular-<id>` with `add`
+  (`POST kuvo/mcp/catalog/<id>`'s add) or "Added"; and Timeouts (`timeout-startup`,
+  `timeout-catalog`, `timeout-execution`, `number`s at `mcp.timeout`). Its events follow the
+  settings file, its flows and the catalog, and read the engine each second. The engine doesn't
+  list a server's tools, so the page doesn't either.
 
 - **Archived Sessions** (`archived`): archived sessions grouped by project, from
   `kuvo/sessions/list`; each row uses `kuvo/sessions/<id>/actions` verbatim, including

@@ -1257,3 +1257,142 @@ fn another_computers_page_is_named_for_it_and_opens_nothing_of_its_own_here(cx: 
     assert_ne!(title(&workspace, cx).as_deref(), Some("This Mac"));
     assert!(view.read_with(cx, |view, _| view.row_why("row-allows-screenRecording")).is_some_and(|why| why.starts_with("Open it on ")));
 }
+
+// MARK: Flow sections (`settings.flows`): MCP Servers, drawn from the box's description alone.
+
+/// The form open over the page, read for what it shows.
+fn form_words(view: &Entity<SettingsView>, cx: &mut VisualTestContext) -> Vec<(String, String)> {
+    view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).checked().cloned()).map(|checked| checked.fields.into_iter().map(|each| (each.id, each.words)).collect()).unwrap_or_default())
+}
+
+#[gpui::test]
+fn a_flow_sections_things_show_how_each_stands_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_mcp();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "mcp");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("MCP Servers"));
+    for (row, badge) in [("row-server-files", true), ("row-server-linear", true), ("row-server-postgres", true), ("row-server-sentry", true)] {
+        assert!(shown(cx, row) && shown(cx, &format!("{row}-badge")) == badge, "{row}");
+    }
+    // Its error, set apart under it; what it offers now as a button, what asks first in its menu.
+    assert!(shown(cx, "row-server-postgres-notice"));
+    assert!(shown(cx, "row-server-postgres-try-again") && shown(cx, "row-server-postgres-menu") && shown(cx, "row-server-postgres-switch"));
+    assert!(shown(cx, "row-server-linear-sign-in"));
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("row-server-files")).as_deref(), Some("npx -y @modelcontextprotocol/server-filesystem ~/Documents"));
+    // Turned off from its switch, from the row's revision.
+    click(cx, "row-server-files-switch");
+    let sent = bodies(&stand_in, "PATCH", "kuvo/settings/mcp");
+    assert_eq!((sent[0]["row"].clone(), sent[0]["value"].clone()), (json!("server-files"), json!(false)));
+    // Removed, asked first in the box's words.
+    click(cx, "row-server-sentry-menu");
+    click(cx, "menu-item-Remove…");
+    assert_eq!(view.read_with(cx, |view, _| view.confirm_words()), Some(("Remove sentry?".into(), "The agent loses its tools.".into(), "Remove".into())));
+    click(cx, "confirm-go");
+    assert!(!shown(cx, "row-server-sentry"));
+}
+
+#[gpui::test]
+fn add_servers_form_says_the_boxs_words_as_its_typed_and_adds_one(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_mcp();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "mcp");
+    click(cx, "row-servers-add-add-server");
+    assert!(shown(cx, "settings-form"));
+    // As it opens: nothing to send yet, and only the fields for a command.
+    assert!(!view.read_with(cx, |view, cx| view.form().unwrap().read(cx).is_ready()));
+    assert!(shown(cx, "settings-form-command") && !shown(cx, "settings-form-url"));
+    click(cx, "settings-form-name-field");
+    cx.simulate_input("my files");
+    assert!(form_words(&view, cx).contains(&("name".into(), "It'll be called my-files.".into())));
+    click(cx, "settings-form-command-field");
+    cx.simulate_input("npx -y @scope/files ~/Docs");
+    assert!(form_words(&view, cx).contains(&("command".into(), "npx is on this Mac.".into())));
+    // On the web shows its URL instead; a word alone isn't an address.
+    click(cx, "settings-form-runs-remote");
+    assert!(shown(cx, "settings-form-url") && !shown(cx, "settings-form-command"));
+    click(cx, "settings-form-url-field");
+    cx.simulate_input("nonsense");
+    assert!(form_words(&view, cx).contains(&("url".into(), "That isn’t a web address. Give one like https://example.com/mcp.".into())));
+    click(cx, "settings-form-submit");
+    assert!(stand_in.seen_at("POST", "kuvo/settings/mcp/servers/add").is_empty(), "not ready: nothing sent");
+    // Back to a command: what was typed there is still there, and it goes.
+    click(cx, "settings-form-runs-local");
+    click(cx, "settings-form-environment-add");
+    cx.simulate_input("TOKEN");
+    click(cx, "settings-form-environment-value-0");
+    cx.simulate_input("{env:TOKEN}");
+    click(cx, "settings-form-submit");
+    let sent = bodies(&stand_in, "POST", "kuvo/settings/mcp/servers/add");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["values"]["name"], json!("my files"));
+    assert_eq!(sent[0]["values"]["command"], json!("npx -y @scope/files ~/Docs"));
+    assert_eq!(sent[0]["values"]["environment"], json!([{ "key": "TOKEN", "value": "{env:TOKEN}" }]));
+    assert!(sent[0]["was"].as_str().is_some_and(|was| !was.is_empty()));
+    assert!(!shown(cx, "settings-form"), "done: the sheet closes");
+    assert!(shown(cx, "row-server-my-files"));
+}
+
+#[gpui::test]
+fn a_sign_in_the_box_leads_opens_its_page_here_and_shows_how_its_going(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_mcp();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    section(&workspace, cx, "mcp");
+    click(cx, "row-server-linear-sign-in");
+    // The app that started it opens its page, once; the flow shows under the row.
+    assert_eq!(cx.opened_url().as_deref(), Some(kuvo::stand_in::settings::mcp::SIGN_IN_PAGE));
+    assert!(shown(cx, "row-server-linear-flow"));
+    assert!(shown(cx, "row-server-linear-flow-open-sign-in-page") && shown(cx, "row-server-linear-flow-cancel"));
+    // The app beside the box has nothing to paste back.
+    assert!(!shown(cx, "row-server-linear-flow-code-go"));
+    // Signed in on its page: the page read again says so, and OK puts it away.
+    stand_in.with_mcp(|settings| settings.mcp_signed_in("linear"));
+    section(&workspace, cx, "Permissions");
+    section(&workspace, cx, "mcp");
+    assert!(shown(cx, "row-server-linear-flow-ok"));
+    click(cx, "row-server-linear-flow-ok");
+    assert!(!shown(cx, "row-server-linear-flow"));
+}
+
+#[gpui::test]
+fn another_computers_sign_in_takes_the_address_its_page_ended_on(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.show_mcp();
+    side(&workspace, cx, Side::Computer);
+    click(cx, "settings-computer");
+    click(cx, "menu-item-devbox");
+    section(&workspace, cx, "mcp");
+    click(cx, "row-server-linear-sign-in");
+    assert!(shown(cx, "row-server-linear-flow-code-go"));
+    let view = settings(&workspace, cx);
+    let field = view.read_with(cx, |view, _| view.code_field("row-server-linear").cloned()).expect("its field");
+    field.update(cx, |field, cx| field.set_text("http://127.0.0.1:19876/mcp/oauth/callback?code=abc", cx));
+    click(cx, "row-server-linear-flow-code-go");
+    let sent = bodies(&devbox, "POST", "kuvo/settings/mcp/server-linear/finish");
+    assert_eq!(sent[0]["values"]["code"], json!("http://127.0.0.1:19876/mcp/oauth/callback?code=abc"));
+    assert!(shown(cx, "row-server-linear-flow-ok"), "done, as the box answered");
+}
+
+#[gpui::test]
+fn a_form_whose_thing_changed_meanwhile_stays_open_with_what_was_typed(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.show_mcp();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "mcp");
+    click(cx, "row-server-files-menu");
+    click(cx, "menu-item-Edit…");
+    click(cx, "settings-form-command-field");
+    cx.simulate_keystrokes("cmd-a backspace");
+    cx.simulate_input("npx -y files-server --readonly");
+    // Turned off on another device meanwhile.
+    stand_in.with_mcp(|settings| settings.mcp.servers[0].entry["disabled"] = json!(true));
+    click(cx, "settings-form-submit");
+    assert!(shown(cx, "settings-form"), "kept open");
+    assert_eq!(view.read_with(cx, |view, cx| view.form().and_then(|form| form.read(cx).refused().map(str::to_owned))).as_deref(), Some("It changed since you read it."));
+    let typed = view.read_with(cx, |view, cx| view.form().unwrap().read(cx).values(cx)["command"].clone());
+    assert_eq!(typed, json!("npx -y files-server --readonly"));
+}

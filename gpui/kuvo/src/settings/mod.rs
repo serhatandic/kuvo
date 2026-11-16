@@ -14,6 +14,7 @@
 //! only the rows on screen. Each group of rows is one card.
 
 mod described;
+pub mod form;
 pub(crate) mod page;
 mod rows;
 pub mod sign_in;
@@ -34,6 +35,7 @@ use serde_json::Value;
 use crate::areas::Reading;
 
 pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone};
+use form::{FormEvent, FormSheet};
 use sign_in::SignIn;
 
 /// The widest a page's cards grow.
@@ -182,6 +184,11 @@ pub struct SettingsView {
     folder_picker: Option<FolderPicker>,
     sign_in: Option<Entity<SignIn>>,
     sign_in_closed: Option<Subscription>,
+    /// A form the box asked to be filled in, as a sheet, and what it says as it ends.
+    form: Option<Entity<FormSheet>>,
+    form_events: Option<Subscription>,
+    /// The fields an address is pasted back in under a flow, by row key.
+    codes: HashMap<String, (Entity<TextField>, Subscription)>,
     /// The confirm asks for the keyboard as it opens (Escape cancels it).
     confirm_focus: FocusHandle,
     focus_confirm: bool,
@@ -202,6 +209,8 @@ pub struct SettingsView {
 #[derive(Clone)]
 struct FolderPicker {
     at: At,
+    /// A form's folder field it chooses for, rather than the row's value.
+    for_form: Option<String>,
     words: kuvo_box::settings_pages::Folder,
     path: String,
     back: Option<String>,
@@ -284,6 +293,9 @@ impl SettingsView {
             folder_picker: None,
             sign_in: None,
             sign_in_closed: None,
+            form: None,
+            form_events: None,
+            codes: HashMap::new(),
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
             dark: cx.theme().appearance.is_dark(),
@@ -839,6 +851,33 @@ impl SettingsView {
             }
         }
         self.fields.retain(|key, _| kept.contains(key));
+        // The fields an address is pasted back in, under a flow that has one.
+        let mut codes = Vec::new();
+        for item in items {
+            let Item::Row { row, .. } = item else { continue };
+            let Some((placeholder, _, act)) = row.flow.as_ref().and_then(|flow| flow.code.clone()) else { continue };
+            codes.push(row.key.clone());
+            if !self.codes.contains_key(&row.key) {
+                let field = cx.new(|cx| TextField::new(cx).bare().placeholder(placeholder));
+                let subscription = cx.subscribe(&field, move |this: &mut SettingsView, _, event: &TextFieldEvent, cx| {
+                    if let TextFieldEvent::Submit(_) = event {
+                        this.act(act.clone(), cx);
+                    }
+                });
+                self.codes.insert(row.key.clone(), (field, subscription));
+            }
+        }
+        self.codes.retain(|key, _| codes.contains(key));
+    }
+
+    /// The field an address is pasted back in under a row's flow.
+    pub fn code_field(&self, key: &str) -> Option<&Entity<TextField>> {
+        self.codes.get(key).map(|(field, _)| field)
+    }
+
+    /// The form open over the page.
+    pub fn form(&self) -> Option<&Entity<FormSheet>> {
+        self.form.as_ref()
     }
 
     /// A row's field, as its control draws it.
@@ -1088,16 +1127,64 @@ impl SettingsView {
                     let key = described::key(&at.row);
                     self.set_busy(&key, "Working…");
                     let to = at.clone();
+                    let flow_before = self.flow_of(&at.section, &at.row);
                     self.run(
                         key.clone(),
                         move |client| client.setting_action_at(&to.section, &to.row, &to.revision, &action),
                         move |this, done, cx| {
                             this.done(&key);
+                            // A flow this started: its page opened here, once (any other client
+                            // shows its button).
+                            if let Ok(Changed::Done(page)) = &done
+                                && let Some(flow) = page.row(&at.row).and_then(|row| row.flow.clone())
+                                && flow.state == kuvo_box::settings_pages::FlowState::Waiting
+                                && flow_before.as_deref() != Some(flow.id.as_str())
+                                && let Some(address) = flow.opens.clone()
+                                && (address.starts_with("https://") || address.starts_with("http://"))
+                            {
+                                this.act(Act::Open(address), cx);
+                            }
                             this.take_changed(&at.section, &at.row, done, cx);
                         },
                         cx,
                     );
                 }
+            }
+            Act::Form { at, action, form } => self.open_form(at, action, *form, cx),
+            Act::Code { at, action } => {
+                let key = described::key(&at.row);
+                let Some(code) = self.codes.get(&key).map(|(field, _)| field.read(cx).text().trim().to_owned()) else { return };
+                if code.is_empty() {
+                    return;
+                }
+                self.set_busy(&key, "Working…");
+                let to = at.clone();
+                self.run(
+                    key.clone(),
+                    move |client| {
+                        let mut values = serde_json::Map::new();
+                        values.insert("code".into(), Value::String(code));
+                        client.setting_form_at(&to.section, &to.row, &to.revision, &action, &values)
+                    },
+                    move |this, done, cx| {
+                        this.done(&key);
+                        let done = match done {
+                            Ok(kuvo_box::settings_pages::Sent::Changed(changed)) => Ok(changed),
+                            Ok(kuvo_box::settings_pages::Sent::Refused { message, .. }) => {
+                                this.problem = Some(message);
+                                return;
+                            }
+                            Err(error) => Err(error),
+                        };
+                        if done.is_ok()
+                            && let Some((field, _)) = this.codes.get(&key)
+                        {
+                            field.update(cx, |field, cx| field.set_text("", cx));
+                        }
+                        this.take_changed(&at.section, &at.row, done, cx);
+                    },
+                    cx,
+                );
             }
             Act::Save { at, number } => {
                 let Some(text) = self.fields.get(&described::key(&at.row)).map(|(field, _, _)| field.read(cx).text().to_owned()) else { return };
@@ -1112,7 +1199,7 @@ impl SettingsView {
             Act::Filter => {},
             Act::Folder { at, words } => {
                 let path = at.original.as_ref().and_then(Value::as_str).filter(|path| !path.is_empty()).unwrap_or("~").to_owned();
-                self.folder_picker = Some(FolderPicker { at, words, path: path.clone(), back: None, folder: None, problem: None });
+                self.folder_picker = Some(FolderPicker { at, for_form: None, words, path: path.clone(), back: None, folder: None, problem: None });
                 self.focus_confirm = true;
                 self.browse_folder(path, cx);
             }
@@ -1308,6 +1395,53 @@ impl SettingsView {
         let Some(confirm) = self.confirm.take() else { return };
         self.act(confirm.act, cx);
         self.rebuild(cx);
+    }
+
+    /// A row's flow now, by its id.
+    fn flow_of(&self, section: &str, row: &str) -> Option<String> {
+        match self.pages.get(section) {
+            Some(Reading::Ready(page)) => page.row(row).and_then(|row| row.flow.as_ref()).map(|flow| flow.id.clone()),
+            _ => None,
+        }
+    }
+
+    // MARK: Forms
+
+    /// Opens a form the box asked to be filled in: done, the page is the box's answer; a folder
+    /// field's Choose… opens the page's picker for it.
+    pub fn open_form(&mut self, at: At, action: String, form: kuvo_box::settings_pages::Form, cx: &mut Context<Self>) {
+        let Some(client) = self.client.clone() else { return };
+        let was = form.revision.clone().unwrap_or_else(|| at.revision.clone());
+        let target = form::Target { section: at.section.clone(), row: at.row.clone(), was, action };
+        let sheet = cx.new(|cx| FormSheet::new(client, self.live, target, form, cx));
+        self.form_events = Some(cx.subscribe(&sheet, move |this: &mut SettingsView, _, event: &FormEvent, cx| {
+            match event {
+                FormEvent::Done(changed) => {
+                    this.form = None;
+                    this.form_events = None;
+                    this.take_changed(&at.section, &at.row, Ok(changed.clone()), cx);
+                }
+                // (What it shows changed meanwhile: the page under it is the box's now; the sheet
+                // stays with what was typed, and says so.)
+                FormEvent::Stale(page) => {
+                    this.pages.insert(at.section.clone(), Reading::Ready(page.clone()));
+                }
+                FormEvent::Cancelled => {
+                    this.form = None;
+                    this.form_events = None;
+                }
+                FormEvent::ChooseFolder { field, words, start } => {
+                    let start = if start.is_empty() { "~".to_owned() } else { start.clone() };
+                    this.folder_picker = Some(FolderPicker { at: at.clone(), for_form: Some(field.clone()), words: words.clone(), path: start.clone(), back: None, folder: None, problem: None });
+                    this.focus_confirm = true;
+                    this.browse_folder(start, cx);
+                }
+            }
+            this.rebuild(cx);
+        }));
+        sheet.update(cx, |sheet, cx| sheet.start(cx));
+        self.form = Some(sheet);
+        cx.notify();
     }
 
     // MARK: Signing in

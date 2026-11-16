@@ -182,6 +182,13 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-worktrees", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_worktrees) },
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     Screen { slug: "settings-row-archived", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_archived) },
+    // Settings › MCP Servers (`kuvo/settings/mcp`), the first flow section: its servers with how
+    // each stands, Add Server's form as it's typed, a sign-in the box leads, and what's wrong said.
+    Screen { slug: "settings-mcp", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
+    Screen { slug: "settings-mcp-add", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_add) },
+    Screen { slug: "settings-mcp-add-error", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_add_error) },
+    Screen { slug: "settings-mcp-signing-in", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_signing_in) },
+    Screen { slug: "settings-mcp-narrow", width: 760., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mcp_list) },
     Screen { slug: "settings-a-yours", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours) },
     Screen { slug: "settings-a-yours-later", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(yours_later) },
     Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
@@ -541,6 +548,29 @@ fn row_worktrees(w: &mut Workspace, window: &mut Window, cx: &mut Context<Worksp
 }
 fn row_git(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "git", window, cx); }
 fn row_archived(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "archived", window, cx); }
+fn mcp_list(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { settings(w, "mcp", window, cx); }
+/// Add Server's form, typed into as someone would: the box's words under each field.
+fn mcp_form(w: &mut Workspace, name: &str, command: &str, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "mcp", window, cx);
+    let Some(row) = w.client().settings_page("mcp").ok().and_then(|page| page.row("servers").cloned()) else { return };
+    let Some(add) = row.add.clone() else { return };
+    let form = add.form.clone().expect("a form");
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Form { at: kuvo::settings::At::of("mcp", &row), action: add.id.clone(), form: Box::new(form) }, cx));
+    if let Some(sheet) = view.read(cx).form().cloned() {
+        sheet.update(cx, |sheet, cx| {
+            sheet.set_text("name", name, cx);
+            sheet.set_text("command", command, cx);
+        });
+    }
+}
+fn mcp_add(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { mcp_form(w, "my files", "npx -y @modelcontextprotocol/server-filesystem ~/Projects", window, cx); }
+fn mcp_add_error(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) { mcp_form(w, "files", "serve-files --root ~/Projects", window, cx); }
+/// A server's sign-in the box leads, under way.
+fn mcp_signing_in(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = settings(w, "mcp", window, cx);
+    let Some(row) = w.client().settings_page("mcp").ok().and_then(|page| page.row("server-linear").cloned()) else { return };
+    view.update(cx, |view, cx| view.act(kuvo::settings::Act::Do { at: kuvo::settings::At::of("mcp", &row), action: "sign-in".into(), confirm: None, asked: false }, cx));
+}
 fn row_storage_confirm(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let view = settings(w, "storage", window, cx);
     if let Some(row) = w.client().settings_page("storage").ok().and_then(|page| page.row("budget").cloned()) {
@@ -964,6 +994,9 @@ fn main() -> anyhow::Result<()> {
         for appearance in [Appearance::Light, Appearance::Dark] {
             cx.update(|cx| Theme::set_appearance(appearance, cx));
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
+            if screen.slug.starts_with("settings-mcp") {
+                stand_in.show_mcp();
+            }
             if screen.slug == "compaction-running" { stand_in.running_compaction(); }
             // The rate limits' conversation waits on a permission; another one waits behind it.
             let mut second = kuvo::stand_in::redis_permission();

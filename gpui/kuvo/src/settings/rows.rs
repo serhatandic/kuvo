@@ -7,7 +7,7 @@ use kuvo_box::accounts::{AccountEntry, Accounts, Action, Confirm, Side, State};
 use kuvo_box::areas::{Account, Level};
 use kuvo_box::models::Offered as OfferedModels;
 use kuvo_box::settings::{Config, UsageSettings};
-use kuvo_box::settings_pages::{Confirm as Asks, Row as Described};
+use kuvo_box::settings_pages::{BadgeTone, Confirm as Asks, FlowState, Form, Row as Described};
 use kuvo_ui::IconName;
 use serde_json::Value;
 
@@ -130,6 +130,10 @@ pub enum Act {
     Section(String),
     /// Goes to a place in Settings (`mod.rs`, its keys): another section, or the other side.
     Go(String),
+    /// What a described row offers that asks for values first: its form, as a sheet.
+    Form { at: At, action: String, form: Box<Form> },
+    /// A flow's pasted address, sent with the action that takes it (`code`'s).
+    Code { at: At, action: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,6 +231,20 @@ pub enum Control {
     Busy(String),
     /// Windows of use, each with its share and when it starts over.
     Windows(Vec<Meter>),
+    /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
+    /// switch, last, at the edge.
+    Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
+}
+
+/// A flow the box leads for a row, as drawn under it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlowDrawn {
+    pub state: FlowState,
+    pub title: String,
+    pub line: String,
+    pub buttons: Vec<Push>,
+    /// Where an address is pasted back: its placeholder, and what sends it.
+    pub code: Option<(String, String, Act)>,
 }
 
 /// How a row's line reads.
@@ -257,11 +275,16 @@ pub struct Row {
     /// Why it can't be changed from here, in the box's words.
     pub why: Option<String>,
     pub control: Control,
+    /// How it stands, beside its name.
+    pub badge: Option<(String, BadgeTone)>,
+    /// One more line under it, set apart.
+    pub notice: Option<(String, Tone)>,
+    pub flow: Option<FlowDrawn>,
 }
 
 impl Row {
     pub fn new(key: impl Into<String>, title: impl Into<String>, detail: impl Into<String>, control: Control) -> Row {
-        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control }
+        Row { key: key.into(), leading: Leading::None, title: title.into(), detail: detail.into(), tone: Tone::Quiet, why: None, control, badge: None, notice: None, flow: None }
     }
 
     fn leading(mut self, leading: Leading) -> Row {
