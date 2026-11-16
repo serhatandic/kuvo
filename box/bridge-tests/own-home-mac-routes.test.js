@@ -267,11 +267,14 @@ test("its machines: a phone reads the list in the box's own words, follows it, a
   assert.equal((await phone("DELETE", "kuvo/machines/nope")).status, 404);
 
   // What stood for the old app's SSH connection: refused in words that say why, never that an app must be open.
-  for (const action of ["connect", "disconnect", "start", "home", "same-as"]) {
+  for (const action of ["connect", "disconnect", "start"]) {
     const refused = await phone("POST", `kuvo/machines/studio/${action}`, action === "same-as" ? { other: "attic" } : undefined);
     assert.equal(refused.status, 409, action);
     assert.ok(refused.json.message.length > 20, action);
     assert.doesNotMatch(refused.json.message, NOT_OPEN, action);
+  }
+  for (const action of ["home", "same-as"]) {
+    assert.equal((await phone("POST", `kuvo/machines/studio/${action}`)).status, 404, action);
   }
   // An address that can't name a computer never reaches ssh.
   const bad = await phone("POST", "kuvo/machines", { destination: "-oProxyCommand=sh" });

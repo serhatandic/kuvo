@@ -2,6 +2,13 @@
   "about": "What every route has alike on both boxes: a query string never changes which route answers, a method is read in any case, kuvo/info and kuvo/file, the engine's routes passed on (a phone's message says it's from the phone), and a route a box doesn't have.",
   "scenarios": [
     {
+      "name": "removed machine home and identity actions are absent",
+      "steps": [
+        { "send": "POST kuvo/machines/lab/home", "expect": { "status": 404 } },
+        { "send": "POST kuvo/machines/lab/same-as", "expect": { "status": 404 } }
+      ]
+    },
+    {
       "name": "kuvo/info: what the box is",
       "steps": [
         {

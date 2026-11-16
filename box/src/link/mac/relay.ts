@@ -41,7 +41,7 @@ import type { LinkState } from "../state";
 // answers itself, as a machine's does, with the app open or closed; and with only Kuvo Code's
 // desktop app, these too (`answersAlone`).
 export const MAC_APP_ROUTES = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
-export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`));
+export const macAppAnswers = (route: string): boolean => MAC_APP_ROUTES.some(area => route === area || route.startsWith(`${area}/`)) && !(route.startsWith("kuvo/machines/") && !isMachinesRoute(route));
 
 export { boxAnswers, keeperRuns } from "./keeper-runs";
 

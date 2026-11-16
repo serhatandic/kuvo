@@ -219,7 +219,7 @@ async function* machinesFollowed(request: LinkRequest, phone: Asker | undefined,
 const OWN_ANSWERS: Record<string, () => MacMachines | Hosts | null> = { "kuvo/machines": machinesWithoutApp, "kuvo/hosts": hostsWithoutApp };
 
 /** Whether `route` is one of those this file answers. */
-export const isMachinesRoute = (route: string): boolean => /^kuvo\/(machines|hosts)(\/|$)/.test(route);
+export const isMachinesRoute = (route: string): boolean => /^kuvo\/(machines|hosts)(\/|$)/.test(route) && !/^kuvo\/machines\/[^/]+\/(home|same-as)$/.test(route);
 
 /** A phone asking about this Mac's machines: the app says, and while it isn't there this box says
  * what it can, and that the rest needs the app. */
