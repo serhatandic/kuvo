@@ -4121,6 +4121,37 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       then try again."}` as soon as the box hears the app isn't open. An app that's open and stuck
       isn't answered for here, as a change can't be said not to have happened: it waits for the app,
       or for the phone to stop waiting.
+  - **In a home of its own** (a Mac's box in `~/.kuvo-code`, as every Mac with Kuvo Code's desktop
+    app has it), with no app's host registered, there's no app to ask: the desktop app is a client,
+    and the box adds, removes and uninstalls computers itself ("Computers", Adding one) and writes
+    `machines.json` and `phone-link.json`. It answers all of these itself, for a phone as the app
+    did and for its own clients alike (`mac/own-machines.ts`), from its own facts:
+    - `GET kuvo/machines` and its events: each machine by the name your computers know it by;
+      `connection` is `connected` ("Connected") while the box hears from it, `connecting`
+      ("Connecting…") before it first has, `notConnected` ("Not heard from lately", or "Not
+      connected" for one it never signed in to your computers), and `installing` with the try's
+      title while it's being set up or uninstalled from here. No `action`, `failure`, `step`,
+      `home`, `alsoUsedBy` or `folded`. `hosts` are the box's own suggestions (`kuvo/computers/add`'s).
+    - `POST kuvo/machines {"destination"}` is the box's own add, waited for: `200 {"machine",
+      "known"}` (`known` for one here already, at that address or another of its own); `400` for
+      an address that can't name one; `502 {"message"}` when it failed, in the try's words; `409
+      {"message"}` where this box doesn't add computers, and where the add has something to ask
+      you (a host key it doesn't know, a computer of another setup): the route can't ask, so that
+      try is stopped, nothing is trusted or joined, and the words say to add it from Kuvo Code on
+      the Mac. The try shows on the Mac meanwhile, and goes on if the phone goes.
+    - `DELETE kuvo/machines/<id>` is `DELETE kuvo/computers/<key>` for that machine, with its
+      refusals and words. `POST kuvo/machines/<id>/uninstall` is the box's own uninstall, waited
+      for: `200 {}`, or `502 {"message"}` when it couldn't (out of reach: nothing is kept to try
+      later). `DELETE kuvo/machines/<id>/addresses/<address>` as before.
+    - `POST kuvo/machines/<id>/connect`, `/disconnect`, `/start`, `/home` and `/same-as` answer
+      `409 {"message"}` saying why: the box holds no connection to a machine, which runs by itself
+      and is met through the relay; none has a home Mac (your setup's main computer is who adds
+      and removes); and the same computer under two addresses is told by its own id as it's added.
+    - `GET kuvo/hosts` as above; `DELETE kuvo/hosts/<id>` takes one this Mac removed out of
+      `phone-link.json` (`404` for one it doesn't keep, `409 {"message"}` for one still on its
+      list), and your other computers stop counting it among theirs if they still did.
+    While the retired Mac app has registered its host there (`kuvo/box/app`'s `host`), a phone's
+    asks go to it as above.
 - Settings › Worktrees: the git worktrees sessions run in, each box its own, kept and named by its
   box (a Mac's by its own box from bridge 0.9.35; before, by the app), with the Mac closed too.
   A Mac's app reaches every box's the same way, its own included, and follows its own as they
@@ -4476,6 +4507,14 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   it's turned off in Login Items & Extensions, on the Mac. `openAtLogin` means the same as
   `backgroundWork` (it never adds Open at Login's own login item again, so the two don't both open
   Kuvo Code); `false` also takes away that item, if it's still there.
+  A Mac's box in a home of its own answers it itself (`mac/own-mac.ts`), for a phone and for its
+  own clients: `keepsAwake` and `awakeNow` are its own (`kuvo/work/settings`'), and
+  `backgroundWork` says whether Kuvo Helper starts it at login: `on`; `needsApproval` while you've
+  switched Kuvo Helper off in Login Items (only you turn it on again, on the Mac, so `true` answers
+  `200` saying `needsApproval`); `off` where no helper keeps the box (a test's or a demo's copy;
+  `true` answers `409 {"message"}`). `false` answers `400 {"message"}` unless it's `off`. No
+  `backgroundWorkFailure`. A `keepsAwake` that isn't true or false is `400`, and nothing is kept
+  of a request that's refused.
 - `GET kuvo/claude-code` (every box, from #341; before, a Mac's app only): what Settings › Agents
   and Settings › Commands offer to bring over from Claude Code on this computer (its own
   `~/.claude/agents` and `~/.claude/commands`), with its app closed too:
@@ -6860,7 +6899,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `groups.mentions` | `GET kuvo/groups/<id>/mentions`: what "&" offers in a group chat, its bots then guests ("Mentions", #736) |
 | `groups.seats` | its bots take turns in chats on other computers ("Peers", group chats) |
 | `handoff` | `kuvo/agents/api/kuvo/handoff…`: handoffs |
-| `hosts` | a Mac: `kuvo/hosts…` (with its app closed its box still lists them, and `DELETE` says the app must be open); a member of a setup answers it too, with `setup.mainOnly` |
+| `hosts` | a Mac: `kuvo/hosts…` (with its app closed its box still lists them, and `DELETE` says the app must be open; a box in a home of its own answers all of it itself); a member of a setup answers it too, with `setup.mainOnly` |
 | `integrations` | `kuvo/integrations…` |
 | `keys` | `kuvo/keys…` |
 | `letters-read` | (in a peer's agents' mail) it takes a letter with `read` (bridge 0.9.100) |
@@ -6870,7 +6909,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `limits.rings` | `rings`, and `level` and `span` on each window, in the plan limits' `rows` ("Plan limits", "Rings and levels", #711) |
 | `limits.titles` | `title` on each of the plan limits' `rows` and `accounts` and on each window ("Plan limits", "Names", #668) |
 | `mac` | a Mac only: `kuvo/mac` |
-| `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open) |
+| `machines` | a Mac only: `kuvo/machines…` (with its app closed its box still lists them, and the rest says the app must be open; a box in a home of its own answers all of it itself, "Machines") |
 | `mcp.catalog` | `kuvo/mcp/catalog…` |
 | `messages.commands` | A command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("A command shows as typed", #668) |
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
@@ -8182,6 +8221,12 @@ alive), which it answers itself (from #341). (`kuvo/claude-code` was one of them
 box answers it now.) Those it hands the app as it comes, whether its app or its keeper runs the box (the keeper's
 host passes on the app's answer as it came, `x-kuvo-answer` with it), `503 {"message"}` at once when
 the app isn't answering (of its machines and hosts it says what it can itself then: "Machines").
+A box in a home of its own with no app's host registered (`kuvo/box/app`), which is every Mac with
+only Kuvo Code's desktop app, has no app to hand them to, and answers all of them itself, as its
+own routes: its machines and hosts ("Machines", In a home of its own), `kuvo/asks…` as a
+machine's box does (its own browser's), `kuvo/mac`, and `kuvo/engine/restart` (in a home of its
+own it always restarts its engine itself, `kuvo-start restart`). `MAC_APP_ROUTES` is then only
+what the retired Mac app is asked, where there is one.
 The app answers those alone, and hands its box everything else it's asked, its own requests
 too (`BoxClient`), so a route a box gains needs no list. Mail your
 machines send it, it takes itself, as a machine's bridge does ("Peers"): their documents (from

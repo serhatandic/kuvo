@@ -6,8 +6,9 @@
 // whether it's wanted (`kuvo/link/config`: the phone link on, machines to meet), which it keeps for
 // when it starts again before the app opens. Your other computers' mail is taken here, as a machine
 // takes it: documents, agents, letters, group chats'. What a phone asks it answers itself, but the
-// Mac's own routes (`MAC_APP_ROUTES`), which go to the app through the host (`link/route`); of
-// those it answers what it can of its machines while the app isn't there (`machines`).
+// Mac's own routes (`MAC_APP_ROUTES`) where there's an app to ask, which go to it through the host
+// (`link/route`); of those it answers what it can of its machines while the app isn't there
+// (`machines`). With only Kuvo Code's desktop app there's none, and it answers those too (`answersAlone`).
 
 import os from "node:os";
 import { engineConnect } from "../areas/engine";

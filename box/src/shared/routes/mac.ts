@@ -1,6 +1,7 @@
-// What only this Mac's box answers, through its app (PhoneLink), or by itself while the app is closed:
-// its own features, its machines, and the machines your phones reach directly. (Its other own
-// route, `kuvo/mac`, has no scenario asking it yet.) Usage is every box's: `kuvo/agents/api/kuvo/usage…`.
+// What only this Mac's box answers: by itself in a home of its own (`mac/own-machines.ts`), through
+// the retired Mac app where there is one (PhoneLink), or by itself while that app is closed: its own
+// features, its machines, and the machines your phones reach directly. (Its other own route,
+// `kuvo/mac`, has no scenario asking it yet.) Usage is every box's: `kuvo/agents/api/kuvo/usage…`.
 
 import { FEATURES, type Feature } from "../features";
 import { bool, type Infer, list, literal, NOTHING, object, type RouteShape, string } from "../shape";

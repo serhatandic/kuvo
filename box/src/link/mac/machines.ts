@@ -1,10 +1,12 @@
-// A Mac's machines for a phone (PROTOCOL.md, "Machines"), with its app open or closed.
+// A Mac's machines for a phone (PROTOCOL.md, "Machines"), where there's an app of the Mac's to
+// ask (the retired Mac app), open or closed.
 //
-// The app connects to them over SSH, so how a connection stands and what's done with one are the
-// app's to say. The list isn't: it's in `machines.json` in this box's folder, which the app alone
-// writes and this box only reads, so there's one list, and this box answers from it while the app
+// That app connects to them over SSH, so how a connection stands and what's done with one are the
+// app's to say. The list isn't: it's in `machines.json` in this box's folder, which the app writes
+// there and this box only reads, so there's one list, and this box answers from it while the app
 // isn't there. It says what it can tell of each by itself (its box was heard from lately), and what
-// needs the app says so.
+// needs the app says so. A box in a home of its own, with no app to ask, writes the list itself and
+// answers all of it: `own-machines.ts`.
 
 import fs from "node:fs";
 import path from "node:path";
