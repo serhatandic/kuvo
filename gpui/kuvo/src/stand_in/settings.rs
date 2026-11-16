@@ -412,7 +412,8 @@ impl Settings {
             return Some((200, json!({ "data": { "providerID": id } })));
         }
         if agents_side && api.len() == 3 && api[0..2] == ["kuvo", "accounts"] && method == "DELETE" {
-            self.agents.retain(|each| each["id"] != api[2] || (query("onlyUnsigned").as_deref() == Some("1") && each["connections"].as_array().is_some_and(|connections| !connections.is_empty())));
+            let account = path_part(api[2]);
+            self.agents.retain(|each| each["id"] != account.as_str() || (query("onlyUnsigned").as_deref() == Some("1") && each["connections"].as_array().is_some_and(|connections| !connections.is_empty())));
             return Some((200, json!({})));
         }
         if !api.is_empty()
@@ -676,11 +677,6 @@ impl Settings {
                 if let Some(found) = self.agents.iter_mut().find(|each| each["id"] == account.as_str()) {
                     found["connections"] = json!([]);
                 }
-                (200, json!({ "data": true }))
-            }
-            ("DELETE", ["kuvo", "accounts", _]) if agents => {
-                let account = api.get(2).map(|part| path_part(part)).unwrap_or_default();
-                self.agents.retain(|each| each["id"] != account.as_str());
                 (200, json!({ "data": true }))
             }
             ("GET" | "POST" | "DELETE", ["integration", ..]) => (404, json!({ "message": "There’s no such account here." })),

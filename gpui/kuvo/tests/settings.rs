@@ -1520,6 +1520,8 @@ fn added_agent_cancel(cx: &mut TestAppContext, completed: bool) {
     click(cx, "menu-item-Add Another Account…");
     cx.run_until_parked();
     assert!(view.read_with(cx, |view, _| view.sign_in().is_some()));
+    // Codex offers two ways (its browser sign-in and an API key): the browser's is picked.
+    click(cx, "sign-in-way-0");
     let starts = stand_in.seen_at("POST", "kuvo/sign-in/start");
     let start = starts.last().expect("new account sign-in");
     assert!(start.path.contains("integration=codex-cli%40added"), "{}", start.path);
