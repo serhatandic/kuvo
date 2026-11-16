@@ -141,7 +141,9 @@ impl Settings {
             _ => row(json!({ "id": "version", "title": format!("Kuvo Code {}", at.version), "line": "Up to date. It updates itself when nothing’s at work.", "kind": "actions", "value": at.version, "actions": [update] })),
         });
         let mut devices = json!({ "id": "devices", "title": "Let my devices connect", "line": format!("Your phone and other computers reach {place}, end to end encrypted."), "kind": "switch", "value": at.devices, "can": true });
-        if at.devices {
+        if !here {
+            devices["can"] = json!({ "why": format!("Change it in Kuvo Code on {name} itself.") });
+        } else if at.devices {
             devices["confirm"] = json!({ "title": "Stop letting your devices connect?", "body": format!("Your phone, and Kuvo Code on your other computers, can’t reach {place} until you turn this on again."), "button": "Turn Off" });
         }
         rows.push(row(devices));

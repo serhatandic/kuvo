@@ -8693,20 +8693,21 @@ The sections now:
   aren't on it yet.
 - **This computer** (`computer`, #713): how Kuvo stands on this computer, each row's title saying
   it. No row says "box": the computer is named ("this Mac" to the app beside it, its name to any
-  other client). `state` ("Running", who keeps it in its line; `restart`, asked first, saying
+  other client). `state` ("Running", or "Not running" as a warning while its engine is down, who keeps it in its line; `restart`, asked first, saying
   whether agents are at work: `kuvo/engine/restart`'s own restart, on a computer you added and on
   a Mac's own box in a home of its own; the retired Mac app's box says to restart it there).
   `version` ("Kuvo Code 1.0.0", or "Kuvo Code 1.0.1 is ready" once `kuvo/update` knows a newer
   one; `update`, titled Check Now or Update Now, is `POST kuvo/update {now: true}`, asked first
   unless nothing is at work; a `status` with no button while updates aren't set up or are held,
-  saying why, and while a release the app offered waits for a quiet moment; `busy` while one
-  installs). `devices` ("Let my devices connect": on a Mac's own box a `switch`, the link's
+  saying why, and while a release the app offered waits for a quiet moment; `busy` while it
+  looks for one ("Checking…") or installs it ("Updating…")). `devices` ("Let my devices connect": on a Mac's own box a `switch`, the link's
   `phones` ("The relay, on this Mac's box"), asked first as it's turned off, `409` on a copy with
-  no relay; on a computer you added a `status`, always on; on the retired app's box, changed
+  no relay, and changed only from the app beside it (`can: {why}` to any other client, which
+  would cut itself off); on a computer you added a `status`, always on; on the retired app's box, changed
   there). On a Mac's own box, a second group, What macOS Allows Kuvo Helper
   (`kuvo/box/permissions`' facts, the place to look them up after "Not Now"): `login-items`
   (whether Kuvo Helper is on in Login Items, `launchctl print-disabled`; off, a warning with Open
-  Login Items; left out where launchd can't be asked, a copy's home), `allows-<id>` for each
+  Login Items; left out where launchd can't be asked, a copy's home, or its launch agent isn't in place), `allows-<id>` for each
   permission (`Allowed`; not allowed, a warning with Open System Settings, which `opens` the
   address of its list; not known while the helper hasn't said), and `allows-files`, which macOS
   asks about by itself. What opens only on that Mac is given to the app beside it alone (`can:

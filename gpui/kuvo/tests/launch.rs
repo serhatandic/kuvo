@@ -531,3 +531,16 @@ fn a_build_that_isnt_the_app_in_its_bundle_only_attaches(cx: &mut TestAppContext
     // (And offers it nothing: it carries no release.)
     assert!(box_here.seen_at("POST", "kuvo/box/update").is_empty());
 }
+
+#[gpui::test]
+fn an_installer_that_breaks_under_a_move_is_said_in_the_move_s_card(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[&to_move()]);
+    bundle.says("move", None, 3, &["not an answer"]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    // The move's own card still: its steps, that nothing runs meanwhile, and Try Again.
+    assert_eq!(line(&launch, cx), "Couldn’t move your sessions");
+    assert!(shown(cx, "launch-steps") && shown(cx, "launch-note") && shown(cx, "launch-again") && !opened(&launch, cx));
+}

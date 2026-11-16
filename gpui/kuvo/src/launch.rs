@@ -106,8 +106,6 @@ pub struct Moving {
     pub finishing: bool,
     /// The step it stopped at, from 1.
     pub stopped_at: Option<u32>,
-    /// It stopped after the point it only goes forward from: trying again finishes it.
-    pub stuck: bool,
     /// What it didn't carry over, each in the box's words.
     pub dropped: Vec<SharedString>,
 }
@@ -247,8 +245,13 @@ impl Launch {
                 self.moving = (self.card && verb == Verb::Move).then(|| Moving::listing(&moved));
             }
             Progress::Step(step) => match &mut self.stage {
-                // (A move's card already up, the box asked again: its steps aren't a move's.)
-                Stage::SettingUp { verb: Verb::Move, .. } if self.moving.is_some() && step.index.is_none() => {}
+                // (A move's card already up, the box asked again: what it does first isn't one of
+                // the move's steps, and is said under them.)
+                Stage::SettingUp { verb: Verb::Move, .. } if self.moving.is_some() && step.index.is_none() => {
+                    if let Some(moving) = &mut self.moving {
+                        moving.title = step.title.map(SharedString::from);
+                    }
+                }
                 Stage::SettingUp { title, at, .. } => {
                     if let Some(moving) = &mut self.moving {
                         moving.take(&step);
@@ -276,7 +279,7 @@ impl Launch {
             }
         }
         // (The box asked again as a move is tried again, and there's no move to run after all.)
-        if !matches!(outcome.end, End::Waits | End::Stopped | End::Started) && !(outcome.end == End::Attach && outcome.verdict.as_deref() == Some("ours")) {
+        if !matches!(outcome.end, End::Waits | End::Stopped | End::Started | End::Broken) && !(outcome.end == End::Attach && outcome.verdict.as_deref() == Some("ours")) {
             self.moving = None;
             self.card = false;
         }
@@ -351,13 +354,14 @@ impl Launch {
                 let stuck = outcome.verdict.as_deref() == Some("stuck");
                 if let Some(moving) = &mut self.moving {
                     moving.stopped_at = outcome.moved.stopped_at.as_deref().and_then(|step| outcome.moved.place_of(step)).or(moving.at);
-                    moving.stuck = stuck;
                     moving.finishing = false;
                 }
                 let line = if stuck { "Couldn’t finish moving" } else { "Couldn’t move your sessions" };
                 self.attach(Some(line.into()), said, Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx)
             }
             End::Stopped => self.attach(Some("Couldn’t set up Kuvo".into()), said, None, window, cx),
+            // (An installer that broke under a move's card: said there, as nothing runs meanwhile.)
+            End::Broken if self.moving.is_some() => self.attach(Some("Couldn’t move your sessions".into()), Some(format!("Kuvo couldn’t go on with the move on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), Some(format!("Nothing runs on {HERE_IN_WORDS} until this is done.").into()), window, cx),
             End::Broken => self.attach(Some("Couldn’t set up Kuvo".into()), Some(format!("Kuvo couldn’t be set up on {HERE_IN_WORDS}. {}", outcome.message.unwrap_or_default()).trim().to_owned().into()), None, window, cx),
         }
     }
@@ -660,7 +664,17 @@ impl Launch {
             );
         }
         // Where it's past its steps: Kuvo being started, in the box's words.
-        let starting = (stopped.is_none() && (moving.finishing || matches!(self.stage, Stage::Starting))).then(|| moving.title.clone().filter(|_| moving.finishing).unwrap_or_else(|| "Starting…".into()));
+        // And before its first step (the box asked, or getting what it needs): said too, so a
+        // list of steps not begun never looks stuck.
+        let starting = if stopped.is_some() {
+            None
+        } else if moving.finishing || matches!(self.stage, Stage::Starting) {
+            Some(moving.title.clone().filter(|_| moving.finishing).unwrap_or_else(|| "Starting…".into()))
+        } else if moving.at.is_none() {
+            Some(moving.title.clone().map_or_else(|| "Getting ready…".into(), |title| format!("{title}…").into()))
+        } else {
+            None
+        };
         let foot = match &stopped {
             Some((_, _, note)) => div()
                 .flex()

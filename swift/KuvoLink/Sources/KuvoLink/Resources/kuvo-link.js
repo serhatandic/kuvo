@@ -51586,12 +51586,18 @@ function helperAtLogin() {
   const tools = launchTools();
   if (!tools || process.platform !== "darwin" || APP_FOLDER || recordedKind() !== "mac")
     return null;
-  const asked = spawnSync11(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+  let agent = false;
+  try {
+    agent = fs153.readFileSync(path160.join(tools.agents, `${LAUNCH_AGENT}.plist`), "utf8").includes(`<string>${xml(helperProgram())}</string>`);
+  } catch {}
+  if (!agent)
+    return null;
+  const asked = spawnSync11(tools.launchctl, ["print-disabled", `gui/${process.getuid?.() ?? 0}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   if (asked.error || asked.status !== 0)
     return null;
   return !SWITCHED_OFF.test(asked.stdout ?? "");
 }
-var SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\\./g, "\\\\.")}"\\s*=>\\s*(disabled|true)`);
+var SWITCHED_OFF = new RegExp(`"${LAUNCH_AGENT.replace(/\./g, "\\.")}"\\s*=>\\s*(disabled|true)`);
 function installHelperAgent({ load, app }) {
   const why = refusal3();
   if (why)
@@ -51699,7 +51705,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2e884b0dec29";
+var BRIDGE_VERSION = "219bdb88e77a";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63029,6 +63035,13 @@ async function clockChange(_context, at, value) {
 var computerFacts = {
   kind: () => !IS_MAC ? "machine" : APP_FOLDER ? "appMac" : "ownMac",
   restarts: () => !IS_MAC || !APP_FOLDER || boxAnswers("kuvo/engine/restart"),
+  running: (context) => {
+    try {
+      return Boolean(context.readEngine()?.port);
+    } catch {
+      return false;
+    }
+  },
   atLogin: helperAtLogin,
   permissions: boxPermissions,
   update: updateStatus,
@@ -63054,11 +63067,14 @@ async function computerPage(context) {
   const opensHere = (id, title, address) => here ? { id, title, opens: address } : { id, title, can: { why: `Open it on ${name} itself.` } };
   const stops = working === true ? `Agents are at work on ${where} now: what they’re doing stops.` : working === false ? `Nothing is at work on ${where} now.` : `What agents are doing on ${where} now stops.`;
   const restarts = computerFacts.restarts();
+  const running = computerFacts.running(context);
   const rows = [row({
     id: "state",
-    title: "Running",
+    title: running ? "Running" : "Not running",
     kind: "actions",
-    line: ownMac ? atLogin === false ? `${HELPER_NAME} keeps it running.` : `${HELPER_NAME} keeps it running, and starts it at login.` : kind === "appMac" ? `Kuvo Code on ${where} runs it.` : "It runs whether or not an app is open.",
+    value: running,
+    ...running ? {} : { tone: "warning" },
+    line: !running ? "Its engine isn’t running, so no agent works here. Restart starts it again." : ownMac ? atLogin === false ? `${HELPER_NAME} keeps it running.` : `${HELPER_NAME} keeps it running, and starts it at login.` : kind === "appMac" ? `Kuvo Code on ${where} runs it.` : "It runs whether or not an app is open.",
     actions: [{
       id: "restart",
       title: "Restart…",
@@ -63075,8 +63091,9 @@ async function computerPage(context) {
     title,
     ...working === false ? {} : { confirm: { title: `Update Kuvo on ${where} now?`, body: `${stops} A newer version, if there is one, installs now.`, button: "Update Now" } }
   });
+  const looking = update.updating === "checking";
   if (update.updating)
-    rows.push(row({ id: "version", title: version, line: "A newer version is being installed.", kind: "status", busy: "Updating…" }));
+    rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
   else if (!update.setUp || update.blocked)
     rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...update.blocked ? { tone: "warning" } : {} }));
   else if (ready)
@@ -63093,6 +63110,8 @@ async function computerPage(context) {
     rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices === true, can: { why: `Change it in Kuvo Code on ${name}.` } }));
   else if (devices === null)
     rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: false, can: { why: "This copy of Kuvo has no relay for your devices to connect through." } }));
+  else if (!here)
+    rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices, can: { why: `Change it in Kuvo Code on ${name} itself.` } }));
   else
     rows.push(row({
       id: "devices",
@@ -63172,7 +63191,7 @@ var PAGES2 = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
-  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path199.join(RUN, "permissions.json"))} ${macLink.config?.phones ?? ""} ${computerFacts.update().updating ?? ""}` }
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime2(MAC_LINK_FILE)} ${mtime2(path199.join(RUN, "permissions.json"))} ${mtime2(path199.join(RUN, "update.json"))} ${mtime2(path199.join(RUN, "update.lock"))} ${mtime2(path199.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` }
 };
 var followers2 = new Set;
 var changed5 = () => {

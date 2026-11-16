@@ -680,7 +680,7 @@ const allowed = (screenRecording: boolean | null, accessibility: boolean | null)
 function thisMac(more: Partial<typeof computerFacts> = {}) {
   const mac = { devices: true as boolean | null, restarted: 0 }
   Object.assign(computerFacts, realFacts, {
-    kind: () => "ownMac", restarts: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false,
+    kind: () => "ownMac", restarts: () => true, running: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false,
     restart: async () => { mac.restarted++; return { status: 202 } }, devices: () => mac.devices, letDevices: async (on: boolean) => { mac.devices = on; return true },
     ...more,
   })
@@ -697,7 +697,7 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
   expect(shown.title).toBe("This Mac")
   expect(shown.groups.map((group: any) => [group.title, group.rows.map((row: any) => [row.title, row.line, row.value])])).toEqual([
     [undefined, [
-      ["Running", "Kuvo Helper keeps it running, and starts it at login.", undefined],
+      ["Running", "Kuvo Helper keeps it running, and starts it at login.", true],
       ["Kuvo Code 1.0.0", "Up to date. It updates itself when nothing’s at work.", "1.0.0"],
       ["Let my devices connect", "Your phone and other computers reach this Mac, end to end encrypted.", true],
     ]],
@@ -728,6 +728,8 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   const away = await fromAway("kuvo/settings/computer")
   expect(away.title).toBe("devbox")
   expect(rowOf(away, "devices").line).toBe("Your phone and other computers reach devbox, end to end encrypted.")
+  // (A device that turned it off would cut itself off: it's switched on the Mac itself.)
+  expect(rowOf(away, "devices").can).toEqual({ why: "Change it in Kuvo Code on devbox itself." })
   expect(rowOf(away, "login-items").actions[0]).toEqual({ id: "open-login-items", title: "Open Login Items", can: { why: "Open it on devbox itself." } })
   expect(rowOf(away, "allows-screenRecording").actions[0].opens).toBeUndefined()
 })
@@ -754,11 +756,21 @@ test.if(onMac)("Let my devices connect is switched on This Mac's page, asked fir
 
 test("a computer you added has the same page without a Mac's rows: no helper, nothing of macOS, and devices always let in", async () => {
   Object.assign(computerFacts, realFacts, { update: () => update({ setUp: false }), working: async () => false })
+  // (No engine in this test's home, as on a computer whose engine is down: said, with the way out.)
   const shown = await fromAway("kuvo/settings/computer")
   expect(shown.groups.map((group: any) => group.id)).toEqual(["computer"])
   expect(shown.groups[0].rows.map((row: any) => [row.id, row.kind, row.line])).toEqual([
-    ["state", "actions", "It runs whether or not an app is open."],
+    ["state", "actions", "Its engine isn’t running, so no agent works here. Restart starts it again."],
     ["version", "status", "Updates aren’t set up for devbox yet."],
     ["devices", "status", "Your phone and other computers reach devbox, end to end encrypted. A computer you added always lets them in."],
   ])
+})
+
+test.if(onMac)("Check Now says it's looking, not installing, and an engine that's down is said where Running would be", async () => {
+  thisMac({ update: () => update({ updating: "checking" }), running: () => false })
+  const shown = (await fromApp("GET", "kuvo/settings/computer")).json
+  expect(rowOf(shown, "version")).toMatchObject({ line: "Looking for a newer version.", busy: "Checking…" })
+  expect(rowOf(shown, "state")).toMatchObject({ title: "Not running", tone: "warning" })
+  thisMac({ update: () => update({ updating: "installing" }) })
+  expect(rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")).toMatchObject({ line: "A newer version is being installed.", busy: "Updating…" })
 })

@@ -1211,7 +1211,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
     let dropped = "New sessions start with Auto, Kuvo's own default, where the earlier Kuvo Code ran everything without asking.";
     for slug in [
         "launch-setting-up", "launch-setting-up-step", "launch-starting", "launch-done", "launch-failed", "launch-failed-narrow", "launch-not-running",
-        "launch-moving", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two",
+        "launch-moving", "launch-move-getting-ready", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two",
     ] {
         if !wanted(slug, "launch") {
             continue;
@@ -1241,9 +1241,10 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
                     "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None, at: None }, true, cx),
                     "launch-setting-up-step" => launch.show(Stage::SettingUp { verb: Verb::New, title: Some("Downloading the engine".into()), at: None }, true, cx),
                     "launch-moving" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((4, 11)) }, Moving { steps, at: Some(4), of: Some(11), ..Moving::default() }, None, cx),
+                    "launch-move-getting-ready" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: None, at: None }, Moving { steps, title: Some("Downloading the engine".into()), ..Moving::default() }, None, cx),
                     "launch-move-starting" => launch.show_move(Stage::Starting, Moving { steps, at: Some(11), of: Some(11), title: Some("Starting Kuvo on this Mac".into()), finishing: true, ..Moving::default() }, None, cx),
                     "launch-move-refused" | "launch-move-refused-narrow" => launch.show_move(Stage::Stopped { line: "Couldn’t move your sessions".into(), message: not_yet.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(1), of: Some(11), stopped_at: Some(1), ..Moving::default() }, None, cx),
-                    "launch-move-stuck" => launch.show_move(Stage::Stopped { line: "Couldn’t finish moving".into(), message: stuck.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(11), of: Some(11), stopped_at: Some(11), stuck: true, ..Moving::default() }, None, cx),
+                    "launch-move-stuck" => launch.show_move(Stage::Stopped { line: "Couldn’t finish moving".into(), message: stuck.into(), note: Some(nothing_runs) }, Moving { steps, at: Some(11), of: Some(11), stopped_at: Some(11), ..Moving::default() }, None, cx),
                     "launch-move-waiting-long" => launch.show_move(Stage::Stopped { line: "Still moving your sessions".into(), message: "It’s taking longer than expected on this Mac. It goes on by itself: try again in a while.".into(), note: None }, Moving { steps, at: Some(6), of: Some(11), ..Moving::default() }, None, cx),
                     "launch-moved" | "launch-moved-dropped" | "launch-two" => {
                         let boxes = kuvo::home::stand_in_boxes(StandIn::at(Replies::Never, NOW));

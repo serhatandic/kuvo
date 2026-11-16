@@ -676,6 +676,8 @@ export const computerFacts = {
   kind: (): "ownMac" | "appMac" | "machine" => (!IS_MAC ? "machine" : APP_FOLDER ? "appMac" : "ownMac"),
   /** Whether this box restarts what it runs itself. */
   restarts: (): boolean => !IS_MAC || !APP_FOLDER || boxAnswers("kuvo/engine/restart"),
+  /** Whether its engine runs now (its record names where it answers). */
+  running: (context: RouteContext): boolean => { try { return Boolean(context.readEngine()?.port); } catch { return false; } },
   atLogin: helperAtLogin,
   permissions: boxPermissions,
   update: updateStatus,
@@ -712,9 +714,11 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
 
   // How it stands, and Restart.
   const restarts = computerFacts.restarts();
+  const running = computerFacts.running(context);
   const rows: SettingRow[] = [row({
-    id: "state", title: "Running", kind: "actions",
-    line: ownMac ? (atLogin === false ? `${HELPER_NAME} keeps it running.` : `${HELPER_NAME} keeps it running, and starts it at login.`) : kind === "appMac" ? `Kuvo Code on ${where} runs it.` : "It runs whether or not an app is open.",
+    id: "state", title: running ? "Running" : "Not running", kind: "actions", value: running,
+    ...(running ? {} : { tone: "warning" as const }),
+    line: !running ? "Its engine isn’t running, so no agent works here. Restart starts it again." : ownMac ? (atLogin === false ? `${HELPER_NAME} keeps it running.` : `${HELPER_NAME} keeps it running, and starts it at login.`) : kind === "appMac" ? `Kuvo Code on ${where} runs it.` : "It runs whether or not an app is open.",
     actions: [{
       id: "restart", title: "Restart…",
       ...(restarts ? {} : { can: { why: `Kuvo Code on ${name} restarts it: restart it there.` } }),
@@ -731,7 +735,9 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
     id: "update", title,
     ...(working === false ? {} : { confirm: { title: `Update Kuvo on ${where} now?`, body: `${stops} A newer version, if there is one, installs now.`, button: "Update Now" } }),
   });
-  if (update.updating) rows.push(row({ id: "version", title: version, line: "A newer version is being installed.", kind: "status", busy: "Updating…" }));
+  // (Looking for one, and fetching it, change nothing yet: only then is it being installed.)
+  const looking = update.updating === "checking";
+  if (update.updating) rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
   else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...(update.blocked ? { tone: "warning" as const } : {}) }));
   else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs when nothing’s at work, or now.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: ready, actions: [now("Update Now")] }));
   else if (update.offered && newerVersion(update.offered, update.version)) rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, line: "It installs when nothing’s at work.", kind: "status", value: update.offered }));
@@ -743,6 +749,9 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   if (kind === "machine") rows.push(row({ id: "devices", title: "Let my devices connect", line: `${reach} A computer you added always lets them in.`, kind: "status", value: "On" }));
   else if (kind === "appMac") rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices === true, can: { why: `Change it in Kuvo Code on ${name}.` } }));
   else if (devices === null) rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: false, can: { why: "This copy of Kuvo has no relay for your devices to connect through." } }));
+  // (Switched on the Mac itself: turned off from a device, that device would cut itself off with
+  // no way to turn it on again.)
+  else if (!here) rows.push(row({ id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices, can: { why: `Change it in Kuvo Code on ${name} itself.` } }));
   else rows.push(row({
     id: "devices", title: "Let my devices connect", line: reach, kind: "switch", value: devices, can: true,
     ...(devices ? { confirm: { title: "Stop letting your devices connect?", body: `Your phone, and Kuvo Code on your other computers, can’t reach ${where} until you turn this on again.`, button: "Turn Off" } } : {}),
@@ -821,7 +830,7 @@ const PAGES: Record<string, Section> = {
   worktrees: { read: worktreesPage, change: worktreesChange, act: worktreesAct, look: () => String(Math.floor(Date.now() / 1000)) },
   storage: { read: storagePage, change: storageChange, act: storageAct, look: () => String(Math.floor(Date.now() / 1000)) },
   archived: { read: archivedPage, change: noActions, act: archivedAct, look: () => String(Math.floor(Date.now() / 1000)) },
-  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${macLink.config?.phones ?? ""} ${computerFacts.update().updating ?? ""}` },
+  computer: { read: computerPage, change: computerChange, act: computerAct, look: () => `${mtime(MAC_LINK_FILE)} ${mtime(path.join(RUN, "permissions.json"))} ${mtime(path.join(RUN, "update.json"))} ${mtime(path.join(RUN, "update.lock"))} ${mtime(path.join(RUN, "engine.json"))} ${macLink.config?.phones ?? ""}` },
 };
 
 // Told as a change is made here, so a page followed shows it at once.
