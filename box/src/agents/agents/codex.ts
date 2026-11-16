@@ -253,17 +253,20 @@ export class CodexAgent implements Agent {
     return { windows, ...(typeof type === "string" && type !== "unknown" ? { plan: codexPlan(type) } : {}), ...(extras.length ? { extras } : {}) }
   }
 
-  /** Its own sign-in on a machine: Kuvo Code's, in its folder there, so signed out here. */
+  /** Its own sign-in: Kuvo Code's on a machine (in its folder there), yours on a Mac (`~/.codex`,
+   * which Codex in Terminal uses too: `signOutShared`). An added account is removed instead. */
   signOut?: () => Promise<void>
+  signOutShared?: boolean
 
   constructor(
     readonly context: AgentContext,
     readonly instance: AgentAccount = { id: "default" },
   ) {
     this.providerID = providerID("codex", instance.id)
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home
       this.signOut = async () => {
-        await signOutWith("Codex", this.executable(), ["logout"], { ...process.env, CODEX_HOME: instance.home })
+        await signOutWith("Codex", this.executable(), ["logout"], instance.home ? { ...process.env, CODEX_HOME: instance.home } : process.env)
         // Its app-servers read the sign-in as they start: the next one, signed out.
         this.shutdown()
         this.known.reset()

@@ -178,6 +178,8 @@ export async function integration(agent: Agent, fresh = false, auto?: Auto): Pro
       account: account.label,
       install: agent.install,
       signsOut: Boolean(agent.signOut),
+      // Signing out signs it out in Terminal too (its own sign-in is yours).
+      signOutShared: Boolean(agent.signOut && agent.signOutShared),
       // Its program's version, and the newest (an old Claude Code lists old models).
       version: maintained?.installed,
       latestVersion: maintained?.latest,
@@ -326,6 +328,9 @@ export function handler(context: Context) {
           await agent.signOut()
           // Gone from the rings at once, with what was read of it (sign-ins.ts).
           await signIns.ask(agent)
+          // Its models leave every picker now, not at the next list.
+          emit("integration.updated", { integrationID: agent.providerID })
+          emit("model.updated", {})
           return json({})
         }
       }
@@ -523,6 +528,8 @@ export function handler(context: Context) {
           sessions.forgetProvider(target.providerID)
           await target.removeAccount?.().catch(() => {})
           target.shutdown?.()
+          // Signed out as it goes: gone from the rings at once (sign-ins.ts).
+          signIns.record(target.providerID, { signedIn: false })
           roster.accounts.remove(target.providerID)
           roster.sync()
           emit("integration.updated", { integrationID: target.providerID })

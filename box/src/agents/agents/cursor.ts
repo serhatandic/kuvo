@@ -215,10 +215,13 @@ export class CursorAgent implements Agent {
     this.modelList = undefined
   }
 
+  /** Its own sign-in, Kuvo Code's (in the bridge's folder; yours in Terminal is never touched).
+   * A key from CURSOR_API_KEY isn't Kuvo Code's to forget: it says so, and it stays signed in. */
   async signOut() {
     rmSync(this.authFile, { force: true })
     this.known.reset()
     this.modelList = undefined
+    if (!this.instance.home && process.env.CURSOR_API_KEY?.trim()) throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell’s environment. Remove it there to sign out.")
   }
 
   async models(): Promise<Model[]> {

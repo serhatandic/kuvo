@@ -4093,9 +4093,13 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
       kuvo/agents/api/integration/<id>/install`; `update` (on the agent's own sign-in, where its
       program is behind, its installer can update it and it isn't updating; `label` names the
       version, "Update to 2.2.4") is `POST kuvo/agents/api/kuvo/updates/<id>`; `signOut` (an
-      agent its bridge can sign out of, while it's signed in) is `POST
-      kuvo/agents/api/integration/<id>/disconnect`; `rename` and `remove` (an account you added
-      beside an agent's own) are `PATCH` and `DELETE kuvo/agents/api/kuvo/accounts/<id>`. A
+      agent's own sign-in that its bridge can sign out of, while it's signed in or ended; never
+      one you added, which is removed instead) is `POST
+      kuvo/agents/api/integration/<id>/disconnect`, and asks first: its confirm says whether
+      Terminal's sign-in goes too (`metadata.signOutShared`: the agent's own sign-in is yours,
+      Codex's and Grok's on a Mac) or stays; `rename` and `remove` (an account you added
+      beside an agent's own: signed out and forgotten, and its confirm says so) are `PATCH` and
+      `DELETE kuvo/agents/api/kuvo/accounts/<id>`. A
       client draws the ids it has a control for and leaves out one it doesn't know.
       Keys are entered, never signed into: an account whose only ways in are keys (`methods` all
       `key`) words `signIn`, `signInAgain` and `addAnother` "Add Key", "Replace Key" and "Add

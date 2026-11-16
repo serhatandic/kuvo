@@ -14,6 +14,7 @@ import { CodexAgent } from "../../src/agents/agents/codex"
 import { CursorAgent } from "../../src/agents/agents/cursor"
 import { GrokAgent } from "../../src/agents/agents/grok"
 import { subscribe } from "../../src/agents/events"
+import { signIns } from "../../src/agents/sign-ins"
 import { handler } from "../../src/agents/server"
 import type { ServerEvent } from "../../src/agents/wire"
 
@@ -340,14 +341,15 @@ describe("an agent's sign-in that can't be checked just now", () => {
     // Signed out of here, with your key still set: asked anew, not as it last said.
     rejects = false
     expect((await box.account(agent)).connections[0]?.label).toBe("ada@example.com")
-    await agent.signOut()
+    // (It says your key stays: Kuvo Code's own sign-in is all it can forget.)
+    await expect(agent.signOut()).rejects.toThrow("CURSOR_API_KEY")
     rejects = true
     expect((await box.models(agent))).toEqual([])
   })
 })
 
 describe("signing out of an agent's own sign-in", () => {
-  test("on a machine it's Kuvo Code's own, in its folder there: Sign Out signs it out with the agent's own command, or says why it couldn't; on a Mac it's yours, signed out where you signed in", async () => {
+  test("on a machine it's Kuvo Code's own, in its folder there: Sign Out signs it out with the agent's own command, or says why it couldn't", async () => {
     const said = join(root, "claude-logout")
     const signedIn = `echo '{"loggedIn":true,"authMethod":"claude.ai","email":"ada@example.com"}'`
     const claude = program("claude", {
@@ -361,10 +363,11 @@ describe("signing out of an agent's own sign-in", () => {
       return { status: response.status, said: ((await response.json()) as any)?.message as string | undefined }
     }
 
-    // This Mac's: your own Claude Code's, shared with claude in Terminal.
+    // Where it runs in your home: your own Claude Code's, shared with claude in Terminal, so its
+    // Sign Out says it signs out there too.
     claude("in")
     const yours = new ClaudeAgent(context())
-    expect((await bridge([yours]).account(yours)).metadata.signsOut).toBe(false)
+    expect((await bridge([yours]).account(yours)).metadata).toMatchObject({ signsOut: true, signOutShared: true })
 
     // A machine's: in Kuvo Code's folder there.
     const home = mkdtempSync(join(root, "machine-claude-"))
@@ -372,7 +375,7 @@ describe("signing out of an agent's own sign-in", () => {
     const box = bridge([machine])
     const account = await box.account(machine)
     expect(account.connections[0]?.label).toBe("ada@example.com")
-    expect(account.metadata.signsOut).toBe(true)
+    expect(account.metadata).toMatchObject({ signsOut: true, signOutShared: false })
 
     claude("locked")
     const refused = await signOut(machine)
@@ -384,6 +387,93 @@ describe("signing out of an agent's own sign-in", () => {
     expect((await signOut(machine)).status).toBe(200)
     expect(readFileSync(said, "utf8").trim()).toBe(home)
     expect((await box.account(machine)).connections).toEqual([])
+  })
+})
+
+describe("Sign Out for every agent's own sign-in, Remove for one you added", () => {
+  const post = (agents: Agent[], route: string, method = "POST") => {
+    const roster = { all: () => agents, find: (id: string) => agents.find((agent) => agent.providerID === id), accounts: { remove: () => {} }, sync: () => {} }
+    const answer = handler({ roster, sessions: { forgetProvider: () => {} }, password: "pw" } as any)
+    return answer(new Request(`http://box/api/${route}`, { method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
+  }
+  /** A fake program that says it's signed in until its `logout`, which writes what it was run with. */
+  function fake(name: string, status: { in: string; out: string }, env: string) {
+    const folder = mkdtempSync(join(root, `${name}-`))
+    const file = join(folder, name)
+    const ran = join(folder, "logout")
+    writeFileSync(file, `#!/bin/sh\nfor a in "$@"; do [ "$a" = logout ] && { echo "${env}=\${${env}:-}" > '${ran}'; exit 0; }; done\n[ -f '${ran}' ] && { ${status.out}; }\n${status.in}\n`)
+    chmodSync(file, 0o755)
+    return { file, ran }
+  }
+
+  test("Grok: on a Mac its own sign-in is yours, so Sign Out signs out Grok in Terminal too (and says so); on a machine, Kuvo Code's own there; the ring goes at once", async () => {
+    const program = fake("grok", { in: `printf 'You are logged in with grok.com.\\n\\nAvailable models:\\n  * grok-4.7 (default)\\n'`, out: `echo 'Error: not authenticated. Run grok login first.'; exit 1` }, "GROK_HOME")
+    class TestGrok extends GrokAgent {
+      override executable() {
+        return program.file
+      }
+    }
+    const yours = new TestGrok(context())
+    expect((await bridge([yours]).account(yours)).metadata).toMatchObject({ signsOut: true, signOutShared: true })
+    signIns.record(yours.providerID, { signedIn: true })
+    expect((await post([yours], `integration/${yours.providerID}/disconnect`)).status).toBe(200)
+    // Its own `grok logout`, in your own GROK_HOME (none set: `~/.grok`).
+    expect(readFileSync(program.ran, "utf8").trim()).toBe("GROK_HOME=")
+    expect(signIns.signedIn(yours.providerID)).toBe(false)
+    expect((await bridge([yours]).account(yours)).connections).toEqual([])
+
+    rmSync(program.ran)
+    const home = mkdtempSync(join(root, "machine-grok-"))
+    const machine = new TestGrok(context(), { id: "default", home })
+    expect((await bridge([machine]).account(machine)).metadata).toMatchObject({ signsOut: true, signOutShared: false })
+    expect((await post([machine], `integration/${machine.providerID}/disconnect`)).status).toBe(200)
+    expect(readFileSync(program.ran, "utf8").trim()).toBe(`GROK_HOME=${home}`)
+  })
+
+  test("Codex: Sign Out runs its own `codex logout`, in your CODEX_HOME on a Mac (shared with Terminal) and Kuvo Code's on a machine", async () => {
+    const program = fake("codex", { in: "true", out: "true" }, "CODEX_HOME")
+    const server = codexServer()
+    class TestCodex extends CodexAgent {
+      override executable() {
+        return program.file
+      }
+      override async rpc(): Promise<any> {
+        return server
+      }
+    }
+    const yours = new TestCodex(context())
+    expect((await bridge([yours]).account(yours)).metadata).toMatchObject({ signsOut: true, signOutShared: true })
+    expect((await post([yours], `integration/${yours.providerID}/disconnect`)).status).toBe(200)
+    expect(readFileSync(program.ran, "utf8").trim()).toBe("CODEX_HOME=")
+
+    const home = mkdtempSync(join(root, "machine-codex-"))
+    const machine = new TestCodex(context(), { id: "default", home })
+    expect((await bridge([machine]).account(machine)).metadata).toMatchObject({ signsOut: true, signOutShared: false })
+    expect((await post([machine], `integration/${machine.providerID}/disconnect`)).status).toBe(200)
+    expect(readFileSync(program.ran, "utf8").trim()).toBe(`CODEX_HOME=${home}`)
+  })
+
+  test("Cursor: Sign Out forgets Kuvo Code's own sign-in; a key from CURSOR_API_KEY isn't its to forget, and it says so", async () => {
+    const agent = new CursorAgent(context())
+    const auth = join(agent.context.home, "cursor", "auth.json")
+    mkdirSync(dirname(auth), { recursive: true })
+    writeFileSync(auth, "{}")
+    await agent.signOut()
+    expect(existsSync(auth)).toBe(false)
+
+    process.env.CURSOR_API_KEY = "key_test"
+    const refused = await post([agent], `integration/${agent.providerID}/disconnect`)
+    expect(refused.status).not.toBe(200)
+    expect(((await refused.json()) as any).message).toContain("CURSOR_API_KEY")
+  })
+
+  test("an added account isn't signed out but removed: signed out and forgotten, its ring gone at once", async () => {
+    const added = new GrokAgent(context(), { id: "1f2e3d4c", home: mkdtempSync(join(root, "added-grok-")) })
+    // Removed instead (its own folder goes with it): no Sign Out of its own.
+    expect(added.signOut).toBeUndefined()
+    signIns.record(added.providerID, { signedIn: true })
+    expect((await post([added], `kuvo/accounts/${encodeURIComponent(added.providerID)}`, "DELETE")).status).toBe(200)
+    expect(signIns.signedIn(added.providerID)).toBe(false)
   })
 })
 

@@ -82,15 +82,19 @@ export class GrokAgent implements Agent {
     } catch {}
   }
 
-  /** Its own sign-in on a machine: Kuvo Code's, in its folder there, so signed out here. */
+  /** Its own sign-in: Kuvo Code's on a machine (in its folder there), yours on a Mac (your
+   * GROK_HOME or `~/.grok`, which Grok in Terminal uses too: `signOutShared`). An added account is
+   * removed instead. */
   signOut?: () => Promise<void>
+  signOutShared?: boolean
 
   constructor(
     readonly context: AgentContext,
     readonly instance: AgentAccount = { id: "default" },
   ) {
     this.providerID = providerID("grok", instance.id)
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home
       this.signOut = async () => {
         await signOutWith("Grok", this.executable(), ["logout"], this.env())
         // A session's Grok holds the sign-in it started with: its next message starts one signed out.

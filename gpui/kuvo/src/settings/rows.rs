@@ -104,7 +104,8 @@ pub enum Act {
     Install { account: String, name: String },
     /// Disconnect, asked first in the box's words where it says to.
     Disconnect { account: String, confirm: Option<Confirm> },
-    SignOut { account: String },
+    /// An agent's own sign-in signed out, asked first in the box's words where it says to.
+    SignOut { account: String, confirm: Option<Confirm> },
     /// An added account removed, asked first in the box's words where it says to.
     RemoveAgent { account: String, confirm: Option<Confirm> },
     /// A model setting at a path in the engine's settings, from what was read there.
@@ -580,7 +581,7 @@ pub(super) fn act_of(entry: &AccountEntry, action: &Action) -> Option<Act> {
         "addAnother" if entry.side == Side::Agents => Act::AddAgent { account, name, sheet_title: action.sheet_title.clone()? },
         "install" => Act::Install { account, name },
         "disconnect" => Act::Disconnect { account, confirm: action.confirm.clone() },
-        "signOut" => Act::SignOut { account },
+        "signOut" => Act::SignOut { account, confirm: action.confirm.clone() },
         "remove" => Act::RemoveAgent { account, confirm: action.confirm.clone() },
         _ => return None,
     })

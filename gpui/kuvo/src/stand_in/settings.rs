@@ -230,7 +230,7 @@ impl Default for Settings {
         let agents = vec![
             integration("claude-code", "Claude Code", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "claude", "installed": true, "version": "2.4.1", "remoteSignIn": true })),
             integration("claude-code@w0rk1a2b", "Claude Code · Work", signed_in("sam@studio.example", "oauth"), json!({ "addedAccounts": true, "agent": "claude", "installed": true, "version": "2.4.1", "accountID": "w0rk1a2b", "accountLabel": "Work", "remoteSignIn": true })),
-            integration("codex-cli", "Codex", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "codex", "installed": true, "version": "0.98.0", "signsOut": true, "remoteSignIn": true })),
+            integration("codex-cli", "Codex", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "codex", "installed": true, "version": "0.98.0", "signsOut": true, "signOutShared": true, "remoteSignIn": true })),
             integration("antigravity", "Antigravity", signed_in("sam@example.com", "oauth"), json!({ "addedAccounts": true, "agent": "antigravity", "installed": true, "signInEnded": true, "remoteSignIn": true })),
             integration("cursor", "Cursor", json!([]), json!({ "addedAccounts": true, "agent": "cursor", "installed": true, "version": "1.9.0", "remoteSignIn": true })),
             integration("grok-cli", "Grok", json!([]), json!({ "addedAccounts": true, "agent": "grok", "installed": false, "install": "npm install -g @stand-in/grok-cli", "remoteSignIn": true })),
@@ -863,12 +863,18 @@ pub fn said_of(account: &Value, offered: &Value, agents: bool, ended: Option<&st
         if !added && !installs && meta["outdated"] == true && meta["updates"] == true && !latest.is_empty() && meta["programUpdate"]["state"] != "updating" {
             actions.push(json!({ "id": "update", "label": format!("Update to {latest}") }));
         }
-        if meta["signsOut"] == true && !said.is_empty() {
-            actions.push(json!({ "id": "signOut", "label": "Sign Out" }));
+        // The agent's own sign-in signs out, signed in or ended; one you added is removed instead.
+        if !added && !installs && meta["signsOut"] == true && (!said.is_empty() || state == "ended") {
+            let message = if meta["signOutShared"] == true {
+                format!("{name} is signed out on {computer}, in Terminal too, and its models leave the model picker. Your sessions stay; sign in again to use it.")
+            } else {
+                format!("{name} is signed out in Kuvo Code on {computer}, and its models leave the model picker. Your sessions stay; sign in again to use it. Outside Kuvo Code, {name} stays as it is.")
+            };
+            actions.push(json!({ "id": "signOut", "label": "Sign Out", "confirm": { "title": format!("Sign out of {name}?"), "message": message, "label": "Sign Out" } }));
         }
         if added {
             actions.push(json!({ "id": "rename", "label": "Rename" }));
-            actions.push(json!({ "id": "remove", "label": "Remove Account", "confirm": { "title": format!("Remove {name}?"), "message": format!("It’s signed out on {computer}, and its models leave the model picker. A turn running on it stops; its sessions stay."), "label": "Remove Account" } }));
+            actions.push(json!({ "id": "remove", "label": "Remove Account", "confirm": { "title": format!("Remove {name}?"), "message": format!("This account is signed out and forgotten on {computer}: it leaves Accounts, and its models leave the model picker. A turn running on it stops; its sessions stay. Your other accounts stay signed in."), "label": "Remove Account" } }));
         }
     } else if said.is_empty() {
         if signs_in {
