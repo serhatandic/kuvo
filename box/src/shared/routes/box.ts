@@ -117,7 +117,7 @@ export const REHOME = object({
  * its own; never on Linux) and its name as System Settings lists it, whether it runs and has said
  * (`known`), and each permission macOS can be asked about, null where that isn't known; that
  * program's bundle on the Mac (`bundle`), and each permission in words (`list`): what System
- * Settings calls it, the address of its list there, whether you add the program to it by hand, and
+ * Settings calls it, what agents need it for (`line`), the address of its list there, whether you add the program to it by hand, and
  * whether a client brings it up now (`asks`). */
 export const BOX_PERMISSIONS = object({
   applies: bool,
@@ -126,7 +126,7 @@ export const BOX_PERMISSIONS = object({
   screenRecording: nullable(bool),
   accessibility: nullable(bool),
   bundle: nullable(string),
-  list: list(object({ id: words("screenRecording", "accessibility"), name: string, allowed: nullable(bool), settings: string, byHand: bool, asks: bool })),
+  list: list(object({ id: words("screenRecording", "accessibility"), name: string, line: string, allowed: nullable(bool), settings: string, byHand: bool, asks: bool })),
 });
 
 /** This Mac's app as its box knows it (`kuvo/box/app`, PROTOCOL.md, "This Mac's app"): where it's

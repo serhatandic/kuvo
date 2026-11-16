@@ -14,6 +14,7 @@ kuvo_box = { path = "../kuvo_box" }
 anyhow = "1"
 # The installer's steps, handed from the thread that runs it to the window.
 async-channel = "2.5"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # The app's device key, in the Mac's keychain; and where System Settings' window is, with the
@@ -24,9 +25,16 @@ core-foundation = "0.10"
 core-graphics = "0.24"
 libc = "0.2"
 objc2 = "0.6"
-# The app updating itself: Sparkle, loaded from the bundle and driven through its classes (updates/sparkle.rs).
-objc2-foundation = "0.3"
 raw-window-handle = "0.6"
+# Your settings' Notifications and General: the Dock's count, and which editors
+# are on this Mac (notifications.rs, yours/mac.rs); and the app updating itself, Sparkle loaded
+# from the bundle and driven through its classes (updates/sparkle.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSBundle", "NSURL", "NSSet", "NSUserDefaults", "NSDate", "NSError", "NSDictionary", "NSArray", "NSObject", "NSEnumerator"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSWorkspace"] }
+# Posting notifications with macOS's own sound (Focus and System Settings silence it), clicks
+# going to GPUI's delegate by the same identifier.
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNNotificationContent", "UNNotificationRequest", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
+block2 = "0.6"
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

@@ -153,7 +153,7 @@ fn a_build_that_doesnt_update_itself_says_so_and_offers_nothing(cx: &mut TestApp
 fn kuvo_on_this_mac_has_its_own_version_under_this_mac(cx: &mut TestAppContext) {
     let (updater, _tell, changes) = updater("0.8.0");
     let mut opened = open(cx, Some((updater, changes)));
-    click(opened.cx, "row-update-computer-open");
+    click(opened.cx, "row-update-computer");
     let view = settings(&mut opened);
     assert_eq!(view.read_with(opened.cx, |view, _| view.place()), "box//computer");
     assert!(shown(opened.cx, "settings-computer"), "the computer's settings, at This Mac");

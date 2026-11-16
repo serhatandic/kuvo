@@ -35,6 +35,10 @@ fn main() {
     }
     gpui_platform::application().with_assets(Assets).run(move |cx: &mut App| {
         bind_keys(cx);
+        // Your settings, kept in the app's own folder (none for the made-up box: kept while it runs).
+        kuvo::yours::init(if stand_in() { None } else { your_settings() }, cx);
+        // Who its notifications are from (macOS takes it from the bundle; Linux from this).
+        cx.set_app_identity("run.kuvo.code", "Kuvo");
         // Its updates: Sparkle, where the bundle carries it and names a feed (`updates`). The
         // stand-in's app has a made-up updater, so Settings › Updates shows as it would.
         let updates = if stand_in() { stand_in_updates(cx) } else { kuvo::updates::start(cx) };
@@ -68,7 +72,7 @@ fn main() {
         let opened = if stand_in() {
             let (boxes, first) = stand_in_boxes();
             cx.open_window(options, |window, cx| {
-                Theme::init(Appearance::of(window), cx);
+                Theme::init(kuvo::yours::appearance(Appearance::of(window), cx), cx);
                 cx.new(|cx| Home::new(boxes, first, true, window, cx))
             })
             .map(|window| {
@@ -83,7 +87,7 @@ fn main() {
             // This computer's Kuvo, set up where it isn't yet, then the app.
             let opens = opens();
             cx.open_window(options, |window, cx| {
-                Theme::init(Appearance::of(window), cx);
+                Theme::init(kuvo::yours::appearance(Appearance::of(window), cx), cx);
                 cx.new(|cx| Launch::new(opens, true, window, cx))
             })
             .map(|_| ())
@@ -168,6 +172,15 @@ fn opens() -> Opens {
             None => Err("This copy of Kuvo has no folder of its own to use.".to_owned()),
         }),
     }
+}
+
+/// Where your settings are kept: `settings.json` in this build's own folder (`~/.kuvo-code/desktop`;
+/// a copy of the app's in its own root), none where it has no folder of its own.
+fn your_settings() -> Option<PathBuf> {
+    let demo_root = std::env::var("KUVO_DEMO_MACHINE_ROOT").ok();
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let names = kuvo_box::install::names_for(&std::env::current_exe().ok()?, demo_root.as_deref(), &home)?;
+    Some(kuvo::keeper::folder_of(&home, &names.root).join(kuvo::yours::FILE))
 }
 
 /// Your boxes: the one on this computer (the nearest), and every other of your computers, each
