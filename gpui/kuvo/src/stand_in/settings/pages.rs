@@ -55,6 +55,9 @@ impl Settings {
         if let Some(answer) = self.mcp_answer(method, rest, body, name, here) {
             return Some(answer);
         }
+        if let Some(answer) = self.agents_answer(method, rest, body) {
+            return Some(answer);
+        }
         Some(match (method, rest) {
             ("GET", []) if self.pages_down => refused(503, "Kuvo on this computer isn’t answering."),
             ("GET", []) => {
@@ -112,6 +115,9 @@ impl Settings {
             json!({ "id": "permissions", "title": "Permissions", "group": "Agents & Tools", "icon": "shield", "line": "What agents may do without asking, and the sandbox their commands run in.", "keywords": ["approval", "full access", "auto", "ask first", "allow", "don't allow", "sandbox", "also allowed", "other computers", "rules"] }),
             json!({ "id": "browser", "title": "Browser", "group": "System", "icon": "globe", "line": "The browser’s search engine, and offering to save sign-ins.", "keywords": ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"] }),
         ];
+        if self.agent_settings.on {
+            sections.push(super::agents::Agents::section());
+        }
         if self.mcp.on {
             sections.push(super::mcp::Mcp::section());
         }

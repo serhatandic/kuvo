@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod agents;
 pub mod mcp;
 mod pages;
 
@@ -58,6 +59,8 @@ pub struct Settings {
     pub computer: Computer,
     /// Its MCP servers (`kuvo/settings/mcp`), listed once it's on.
     pub mcp: mcp::Mcp,
+    /// Its Agents section (`kuvo/settings/agents`), listed once it's on.
+    pub agent_settings: agents::Agents,
 }
 
 /// How the stand-in's computer stands, as its own settings page says it. All made up.
@@ -211,6 +214,7 @@ impl Default for Settings {
             pages_down: false,
             computer: Computer::default(),
             mcp: mcp::Mcp::default(),
+            agent_settings: agents::Agents::default(),
         }
     }
 }

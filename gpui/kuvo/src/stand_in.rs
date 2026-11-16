@@ -253,6 +253,11 @@ impl StandIn {
         self.state().settings.mcp.on = true;
     }
 
+    /// Its Agents section is listed (`kuvo/settings/agents`), as the real box answered it.
+    pub fn show_agents(&self) {
+        self.state().settings.agent_settings.on = true;
+    }
+
     /// Its MCP servers' state, to change or read (a sign-in going through, what its forms sent).
     pub fn with_mcp<T>(&self, work: impl FnOnce(&mut crate::stand_in::settings::Settings) -> T) -> T {
         work(&mut self.state().settings)

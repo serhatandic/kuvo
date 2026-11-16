@@ -9,19 +9,23 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, div, prelude::FluentBuilder as _, px, svg,
 };
 use kuvo_box::BoxClient;
 use kuvo_box::settings_pages::{Changed, Checked, Field, FieldKind, FieldWords, Folder, Form, Sent, WordsTone};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TypeSize,
     button::{Button, ButtonSize},
+    menu::{Menu, MenuEntry, PopoverMenu},
     small::{Switch, spinner},
     theme::{MONO_FONT, radius, space},
 };
 use serde_json::{Map, Value, json};
 
 use kuvo_box::accounts::said;
+
+/// The most choices a `choice` field shows side by side; more are a menu.
+const MOST_SEGMENTS: usize = 4;
 
 /// How long after the last key the values are checked.
 const SETTLE: Duration = Duration::from_millis(300);
@@ -439,6 +443,54 @@ impl FormSheet {
                         Button::new(SharedString::from(format!("settings-form-{id}-clear")), words.clear).ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.chose_folder(&id, "", cx)))
                     }))
                     .into_any_element()
+            }
+            // More choices than fit side by side (a model): a menu, as a choice row's.
+            FieldKind::Choice if field.choices.len() > MOST_SEGMENTS => {
+                let chosen = values.get(&id).and_then(Value::as_str).unwrap_or_default().to_owned();
+                let shown = field.choices.iter().find(|choice| choice.id == chosen).map(|choice| choice.title.clone()).unwrap_or_else(|| chosen.clone());
+                let trigger_id = SharedString::from(format!("settings-form-{id}-menu"));
+                let trigger = div()
+                    .id(trigger_id.clone())
+                    .debug_selector({
+                        let id = trigger_id.to_string();
+                        move || id
+                    })
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .h(px(32.))
+                    .px(space::S3)
+                    .rounded(radius::NAV)
+                    .border_1()
+                    .border_color(c.border_strong)
+                    .bg(c.card)
+                    .when(!disabled, |d| d.cursor_pointer())
+                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(if disabled { c.text_muted } else { c.text }).child(if shown.is_empty() { "—".to_owned() } else { shown }))
+                    .child(div().flex().flex_none().flex_col().child(svg().path(IconName::ChevronUp.path()).size(px(10.)).text_color(c.icon)).child(svg().path(IconName::ChevronDown.path()).size(px(10.)).text_color(c.icon)));
+                if disabled {
+                    trigger.into_any_element()
+                } else {
+                    let (choices, this) = (field.choices.clone(), cx.entity().downgrade());
+                    let wide = choices.iter().any(|choice| choice.line.is_some());
+                    PopoverMenu::new(SharedString::from(format!("settings-form-{id}-popover")), trigger, move |_, cx| {
+                        let (choices, this, id, chosen) = (choices.clone(), this.clone(), id.clone(), chosen.clone());
+                        cx.new(|cx| {
+                            let mut menu = Menu::new(cx).width(px(if wide { 360. } else { 240. }));
+                            for choice in choices {
+                                let (this, id, pick) = (this.clone(), id.clone(), choice.id.clone());
+                                let mut entry = MenuEntry::new(choice.title.clone()).checked(choice.id == chosen).on_select(move |_, cx| {
+                                    this.update(cx, |this, cx| this.pick(&id, Value::String(pick.clone()), cx)).ok();
+                                });
+                                if let Some(line) = choice.line.clone() {
+                                    entry = entry.detail(line);
+                                }
+                                menu = menu.entry(entry);
+                            }
+                            menu
+                        })
+                    })
+                    .into_any_element()
+                }
             }
             FieldKind::Choice => {
                 let chosen = values.get(&id).and_then(Value::as_str).unwrap_or_default().to_owned();
