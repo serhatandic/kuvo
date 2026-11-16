@@ -9669,7 +9669,6 @@ class LimitResets {
   spends = [];
   allowed = new Map;
   seen = new Map;
-  sharedSeen = false;
   waiting = new Map;
   running = new Map;
   constructor(limits, file, now = Date.now, transport, directory, peerWait = PEER_WAIT) {
@@ -9681,30 +9680,6 @@ class LimitResets {
     this.peerWait = peerWait;
     this.load();
     limits.resets = this;
-    directory?.listen(() => this.directorySaid());
-  }
-  directorySaid() {
-    const directory = this.directory;
-    if (!directory?.told)
-      return;
-    const shared = directory.sharedHere === true;
-    const becameShared = shared && !this.sharedSeen;
-    let changed = shared !== this.sharedSeen;
-    this.sharedSeen = shared;
-    const sharedPeer = directory.peerBoxes().some((box) => directory.isSharedPeer?.(box.key) === true);
-    for (const [row, decided] of [...this.allowed]) {
-      if (!decided.on && decided.from === "")
-        continue;
-      const apart = decided.from === undefined ? sharedPeer : decided.from ? directory.isPeer?.(decided.from) === true && !this.isYours(decided.from) : false;
-      if (!becameShared && !apart)
-        continue;
-      this.allowed.set(row, { on: false, at: decided.at, from: "" });
-      changed = true;
-    }
-    if (!changed)
-      return;
-    this.save();
-    this.changedSoon();
   }
   agentsMay(provider) {
     const live = this.limits.liveRow(provider);
@@ -10048,7 +10023,6 @@ class LimitResets {
       for (const [provider, row] of Object.entries(saved.seen ?? {}))
         if (typeof row === "string")
           this.seen.set(provider, row);
-      this.sharedSeen = saved.shared === true;
     } catch {}
   }
   save() {
@@ -10057,7 +10031,7 @@ class LimitResets {
     const at = this.now();
     this.spends = this.spends.filter((spend) => spend.state === "sending" || at - spend.at < KEEP_FOR).slice(-KEEP);
     mkdirSync10(dirname10(this.file), { recursive: true });
-    writeFileSync12(this.file + ".new", JSON.stringify({ spends: this.spends, allowed: Object.fromEntries(this.allowed), seen: Object.fromEntries(this.seen), ...this.sharedSeen ? { shared: true } : {} }), { mode: 384 });
+    writeFileSync12(this.file + ".new", JSON.stringify({ spends: this.spends, allowed: Object.fromEntries(this.allowed), seen: Object.fromEntries(this.seen) }), { mode: 384 });
     renameSync8(this.file + ".new", this.file);
   }
 }
@@ -10733,10 +10707,10 @@ class Limits {
   list(borrowed = true) {
     const listed = [];
     for (const account of this.accounts()) {
-      const entry = this.entries.get(account.provider);
-      if (!entry || entry.problem?.kind === "none")
+      const entry = this.entries.get(account.provider) ?? { windows: [], next: 0 };
+      if (entry.problem?.kind === "none")
         continue;
-      if (!entry.checked && !entry.windows.length && !entry.problem && !entry.elsewhere)
+      if (!account.limits.read && account.limits.signIn && account.limits.signIn() === undefined)
         continue;
       const problem = entry.problem ? { kind: entry.problem.kind, message: entry.problem.message, ...entry.problem.until ? { until: entry.problem.until } : {} } : undefined;
       const peer = borrowed && entry.elsewhere && entry.identity ? this.peers?.freshest(account.service, entry.identity) : undefined;
@@ -10798,11 +10772,13 @@ class Limits {
     return raw ? `${account.service}#${identityOf(raw)}` : undefined;
   }
   forced = new Set;
-  readAgain(provider) {
+  async readAgain(provider) {
+    if (!this.account(provider))
+      await this.tick();
     let entry = this.entries.get(provider);
     if (!entry) {
       if (!this.account(provider))
-        return Promise.resolve();
+        return;
       entry = { windows: [], next: 0 };
       this.entries.set(provider, entry);
     }
@@ -10827,9 +10803,10 @@ class Limits {
     return new Set(this.accounts().filter((account) => account.limits.read).map((account) => account.provider));
   }
   services() {
-    return [...new Set([...this.accounts().map((account) => account.service), ...this.alsoServices])];
+    return [...new Set([...this.accounts().map((account) => account.service), ...this.covers(), ...this.alsoServices])];
   }
   alsoServices = [];
+  covers = () => [];
   async refresh(only) {
     const at = this.now();
     for (const account of this.accounts()) {
@@ -17546,13 +17523,16 @@ class CodexAgent {
     return { windows, ...typeof type === "string" && type !== "unknown" ? { plan: codexPlan(type) } : {}, ...extras.length ? { extras } : {} };
   }
   signOut;
+  signOutShared;
+  signOutStops = true;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
     this.providerID = providerID("codex", instance.id);
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home;
       this.signOut = async () => {
-        await signOutWith("Codex", this.executable(), ["logout"], { ...process.env, CODEX_HOME: instance.home });
+        await signOutWith("Codex", this.executable(), ["logout"], instance.home ? { ...process.env, CODEX_HOME: instance.home } : process.env);
         this.shutdown();
         this.known.reset();
         this.modelList = undefined;
@@ -19943,7 +19923,7 @@ class CursorAgent {
     return loaded.apiKey;
   }
   async account(fresh = false) {
-    if ((this.instance.home || !process.env.CURSOR_API_KEY) && !existsSync17(this.authFile)) {
+    if ((this.instance.home || !process.env.CURSOR_API_KEY?.trim()) && !existsSync17(this.authFile)) {
       return { installed: true, signedIn: false, message: "Sign in with your Cursor account. Kuvo Code downloads Cursor's agent the first time." };
     }
     return this.known.read(fresh, async () => {
@@ -20008,6 +19988,8 @@ class CursorAgent {
     rmSync14(this.authFile, { force: true });
     this.known.reset();
     this.modelList = undefined;
+    if (!this.instance.home && process.env.CURSOR_API_KEY?.trim())
+      throw new Error("Cursor stays signed in with CURSOR_API_KEY from your shell\u2019s environment. Remove it there to sign out.");
   }
   async models() {
     const sdk = await this.sdk();
@@ -21076,16 +21058,24 @@ class GrokAgent {
     } catch {}
   }
   signOut;
+  signOutShared;
   constructor(context, instance = { id: "default" }) {
     this.context = context;
     this.instance = instance;
     this.providerID = providerID("grok", instance.id);
-    if (instance.id === "default" && instance.home) {
+    if (instance.id === "default") {
+      this.signOutShared = !instance.home;
       this.signOut = async () => {
-        await signOutWith("Grok", this.executable(), ["logout"], this.env());
+        const key = Boolean(process.env.XAI_API_KEY?.trim());
+        if (key)
+          await signOutWith("Grok", this.executable(), ["logout"], this.env()).catch(() => {});
+        else
+          await signOutWith("Grok", this.executable(), ["logout"], this.env());
         this.programUpdated();
         this.known.reset();
         this.status = undefined;
+        if (key)
+          throw new Error("Grok stays signed in with XAI_API_KEY from your shell\u2019s environment. Remove it there to sign out.");
       };
     }
   }
@@ -35721,7 +35711,6 @@ class LinkDirectory {
   told = false;
   setup;
   inNoSetup = false;
-  sharedHere = false;
   constructor(transport, clock = realClock) {
     this.transport = transport;
     this.clock = clock;
@@ -35732,7 +35721,7 @@ class LinkDirectory {
     const boxes = new Map;
     for (const box of given.boxes) {
       if (box && typeof box.key === "string" && box.key)
-        boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, ...box.apart === true ? { apart: true } : {}, ...box.shared === true ? { shared: true } : {} });
+        boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true });
     }
     this.boxes = boxes;
     const self = given.self;
@@ -35744,7 +35733,6 @@ class LinkDirectory {
     }
     this.setup = typeof given.setup === "string" && /^set_[A-Za-z0-9_-]{1,64}$/.test(given.setup) ? given.setup : undefined;
     this.inNoSetup = given.setup === null;
-    this.sharedHere = given.shared === true;
     this.told = true;
     this.listed = given.bots.filter((bot) => bot && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.box === "string" && boxes.has(bot.box)).map((bot) => ({
       id: bot.id,
@@ -35780,10 +35768,7 @@ class LinkDirectory {
     return this.boxes.has(box);
   }
   isYours(box) {
-    return this.told && this.isPeer(box) && this.boxes.get(box)?.apart !== true;
-  }
-  isSharedPeer(box) {
-    return this.boxes.get(box)?.shared === true;
+    return this.told && this.isPeer(box);
   }
   home(box) {
     let home = this.homes.get(box);
@@ -35794,6 +35779,74 @@ class LinkDirectory {
   existing(box) {
     return this.homes.get(box);
   }
+}
+
+// box/src/agents/sign-ins.ts
+var ASK_WITHIN = 20000;
+
+class SignIns {
+  within;
+  said = new Map;
+  seen = new Map;
+  none = new Set;
+  constructor(within = ASK_WITHIN) {
+    this.within = within;
+  }
+  changed;
+  signedIn(provider) {
+    return this.none.has(provider) ? false : this.said.get(provider);
+  }
+  allSaid(agents) {
+    return agents.every((agent) => this.signedIn(agent.providerID) !== undefined);
+  }
+  record(provider, account) {
+    this.telling(provider, () => this.said.set(provider, account.signedIn));
+  }
+  telling(provider, change) {
+    const before = this.signedIn(provider);
+    change();
+    if (before !== undefined && before !== this.signedIn(provider))
+      this.changed?.(provider);
+  }
+  async round(agents) {
+    await Promise.all(agents.map(async (agent) => {
+      const provider = agent.providerID;
+      const source = agent.limits;
+      const signIn = source?.signIn?.();
+      if (source?.signIn && signIn === undefined)
+        return this.telling(provider, () => this.none.add(provider));
+      if (this.said.has(provider) && !this.none.has(provider) && this.seen.get(provider) === signIn)
+        return;
+      this.seen.set(provider, signIn);
+      const account = await this.answer(agent, false);
+      this.telling(provider, () => {
+        this.none.delete(provider);
+        if (account)
+          this.said.set(provider, account.signedIn);
+      });
+    }));
+  }
+  async ask(agent, fresh = true) {
+    const account = await this.answer(agent, fresh);
+    if (account)
+      this.record(agent.providerID, account);
+  }
+  async answer(agent, fresh) {
+    let tooLate = () => {};
+    const waited = new Promise((resolve) => tooLate = () => resolve(undefined));
+    const late = setTimeout(() => tooLate(), this.within);
+    late.unref?.();
+    return Promise.race([
+      agent.account(fresh).then((account) => account, () => {
+        return;
+      }),
+      waited
+    ]).finally(() => clearTimeout(late));
+  }
+}
+var signIns = new SignIns;
+function signedInAgents(agents, record = signIns) {
+  return agents.filter((agent) => record.signedIn(agent.providerID) === true);
 }
 
 // box/src/agents/server.ts
@@ -35844,7 +35897,10 @@ async function maintainedSoon(agent, fresh) {
 }
 async function integration(agent, fresh = false, auto) {
   const [account, maintained] = await Promise.all([
-    agent.account(fresh).catch((error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
+    agent.account(fresh).then((account) => {
+      signIns.record(agent.providerID, account);
+      return account;
+    }, (error) => ({ installed: true, signedIn: false, message: String(error?.message ?? error) })),
     maintainedSoon(agent, fresh)
   ]);
   const before = lastSeen.get(agent.providerID);
@@ -35873,6 +35929,8 @@ async function integration(agent, fresh = false, auto) {
       account: account.label,
       install: agent.install,
       signsOut: Boolean(agent.signOut),
+      signOutShared: Boolean(agent.signOut && agent.signOutShared),
+      signOutStops: Boolean(agent.signOut && agent.signOutStops),
       version: maintained?.installed,
       latestVersion: maintained?.latest,
       outdated: maintained ? isOutdated(maintained) : false,
@@ -35891,6 +35949,7 @@ async function models(agents, hidden = false) {
   const lists = await Promise.all(agents.map(async (agent) => {
     try {
       const account = await agent.account();
+      signIns.record(agent.providerID, account);
       return account.signedIn ? await agent.models(hidden ? { hidden } : undefined) : [];
     } catch {
       return [];
@@ -35955,7 +36014,7 @@ function handler(context) {
             const id = newID("att");
             const created = Date.now();
             const expires = created + 30 * 60000;
-            const stop = watchSignIn(attempt, expires, () => void context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {}));
+            const stop = watchSignIn(attempt, expires, () => void signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {}));
             attempts.set(id, { agent, attempt, created, expires, stop });
             return located({ attemptID: id, url: attempt.url, instructions: attempt.instructions, mode: attempt.mode, acceptsCode: attempt.acceptsCode || undefined, userCode: attempt.userCode, time: { created, expires } });
           }
@@ -35992,7 +36051,7 @@ function handler(context) {
           if (!agent.signInWithKey)
             return error2(400, `${agent.name} doesn't take a key here.`);
           await agent.signInWithKey(String(key ?? "").trim());
-          context.limits?.readAgain(agent.providerID).then(() => context.usage?.refresh()).catch(() => {});
+          signIns.ask(agent).then(() => context.limits?.readAgain(agent.providerID)).then(() => context.usage?.refresh()).catch(() => {});
           return json15({});
         }
         if (b === "install" && method === "POST") {
@@ -36013,6 +36072,9 @@ function handler(context) {
           if (!agent.signOut)
             return error2(400, `Sign out of ${agent.name} where you signed in.`);
           await agent.signOut();
+          await signIns.ask(agent);
+          emit("integration.updated", { integrationID: agent.providerID });
+          emit("model.updated", {});
           return json15({});
         }
       }
@@ -36212,6 +36274,7 @@ function handler(context) {
           sessions.forgetProvider(target.providerID);
           await target.removeAccount?.().catch(() => {});
           target.shutdown?.();
+          signIns.record(target.providerID, { signedIn: false });
           roster.accounts.remove(target.providerID);
           roster.sync();
           emit("integration.updated", { integrationID: target.providerID });
@@ -37533,7 +37596,23 @@ var handoffs = new Handoffs(places5);
 var reviews = new Reviews(join42(home3, "reviews.json"), places5);
 var voice = new VoiceWords(places5);
 var engineAccounts = new EngineAccounts(() => link4.request("GET", "/api/credential"));
-var limits = new Limits(() => [...agentAccounts(roster.all()), ...engineAccounts.accounts()], join42(home3, "limits.json"), Date.now, () => engineAccounts.refresh(), () => engineAccounts.answered);
+var limits = new Limits(() => [...agentAccounts(signedInAgents(roster.all())), ...engineAccounts.accounts()], join42(home3, "limits.json"), Date.now, async () => void await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())]), () => engineAccounts.answered && signIns.allSaid(roster.all()));
+signIns.changed = (provider) => {
+  if (signIns.signedIn(provider))
+    return void limits.readAgain(provider).catch(() => {});
+  limits.ownChanged();
+  limits.tick();
+};
+subscribe((event) => {
+  if (event.type !== "integration.updated")
+    return;
+  const agent = roster.all().find((each) => each.providerID === event.data?.integrationID);
+  if (agent)
+    signIns.ask(agent, false);
+  else
+    limits.ownChanged();
+});
+limits.covers = () => agentAccounts(roster.all()).map((account) => account.service);
 limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES];
 peers.limits = new LimitsPeers(limits, post, directory, join42(home3, "limits-peers.json"));
 peers.resets = new LimitResets(limits, join42(home3, "limits-resets.json"), Date.now, post, directory);
@@ -37760,4 +37839,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 1ecfb5bd94d493478d04cb12102528b148945254d373e380198770cf94000978
+// Built from Packages/Box/src/agents 2f4e8ebde0744c412cc4e6eb3b360a9d57392b97a2b2ea5ca8f35c3be929ebd2
