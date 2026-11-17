@@ -526,8 +526,9 @@ export function heldProcess(holding: Held | Promise<Held>, fallback?: () => Chil
       })
     },
     (error) => {
-      // (No holder: the agent as a process of the bridge's own, given what was written meanwhile.)
-      const own = fallback?.()
+      // (No holder: the agent as a process of the bridge's own, given what was written meanwhile;
+      // none once it was stopped meanwhile.)
+      const own = process_.killed ? undefined : fallback?.()
       if (own?.stdin && own.stdout) {
         for (const line of waiting.splice(0)) own.stdin.write(line + "\n")
         if (ending) own.stdin.end()

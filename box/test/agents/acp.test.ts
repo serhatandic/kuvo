@@ -24,6 +24,8 @@ import { subagentEngine } from "./support/subagents"
 import { forgetServers } from "../../src/agents/servers"
 import { relayTiming } from "../../src/agents/toolrelay"
 import { noteAgentsInside } from "../../src/agents/fence"
+import { agentHoldFolder } from "../../src/agents/hold/adopt"
+import { heldIn } from "../../src/agents/hold/client"
 import type { PermissionRule } from "../../src/agents/wire"
 
 const base = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-acp-test-"))
@@ -828,6 +830,60 @@ describe("Stopping an ACP agent", () => {
     expect(launches()).toHaveLength(2)
     expect(received().filter((message) => message.method === "session/load").map((message) => message.params.sessionId)).toEqual(["s1"])
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "succeeded" })
+  })
+
+  for (const when of ["its holder is still starting it", "it's still getting ready to start"] as const)
+  test(`one closed while ${when} (its session closed, the bridge stopping) isn't left running, nor its holder`, async () => {
+    const script = fakeAcp([said("Hello.")])
+    const folder = agentHoldFolder("grok")!
+    expect(folder).toBeTruthy()
+    const before = new Set(heldIn(folder).map((record) => record.id))
+    let thread: AcpThread | undefined
+    let outsideAsHeld: boolean | undefined
+    const agent: Agent = {
+      id: "grok",
+      providerID: "acp",
+      name: "Agent",
+      instance: { id: "default" },
+      methods: () => [],
+      account: async () => ({ installed: true, signedIn: true }),
+      models: async () => [],
+      thread: (session, state) =>
+        (thread = new AcpThread(
+          {
+            fileSystem: false,
+            authMethod: () => undefined,
+            held: { kind: "grok", provider: "acp" },
+            // Closed as it reads its skills (its first step), or once its holder is starting it (in
+            // the same breath: before the holder can have said it's ready).
+            skills: async () => {
+              if (when === "it's still getting ready to start") thread!.close()
+              return undefined
+            },
+            command: async (mode) => {
+              if (when === "its holder is still starting it")
+                setImmediate(() => {
+                  // (Outside the sandbox, which is off, from as its holder starts it: agents keep off the vault.)
+                  outsideAsHeld = thread!.outside
+                  thread!.close()
+                })
+              return { argv: [process.execPath, script, JSON.stringify(mode)], cwd: root }
+            },
+            selectModel: async () => {},
+          },
+          session,
+          state,
+          "Agent",
+        )),
+    }
+    const id = start(agent)
+    await settled(id)
+    expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed" })
+    if (when === "its holder is still starting it") expect(outsideAsHeld).toBe(true)
+    // (And inside again, as nothing of it runs.)
+    expect(thread!.outside).toBe(false)
+    for (const { pid } of received().filter((entry) => entry.argv)) expect(() => process.kill(pid, 0)).toThrow()
+    await until(() => heldIn(folder).every((record) => before.has(record.id)))
   })
 
   test("Stop while it waits on your answer: the ask goes, it's told to cancel, and then what it asked is answered as cancelled (not as a no)", async () => {

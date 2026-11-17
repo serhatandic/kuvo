@@ -10,6 +10,8 @@ import { existsSync, mkdirSync, readdirSync, realpathSync, symlinkSync } from "n
 import { createHash } from "node:crypto"
 import { createServer } from "node:net"
 import { CodexAgent, codexTiming } from "../../src/agents/agents/codex"
+import { agentHoldFolder } from "../../src/agents/hold/adopt"
+import { heldIn } from "../../src/agents/hold/client"
 import { Auto } from "../../src/agents/auto"
 import { subscribe } from "../../src/agents/events"
 import { watchFolder } from "../../src/shared/watch"
@@ -519,6 +521,30 @@ process.stdin.resume()
     expect(() => process.kill(pid, 0)).toThrow()
   })
 
+  test("a Codex stopped before its holder has even answered isn't left running, nor its holder", async () => {
+    const pidFile = join(root, "pid")
+    const script = join(root, "never.js")
+    writeFileSync(script, `process.stdin.on("end", () => process.exit(0))\nprocess.stdin.resume()\n`)
+    const launcher = join(root, "codex")
+    // (Its pid said first thing, by the shell that becomes it.)
+    writeFileSync(launcher, `#!/bin/sh\necho $$ > "${pidFile}.new" && mv "${pidFile}.new" "${pidFile}"\nexport BUN_BE_BUN=1\nexec "${process.execPath}" "${script}" "$@"\n`)
+    chmodSync(launcher, 0o755)
+    const folder = agentHoldFolder("codex")!
+    expect(folder).toBeTruthy()
+    const before = new Set(heldIn(folder).map((record) => record.id))
+    const agent = (codex = new TestCodex(launcher, root))
+    const starting = agent.rpc()
+    starting.catch(() => {})
+    // Stopped at once: its holder is starting it, and hasn't said it's ready.
+    agent.shutdown()
+    await expect(starting).rejects.toThrow("Codex stopped.")
+    // (Nothing of it outside the sandbox, which is off, any more: agents may use the vault again.)
+    expect(agent.outside()).toBe(false)
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : undefined
+    if (pid) expect(() => process.kill(pid, 0)).toThrow()
+    await until(() => heldIn(folder).every((record) => before.has(record.id)))
+  })
+
   test("one still starting outside the sandbox counts as outside it (agents keep off the vault) from its start until it stops", async () => {
     const go = join(root, "go")
     const script = join(root, "slow.js")
@@ -546,6 +572,8 @@ process.stdin.on("data", (chunk) => {
     delete process.env.KUVO_FENCE
     const agent = (codex = new TestCodex(launcher, root))
     const starting = agent.rpc()
+    // (From as its holder starts it, before that says it's ready.)
+    expect(agent.outside()).toBe(true)
     await until(() => existsSync(join(root, "started")))
     expect(agent.outside()).toBe(true)
     writeFileSync(go, "")

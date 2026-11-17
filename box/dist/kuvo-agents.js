@@ -9488,7 +9488,7 @@ function heldProcess(holding, fallback) {
       events.emit("close", exit.code, process_.signalCode);
     });
   }, (error) => {
-    const own = fallback?.();
+    const own = process_.killed ? undefined : fallback?.();
     if (own?.stdin && own.stdout) {
       for (const line of waiting.splice(0))
         own.stdin.write(line + `
@@ -9664,8 +9664,9 @@ class AcpThread {
     return this.fenced;
   }
   get outside() {
-    return Boolean(this.rpc && !this.rpc.isClosed && !this.fenced);
+    return this.startingOutside > 0 || Boolean(this.rpc && !this.rpc.isClosed && !this.fenced);
   }
+  startingOutside = 0;
   startedOver = false;
   onOwnTurn;
   own;
@@ -9676,6 +9677,8 @@ class AcpThread {
     this.name = name;
   }
   async open(input, hooks) {
+    const closes = this.closes;
+    const opening = ++this.opens;
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks);
     const subagents = await this.flavor.subagents?.(this.session.location.directory);
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...subagents ? { subagents } : {}, ...this.flavor.whole && fenceRules() ? { whole: true } : {} };
@@ -9690,7 +9693,7 @@ class AcpThread {
       return this.rpc;
     if (this.rpc && !this.rpc.isClosed && this.tasks.size)
       this.cut.push(...this.taskWork());
-    this.close();
+    this.drop();
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) });
     const launch = await this.flavor.command(mode);
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents]);
@@ -9703,10 +9706,25 @@ class AcpThread {
     const cwd = whole ? this.session.location.directory : launch.cwd ?? this.session.location.directory;
     const env = { ...whole?.env ?? launch.env, OPENCODE_SESSION_ID: this.session.id };
     const holdIn = this.flavor.held ? agentHoldFolder(this.flavor.held.kind) : undefined;
-    const held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held.provider, kind: this.flavor.held.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
-      console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
-      return;
-    }) : undefined;
+    if (holdIn && !whole)
+      this.startingOutside++;
+    let held;
+    try {
+      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held.provider, kind: this.flavor.held.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+        console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
+        return;
+      }) : undefined;
+      if (this.closes !== closes || this.opens !== opening) {
+        held?.stop();
+        await held?.exited;
+        launch.onExit?.();
+        ended?.();
+        throw new Error(`${this.name} stopped.`);
+      }
+    } finally {
+      if (holdIn && !whole)
+        this.startingOutside--;
+    }
     const rpc = new RPC(held ?? argv, {
       cwd,
       env,
@@ -9836,7 +9854,7 @@ class AcpThread {
       }
     } catch (error) {
       if (this.rpc === rpc)
-        this.close();
+        this.drop();
       throw error;
     }
     return rpc;
@@ -10592,7 +10610,7 @@ ${text}`;
   async stopBackgroundTasks() {
     if (!this.tasks.size || this.active)
       return;
-    this.close();
+    this.drop();
   }
   taskWork() {
     return [...this.tasks.values()].map((task) => {
@@ -10608,7 +10626,13 @@ ${text}`;
     if (had)
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
   }
+  closes = 0;
+  opens = 0;
   close() {
+    this.closes++;
+    this.drop();
+  }
+  drop() {
     this.rpc?.kill();
     this.rpc = undefined;
     this.leftRunning();
@@ -17323,7 +17347,11 @@ ${input.text}` } : input, this.copies());
         if (this.holding === holding)
           this.held = held;
       }, (error) => console.error("Claude Code's holder didn't start:", error?.message ?? error));
-      const process_ = heldProcess(holding, () => whole ? whole.spawn(options) : spawn6(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] }));
+      let ownRan = false;
+      const process_ = heldProcess(holding, () => {
+        ownRan = true;
+        return whole ? whole.spawn(options) : spawn6(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] });
+      });
       const said = new Said;
       this.said = said;
       this.saidAll = holding.then((held) => {
@@ -17331,7 +17359,7 @@ ${input.text}` } : input, this.copies());
         return held.exited.then(() => said.finish());
       }, () => said.finish());
       if (whole)
-        process_.once("exit", () => void holding.then(whole.ended, () => {}));
+        process_.once("exit", () => void holding.then(whole.ended, () => !ownRan && whole.ended()));
       return process_;
     };
   }
@@ -18834,8 +18862,9 @@ class CodexAgent {
     return slot;
   }
   outside() {
-    return [...this.unfencedServers].some((server) => !server.isClosed);
+    return this.startingOutside > 0 || [...this.unfencedServers].some((server) => !server.isClosed);
   }
+  startingOutside = 0;
   isFenced(rpc) {
     return this.fencedServers.has(rpc);
   }
@@ -18959,11 +18988,26 @@ class CodexAgent {
     const env = { ...this.instance.home ? { CODEX_HOME: this.instance.home } : {}, ...thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}, ...fence?.env };
     const argv = fence ? [fence.command, ...args] : [executable, ...args];
     const cwd = fence ? directory : this.context.temporary;
+    const stops = slot.stops;
     const holdIn = agentHoldFolder("codex");
-    const held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
-      console.error("Codex's holder didn't start:", error?.message ?? error);
-      return;
-    }) : undefined;
+    if (holdIn && !fence)
+      this.startingOutside++;
+    let held;
+    try {
+      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+        console.error("Codex's holder didn't start:", error?.message ?? error);
+        return;
+      }) : undefined;
+      if (slot.stops !== stops || this.slots.get(key) !== slot) {
+        held?.stop();
+        await held?.exited;
+        fence?.ended();
+        throw new Error("Codex stopped.");
+      }
+    } finally {
+      if (holdIn && !fence)
+        this.startingOutside--;
+    }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env });
     slot.fence = fenceNow;
     this.serve(rpc, slot, Boolean(fence), () => fence?.ended());
@@ -18978,7 +19022,7 @@ class CodexAgent {
       if (slot.opening === rpc)
         slot.opening = undefined;
     }
-    if (this.slots.get(key) !== slot) {
+    if (slot.stops !== stops || this.slots.get(key) !== slot) {
       rpc.kill();
       throw new Error("Codex stopped.");
     }
@@ -19046,6 +19090,8 @@ class CodexAgent {
   }
   stop(key) {
     const slot = this.slots.get(key);
+    if (slot)
+      slot.stops = (slot.stops ?? 0) + 1;
     slot?.opening?.kill();
     const server = slot?.server;
     if (!slot || !server)
@@ -39390,4 +39436,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents b3f93961de3f053fef298906618f0fb6d58ae0ad4e7a21cdda662a46678756c2
+// Built from Packages/Box/src/agents 0e5a30a6720cb8796418c791dd0c7886598978186464f6506cb82e1f903c4ffa

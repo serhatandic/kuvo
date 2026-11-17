@@ -1673,7 +1673,11 @@ class ClaudeThread implements Thread {
         },
         (error) => console.error("Claude Code's holder didn't start:", error?.message ?? error),
       )
-      const process_ = heldProcess(holding, () => (whole ? whole.spawn(options) : spawn(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] })))
+      let ownRan = false
+      const process_ = heldProcess(holding, () => {
+        ownRan = true
+        return whole ? whole.spawn(options) : spawn(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] })
+      })
       // What it says as it stops, for why it did (as the SDK keeps it for a process it starts itself).
       const said = new Said()
       this.said = said
@@ -1684,7 +1688,8 @@ class ClaudeThread implements Thread {
         },
         () => said.finish(),
       )
-      if (whole) process_.once("exit", () => void holding.then(whole.ended, () => {}))
+      // (Stopped before a holder that then failed: no process of the bridge's own ran, to end it.)
+      if (whole) process_.once("exit", () => void holding.then(whole.ended, () => !ownRan && whole.ended()))
       return process_
     }
   }
