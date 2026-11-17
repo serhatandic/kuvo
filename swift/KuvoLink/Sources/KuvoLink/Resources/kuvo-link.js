@@ -3012,6 +3012,120 @@ var init_phones = __esm(() => {
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 });
 
+// box/src/link/work-queue/relations.ts
+function references(text) {
+  if (!text.includes("#"))
+    return [];
+  const skipped = [...text.matchAll(/!?\[(?:\\.|[^\]\\\n])*\](?:\([^\n)]*\)|\[[^\]\n]*\])|(?:https?:\/\/|www\.)[^\s<]+|gh:[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/[A-Za-z0-9_.-]{1,100}#[0-9]{1,10}/giu)].map((match) => [match.index, match.index + match[0].length]);
+  for (const tick of text.matchAll(/`+/g)) {
+    if (skipped.some(([start, end]) => start <= tick.index && tick.index < end))
+      continue;
+    const end = text.indexOf(tick[0], tick.index + tick[0].length);
+    if (end >= 0 || tick[0].length >= 3)
+      skipped.push([tick.index, end >= 0 ? end + tick[0].length : text.length]);
+  }
+  const found = [];
+  for (const match of text.matchAll(/#([0-9]+)/g)) {
+    const start = match.index, end = start + match[0].length;
+    const before = start ? text[start - 1] : "";
+    if (before && !/\s|[([{“‘"'/,–-]/u.test(before))
+      continue;
+    if (match[1].length > 6 || Number(match[1]) === 0 || word.test(String.fromCodePoint(text.codePointAt(end) ?? 0)))
+      continue;
+    if (skipped.some(([a, b]) => a < end && b > start))
+      continue;
+    const prefix = text.slice(Math.max(0, start - 80), start).trimEnd();
+    if (/(?:^|[^\p{L}\p{N}])(?:pr|mr|pull request|issue|step)$/iu.test(prefix))
+      continue;
+    const number = Number(match[1]);
+    if (number <= 10) {
+      const left = prefix.match(/\p{L}+$/u)?.[0].toLowerCase() ?? "";
+      const right = text.slice(end, end + 100).trimStart().toLowerCase();
+      const next = right.match(/^\p{L}+/u)?.[0] ?? "";
+      const following = right.split(/\s+/, 2).map((part) => part.replace(/^\p{P}+|\p{P}+$/gu, ""));
+      if (ranks.has(left) || ranks.has(next) || (next === "on" || next === "in") && letters.test(following[1] ?? "") || next === "google" && /^results?$/.test(following[1] ?? ""))
+        continue;
+    }
+    found.push({ start, end, number });
+  }
+  return found;
+}
+function relationOf(value) {
+  return isObject(value) && typeof value.item === "string" && ITEM_ID.test(value.item) && typeof value.kind === "string" && Object.hasOwn(inverse, value.kind);
+}
+function setRelation(from, to, kind) {
+  if (from.id === to.id)
+    throw new Refusal("Choose a different item.");
+  if (kind !== null && !["related", "blocks", "blocked-by", "duplicate-of"].some((each) => each === kind)) {
+    throw new Refusal("Choose a kind of link and try again.");
+  }
+  const kept = kind;
+  const [first, other] = from.id < to.id ? [from, to] : [to, from];
+  const list = (first.relations ?? []).filter((each) => each.item !== other.id);
+  if (kept !== null)
+    list.push({ item: other.id, kind: first === from ? kept : inverse[kept] });
+  if (list.length)
+    first.relations = list;
+  else
+    delete first.relations;
+}
+function mentionLinkOf(value) {
+  return isObject(value) && typeof value.item === "string" && ITEM_ID.test(value.item) && (value.kind === "mentions" || value.kind === "mentioned-in");
+}
+function mentionGraph(items) {
+  const live = items.filter((item) => !item.removed);
+  const byNumber = new Map;
+  for (const item of live) {
+    if (item.number !== undefined && !byNumber.has(item.number))
+      byNumber.set(item.number, item);
+  }
+  const graph = new Map;
+  const link = (from, item, kind) => {
+    const list = graph.get(from) ?? [];
+    if (!list.length)
+      graph.set(from, list);
+    list.push({ item, kind });
+  };
+  for (const item of live) {
+    const numbers = new Set([item.body, ...item.notes.map((note) => note.text)].flatMap((text) => references(text).map((ref) => ref.number)));
+    for (const number of numbers) {
+      const other = byNumber.get(number);
+      if (!other || other.id === item.id)
+        continue;
+      link(item.id, other.id, "mentions");
+      link(other.id, item.id, "mentioned-in");
+    }
+  }
+  return graph;
+}
+function syncMentions(items) {
+  const graph = mentionGraph(items);
+  for (const item of items) {
+    const links = graph.get(item.id);
+    if (links)
+      item.mentionLinks = links;
+    else
+      delete item.mentionLinks;
+  }
+}
+function relationsOf(item, items) {
+  const live = new Map(items.filter((other) => !other.removed).map((other) => [other.id, other]));
+  const backward = [...live.values()].flatMap((other) => (other.relations ?? []).filter((link) => link.item === item.id).map((link) => ({ item: other.id, kind: inverse[link.kind] })));
+  const links = [...item.relations ?? [], ...backward, ...mentionGraph(items).get(item.id) ?? []];
+  return links.flatMap(({ item: id, kind }) => {
+    const other = live.get(id);
+    return other ? [{ id, kind, title: other.title, number: other.number }] : [];
+  });
+}
+var word, letters, ranks, inverse;
+var init_relations = __esm(() => {
+  init_store();
+  word = /[\p{L}\p{N}_]/u;
+  letters = /\p{L}/u;
+  ranks = new Set("ranked rank number result results spot place position priority seller".split(" "));
+  inverse = { related: "related", blocks: "blocked-by", "blocked-by": "blocks", "duplicate-of": "duplicated-by", "duplicated-by": "duplicate-of" };
+});
+
 // box/src/link/work-queue/sources.ts
 function issueAt(given) {
   if (typeof given !== "string")
@@ -3343,6 +3457,8 @@ function itemOf(given, owner) {
     notes: list(given.notes, (each) => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
     ...Array.isArray(given.events) ? { events: list(given.events, eventKept).slice(-MOST_EVENTS) } : {},
     files: list(given.files, (each) => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
+    ...Array.isArray(given.relations) ? { relations: list(given.relations, relationOf) } : {},
+    ...Array.isArray(given.mentionLinks) ? { mentionLinks: list(given.mentionLinks, mentionLinkOf) } : {},
     links: list(given.links, (each) => typeof each.url === "string"),
     sessions: list(given.sessions, (each) => typeof each.session === "string" && SESSION.test(each.session)),
     ...Array.isArray(given.handed) ? { handed: list(given.handed, (each) => typeof each.from === "string" && typeof each.to === "string") } : {},
@@ -3548,6 +3664,7 @@ function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
       purged.push(...gone.map((item) => item.id));
     }
     const value = work(book);
+    syncMentions(book.items());
     const changed = book.save();
     for (const id of purged)
       fs47.rmSync(path47.join(FILES2, id), { recursive: true, force: true });
@@ -3618,6 +3735,7 @@ var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, YOURS = "usr_you", OWNER2, KEPT_OWNER, 
   }
 }, readAll = () => onceEach(owners().map(readQueueOrNone)), allItems = () => readAll().flatMap((queue) => queue.items), Refusal, QueueSetAside, matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf2 = (item) => path47.join(FILES2, item);
 var init_store = __esm(() => {
+  init_relations();
   init_files2();
   init_home();
   init_sources();
@@ -7147,8 +7265,8 @@ function checked2(unit, value) {
     case "totalSpend": {
       if (!given || typeof given.show !== "boolean")
         return;
-      const period = word(given.period);
-      const metric = word(given.metric);
+      const period = word2(given.period);
+      const metric = word2(given.metric);
       return { show: given.show, ...period ? { period } : {}, ...metric ? { metric } : {}, ...others(given, ["show", "period", "metric"]) };
     }
     case "codexFallback":
@@ -7401,7 +7519,7 @@ var SETTINGS_UNITS, LAYOUT_LISTS, MOST_IDS = 1000, MOST_PROVIDERS = 200, ID3, id
       out.push(each);
   }
   return out;
-}, word = (value) => typeof value === "string" && /^[^\u0000-\u001f]{1,40}$/.test(value) ? value : undefined, MOST_OTHER = 16000, MOST_OTHER_PARTS = 20, MOST_OTHER_PART = 64000, OTHER_PART, isUnit = (name) => SETTINGS_UNITS.includes(name), stampOf = (value) => {
+}, word2 = (value) => typeof value === "string" && /^[^\u0000-\u001f]{1,40}$/.test(value) ? value : undefined, MOST_OTHER = 16000, MOST_OTHER_PARTS = 20, MOST_OTHER_PART = 64000, OTHER_PART, isUnit = (name) => SETTINGS_UNITS.includes(name), stampOf = (value) => {
   if (!value || typeof value !== "object")
     return null;
   const stamp = value;
@@ -7921,7 +8039,7 @@ function groupChats({ S, prefs, staged, dropped }) {
   if (seats)
     dropped.push(`In your group chats, ${seats === 1 ? "a bot on one of your machines takes its seat" : `${seats} bots on your machines take their seats`} again at ${seats === 1 ? "its" : "their"} next turn: the conversation ${seats === 1 ? "it" : "they"} had there before stays on that machine, unused.`);
 }
-function letters({ S, staged, dropped }) {
+function letters2({ S, staged, dropped }) {
   const waiting = readJSON4(path150.join(S, "agent-messages.json")), mailed = readJSON4(path150.join(S, "agent-letters.json")), seen = readJSON4(path150.join(S, "agent-letters-seen.json"));
   if (!Array.isArray(waiting) && !Array.isArray(mailed) && !isObject(seen))
     return;
@@ -8083,7 +8201,7 @@ function runUpgrades(run, move) {
   const madeHere = places.filter((name) => !exists4(upgrade.staged(name)));
   for (const name of places)
     fs141.mkdirSync(upgrade.staged(name), { recursive: true, mode: 448 });
-  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, welcomed, bots, personalities, groupChats, letters, usage, said5])
+  for (const each of [projects, worktrees, machines, engineSettings, boxSettings, link, welcomed, bots, personalities, groupChats, letters2, usage, said5])
     each(upgrade);
   enginePlugin(run.release, upgrade);
   for (const name of madeHere)
@@ -25860,7 +25978,7 @@ function stageClientFiles(given, local) {
       fs84.mkdirSync(folder, { recursive: true, mode: 448 });
       const staged = path88.join(folder, String(index));
       fs84.writeFileSync(staged, bytes, { mode: 384 });
-      return { staged, name, size: bytes.length };
+      return { staged, name, size: bytes.length, clientIndex: index };
     });
     return { staged, clear };
   } catch (error) {
@@ -25893,6 +26011,9 @@ var TYPES = {
   ".gif": "image/gif",
   ".webp": "image/webp",
   ".heic": "image/heic",
+  ".bmp": "image/bmp",
+  ".tiff": "image/tiff",
+  ".tif": "image/tiff",
   ".svg": "image/svg+xml",
   ".pdf": "application/pdf",
   ".md": "text/markdown",
@@ -26184,17 +26305,31 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
     if (gone.has(file.name))
       acting.fileOps.push(() => fs84.rmSync(path88.join(filesOf2(item.id), file.name), { force: true }));
   item.files = left;
+  const anchors = new Map;
   for (const each of staged) {
     const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
     const ext = path88.extname(base);
     let name = base;
     for (let n = 2;item.files.some((file) => file.name === name); n++)
       name = `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
-    item.files.push({ name, size: each.size, type: typeOf(name), at: now });
+    const anchor = each.clientIndex === undefined ? undefined : crypto31.randomBytes(12).toString("hex");
+    if (anchor && each.clientIndex !== undefined)
+      anchors.set(each.clientIndex, anchor);
+    item.files.push({ name, size: each.size, type: typeOf(name), at: now, ...anchor ? { anchor } : {} });
     acting.fileOps.push(() => {
       fs84.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
       fs84.renameSync(each.staged, path88.join(filesOf2(item.id), name));
     });
+  }
+  if (fields.body !== undefined && anchors.size) {
+    item.body = text(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
+      const anchor = anchors.get(Number(index));
+      const file = anchor && item.files.find((file) => file.anchor === anchor);
+      if (!file)
+        return marker;
+      const label = file.name.replace(/[\\[\]]/g, (char) => "\\" + char).replace(/[\r\n]/g, " ");
+      return `![${label}](kuvo-attachment:file/${anchor})`;
+    }), MOST_BODY, "The description (body)");
   }
   item.updated = { at: now, by: who };
 }
@@ -34179,6 +34314,7 @@ function elsewhereOf2(session, link = readLink()) {
 }
 
 // box/src/link/work-queue/acts.ts
+init_relations();
 import fs109 from "node:fs";
 import path111 from "node:path";
 init_numbers();
@@ -34230,13 +34366,15 @@ function addHere(given, local = false) {
 async function actHere({ method, action, ref, given = {}, targets, signal, local = false }) {
   const find = (items) => matching2(items, ref)[0] ?? null;
   if (method === "GET") {
-    const item = find(allItems());
+    const items = allItems();
+    const item = find(items);
     if (!item)
       return { status: 404, value: { message: "There's no such item." } };
     const facts = await factsOf(targets, signal ?? undefined);
     await readSeen([item], GITHUB_WAIT);
     const { titles } = await ownersOf(item.owner, [item], facts, targets);
-    return { status: 200, value: { item: withCan(wholeOf(item, facts.working, titles, assignable())) } };
+    const whole = wholeOf(item, facts.working, titles, assignable());
+    return { status: 200, value: { item: { ...withCan(whole), itemRelations: relationsOf(item, items), bodyMentions: references(whole.body), canLinkItems: !item.removed && !item.handing && !frozen().has(item.owner) } } };
   }
   const now = Date.now();
   const primary = primaryOf();
@@ -34269,6 +34407,22 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
       refuseLiveElsewhere(item, book.items(), titled);
       restoreItem(book, item, YOU, now);
     }));
+  }
+  if (given.itemRelation !== undefined) {
+    const relation = given.itemRelation;
+    const applied = changed3(inBook((item, book) => {
+      if (item.removed || !isObject(relation) || typeof relation.item !== "string")
+        throw new Refusal("Choose two items that are still in the Work Queue.");
+      const other = book.items().find((each) => each.id === relation.item && !each.removed);
+      if (!other)
+        throw new Refusal("Choose an item kept on the same computer and try again.");
+      refuseMoving([other.owner]);
+      refuseHanding(other);
+      setRelation(item, other, relation.kind);
+    }));
+    if (applied.status === 200 && isObject(applied.value))
+      applied.value.itemRelationApplied = true;
+    return applied;
   }
   let staged;
   try {
@@ -45155,7 +45309,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8eb1c1546153";
+var BRIDGE_VERSION = "98fab1edac4a";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -60118,6 +60272,7 @@ async function callTool(name, args, caller, signal) {
 }
 
 // box/src/link/work-queue/tools.ts
+init_relations();
 init_home();
 init_labels();
 init_statuses();
@@ -60946,6 +61101,7 @@ async function showWords(item, facts, targets, caller) {
   const status = statusName(item.status);
   const read = seenOf(item.source);
   const names = new Map(labels().map((each) => [each.id, each.name]));
+  const related = relationsOf(item, allItems().filter((each) => inView(caller.owner, each, overseenBy(caller.owner, facts.all)) || linkedTo(caller.owner, each)));
   const parts = [
     `${nameOf({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
     item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords(read.value.state)} before)` : `${seenWords(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",
@@ -60957,6 +61113,10 @@ ${item.source ? githubText(item.body, item.source.ref) : item.body}` : "",
     item.links.length ? `
 Links:
 ${item.links.map((each) => `- ${each.title ? `${each.title}: ` : ""}${each.url}`).join(`
+`)}` : "",
+    related.length ? `
+Item links:
+${related.map((each) => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? "" : `#${each.number} `}${each.title}`).join(`
 `)}` : "",
     item.files.length ? `
 Files: ${item.files.map((each) => each.name).join(", ")}` : "",
@@ -65109,6 +65269,7 @@ async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
 }
 
 // box/src/link/areas/work-queue.ts
+init_relations();
 import fs195 from "node:fs";
 import path204 from "node:path";
 init_labels();
@@ -65251,6 +65412,11 @@ async function* workQueueRoute(context, match) {
   if (part === "refs") {
     if (method !== "GET" && method !== "POST")
       return yield* json(405, {});
+    if (method === "POST" && typeof given.text === "string") {
+      if (!fromClient(context))
+        return yield* json(403, { message: notClient(context) });
+      return yield* json(200, { mentions: references(given.text.slice(0, MOST_BODY)) });
+    }
     const listed = method === "POST" ? Array.isArray(given.refs) ? given.refs : [] : (queryOf2(request).get("refs") ?? "").split(",");
     const wanted = listed.filter((each) => typeof each === "string").map((each) => each.trim()).filter((each) => each && each.length <= 300).slice(0, 200);
     const items = allItems();
@@ -65435,9 +65601,12 @@ async function* workQueueRoute(context, match) {
       return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
-  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {} }, signal);
+  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files, itemRelation: given.itemRelation } } : {} }, signal);
   if ("refused" in there)
     return yield* json(there.status, { message: there.refused, computer: far.computer });
+  if (given.itemRelation !== undefined && there.status === 200 && (!isObject(there.value) || there.value.itemRelationApplied !== true)) {
+    return yield* json(409, { message: `Update Kuvo on ${far.computer.name} to link items there, then try again.`, computer: far.computer });
+  }
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id)
     changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);
   const value = !isObject(there.value) ? there.value : isObject(there.value.item) ? { ...there.value, item: fromThere(there.value.item, far.computer) } : there.status === 200 ? there.value : { ...there.value, computer: far.computer };
