@@ -888,17 +888,35 @@ fn the_theme_row_switches_light_and_dark(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn usage_lays_out_each_accounts_windows_side_by_side(cx: &mut TestAppContext) {
+fn usage_wraps_equal_width_cards_and_stacks_their_limits(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Usage");
     for row in ["usage-0", "usage-1", "usage-2", "usage-3", "usage-4", "usage-5"] {
         assert!(shown(cx, row), "{row}");
     }
-    // Claude · Work has three windows on the same line.
+    // At this width two accounts fit, align at the top, and retain their natural heights.
+    let [first, second, third] = [0, 1, 2].map(|ix| bounds(cx, &format!("usage-{ix}")).expect("usage card"));
+    assert_eq!(first.origin.y, second.origin.y);
+    assert!(first.origin.x < second.origin.x);
+    assert!(first.size.height > second.size.height);
+    assert_eq!(first.origin.x, third.origin.x);
+    assert!(third.origin.y > first.origin.y);
+    assert_eq!(first.size.width, second.size.width);
+    assert_eq!(first.size.width, third.size.width);
     let [session, weekly, sonnet] = [0, 1, 2].map(|ix| bounds(cx, &format!("usage-0-window-{ix}")).expect("usage window"));
-    assert!(session.origin.x < weekly.origin.x && weekly.origin.x < sonnet.origin.x);
-    assert_eq!(session.origin.y, sonnet.origin.y);
+    assert_eq!(session.origin.x, weekly.origin.x);
+    assert_eq!(session.origin.x, sonnet.origin.x);
+    assert_eq!(session.size.width, sonnet.size.width);
+    assert!(session.origin.y < weekly.origin.y && weekly.origin.y < sonnet.origin.y);
+
+    cx.simulate_resize(size(px(1600.), px(1800.)));
+    cx.run_until_parked();
+    let [first, second, third, fourth] = [0, 1, 2, 3].map(|ix| bounds(cx, &format!("usage-{ix}")).expect("usage card"));
+    assert!(first.origin.x < second.origin.x && second.origin.x < third.origin.x);
+    assert_eq!(first.origin.y, third.origin.y);
+    assert_eq!(first.size.width, third.size.width);
+    assert!(fourth.origin.y > first.origin.y);
     assert!(!shown(cx, "usage-0-window-3"));
     // Cursor's plan ended: listed, saying so, with no meters.
     assert!(shown(cx, "usage-1") && !shown(cx, "usage-1-window-0"));

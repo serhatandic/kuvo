@@ -26,6 +26,9 @@ use crate::time;
 
 /// How wide the computer picker and its menu are: the sidebar's, inside its padding.
 const PICKER_WIDTH: f32 = crate::sidebar::WIDTH - 24.;
+const USAGE_CARD_WIDTH: f32 = 344.;
+const USAGE_CARD_GAP: f32 = 12.;
+const USAGE_PAGE_WIDTH: f32 = 3. * USAGE_CARD_WIDTH + 2. * USAGE_CARD_GAP;
 
 impl SettingsView {
     /// The sidebar of the side shown: whose settings these are (a computer's is its picker), the
@@ -195,7 +198,7 @@ impl SettingsView {
         self.picker.open(menu, window, cx);
     }
 
-    fn item(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let Some(item) = self.items.get(ix).cloned() else { return div().into_any_element() };
         let body: AnyElement = match item {
@@ -215,6 +218,13 @@ impl SettingsView {
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(cx))))
                     .into_any_element()
             }
+            Item::UsageCards(rows) => div()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap(px(USAGE_CARD_GAP))
+                .children(rows.into_iter().map(|row| self.row(row, true, true, cx)))
+                .into_any_element(),
             Item::Group { label, words } => div()
                 .pt(space::S6)
                 .pb(space::S2)
@@ -224,7 +234,7 @@ impl SettingsView {
                 .when(!label.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(label)))
                 .when(!words.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)))
                 .into_any_element(),
-            Item::Row { row, first, last } => self.row(*row, first, last, window, cx),
+            Item::Row { row, first, last } => self.row(*row, first, last, cx),
             Item::Note { key, words, busy: true, .. } => {
                 let first = self.items.iter().find_map(|item| match item { Item::Note { key, busy: true, .. } => Some(key), _ => None });
                 if first == Some(&key) {
@@ -259,11 +269,12 @@ impl SettingsView {
                 .into_any_element(),
             Item::End => div().h(space::S10).into_any_element(),
         };
-        // Each item in a column as wide as a page's cards, in the middle.
-        div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(PAGE_WIDTH)).child(body)).into_any_element()
+        // Usage has room for three cards. The other settings pages use the usual column.
+        let width = if self.side() == Side::Computer && self.section() == "usage" { USAGE_PAGE_WIDTH } else { PAGE_WIDTH };
+        div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(width)).child(body)).into_any_element()
     }
 
-    fn row(&mut self, row: Row, first: bool, last: bool, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         if row.layout == Layout::Bare {
             return self.bare_row(row, cx);
@@ -295,13 +306,12 @@ impl SettingsView {
         if let Control::Usage { plan, meters } = &control {
             let selector = key.clone();
             let now = self.now.unwrap_or_else(time::now_ms);
-            let columns = if window.viewport_size().width < px(1050.) || meters.len() == 4 { 2 } else { 3 };
             let plan = plan.as_ref().filter(|plan| !plan.is_empty()).map(|plan| {
                 div().flex_none().max_w(px(110.)).truncate().rounded(radius::PILL).bg(c.sunken)
                     .px(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child(plan.clone())
             });
-            return div().pb(space::S1_5).child(
-                div().id(SharedString::from(key.clone())).debug_selector(move || selector)
+            return div().id(SharedString::from(key.clone())).debug_selector(move || selector)
+                    .w(px(USAGE_CARD_WIDTH)).max_w(gpui::relative(1.)).flex_none()
                     .rounded(radius::POPOVER).border_1().border_color(c.border).bg(c.card)
                     .px(space::S3).py(space::S2).flex().flex_col().gap(space::S1_5)
                     .child(
@@ -313,8 +323,8 @@ impl SettingsView {
                     .children(why.map(|words| {
                         div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(words)
                     }))
-                    .when(!meters.is_empty(), |d| d.child(usage_meters(&key, meters, columns, now, self.usage_elapsed(), cx))),
-            ).into_any_element();
+                    .when(!meters.is_empty(), |d| d.child(usage_meters(&key, meters, now, self.usage_elapsed(), cx)))
+                    .into_any_element();
         }
         if matches!(&control, Control::Field { save: Act::Filter, .. }) {
             let selector = key.clone();
@@ -937,19 +947,18 @@ fn usage_reset(at: Option<f64>, now: f64) -> String {
             let seconds = (at / 1000.) as i64;
             let local_day = (seconds + crate::pasted::utc_offset(seconds)).div_euclid(86_400);
             let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][local_day.rem_euclid(7) as usize];
-            format!("{weekday} {}", time::clock(at))
+            format!("resets {weekday} {}", time::clock(at))
         }
     }
 }
 
-/// Equal columns keep the meter and its caption aligned across wrapped rows.
-fn usage_meters(key: &str, meters: &[UsageMeter], columns: u16, now: f64, elapsed: std::time::Duration, cx: &App) -> AnyElement {
+/// Stack full-width meters so all tracks have the same length.
+fn usage_meters(key: &str, meters: &[UsageMeter], now: f64, elapsed: std::time::Duration, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     div()
-        .grid()
-        .grid_cols(columns.min(meters.len() as u16))
-        .gap_x(space::S3)
-        .gap_y(space::S1_5)
+        .flex()
+        .flex_col()
+        .gap(space::S2)
         .children(meters.iter().enumerate().map(|(ix, meter)| {
             let selector = format!("{key}-window-{ix}");
             let old = meter.old_at(elapsed);
@@ -982,7 +991,7 @@ mod usage_tests {
         let noon = 86_400 + 43_200;
         let afternoon = (noon - crate::pasted::utc_offset(noon)) as f64 * 1000.;
         let reset = usage_reset(Some(afternoon), afternoon - 2. * 86_400_000.);
-        assert!(reset.starts_with("Fri "));
+        assert!(reset.starts_with("resets Fri "));
         assert!(reset.ends_with(&time::clock(afternoon)));
         assert!(!reset.contains("UTC"));
     }
@@ -1006,7 +1015,7 @@ impl Render for SettingsView {
             .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
         let page = match loading {
             Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("page-loading", words)).into_any_element(),
-            None => list(self.list.clone(), cx.processor(|this, ix, window, cx| this.item(ix, window, cx))).size_full().into_any_element(),
+            None => list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full().into_any_element(),
         };
         let problem = self.problem.clone().map(|problem| {
             // Over the page, which starts under it: never over its title.

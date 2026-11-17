@@ -262,6 +262,7 @@ enum Item {
     /// Whose these settings are, said once under the title.
     Whose(String),
     UsageSummary,
+    UsageCards(Vec<Row>),
     Group { label: String, words: String },
     Row { row: Box<Row>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool, warning: bool },
@@ -269,6 +270,16 @@ enum Item {
     Aside { key: &'static str, icon: IconName, title: String, words: String },
     Nothing(String),
     End,
+}
+
+impl Item {
+    fn rows(&self) -> &[Row] {
+        match self {
+            Self::Row { row, .. } => std::slice::from_ref(row.as_ref()),
+            Self::UsageCards(rows) => rows,
+            _ => &[],
+        }
+    }
 }
 
 impl EventEmitter<Pick> for SettingsView {}
@@ -789,10 +800,7 @@ impl SettingsView {
 
     /// The line under a row on the page open, as drawn.
     pub fn row_detail(&self, key: &str) -> Option<String> {
-        self.items.iter().find_map(|item| match item {
-            Item::Row { row, .. } if row.key == key => Some(row.detail.clone()),
-            _ => None,
-        })
+        self.items.iter().flat_map(Item::rows).find(|row| row.key == key).map(|row| row.detail.clone())
     }
 
     /// What a menu row on the page open shows as picked.
@@ -808,17 +816,18 @@ impl SettingsView {
 
     /// The rows on the page open, by key, in order (a list's items among them).
     pub fn page_rows(&self) -> Vec<String> {
-        self.items.iter().filter_map(|item| if let Item::Row { row, .. } = item { Some(row.key.clone()) } else { None }).collect()
+        self.items.iter().flat_map(Item::rows).map(|row| row.key.clone()).collect()
     }
 
     /// Every word on the page open: its rows' titles, lines and whys, and its notes.
     pub fn page_words(&self) -> String {
         let mut words = String::new();
         for item in &self.items {
-            match item {
-                Item::Row { row, .. } => words.extend([row.title.as_str(), "\n", row.detail.as_str(), "\n", row.why.as_deref().unwrap_or_default(), "\n"]),
-                Item::Note { words: note, .. } => words.extend([note.as_str(), "\n"]),
-                _ => {}
+            for row in item.rows() {
+                words.extend([row.title.as_str(), "\n", row.detail.as_str(), "\n", row.why.as_deref().unwrap_or_default(), "\n"]);
+            }
+            if let Item::Note { words: note, .. } = item {
+                words.extend([note.as_str(), "\n"]);
             }
         }
         words
@@ -826,10 +835,7 @@ impl SettingsView {
 
     /// Why a row on the page open can't be changed from here, as drawn under it.
     pub fn row_why(&self, key: &str) -> Option<String> {
-        self.items.iter().find_map(|item| match item {
-            Item::Row { row, .. } if row.key == key => row.why.clone(),
-            _ => None,
-        })
+        self.items.iter().flat_map(Item::rows).find(|row| row.key == key).and_then(|row| row.why.clone())
     }
 
     /// What shows in place of a computer's settings while it isn't reached: its title and words.
@@ -897,11 +903,13 @@ impl SettingsView {
                 for block in blocks {
                     match block {
                         Block::Group(label, words, rows) => {
-                            if !usage || !label.is_empty() || !words.is_empty() {
+                            if usage && label.is_empty() && words.is_empty() {
+                                items.push(Item::UsageCards(rows));
+                            } else {
                                 items.push(Item::Group { label, words });
+                                let count = rows.len();
+                                items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
                             }
-                            let count = rows.len();
-                            items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
                         }
                         Block::Note { key, words, busy, warning } => items.push(Item::Note { key, words, busy, warning }),
                     }
