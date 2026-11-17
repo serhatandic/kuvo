@@ -259,6 +259,7 @@ export { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } fro
 export { forgetMigrated as forgetQueueMigrated } from "./work-queue/migrate";
 export { atWorkForSure as queueAtWorkForSure, forgetSettled as forgetQueueSettled, settleStarted as settleQueueStarted } from "./work-queue/started";
 import { atWorkForSure, settleStarted } from "./work-queue/started";
+import { repairFromRelease } from "./updates/repair";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
 export { answerPersonalities, retellBots, takePersonalities, takePersonalitiesDocument } from "./personalities/take";
@@ -1234,6 +1235,13 @@ if (main) {
   else if (mode === "engine-swap") {
     console.log(JSON.stringify({ swapped: await swapEngine() }));
   }
+  // Kuvo's own programs here put back from the signed release this box runs, where one isn't what it
+  // says (`repair`, as the keeper starts it: updates/repair.ts). A test's folder only takes a test's
+  // key (`KUVO_TEST_RELEASE_KEY`, from its launch's environment).
+  else if (mode === "repair") {
+    const key = process.env.KUVO_TEST_RELEASE_KEY;
+    console.log(JSON.stringify(repairFromRelease(key && !REAL_BOX ? { keys: [key] } : {})));
+  }
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or
     // `update --offered` (the one Kuvo Code here offered, `kuvo/box/update`, when it's due: nothing
@@ -1365,3 +1373,4 @@ if (main) {
 
 export { frameBudget, browserView } from "./browser/view";
 export { viewUpgrade } from "./browser/websocket";
+export { repairFromRelease } from "./updates/repair";

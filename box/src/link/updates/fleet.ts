@@ -168,6 +168,8 @@ let hostOf: () => Pick<LinkHost, "send"> | null | undefined = () => null;
 // A test's own ways (its keys only in a test's folder), as the mail it takes uses them.
 let ways: FleetOptions = {};
 const ownWays = (): FleetOptions => ways;
+/** The keys a held release is checked with: Kuvo Code's own (a test's in a test's folder). */
+export const heldKeys = (): string[] => ownWays().keys ?? UPDATE_KEYS;
 /** For a test: where its mail goes, its keys, its block and what's done with an offered release. */
 export function fleetWith(options: FleetOptions): void {
   ways = REAL_BOX ? { ...options, keys: undefined, blocked: undefined } : options;

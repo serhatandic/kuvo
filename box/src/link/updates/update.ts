@@ -237,7 +237,7 @@ export async function agentsWorking(readEngine: () => EngineRecord = readEngineF
 }
 
 
-const hexSHA256 = (data: Buffer): string => crypto.createHash("sha256").update(data).digest("hex");
+export const hexSHA256 = (data: Buffer): string => crypto.createHash("sha256").update(data).digest("hex");
 
 // `command` with `args`, in the box's folder, its environment the bridge's: its exit status and
 // output, within `timeout` ms.
@@ -392,11 +392,6 @@ export function roomForData(): boolean {
   return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200_000_000;
 }
 
-// COMPAT(0.7 files): `bin/.own`, the box's own copies of the tools an older Mac puts its own over. Goes on the user's word, once no Mac from before 1.0 connects.
-// The box's tools that an older Kuvo Code on a Mac (0.7 and before) puts its own over as it
-// connects: the box keeps copies of its own (`bin/.own`), which its keeper puts back.
-const OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
-
 // The order files go in: its version first (a Mac connecting meanwhile leaves the box as it is),
 // the keeper's mark last (the keeper starts its new script only once the script is there).
 const installOrder = (files: string[]): string[] => [...files].sort((a, b) => (a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1));
@@ -425,7 +420,7 @@ export interface UpdateOptions {
 
 /** A release's `box.json`, in its pack: its version, its engine's, each file's SHA-256, and its
  * Mac bundles' (`bin/<name>.app`), each file by its path in the bundle. */
-interface BoxFiles {
+export interface BoxFiles {
   version: string;
   engine: string;
   files: Record<string, string>;
@@ -459,7 +454,7 @@ function differsHere(box: BoxFiles, root = K): boolean {
 
 // The `box.json` in a release's `pack` (checked against its manifest already), unpacked in a folder
 // of its own that goes after; it throws for a pack that has none, or not for `version`.
-function packedBox(pack: Buffer, version: string): BoxFiles {
+export function packedBox(pack: Buffer, version: string): BoxFiles {
   // (Only `box.json`, read from tar's output: nothing unpacked. Packed from a folder, `./box.json`.)
   for (const name of ["./box.json", "box.json"]) {
     const read = spawnSync("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 10_000_000, timeout: 120_000 });
@@ -606,16 +601,6 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     if (process.platform !== "darwin") bundles.length = 0;
     if (!files.includes("bin/box-version") || fs.readFileSync(path.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version) throw new Error("The release's files aren't what it says.");
-    // COMPAT(0.7 files): the release's tools kept in `bin/.own`. Goes on the user's word, once no Mac from before 1.0 connects.
-    // Its tools kept as the box's own too (and put back with the rest, if it goes back).
-    for (const tool of OWN_TOOLS) {
-      if (!files.includes(`bin/${tool}`)) continue;
-      const from = path.join(stage, "files", "bin", tool), own = path.join(stage, "files", "bin", ".own", tool);
-      fs.mkdirSync(path.dirname(own), { recursive: true, mode: 0o700 });
-      fs.copyFileSync(from, own);
-      fs.chmodSync(own, fs.statSync(from).mode & 0o777);
-      files.push(`bin/.own/${tool}`);
-    }
     // Each bundle in among the files, as one (before the keeper's mark, last).
     files.splice(0, files.length, ...installOrder([...files, ...bundles]));
 
@@ -930,7 +915,7 @@ interface Installed {
 }
 
 // COMPAT(0.7 files): how long a Mac's `run/mac-installing` counts. Goes on the user's word, once no Mac from before 1.0 connects.
-const MAC_INSTALLING = 3600_000;
+export const MAC_INSTALLING = 3600_000;
 
 // COMPAT(0.7 visits): drift, an older Mac's files put back over an update's. Goes on the user's word, once no Mac from before 1.0 connects.
 // Whether a Mac that doesn't leave a newer box as it is (an older Kuvo Code) put its own files back

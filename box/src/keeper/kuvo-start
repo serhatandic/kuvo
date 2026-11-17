@@ -266,20 +266,13 @@ keep)
     else
       boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
     fi
-    # COMPAT(0.7 files): the box tools put back from bin/.own. Goes 3 months after 0.8.0.
-    # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own
-    # tools over the box's since the box was last marked: the box's back, as the Kuvo Code
-    # that marked it put them there (bin/.own). Not while a Mac puts its files in place, or
-    # the box updates itself. Only over a tool put there after the box's version was (an older
-    # Mac's), never one a release put there with it: a release's files all carry the same time,
-    # the box's version's too, so a copy kept from before (an older bridge, which can't run under
-    # this keeper) never goes back over the release's own.
-    if [ -d "$K/bin/.own" ] && [ "$R/attached" -nt "$K/bin/box-version" ] && [ ! -d "$R/.updating" ] && [ -z "$(find "$R/mac-installing" -mmin -60 2>/dev/null)" ]; then
-      for f in "$K"/bin/.own/*; do
-        n=${f##*/}; t="$K/bin/$n"
-        [ -f "$f" ] && { [ ! -f "$t" ] || { { [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } && [ "$t" -nt "$K/bin/box-version" ]; }; } || continue
-        if cmp -s "$f" "$t"; then touch -r "$f" "$t"; else cp -p "$f" "$K/bin/.$n.new" && mv -f "$K/bin/.$n.new" "$t"; fi
-      done 2>/dev/null
+    # Kuvo's own programs here repaired from the signed release this box runs (`kuvo-link.js repair`,
+    # PROTOCOL.md, "Updates", Repaired from the release it runs): as the keeper starts, each hour,
+    # once an older Kuvo Code on a Mac connected (it touches run/attached, and may put its own tools
+    # over the box's), and when the coding agents' bridge didn't start (below). One look at a time.
+    if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && { [ "$round" -eq 0 ] || [ $((round % 240)) -eq 0 ] || [ -n "${repair_now-}" ] || { [ -f "$R/attached" ] && [ "$R/attached" -nt "$R/repair.json" ]; }; } && ! is "$(cat "$R/repair.pid" 2>/dev/null)" kuvo-link; then
+      repair_now=
+      (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null & echo $! >"$R/repair.pid")
     fi
     # COMPAT(0.7 engine-stop): run/stopped taken away once an older Mac started the engine. Goes 3 months after 0.8.0.
     # Running though stopped: an older Kuvo Code on a Mac, which doesn't know Stop, started
@@ -311,7 +304,8 @@ keep)
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi
       fi
       sh "$me" bridge >/dev/null 2>&1
-      if bridge_runs; then bstarted=$now; else bstarted=; bfails=$((bfails + 1)); fi
+      # (One that didn't start may be a program put over the release's: repaired at the next round.)
+      if bridge_runs; then bstarted=$now; else bstarted=; bfails=$((bfails + 1)); repair_now=1; fi
       case $bfails in 0 | 1) bwait=0 ;; 2) bwait=15 ;; 3) bwait=30 ;; 4) bwait=60 ;; *) bwait=300 ;; esac
       bnext=$((now + bwait))
     fi
@@ -456,17 +450,25 @@ bridge)
   bridge_runs
   ;;
 bridge-again)
-  # Try Again, from whoever asks the box (`kuvo/agents/start`): a bridge this keeper started that
-  # never said where it listens (no run/bridge.json of its own) ended, by the number it noted; the
-  # keeper's wait after failures forgotten (run/agents.now); the keeper started if it isn't running;
-  # and the bridge started now.
+  # Try Again, from whoever asks the box (`kuvo/agents/start`): Kuvo's programs repaired from the
+  # release this box runs; a bridge this keeper started that never said where it listens (no
+  # run/bridge.json of its own) a minute on, ended by the number it noted, under the launch's lock
+  # (so never one another start has just begun); the keeper's wait after failures forgotten
+  # (run/agents.now); the keeper started if it isn't running; and the bridge started.
   { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
-  a=$(cat "$R/agents.pid" 2>/dev/null)
-  if is "$a" kuvo-agents && ! grep -q "\"pid\":$a[,}]" "$R/bridge.json" 2>/dev/null; then
-    kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null
-    n=0; while kill -0 "$a" 2>/dev/null && [ $n -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
-    kill -0 "$a" 2>/dev/null && kill -9 "$a" 2>/dev/null
-    rm -f "$R/agents.pid"
+  if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ]; then
+    (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null)
+  fi
+  if lock 50; then
+    a=$(cat "$R/agents.pid" 2>/dev/null)
+    m=$(stat -c %Y "$R/agents.pid" 2>/dev/null || stat -f %m "$R/agents.pid" 2>/dev/null)
+    if is "$a" kuvo-agents && ! grep -q "\"pid\":$a[,}]" "$R/bridge.json" 2>/dev/null && [ -n "$m" ] && [ $(($(date +%s) - m)) -ge 60 ]; then
+      kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null
+      n=0; while kill -0 "$a" 2>/dev/null && [ $n -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+      kill -0 "$a" 2>/dev/null && kill -9 "$a" 2>/dev/null
+      [ "$(cat "$R/agents.pid" 2>/dev/null)" = "$a" ] && rm -f "$R/agents.pid"
+    fi
+    unlock
   fi
   : >"$R/agents.now"
   rm -f "$R/agents.retry"

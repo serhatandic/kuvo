@@ -2971,16 +2971,22 @@ the box (`link/areas/agents-down.ts`), never by a client:
   - `engine`: "The coding agents start once the engine is running." (the engine's own line says
     why it isn't);
   - `notInstalled`: `bin/kuvo-agents.js` isn't there;
+  - `outdated`: the bridge's program is from before its keeper kept it (it asks for the engine's
+    port and pid, and ends): put over the release's by an older Kuvo. A repair puts the release's
+    back ("Updates", Repaired from the release it runs), so Try Again is offered; where the last
+    repair found no sound release here (`run/repair.json` `damaged`, or `none` for a reason other than `busy`), it says
+    the next update brings them, with no Try Again;
   - `keeper`: nothing runs that starts it again (its keeper, `run/box.pid`, isn't running);
   - `crashing`: it keeps stopping, and its keeper waits before the next start (`run/agents.retry`,
     in seconds since 1970, as `engine.retry`): "…Kuvo tries again in about N minutes.";
   - `stuck`: the bridge its keeper started (`run/agents.pid`) never said where it listens;
   - `notStarting`: none of these, and no bridge for two minutes;
   - `app`: a box in a retired Mac app's folder, with what that app said (`run/agents-stopped`).
-  `action` is `{label: "Try Again", route: "kuvo/agents/start"}` for `keeper`, `crashing`, `stuck`
-  and `notStarting`. Codes, paths and the bridge's last words go to the box's log, never to people.
-- **`POST kuvo/agents/start`** (Try Again): the keeper's `kuvo-start bridge-again` ends a bridge it
-  started that never said where it listens (by its noted pid), forgets its wait after failures
+  `action` is `{label: "Try Again", route: "kuvo/agents/start"}` for `keeper`, `crashing`, `stuck`,
+  `notStarting` and a repairable `outdated`. Codes, paths and the bridge's last words go to the box's log, never to people.
+- **`POST kuvo/agents/start`** (Try Again, one at a time): the keeper's `kuvo-start bridge-again`
+  repairs Kuvo's files from the release, ends a bridge it started that hasn't said where it listens
+  a minute on (by its noted pid, under the launch's lock), forgets its wait after failures
   (`run/agents.now`), starts the keeper if it isn't running, and starts the bridge. Answered once
   that's done (45 s at most): `200 {}` once it runs, else `503` with the state as above. `405` for
   another method; `409 {message}` where there's no keeper to ask.
@@ -2994,13 +3000,27 @@ the box (`link/areas/agents-down.ts`), never by a client:
 
 ### Updates
 
+**Repaired from the release it runs.** Every box keeps the signed release it runs, whole, in
+`updates/release` (the one it holds for your other computers: "Your computers follow each other").
+`kuvo-link.js repair` checks Kuvo's own files here against it: the manifest (`boxes.json`) by its
+signature, the pack by the manifest's SHA-256, each file by the SHA-256 the pack's `box.json`
+names. A file that's missing or differs is put back from the pack, whole, with the pack's mode;
+`bin/.own`, what an older Kuvo kept apart, goes. Only from the release this box runs
+(`bin/box-version`): a held release of another version is never used (`none`, `otherVersion`), so a
+repair never goes up or down. A held release whose pack isn't what its manifest says is never used
+and is removed (`damaged`): the box's next update brings a sound one. Not while an update or a
+rollback runs, nor within an hour of a Mac's note that it puts its files in place (`busy`). Each
+look is noted in `run/repair.json` (`{at, result, version?, files?, why?}`). The keeper starts one
+as it starts, each hour, once `run/attached` is newer than that note, after its coding agents'
+bridge didn't start, and before Try Again (`kuvo-start bridge-again`). Its Mac bundles aren't
+repaired: what keeps them running does.
+
 A box's files say which Kuvo Code put them there: `~/.kuvo-code/bin/box-version`. It holds that
 app's version, written by a Mac after it sets the box up, or by the box when it updates itself.
 - **Older or unmarked box**: a Mac installs its own engine, bridge, helpers, agents bridge and
-  keeper, then writes its version. Marking it, it also keeps copies of the box's tools
-  (`kuvo-agents.js`, `kuvo-browser.js`, `kuvo-wake`, `kuvo-npx`) in `bin/.own`, only those that
-  carry its own first or last line (`// kuvo-browser <hash>`, `// kuvo-agents <hash>`). Its engine
-  launches note `"box": <version>`.
+  keeper, then writes its version. (An older Mac also kept copies of the box's tools in `bin/.own`;
+  a box removes that folder at each repair, below, so nothing puts them back.) Its engine launches
+  note `"box": <version>`.
 - **Newer box**: a Mac leaves everything as it is.
   - Every script that would write one of its files reads what it was given and stops.
   - It connects to the engine running there, and doesn't start it over for its own settings.
@@ -3205,8 +3225,7 @@ did: the box keeps working as itself ("For released Macs").
        which its `restore.sh` would put back): `kuvo-start rollback` moves that data to
        `updates/backups` first, and runs `restore.sh` only once it has; the keeper that puts back starts the engine
        that ran meanwhile (`run/engine.json`'s `version`) where that's newer than its own `V`.
-  4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last, with copies of the
-     release's tools in `bin/.own` (kept for a rollback as the rest is). A bundle goes whole, in
+  4. It swaps file by file: `bin/box-version` first, `bin/.kuvo-boot` last. A bundle goes whole, in
      among them: the new one staged beside it (`<name>.app.new`), the old one put aside
      (`<name>.app.old`), the new renamed in, the old removed. The box doesn't restart a program
      running from the old one: what keeps it running does. `restore.sh` puts a kept bundle back the
@@ -11528,12 +11547,11 @@ it ("Session lists").
 **Kuvo Code 0.5 to 0.7.2.** It can go once 0.8.0 has been out three months and no Mac with 0.7 or
 before connects (the box notes one: `run/attached`).
 - **Its files**: such a Mac doesn't know box versions, and puts its own engine, bridge, helpers,
-  agents bridge and keeper over the box's as it connects, touching `run/attached`. Once that's
-  newer than `bin/box-version`, the keeper puts each tool in `bin/.own` back where it differs,
-  but not while a Mac installs (`run/mac-installing`, an hour at most) or the box updates itself.
-  A tool there that doesn't carry the box's own first or last line is such a Mac's, and gives way
-  to the copy. Marking a box, a Mac puts its `kuvo-npx` there only with its own engine version
-  there, which it runs.
+  agents bridge and keeper over the box's as it connects, touching `run/attached`. The box no
+  longer keeps copies of its tools for it (`bin/.own`, gone): a newer `run/attached` starts a repair
+  from the release the box runs ("Updates", Repaired from the release it runs), which puts each of
+  its files back where it differs. Marking a box, a Mac puts its `kuvo-npx` there only with its own
+  engine version there, which it runs.
   <!-- compat: 0.7 files -->
 - **Messages it writes itself**: such a Mac, and every Mac and phone from before `messages.send`,
   writes a message's blocks itself and sends its text (`api/session/<id>/prompt`, `queue/add` with

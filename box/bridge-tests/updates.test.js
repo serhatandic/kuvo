@@ -106,7 +106,6 @@ function machine() {
   write(path.join(home, "bin", "kuvo-start"), keeper("1.0.0"), 0o700);
   write(path.join(home, "bin", "kuvo-link.js"), "// the old link\n", 0o600);
   write(path.join(home, "bin", "kuvo-wake"), "# the old wake-ups\n", 0o755);
-  write(path.join(home, "bin", ".own", "kuvo-wake"), "# the old wake-ups\n", 0o755);
   write(path.join(home, "engine", "1.0.0", "opencode"), engineBinary("1.0.0"), 0o755);
   write(path.join(home, "data", "opencode", "opencode.db"), "the old engine's data");
   // A start that never sees its engine noted fails here (status null) rather than holding up the
@@ -255,9 +254,9 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
   assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /^V=1\.1\.0$/m);
   assert.equal((fs.statSync(path.join(home, "bin", "kuvo-link.js")).mode & 0o777), 0o600, "with its own mode");
-  // Its tools kept as the box's own too, for its keeper to put back after an older Mac's visit.
-  assert.equal(fs.readFileSync(path.join(home, "bin", ".own", "kuvo-wake"), "utf8"), "# the new wake-ups\n");
-  assert.equal((fs.statSync(path.join(home, "bin", ".own", "kuvo-wake")).mode & 0o777), 0o755);
+  // (No copies of its tools kept apart any more: the release it holds repairs them, updates/repair.ts.)
+  assert.ok(!fs.existsSync(path.join(home, "bin", ".own")));
+  assert.equal((fs.statSync(path.join(home, "bin", "kuvo-wake")).mode & 0o777), 0o755);
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.1.0", "the new engine runs");
   engines.add(read(engineFile).pid);
   assert.ok(fs.existsSync(path.join(home, "updates", "rollback", "restore.sh")));
@@ -449,7 +448,7 @@ test("a new engine that never answers, and wrote nothing, goes back with the res
   assert.equal(await settle(), "unwell", "its engine never runs");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.9.0");
   assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-link.js"), "utf8"), "// the old link\n");
-  assert.equal(fs.readFileSync(path.join(home, "bin", ".own", "kuvo-wake"), "utf8"), "# the old wake-ups\n", "the box's own tools as they were");
+  assert.equal(fs.readFileSync(path.join(home, "bin", "kuvo-wake"), "utf8"), "# the old wake-ups\n", "the box's own tools as they were");
   assert.match(fs.readFileSync(path.join(home, "bin", "kuvo-start"), "utf8"), /^V=1\.0\.0$/m);
   await waitFor(() => fs.existsSync(engineFile) && read(engineFile).version === "1.0.0", "the old engine runs again");
   engines.add(read(engineFile).pid);
