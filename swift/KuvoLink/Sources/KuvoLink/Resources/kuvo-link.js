@@ -17149,15 +17149,15 @@ var QUIET = 60000;
 var GIVE_UP = 5 * 60000;
 var TRIED_FOR = 3600000;
 var packChecked = null;
-function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS) {
+function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD3) {
   try {
-    const boxes = fs52.readFileSync(path53.join(HELD3, "boxes.json"), "utf8");
+    const boxes = fs52.readFileSync(path53.join(folder, "boxes.json"), "utf8");
     const manifest = verifyBoxes(boxes, keys);
     if (manifest.spreads !== true)
       return null;
-    const pack = path53.join(HELD3, packName(manifest));
+    const pack = path53.join(folder, packName(manifest));
     const stat = fs52.statSync(pack);
-    const stamp = `${stat.size} ${stat.mtimeMs}`;
+    const stamp = `${pack} ${stat.size} ${stat.mtimeMs}`;
     if (packChecked?.stamp !== stamp || packChecked.sha !== manifest.pack.sha256) {
       packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto21.createHash("sha256").update(fs52.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
     }
@@ -17167,6 +17167,17 @@ function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS) {
   } catch {
     return null;
   }
+}
+function runningKept(keys = ownWays().keys ?? UPDATE_KEYS) {
+  const running = boxVersion();
+  if (!running)
+    return null;
+  for (const folder of [HELD3, RUNNING]) {
+    const kept = heldRelease(keys, folder);
+    if (kept?.version === running)
+      return kept;
+  }
+  return null;
 }
 function keepRelease(boxes, pack) {
   const partial = `${HELD3}.partial`;
@@ -17285,6 +17296,21 @@ function heldAround(now) {
     ...others.map((key) => ({ peer: key, version: heldBy2.get(key)?.version }))
   ].filter((each) => typeof each.version === "string" && newerVersion(each.version, mine)).filter((each) => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR).sort((a, b) => newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0);
 }
+function repairPull(options, now) {
+  const mine = boxVersion();
+  if (pull || !mine || isUpdating() || runningKept(options.keys))
+    return;
+  const told = readPeerAgents();
+  const link = readLink();
+  const peers = new Set(peersOf(link).map((peer) => peer.key));
+  const others = yours(link, told).map((box) => box.key).filter((key) => !peers.has(key) && now - (heldBy2.get(key)?.at ?? -Infinity) < HELD_WORD);
+  const holder = [...[...peers].map((key) => ({ peer: key, version: told[key]?.computer?.release })), ...others.map((key) => ({ peer: key, version: heldBy2.get(key)?.version }))].filter((each) => each.version === mine && now - (tried.get(`${each.peer} ${mine}`) ?? -Infinity) >= TRIED_FOR).sort((a, b) => a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0)[0];
+  if (!holder)
+    return;
+  pull = { peer: holder.peer, version: mine, got: new Set, asked: new Map, heard: now, progressed: now, forRepair: true };
+  fs52.rmSync(INCOMING, { recursive: true, force: true });
+  ask2(pull, options, now, false);
+}
 function followPeers(asked = {}) {
   const options = { ...ownWays(), ...asked };
   const { clock = Date.now, blocked = updatesBlocked() } = options;
@@ -17292,6 +17318,20 @@ function followPeers(asked = {}) {
     return;
   const now = clock();
   const best = heldAround(now).find((each) => !notThis(each.version, now)) ?? null;
+  if (pull?.forRepair) {
+    if (pull.version !== boxVersion() || !pull.whole && runningKept(options.keys))
+      return endPull(null);
+    if (pull.whole)
+      return finish(pull, options, now);
+    if (now - pull.progressed >= GIVE_UP)
+      return endPull(`${pull.version} couldn't be had from that computer in time.`, now);
+    if (!best || busyHere(blocked)) {
+      if (now - pull.heard >= QUIET)
+        ask2(pull, options, now, true);
+      return;
+    }
+    endPull(null);
+  }
   if (pull) {
     if (!newerVersion(pull.version, boxVersion()))
       return endPull(null);
@@ -17309,7 +17349,7 @@ function followPeers(asked = {}) {
     endPull(null);
   }
   if (!best || busyHere(blocked))
-    return;
+    return repairPull(options, now);
   pull = { peer: best.peer, version: best.version, got: new Set, asked: new Map, heard: now, progressed: now };
   fs52.rmSync(INCOMING, { recursive: true, force: true });
   ask2(pull, options, now, false);
@@ -17349,15 +17389,16 @@ function takeReleaseMail(sender, given, asked = {}) {
     heldBy2.set(sender.key, { version: given.holds, at: clock() });
     return followPeers(asked);
   }
+  const holding = (version) => [heldRelease(keys), heldRelease(keys, RUNNING)].find((each) => each?.version === version) ?? null;
   if (typeof given.want === "string") {
-    const held = heldRelease(keys);
+    const held = holding(given.want);
     tell(sender.key, held && held.version === given.want ? { version: held.version, boxes: held.boxes, size: held.size } : { version: given.want, none: true }, options);
     return;
   }
   if (typeof given.version !== "string")
     return;
   if (Number.isInteger(given.part) && given.d === undefined) {
-    const held = heldRelease(keys);
+    const held = holding(given.version);
     const i = given.part;
     if (!held || held.version !== given.version || i < 0 || i * PART >= held.size)
       return;
@@ -17386,14 +17427,15 @@ function takeReleaseMail(sender, given, asked = {}) {
       return endPull(`what it sent for ${current.version} isn't a release this computer takes: ${error.message}`, now);
     }
     const size = given.size;
-    if (manifest.version !== current.version || !newerVersion(manifest.version, boxVersion()))
+    const fits = current.forRepair ? manifest.version === boxVersion() : newerVersion(manifest.version, boxVersion());
+    if (manifest.version !== current.version || !fits)
       return endPull(`what it sent isn't ${current.version}.`, now);
-    const behind = engineBehind(manifest.engine);
+    const behind = current.forRepair ? null : engineBehind(manifest.engine);
     if (behind)
       return endPull(`${current.version} isn't taken here: ${behind}`, now);
     if (typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > MOST_PACK)
       return endPull(`its ${current.version} isn't a size a release can be.`, now);
-    if (notThis(manifest.version, now))
+    if (!current.forRepair && notThis(manifest.version, now))
       return endPull(null);
     fs52.mkdirSync(INCOMING, { recursive: true, mode: 448 });
     writePrivate(path53.join(INCOMING, `${current.version}.json`), given.boxes);
@@ -17437,6 +17479,16 @@ function takeReleaseMail(sender, given, asked = {}) {
 }
 function finish(current, options, now) {
   const folder = path53.join(INCOMING, "release");
+  if (current.forRepair) {
+    if (current.version === boxVersion()) {
+      fs52.rmSync(RUNNING, { recursive: true, force: true });
+      fs52.renameSync(folder, RUNNING);
+      log(`${current.version}, the version here, came from another of your computers, to repair from.`);
+    }
+    pull = null;
+    fs52.rmSync(INCOMING, { recursive: true, force: true });
+    return;
+  }
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
     if (offered.message === UPDATING_ALREADY || isUpdating())
@@ -17748,6 +17800,7 @@ function roomForData() {
 `).pop()?.trim().split(/\s+/)[3];
   return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200000000;
 }
+var OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
 var installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1);
 var engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running);
 function differsHere(box, root = K) {
@@ -17905,6 +17958,16 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       bundles.length = 0;
     if (!files.includes("bin/box-version") || fs53.readFileSync(path54.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version)
       throw new Error("The release's files aren't what it says.");
+    if (fs53.existsSync(path54.join(K, "bin", ".own")))
+      for (const tool of OWN_TOOLS) {
+        if (!files.includes(`bin/${tool}`))
+          continue;
+        const from = path54.join(stage, "files", "bin", tool), own = path54.join(stage, "files", "bin", ".own", tool);
+        fs53.mkdirSync(path54.dirname(own), { recursive: true, mode: 448 });
+        fs53.copyFileSync(from, own);
+        fs53.chmodSync(own, fs53.statSync(from).mode & 511);
+        files.push(`bin/.own/${tool}`);
+      }
     files.splice(0, files.length, ...installOrder([...files, ...bundles]));
     const engineFolder = path54.join(K, "engine", manifest.engine);
     let staged = null;
@@ -45089,7 +45152,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4cd8f7d975cb";
+var BRIDGE_VERSION = "cf7b91e537bc";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -72235,10 +72298,10 @@ init_migrate();
 
 // box/src/link/updates/repair.ts
 init_files2();
-init_home();
 import { spawnSync as spawnSync23 } from "node:child_process";
 import fs210 from "node:fs";
 import path220 from "node:path";
+init_home();
 var REPAIR_FILE = path220.join(RUN, "repair.json");
 var OWN_LEFT = path220.join(K, "bin", ".own");
 var KEEPER = "bin/kuvo-start";
@@ -72249,6 +72312,8 @@ function repairFromRelease(options = {}) {
     try {
       writePrivate(REPAIR_FILE, JSON.stringify({ at: now, ...repair }));
     } catch {}
+    if (repair.result === "sound" || repair.result === "repaired")
+      fs210.rmSync(OWN_LEFT, { recursive: true, force: true });
     if (repair.result === "repaired")
       console.error(`repaired from the release it runs (${repair.version}): ${repair.files.join(", ")}`);
     if (repair.result === "damaged")
@@ -72257,7 +72322,6 @@ function repairFromRelease(options = {}) {
   };
   if (IS_MAC && !OWN_HOME_MAC)
     return { result: "none", why: "busy" };
-  fs210.rmSync(OWN_LEFT, { recursive: true, force: true });
   if (busy(now))
     return said({ result: "none", why: "busy" });
   const running = boxVersion();
@@ -72276,6 +72340,9 @@ function repairFromRelease(options = {}) {
     return said({ result: "none", why: "failed" });
   }
   const files = Object.entries(box.files).filter(([file]) => BOX_FILE.test(file) && !file.split("/").includes(".."));
+  const keeper = files.find(([file, sha]) => file === KEEPER && !matches2(file, sha, null));
+  if (keeper)
+    unpacked(pack, KEEPER);
   const wrong = files.filter(([file, sha]) => !matches2(file, sha, null)).map(([file]) => file);
   if (!wrong.length)
     return said({ result: "sound", version: manifest.version });
@@ -72389,6 +72456,37 @@ function modeIn(listing, file) {
     return [...bits].reduce((mode, bit, index) => mode | (bit !== "-" && bit !== "S" && bit !== "T" ? 1 << 8 - index : 0), 0);
   }
   return 420;
+}
+var FEED = "https://github.com/serhatandic/kuvo-code/releases/download";
+async function repairWithFetch(options = {}) {
+  const first = repairFromRelease(options);
+  const missing = first.result === "damaged" || first.result === "none" && (first.why === "noRelease" || first.why === "otherVersion");
+  const running = boxVersion();
+  if (!missing || !running)
+    return first;
+  const keys = options.keys ?? heldKeys();
+  try {
+    const base = options.feed ?? FEED;
+    const boxes = await fetchedPatiently(`${base}/v${running}/boxes.json`, 1e6, 30000);
+    const manifest = verifyBoxes(boxes.toString("utf8"), keys);
+    if (manifest.version !== running)
+      throw new Error(`the feed's ${running} says ${manifest.version}`);
+    const pack = await fetchedPatiently(`${base}/v${running}/${packName(manifest)}`, 1e8, 300000);
+    if (hexSHA256(pack) !== manifest.pack.sha256)
+      throw new Error(`the feed's ${running} isn't what its manifest says`);
+    const partial = `${RUNNING}.partial`;
+    fs210.rmSync(partial, { recursive: true, force: true });
+    fs210.mkdirSync(partial, { recursive: true, mode: 448 });
+    fs210.writeFileSync(path220.join(partial, "boxes.json"), boxes, { mode: 384 });
+    fs210.writeFileSync(path220.join(partial, packName(manifest)), pack, { mode: 384 });
+    fs210.rmSync(RUNNING, { recursive: true, force: true });
+    fs210.renameSync(partial, RUNNING);
+    console.error(`${running}, the version here, fetched from the release feed to repair from`);
+  } catch (error) {
+    console.error(`${running} couldn't be fetched to repair from:`, error.message ?? error);
+    return first;
+  }
+  return repairFromRelease(options);
 }
 
 // box/src/link/main.ts
@@ -73239,8 +73337,9 @@ if (main) {
   } else if (mode === "engine-swap") {
     console.log(JSON.stringify({ swapped: await swapEngine() }));
   } else if (mode === "repair") {
-    const key = process.env.KUVO_TEST_RELEASE_KEY;
-    console.log(JSON.stringify(repairFromRelease(key && !REAL_BOX ? { keys: [key] } : {})));
+    const key = process.env.KUVO_TEST_RELEASE_KEY, feed = process.env.KUVO_TEST_RELEASE_FEED;
+    console.log(JSON.stringify(await repairWithFetch({ ...key && !REAL_BOX ? { keys: [key] } : {}, ...feed && !REAL_BOX ? { feed } : {} })));
+    process.exit(0);
   } else if (mode === "update") {
     const args = process.argv.slice(3);
     const option = (name) => args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined;
@@ -73732,6 +73831,7 @@ export {
   renameHere,
   renewsItself,
   repairFromRelease,
+  repairWithFetch,
   repeatText,
   resumeStarts,
   retellBots,
