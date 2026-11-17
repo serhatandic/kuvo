@@ -113,6 +113,7 @@ import { keepAwakeWhileWorking } from "./work/awake";
 import { runningServe, SERVE_FILE, SERVE_NEEDED } from "./serve-kept";
 import { uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
+import { handOverCommand, watchHelperBuild } from "./compat/helper-handover";
 import { keepMachinesUp } from "./add/keep-up";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
@@ -802,10 +803,14 @@ async function serve(): Promise<void> {
   // which any of your processes can read); a test's box, in OPENCODE_PASSWORD.
   let password = process.env.OPENCODE_PASSWORD;
   delete process.env.OPENCODE_PASSWORD;
+  // Whether the helper that started it leaves by itself for a new build of it (`renews`, said by one
+  // since beta.31); undefined where it wasn't started so.
+  let renews: boolean | undefined;
   if (!password) {
     const given = await firstLine();
     if (typeof given.password === "string") password = given.password;
     takeVaultSecrets(given);
+    renews = given.renews === true;
   }
   if (!password) {
     console.error("serve answers only with a password: on its stdin, {\"password\"}, or in OPENCODE_PASSWORD.");
@@ -922,6 +927,8 @@ async function serve(): Promise<void> {
   // The box's files changed under it (an update put new ones there): it goes, as its app gone does,
   // for its helper to start the new ones (only where its helper starts it, from the box's own files).
   leaveForNewCode(fileURLToPath(import.meta.url), () => void leave());
+  // COMPAT(beta.30 helper-handover): a helper from before beta.31, which never leaves for the new build in its place, handed over once. Goes once no box is from before beta.31.
+  watchHelperBuild(renews);
   // The copy of the engine's data an update kept, gone after its 30 days (a Mac runs no link whose
   // rounds would): as it starts, then every half hour.
   const dropBackups = () => { try { dropOldBackups(); } catch {} };
@@ -1321,6 +1328,10 @@ if (main) {
   }
   // This Mac's box's helper, Kuvo Helper, started at login (PROTOCOL.md, "This Mac's box: its
   // helper"): `helper install [--load] [--app <bundle ID>] | helper start [--if-missing] [--app <bundle ID>] | helper status`.
+  // COMPAT(beta.30 helper-handover): `helper hand-over --pid <helper>`, which serve starts. Goes once no box is from before beta.31.
+  else if (mode === "helper" && process.argv[3] === "hand-over") {
+    process.exitCode = handOverCommand(process.argv.slice(4));
+  }
   else if (mode === "helper") {
     process.exitCode = helperCommand(process.argv.slice(3));
   }

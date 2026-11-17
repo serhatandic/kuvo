@@ -472,11 +472,13 @@ private final class InTheTests {}
         #expect(text(home.appending(path: "keep.home")).trimmingCharacters(in: .newlines) == home.standardizedFileURL.path(percentEncoded: false).replacing(/\/$/, with: ""))
         // Its server, given its password and the vault's secrets on stdin (a box that never had a
         // vault key gets one made).
-        let given = try #require(try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: String])
-        #expect(given["password"]?.count == 64)
-        let vaultSecret = try #require(given["hostVaultSecret"])
+        let given = try #require(try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: Any])
+        #expect((given["password"] as? String)?.count == 64)
+        let vaultSecret = try #require(given["hostVaultSecret"] as? String)
         #expect(vaultSecret.count == 64)
-        #expect(given["vaultFileKey"]?.isEmpty == false)
+        #expect((given["vaultFileKey"] as? String)?.isEmpty == false)
+        // And that it leaves by itself for a new build of it, so the box never hands it over.
+        #expect(given["renews"] as? Bool == true)
         // Where its host interface answers, only for you to read.
         let host = json(hostFile)
         #expect((try FileManager.default.attributesOfItem(atPath: hostFile.path)[.posixPermissions] as? Int) == 0o600)
@@ -531,7 +533,7 @@ private final class InTheTests {}
         defer { cleanUp([helper]) }
         let hostFile = run.appending(path: "host.json"), stdin = home.appending(path: "serve.stdin")
         until { FileManager.default.fileExists(atPath: hostFile.path) && !text(stdin).isEmpty }
-        let given = try #require(try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: String])
+        let given = try #require(try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: Any])
         #expect(given["vaultFileKey"] == nil, "no new vault key: the box's files stay signed with the one it had")
         let identity = try await post(json(hostFile), "/link/identity", [:])
         #expect(identity.status == 503)
@@ -550,7 +552,7 @@ private final class InTheTests {}
         let hostFile = run.appending(path: "host.json"), stdin = home.appending(path: "serve.stdin")
         until { FileManager.default.fileExists(atPath: hostFile.path) && !text(stdin).isEmpty }
         let host = json(hostFile)
-        let vaultSecret = try #require((try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: String])?["hostVaultSecret"])
+        let vaultSecret = try #require((try JSONSerialization.jsonObject(with: Data(text(stdin).utf8)) as? [String: Any])?["hostVaultSecret"] as? String)
         // The vault's file key the app kept, given to the box as it was.
         #expect(text(stdin).contains(#""vaultFileKey":"filekey""#))
         // Its copies, read and changed through the helper (their list names it alone).
@@ -1008,6 +1010,9 @@ private final class InTheTests {}
         #expect(info["CFBundleExecutable"] as? String == "Kuvo Helper")
         #expect(helperInApp.lastPathComponent == "Kuvo Helper.app")
         #expect(info["LSUIElement"] as? Bool == true)
+        // That it leaves by itself for a new build of it, in plain XML as the box reads it.
+        #expect(info["KuvoHelperRenews"] as? Bool == true)
+        #expect(text(helperInApp.appending(path: "Contents/Info.plist")).contains("<key>KuvoHelperRenews</key>\n\t<true/>"))
         #expect(info["CFBundleShortVersionString"] as? String == "0.0.4")
         #expect(info["CFBundleVersion"] as? String == "4")
         // What macOS says as it asks, in the helper's own words (no app's are read).

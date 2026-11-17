@@ -13,7 +13,7 @@
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { APP_FOLDER, K, recordedKind } from "./home";
+import { APP_FOLDER, K, RUN, recordedKind } from "./home";
 import { LAUNCH_AGENT } from "./marks";
 import { launchTools } from "./uninstall";
 
@@ -21,6 +21,8 @@ export const HELPER_NAME = "Kuvo Helper";
 /** The helper in the box's `bin`, as its release brings it. */
 export const helperBundle = (): string => path.join(K, "bin", `${HELPER_NAME}.app`);
 export const helperProgram = (): string => path.join(helperBundle(), "Contents", "MacOS", HELPER_NAME);
+// COMPAT(beta.30 helper-handover): the record of the one hand-over of a helper from before beta.31 to the build in place (compat/helper-handover.ts). Goes once no box is from before beta.31.
+export const HANDOVER_RECORD = (): string => path.join(RUN, "helper-handover.json");
 
 const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -73,7 +75,10 @@ export function helperStatus() {
     const state = /^\s*state = (.+)$/m.exec(asked.stdout ?? "")?.[1]?.trim();
     running = loaded === false ? false : loaded && state ? state === "running" : null;
   }
-  return { helper: fs.existsSync(helperProgram()), agent, loaded, running };
+  // COMPAT(beta.30 helper-handover): a helper from before beta.31 handed over to the build in place, once, and how that went. Goes once no box is from before beta.31.
+  let handOver: unknown = null;
+  try { handOver = JSON.parse(fs.readFileSync(HANDOVER_RECORD(), "utf8")); } catch {}
+  return { helper: fs.existsSync(helperProgram()), agent, loaded, running, handOver };
 }
 
 /** Whether Kuvo Helper is switched on in System Settings › General › Login Items (`launchctl
@@ -154,19 +159,24 @@ export function installHelperAgent({ load, app }: { load: boolean; app: string }
  * and took it, which isn't yet the helper keeping the box). `ifMissing`: one
  * in place is left as it is, loaded or not (switched off in Login Items, it stays off, and isn't
  * opened). `mac`: whether it's a Mac's own box in a home of its own, which only its helper starts. */
-export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMissing?: boolean }): { started: boolean; mac: boolean; left?: boolean; disabled?: boolean; opened?: boolean; message: string } {
+export function startHelperAgent({ app, ifMissing = false, unlessStopped = false }: { app: string; ifMissing?: boolean; unlessStopped?: boolean }): { started: boolean; mac: boolean; left?: boolean; disabled?: boolean; opened?: boolean; stopped?: boolean; message: string } {
   const mac = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
   const why = refusal();
   if (why) return { started: false, mac, message: why };
   const tools = launchTools()!;
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const run = (args: string[]) => spawnSync(tools.launchctl, args, { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "pipe"] });
+  // (`unlessStopped`: not where Kuvo on this Mac was stopped, looked at again right before anything
+  // starts it: a hand-over's start, never one you asked for.)
+  const stoppedNow = () => unlessStopped && (fs.existsSync(path.join(K, "run", "paused")) || fs.existsSync(path.join(K, "run", "off")));
+  const stoppedSaid = { started: false, mac, stopped: true, message: "Kuvo on this Mac was stopped: nothing was started." };
   // Switched off in Login Items (why launchd won't, usually): opened here instead, as its own
   // program (one that runs already holds the box's lock, and the new one goes at once). Null: it
   // isn't switched off there.
   const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
     if (disabled.status !== 0 || !SWITCHED_OFF.test(disabled.stdout ?? "")) return null;
+    if (stoppedNow()) return stoppedSaid;
     const opened = spawnSync(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30_000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
       // (Asked of macOS, which took it: whether it then keeps the box is the helper's to say, in
@@ -176,6 +186,7 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
     return { started: false, mac, disabled: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
   const status = helperStatus();
+  if (stoppedNow()) return stoppedSaid;
   if (!status.agent) {
     const done = installHelperAgent({ load: true, app });
     return done.loaded ? { started: true, mac, message: done.message } : (openedInstead() ?? { started: false, mac, message: done.message });
@@ -194,6 +205,7 @@ export function startHelperAgent({ app, ifMissing = false }: { app: string; ifMi
     const pause = new Int32Array(new SharedArrayBuffer(4));
     for (let waited = 0; waited < 100 && /\bpid = \d+/.test(run(["print", `${domain}/${LAUNCH_AGENT}`]).stdout ?? ""); waited++) Atomics.wait(pause, 0, 0, 100);
   }
+  if (stoppedNow()) return stoppedSaid;
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
   return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }

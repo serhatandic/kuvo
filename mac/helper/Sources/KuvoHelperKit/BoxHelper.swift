@@ -483,7 +483,8 @@ public final class BoxHelper {
         serveLacksFileKey = fileKey == nil && retry
         let password = HostProof.secret()
         servePassword = password
-        var secrets = ["password": password, "hostVaultSecret": host.vaultSecret]
+        // COMPAT(beta.30 helper-handover): `renews` (and `KuvoHelperRenews` in its Info.plist), that it leaves by itself for a new build of it put in its place (`renewed`), so the box hands over only a helper from before that, which doesn't say so. Goes once no box is from before beta.31.
+        var secrets: [String: Any] = ["password": password, "hostVaultSecret": host.vaultSecret, "renews": true]
         if let fileKey { secrets["vaultFileKey"] = fileKey }
         let first = ((try? JSONSerialization.data(withJSONObject: secrets)) ?? Data()) + Data("\n".utf8)
         serve = Child.spawn("/bin/sh", [start.path(percentEncoded: false), "serve"], environment: environment, directory: home, session: false,
