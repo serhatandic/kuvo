@@ -2,6 +2,11 @@
 // "Updates"), and prints boxes.json: the manifest and its signature, in one file, so the two
 // can't come from different releases.
 //   KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json>
+//   KUVO_BOX_SPREADS=1   a release for everyone (the release workflow) or the user's private feed:
+//                        marked `spreads`, so a computer holding it hands it to the user's other
+//                        computers. Without it (a build made for trying an update), no computer
+//                        hands it on or follows it, so it never takes a real release's number
+//                        elsewhere (box/src/link/updates/fleet.ts).
 // The key is Ed25519 (openssl genpkey -algorithm ed25519). Machines take a manifest only when its
 // key is one pinned in kuvo-link.js (UPDATE_KEYS), and the signature covers "kuvo-box v1\n" and
 // the manifest's bytes, so nothing else signed with the key passes for one.
@@ -35,6 +40,7 @@ const manifest = Buffer.from(JSON.stringify({
   linux: box.linux,
   darwin: box.darwin,
   pack: { url, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length },
+  ...(process.env.KUVO_BOX_SPREADS === "1" ? { spreads: true } : {}),
 }));
 const signature = crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), key);
 const publicKey = crypto.createPublicKey(key).export({ type: "spki", format: "der" }).subarray(-32).toString("base64url");

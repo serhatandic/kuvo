@@ -748,7 +748,7 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   expect(rowOf(shown, "login-items")).toMatchObject({ tone: "warning", line: "Off, so Kuvo on this Mac doesn’t start at login.", actions: [{ id: "open-login-items", title: "Open Login Items", opens: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" }] })
   expect(rowOf(shown, "allows-screenRecording")).toMatchObject({ tone: "warning", line: "Not allowed. Agents can’t look at the screen.", actions: [{ title: "Open System Settings", opens: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" }] })
   expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet" })
-  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself soon.", kind: "status" })
+  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself within a few days of its release, or as soon as another of your computers has it.", kind: "status" })
   expect(rowOf(shown, "version").actions).toBeUndefined()
   // Its update failed: Update Now, and work under way is said before it's stopped.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ latest: "1.0.1", last: { at: 1, result: "failed", message: "No room." } }), working: async () => true })

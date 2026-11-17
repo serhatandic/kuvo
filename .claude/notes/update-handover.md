@@ -629,140 +629,98 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
 - Step 9 (live handoff instead of Renewal's drain) can now build on this. Adoption is crash
   recovery; a handoff adds `handover.json` and detaching without stopping.
 
-## One fleet, one version (design, 2026-11-17, branch kuvo/one-update-for-all-your-computers-when)
+## One fleet, one version (built, 2026-11-17, branch kuvo/one-update-for-all-your-computers-when)
 
 The user: "When I update the app, everything should be updated immediately. Update Now is for
-catastrophes; we succeeded if a user never sees it." Today only the Mac whose app updated takes the
-new Kuvo (its app offers its release, `kuvo/box/update`); the Mac that set a Linux machine up over
-SSH brings it up every 15 minutes (`add/keep-up.ts`); another Mac (the mini) is never brought up by
-a peer, and waits for its own app's Sparkle (about daily) or its nightly GitHub check (02:00 to
-05:00, a release three days old, and only GitHub's latest: never a private-feed beta).
-
-What the code really waits for today [V update.ts]: the nightly check runs only in the night window;
-it takes a release only three days after it's out (`RELEASE_AGE`); and it waits for nothing at work
-only when the release brings an engine its code wasn't checked with (`engineApart` false: the box is
-two or more engine releases behind). The header's "when nothing runs on it" was stale. Every other
-update stops nothing (sections above).
+catastrophes; we succeeded if a user never sees it." And later: "waiting 5 minutes after every update
+isn't acceptable." Before this, only the Mac whose app updated took the new Kuvo; machines were
+brought up over SSH every 15 minutes; another Mac waited for its own app (about daily) or the nightly
+GitHub check (02:00 to 05:00, a release three days old, never a private-feed beta).
 
 ### The rule
-Every computer runs the newest signed release any of your computers holds. Whatever brings a
-newer release into the fleet first (an app update on a Mac, a computer's own release check, a
-peer) is enough: the others take it from that computer at once, by themselves, under the same
-health rule and code-only rollback. Never older, never unsigned.
+Every computer runs the newest signed release any of your computers holds. Whatever brings a newer
+release in first (an app update, a computer's own release check, a peer) is enough: the others take
+it from that computer at once, all in parallel, each judged by its own health rule and going back by
+itself (code only). Never older, never unsigned, only between your own computers.
 
 ### Pieces, all in the box (`box/src/link/updates/fleet.ts`)
-1. **The held release.** Each box keeps the signed release it runs, `boxes.json` and its pack, in
-   `updates/release/` (kept by `clearUpdateStaging`). Written as an update swaps files in (from
-   GitHub's or an offered folder's), and when Kuvo Code on a Mac offers the release it carries and
-   the box has those same files already (so a Mac's box always holds its app's release). (Superseded below,
-   "no wait on another computer's trial": held and handed over from the moment it's checked.) A machine set up over SSH holds none until its first
-   signed update (its files came unsigned over SSH): it takes releases, it doesn't give them.
-2. **Saying it.** The `computer` part of the agents mail peers already exchange (at connect, on
-   change within a minute, every ten minutes) gains `kuvo` (the Kuvo version this box runs; on a Mac
-   `version` is the app's, which says nothing of its Kuvo) and `release` (the version of the signed
-   release it can hand over). No new round trip: a box that updates says so in its next mail.
-3. **Following.** On each agents mail from a peer, and each minute, a box picks the newest `release`
-   its peers say, newer than its own version (ties: the lowest key, then the next on failure, so the
-   choice is deterministic), unless something's in the way (an update under way or on trial, an
-   offered release as new or newer waiting, that version resting after it failed here). Then it
-   pulls it from that peer.
-4. **Moving the bytes: peer mail `release`, over the relay, encrypted end to end like all peer
-   mail.** Pull-based: `{release: {want}}` → `{release: {version, boxes, size}}` (the signed
-   manifest, a few KB) or `{release: {version, none: true}}`; then `{release: {version, part: i}}` →
-   `{release: {version, i, d}}`, 30,000-byte parts (as moves use), up to 8 asked at once, a part not
-   answered asked again at the next minute's look. No bytes are asked for until the manifest is
-   verified (pinned key `UPDATE_KEYS`, newer than this box, its engine not older than the one
-   running). The whole pack is checked against the signed SHA-256, then offered to the box itself
-   (`offerUpdate`: checked a second time) and taken by the existing offered path, which stops
-   nothing. The engine, when the release brings a new one, comes from the address the signed
-   manifest names, checked by its signed SHA-512, as every update gets it. A private-feed beta
-   travels the same way: no peer needs GitHub.
-5. **Never a downgrade.** Only a strictly newer version is asked for, offered or taken (each step
-   checks again); a computer that's behind never says it holds a release newer than its peers', and
-   nothing a peer says moves a box back.
-6. **Offline computers.** A computer that was away hears its peers' mail as it connects (`ask:
-   agents`), and its peers hear its own: whichever side is behind pulls then. A pull cut short starts
-   again at the next minute's look (a link that starts again begins the pull anew).
-7. **The release check (was "nightly").** One code path, no night window and no wait for quiet:
-   every six hours at any hour, and a minute after the link starts, a box asks GitHub for the latest
-   release and takes it if it's newer, as any other way in. It's needed only for a fleet where no app
-   opens (a phone-only user, Linux machines alone), so security fixes still arrive; whatever finds a
-   newer release first, propagation spreads it. It keeps `RELEASE_AGE` (three days after a release is
-   out) for now: a decision for the user (below).
-8. **Machines over SSH.** The 15-minute keep-up round stays only as the retry: it brings a machine
-   up over SSH when the machine doesn't follow peers itself (a box from before this: no `kuvo` in its
-   mail), or is still behind an hour after a peer could hand it the release.
-9. **The Mac's app.** Not needed for the box to be current, and never started by Kuvo Helper for it.
-   The box states the fact: the app's registration (`kuvo/box/app {desktop, version}`) gives its
-   version, and this Mac's row in `kuvo/computers` says `appCheck: <version>` while Kuvo on this Mac
-   is newer than its app.
-   The app, seeing it, asks Sparkle for a background check once per Kuvo version
-   (`checkForUpdatesInBackground`): Sparkle installs it as you set it (by itself at quit, or its own
-   window). Until then the gate (`kuvo_box/src/gate.rs`, Open/Behind/Held) already lets an older app
-   use a newer box: its features are Open or Behind, never Held, as a box newer than its app is never
-   held. So the app follows; it is never updated by the box.
-10. **Update Now, rare by design.** It's offered only where a computer can't take an update by itself:
-    a version that failed here twice (put back, or failed before anything changed) and a machine this
-    box couldn't reach over SSH for three days while it stayed behind with no peer to hand it a
-    release. A release waiting, an update under way, a Mac or machine about to follow: a line, no
-    button. "Another Mac: its own app updates it" goes: another Mac follows like any computer, and the
-    box listing your computers says "Kuvo on <name> updates in a moment".
+1. **Held.** A box keeps the newest signed release it has (`updates/release`: `boxes.json` and its
+   pack by its name) from the moment it's checked there: the app offers it (`offerUpdate`, the
+   "same files" 409 too), the box fetched it (`update`, once the pack's SHA-256 is checked), or a
+   peer handed it over. It hands it over at once, before or while taking it, whatever comes of it
+   here; never an older one over a newer. Only a release signed with `spreads` (the release workflow
+   and the private feed set `KUVO_BOX_SPREADS=1` for `scripts/sign-box.mjs`): a build signed for
+   trying an update is taken where it's offered and never handed on, so it can't take a real
+   release's number on other computers. The holder checks its pack against the signed SHA-256
+   before serving (once per file). A machine set up over SSH holds none until it gets a signed one.
+2. **Told.** Agents mail's `computer` says `kuvo` (the Kuvo version it runs; a Mac's `version` is its
+   app's) and `release` (the version held). Your other Macs, which aren't peers of a Mac's box (its
+   peers are its machines), get `{release: {holds}}` instead. The link watches `updates`
+   (`watchHeld`) and tells at once when what's held changes; also each minute, and every ten.
+3. **Whose.** Only your own computers: peers, the setup's members, and the Macs a machine of yours
+   names as its own (a Mac that set up one of your computers is yours, #783). A box only vouched for
+   otherwise is never asked, told or answered.
+4. **Followed.** On each agents mail or `holds`, and each minute: the newest held version newer than
+   this box, then the lowest key; a version resting after failing here, or that failed here twice,
+   gives way to the next newer one. Not while blocked, an update runs or is on trial, the engine is
+   stopped on purpose.
+5. **Moved.** Peer mail `release`, through the relay, end to end encrypted: `{want}` → `{version,
+   boxes, size}` or `{none}`; then `{part}` → `{i, d}`, 30,000 bytes each, sixteen at once. Nothing
+   is asked before `boxes` verifies (pinned key, the version asked, newer, its engine not older than
+   the one running, 1 byte to 100 MB). Whole, it's checked against the signed SHA-256, moved (never
+   copied) into `incoming/release`, and offered to the box itself (checked again), then taken by the
+   offered path, which stops nothing. A release check under way here holds a pull, kept, and offers it
+   once the check is over. The engine, when new, comes from the manifest's URL, checked by its
+   SHA-512. A pull that hears nothing in a minute asks again; no progress in five minutes, the next
+   peer. A link that starts again begins the pull anew (parts are kept only within one pull).
+6. **Failed twice.** Per computer (`offerFailed.tries`, kept through a take's trial and forgotten once
+   one's judged well): a version put back or failed twice in a row isn't taken by itself again until
+   a newer one comes, or you press Update Now (which takes the one held or offered).
+7. **The release check.** No night window, no wait for quiet: a minute after the link starts, then
+   once in six hours at any hour, each box at its own point in them (offset from its name and
+   folder). Still a release three days old (`RELEASE_AGE`, a decision for the user).
+8. **Machines over SSH.** The 15-minute round is the retry: a machine that doesn't follow its peers
+   (no `kuvo`), or is still behind an hour after it could have.
+9. **The Mac's app.** Never needed for the box to be current, never started for it. It registers its
+   version (`kuvo/box/app {desktop, version}`); while Kuvo on its Mac is newer, that Mac's row says
+   `appCheck`, and the app asks Sparkle for a background check once per version, only where you let
+   it check by itself. Meanwhile the gate lets it use the newer Kuvo (Open or Behind, never Held).
+10. **Update Now.** Only where a computer can't get past something by itself: a version that failed
+    there twice; a machine not reached over SSH for three days; a release that restarts the engine
+    and waited a day for nothing to be at work. Otherwise a line, nothing to press: "updates in a
+    moment", and after a day behind, "hasn't updated yet".
 
-### Two Macs (built after review)
-A Mac's box's peers are its own machines (`peersOf`: `link.macPeers`, all `machine`); another Mac is
-a box "vouched for" by a machine both set up, which got plan limits only. A release's trust is its
-signature, not who hands it over, so `release` mail now goes between vouched boxes too: each box
-tells the boxes its peers vouch for what it holds (`{holds}`, each minute when it changes, every ten
-minutes anyway), and they pull from it as from a peer. So the mini takes the MacBook's release
-directly, in the exchange that follows the MacBook holding it. Not covered by a test: a real
-`IS_MAC` box (`KUVO_BOX=mac`); the fleet tests drive a machine's box with a vouched Mac.
-
-### Decisions for the user (added after review)
-- Betas spread: one computer on a beta brings every computer to it (the newest signed version
-  wins, as briefed). Recommend: keep, as the private-feed betas are meant to reach the user's own
-  computers; the alternative is following only the channel each computer is on.
+### Timing: MacBook's app updates → mini on the new version (no engine change)
+- The app relaunches and offers its release: checked and held in about 0.1 s; the link hears it
+  within 50 ms and mails peers and your other Macs (one relay hop).
+- The mini asks for the manifest (one round trip), then the pack: a real one is about 1.8 MB
+  (`box-0.8.0-beta.32.tar.gz`), 61 parts, four round trips at sixteen in flight: about 1 to 3 s.
+- The mini takes it in a process of its own: the new link's self-test, the swap, the keeper: about
+  10 to 30 s; its server and link move to the new code within seconds after. So about 15 to 40 s in
+  all. A new engine adds its download from npm, and changes once the turns on it end.
+- Meanwhile the mini is fully usable: an older Kuvo with the app's baseline is Behind in the gate
+  (`kuvo_box/src/gate.rs`), never Held.
 
 ### What stays, and why
-- A release whose engine its code wasn't checked with (a box two engine releases behind) still waits
-  for nothing at work before it's taken: that one update stops the engine, and cutting work is worse
-  than a short wait. Rare by design now that every computer follows each release.
-- Peer mail reaches only your own computers (`openMail`); vouched boxes (another setup's) get
-  limits only, never a release.
+- A release whose engine its code wasn't checked with (a computer two engine releases behind) still
+  waits for nothing to be at work: that one update stops the engine. After a day, Update Now.
+- A release put back on the computer that had it first is still handed over: each computer's judge
+  sees its own pieces, and one that's bad everywhere goes back everywhere, code only.
 
 ### Decisions for the user
-- `RELEASE_AGE`: a computer's own GitHub check waits three days after a release is out (staged
-  rollout). An app update or a peer is taken at once regardless. Recommend: keep it (a bad release
-  then needs someone's app update to spread).
+- `RELEASE_AGE`: a computer's own GitHub check waits three days; an app update or a peer is taken at
+  once. Recommend: keep.
+- Betas spread: one computer on a beta (`spreads`, the private feed's) brings every computer to it.
+  Recommend: keep, as the private-feed betas are meant for the user's own computers.
 
 ### Tests
-Bridge (`box/bridge-tests/update-follows-peers.test.js`, fake peers, releases signed with the test key): a peer's
-newer release is pulled and offered in one exchange; unsigned, wrongly signed, older and same-version
-releases are refused before any part is asked; a peer that sends a pack not matching the signed
-SHA-256 is refused; an offline peer coming back is followed; the release check runs any hour and
-waits for nothing at work; Update Now isn't offered in the normal paths. Bridge
-(`update-follows-peer.test.js`): a box with an engine turn and a coding agent's turn running takes a
-peer's release over peer mail, and neither turn is cut.
-
-### Change, 2026-11-17 (the user): no wait on another computer's trial
-"If I use the app on the MacBook but the mini mostly, waiting 5 minutes after every update isn't
-acceptable." So a box holds a release, and tells its peers, the moment it's signed and checked
-there: Kuvo Code hands it over (`offerUpdate`), the box fetched it (`update`, once the pack's SHA-256
-is checked), or a peer did. Not after its own trial. Every computer updates in parallel, each judged
-by its own health rule and going back by itself (code only); a release put back on the computer that
-had it first is still held and handed over (no reason found to stop it: each computer's judge sees
-its own pieces, and a release that's bad everywhere goes back everywhere, code only). "Failed twice"
-stays per computer (`offerFailed.tries`). The link watches `updates` (`watchHeld`) and announces at
-once, to peers and vouched Macs; parts go sixteen at once.
-
-Timing, MacBook's app updates → mini on the new version (no engine change):
-- The app relaunches and offers its release: checked and held here in about 0.1 s; the link hears it
-  within 50 ms and mails its peers (one relay hop).
-- The mini asks for the manifest (one round trip), then the pack: a real one is about 1.8 MB
-  (`box-0.8.0-beta.32.tar.gz`), 61 parts, four round trips at sixteen in flight: about 1 to 3 s
-  through the relay.
-- The mini takes it in a process of its own: the new link's self-test, the swap, the keeper starting
-  it again: about 10 to 30 s; its server and link move to the new code within seconds after.
-- So about 15 to 40 s in all. A release with a new engine adds the engine's download from npm (tens of
-  MB), and the engine itself changes once the turns on it end ("A new engine").
-- Meanwhile the mini is fully usable: an older Kuvo with the app's baseline is Behind in the gate
-  (`kuvo_box/src/gate.rs`), never Held; only what it doesn't have yet is left out.
+`box/bridge-tests/update-follows-peers.test.js` (fake peers, `peer-release.js`; releases signed with
+the test key): pulled and offered in one exchange; refused unsigned, other key, older, its own
+version, another version, a tampered pack; offline return and a cut exchange; Mac to Mac; only your
+own computers; a build for trying never handed on; a release check holding a pull; failed twice not
+followed, an older newer one still is; newest wins, lowest key; held from the moment it's offered,
+handed over during a trial and after a rollback; Update Now's lines; `appCheck`; the rounds.
+`update-stops-nothing.test.js`: a release from a peer while an engine turn and a coding agent's turn
+run, neither cut. `updates.test.js`: put back after its trial twice through `takeOffer` → trial →
+judge, then Update Now with no offer waiting, and not taken by itself again. Not covered: a real
+`IS_MAC` box (`KUVO_BOX=mac`), a live Sparkle install.

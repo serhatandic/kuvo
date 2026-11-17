@@ -34,7 +34,7 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
 import { keeperEngine, SWAP_NOW } from "./engine-swap";
 import { swapLine, swapUnderWay } from "../../shared/engine-swap";
-import { keepRelease } from "./fleet";
+import { HELD, keepRelease } from "./fleet";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -854,7 +854,7 @@ function folderDiffers(from: string, manifest: BoxRelease): boolean {
 }
 
 // The name of a release's pack, as its address ends: in a folder here, it's beside `boxes.json`.
-function packName(manifest: BoxRelease): string {
+export function packName(manifest: Pick<BoxRelease, "pack">): string {
   let name = "";
   try { name = decodeURIComponent(path.posix.basename(new URL(manifest.pack.url).pathname)); } catch {}
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error("That isn't a release.");
@@ -980,9 +980,13 @@ export function checkDrift(now = Date.now()): boolean {
 export const RELEASE_CHECK = 6 * 3600_000;
 
 /** The release check's round `now` falls in: one look in each, at any hour. */
-export function releaseRound(now = Date.now()): string {
-  return String(Math.floor(now / RELEASE_CHECK));
+export function releaseRound(now = Date.now(), offset = ROUND_OFFSET): string {
+  return String(Math.floor((now + offset) / RELEASE_CHECK));
 }
+
+/** Where in its six hours each box's round falls: from its folder and its computer's name, so your
+ * computers, and everyone's, don't all ask GitHub at once. */
+const ROUND_OFFSET = parseInt(crypto.createHash("sha256").update(`${os.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
 
 // What `kuvo/update` says: whether updates are set up, this version and the newest heard of, how
 // the last went, whether one runs now, why not, when it can't, and a release offered from a folder
@@ -1038,10 +1042,10 @@ export function updateStatus(): UpdateStatus {
 // one. `round`: the release check's round it's for, noted by it unless something was at work. `keys` and `url`: a
 // test's (a test's folder only).
 let updateStarted: ChildProcess | null = null;
-export function startUpdate({ now = false, offered = false, round, keys, url }: { now?: boolean; offered?: boolean; round?: string; keys?: string[]; url?: string } = {}): boolean {
+export function startUpdate({ now = false, offered = false, round, keys, url, from }: { now?: boolean; offered?: boolean; round?: string; keys?: string[]; url?: string; from?: string } = {}): boolean {
   if (updateStarted || isUpdating()) return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...(url ? ["--url", url] : [])] : [];
-  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...test];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: K, env: process.env });
   updateStarted = child;
   const done = () => { if (updateStarted === child) updateStarted = null; };
@@ -1063,12 +1067,14 @@ export async function* updateRoute(context: RouteContext): AsyncGenerator<Answer
     const blocked = updatesBlocked();
     if (blocked) return yield* json(409, { message: blocked });
     // A release Kuvo Code here offered, newer than this box, is what Update Now takes, whatever is
-    // at work (the client asked first); else the newest from GitHub.
+    // at work (the client asked first); else a newer one held here (one that failed here twice,
+    // which nothing takes by itself any more: `updates/fleet.ts`); else the newest from GitHub.
     const offered = offerWaits();
     const held = offered ? offerHeld() : updateOnTrial() ? ON_TRIAL : null;
     if (held) return yield* json(409, { message: held });
+    const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD : undefined;
     // (Said as under way at once: its own process takes the update's lock a moment later.)
-    return yield* (startUpdate({ now: true, offered }) ? json(202, { ...updateStatus(), updating: "checking" }) : json(409, { message: UPDATING_ALREADY }));
+    return yield* (startUpdate({ now: true, offered, from: kept }) ? json(202, { ...updateStatus(), updating: "checking" }) : json(409, { message: UPDATING_ALREADY }));
   }
   return yield* json(405, {});
 }
@@ -1084,6 +1090,16 @@ export function offeredVersion(): string | null {
 }
 
 const dropOffer = (): void => fs.rmSync(OFFERED, { recursive: true, force: true });
+
+// The version of the newest release held here to hand to your other computers (`updates/release`),
+// checked as it was kept, or null.
+function heldVersion(): string | null {
+  try {
+    const given = JSON.parse(fs.readFileSync(path.join(HELD, "boxes.json"), "utf8"));
+    const version = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.version;
+    return versionOrder(version) ? version : null;
+  } catch { return null; }
+}
 
 /** Since when the release offered here has waited (its folder's time), or now for none. */
 export function offeredSince(): number {
@@ -1248,6 +1264,8 @@ export async function offerDue({ blocked = updatesBlocked(), clock = Date.now, n
   }
   if (blocked || !before || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, "stopped"))) return false;
   if (now) return true;
+  // (One that failed here twice waits for your word, Update Now, or a newer one.)
+  if (offerFailedTwice(offered)) return false;
   // (Only one with another engine waits for nothing to be at work.)
   return !updateStarted && !offerRests(offered, clock()) && !(offerChangesEngine() && await boxBusy());
 }

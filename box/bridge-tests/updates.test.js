@@ -1090,6 +1090,7 @@ test("an offered release that doesn't come up is taken back and goes; one the bo
   assert.equal(rest.status, 409);
   assert.match(rest.message, /tried 0\.10\.0 lately/);
   assert.equal(offer(again, { clock: () => Date.now() + 86_400_000 + 1000 }).status, 202, "a day on");
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).actions, [], "once: nothing to press, it tries again by itself");
   fs.rmSync(offered, { recursive: true });
 
   // One whose new bridge never says it's well, taken back by the keeper twenty minutes on (the
@@ -1103,6 +1104,36 @@ test("an offered release that doesn't come up is taken back and goes; one the bo
   fs.writeFileSync(path.join(home, "bin", "box-version"), "0.11.0");
   assert.equal(await take(), null);
   assert.equal(fs.existsSync(offered), false);
+});
+
+test("a release put back after its trial twice isn't taken by itself again: this box's row says so with Update Now, though no offer waits", async () => {
+  machine();
+  // Taken, and put back after its trial (its keeper starts no engine).
+  assert.equal(offer(release({ breaks: true }).folder).status, 202);
+  assert.equal((await take()).result, "updated");
+  assert.equal(await settle(), "unwell");
+  await waitFor(() => fs.existsSync(engineFile), "an engine runs again");
+  engines.add(read(engineFile).pid);
+  assert.equal(read(path.join(home, "run", "update.json")).offerFailed.tries, 1);
+  // A day on, the same version again (with a newer engine, so its broken keeper is what starts it),
+  // taken and put back again: twice.
+  const dayOn = { clock: () => Date.now() + 86_400_000 + 1000 };
+  assert.equal(offer(release({ engine: "1.2.0", breaks: true }).folder, dayOn).status, 202);
+  assert.equal((await take(dayOn)).result, "updated");
+  assert.equal(await settle(), "unwell");
+  assert.equal(boxVersion(), "0.9.0");
+  try { engines.add(read(engineFile).pid); } catch {}
+  assert.equal(read(path.join(home, "run", "update.json")).offerFailed.tries, 2);
+  assert.equal(link.offerWaits(), false, "the offer went with the take");
+  const stuck = link.keepingSelfUp("Studio Mac", 0, null);
+  assert.deepEqual([stuck.update.state, stuck.update.title], ["failed", "Kuvo on Studio Mac couldn’t be updated to 0.10.0 after 2 tries."]);
+  assert.deepEqual(stuck.actions.map(action => [action.id, action.label]), [["update-here", "Update Now"]]);
+  // Offered again days later: kept, but not taken by itself; on your word, it is.
+  const later = { clock: () => Date.now() + 3 * 86_400_000 };
+  assert.equal(offer(release({ engine: "1.2.0", breaks: true }).folder, later).status, 202);
+  assert.equal(await take(later), null, "not by itself after failing twice");
+  assert.equal(await link.offerDue({ blocked: null, clock: later.clock, now: true }), true, "Update Now takes it");
+  fs.rmSync(offered, { recursive: true });
 });
 
 const helper = { "Contents/Info.plist": "<plist>the new helper</plist>\n", "Contents/MacOS/Kuvo Helper": "#!/bin/sh\necho the new helper\n", "Contents/_CodeSignature/CodeResources": "the new seal\n" };
@@ -1141,12 +1172,14 @@ test("an offered release that fails before anything changes (its engine's downlo
   assert.equal((await take(at(1))).result, "failed");
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed.tries, 2);
   // Failing again: what it can't get past by itself, said, with Update Now.
-  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated after 2 tries. It tries again later.", detail: "" });
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated to 0.10.0 after 2 tries.", detail: "" });
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).actions.map(action => action.label), ["Update Now"]);
   assert.equal(await take(at(2)), null, "not an hour on");
   assert.equal(link.offeredVersion(), "0.10.0");
   served["/engine.tgz"] = engine;
-  assert.equal((await take(at(26))).result, "updated");
+  // (Failed twice: not taken by itself again, only on your word.)
+  assert.equal(await take(at(26)), null);
+  assert.equal((await take({ ...at(26), now: true })).result, "updated");
   engines.add(read(engineFile).pid);
   assert.equal(fs.existsSync(offered), false);
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed?.tries, 2, "kept while it's on trial: put back, it counts");
@@ -1232,6 +1265,10 @@ test("a release whose bundle doesn't come up puts the bundle back as it was; one
   ];
   for (const [odd, words] of odds) {
     when = later();
+    // (Each a release of its own: what failed before doesn't hold this one back.)
+    const state = read(path.join(home, "run", "update.json"));
+    delete state.offerFailed;
+    write(path.join(home, "run", "update.json"), JSON.stringify(state));
     assert.equal(offer(release({ bundle: helper, ...odd }).folder, when).status, 202, "the pack is as its signed manifest says");
     const running = read(engineFile).pid;
     const outcome = await take(when);

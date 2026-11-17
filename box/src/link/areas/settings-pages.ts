@@ -741,7 +741,7 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...(update.blocked ? { tone: "warning" as const } : {}) }));
   // (A newer release its own check found: it installs by itself, nothing to press, unless its
   // update failed.)
-  else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs by itself soon.", ...(failed ? { tone: "warning" as const, kind: "actions", actions: [now("Update Now")] } : { kind: "status" }), value: ready }));
+  else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs by itself within a few days of its release, or as soon as another of your computers has it.", ...(failed ? { tone: "warning" as const, kind: "actions", actions: [now("Update Now")] } : { kind: "status" }), value: ready }));
   // (The release Kuvo Code here offered, or another of your computers handed it: taken in a moment,
   // as it stops nothing; one with another engine as soon as nothing's at work. Update Now only once
   // it failed twice: what it can't get past by itself.)

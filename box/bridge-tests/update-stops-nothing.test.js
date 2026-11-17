@@ -150,7 +150,7 @@ function pack() {
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.0.0", linux: builds, darwin: builds }));
   const out = path.join(scratch, "release");
   const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out], {
-    env: { ...process.env, BUN: bun, NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
+    env: { ...process.env, BUN: bun, NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }), KUVO_BOX_SPREADS: "1" }, encoding: "utf8",
   });
   assert.equal(packed.status, 0, packed.stderr);
   return { out, pinned: publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64") };

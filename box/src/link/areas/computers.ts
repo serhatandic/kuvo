@@ -241,6 +241,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     // (Kuvo on this Mac ahead of its desktop app: the app checks for its update.)
     ...(IS_MAC && appBehind(boxVersion()) ? { appCheck: appBehind(boxVersion())! } : {}),
   }];
+  // The Kuvo each peer runs, where it says (one that follows the others: `updates/fleet.ts`).
+  const kuvoOf = new Map(peersOf(link).flatMap(peer => (told[peer.key]?.computer?.kuvo ? [[peer.key, told[peer.key]!.computer!.kuvo!] as const] : [])));
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
@@ -251,8 +253,6 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     });
   };
   const peers = peersOf(link);
-  // The Kuvo each peer runs, where it says (one that follows the others: `updates/fleet.ts`).
-  const kuvoOf = new Map(peers.flatMap(peer => (told[peer.key]?.computer?.kuvo ? [[peer.key, told[peer.key]!.computer!.kuvo!] as const] : [])));
   const reach = readReach();
   const leads = followedSetup(link)?.role === "primary";
   for (const peer of byName(peers)) {

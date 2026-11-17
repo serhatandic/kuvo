@@ -292,10 +292,20 @@ export function keepingSelfUp(name: string, working: number | undefined, blocked
   const none = { actions: [] };
   // A newer engine taking the running one's place (PROTOCOL.md, "A new engine"): said in its line.
   const swap = swapUnderWay(RUN);
-  if (!offerWaits()) return swap ? { update: { state: swap.stage === "waiting" ? "waiting" : "updating", title: swapLine(swap)!, detail: "" }, actions: [] } : none;
   const status = updateStatus();
   if (blocked !== undefined) status.blocked = blocked;
   const line = (state: ComputerUpdate["state"], title: string): ComputerUpdate => ({ state, title, detail: "" });
+  // A newer version that failed here twice (put back after its trial, or failed before anything
+  // changed), offered or not: it isn't taken by itself again until a newer one comes, so said, with
+  // Update Now (which takes the one held here, or offered).
+  const failed = status.offerFailed;
+  if (failed && newerVersion(failed.version, status.version) && offerFailedTwice(failed.version) && !status.blocked && !offerHeld() && !isUpdating()) {
+    const at = working ?? 0;
+    // (Asked first where taking it restarts the engine: what's at work stops.)
+    const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
+    return { update: line("failed", `Kuvo on ${name} couldn’t be updated to ${failed.version} after 2 tries.`), actions: [{ id: "update-here", label: "Update Now", ...(offerWaits() && offerChangesEngine() ? { confirm } : {}) }] };
+  }
+  if (!offerWaits()) return swap ? { update: { state: swap.stage === "waiting" ? "waiting" : "updating", title: swapLine(swap)!, detail: "" }, actions: [] } : none;
   // (Looking for a release from GitHub isn't this one being taken.)
   if (isUpdating() && status.updating && status.updating !== "checking") return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
   if (status.blocked || offerHeld()) return none;
@@ -304,15 +314,8 @@ export function keepingSelfUp(name: string, working: number | undefined, blocked
   // waits for, conversations working and browser asks waiting, is more than the sessions counted).
   const engine = offerChangesEngine();
   const at = working ?? 0;
-  // (Failed once, it's tried again by itself in a while: said as a failure, with Update Now, only
-  // once it failed twice.)
-  if (status.offerFailed && status.offerFailed.version === status.offered) {
-    if (offerFailedTwice(status.offered)) {
-      const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
-      return { update: line("failed", `Kuvo on ${name} couldn’t be updated after 2 tries. It tries again later.`), actions: [{ id: "update-here", label: "Update Now", ...(engine ? { confirm } : {}) }] };
-    }
-    return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions: [] };
-  }
+  // (Failed once, it's tried again by itself in a while; twice is said above.)
+  if (status.offerFailed && status.offerFailed.version === status.offered) return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions: [] };
   if (!engine) return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions: [] };
   const waiting = line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`);
   // (Nothing free there for a day, a bot always at work say: it can't get past that by itself, so

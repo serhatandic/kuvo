@@ -218,14 +218,14 @@ build() {
     PUBLIC=$(public_key)
     say "Building Kuvo $VERSION ($APP_ID) reading $url."
     if [ -n "$TEST" ]; then
-        env -u KUVO_BOX_SIGNING_KEY PRIVATE_FEED=1 SIGN_IDENTITY="$IDENTITY" APP_ID="$APP_ID" VERSION="$VERSION" OUT="$work/build" FEED_URL="$url" UPDATE_PUBLIC_KEY="$PUBLIC" \
+        env -u KUVO_BOX_SIGNING_KEY PRIVATE_FEED=1 KUVO_BOX_SPREADS=1 SIGN_IDENTITY="$IDENTITY" APP_ID="$APP_ID" VERSION="$VERSION" OUT="$work/build" FEED_URL="$url" UPDATE_PUBLIC_KEY="$PUBLIC" \
             BOX_URL="$base/box-$VERSION.tar.gz" ./scripts/build-desktop-app.sh
     else
         # The box releases' key, as every signed build reads it (never on a command line): without
         # it the box on your Mac wouldn't take the release the app carries.
         BOX_KEY="$(security find-generic-password -s "Kuvo Code box signing key" -a kuvo-box -w | base64 -d)" || BOX_KEY=""
         case "$BOX_KEY" in *"PRIVATE KEY"*) ;; *) die "the box releases' key (\"Kuvo Code box signing key\") isn't in the keychain, or couldn't be read." ;; esac
-        KUVO_BOX_SIGNING_KEY="$BOX_KEY" PRIVATE_FEED=1 SIGN_IDENTITY="$IDENTITY" APP_ID="$APP_ID" VERSION="$VERSION" OUT="$work/build" FEED_URL="$url" \
+        KUVO_BOX_SIGNING_KEY="$BOX_KEY" PRIVATE_FEED=1 KUVO_BOX_SPREADS=1 SIGN_IDENTITY="$IDENTITY" APP_ID="$APP_ID" VERSION="$VERSION" OUT="$work/build" FEED_URL="$url" \
             UPDATE_PUBLIC_KEY="$PUBLIC" BOX_URL="$base/box-$VERSION.tar.gz" ./scripts/build-desktop-app.sh
     fi
     APP="$work/build/Kuvo.app"

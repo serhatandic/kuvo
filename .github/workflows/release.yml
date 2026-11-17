@@ -299,6 +299,8 @@ jobs:
         shell: bash
         env:
           KUVO_BOX_SIGNING_KEY: ${{ secrets.KUVO_BOX_SIGNING_KEY }}
+          # (A release for everyone: your computers hand it to each other.)
+          KUVO_BOX_SPREADS: "1"
           ENGINE_CHECK: ${{ runner.temp }}/engine-check.json
         run: |
           set -euo pipefail

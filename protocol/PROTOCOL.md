@@ -1744,9 +1744,11 @@ machines; a client that wants every computer's facts asks the box that has it as
     "Kuvo on <name> updates once your sessions there finish." / "… updates as soon as nothing’s at
     work there." (`waiting`), "Kuvo on <name> updates in a moment." (`waiting`), "Updating Kuvo on
     <name>…" (`updating`), "… tries its update again in a while." (`waiting`: it failed once, put
-    back or not), "… couldn’t be updated twice. It tries again later." (`failed`: that version failed
-    here twice in a row, `offerFailed.tries`, words "couldn’t be updated after 2 tries"); `update-here` (Update Now, asked first where it stops
-    work) only with that last one, or (`long: true`) a release that restarts the engine that has
+    back or not), "Kuvo on <name> couldn’t be updated to <version> after 2 tries." (`failed`: a
+    version newer than the box failed here twice in a row, `offerFailed.tries`, whether an offer
+    waits or not: it isn't taken by itself again until a newer one comes); `update-here` (Update
+    Now, which takes the release offered here, else the newer one held in `updates/release`, else
+    GitHub's newest; asked first where it restarts the engine) only with that last one, or (`long: true`) a release that restarts the engine that has
     waited a day for nothing to be at work: nothing to press while it takes the release by itself. Left out while none waits, or while it can't update (blocked, its engine
     stopped on purpose, an update on trial). On an older machine this box could add but didn't set
     up over SSH (`add`, above): "Kuvo on <name> needs an update. Set it up over SSH from <this box>
@@ -3035,7 +3037,8 @@ did: the box keeps working as itself ("For released Macs").
 - **When**: as soon as a newer release reaches it, whichever way: Kuvo Code on this Mac offers the
   one it carries (above), another of your computers holds it (below), or its own release check
   finds it (`boxes.json` from GitHub, a minute after its link starts and once in every six hours
-  after, at any hour: `run/update.json`'s `round`), always (there's no switch). Its own check takes a
+  after, at any hour, each box at its own point in them, offset by its computer's name and folder
+  so they don't all ask at once: `run/update.json`'s `round`), always (there's no switch). Its own check takes a
   release once it's three days old; the other ways, whatever its age. Or now (Update Now,
   `POST kuvo/update {now: true}`), whatever its age. Either way, whatever is at work there: an update
   stops nothing. A release with another engine than the one running, whose `box.json` lists the
@@ -3056,17 +3059,23 @@ did: the box keeps working as itself ("For released Macs").
     checked), or a peer hands it over. It hands it over at once, before or while it takes it itself,
     and whatever came of that: every computer updates in parallel and judges a release by its own
     health rule, going back by itself (code only). A newer held release is never replaced by an
-    older one. A machine set up over SSH holds none until it gets a signed one.
+    older one. A machine set up over SSH holds none until it gets a signed one. Only a release whose
+    manifest says `spreads: true` is held to hand over (`scripts/sign-box.mjs` with
+    `KUVO_BOX_SPREADS=1`: the release workflow and the private feed): a build signed for trying an
+    update is taken where it's offered and never handed on. The pack is kept by the name its
+    address ends in, and checked against the signed SHA-256 before it's served.
   - **Told**: its agents mail's `computer` says `kuvo` (the Kuvo version it runs; a Mac's `version`
     is its app's) and `release` (the version it holds), "Peers".
   - **Told at once**: the box's link watches `updates` and, as a newer release is held (whichever
     process kept it), tells its peers in agents mail and the boxes they vouch for (`holds`) right
     away, not at the next round.
   - **Followed**: as a peer's agents mail comes, and each minute, a box takes the newest `release`
-    its peers say, newer than its own version: the newest version, then the lowest key (a peer that
-    couldn't hand a version over isn't asked for it again for an hour). Not while it's blocked, an
-    update runs or is on trial, a release as new or newer is offered here already, or that version
-    rests after failing here.
+    your computers say, newer than its own version: the newest version, then the lowest key (a peer
+    that couldn't hand a version over isn't asked for it again for an hour). A version that rests
+    after failing here, or failed here twice, gives way to the next newer one; one as new or newer
+    offered here already is taken first. Not while it's blocked, an update runs (its own release
+    check too) or is on trial, or its engine is stopped on purpose: a pull under way then waits,
+    kept, and is offered once that's over.
   - **Moved**: peer mail `release`, one pull at a time. `{want: <version>}` → `{version, boxes,
     size}` (`boxes`, the signed `boxes.json` as it is) or `{version, none: true}`; then `{version,
     part: <i>}` → `{version, i, d}` (`d`: the pack's 30,000 bytes from `i × 30,000`, base64), up to
@@ -3074,15 +3083,19 @@ did: the box keeps working as itself ("For released Macs").
     asked, newer than the box, a size from 1 byte to 100 MB). An answer from another peer, or for
     another version, is dropped. A pull that hears nothing in a minute asks again for what it waits
     for; one that makes no progress in five minutes leaves that peer. Whole, the pack is checked
-    against the signed SHA-256 and offered to the box itself from a folder of its own (as above,
-    checked again), and taken; the engine comes from the manifest's URL, as for any update. Only the
+    against the signed SHA-256, moved into a folder of its own (`updates/incoming/release`) and
+    offered to the box itself from there (as above, checked again), and taken; an offer refused for
+    an update under way here is offered again at the next look, any other refusal rests that peer
+    an hour; the engine comes from the manifest's URL, as for any update. Only the
     box with the relay connection pulls (its link, `run`); a box that starts again begins anew.
-  - **Between two Macs**: a Mac's box's peers are its own machines, so another of your Macs is a
-    box a peer vouches for (known through a machine both set up). `release` mail goes between those
-    too, and only it beside limits: each minute a box tells each box its peers vouch for what it
-    holds (`{holds: <version>}`, when that changes and every ten minutes), which that box follows as
-    a peer's `computer.release` (for half an hour from its word). A release's trust is its
-    signature, never who hands it over.
+  - **Whose**: only your own computers: its peers, the members of the setup it follows, and the Macs
+    a machine of yours names among its own `boxes` as `mac` (a Mac that set up one of your computers
+    is yours, #783). A box a peer only vouches for otherwise is never asked, told or answered.
+  - **Between two Macs**: a Mac's box's peers are its own machines, so another of your Macs isn't
+    one; `release` mail goes between them too (and, of what a vouched box sends, only it beside
+    limits): a box tells your other Macs what it holds (`{holds: <version>}`, at once when that
+    changes, and every ten minutes), which they follow as a peer's `computer.release` (for half an
+    hour from its word).
   - **Never** older, its own version, unsigned or signed by a key it doesn't pin, with an engine
     older than the one running (refused before any part is asked), or from a box that isn't yours
     (a peer, or one a peer vouches for). A refusal that's no fault of the computer that sent it (an
