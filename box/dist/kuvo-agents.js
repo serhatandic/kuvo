@@ -11266,8 +11266,102 @@ async function resetRoutes(resets, method, rest, body) {
   return json6({ message: "Not found" }, 404);
 }
 
+// box/src/agents/usage/limit-display.ts
+import { hostname } from "os";
+var FRESH_FOR = 30 * 60000;
+var DAY = 24 * 60;
+var dateOptions = {
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  timeZoneName: "short"
+};
+var date = new Intl.DateTimeFormat("en-GB", dateOptions);
+var datedYear = new Intl.DateTimeFormat("en-GB", { ...dateOptions, year: "numeric" });
+var computerName = (box) => box.name || (box.here ? hostname() : "Another computer");
+function atTime(at, now) {
+  const stamp = new Date(at);
+  if (Number.isNaN(stamp.getTime()))
+    return;
+  return (stamp.getFullYear() === new Date(now).getFullYear() ? date : datedYear).format(stamp);
+}
+function limitDisplay(account, members, now) {
+  const problem = account.problem?.kind;
+  const meters = problem === "ended" ? [] : account.windows.map((window) => {
+    const source = members.find((member) => member.account.windows.includes(window));
+    const readTime = atTime(window.read, now);
+    const computer = computerName(source.box);
+    const read = readTime ? `${computer} \xB7 Read ${readTime}` : computer;
+    const resetTime = window.resetsAt === undefined ? undefined : atTime(window.resetsAt, now);
+    const share = Math.min(1, Math.max(0, window.used));
+    const freshUntil = Math.min(window.read + FRESH_FOR, window.resetsAt ?? Infinity, source.box.awayAt ?? Infinity);
+    return {
+      title: usageTitle(window),
+      share,
+      value: `${Math.round(share * 100)}% used`,
+      level: levelOf(share),
+      read,
+      reset: resetTime ? `Reset due ${resetTime}` : "Reset time unavailable",
+      old: "Old reading",
+      freshForMs: source.box.away || source.account.problem || !readTime ? 0 : Math.max(0, Math.floor(freshUntil - now))
+    };
+  });
+  const firstRead = meters[0]?.read;
+  const sharedRead = firstRead && meters.every((meter) => meter.read === firstRead) ? firstRead : undefined;
+  const signedInOn = meters.length === 0 ? [...new Set(members.map((member) => computerName(member.box)))].join(", ") : undefined;
+  const detail = [account.plan, sharedRead ?? signedInOn].filter(Boolean).join(" \xB7 ");
+  const status = statusOf(problem, meters.length > 0, account.checked !== undefined);
+  return {
+    detail,
+    ...status ? { status } : {},
+    meters: sharedRead ? meters.map(({ read: _, ...meter }) => meter) : meters
+  };
+}
+function usageTitle(window) {
+  if (window.name)
+    return window.name;
+  const span = window.minutes === 300 ? "5-hour" : windowTitle({ minutes: window.minutes });
+  return window.model ? span === "Limit" ? window.model : `${window.model} \xB7 ${span}` : span;
+}
+function statusOf(problem, hasMeters, checked) {
+  switch (problem) {
+    case "ended":
+      return { words: "Plan ended.", warning: false };
+    case "expired":
+      return { words: "Sign-in expired. Sign in again under Accounts on that computer.", warning: true };
+    case "unreadable":
+      return { words: "This sign-in can\u2019t read limits. Check the sign-in under Accounts on that computer.", warning: true };
+    case "rate-limited":
+      return { words: "The provider is holding off new readings. Kuvo will try again.", warning: true };
+    case "failed":
+      return { words: "Couldn\u2019t read limits. Check the computer\u2019s connection. Kuvo will try again.", warning: true };
+    default:
+      return hasMeters ? undefined : { words: checked ? "No limits reported." : "Waiting for the first reading.", warning: false };
+  }
+}
+function windowTitle(window) {
+  if (window.name)
+    return window.name;
+  if (window.model)
+    return window.model;
+  const minutes = window.minutes;
+  if (minutes === 300)
+    return "Session";
+  if (minutes === 10080)
+    return "Weekly";
+  if (minutes !== undefined && minutes >= 40000 && minutes <= 45000)
+    return "Monthly";
+  if (minutes !== undefined && minutes >= DAY)
+    return `${Math.floor(minutes / DAY)}-day`;
+  if (minutes !== undefined && minutes >= 60)
+    return `${Math.floor(minutes / 60)}-hour`;
+  return "Limit";
+}
+var levelOf = (used) => used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm";
+
 // box/src/agents/limits-rows.ts
-function limitRows(boxes, now) {
+function limitRows(boxes, now, presentUsage = false) {
   const groups = [];
   const found = new Map;
   for (const box of boxes) {
@@ -11283,8 +11377,10 @@ function limitRows(boxes, now) {
     }
   }
   const rows = groups.map(({ id, members }) => {
+    const account = merged(members);
     const row = {
-      ...ringed(merged(members), now),
+      ...ringed(account, now),
+      ...presentUsage ? { usage: limitDisplay(account, members, now) } : {},
       title: "",
       id,
       boxes: members.map(({ box, account }) => ({
@@ -11320,24 +11416,6 @@ function accountTitle(account) {
   const label = account.label?.trim();
   return label ? `${base} \xB7 ${label}` : base;
 }
-function windowTitle(window) {
-  if (window.name)
-    return window.name;
-  if (window.model)
-    return window.model;
-  const minutes = window.minutes;
-  if (minutes === 300)
-    return "Session";
-  if (minutes === 10080)
-    return "Weekly";
-  if (minutes !== undefined && minutes >= 40000 && minutes <= 45000)
-    return "Monthly";
-  if (minutes !== undefined && minutes >= DAY)
-    return `${Math.floor(minutes / DAY)}-day`;
-  if (minutes !== undefined && minutes >= 60)
-    return `${Math.floor(minutes / 60)}-hour`;
-  return "Limit";
-}
 function named2(rows) {
   const names = rows.map((row) => accountTitle(row));
   const here = (index) => rows[index].boxes.filter((box) => box.here);
@@ -11367,8 +11445,7 @@ function named2(rows) {
   }
   rows.forEach((row, index) => row.title = names[index]);
 }
-var levelOf = (used) => used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm";
-var DAY = 24 * 60;
+var DAY2 = 24 * 60;
 function spansOf(windows) {
   const spans = new Map;
   if (!windows.length)
@@ -11384,7 +11461,7 @@ function spansOf(windows) {
   for (const window of pool) {
     if (!window.minutes)
       continue;
-    if (window.minutes < DAY) {
+    if (window.minutes < DAY2) {
       if (!short || window.minutes < short.minutes)
         short = window;
     } else if (!long || window.minutes > long.minutes)
@@ -11829,9 +11906,9 @@ class Limits {
   ownChanged() {
     this.changed();
   }
-  rows() {
+  rows(presentUsage = false) {
     const own = this.list(false);
-    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now());
+    return this.peers ? this.peers.rows(own, presentUsage) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage);
   }
   peersChanged() {
     this.changed(true, false);
@@ -12379,7 +12456,7 @@ async function limitsRoutes(limits, method, rest, body = async () => {
     return json7({ message: "Plan limits aren't read on this computer." }, 503);
   if (rest[0] === "reset")
     return resetRoutes(limits.resets, method, rest.slice(1), body);
-  const answer = () => json7({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } });
+  const answer = () => json7({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(true), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } });
   if (!rest.length && method === "GET")
     return answer();
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
@@ -22164,7 +22241,7 @@ var number = (value) => {
   const found = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof found === "number" && Number.isFinite(found) ? found : undefined;
 };
-var date = (value) => {
+var date2 = (value) => {
   if (typeof value !== "string" || !value.trim())
     return;
   const at = Date.parse(value);
@@ -22211,8 +22288,8 @@ async function readGrok(secret, _credential, now) {
   const config = body?.config;
   if (config && typeof config === "object" && !Array.isArray(config) && !Object.keys(config).some((key) => /period|percent|limit/i.test(key)))
     throw new LimitsProblem("ended", "Its SuperGrok plan isn't active now.");
-  const start = date(period?.start);
-  const end = date(period?.end);
+  const start = date2(period?.start);
+  const end = date2(period?.end);
   if (!start || !end || end <= start)
     throw new LimitsProblem("failed", "xAI's answer wasn't what Kuvo Code reads.");
   const used = number(body.config.creditUsagePercent) ?? 0;
@@ -22220,7 +22297,7 @@ async function readGrok(secret, _credential, now) {
 }
 async function readCopilot(secret, _credential, now) {
   const body = await fetched(engineEndpoints.copilot, { Authorization: `token ${secret}`, "Editor-Version": "vscode/1.96.2", "Editor-Plugin-Version": "copilot-chat/0.26.7", "User-Agent": "GitHubCopilotChat/0.26.7", "X-Github-Api-Version": "2025-04-01" }, now, "GitHub");
-  const resetsAt = date(body?.quota_reset_date) ?? date(body?.limited_user_reset_date);
+  const resetsAt = date2(body?.quota_reset_date) ?? date2(body?.limited_user_reset_date);
   const windows = [];
   const snapshots = body?.quota_snapshots;
   for (const [id, name] of [["premium_interactions", "Premium requests"], ["chat", "Chat"], ["completions", "Completions"]]) {
@@ -22411,7 +22488,7 @@ async function readOpenCodeGo(secret, _credential, now) {
     const percent = number(usage[id]?.percent);
     if (percent === undefined)
       continue;
-    let resetsAt = date(usage[id].resetsAt);
+    let resetsAt = date2(usage[id].resetsAt);
     if (id === "rolling" && resetsAt && resetsAt >= now + 299 * 60000)
       resetsAt = undefined;
     windows.push({ id, used: percent / 100, minutes, ...resetsAt ? { resetsAt } : {} });
@@ -22898,7 +22975,7 @@ function spendTitle(service) {
 import { execFileSync as execFileSync2 } from "child_process";
 import { createHash as createHash16 } from "crypto";
 import { lstatSync as lstatSync9, mkdirSync as mkdirSync24, readFileSync as readFileSync33, realpathSync as realpathSync8, renameSync as renameSync20, statSync as statSync15, writeFileSync as writeFileSync25 } from "fs";
-import { homedir as homedir5, hostname } from "os";
+import { homedir as homedir5, hostname as hostname2 } from "os";
 import { basename as basename11, dirname as dirname18, join as join38 } from "path";
 
 // box/src/agents/usage/claude-log.ts
@@ -24137,7 +24214,7 @@ function datedBaseModel(model) {
 
 // box/src/agents/usage/history.ts
 var SLOT = 15 * 60000;
-var DAY2 = 24 * 60 * 60000;
+var DAY3 = 24 * 60 * 60000;
 var KEPT_DAYS = 35;
 var noSlots = () => ({ used: new Map, unknown: new Map, fallback: new Map });
 var UNATTRIBUTED = "Unattributed";
@@ -24200,7 +24277,7 @@ function summed(all) {
   return sum;
 }
 function trimmed2(slots, now) {
-  const since = now - KEPT_DAYS * DAY2;
+  const since = now - KEPT_DAYS * DAY3;
   const kept = noSlots();
   for (const [slot, models] of slots.used)
     if (slot >= since)
@@ -24241,7 +24318,7 @@ function dayIn(at, zone) {
 function windowDays(now, zone, previous = 30) {
   const [year, month, day] = dayIn(now, zone).split("-").map(Number);
   const noon = Date.UTC(year, month - 1, day, 12);
-  return Array.from({ length: previous + 1 }, (_, back) => new Date(noon - back * DAY2).toISOString().slice(0, 10));
+  return Array.from({ length: previous + 1 }, (_, back) => new Date(noon - back * DAY3).toISOString().slice(0, 10));
 }
 function daysIn(slots, zone, now, previous = 30) {
   const window = new Set(windowDays(now, zone, previous));
@@ -25258,7 +25335,7 @@ function readAntigravityDatabase(path) {
 import { createHash as createHash13 } from "crypto";
 import { mkdirSync as mkdirSync21, readFileSync as readFileSync31, renameSync as renameSync17, writeFileSync as writeFileSync22 } from "fs";
 import { join as join35 } from "path";
-var DAY3 = 24 * 60 * 60000;
+var DAY4 = 24 * 60 * 60000;
 var CURSOR_DAYS = 32;
 var MIN_BETWEEN = 60000;
 var integer = (value) => typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
@@ -25335,7 +25412,7 @@ class CursorHistory {
     if (under)
       return under;
     const last = this.last.get(key);
-    if (last && now >= last.at && now - last.at < MIN_BETWEEN && Math.floor(now / DAY3) === Math.floor(last.at / DAY3))
+    if (last && now >= last.at && now - last.at < MIN_BETWEEN && Math.floor(now / DAY4) === Math.floor(last.at / DAY4))
       return { days: last.days, whole: true };
     const read = this.readFor(client, access, key, now).then((result) => {
       if (result.whole)
@@ -25347,11 +25424,11 @@ class CursorHistory {
   }
   async readFor(client, access, key, now) {
     const token = { access };
-    const today = Math.floor(now / DAY3) * DAY3;
+    const today = Math.floor(now / DAY4) * DAY4;
     const window = Array.from({ length: CURSOR_DAYS }, (_, back) => {
-      const start = today - back * DAY3;
-      const end = Math.min(start + DAY3, now);
-      return { key: dayKey(start), start, end, complete: end === start + DAY3 };
+      const start = today - back * DAY4;
+      const end = Math.min(start + DAY4, now);
+      return { key: dayKey(start), start, end, complete: end === start + DAY4 };
     });
     const keys = new Set(window.map((day) => day.key));
     const cached = new Map([...this.load(key)].filter(([day]) => keys.has(day)));
@@ -25447,7 +25524,7 @@ class CursorHistory {
       if (count === 0 && received < parsed.total)
         return "incomplete";
       for (const event of parsed.events) {
-        if (event.at < day.start || event.at >= day.start + DAY3)
+        if (event.at < day.start || event.at >= day.start + DAY4)
           return "invalid";
         const slot = Math.floor(event.at / SLOT);
         const id = `${slot}
@@ -26337,7 +26414,7 @@ async function settingsRoutes(settings, choices, method, rest, body) {
 // box/src/agents/usage/usage.ts
 var USAGE_SERVICES = ["claude", "codex", "grok", "opencode", "cursor", "antigravity"];
 var MINUTE3 = 60000;
-var DAY4 = 24 * 60 * MINUTE3;
+var DAY5 = 24 * 60 * MINUTE3;
 var SCAN_EVERY = 5 * MINUTE3;
 function usageRows(boxes) {
   const groups = [];
@@ -26477,7 +26554,7 @@ class Usage {
     const pricing = this.pricing.current();
     const fallback = this.settings?.codexFallback ?? null;
     const at = this.now();
-    const since = Math.floor((at - KEPT_DAYS * DAY4) / DAY4) * DAY4;
+    const since = Math.floor((at - KEPT_DAYS * DAY5) / DAY5) * DAY5;
     const sources = this.sources();
     let complete = true;
     try {
@@ -26692,7 +26769,7 @@ function placeOf(computer, folder, part) {
 `).update(part);
   return hash.digest("hex").slice(0, 16);
 }
-function thisComputer(platform = process.platform, read = (path) => readFileSync33(path, "utf8"), macUUID = () => uuidOf(ioreg()), name = hostname) {
+function thisComputer(platform = process.platform, read = (path) => readFileSync33(path, "utf8"), macUUID = () => uuidOf(ioreg()), name = hostname2) {
   if (platform === "darwin") {
     const uuid = macUUID();
     if (uuid)
@@ -36132,7 +36209,7 @@ import { mkdirSync as mkdirSync26, readFileSync as readFileSync37, renameSync as
 import { dirname as dirname21 } from "path";
 var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage";
 var MINUTE4 = 60000;
-var DAY5 = 24 * 60 * MINUTE4;
+var DAY6 = 24 * 60 * MINUTE4;
 var TELL_AGAIN = 10 * MINUTE4;
 var PEER_AWAY = 25 * MINUTE4;
 var SKEW = MINUTE4;
@@ -36323,7 +36400,7 @@ class UsagePeers {
   }
   lastDigest;
   shared() {
-    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY5) / DAY5) * DAY5) / SLOT;
+    const start = Math.floor(Math.floor((this.now() - KEPT_DAYS * DAY6) / DAY6) * DAY6) / SLOT;
     const accounts = this.usage.own().slice(0, MOST_ACCOUNTS).flatMap((own) => {
       const taken = takenAccount(toldOf2(own), 0, Infinity);
       return taken ? [{ ...toldOf2(taken), slots: fromSlot(keptSlots(taken.slots), start), whole: start }] : [];
@@ -38709,7 +38786,7 @@ class LimitsPeers {
     if (changed)
       this.save();
   }
-  rows(own) {
+  rows(own, presentUsage = false) {
     const now = this.now();
     const self = this.directory.own();
     const boxes = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }];
@@ -38718,9 +38795,10 @@ class LimitsPeers {
       const ours = this.ours(key);
       const accounts = ours ? kept.accounts : forVouched(kept.accounts);
       const visible = this.noticePeer(key, kept) ? accounts.map((a) => ({ ...a, ...a.notices ? { notices: a.notices.filter((n) => currentNotice(n, now)) } : {} })) : withoutNotices(accounts);
-      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY2, ...!ours ? { vouched: true } : {}, accounts: visible });
+      const awayAt = kept.heard + PEER_AWAY2;
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, ...!ours ? { vouched: true } : {}, accounts: visible });
     }
-    return limitRows(boxes, now);
+    return limitRows(boxes, now, presentUsage);
   }
   tell(urgent = false) {
     if (!this.transport.followed || !this.directory.told)
@@ -39461,4 +39539,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 8a67b9ff26ff2b38b609251332f2e7f99b386f71550a055c30cd1bcc3b8ad669
+// Built from Packages/Box/src/agents 67c1ed9181be0e59d9fd96fbb3b22a6412be1dc19863e1b982d6739ee522a2a4
