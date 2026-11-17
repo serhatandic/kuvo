@@ -269,12 +269,16 @@ function wait(socket) {
   socket.waiting = true
   child.stdout.pause()
   const hung = setTimeout(() => socket.destroy(), HUNG)
-  const go = () => {
+  /** Waits no more: the agent's output read on (and this bridge sent more, if it's still the one). */
+  socket.unwait = () => {
     clearTimeout(hung)
     socket.off("drain", go)
     socket.off("close", go)
     socket.waiting = false
     child.stdout.resume()
+  }
+  const go = () => {
+    socket.unwait()
     pump(socket)
   }
   socket.on("drain", go)
@@ -321,6 +325,8 @@ function welcome(socket, hello) {
     return socket.end()
   }
   if (controller && controller !== socket) {
+    // (One that stopped reading holds nothing back now: the newer bridge's lines go on at once.)
+    if (controller.waiting) controller.unwait()
     send(controller, { fenced: true })
     controller.end()
   }

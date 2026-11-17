@@ -581,6 +581,14 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
   - **Two bridges at once:** a "generation" refusal leaves the holder to the bridge that took it.
   - **PID checks:** the keeper's `held_pid` and uninstall's `holders()` match the holder's program
     and its own id.
+  - **Re-review NITs, fixed:**
+    - A take-up that throws lets go of its own turn only (`HeldGate.release`). A shared Codex
+      app-server stops only once no turn taken up in it is left.
+    - On a shared app-server, a session's kept steps go at its own thread's first line
+      (`HeldTurn.began`), not at any thread's.
+    - A bridge fenced off while its socket was full no longer holds back the agent's output
+      (`unwait`). The test for it passes on the old holder too, because the newer bridge's own drain
+      resumed reading anyway, so that stall was mostly theoretical.
   - **Not handled:** a bridge that crashes while another runs isn't adopted by the running one; its
     held agents stop after 15 minutes. There's one bridge at a time (the keeper's, and Renewal's
     makes way before the next starts), so it takes two bridges up at once, which the generation

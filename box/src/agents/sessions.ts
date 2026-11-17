@@ -2438,18 +2438,22 @@ export class Sessions {
         // (Once its agent's lines come: until then, a take-up that fails leaves them as they were.)
         const opened = record.messages.findIndex((message) => message.id === userMessage)
         const kept = new Set(record.messages.slice(opened + 1).filter((message) => message.type === "assistant").map((message) => message.id))
-        void input.held.held.firstLine.then(() => {
-          if (runOf(live.doing) !== run || run.heldTaken) return
-          run.heldTaken = true
-          record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)))
-          this.store.save(id)
-        })
+        const taken = input.held
         let result: RunResult
         try {
-          result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned])
+          const running = thread.run({ ...input, model }, turn, hooks)
+          // (Its own first line: on a Codex that runs several conversations, not another's.)
+          void (taken.began ?? taken.held.firstLine).then(() => {
+            if (runOf(live.doing) !== run || run.heldTaken) return
+            run.heldTaken = true
+            record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)))
+            this.store.save(id)
+          })
+          result = await Promise.race([running, abandoned])
         } catch (error) {
-          // (Its agent couldn't take it up: it stops, as the bridge before would have stopped it.)
-          input.held.held.stop()
+          // (Its agent couldn't take it up: let go of; the agent stops, as the bridge before would
+          // have stopped it, unless another conversation's turn is taken up in it.)
+          taken.gate.release(taken.thread)
           throw error
         }
         if (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork)) slot.seen = record.messages[record.messages.length - 1]?.id

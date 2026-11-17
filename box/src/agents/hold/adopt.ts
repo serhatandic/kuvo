@@ -106,6 +106,19 @@ export class HeldGate {
     this.check()
   }
 
+  /**
+   * A turn that couldn't be taken up after all: let go of (as `drop`), or, once it was ready, no
+   * longer counted; the agent stops once no turn taken up in it is left (another session's turn on
+   * the same Codex goes on).
+   */
+  release(thread: string) {
+    if (this.waiting.has(thread)) return this.drop(thread)
+    if (this.released.has(thread)) return
+    this.released.add(thread)
+    if (this.opened && this.released.size >= this.taken) this.held.stop()
+  }
+  private released = new Set<string>()
+
   private check() {
     if (this.opened || this.waiting.size) return
     if (!this.taken) {
@@ -126,6 +139,8 @@ export interface HeldTurn {
   thread: string
   note: HeldTurnNote
   gate: HeldGate
+  /** Set by an agent whose process runs several conversations (Codex's app-server): once this turn's own first line comes again. Otherwise the agent's first line is. */
+  began?: Promise<void>
 }
 
 /** A holder's process stopped (its agent first, as a bridge stops one), by its own pid, once it's

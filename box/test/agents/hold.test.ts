@@ -306,6 +306,31 @@ describe("an agent under a holder", () => {
     expect(alive(grandchild)).toBe(false)
   })
 
+  test("a bridge that stopped reading, fenced off by a newer one, holds nothing back from it", async () => {
+    // (More than a socket's buffers hold: the agent's output waits for the bridge that stopped.)
+    const { held, folder } = await writer(`for (let n = 0; n < 200_000; n++) process.stdout.write(JSON.stringify({ n, pad: "y".repeat(90) }) + "\\n")`)
+    held.detach()
+    await held.closed
+    const record = heldIn(folder).find((each) => each.id === held.id)!
+    // The hung bridge, a process of its own: it attaches, asks for the burst, and is stopped (SIGSTOP).
+    const hung = spawn(process.execPath, ["-e", `
+      const socket = require("node:net").connect(${JSON.stringify(join(folder, `${held.id}.sock`))});
+      socket.write(JSON.stringify({ hello: "hold/1", key: ${JSON.stringify(record.key)}, generation: ${record.generation + 1} }) + "\\n");
+      socket.once("data", () => { socket.pause(); socket.write(JSON.stringify({ i: "go" }) + "\\n"); console.log("attached"); });
+    `], { stdio: ["ignore", "pipe", "ignore"] })
+    const gone = new Promise<void>((resolve) => hung.once("exit", () => resolve()))
+    await new Promise<void>((resolve) => hung.stdout!.once("data", () => resolve()))
+    process.kill(hung.pid!, "SIGSTOP")
+    // A newer bridge takes over: all of it comes, without waiting the minute a hung bridge gets.
+    const newer = await attach(folder, { ...record, generation: record.generation + 1 }, 0)
+    const lines = await untilDone(newer)
+    expect(lines.length).toBe(200_001)
+    process.kill(hung.pid!, "SIGKILL")
+    await gone
+    newer.end()
+    await newer.closed
+  })
+
   test("two bridges taking up the same held agent at once: one has it, and the other leaves it be", async () => {
     const { dir, folder } = shortFolder()
     const agent = join(dir, "quiet.js")

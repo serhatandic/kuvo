@@ -1047,6 +1047,8 @@ interface Active extends Lane {
   hooks: TurnHooks
   /** Taken up from its holder: the holder's last line before this turn began. */
   from?: number
+  /** Taken up from its holder: told as its own first line comes. */
+  began?: () => void
   /** The agents it spawned, by their thread. */
   subagents: Map<string, SubagentLane>
   /** Spawn calls under way whose thread isn't known yet, oldest first. */
@@ -1603,6 +1605,8 @@ class CodexThread implements Thread {
       this.answered = []
       this.wokeUp()
       const active: Active = { turn, hooks, resolve, streamed: new Set(), changes: new Map(), output: new Map(), toolsSinceText: false, subagents: new Map(), spawning: [], auto: input.auto, model: input.model.id, planning: input.plan, turnID: taken.note.turn, from: taken.note.from }
+      // (Its own first line, not another conversation's on the same app-server.)
+      taken.began = new Promise<void>((began) => (active.began = began))
       active.resolve = (result) => {
         for (const [threadID, lane] of active.subagents) {
           if (lane.ended) continue
@@ -1763,6 +1767,10 @@ class CodexThread implements Thread {
     // Taken up from its holder: what came before its own turn began (another thread's turn began
     // earlier there) isn't this turn's.
     if (active?.from !== undefined && from && from.lineSeq && from.lineSeq <= active.from) return
+    if (active?.began && params?.threadId && (params.threadId === this.nativeID || active.subagents.has(params.threadId))) {
+      active.began()
+      active.began = undefined
+    }
     // An agent it spawned: told in its session (one still at work after the turn too).
     if (params?.threadId && this.nativeID && params.threadId !== this.nativeID) return this.subagentNotification(active, params.threadId, method, params, from)
     // Codex let go of the thread: the next turn loads it again.

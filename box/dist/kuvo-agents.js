@@ -8865,12 +8865,16 @@ function wait(socket) {
   socket.waiting = true
   child.stdout.pause()
   const hung = setTimeout(() => socket.destroy(), HUNG)
-  const go = () => {
+  /** Waits no more: the agent's output read on (and this bridge sent more, if it's still the one). */
+  socket.unwait = () => {
     clearTimeout(hung)
     socket.off("drain", go)
     socket.off("close", go)
     socket.waiting = false
     child.stdout.resume()
+  }
+  const go = () => {
+    socket.unwait()
     pump(socket)
   }
   socket.on("drain", go)
@@ -8917,6 +8921,8 @@ function welcome(socket, hello) {
     return socket.end()
   }
   if (controller && controller !== socket) {
+    // (One that stopped reading holds nothing back now: the newer bridge's lines go on at once.)
+    if (controller.waiting) controller.unwait()
     send(controller, { fenced: true })
     controller.end()
   }
@@ -9563,6 +9569,16 @@ class HeldGate {
       this.dropped.push(thread);
     this.check();
   }
+  release(thread) {
+    if (this.waiting.has(thread))
+      return this.drop(thread);
+    if (this.released.has(thread))
+      return;
+    this.released.add(thread);
+    if (this.opened && this.released.size >= this.taken)
+      this.held.stop();
+  }
+  released = new Set;
   check() {
     if (this.opened || this.waiting.size)
       return;
@@ -19848,6 +19864,7 @@ ${said(index)}`).join(`
       this.answered = [];
       this.wokeUp();
       const active = { turn, hooks, resolve, streamed: new Set, changes: new Map, output: new Map, toolsSinceText: false, subagents: new Map, spawning: [], auto: input.auto, model: input.model.id, planning: input.plan, turnID: taken.note.turn, from: taken.note.from };
+      taken.began = new Promise((began) => active.began = began);
       active.resolve = (result) => {
         for (const [threadID, lane] of active.subagents) {
           if (lane.ended)
@@ -20010,6 +20027,10 @@ ${said.map((each) => each.text).join(`
     const active = this.active;
     if (active?.from !== undefined && from && from.lineSeq && from.lineSeq <= active.from)
       return;
+    if (active?.began && params?.threadId && (params.threadId === this.nativeID || active.subagents.has(params.threadId))) {
+      active.began();
+      active.began = undefined;
+    }
     if (params?.threadId && this.nativeID && params.threadId !== this.nativeID)
       return this.subagentNotification(active, params.threadId, method, params, from);
     if (method === "thread/closed") {
@@ -29727,18 +29748,20 @@ ${text.slice(0, 4000)}
         heldTaken = true;
         const opened = record.messages.findIndex((message) => message.id === userMessage);
         const kept = new Set(record.messages.slice(opened + 1).filter((message) => message.type === "assistant").map((message) => message.id));
-        input.held.held.firstLine.then(() => {
-          if (runOf(live.doing) !== run || run.heldTaken)
-            return;
-          run.heldTaken = true;
-          record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)));
-          this.store.save(id);
-        });
+        const taken = input.held;
         let result;
         try {
-          result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned]);
+          const running = thread.run({ ...input, model }, turn, hooks);
+          (taken.began ?? taken.held.firstLine).then(() => {
+            if (runOf(live.doing) !== run || run.heldTaken)
+              return;
+            run.heldTaken = true;
+            record.messages.splice(0, record.messages.length, ...record.messages.filter((message) => !kept.has(message.id)));
+            this.store.save(id);
+          });
+          result = await Promise.race([running, abandoned]);
         } catch (error) {
-          input.held.held.stop();
+          taken.gate.release(taken.thread);
           throw error;
         }
         if (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork))
@@ -39367,4 +39390,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents dc049ebb28911d544f125abede55bdbdcd6bb391b6dc7c891b82712aa67f1354
+// Built from Packages/Box/src/agents 1fcd413c55af6fa199dcc8233dcabfd8aff5b41657c193f93d7247a72ef51740
