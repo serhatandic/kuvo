@@ -44083,7 +44083,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "255ee0123c90";
+var BRIDGE_VERSION = "86ae8cb7e73e";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -55498,7 +55498,7 @@ function installHelperAgent({ load, app }) {
     message: loaded ? `${HELPER_NAME2} runs Kuvo on this Mac now, and at login.` : `${HELPER_NAME2} starts Kuvo on this Mac at login, but launchd didn't start it now: ${(started.stderr || "").trim().slice(0, 300) || "it said nothing"}.`
   };
 }
-function startHelperAgent({ app, ifMissing = false }) {
+function startHelperAgent({ app, ifMissing = false, unlessStopped = false }) {
   const mac = process.platform === "darwin" && !APP_FOLDER && recordedKind() === "mac";
   const why = refusal3();
   if (why)
@@ -55506,10 +55506,14 @@ function startHelperAgent({ app, ifMissing = false }) {
   const tools = launchTools();
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const run = (args) => spawnSync16(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+  const stoppedNow = () => unlessStopped && (fs172.existsSync(path182.join(K, "run", "paused")) || fs172.existsSync(path182.join(K, "run", "off")));
+  const stoppedSaid = { started: false, mac, stopped: true, message: "Kuvo on this Mac was stopped: nothing was started." };
   const openedInstead = () => {
     const disabled = run(["print-disabled", domain]);
     if (disabled.status !== 0 || !SWITCHED_OFF.test(disabled.stdout ?? ""))
       return null;
+    if (stoppedNow())
+      return stoppedSaid;
     const opened = spawnSync16(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
       return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME2} is turned off in System Settings › General › Login Items, so it was opened for now, to run Kuvo on this Mac until you log out. Turn it on there to start it at login.` };
@@ -55517,6 +55521,8 @@ function startHelperAgent({ app, ifMissing = false }) {
     return { started: false, mac, disabled: true, message: `${HELPER_NAME2} is turned off in System Settings › General › Login Items, and macOS didn't open it: ${(opened.stderr || "").trim().slice(0, 300) || opened.error?.message || "it said nothing"}. Turn it on there, then try again.` };
   };
   const status = helperStatus();
+  if (stoppedNow())
+    return stoppedSaid;
   if (!status.agent) {
     const done = installHelperAgent({ load: true, app });
     return done.loaded ? { started: true, mac, message: done.message } : openedInstead() ?? { started: false, mac, message: done.message };
@@ -55534,6 +55540,8 @@ function startHelperAgent({ app, ifMissing = false }) {
     for (let waited = 0;waited < 100 && /\bpid = \d+/.test(run(["print", `${domain}/${LAUNCH_AGENT}`]).stdout ?? ""); waited++)
       Atomics.wait(pause, 0, 0, 100);
   }
+  if (stoppedNow())
+    return stoppedSaid;
   const started = run(["kickstart", `${domain}/${LAUNCH_AGENT}`]);
   return started.status === 0 ? { started: true, mac, message: `${HELPER_NAME2} runs Kuvo on this Mac.` } : refusedBy("start", started);
 }
@@ -70645,6 +70653,13 @@ function bundleRenews(bundle = helperBundle()) {
     return false;
   }
 }
+function helperCopy(bundle = helperBundle()) {
+  try {
+    return fs205.statSync(path215.join(bundle, "Contents", "MacOS", HELPER_NAME2)).ino;
+  } catch {
+    return null;
+  }
+}
 function readHandOver() {
   try {
     const record = JSON.parse(fs205.readFileSync(HANDOVER_RECORD(), "utf8"));
@@ -70657,6 +70672,7 @@ var note5 = (record) => writePrivate(HANDOVER_RECORD(), JSON.stringify(record));
 var stoppedHere = () => fs205.existsSync(path215.join(RUN, "paused")) || fs205.existsSync(path215.join(RUN, "off"));
 var slashes = (text) => text.replace(/\/+/g, "/");
 var isOwnHelper = (pid) => pid > 1 && alive(pid) && slashes(commandLineOf(pid) ?? "").includes(slashes(`${helperProgram2()} keep`));
+var stillHanding = (record) => record.by ? runsAs(record.by, /kuvo-link\.js helper hand-over/) : Date.now() - record.at < 120000;
 function considerHelper(parent) {
   if (!OWN_HOME_MAC || !launchTools() || !isOwnHelper(parent) || stoppedHere())
     return "none";
@@ -70665,17 +70681,23 @@ function considerHelper(parent) {
   const bundle = helperSeal();
   if (!bundle)
     return "later";
+  const copy = helperCopy();
+  if (copy === null)
+    return "later";
   if (!bundleRenews())
     return "none";
   const tried = readHandOver();
-  if (tried?.bundle === bundle) {
-    if (!tried.stillOld && tried.outcome !== "handing") {
-      note5({ ...tried, stillOld: { pid: parent, at: Date.now() } });
-      console.error(`${HELPER_NAME2} is still the one from before the update after it was handed over once (${tried.outcome}): it moves to the new one at your next login.`);
+  if (tried?.bundle === bundle && tried.copy === copy) {
+    if (tried.outcome === "handing" && stillHanding(tried))
+      return "later";
+    if (!tried.stillOld) {
+      const outcome = tried.outcome === "handing" ? "failed" : tried.outcome;
+      note5({ ...tried, outcome, ...tried.outcome === "handing" ? { message: "The hand-over ended before it said how it went." } : {}, stillOld: { pid: parent, at: Date.now() } });
+      console.error(`${HELPER_NAME2} is still the one from before the update after it was handed over once (${outcome}): it moves to the new one at your next login.`);
     }
     return "none";
   }
-  note5({ v: 1, bundle, pid: parent, at: Date.now(), outcome: "handing" });
+  note5({ v: 1, bundle, copy, pid: parent, at: Date.now(), outcome: "handing" });
   return "hand-over";
 }
 function watchHelperBuild(renews) {
@@ -70697,12 +70719,20 @@ function watchHelperBuild(renews) {
       clearInterval(timer);
     if (said === "hand-over") {
       console.error(`${HELPER_NAME2} is from before the update and doesn't move to the new one by itself: it's handed over once.`);
-      try {
-        spawn21(process.execPath, [...OWN_RUNTIME, SCRIPT, "helper", "hand-over", "--pid", String(parent)], { detached: true, stdio: "ignore", cwd: K, env: process.env }).unref();
-      } catch (error) {
+      const failed = (error) => {
         const record = readHandOver();
-        if (record)
+        if (record?.outcome === "handing" && record.pid === parent)
           note5({ ...record, outcome: "failed", message: error.message });
+      };
+      try {
+        const child = spawn21(process.execPath, [...OWN_RUNTIME, SCRIPT, "helper", "hand-over", "--pid", String(parent)], { detached: true, stdio: "ignore", cwd: K, env: process.env });
+        child.on("error", failed);
+        child.unref();
+        const record = readHandOver();
+        if (child.pid && record?.outcome === "handing" && record.pid === parent && !record.by)
+          note5({ ...record, by: child.pid });
+      } catch (error) {
+        failed(error);
       }
     }
     return true;
@@ -70729,9 +70759,16 @@ function handOverCommand(args) {
     console.error("Usage: kuvo-link.js helper hand-over --pid <Kuvo Helper's process>");
     return 2;
   }
-  const record = readHandOver();
+  const ours = () => {
+    const record = readHandOver();
+    return record?.pid === pid ? record : null;
+  };
+  const begun = ours();
+  if (begun)
+    note5({ ...begun, by: process.pid });
   const done = (outcome, message) => {
-    if (record && record.pid === pid)
+    const record = ours();
+    if (record)
       note5({ ...record, outcome, message });
     console.log(JSON.stringify({ outcome, message }));
     return outcome === "handed" ? 0 : 1;
@@ -70746,17 +70783,27 @@ function handOverCommand(args) {
   try {
     process.kill(pid, "SIGTERM");
   } catch {}
-  for (let waited = 0;waited < 200 && alive(pid); waited++)
+  for (let waited = 0;waited < 600 && alive(pid); waited++)
     pause3(100);
   if (alive(pid))
     return done("stayed", `${HELPER_NAME2} from before the update didn't stop: it moves to the new one at your next login.`);
   const domain = `gui/${process.getuid?.() ?? 0}`;
-  for (let waited = 0;waited < 50 && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync21(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""); waited++)
+  const until = Date.now() + 5000;
+  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync21(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""))
     pause3(100);
   if (stoppedHere())
     return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
-  const started = startHelperAgent({ app: appOfAgent(tools.agents) });
-  return started.started ? done("handed", `${HELPER_NAME2} runs the new version now.`) : done("failed", started.message);
+  const started = startHelperAgent({ app: appOfAgent(tools.agents), unlessStopped: true });
+  if (started.started)
+    return done("handed", `${HELPER_NAME2} runs the new version now.`);
+  if (started.stopped)
+    return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
+  if (!started.disabled && !stoppedHere()) {
+    const opened = spawnSync21(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
+    if (opened.status === 0)
+      return done("handed", `${HELPER_NAME2} runs the new version now, opened until you log out: launchd didn't start it (${started.message})`);
+  }
+  return done("failed", started.message);
 }
 
 // box/src/link/updates/code-in-place.ts
