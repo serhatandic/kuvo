@@ -11,14 +11,19 @@
 import "../safety"
 import { afterAll, describe, expect, test } from "bun:test"
 import { spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { attach, hold, heldIn, holdFolder, HOLDER, type HoldRecord } from "../../src/agents/hold/client"
 import { RPC } from "../../src/agents/rpc"
 
 // (In the run's own home: short enough for a socket's path, and never /tmp.)
 const root = mkdtempSync(join(process.env.HOME!, "h"))
-afterAll(() => rmSync(root, { recursive: true, force: true }))
+const folders: string[] = []
+// (Holders run in sessions of their own: any a failed test left are stopped, by their own pid.)
+afterAll(() => {
+  for (const folder of folders) for (const record of heldIn(folder)) process.kill(record.pid, "SIGTERM")
+  rmSync(root, { recursive: true, force: true })
+})
 
 /** A Codex-like agent: `turn/start` asks to run a command, runs it once approved, and ends the turn. */
 const AGENT = String.raw`
@@ -59,6 +64,7 @@ rpc.onRequest = (method) => {
   console.log(JSON.stringify({ asked: method, id: held.id, pid: held.pid }));
   return new Promise(() => {});
 };
+rpc.start();
 await rpc.request("turn/start", { threadId: "t1", input: [] });
 `
 
@@ -67,6 +73,7 @@ function shortFolder() {
   const dir = mkdtempSync(join(root, "/"))
   const folder = join(dir, "h")
   if (Buffer.byteLength(folder) + 18 >= 104) throw new Error(`This run's home is too deep for a socket's path: ${folder}`)
+  folders.push(folder)
   return { dir, folder }
 }
 
@@ -136,6 +143,7 @@ describe("an agent under a holder", () => {
         if (method === "turn/completed") resolve(params.turn.status)
       }
     })
+    rpc.start()
     expect(await ended).toBe("completed")
     expect(asks).toEqual(["item/commandExecution/requestApproval"])
     expect(readFileSync(paths.log + ".ran", "utf8")).toBe("accept\n")
@@ -163,6 +171,7 @@ describe("an agent under a holder", () => {
     const second = await attach(paths.folder, record)
     const secondRPC = new RPC(second, { firstID: 1_000_000 })
     secondRPC.onRequest = () => new Promise(() => {})
+    secondRPC.start()
     // (The first bridge, fenced off as the second attached, still runs: it's ended here.)
     bridge.kill("SIGKILL")
     await gone
@@ -171,13 +180,14 @@ describe("an agent under a holder", () => {
     expect(third.generation).toBe(3)
     await second.closed
     expect(second.fenced).toBe(true)
-    // What the fenced bridge sends never reaches the agent, and its requests fail at once.
+    // The fenced bridge's requests fail at once, and none of it reaches the agent.
     await expect(secondRPC.request("ping")).rejects.toThrow()
     expect(readFileSync(paths.log, "utf8")).not.toContain('"ping"')
     // The one now attached is asked the open approval, and its answer is the one that counts.
     const thirdRPC = new RPC(third, { firstID: 2_000_000 })
     thirdRPC.onRequest = async () => ({ decision: "decline" })
     const ended = new Promise<void>((resolve) => (thirdRPC.onNotification = (method) => method === "turn/completed" && resolve()))
+    thirdRPC.start()
     await ended
     expect(readFileSync(paths.log + ".ran", "utf8")).toBe("decline\n")
     // A stale generation still can't come back.
@@ -201,6 +211,33 @@ describe("an agent under a holder", () => {
     expect(existsSync(join(paths.folder, `${asked.id}.sock`))).toBe(false)
   })
 })
+
+test("an agent no bridge attaches to is stopped, as a bridge stops one, and its holder goes", async () => {
+  const paths = files()
+  const held = await hold([process.execPath, paths.agent, paths.log], { folder: paths.folder, kind: "jsonrpc", env: { BUN_BE_BUN: process.env.BUN_BE_BUN, PATH: process.env.PATH }, orphan: 100 })
+  const record = join(paths.folder, `${held.id}.json`)
+  const gone = untilGone(record)
+  // (Let go of, as a bridge that crashed lets go: no newer one comes.)
+  held.detach()
+  await gone
+  expect(alive(held.pid!)).toBe(false)
+  expect(existsSync(join(paths.folder, `${held.id}.sock`))).toBe(false)
+})
+
+/** Once `path` is gone (its folder watched, not polled). */
+function untilGone(path: string) {
+  return new Promise<void>((resolve) => {
+    const watcher = watch(dirname(path), () => {
+      if (existsSync(path)) return
+      watcher.close()
+      resolve()
+    })
+    if (!existsSync(path)) {
+      watcher.close()
+      resolve()
+    }
+  })
+}
 
 describe("what a holder sends again to a new bridge", () => {
   /** An agent that says one line per line it reads, the first a request (with an id). */

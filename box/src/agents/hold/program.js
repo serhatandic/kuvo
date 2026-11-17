@@ -3,26 +3,29 @@
 // It runs the agent as its own child on pipes (its parent never changes), numbers each line the
 // agent writes, keeps the latest few MB of them, and lets one bridge at a time drive the agent over
 // a unix socket: a bridge attaches with a generation, and a higher generation fences off the older
-// one (only the newest may write). It ends once its agent has ended and a bridge has heard so.
+// one (only the newest may write). It ends once its agent has ended and a bridge has heard so; an
+// agent no bridge attaches to for a while is stopped, as a bridge stops one.
 //
 // Protocol-agnostic, and changed rarely: a newer one is used only for agents started after it, and
 // older ones live on until their agent ends. Plain JavaScript on Node's modules alone, so the
 // bridge writes it out and runs it on its own Bun (client.ts), small, apart from the bridge's code.
 //
-// usage: <bun> kuvo-hold.js <folder> <id> <kind> <spec>
+// usage: <bun> kuvo-hold.js <folder> <id> <kind>, with one line on stdin: {key, spec}
 //   kind: "jsonrpc" (Codex, ACP: requests the agent sent that no bridge answered are sent again to
 //         the next one), "claude" (its control requests are never sent again, nor replayed: Claude
 //         Code sends its open asks again itself when a new SDK client initializes, and cancels open
-//         hook callbacks, so a replayed one would be asked twice), or "raw" (nothing parsed).
-//   spec: {command: [program, ...args], cwd, meta, holder, bun?, journalBytes?, linger?}
-//   env:  the agent's, with KUVO_HOLD_KEY (the key a bridge gives first; the agent never sees it)
+//         hook callbacks, so a replayed one would be asked twice), or "raw" (lines as written).
+//   key:  what a bridge gives first (never in an environment or on a command line)
+//   spec: {command: [program, ...args], cwd, meta, holder, bun?, journalBytes?, linger?, orphan?}
+//   env:  the agent's
 //
 // Frames, one JSON object per line. A bridge sends first {hello: "hold/1", key, generation, from?};
 // then {i: line} (to the agent's stdin), {ack: seq}, {meta: {...}}, {end: true} (close its stdin),
 // {signal: name}, {bye: true}. The holder answers {hello, pid, child, generation, seq, first, gap,
-// exited} or {refused}, then sends {s: seq, o: line} (again: true for a request sent again),
-// {e: text} (stderr), {x: {code, signal}} (the agent ended), {fenced: true} (a newer bridge took
-// over). Files: <folder>/<id>.sock and <id>.json (the record, with the key: the folder is 0700).
+// exited, stderr, meta} or {refused}, then sends {s: seq, o: line} (again: true for a request sent
+// again), {e: text} (stderr), {x: {code, signal}} (the agent ended, after all it wrote), {fenced:
+// true} (a newer bridge took over). Files: <folder>/<id>.sock and <id>.json (its record, with the
+// key: the folder is 0700).
 
 import { spawn } from "node:child_process"
 import { randomBytes, timingSafeEqual } from "node:crypto"
@@ -31,45 +34,71 @@ import net from "node:net"
 import { join } from "node:path"
 
 const PROTO = "hold/1"
-const [folder, id, kind, specText] = process.argv.slice(2)
-const spec = JSON.parse(specText ?? "{}")
-const key = Buffer.from(process.env.KUVO_HOLD_KEY ?? "")
-// (Nor does the agent get the key, nor the setting that runs the engine's binary as Bun, the
-// holder's own, unless its bridge gave the agent one: `spec.bun`.)
+const [folder, id, kind] = process.argv.slice(2)
+const socketPath = join(folder ?? "", `${id}.sock`)
+const recordPath = join(folder ?? "", `${id}.json`)
+/** Most asks it keeps open for a bridge to come (the oldest go first). */
+const MOST_PENDING = 1_000
+/** How long a bridge has to say hello, and how long its hello may be. */
+const HELLO_WITHIN = 10_000
+const HELLO_BYTES = 64_000
+/** How long the agent's stdout may stay open after it ended (something it started holds it). */
+const OUTPUT_AFTER_END = 2_000
+
+const given = await new Promise((resolve) => {
+  let text = ""
+  process.stdin.setEncoding("utf8")
+  process.stdin.on("data", (chunk) => (text += chunk))
+  process.stdin.on("end", () => {
+    try {
+      resolve(JSON.parse(text) ?? {})
+    } catch {
+      resolve({})
+    }
+  })
+})
+const key = Buffer.from(String(given.key ?? ""))
+const spec = given.spec ?? {}
+if (key.length < 16 || !Array.isArray(spec.command) || !spec.command.length || !folder || !/^[0-9a-f]{12}$/.test(id ?? "")) {
+  console.error("kuvo-hold: no key, command or id")
+  process.exit(2)
+}
+// (Nor does the agent get the setting that runs the engine's binary as Bun, the holder's own,
+// unless its bridge gave the agent one: `spec.bun`.)
 const env = { ...process.env }
-delete env.KUVO_HOLD_KEY
 delete env.BUN_BE_BUN
 if (typeof spec.bun === "string") env.BUN_BE_BUN = spec.bun
-const socketPath = join(folder, `${id}.sock`)
-const recordPath = join(folder, `${id}.json`)
 const journalBytes = Number(spec.journalBytes) || 4_000_000
 // How long it waits for a bridge to hear its agent ended, with none attached, before it goes.
 const linger = Number(spec.linger) || 15 * 60_000
+// How long its agent runs with no bridge attached before it's stopped (none came to adopt it).
+const orphan = Number(spec.orphan) || 15 * 60_000
 
 /** The latest lines the agent wrote, oldest first, at most `journalBytes` of them. */
 const journal = []
 let journaled = 0
 let seq = 0
-/** Requests the agent sent that no bridge has answered, by id, with their line's number. */
+/** Requests the agent sent that no bridge has answered, by id: their line and its number. */
 const pending = new Map()
-let generation = 0
+/** What the bridges attached so far took in: where the next one starts, unless it says. */
 let acked = 0
+let generation = 0
 let meta = spec.meta ?? {}
 let controller
 let exited = null
 let stderrTail = ""
 let leaving = false
-
-if (key.length < 16 || !Array.isArray(spec.command) || !spec.command.length) {
-  console.error("kuvo-hold: no key or command")
-  process.exit(2)
-}
+let stopping = false
+let orphaned
+let lingering
+let ending = false
+const started = Date.now()
 
 const child = spawn(spec.command[0], spec.command.slice(1), { cwd: spec.cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"] })
 child.stdin.on("error", () => {})
 
 function writeRecord() {
-  const record = { proto: PROTO, holder: spec.holder ?? null, id, kind, pid: process.pid, child: child.pid ?? null, program: spec.command[0], cwd: spec.cwd ?? null, started, generation, acked, exited, meta, key: key.toString() }
+  const record = { proto: PROTO, holder: spec.holder ?? null, id, kind, pid: process.pid, child: child.pid ?? null, program: spec.command[0], cwd: spec.cwd ?? null, started, generation, exited, meta, key: key.toString() }
   const temporary = `${recordPath}.${randomBytes(4).toString("hex")}`
   try {
     writeFileSync(temporary, JSON.stringify(record), { mode: 0o600 })
@@ -78,35 +107,30 @@ function writeRecord() {
     rmSync(temporary, { force: true })
   }
 }
-let recordTimer
-/** The record again soon (acks come often): once a second at most. */
-function writeRecordSoon() {
-  recordTimer ??= setTimeout(() => {
-    recordTimer = undefined
-    writeRecord()
-  }, 1_000)
-}
-const started = Date.now()
 
-const idOf = (message) => (message && typeof message === "object" && "id" in message && message.id !== undefined && message.id !== null ? JSON.stringify(message.id) : undefined)
+const idKey = (value) => (value === undefined || value === null ? undefined : JSON.stringify(value))
 
-/** A line the agent wrote: numbered, kept, and sent to the bridge attached. */
-function fromAgent(line) {
-  seq++
-  if (kind === "jsonrpc") {
-    try {
-      const message = JSON.parse(line)
-      const found = idOf(message)
-      if (found !== undefined && typeof message.method === "string") pending.set(found, seq)
-    } catch {}
+/** What a line of the agent's says of the asks open: a new one, or one it settled itself. */
+function noteAsks(line) {
+  let message
+  try {
+    message = JSON.parse(line)
+  } catch {
+    return
   }
-  const bytes = Buffer.byteLength(line)
-  // (Claude Code's asks and hook callbacks: the live bridge gets them, a later one never.)
-  const ask = kind === "claude" && line.includes('"control_request"') && isControlRequest(line)
-  journal.push({ s: seq, line, bytes, ask })
-  journaled += bytes
-  while (journaled > journalBytes && journal.length > 1) journaled -= journal.shift().bytes
-  send(controller, { s: seq, o: line })
+  if (!message || typeof message !== "object" || typeof message.method !== "string") return
+  const asked = idKey(message.id)
+  if (asked !== undefined) {
+    pending.set(asked, { s: seq, line })
+    if (pending.size > MOST_PENDING) pending.delete(pending.keys().next().value)
+    return
+  }
+  // Codex settled one itself (`serverRequest/resolved`), or an agent took one back (`$/cancelRequest`).
+  if (message.method === "serverRequest/resolved" || message.method === "$/cancelRequest") {
+    const settled = message.params?.requestId ?? message.params?.id
+    if (settled === undefined || settled === null) return
+    for (const each of [settled, String(settled), Number(settled)]) pending.delete(idKey(each))
+  }
 }
 
 function isControlRequest(line) {
@@ -117,41 +141,59 @@ function isControlRequest(line) {
   }
 }
 
+/** A line the agent wrote: numbered, kept, and sent to the bridge attached. */
+function fromAgent(line) {
+  seq++
+  if (kind === "jsonrpc") noteAsks(line)
+  const bytes = Buffer.byteLength(line)
+  // (Claude Code's asks and hook callbacks: the live bridge gets them, a later one never.)
+  const ask = kind === "claude" && line.includes('"control_request"') && isControlRequest(line)
+  journal.push({ s: seq, line, bytes, ask })
+  journaled += bytes
+  while (journaled > journalBytes && journal.length > 1) journaled -= journal.shift().bytes
+  send(controller, { s: seq, o: line })
+}
+
 /** A line a bridge sent the agent: an answer to one of its requests is no longer open. */
 function toAgent(line) {
   if (kind === "jsonrpc") {
     try {
       const message = JSON.parse(line)
-      const found = idOf(message)
-      if (found !== undefined && message.method === undefined) pending.delete(found)
+      const answered = message && typeof message === "object" && message.method === undefined ? idKey(message.id) : undefined
+      if (answered !== undefined) pending.delete(answered)
     } catch {}
   }
   if (!exited) child.stdin.write(line + "\n")
 }
 
+/** A frame to a bridge; one that stopped reading (hung) is let go, to attach again from its ack. */
 function send(socket, frame) {
   if (!socket || socket.destroyed) return
   socket.write(JSON.stringify(frame) + "\n")
+  if (socket.writableLength > journalBytes) socket.destroy()
 }
 
-function lines(stream, each) {
+/** Lines from a stream; `exact`: as written (blank ones and carriage returns too). Returns what's left, to say at its end. */
+function lines(stream, each, { exact = false, most } = {}) {
   let buffer = ""
   stream.setEncoding("utf8")
   stream.on("data", (chunk) => {
     buffer += chunk
     for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
-      const line = buffer.slice(0, at).replace(/\r$/, "")
+      const line = exact ? buffer.slice(0, at) : buffer.slice(0, at).replace(/\r$/, "")
       buffer = buffer.slice(at + 1)
-      if (line.trim()) each(line)
+      if (exact || line.trim()) each(line)
     }
+    if (most && buffer.length > most()) stream.destroy()
   })
   return () => {
-    if (buffer.trim()) each(buffer)
+    if (exact ? buffer.length : buffer.trim()) each(buffer)
     buffer = ""
   }
 }
 
-const restOfStdout = lines(child.stdout, fromAgent)
+const outputDone = new Promise((resolve) => child.stdout.once("close", resolve))
+const restOfStdout = lines(child.stdout, fromAgent, { exact: kind === "raw" })
 child.stderr.setEncoding("utf8")
 child.stderr.on("data", (text) => {
   stderrTail = (stderrTail + text).slice(-8_000)
@@ -160,8 +202,8 @@ child.stderr.on("data", (text) => {
 
 /** A bridge's hello: the right key, and a generation no older than the newest's. */
 function welcome(socket, hello) {
-  const given = Buffer.from(String(hello?.key ?? ""))
-  if (hello?.hello !== PROTO || given.length !== key.length || !timingSafeEqual(given, key)) {
+  const offered = Buffer.from(String(hello?.key ?? ""))
+  if (hello?.hello !== PROTO || offered.length !== key.length || !timingSafeEqual(offered, key)) {
     send(socket, { refused: "Not this holder's key." })
     return socket.end()
   }
@@ -176,27 +218,25 @@ function welcome(socket, hello) {
   }
   controller = socket
   generation = wanted
+  clearTimeout(orphaned)
   const from = Number.isSafeInteger(hello.from) ? hello.from : acked
   const first = journal[0]?.s ?? seq + 1
   send(socket, { hello: PROTO, pid: process.pid, child: child.pid ?? null, generation, seq, first, gap: from + 1 < first, exited, stderr: stderrTail, meta })
   for (const entry of journal) if (entry.s > from && !entry.ask) send(socket, { s: entry.s, o: entry.line })
   // What it asked and no bridge answered, which the new one has already seen: asked again.
-  for (const at of pending.values()) {
-    if (at > from) continue
-    const entry = journal.find((each) => each.s === at)
-    if (entry) send(socket, { s: entry.s, o: entry.line, again: true })
+  for (const { s, line } of pending.values()) if (s <= from) send(socket, { s, o: line, again: true })
+  if (exited) {
+    send(socket, { x: exited })
+    socket.heardEnd = true
   }
-  if (exited) send(socket, { x: exited })
   writeRecord()
 }
 
 function fromBridge(socket, frame) {
-  if (socket !== controller) return
+  if (socket !== controller || !frame || typeof frame !== "object") return
   if (typeof frame.i === "string") toAgent(frame.i)
-  else if (Number.isSafeInteger(frame.ack) && frame.ack > acked) {
-    acked = Math.min(frame.ack, seq)
-    writeRecordSoon()
-  } else if (frame.meta && typeof frame.meta === "object") {
+  else if (Number.isSafeInteger(frame.ack)) acked = Math.max(acked, Math.min(frame.ack, seq))
+  else if (frame.meta && typeof frame.meta === "object") {
     meta = { ...meta, ...frame.meta }
     writeRecord()
   } else if (frame.end) child.stdin.end()
@@ -209,27 +249,35 @@ function fromBridge(socket, frame) {
 
 const server = net.createServer((socket) => {
   let hello = false
+  const late = setTimeout(() => !hello && socket.destroy(), HELLO_WITHIN)
   socket.on("error", () => {})
   socket.on("close", () => {
-    if (socket === controller) controller = undefined
-    // (Heard of its agent's end, and gone: nothing left to hold.)
-    if (exited && hello && socket.heardEnd) leave()
+    clearTimeout(late)
+    // (Only the bridge attached counts: one fenced off as it closes says nothing of this one.)
+    if (socket !== controller) return
+    controller = undefined
+    // Heard of its agent's end, and gone: nothing left to hold.
+    if (exited && socket.heardEnd) return leave()
+    if (!ending) waitForBridge()
   })
-  lines(socket, (line) => {
-    let frame
-    try {
-      frame = JSON.parse(line)
-    } catch {
-      return socket.destroy()
-    }
-    if (!hello) {
-      hello = true
-      welcome(socket, frame)
-      if (exited && socket === controller) socket.heardEnd = true
-      return
-    }
-    fromBridge(socket, frame)
-  })
+  lines(
+    socket,
+    (line) => {
+      let frame
+      try {
+        frame = JSON.parse(line)
+      } catch {
+        return socket.destroy()
+      }
+      if (!hello) {
+        hello = true
+        clearTimeout(late)
+        return welcome(socket, frame)
+      }
+      fromBridge(socket, frame)
+    },
+    { most: () => (hello ? Infinity : HELLO_BYTES) },
+  )
 })
 server.on("error", (error) => {
   console.error("kuvo-hold:", error?.message ?? error)
@@ -239,24 +287,41 @@ server.on("error", (error) => {
 rmSync(socketPath, { force: true })
 server.listen(socketPath, () => {
   writeRecord()
+  if (!controller && !ending) waitForBridge()
   // Ready: said once to the bridge starting it, and its stdout let go (that bridge may be gone soon).
   process.stdout.write(JSON.stringify({ ready: PROTO, pid: process.pid, child: child.pid ?? null }) + "\n", () => process.stdout.destroy())
 })
 
-let lingering
-child.on("exit", (code, signal) => {
-  restOfStdout()
-  exited = { code, signal }
-  writeRecord()
-  if (controller) {
-    send(controller, { x: exited })
-    controller.heardEnd = true
-  }
-  lingering = setTimeout(leave, linger)
-})
+/** With no bridge attached, its agent is stopped after a while (none came to adopt it). */
+function waitForBridge() {
+  clearTimeout(orphaned)
+  orphaned = setTimeout(stop, orphan)
+}
+
+/** Its agent ended: said once all it wrote is in (or a moment later, if something it started keeps its output open). */
+function ended(code, signal) {
+  if (ending) return
+  ending = true
+  clearTimeout(orphaned)
+  void Promise.race([outputDone, new Promise((resolve) => setTimeout(resolve, OUTPUT_AFTER_END))]).then(() => {
+    restOfStdout()
+    child.stdout.destroy()
+    exited = { code, signal }
+    writeRecord()
+    if (controller) {
+      send(controller, { x: exited })
+      controller.heardEnd = true
+    }
+    // (Asked to stop, with no bridge there: none is waiting to hear it.)
+    if (stopping && !controller) return leave()
+    lingering = setTimeout(leave, linger)
+  })
+}
+child.on("exit", (code, signal) => ended(code, signal))
 child.on("error", (error) => {
   stderrTail = (stderrTail + String(error?.message ?? error)).slice(-8_000)
-  if (!exited) child.emit("exit", 127, null)
+  child.stdout.destroy()
+  ended(127, null)
 })
 
 /** Its agent ended and a bridge heard (or none came in time): its files go, and so does it. */
@@ -264,21 +329,37 @@ function leave() {
   if (leaving) return
   leaving = true
   clearTimeout(lingering)
-  clearTimeout(recordTimer)
+  clearTimeout(orphaned)
   rmSync(socketPath, { force: true })
   rmSync(recordPath, { force: true })
   server.close()
-  if (controller) controller.end()
-  process.exit(0)
+  if (controller && !controller.destroyed) {
+    // (What it was sent goes first.)
+    setTimeout(() => process.exit(0), 1_000)
+    controller.end(() => process.exit(0))
+  } else process.exit(0)
 }
 
-// Asked to stop (the box stopping): the agent is, as a bridge stops it (its stdin closed, then told).
-process.on("SIGTERM", () => {
+/** Stops its agent as a bridge stops one: its stdin closed, then told, then made to. */
+function stop() {
   if (exited) return leave()
+  if (stopping) return
+  stopping = true
   child.stdin.end()
-  try {
-    child.kill("SIGTERM")
-  } catch {}
-})
+  const told = setTimeout(() => {
+    try {
+      child.kill("SIGTERM")
+    } catch {}
+  }, 5_000)
+  const made = setTimeout(() => {
+    try {
+      child.kill("SIGKILL")
+    } catch {}
+  }, 15_000)
+  child.once("exit", () => (clearTimeout(told), clearTimeout(made)))
+}
+
+// Asked to stop (the box stopping): its agent too, and it goes once that has.
+process.on("SIGTERM", stop)
 process.on("SIGHUP", () => {})
 process.on("SIGINT", () => {})

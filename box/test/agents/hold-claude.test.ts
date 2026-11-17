@@ -15,7 +15,12 @@ import { attach, heldIn, heldProcess } from "../../src/agents/hold/client"
 
 const sdk = join(import.meta.dir, "../../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs")
 const root = mkdtempSync(join(process.env.HOME!, "c"))
-afterAll(() => rmSync(root, { recursive: true, force: true }))
+const folders: string[] = []
+// (Holders run in sessions of their own: any a failed test left are stopped, by their own pid.)
+afterAll(() => {
+  for (const folder of folders) for (const record of heldIn(folder)) process.kill(record.pid, "SIGTERM")
+  rmSync(root, { recursive: true, force: true })
+})
 
 const CLI = String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
@@ -75,6 +80,7 @@ for await (const message of q) {}
 test("Claude Code outlives its bridge's SIGKILL with an ask open, and a new SDK client takes the turn to its result", async () => {
   const dir = mkdtempSync(join(root, "/"))
   const folder = join(dir, "h")
+  folders.push(folder)
   const cli = join(dir, "claude.js")
   const first = join(dir, "first.mjs")
   const ran = join(dir, "ran")

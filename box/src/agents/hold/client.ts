@@ -4,17 +4,18 @@
 // a process of the bridge's own would give them (`Held`), for RPC (Codex, ACP) and Claude's SDK.
 //
 // Step 8 of .claude/notes/update-handover.md: built and tested, not yet what any agent is started
-// with (adopting a live turn in a new bridge is still to come). A box's holders are in
+// with (adopting a live turn in a new bridge is still to come). A holder no bridge attaches to
+// stops its agent after a while (program.js), so none is left running for good. A box's holders are in
 // `run/agents/hold` (0700): `<id>.sock`, `<id>.json` (its record, with the key), and the program,
 // `kuvo-hold-<HOLDER>.js`, which every holder started since it was written runs.
 
 import { spawn } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import { EventEmitter } from "node:events"
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
 import { userInfo } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { PassThrough, Writable } from "node:stream"
 import program from "./program.js" with { type: "text" }
 
@@ -56,12 +57,38 @@ export function holdFolder(boxHome: string): string | undefined {
   return join("/private/tmp", `kuvo-ssh-${userInfo().uid}`, `hold-${createHash("sha256").update(boxHome).digest("hex").slice(0, 8)}`)
 }
 
-/** The program, written once into the folder (whole, before it can be run). */
+/** A folder that's this user's alone: a folder (not a link), theirs, open to no one else. */
+function ownFolder(path: string): boolean {
+  try {
+    const seen = lstatSync(path)
+    return seen.isDirectory() && seen.uid === process.getuid?.() && (seen.mode & 0o077) === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The program in the folder, as this bridge has it (written whole, before it can be run, and
+ * written again should what's there differ). In the short folder in `/tmp`, which anyone could have
+ * made first, only if that folder is this user's alone, as the SSH agents' (vault/ssh.ts).
+ */
 function programIn(folder: string): string {
+  if (folder.startsWith("/private/tmp/")) {
+    const parent = dirname(folder)
+    try {
+      mkdirSync(parent, { mode: 0o700 })
+    } catch {}
+    if (!ownFolder(parent)) throw new Error(`${parent} isn't this user's alone: no agent is held there.`)
+  }
   mkdirSync(folder, { recursive: true, mode: 0o700 })
   chmodSync(folder, 0o700)
+  if (!ownFolder(folder)) throw new Error(`${folder} isn't this user's alone: no agent is held there.`)
   const path = join(folder, `kuvo-hold-${HOLDER}.js`)
-  if (!existsSync(path)) {
+  let there: string | undefined
+  try {
+    there = readFileSync(path, "utf8")
+  } catch {}
+  if (there !== program) {
     const temporary = `${path}.${randomBytes(4).toString("hex")}`
     writeFileSync(temporary, program, { mode: 0o600 })
     renameSync(temporary, path)
@@ -109,9 +136,10 @@ export interface HoldOptions {
   meta?: Record<string, unknown>
   /** The Bun to run the holder on (the bridge's own, by default). */
   runtime?: string
-  /** A test's: the journal's size, and how long a holder whose agent ended waits for a bridge. */
+  /** A test's: the journal's size, how long a holder whose agent ended waits for a bridge, and how long its agent runs with none. */
   journalBytes?: number
   linger?: number
+  orphan?: number
 }
 
 /** Starts `command` under a holder of its own, and attaches to it as its first bridge. */
@@ -121,20 +149,22 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
   const path = programIn(options.folder)
   const env: Record<string, string> = {}
   for (const [name, value] of Object.entries(options.env)) if (value !== undefined) env[name] = value
-  // The engine's binary is Bun when told so (the holder takes it out of the agent's).
+  // The engine's binary is Bun when told so (the holder takes it out of the agent's, but for the
+  // agent's own, `bun`).
   env.BUN_BE_BUN = "1"
-  env.KUVO_HOLD_KEY = key
-  // (The agent's own BUN_BE_BUN, if it has one, apart from the holder's.)
-  const spec = { command, cwd: options.cwd, meta: options.meta ?? {}, holder: HOLDER, bun: options.env.BUN_BE_BUN, journalBytes: options.journalBytes, linger: options.linger }
+  const spec = { command, cwd: options.cwd, meta: options.meta ?? {}, holder: HOLDER, bun: options.env.BUN_BE_BUN, journalBytes: options.journalBytes, linger: options.linger, orphan: options.orphan }
   // In a session of its own (no group signal reaches it), started in its own folder with no Bun
-  // settings or .env of the project's read into it, and so into the agent's.
-  const starting = spawn(options.runtime ?? process.execPath, ["--config=/dev/null", "--no-env-file", path, options.folder, id, options.kind, JSON.stringify(spec)], {
+  // settings or .env of the project's read into it, and so into the agent's. Its key and what it
+  // runs come on its stdin, never on a command line or in an environment.
+  const starting = spawn(options.runtime ?? process.execPath, ["--config=/dev/null", "--no-env-file", path, options.folder, id, options.kind], {
     cwd: options.folder,
     env,
     detached: true,
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["pipe", "pipe", "ignore"],
   })
-  const ready = await new Promise<{ pid: number }>((resolve, reject) => {
+  starting.stdin!.on("error", () => {})
+  starting.stdin!.end(JSON.stringify({ key, spec }))
+  const ready = new Promise<{ pid: number }>((resolve, reject) => {
     let said = ""
     starting.stdout!.setEncoding("utf8")
     starting.stdout!.on("data", (chunk: string) => {
@@ -150,9 +180,19 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
     starting.once("error", reject)
     starting.once("exit", (code) => reject(new Error(`The agent's holder stopped as it started (${code}).`)))
   })
-  starting.removeAllListeners("exit")
-  starting.unref()
-  return connect(options.folder, id, key, 1, ready.pid)
+  try {
+    const { pid } = await ready
+    starting.removeAllListeners("exit")
+    starting.unref()
+    return await connect(options.folder, id, key, 1, pid)
+  } catch (error) {
+    // (Its own holder, by the process it started: with the agent it may have started, it goes.)
+    try {
+      if (starting.pid) process.kill(starting.pid, "SIGTERM")
+    } catch {}
+    starting.unref()
+    throw error
+  }
 }
 
 /** Attaches to a holder an earlier bridge started, one generation past the last that attached. */
@@ -355,6 +395,7 @@ export function forgetHolder(folder: string, record: HoldRecord) {
 export function heldProcess(holding: Held | Promise<Held>) {
   const events = new EventEmitter()
   const stdout = new PassThrough()
+  stdout.on("error", () => {})
   let held: Held | undefined
   const waiting: string[] = []
   let ending = false
@@ -395,7 +436,9 @@ export function heldProcess(holding: Held | Promise<Held>) {
       held = each
       for (const line of waiting.splice(0)) each.write(line)
       if (ending) each.end()
-      each.onLine((line) => stdout.write(line + "\n"))
+      each.onLine((line) => {
+        if (!stdout.writableEnded) stdout.write(line + "\n")
+      })
       void each.exited.then((exit) => {
         stdout.end()
         process_.exitCode = exit.code

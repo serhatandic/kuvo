@@ -57,14 +57,13 @@ export class RPC {
     if (!Array.isArray(command)) {
       const held = (this.held = command)
       held.onStderr((text) => (this.stderr = (this.stderr + text).slice(-8_000)))
-      // (From the next moment: what the holder sends again as this bridge attaches waits for the
-      // handlers its caller sets right after this, or an ask would be answered "not found".)
-      queueMicrotask(() =>
+      // (From `start()`: what the holder sends again as this bridge attaches waits for its
+      // handlers, or an ask would be answered "not found".)
+      this.begin = () =>
         held.onLine((line) => {
           const trimmed = line.replace(/\r$/, "")
           if (trimmed.trim() && (!this.filter || this.filter(trimmed))) this.receive(trimmed)
-        }),
-      )
+        })
       // (Taken over by a newer bridge: the agent didn't stop, but it's that bridge's now.)
       this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)))
       this.errorsRead = this.exited.then(() => {})
@@ -76,6 +75,15 @@ export class RPC {
     this.exited = child.exited.then(ended)
     void this.read(child)
     this.errorsRead = this.readErrors(child).catch(() => {})
+  }
+
+  private begin?: () => void
+
+  /** Over a holder: its lines start coming, to the handlers set by now (a process of its own starts at once). */
+  start() {
+    const begin = this.begin
+    this.begin = undefined
+    begin?.()
   }
 
   /** Once all it wrote to stderr is in `stderr` (after it's gone). */

@@ -450,14 +450,22 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
   - `claude` holders never replay control requests, from the journal or otherwise: Claude Code
     re-sends its asks itself (S1), so a replayed one is asked twice. The test caught this.
   - The holder ends once its agent ended and a bridge heard it (or after 15 minutes with none). Its
-    files go with it.
+    files go with it. An agent with no bridge attached for 15 minutes is stopped as a bridge stops
+    one (stdin closed, then SIGTERM, then SIGKILL), so nothing held runs for good.
+  - Its key and spec come on its stdin, never in an environment or on a command line. Open asks
+    keep their own line (at most 1,000), and go when answered or settled (`serverRequest/resolved`,
+    `$/cancelRequest`). The agent's end is said after its last output. A bridge that stops reading
+    is dropped, to attach again from its ack.
 - `box/src/agents/hold/client.ts`: `hold()`, `attach()` (generation+1), `heldIn()`, `holdFolder()`
   (`run/agents/hold`; on macOS, past the 104-byte socket limit, Kuvo Code's short folder in `/tmp`
   as `SSH_AGENTS` does; elsewhere none: unheld). It also gives `Held` (lines, stderr, exit, write,
   end, kill, `note` for record metadata, `detach`) and `heldProcess()` (a `SpawnedProcess` for
   Claude's SDK `spawnClaudeCodeProcess`).
-- `RPC` takes a `Held` in place of a command (Codex, ACP, Cursor's worker): the same lines, and
-  `firstID` for a generation's own ids.
+- `RPC` takes a `Held` in place of a command (Codex, ACP, Cursor's worker): the same lines once
+  `start()` is called (so the handlers are set before a replayed ask arrives), and `firstID` for a
+  generation's own ids.
+- On macOS, the `/tmp` fallback folder is used only if it is this user's alone (as `safeFolder`).
+  The program file is checked against the bridge's own copy before it runs.
 - Tests (`box/test/agents/hold.test.ts`, `hold-claude.test.ts`): the first bridge, a process of its
   own, is SIGKILLed with an approval open. The agent lives; a new bridge attaches (generation 2), is
   asked again once, answers, and the turn ends (`turn/completed`, or the SDK's `result`), the command
@@ -476,7 +484,12 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
    - rebuild the open turn's message from the journal (drop what the store kept of that turn and
      replay from its `turn/started`; if the journal has a `gap`, end the turn as today);
    - answers to ids the old bridge sent: match them from the record (`meta`), not by `pending`;
-   - Claude asks are deduped by request_id / tool_use_id (S1).
+   - Claude asks are deduped by request_id / tool_use_id (S1), and a Claude Code whose
+     `initialize` reply lacks `pending_permission_requests` (before 2.1.268) isn't adoptable.
+   - `Held.exited` says `fenced` or `lost` for a bridge that lost the agent. RPC maps it to exit
+     -1 today, which codex.ts would read as "the server stopped": tell these apart before wiring.
+   - `heldIn` trusts a record whose pid lives; after a reboot a reused pid could look alive. Also
+     check the socket answers.
    Without this, holding only delays the cut: a new bridge would have to end the held agents.
 3. Keeper and footprint: `kuvo-start stop` must stop holders by their record's pid (never by
    pattern). The bridge removes `kuvo-hold-*.js` that no live holder runs and the records of dead

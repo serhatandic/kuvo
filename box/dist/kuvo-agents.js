@@ -7293,11 +7293,11 @@ class RPC {
     if (!Array.isArray(command)) {
       const held = this.held = command;
       held.onStderr((text) => this.stderr = (this.stderr + text).slice(-8000));
-      queueMicrotask(() => held.onLine((line) => {
+      this.begin = () => held.onLine((line) => {
         const trimmed = line.replace(/\r$/, "");
         if (trimmed.trim() && (!this.filter || this.filter(trimmed)))
           this.receive(trimmed);
-      }));
+      });
       this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
       this.errorsRead = this.exited.then(() => {});
       return;
@@ -7307,6 +7307,12 @@ class RPC {
     this.exited = child.exited.then(ended);
     this.read(child);
     this.errorsRead = this.readErrors(child).catch(() => {});
+  }
+  begin;
+  start() {
+    const begin = this.begin;
+    this.begin = undefined;
+    begin?.();
   }
   errorsRead;
   jsonrpc;
@@ -37860,4 +37866,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 880b2d675db90945ce335237d3572c99850de0baa90cb2d4688fe348294f780d
+// Built from Packages/Box/src/agents 2b3fded6f49f21e8b2434216207d63dd8996b579aba9f11bc63a4bd84ae49176
