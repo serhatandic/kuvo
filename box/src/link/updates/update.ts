@@ -34,7 +34,7 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
 import { keeperEngine, SWAP_NOW } from "./engine-swap";
 import { swapLine, swapUnderWay } from "../../shared/engine-swap";
-import { HELD, keepRelease } from "./fleet";
+import { keepRelease } from "./fleet";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -572,6 +572,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
     const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await download(() => fetchedPatiently(manifest.pack.url, 100_000_000, 300_000));
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
+    // Signed and checked: held from now, for your other computers to take at once, each judging it
+    // for itself, whatever comes of taking it here (`updates/fleet.ts`).
+    keepRelease(released, pack);
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
@@ -728,9 +731,6 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
-    // The signed release it runs now, kept for your other computers to take from it once it's
-    // judged well here (`updates/fleet.ts`).
-    keepRelease(released, pack);
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -1073,15 +1073,6 @@ export async function* updateRoute(context: RouteContext): AsyncGenerator<Answer
   return yield* json(405, {});
 }
 
-// The version of the signed release this box keeps to hand over (`updates/release`), whatever it
-// runs, or null.
-function heldVersion(): string | null {
-  try {
-    const given = JSON.parse(fs.readFileSync(path.join(HELD, "boxes.json"), "utf8"));
-    return JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.version ?? null;
-  } catch { return null; }
-}
-
 // The version of the release offered from a folder here (`updates/offered`), or null: checked as
 // it was offered, and again as it's taken.
 export function offeredVersion(): string | null {
@@ -1218,8 +1209,8 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
       }
       if (!differs) {
         // (The release it runs, signed: kept to hand to your other computers, where it holds none
-        // of its version yet, as a box an app installed does.)
-        if (heldVersion() !== manifest.version) keepRelease(boxes, pack);
+        // as new yet, as a box an app installed does.)
+        keepRelease(boxes, pack);
         return { status: 409, message: `It has ${before} already, with these same files.` };
       }
     }
@@ -1230,6 +1221,9 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
     if (again) fs.writeFileSync(path.join(partial, OFFER_DIFFERS), "", { mode: 0o600 });
     dropOffer();
     fs.renameSync(partial, OFFERED);
+    // Signed and checked: held from now, so your other computers take it at once, in parallel with
+    // this one (`updates/fleet.ts`).
+    keepRelease(boxes, pack);
   } catch (error) {
     fs.rmSync(partial, { recursive: true, force: true });
     return { status: 409, message: `It couldn't keep the release: ${String((error as Error | undefined)?.message ?? error).slice(0, 200)}` };

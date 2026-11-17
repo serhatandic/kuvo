@@ -14,12 +14,13 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
 import { REAL_BOX, UPDATES } from "../home";
+import { watchFolders } from "../follow";
 import { readPeerAgents, vouchedOf } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import {
-  type BoxRelease, UPDATE_KEYS, boxVersion, engineBehind, isUpdating, newerVersion, offerHeld, offerRests, offerUpdate, offeredVersion, sameVersion,
+  type BoxRelease, UPDATE_KEYS, boxVersion, engineBehind, isUpdating, newerVersion, offerHeld, offerRests, offerUpdate, offeredVersion,
   startOfferedUpdate, updateOnTrial, updatesBlocked, verifyBoxes,
 } from "./update";
 
@@ -31,7 +32,7 @@ export const INCOMING = path.join(UPDATES, "incoming");
 /** Each part's size: as moves send theirs, well inside one sealed mail. */
 export const PART = 30_000;
 /** How many parts are asked for at once. */
-const WINDOW = 8;
+const WINDOW = 16;
 /** The largest pack a box takes (as `update` reads one). */
 const MOST_PACK = 100_000_000;
 /** A pull that heard nothing this long asks again for what it waits for; one that made no progress
@@ -41,10 +42,11 @@ const GIVE_UP = 5 * 60_000;
 /** A peer that couldn't hand a version over isn't asked for it again for this long. */
 const TRIED_FOR = 3600_000;
 
-/** The signed release this box holds and runs: its version, its signed manifest as it came
- * (`boxes.json`'s text), its pack's file and size. None while it isn't the version running (an
- * update taken back), or while an update is on trial here: a release goes on from a computer only
- * once it's judged well there. */
+/** The newest signed release this box holds: its version, its signed manifest as it came
+ * (`boxes.json`'s text), its pack's file and size. Held from the moment it's checked here (Kuvo Code
+ * here handed it over, the box fetched it, or a peer did), before or while it's taken, and kept
+ * whatever came of taking it here: each computer judges a release for itself, by its own health
+ * rule, and goes back by itself, so none waits on another's trial. */
 export interface Held {
   version: string;
   boxes: string;
@@ -53,21 +55,22 @@ export interface Held {
 }
 
 export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS): Held | null {
-  if (updateOnTrial() || isUpdating()) return null;
   try {
     const boxes = fs.readFileSync(path.join(HELD, "boxes.json"), "utf8");
     const manifest = verifyBoxes(boxes, keys);
-    if (!sameVersion(manifest.version, boxVersion())) return null;
     const pack = path.join(HELD, "pack.tgz");
     const size = fs.statSync(pack).size;
     return { version: manifest.version, boxes, pack, size };
   } catch { return null; }
 }
 
-/** The release just put in place (its signed manifest and pack, checked already) kept as the one
- * this box holds: whole or not at all, the one before gone. */
+/** A release checked here (its signed manifest and pack, checked already) kept as the one this box
+ * holds, unless it holds a newer one: whole or not at all, the one before gone. */
 export function keepRelease(boxes: Buffer | string, pack: Buffer): void {
   const partial = `${HELD}.partial`;
+  let had = "";
+  try { had = fs.readFileSync(path.join(HELD, "boxes.json"), "utf8"); } catch {}
+  if (newerVersion(versionIn(had), versionIn(boxes.toString()))) return;
   try {
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
@@ -78,6 +81,29 @@ export function keepRelease(boxes: Buffer | string, pack: Buffer): void {
   } catch {
     fs.rmSync(partial, { recursive: true, force: true });
   }
+}
+
+// The version a `boxes.json` says (checked elsewhere), or null.
+function versionIn(boxes: string): string | null {
+  try { return JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8"))?.version ?? null; } catch { return null; }
+}
+
+/** `changed` told as soon as the release this box holds changes (another process may have kept it:
+ * Kuvo Code here hands its release to this box's server), so its peers hear at once, not at the
+ * next minute's round. */
+export function watchHeld(changed: () => void): { close: () => void } {
+  let was = heldRelease()?.version ?? null;
+  let soon: ReturnType<typeof setTimeout> | null = null;
+  const look = () => {
+    soon = null;
+    const now = heldRelease()?.version ?? null;
+    if (now === was) return;
+    was = now;
+    changed();
+  };
+  // (A moment's gather: the folder's renamed in, in more than one step.)
+  const watch = watchFolders([UPDATES], () => { soon ??= setTimeout(look, 50); }, { recursive: false });
+  return { close: () => { watch.close(); if (soon) clearTimeout(soon); } };
 }
 
 /** What this box tells its peers of its Kuvo (`computer.kuvo`, `computer.release`). */

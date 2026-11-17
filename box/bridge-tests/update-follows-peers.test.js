@@ -259,11 +259,38 @@ test("a box holds the signed release it runs, and hands it over only once it's j
   link.takeReleaseMail(lab.sender, { want: "0.8.0" });
   assert.deepEqual(sent[2][1], { version: "0.8.0", none: true }, "another version: it holds none");
 
-  // An update on trial here: nothing handed over until it's judged well.
+  // An update on trial here: handed over all the same, each computer judging it for itself.
   write(path.join(RUN, "update-trial"), "0.9.0");
-  assert.deepEqual(link.fleetFacts(), { kuvo: "0.9.0" });
+  assert.deepEqual(link.fleetFacts(), { kuvo: "0.9.0", release: "0.9.0" });
   link.takeReleaseMail(lab.sender, { want: "0.9.0" });
-  assert.deepEqual(sent.at(-1)[1], { version: "0.9.0", none: true });
+  assert.equal(sent.at(-1)[1].version, "0.9.0");
+  assert.equal(typeof sent.at(-1)[1].boxes, "string");
+});
+
+test("a newer release Kuvo Code here hands over is told to your other computers at once, before it's taken here, and stays held whatever comes of it here", async () => {
+  box();
+  follow({});
+  // The link watches what's held: the moment Kuvo Code here hands a release over, it's told.
+  let watch;
+  const told = new Promise(resolve => { watch = link.watchHeld(resolve); });
+  assert.equal(link.offerUpdate(release("0.10.0"), { keys: [pinned], blocked: null }).status, 202);
+  await told;
+  watch.close();
+  assert.deepEqual(link.fleetFacts(), { kuvo: "0.9.0", release: "0.10.0" }, "still on 0.9.0 itself, holding 0.10.0");
+
+  // The mini, behind, starts pulling it from this box while this box hasn't even taken it.
+  const sent = [];
+  link.fleetWith({ keys: [pinned], blocked: null, send: (key, mail) => { sent.push(mail); return true; } });
+  link.takeReleaseMail(mini.sender, { want: "0.10.0" });
+  assert.equal(sent[0].version, "0.10.0");
+  assert.ok(sent[0].size > 0, "handed over before it's taken here");
+  // Taken here and put back by its judge: still held, as the others judge it for themselves.
+  write(path.join(RUN, "update.json"), JSON.stringify({ trial: { from: "0.9.0", to: "0.10.0", at: Date.now() } }));
+  link.noteTrialEnded();
+  assert.equal(link.fleetFacts().release, "0.10.0");
+  // Never an older one over it.
+  link.keepRelease(fs.readFileSync(path.join(release("0.9.0"), "boxes.json")), crypto.randomBytes(10));
+  assert.equal(link.fleetFacts().release, "0.10.0");
 });
 
 test("Update Now is offered only where a computer can't take an update by itself: never while a release waits or is tried again, and for another computer that follows, never", () => {

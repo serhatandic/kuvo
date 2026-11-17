@@ -654,9 +654,8 @@ health rule and code-only rollback. Never older, never unsigned.
 1. **The held release.** Each box keeps the signed release it runs, `boxes.json` and its pack, in
    `updates/release/` (kept by `clearUpdateStaging`). Written as an update swaps files in (from
    GitHub's or an offered folder's), and when Kuvo Code on a Mac offers the release it carries and
-   the box has those same files already (so a Mac's box always holds its app's release). It's handed
-   over only while it's the version the box runs and no trial is open: a release goes on from a
-   computer only once it's judged well there. A machine set up over SSH holds none until its first
+   the box has those same files already (so a Mac's box always holds its app's release). (Superseded below,
+   "no wait on another computer's trial": held and handed over from the moment it's checked.) A machine set up over SSH holds none until its first
    signed update (its files came unsigned over SSH): it takes releases, it doesn't give them.
 2. **Saying it.** The `computer` part of the agents mail peers already exchange (at connect, on
    change within a minute, every ten minutes) gains `kuvo` (the Kuvo version this box runs; on a Mac
@@ -715,7 +714,7 @@ a box "vouched for" by a machine both set up, which got plan limits only. A rele
 signature, not who hands it over, so `release` mail now goes between vouched boxes too: each box
 tells the boxes its peers vouch for what it holds (`{holds}`, each minute when it changes, every ten
 minutes anyway), and they pull from it as from a peer. So the mini takes the MacBook's release
-directly, one exchange after the MacBook's update is judged well. Not covered by a test: a real
+directly, in the exchange that follows the MacBook holding it. Not covered by a test: a real
 `IS_MAC` box (`KUVO_BOX=mac`); the fleet tests drive a machine's box with a vouched Mac.
 
 ### Decisions for the user (added after review)
@@ -743,3 +742,27 @@ SHA-256 is refused; an offline peer coming back is followed; the release check r
 waits for nothing at work; Update Now isn't offered in the normal paths. Bridge
 (`update-follows-peer.test.js`): a box with an engine turn and a coding agent's turn running takes a
 peer's release over peer mail, and neither turn is cut.
+
+### Change, 2026-11-17 (the user): no wait on another computer's trial
+"If I use the app on the MacBook but the mini mostly, waiting 5 minutes after every update isn't
+acceptable." So a box holds a release, and tells its peers, the moment it's signed and checked
+there: Kuvo Code hands it over (`offerUpdate`), the box fetched it (`update`, once the pack's SHA-256
+is checked), or a peer did. Not after its own trial. Every computer updates in parallel, each judged
+by its own health rule and going back by itself (code only); a release put back on the computer that
+had it first is still held and handed over (no reason found to stop it: each computer's judge sees
+its own pieces, and a release that's bad everywhere goes back everywhere, code only). "Failed twice"
+stays per computer (`offerFailed.tries`). The link watches `updates` (`watchHeld`) and announces at
+once, to peers and vouched Macs; parts go sixteen at once.
+
+Timing, MacBook's app updates → mini on the new version (no engine change):
+- The app relaunches and offers its release: checked and held here in about 0.1 s; the link hears it
+  within 50 ms and mails its peers (one relay hop).
+- The mini asks for the manifest (one round trip), then the pack: a real one is about 1.8 MB
+  (`box-0.8.0-beta.32.tar.gz`), 61 parts, four round trips at sixteen in flight: about 1 to 3 s
+  through the relay.
+- The mini takes it in a process of its own: the new link's self-test, the swap, the keeper starting
+  it again: about 10 to 30 s; its server and link move to the new code within seconds after.
+- So about 15 to 40 s in all. A release with a new engine adds the engine's download from npm (tens of
+  MB), and the engine itself changes once the turns on it end ("A new engine").
+- Meanwhile the mini is fully usable: an older Kuvo with the app's baseline is Behind in the gate
+  (`kuvo_box/src/gate.rs`), never Held; only what it doesn't have yet is left out.

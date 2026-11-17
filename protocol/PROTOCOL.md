@@ -3050,14 +3050,18 @@ did: the box keeps working as itself ("For released Macs").
 - **Your computers follow each other** (one fleet, one version): every box runs the newest signed
   release any of your computers holds, and a box that's behind takes it from one that holds it, by
   itself, at once.
-  - **Held**: a box keeps the signed release it runs (`updates/release`: `boxes.json` and
-    `pack.tgz`), written as an update puts it in place, and as Kuvo Code here offers the release it
-    carries of the box's own version with the same files (the 409 "with these same files" keeps it).
-    It hands it over only while that's the version it runs and no update is on trial or under way
-    there: a release goes on from a computer once it was judged well there. A machine set up over SSH
-    holds none until its first signed update.
+  - **Held**: a box keeps the newest signed release it has (`updates/release`: `boxes.json` and
+    `pack.tgz`) from the moment it's checked there: Kuvo Code here offers it (`kuvo/box/update`,
+    and the 409 "with these same files" too), the box fetches it (once the pack's SHA-256 is
+    checked), or a peer hands it over. It hands it over at once, before or while it takes it itself,
+    and whatever came of that: every computer updates in parallel and judges a release by its own
+    health rule, going back by itself (code only). A newer held release is never replaced by an
+    older one. A machine set up over SSH holds none until it gets a signed one.
   - **Told**: its agents mail's `computer` says `kuvo` (the Kuvo version it runs; a Mac's `version`
     is its app's) and `release` (the version it holds), "Peers".
+  - **Told at once**: the box's link watches `updates` and, as a newer release is held (whichever
+    process kept it), tells its peers in agents mail and the boxes they vouch for (`holds`) right
+    away, not at the next round.
   - **Followed**: as a peer's agents mail comes, and each minute, a box takes the newest `release`
     its peers say, newer than its own version: the newest version, then the lowest key (a peer that
     couldn't hand a version over isn't asked for it again for an hour). Not while it's blocked, an
@@ -3066,7 +3070,7 @@ did: the box keeps working as itself ("For released Macs").
   - **Moved**: peer mail `release`, one pull at a time. `{want: <version>}` → `{version, boxes,
     size}` (`boxes`, the signed `boxes.json` as it is) or `{version, none: true}`; then `{version,
     part: <i>}` → `{version, i, d}` (`d`: the pack's 30,000 bytes from `i × 30,000`, base64), up to
-    eight asked at once. Nothing more is asked until `boxes` verifies (a pinned key, the version
+    sixteen asked at once. Nothing more is asked until `boxes` verifies (a pinned key, the version
     asked, newer than the box, a size from 1 byte to 100 MB). An answer from another peer, or for
     another version, is dropped. A pull that hears nothing in a minute asks again for what it waits
     for; one that makes no progress in five minutes leaves that peer. Whole, the pack is checked
