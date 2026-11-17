@@ -3889,7 +3889,7 @@ function memberHosts(link) {
   }
   return { hosts: hosts.sort((one, other) => one.name < other.name ? -1 : one.name > other.name ? 1 : 0) };
 }
-var named = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named(main)}.`, primary: main.key });
+var named2 = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named2(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named2(main)}.`, primary: main.key });
 var init_main_only = __esm(() => {
   init_home();
   init_known();
@@ -9015,6 +9015,151 @@ import fs13 from "node:fs";
 import net2 from "node:net";
 import os3 from "node:os";
 import path11 from "node:path";
+// box/src/link/notices/sentence.ts
+init_text();
+var plain = (text) => String(text ?? "").replace(/^[ \t]{0,3}(#{1,6}|>+)[ \t]+/gm, "").replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1").replace(/(?<![\w*_])[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?![\w*_])/g, "").replace(/`/g, "").replace(/\s+/g, " ").trim();
+var SENTENCE_LONGEST = 100;
+var LINE_LONGEST = 60;
+var ABBREVIATIONS = /(?:^|\s)(?:e\.g|i\.e|vs|cf|approx|incl|Mr|Mrs|Ms|Dr|Fig)\.$/i;
+function firstOf(words) {
+  const ending = /[.!?…]+["”’)\]]*(?=\s|$)/g;
+  for (let found = ending.exec(words);found; found = ending.exec(words)) {
+    const end = found.index + found[0].length;
+    if (ABBREVIATIONS.test(words.slice(0, found.index + 1)))
+      continue;
+    return words.slice(0, end);
+  }
+  return words;
+}
+function cutAtWord(text, longest) {
+  const characters = Array.from(text);
+  if (characters.length <= longest)
+    return text;
+  const room = characters.slice(0, longest - 1).join("");
+  const space = room.lastIndexOf(" ");
+  return (space > longest / 2 ? room.slice(0, space) : room).replace(/[\s,;:–—-]+$/, "") + "…";
+}
+var lastName = (address) => address.replace(/\/+$/, "").split("/").pop() || address;
+var plainAddresses = (text) => text.replace(/\bhttps?:\/\/(?:www\.)?([^\s/?#)\]>"']+)[^\s)\]>"']*/gi, "$1").replace(/(?<![\w.:/~@-])(?:~|\.{1,2})?\/(?:[\w.@+-]+\/)+[\w.@+-]*|(?<![\w.:/~@-])[\w.@+-]+(?:\/[\w.@+-]+){2,}(?<=[A-Za-z][\w.@+-]*)/g, lastName);
+function oneSentence(text, longest = SENTENCE_LONGEST) {
+  const lines = plainAddresses(String(text ?? "")).replace(/```[\s\S]*?(?:```|$)/g, `
+
+`).split(`
+`);
+  const paragraphs = [];
+  let current = [];
+  let heading = "";
+  const close = () => {
+    if (current.length)
+      paragraphs.push(plain(current.join(" ")));
+    current = [];
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line || /^#{1,6}\s/.test(line) || line.startsWith("|") || /^([-*_])(\s*\1){2,}$/.test(line) || /^(\*\*|__)[^*_]+\1:?$/.test(line) || /^<\/?[a-z][^>]*>$/i.test(line)) {
+      close();
+      if (!heading && /^(#{1,6}\s|\*\*|__)/.test(line))
+        heading = plain(line.replace(/^#{1,6}\s+/, ""));
+      continue;
+    }
+    const item = /^(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      close();
+      current.push(item[1]);
+      close();
+      continue;
+    }
+    current.push(line);
+  }
+  close();
+  const found = paragraphs.filter(Boolean);
+  if (!found.length)
+    return heading ? cutAtWord(firstOf(heading), longest) : "";
+  let sentence = firstOf(found[0]);
+  if (sentence === found[0] && sentence.endsWith(":") && found[1])
+    sentence = `${sentence} ${firstOf(found[1])}`;
+  return cutAtWord(sentence, longest);
+}
+
+// box/src/link/notices/plain.ts
+var PROGRAM = /^[A-Za-z][\w.+-]{0,24}$/;
+var programsOf = (line) => line.split(/\s*(?:&&|\|\||;)\s*/).flatMap((part) => {
+  const words = part.trim().split(/\s+/);
+  while (words.length && /^[A-Za-z_]\w*=/.test(words[0]))
+    words.shift();
+  const name = words[0]?.replace(/^.*\//, "") ?? "";
+  return PROGRAM.test(name) && name !== "cd" ? [name] : [];
+});
+var programsRun = (lines) => [...new Set(lines.flatMap((line) => programsOf(String(line))))];
+var named = (names) => names.length <= 2 ? names.join(" and ") : `${names[0]}, ${names[1]} and ${names.length - 2} more`;
+function commandWords(lines) {
+  const specific = lines.map((line) => String(line)).filter((line) => line.trim() && line.trim() !== "*");
+  const names = programsRun(specific);
+  if (!names.length)
+    return { words: "a command", whole: specific.length === 0 };
+  return { words: named(names), whole: names.length <= 2 && specific.every((line) => PROGRAM.test(line.trim())) };
+}
+var fileName = (resource) => {
+  const name = resource.replace(/\/+$/, "").split("/").pop() ?? "";
+  return /^[\w][\w .+@()-]{0,38}$/.test(name) ? name : null;
+};
+var hostOf = (resource) => /^https?:\/\/(?:www\.)?([^\s/?#:]+)/i.exec(resource)?.[1] ?? null;
+var OTHER = { task: "start a helper", skill: "use a skill", websearch: "search the web", codesearch: "search code", glob: "look through files", grep: "look through files", list: "look at a folder" };
+function permissionLine(request) {
+  const resources = (Array.isArray(request.resources) ? request.resources : []).map(String).filter((each) => each !== "*");
+  const none = resources.length === 0;
+  const say = (words, whole = none) => ({ line: cutAtWord(`Wants to ${words}.`, LINE_LONGEST), whole });
+  const files = (verb, one, many) => {
+    const only = resources.length === 1 ? fileName(resources[0]) : null;
+    return say(none ? one : only ? `${verb} ${only}` : resources.length > 1 ? `${verb} ${resources.length} ${many}` : one);
+  };
+  switch (request.action) {
+    case "edit":
+    case "write":
+    case "patch":
+      return files("edit", "edit files", "files");
+    case "read":
+      return files("read", "read a file", "files");
+    case "shell":
+    case "bash": {
+      const { words, whole } = commandWords(resources);
+      return say(`run ${words}`, whole);
+    }
+    case "external_directory":
+      return say("work outside the project");
+    case "webfetch": {
+      const hosts = [...new Set(resources.map(hostOf))];
+      return say(hosts.length === 1 && hosts[0] ? `open ${hosts[0]}` : "open a web page");
+    }
+    default:
+      return say(OTHER[request.action] ?? "use a tool");
+  }
+}
+var shortWords = (text, longest = SENTENCE_LONGEST) => cutAtWord(plain(plainAddresses(String(text ?? ""))), longest);
+function reasonWords(reason) {
+  const first = String(reason ?? "").split(`
+`).map((each) => each.trim()).find(Boolean) ?? "";
+  const sentence = /[/\\]/.test(first) ? "" : oneSentence(first, 60);
+  if (!sentence || sentence.split(/\s+/).length < 3)
+    return "";
+  const code = /[{}[\]<>/\\]|\b[A-Z][A-Z0-9_]{3,}\b|\b\w*\d{3,}\w*\b|\w+_\w+|\b\w+\.\w+\(|0x[0-9a-fA-F]+/;
+  if (code.test(sentence))
+    return "";
+  return sentence;
+}
+function shortNotice(notice) {
+  const short = { ...notice };
+  if (short.title)
+    short.title = cutAtWord(short.title.replace(/\s+/g, " ").trim(), 60);
+  if (short.subtitle)
+    short.subtitle = cutAtWord(short.subtitle.replace(/\s+/g, " ").trim(), 60);
+  if (short.body && (short.body.length > SENTENCE_LONGEST || short.body.includes(`
+`)))
+    short.body = oneSentence(short.body) || cutAtWord(short.body.replace(/\s+/g, " ").trim(), SENTENCE_LONGEST);
+  return short;
+}
+
+// box/src/link/areas/asks.ts
 init_home();
 var ASKS_FILE = path11.join(RUN, "browser-asks.json");
 var BROWSER_SOCKET = path11.join(RUN, "browser.sock");
@@ -9104,7 +9249,7 @@ function answerAsk(id, answer, socketPath = BROWSER_SOCKET) {
 function askNotice(ask, asker) {
   const host = String(ask.host ?? "");
   const title = { signIn: `Sign in to ${host}`, code: `Code for ${host}`, action: `Your turn on ${host}` }[ask.kind];
-  const body = ask.kind === "signIn" ? "The agent needs your sign-in to go on." : ask.kind === "code" ? ask.prompt || "The agent needs a code to go on." : String(ask.instruction ?? "");
+  const body = ask.kind === "signIn" ? "The agent needs your sign-in to go on." : ask.kind === "code" ? shortWords(ask.prompt) || "The agent needs a code to go on." : shortWords(ask.instruction);
   const session = typeof ask.session === "string" ? ask.session : undefined;
   return { title, subtitle: asker || undefined, body, category: "ask", thread: session ?? ask.id, data: { ...session ? { session } : {}, ask: ask.id } };
 }
@@ -19455,7 +19600,7 @@ function split(args) {
     at += VALUED.has(args[at]) ? 2 : 1;
   return { lead: args.slice(0, at), rest: args.slice(at) };
 }
-function plain(rest) {
+function plain2(rest) {
   const [command, sub] = rest;
   if (command === "cat-file")
     return !rest.some((each) => /^--(filters|textconv|path)/.test(each));
@@ -19663,7 +19808,7 @@ async function strayCommonLater(lead, rest, cwd) {
 function ownArgs(args, cwd) {
   const { lead, rest } = split(args);
   let found = NOTHING2;
-  if (!plain(rest)) {
+  if (!plain2(rest)) {
     if (strayCommon(lead, rest, cwd))
       return;
     for (const scoped of [true, false]) {
@@ -19678,7 +19823,7 @@ function ownArgs(args, cwd) {
 async function ownArgsLater(args, cwd) {
   const { lead, rest } = split(args);
   let found = NOTHING2;
-  if (!plain(rest)) {
+  if (!plain2(rest)) {
     if (await strayCommonLater(lead, rest, cwd))
       return;
     for (const scoped of [true, false]) {
@@ -21417,7 +21562,7 @@ function readTold() {
 var keptStill = (entry, now) => now - entry.at < (entry.by === "agent" ? SENT_KEPT : NEWS_KEPT) && (entry.notice.category !== "usage" || !entry.notice.data?.expires || Number(entry.notice.data.expires) > now);
 var toldFollowers = new Set;
 function keepTold(notice, { by, now = Date.now(), at = now, unless } = {}) {
-  const entry = { id: newID("ntc_"), at, notice, ...by ? { by } : {} };
+  const entry = { id: newID("ntc_"), at, notice: shortNotice(notice), ...by ? { by } : {} };
   let refused = null;
   try {
     locked(TOLD_LOCK, () => {
@@ -22338,7 +22483,7 @@ var MOST_KEPT2 = 16;
 var SESSIONS = 100;
 var KEPT_FOR3 = 86400000;
 var SAID_ALREADY = 200;
-var plain2 = (text) => text.replace(/\s+/g, " ").trim();
+var plain3 = (text) => text.replace(/\s+/g, " ").trim();
 function readSent(file) {
   try {
     const kept = JSON.parse(fs66.readFileSync(file, "utf8"));
@@ -22350,7 +22495,7 @@ function readSent(file) {
   }
 }
 function noteSent(session, to, text, now = Date.now(), file = WORK_SENT) {
-  const words = plain2(text).slice(0, KEPT_TEXT);
+  const words = plain3(text).slice(0, KEPT_TEXT);
   if (!words)
     return;
   try {
@@ -22369,7 +22514,7 @@ function noteSent(session, to, text, now = Date.now(), file = WORK_SENT) {
   } catch {}
 }
 function saidAlready(session, to, reply, since, file = WORK_SENT) {
-  const words = plain2(reply);
+  const words = plain3(reply);
   if (!words)
     return false;
   const cut = words.slice(0, KEPT_TEXT);
@@ -27203,7 +27348,7 @@ function saveNames() {
     placeWhole(NAMES_FILE, JSON.stringify({ names }));
   } catch {}
 }
-var lastName = (ref) => lastNames.get(nameKey(ref)) ?? saved().get(nameKey(ref));
+var lastName2 = (ref) => lastNames.get(nameKey(ref)) ?? saved().get(nameKey(ref));
 function noteNames(providerID, ids, name) {
   for (const id of ids) {
     const key = nameKey({ providerID, id });
@@ -27267,7 +27412,7 @@ function accountsIn(listed) {
   }
   return accounts;
 }
-var named2 = (ref, models) => models.find((model) => model.providerID === ref.providerID && model.id === ref.id) ?? models.find((model) => model.providerID === ref.providerID && model.aliases.includes(ref.id));
+var named3 = (ref, models) => models.find((model) => model.providerID === ref.providerID && model.id === ref.id) ?? models.find((model) => model.providerID === ref.providerID && model.aliases.includes(ref.id));
 async function engineLists(engine, folder) {
   const [providers, listed, integrations, fallback] = await Promise.all(["/api/provider", "/api/model", "/api/integration", "/api/model/default"].map((route) => asked4(engine, route, folder)));
   const models = modelsIn(listed), accounts = accountsIn(integrations);
@@ -27304,7 +27449,7 @@ var accountOf = (account) => ({ id: account.id, name: account.name, ...account.l
 function onEngine(ref, engine) {
   if (!engine)
     return;
-  const listed = named2(ref, engine.models);
+  const listed = named3(ref, engine.models);
   const name = listed ? { name: listed.name } : {};
   if (listed && ref.providerID === "opencode")
     return { ...name, runs: true };
@@ -27339,7 +27484,7 @@ function withAgents(ref, bridge) {
   if (!account.signedIn)
     return { runs: false, missing: "signIn", account: accountOf(account) };
   const ofIt = bridge.models.filter((model) => model.providerID === ref.providerID);
-  const listed = named2(ref, ofIt);
+  const listed = named3(ref, ofIt);
   if (listed)
     return { name: listed.name, runs: true };
   if (!ofIt.length || ofIt.every((model) => model.provisional) || !account.complete)
@@ -27352,7 +27497,7 @@ function stateOf(ref, lists) {
 }
 function listedOf(ref, lists) {
   const models = onAgents(ref) ? lists.bridge?.models : lists.engine?.models;
-  return models ? named2(ref, models) : undefined;
+  return models ? named3(ref, models) : undefined;
 }
 function offeredHere(lists) {
   const order = (providerID) => {
@@ -29589,19 +29734,19 @@ init_home();
 import fs95 from "node:fs";
 import path96 from "node:path";
 var FULL_ACCESS_FOLDER = path96.join(RUN, "fence", "full");
-var named3 = (session) => /^ses_[A-Za-z0-9_]+$/.test(session);
+var named4 = (session) => /^ses_[A-Za-z0-9_]+$/.test(session);
 function markFullAccess(session, on, root = session, folder = FULL_ACCESS_FOLDER) {
-  if (!named3(session))
+  if (!named4(session))
     return;
   const file = path96.join(folder, session);
   try {
     if (!on)
       return fs95.rmSync(file, { force: true });
     fs95.mkdirSync(folder, { recursive: true, mode: 448 });
-    fs95.writeFileSync(file, named3(root) ? root : session, { mode: 384 });
+    fs95.writeFileSync(file, named4(root) ? root : session, { mode: 384 });
   } catch {}
 }
-var markedFullAccess = (session, folder = FULL_ACCESS_FOLDER) => named3(session) && fs95.existsSync(path96.join(folder, session));
+var markedFullAccess = (session, folder = FULL_ACCESS_FOLDER) => named4(session) && fs95.existsSync(path96.join(folder, session));
 function markConversation(root, on, folder = FULL_ACCESS_FOLDER) {
   markFullAccess(root, on, root, folder);
   if (on)
@@ -29611,7 +29756,7 @@ function markConversation(root, on, folder = FULL_ACCESS_FOLDER) {
     names = fs95.readdirSync(folder);
   } catch {}
   for (const name of names) {
-    if (!named3(name) || name === root)
+    if (!named4(name) || name === root)
       continue;
     try {
       if (fs95.readFileSync(path96.join(folder, name), "utf8") === root)
@@ -29620,7 +29765,7 @@ function markConversation(root, on, folder = FULL_ACCESS_FOLDER) {
   }
 }
 async function noteFullAccess(session, found) {
-  if (typeof session !== "string" || !named3(session))
+  if (typeof session !== "string" || !named4(session))
     return;
   const at = found === undefined ? await conversationOf3(session) : found;
   if (at)
@@ -30505,74 +30650,6 @@ function startedWords(outcome, waits) {
 
 ${answer}` : "It hasn't answered yet; it may still write back with send_message.") + warned, isError: false };
 }
-
-// box/src/link/notices/sentence.ts
-init_text();
-var plain3 = (text) => String(text ?? "").replace(/^[ \t]{0,3}(#{1,6}|>+)[ \t]+/gm, "").replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, "$1").replace(/(?<![\w*_])[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?![\w*_])/g, "").replace(/`/g, "").replace(/\s+/g, " ").trim();
-var SENTENCE_LONGEST = 160;
-var ABBREVIATIONS = /(?:^|\s)(?:e\.g|i\.e|vs|cf|approx|incl|Mr|Mrs|Ms|Dr|Fig)\.$/i;
-function firstOf(words) {
-  const ending = /[.!?…]+["”’)\]]*(?=\s|$)/g;
-  for (let found = ending.exec(words);found; found = ending.exec(words)) {
-    const end = found.index + found[0].length;
-    if (ABBREVIATIONS.test(words.slice(0, found.index + 1)))
-      continue;
-    return words.slice(0, end);
-  }
-  return words;
-}
-function cutAtWord(text, longest) {
-  const characters = Array.from(text);
-  if (characters.length <= longest)
-    return text;
-  const room = characters.slice(0, longest - 1).join("");
-  const space = room.lastIndexOf(" ");
-  return (space > longest / 2 ? room.slice(0, space) : room).replace(/[\s,;:–—-]+$/, "") + "…";
-}
-function oneSentence(text, longest = SENTENCE_LONGEST) {
-  const lines = String(text ?? "").replace(/```[\s\S]*?(?:```|$)/g, `
-
-`).split(`
-`);
-  const paragraphs = [];
-  let current = [];
-  let heading = "";
-  const close = () => {
-    if (current.length)
-      paragraphs.push(plain3(current.join(" ")));
-    current = [];
-  };
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || /^#{1,6}\s/.test(line) || line.startsWith("|") || /^([-*_])(\s*\1){2,}$/.test(line) || /^(\*\*|__)[^*_]+\1:?$/.test(line) || /^<\/?[a-z][^>]*>$/i.test(line)) {
-      close();
-      if (!heading && /^(#{1,6}\s|\*\*|__)/.test(line))
-        heading = plain3(line.replace(/^#{1,6}\s+/, ""));
-      continue;
-    }
-    const item = /^(?:[-*+]|\d+[.)])\s+(.*)$/.exec(line);
-    if (item) {
-      close();
-      current.push(item[1]);
-      close();
-      continue;
-    }
-    current.push(line);
-  }
-  close();
-  const found = paragraphs.filter(Boolean);
-  if (!found.length)
-    return heading ? cutAtWord(firstOf(heading), longest) : "";
-  let sentence = firstOf(found[0]);
-  if (sentence === found[0] && sentence.endsWith(":") && found[1])
-    sentence = `${sentence} ${firstOf(found[1])}`;
-  return cutAtWord(sentence, longest);
-}
-var reasonLine = (reason, longest = 120) => {
-  const line = String(reason ?? "").split(`
-`).map((each) => each.trim()).find(Boolean) ?? "";
-  return line ? cut(line, longest) : "";
-};
 
 // box/src/link/notices/notify.ts
 var NOTIFY_LIMITS = { hour: 3, day: 12, apart: 2 * 60000, boxHour: 10 };
@@ -36740,7 +36817,7 @@ function inTurn2(id, step) {
   });
   return next;
 }
-var hostOf = () => null;
+var hostOf2 = () => null;
 var watching2 = false;
 var driving = new Set;
 function drive(id) {
@@ -36769,7 +36846,7 @@ function tell(peer, move) {
   if (!bytes)
     return false;
   try {
-    return hostOf()?.send(bytes) === true;
+    return hostOf2()?.send(bytes) === true;
   } catch {
     return false;
   }
@@ -38019,7 +38096,7 @@ function keepMoving(now = Date.now()) {
   const records = readMoves();
   noteWaiting(records, now);
   keepLeft(now);
-  tellMoving(hostOf(), now);
+  tellMoving(hostOf2(), now);
   forgetQuiet(now);
   if (groupsToWake && now - groupsLookedAt > STEP_AGAIN) {
     groupsLookedAt = now;
@@ -38239,7 +38316,7 @@ async function resumeMoves(now = Date.now()) {
   movesChanged();
 }
 function watchMoves(host, signal) {
-  hostOf = host;
+  hostOf2 = host;
   watching2 = true;
   lookingSince = Date.now();
   resumeMoves().catch(() => {});
@@ -40591,7 +40668,6 @@ function alwaysWords(request, home, forConversation = false) {
   }
 }
 var ALWAYS_LONGEST = 24;
-var showsAllCovered = (request) => (Array.isArray(request.resources) ? request.resources : []).filter((each) => each !== "*").length <= 4;
 var singleQuestion = (form) => {
   if (form.metadata?.kind !== "question")
     return null;
@@ -40707,8 +40783,8 @@ async function noticeFor(event, get) {
       const where = await shown(data.sessionID);
       if (isHiddenRun(where))
         return null;
-      const body = describePermission(data, os13.homedir());
-      return about(where, "permission", body, { request: data.id, ...where.id !== data.sessionID ? { requestSession: data.sessionID } : {}, ...offersAlways(data) ? {} : { always: "0" }, alwaysTitle: masked(alwaysTitle(data, os13.homedir())) }, { answerable: showsAllCovered(data) && showsAll(body), untitled: "Kuvo Code" });
+      const { line: body, whole } = permissionLine(data);
+      return about(where, "permission", body, { request: data.id, ...where.id !== data.sessionID ? { requestSession: data.sessionID } : {}, ...offersAlways(data) ? {} : { always: "0" }, alwaysTitle: masked(alwaysTitle(data, os13.homedir())) }, { answerable: whole && showsAll(body), untitled: "Kuvo Code" });
     }
     case "form.created": {
       const form = data.form ?? data;
@@ -40720,9 +40796,10 @@ async function noticeFor(event, get) {
         return null;
       if (isAutopilot(where) && !await stillAsked(form, get, event.location?.directory))
         return null;
-      const body = describeForm(form);
+      const full = describeForm(form);
+      const body = shortWords(full);
       const choices = (singleQuestion(form)?.options ?? []).map((option) => String(option?.label ?? ""));
-      return about(where, "question", body, { request: form.id, ...where.id !== form.sessionID ? { requestSession: form.sessionID } : {} }, { answerable: showsAll(body) && choices.every(showsAll), untitled: "Kuvo Code" });
+      return about(where, "question", body, { request: form.id, ...where.id !== form.sessionID ? { requestSession: form.sessionID } : {} }, { answerable: !body.endsWith("…") && showsAll(body) && choices.every(showsAll), untitled: "Kuvo Code" });
     }
     case "session.execution.succeeded":
     case "session.execution.failed": {
@@ -40735,7 +40812,7 @@ async function noticeFor(event, get) {
       if (summary === "failed")
         return about(ended, "failed", "Couldn't summarize the conversation.");
       if (event.type === "session.execution.failed") {
-        const reason = reasonLine(data.error?.message);
+        const reason = reasonWords(data.error?.message);
         return about(ended, "failed", reason ? `Stopped with an error: ${reason}` : "Stopped with an error.");
       }
       if (summary === "completed")
@@ -42459,14 +42536,15 @@ async function alwaysForWrite(writes, project) {
 }
 function sandboxAskNotice(asked) {
   const who = asked.botName ?? asked.sessionName ?? "An agent";
+  const { words, whole } = commandWords([asked.command]);
+  const line = cutAtWord(`Wants to run ${words} outside the sandbox.`, LINE_LONGEST);
   return {
-    title: `${who} wants to run a command outside the sandbox`,
+    title: who,
     subtitle: asked.machine,
-    body: `${oneLine(asked.command, 120)}${asked.why ? `
-${asked.why}` : ""}`,
+    body: line,
     category: "ask",
     thread: asked.session ?? asked.id,
-    data: { ...asked.session ? { session: asked.session } : {}, sandboxAsk: asked.id }
+    data: { ...asked.session ? { session: asked.session } : {}, sandboxAsk: asked.id, ...whole ? {} : { answerable: "0" } }
   };
 }
 function watchSandboxAsks(tell, answered = () => {}, after = 2000) {
@@ -42669,11 +42747,11 @@ function ask2(what, signal, patience = PATIENCE) {
 var answer5 = book2.answer;
 function vaultAskNotice(asked) {
   const who = asked.botName ?? asked.sessionName ?? "An agent";
-  const title = asked.kind === "use" ? `${who} wants to use ${asked.itemName ?? "an item"}` : `${who} needs ${asked.need ?? "something from your vault"}`;
+  const title = asked.kind === "use" ? `${who} wants to use ${asked.itemName ?? "an item"}` : `${who} needs ${cutAtWord(oneLine(asked.need ?? "", 80), 40) || "something from your vault"}`;
   return {
     title,
     subtitle: asked.machine,
-    body: asked.why || (asked.kind === "use" ? asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no." : "Give it an item from your vault, or say no."),
+    body: shortWords(asked.why) || (asked.kind === "use" ? asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no." : "Give it an item from your vault, or say no."),
     category: "ask",
     thread: asked.group ?? asked.session ?? asked.id,
     data: { ...asked.group ? { group: asked.group } : asked.session ? { session: asked.session } : {}, vaultAsk: asked.id }
@@ -44123,7 +44201,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e2714bc07817";
+var BRIDGE_VERSION = "b93cf3bcee34";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -48884,8 +48962,7 @@ async function tellLateAnswers(targets, file = WORK_ASKS2, bridgeRuns) {
 function workAskWords(ask) {
   if (ask.action === "resetLimits" && ask.reset)
     return resetAskWords(ask.name, ask.reset);
-  const where = ask.folder ? ` in ${shownPath(path162.dirname(ask.folder))}` : "";
-  return ask.action === "cloneProject" ? { title: `${ask.name} asks to clone a project`, body: `${ask.clone ?? ""} as ${ask.project}${where}` } : { title: `${ask.name} asks to make a project`, body: `${ask.project}${where}` };
+  return { title: `${ask.name} asks to ${ask.action === "cloneProject" ? "clone" : "make"} a project`, body: cutAtWord(ask.project, 60) };
 }
 async function watchWorkAsks(tell, { signal, every = 2000, read = workAsks, answered = () => {} } = {}) {
   const told = new Set;
@@ -54485,7 +54562,7 @@ function fetchedFrom(url) {
   const source = testSource();
   return source ? `${source}/${url.slice("https://".length)}` : url;
 }
-var hostOf2 = (url) => new URL(url).host;
+var hostOf3 = (url) => new URL(url).host;
 async function download(url, expected, to, received, signal) {
   const address = fetchedFrom(url);
   if (signal.aborted)
@@ -54512,7 +54589,7 @@ async function download(url, expected, to, received, signal) {
     const cause = error?.cause;
     if (signal.aborted)
       throw new SetupError("Stopped.");
-    throw new SetupError(`Couldn't reach ${hostOf2(url)} to download the browser (${cause?.code ?? cause?.message ?? error?.message ?? "no connection"}): the machine needs to reach storage.googleapis.com${testSystem() === "darwin" || !testSystem() && process.platform === "darwin" ? "" : " and dl.rockylinux.org"} over HTTPS.`);
+    throw new SetupError(`Couldn't reach ${hostOf3(url)} to download the browser (${cause?.code ?? cause?.message ?? error?.message ?? "no connection"}): the machine needs to reach storage.googleapis.com${testSystem() === "darwin" || !testSystem() && process.platform === "darwin" ? "" : " and dl.rockylinux.org"} over HTTPS.`);
   }
   if (response.status === 404) {
     settle();
@@ -54522,7 +54599,7 @@ async function download(url, expected, to, received, signal) {
   if (!response.ok || !response.body) {
     settle();
     await response.body?.cancel().catch(() => {});
-    throw new SetupError(`${hostOf2(url)} answered ${response.status} for the browser's download.`);
+    throw new SetupError(`${hostOf3(url)} answered ${response.status} for the browser's download.`);
   }
   const fd = fs167.openSync(to, fs167.constants.O_WRONLY | fs167.constants.O_CREAT | fs167.constants.O_EXCL, 384);
   const hash = crypto59.createHash("sha256");
@@ -54532,7 +54609,7 @@ async function download(url, expected, to, received, signal) {
       awake();
       bytes += chunk.length;
       if (bytes > expected.size)
-        throw new SetupError(`The browser's download from ${hostOf2(url)} is larger than it should be, so it wasn't used.`);
+        throw new SetupError(`The browser's download from ${hostOf3(url)} is larger than it should be, so it wasn't used.`);
       hash.update(chunk);
       let written = 0;
       while (written < chunk.length)
@@ -54540,9 +54617,9 @@ async function download(url, expected, to, received, signal) {
       received(bytes);
     }
     if (bytes !== expected.size)
-      throw new SetupError(`The browser's download from ${hostOf2(url)} stopped partway.`);
+      throw new SetupError(`The browser's download from ${hostOf3(url)} stopped partway.`);
     if (hash.digest("hex") !== expected.sha256)
-      throw new SetupError(`The browser's download from ${hostOf2(url)} isn't what Kuvo Code expects (its checksum doesn't match), so it wasn't used.`);
+      throw new SetupError(`The browser's download from ${hostOf3(url)} isn't what Kuvo Code expects (its checksum doesn't match), so it wasn't used.`);
     done = true;
     return "ok";
   } catch (error) {
@@ -54550,7 +54627,7 @@ async function download(url, expected, to, received, signal) {
       throw error;
     if (signal.aborted)
       throw new SetupError("Stopped.");
-    throw new SetupError(`The browser's download from ${hostOf2(url)} stopped partway (${controller.signal.aborted ? "it came too slowly" : error?.message ?? "the connection closed"}).`);
+    throw new SetupError(`The browser's download from ${hostOf3(url)} stopped partway (${controller.signal.aborted ? "it came too slowly" : error?.message ?? "the connection closed"}).`);
   } finally {
     settle();
     await response.body?.cancel().catch(() => {});
@@ -54802,7 +54879,7 @@ async function installBrowser(asked = {}) {
     note4({ state: "downloading", progress: 0 });
     const zip = path177.join(staging, "chromium.zip");
     if (await download(chromium.url, chromium, zip, (bytes) => received("chromium", bytes), stop.signal) === "missing") {
-      throw new SetupError(`${hostOf2(chromium.url)} doesn't have the browser this Kuvo Code pins (Chrome for Testing ${runtime.chromium.version}): update Kuvo Code.`, false);
+      throw new SetupError(`${hostOf3(chromium.url)} doesn't have the browser this Kuvo Code pins (Chrome for Testing ${runtime.chromium.version}): update Kuvo Code.`, false);
     }
     const queue = [...packages];
     const worker = async () => {
@@ -56035,7 +56112,7 @@ function toolsOf(given) {
     return null;
   return { url: url.toString(), token: given.token };
 }
-function hostOf3(given) {
+function hostOf4(given) {
   if (!isObject(given) || typeof given.url !== "string" || typeof given.password !== "string")
     return null;
   if (given.password.length < 16 || given.password.length > 512)
@@ -56054,7 +56131,7 @@ function readApp() {
   const said = readJSON3(APP_FILE());
   if (!isObject(said))
     return null;
-  return { bundle: bundleOf2(said.bundle), desktop: bundleOf2(said.desktop), tools: toolsOf(said.tools), host: hostOf3(said.host), at: typeof said.at === "number" ? said.at : 0 };
+  return { bundle: bundleOf2(said.bundle), desktop: bundleOf2(said.desktop), tools: toolsOf(said.tools), host: hostOf4(said.host), at: typeof said.at === "number" ? said.at : 0 };
 }
 var isOpen = () => readApp()?.tools != null;
 function readFailed() {
@@ -56279,7 +56356,7 @@ async function* appRoute({ request, json }) {
     return yield* json(400, { message: "Its bundle is a whole path to the app (…/Kuvo Code.app)." });
   if (given.host !== undefined && given.host !== null && !request.fromApp)
     return yield* json(403, { message: "Only Kuvo Code itself says where its own host answers." });
-  const host = given.host === undefined ? undefined : given.host === null ? null : hostOf3(given.host);
+  const host = given.host === undefined ? undefined : given.host === null ? null : hostOf4(given.host);
   if (given.host !== undefined && given.host !== null && !host)
     return yield* json(400, { message: "Its host answers on this Mac (http://127.0.0.1:<port>), with a password." });
   registerApp({ tools, bundle, host });
@@ -57175,7 +57252,8 @@ init_text();
 init_noise();
 init_frames();
 var NOTICE_LIMIT = 2500;
-function noticeJSON(notice) {
+function noticeJSON(given) {
+  const notice = shortNotice(given);
   const value = { t: "notify", title: cut(masked(String(notice.title ?? "")), 200), category: notice.category, thread: String(notice.thread ?? ""), data: notice.data ?? {} };
   if (notice.subtitle)
     value.subtitle = cut(masked(String(notice.subtitle)), 200);
@@ -64087,7 +64165,7 @@ async function modelOf2(place, engine, bridge, reads = listReads(engine, bridge)
     return;
   if (state.runs && state.name)
     rememberName(ref, state.name);
-  return { model: ref, ...state, ...readiness(ref, state, lastName(ref)) };
+  return { model: ref, ...state, ...readiness(ref, state, lastName2(ref)) };
 }
 async function* sessionModelsRoute(context) {
   const { request, readEngine, bridge, signal, json } = context;
@@ -66788,7 +66866,7 @@ var commandsSection = {
 };
 
 // box/src/shared/mcp-setup.ts
-function commandWords(line) {
+function commandWords2(line) {
   const words = [];
   let current = "";
   let quote = null;
@@ -66899,18 +66977,18 @@ function server(entry, name) {
   if (!command.length)
     return null;
   if (command.length === 1 && command[0].includes(" ") && entry.args === undefined)
-    command = commandWords(command[0]);
+    command = commandWords2(command[0]);
   return { ...name ? { name } : {}, command, environment: strings3(entry.env ?? entry.environment), headers: {} };
 }
 function claudeCodeJSON(line) {
-  const words = commandWords(line).slice(3);
+  const words = commandWords2(line).slice(3);
   while (words[0]?.startsWith("-"))
     words.splice(0, words[0].includes("=") || words[0] === "--client-secret" ? 1 : Math.min(2, words.length));
   const entry = words.length >= 2 ? jsonObject(words[1]) : null;
   return entry ? server(entry, words[0]) : null;
 }
 function claudeCode(line) {
-  const words = commandWords(line).slice(3).flatMap((word) => {
+  const words = commandWords2(line).slice(3).flatMap((word) => {
     const equals = word.indexOf("=");
     return word.startsWith("--") && equals > 0 ? [word.slice(0, equals), word.slice(equals + 1)] : [word];
   });
@@ -67204,7 +67282,7 @@ function readForm4(context, known, name, values, before = {}) {
       entry.url = url;
     }
   } else {
-    const words = commandWords(text8(values.command));
+    const words = commandWords2(text8(values.command));
     if (!words.length) {
       if (!fields.some((each) => each.id === "command"))
         say("command", "The command that starts it.", "quiet");
