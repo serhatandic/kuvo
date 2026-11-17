@@ -2,7 +2,8 @@ import "./safety"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
+import { accountHomeForTest } from "../src/shared/account"
 import { dirname, join, relative } from "node:path"
 
 // A conversation set to Auto, as its agent meets the reviewer: a command it asks to run outside
@@ -57,12 +58,17 @@ let engineFile: string
 let engineBefore: string | null = null
 const sandboxOnBefore = process.env.KUVO_TEST_SANDBOX_ON
 
-// (What's judged here is your account's own home, as the code finds it, so HOME names it for these:
-// what they write and run stays in their own folders, and test-safety.js still refuses a delete.)
+// (What's judged here is your account's home, as the code finds it: a home of the test's own, with
+// its own Desktop, Documents and Downloads, which HOME and your account's home both name for these.
+// Never your real one: macOS may hold whoever opens those until you answer its prompt.)
 const runsHome = process.env.HOME
+let yourHome: string
 beforeAll(async () => {
-  process.env.HOME = process.env.KUVO_TEST_REAL_HOME
-  box = mkdtempSync(join(tmpdir(), "kuvo-auto-"))
+  box = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-auto-")))
+  yourHome = join(box, "home")
+  for (const folder of ["Desktop", "Documents", "Downloads"]) mkdirSync(join(yourHome, folder), { recursive: true })
+  process.env.HOME = yourHome
+  accountHomeForTest(yourHome)
   process.env.KUVO_TEST_SANDBOX_ON = "1"
   process.env.KUVO_TEST_LOCAL_SCRIPTS = "1"
   project = join(box, "project")
@@ -108,6 +114,7 @@ beforeAll(async () => {
 })
 afterAll(() => {
   process.env.HOME = runsHome
+  accountHomeForTest(undefined)
   engine.stop(true)
   if (engineBefore === null) rmSync(engineFile, { force: true })
   else writeFileSync(engineFile, engineBefore)
@@ -257,7 +264,7 @@ test("in Auto, a file the agent's own tool wants outside its folder is allowed o
   // Claude Code's own tools, as its calls name the file; what runs as you log in is the model's,
   // told so, and what it refuses is held back.
   reply = () => '{"decision": "refuse", "reason": "A shell start-up change nobody asked for."}'
-  expect((await ask("per_3", "Write", join(homedir(), ".bash_profile"), { file_path: join(homedir(), ".bash_profile"), content: "export PATH=/tmp/x:$PATH" }))?.decision).toBe("refuse")
+  expect((await ask("per_3", "Write", join(yourHome, ".bash_profile"), { file_path: join(yourHome, ".bash_profile"), content: "export PATH=/tmp/x:$PATH" }))?.decision).toBe("refuse")
   expect(prompts.at(-1)).toContain("It sets up something that runs at login or on a schedule")
   expect(replies.at(-1)).toMatchObject({ path: "/permission/per_3/reply", body: { decision: "reject", message: expect.stringContaining("Auto's reviewer held this back: A shell start-up change nobody asked for.") } })
   // The same ask heard again (the stream reconnected) isn't reviewed twice: it's answered as it was,
@@ -319,7 +326,7 @@ test("every client hears which of a conversation's asks Auto's reviewer is check
     reply = () => '{"decision": "allow", "reason": "The notes the user asked for."}'
     await ask("ses_heard", "per_h1", join(box, "notes", "shared.md"))
     reply = () => '{"decision": "refuse", "reason": "Nobody asked for that."}'
-    await ask("ses_heard", "per_h2", join(homedir(), ".zshrc"))
+    await ask("ses_heard", "per_h2", join(yourHome, ".zshrc"))
     // Kuvo Code's own folders: refused, with nothing to approve.
     const kuvo = (await import("../src/link/fence/policy")).fencePolicy().kuvo[0]
     await ask("ses_heard", "per_h3", join(kuvo, "notes.txt"))

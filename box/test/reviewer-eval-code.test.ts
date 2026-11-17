@@ -1,7 +1,8 @@
 import "./safety"
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { accountHomeForTest } from "../src/shared/account"
 import { join } from "node:path"
 
 // The reviewer's eval set (`eval/reviewer/actions.jsonl`): every case it says code settles (a hard
@@ -12,16 +13,22 @@ import { join } from "node:path"
 
 let box: string
 let reviewer: typeof import("../src/link/work/reviewer")
-// (What's judged here is your account's own home, as the code finds it, so HOME names it for these:
-// what they write and run stays in their own folders, and test-safety.js still refuses a delete.)
+// (What's judged here is your account's home, as the code finds it: a home of the test's own, with
+// its own Desktop, Documents and Downloads, which HOME and your account's home both name for these.
+// Never your real one: macOS may hold whoever opens those until you answer its prompt.)
 const runsHome = process.env.HOME
+let yourHome: string
 beforeAll(async () => {
-  process.env.HOME = process.env.KUVO_TEST_REAL_HOME
-  box = mkdtempSync(join(tmpdir(), "kuvo-reviewer-eval-"))
+  box = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-reviewer-eval-")))
+  yourHome = join(box, "home")
+  for (const folder of ["Desktop", "Documents", "Downloads"]) mkdirSync(join(yourHome, folder), { recursive: true })
+  process.env.HOME = yourHome
+  accountHomeForTest(yourHome)
   reviewer = await import("../src/link/work/reviewer")
 })
 afterAll(() => {
   process.env.HOME = runsHome
+  accountHomeForTest(undefined)
   rmSync(box, { recursive: true, force: true })
 })
 
@@ -39,7 +46,7 @@ test("the eval set has its hundred cases and more", () => {
 test.each(cases.map(each => [each.id, each] as const))("eval case %s: settled by code as it says, or left to the model", async (_, each) => {
   const project = join(box, "project")
   const action = each.kind === "command" ? { kind: "command" as const, command: each.command!, folder: project }
-    : each.kind === "file" ? { kind: "file" as const, path: each.path!.replace(/^~(?=\/)/, homedir()), access: each.access ?? "read", folder: project }
+    : each.kind === "file" ? { kind: "file" as const, path: each.path!.replace(/^~(?=\/)/, yourHome), access: each.access ?? "read", folder: project }
     : { kind: "tool" as const, tool: each.tool!, args: each.args ?? {}, folder: project }
   const context = each.bot ? { session: `eval_${each.id}`, said: [], bot: { id: "bot_eval", name: "Eval", goal: each.bot } } : { session: `eval_${each.id}`, said: each.said ?? [] }
   const verdict = await reviewer.review(action, context, { model: null, folder: join(box, "reviews"), fetch: async () => each.fetched ?? Promise.reject(new Error("not in the eval set")) })

@@ -628,10 +628,12 @@ function namesIn(folder: string): { known: boolean; value: string[] | null } {
 // release), and other drives. The walls name ~/Library's as macOS does, so nothing there needs opening.
 const MAC_ASKS = [...MAC_PERSONAL, "Library"];
 let macAsks: RegExp | undefined;
+let macAsksHome: string | undefined;
 function macAsksAbout(at: string): boolean {
-  if (!macAsks) {
+  if (!macAsks || macAsksHome !== accountHome()) {
     // (Your home by the name your account has for it, and by where it is if that's a link.)
-    const homes = [accountHome(), realish(accountHome())].map(each => escapeRegex(each.toLowerCase())).join("|");
+    macAsksHome = accountHome();
+    const homes = [macAsksHome, realish(macAsksHome)].map(each => escapeRegex(each.toLowerCase())).join("|");
     macAsks = new RegExp(`^(/system/volumes/data)?(/volumes/|(${homes})/(${MAC_ASKS.map(each => escapeRegex(each.toLowerCase())).join("|")})(/|$))`);
   }
   return macAsks.test(at.toLowerCase());

@@ -36,9 +36,17 @@ function accountEntry(): { name: string; home: string } {
   return account;
 }
 
-/** Your account's own home folder, as the system has it, whatever HOME says. */
+/** Your account's own home folder, as the system has it, whatever HOME says (a test's own while it
+ * names one: `accountHomeForTest`). */
 export function accountHome(): string {
-  return accountEntry().home;
+  return testHome ?? accountEntry().home;
+}
+
+let testHome: string | undefined;
+/** For a test that judges what's yours (the reviewer's walls): your account's home taken to be a
+ * folder the test made, never your real one; undefined, the system's again. */
+export function accountHomeForTest(home: string | undefined) {
+  testHome = home;
 }
 
 /** Your account's name, as the system has it (zsh's `%n`), whatever USER says: empty when it has

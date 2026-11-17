@@ -2,7 +2,8 @@ import "./safety"
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
+import { accountHomeForTest } from "../src/shared/account"
 import { join } from "node:path"
 
 // Auto's reviewer, as a conversation in Auto meets it: only Kuvo Code's own folders and wrecking
@@ -17,12 +18,17 @@ let project: string
 let reviewer: typeof import("../src/link/work/reviewer")
 let fencePolicy: typeof import("../src/link/fence/policy").fencePolicy
 
-// (What's judged here is your account's own home, as the code finds it, so HOME names it for these:
-// what they write and run stays in their own folders, and test-safety.js still refuses a delete.)
+// (What's judged here is your account's home, as the code finds it: a home of the test's own, with
+// its own Desktop, Documents and Downloads, which HOME and your account's home both name for these.
+// Never your real one: macOS may hold whoever opens those until you answer its prompt.)
 const runsHome = process.env.HOME
+let yourHome: string
 beforeAll(async () => {
-  process.env.HOME = process.env.KUVO_TEST_REAL_HOME
-  box = mkdtempSync(join(tmpdir(), "kuvo-reviewer-"))
+  box = realpathSync(mkdtempSync(join(tmpdir(), "kuvo-reviewer-")))
+  yourHome = join(box, "home")
+  for (const folder of ["Desktop", "Documents", "Downloads"]) mkdirSync(join(yourHome, folder), { recursive: true })
+  process.env.HOME = yourHome
+  accountHomeForTest(yourHome)
   project = join(box, "project")
   mkdirSync(project, { recursive: true })
   reviewer = await import("../src/link/work/reviewer")
@@ -30,6 +36,7 @@ beforeAll(async () => {
 })
 afterAll(() => {
   process.env.HOME = runsHome
+  accountHomeForTest(undefined)
   rmSync(box, { recursive: true, force: true })
 })
 
@@ -114,7 +121,7 @@ test("what would run at login or on a schedule is told to the model as that, on 
     expect({ line, told: ask.shown.at(-1)!.includes(persists) }).toEqual({ line, told: true })
   }
   // A file one of the agent's tools writes there too.
-  await reviewer.review({ kind: "file", path: join(homedir(), ".config", "systemd", "user", "x.service"), access: "write", folder: project }, yours("Fix the build"), given(ask))
+  await reviewer.review({ kind: "file", path: join(yourHome, ".config", "systemd", "user", "x.service"), access: "write", folder: project }, yours("Fix the build"), given(ask))
   expect(ask.shown.at(-1)).toContain(persists)
   // Reading them, or what never runs later, isn't.
   for (const line of ["cat ~/.zshrc", "crontab -l", "launchctl list", "systemctl --user status thing", "npm run build"]) {
@@ -130,13 +137,13 @@ test("a command the sandbox stopped is judged by what it was stopped doing too: 
   const persists = "It sets up something that runs at login or on a schedule"
   const stopped = (path: string) => ({ ...command("npm install"), stopped: { printed: "npm error EPERM: operation not permitted, open '" + path + "'", stops: [{ kind: "write", path }] } })
   // An install whose script writes your authorized_keys looks like any install, but for that.
-  await reviewer.review(stopped(join(homedir(), ".ssh", "authorized_keys")), yours("Install the dependencies"), given(ask))
+  await reviewer.review(stopped(join(yourHome, ".ssh", "authorized_keys")), yours("Install the dependencies"), given(ask))
   expect(ask.shown.at(-1)).toContain(persists)
   expect(ask.shown.at(-1)).toContain("It already ran in the sandbox")
   expect(ask.shown.at(-1)).toMatch(/<refused_[0-9a-f]+>\n- write .*authorized_keys/)
   expect(ask.shown.at(-1)).toMatch(/<printed_[0-9a-f]+>\nnpm error EPERM/)
   // One the sandbox stopped writing in the project's caches isn't.
-  await reviewer.review(stopped(join(homedir(), ".npm", "_cacache", "index")), yours("Install the dependencies"), given(ask))
+  await reviewer.review(stopped(join(yourHome, ".npm", "_cacache", "index")), yours("Install the dependencies"), given(ask))
   expect(ask.shown.at(-1)).not.toContain(persists)
   const asked = ask.shown.length
   expect(await reviewer.review(stopped(join(fencePolicy().kuvo[0], "box", "approval.json")), yours("Install the dependencies"), given(ask))).toMatchObject({ decision: "refuse", by: "code", held: false })
@@ -172,22 +179,22 @@ test("the agent's tools read anywhere but your secrets with no review; your secr
   const folder = join(box, "reviews")
   // Reads outside its folder go ahead, unlogged.
   const reader = yours("Check my SSH")
-  for (const where of [join(homedir(), ".ssh", "config"), join(homedir(), ".zshrc"), join(box, "other", "notes.md")]) {
+  for (const where of [join(yourHome, ".ssh", "config"), join(yourHome, ".zshrc"), join(box, "other", "notes.md")]) {
     expect(await reviewer.review(file(where, "read"), reader, given(ask))).toMatchObject({ decision: "allow", by: "code" })
   }
-  expect(await reviewer.review({ ...file(homedir(), "read"), tool: "grep", input: { pattern: "TODO", path: homedir() } }, reader, given(ask))).toMatchObject({ decision: "allow", by: "code" })
+  expect(await reviewer.review({ ...file(yourHome, "read"), tool: "grep", input: { pattern: "TODO", path: yourHome } }, reader, given(ask))).toMatchObject({ decision: "allow", by: "code" })
   expect(ask.shown).toHaveLength(0)
   expect(reviewer.reviewLog(reader.session, folder).decisions).toHaveLength(0)
   // A private key is the model's, with what it's told about secrets.
-  expect((await reviewer.review(file(join(homedir(), ".ssh", "id_work"), "read"), yours("Check my SSH"), given(model(refuses)))).decision).toBe("refuse")
-  await reviewer.review(file(join(homedir(), ".ssh", "id_work"), "read"), yours("Check my SSH"), given(ask))
+  expect((await reviewer.review(file(join(yourHome, ".ssh", "id_work"), "read"), yours("Check my SSH"), given(model(refuses)))).decision).toBe("refuse")
+  await reviewer.review(file(join(yourHome, ".ssh", "id_work"), "read"), yours("Check my SSH"), given(ask))
   expect(ask.shown.at(-1)).toContain("printing, copying or archiving secrets")
   // So are the coding agents' sign-ins, as your keys are.
-  for (const where of [join(homedir(), ".codex", "auth.json"), join(homedir(), ".grok", "auth.json")]) {
+  for (const where of [join(yourHome, ".codex", "auth.json"), join(yourHome, ".grok", "auth.json")]) {
     expect(await reviewer.review(file(where, "read"), reader, given(model(refuses)))).toMatchObject({ decision: "refuse", by: "model" })
   }
   // Changing a file elsewhere: the model's, told the tool and its arguments.
-  expect((await reviewer.review(file(join(homedir(), ".config", "tool", "settings.json"), "write"), yours("Set the tool's theme"), given(ask))).decision).toBe("allow")
+  expect((await reviewer.review(file(join(yourHome, ".config", "tool", "settings.json"), "write"), yours("Set the tool's theme"), given(ask))).decision).toBe("allow")
   await reviewer.review({ ...file(join(box, "other", "notes.md"), "write"), tool: "write", input: { path: join(box, "other", "notes.md"), content: "TODO" } }, yours("Write the notes"), given(ask))
   expect(ask.shown.at(-1)).toContain("with the agent's write tool")
   expect(ask.shown.at(-1)).toContain('"content": "TODO"')
@@ -409,7 +416,7 @@ test("your own settings for every project (global git, SSH keys, sign-ins' files
   expect(ask.shown.at(-1)).toContain("your global git settings, for every project")
   // A bot's goal names it too; and a file the agent's tools change there.
   expect((await reviewer.review(command("ssh-keygen -t ed25519 -f ~/.ssh/deploy"), { session: "ses_bot_keys", said: [], bot: { id: "bot_x", name: "Pixel", goal: "Set up an SSH deploy key for the server" } }, given(ask))).decision).toBe("allow")
-  expect(await reviewer.review({ kind: "file", path: join(homedir(), ".gitconfig"), access: "write", folder: project }, yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", why: "unasked" })
+  expect(await reviewer.review({ kind: "file", path: join(yourHome, ".gitconfig"), access: "write", folder: project }, yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", why: "unasked" })
 })
 
 test("the tools that write your own settings are held back too, past sudo -u and quotes; reading them, trusting a host and a project's own settings aren't", async () => {
@@ -549,8 +556,8 @@ test("once the model allows a change its file tool makes in a folder, the same t
   const next = yours("Fix the build")
   await reviewer.review(room, next, given(model(allows)))
   expect(await reviewer.review(change(join(box, "room", "a.txt")), next, given(ask))).toMatchObject({ decision: "refuse", by: "model" })
-  await reviewer.review(change(join(homedir(), "kuvo-test-notes.md")), next, given(model(allows)))
-  expect(await reviewer.review(change(join(homedir(), "kuvo-test-other.md")), next, given(ask))).toMatchObject({ decision: "refuse", by: "model" })
+  await reviewer.review(change(join(yourHome, "kuvo-test-notes.md")), next, given(model(allows)))
+  expect(await reviewer.review(change(join(yourHome, "kuvo-test-other.md")), next, given(ask))).toMatchObject({ decision: "refuse", by: "model" })
   const bin = join(box, "bin")
   mkdirSync(bin)
   const before = process.env.PATH
@@ -646,14 +653,14 @@ test.skipIf(process.platform !== "darwin")("on a Mac, your settings and what run
   const ask = model(allows)
   const change = (where: string) => ({ kind: "file" as const, path: where, access: "write" as const, folder: project })
   // (Folders not there yet, so nothing on the disk gives the case back.)
-  expect(await reviewer.review(change(join(homedir(), ".Config", "GIT", "config")), yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", why: "unasked" })
-  await reviewer.review(change(join(homedir(), ".ZSHRC.kuvo-test")), yours("Fix the build"), given(ask))
+  expect(await reviewer.review(change(join(yourHome, ".Config", "GIT", "config")), yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", why: "unasked" })
+  await reviewer.review(change(join(yourHome, ".ZSHRC.kuvo-test")), yours("Fix the build"), given(ask))
   expect(ask.shown.at(-1)).toContain("It sets up something that runs at login or on a schedule")
   // And by every case Unicode has, as the disk folds them: `ſ` is `s`.
   expect(reviewer.walledForOwn(join(box, "proj", "opencode.j\u017fon"), policy ??= fencePolicy())).toBe(true)
   expect(reviewer.walledForOwn(join(box, "proj", ".git", "hoo\u212as", "pre-commit"), policy)).toBe(true)
   // Kuvo Code's own folders named by pattern, too.
-  expect(await reviewer.review(change(join(homedir(), "Library", "Caches", "RUN.KUVO.CODE.kuvo-test", "x")), yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", by: "code", held: false })
+  expect(await reviewer.review(change(join(yourHome, "Library", "Caches", "RUN.KUVO.CODE.kuvo-test", "x")), yours("Fix the build"), given(ask))).toMatchObject({ decision: "refuse", by: "code", held: false })
 })
 
 test("a place taken back while a review is under way isn't stored again by it (#422)", async () => {
@@ -673,12 +680,12 @@ test("a place taken back while a review is under way isn't stored again by it (#
 })
 
 test.skipIf(process.platform !== "darwin")("an agent in Auto never starts a session in ~/Library, nor takes one of its folders for its own, but for the caches commands write there", async () => {
-  expect(await reviewer.keptFromSessions(join(homedir(), "Library", "Preferences", "kuvo-test"), policy ??= fencePolicy())).toMatch(/~\/Library/)
-  expect(await reviewer.keptFromSessions(join(homedir(), "Library", "Developer", "kuvo-test"), policy)).toBeNull()
+  expect(await reviewer.keptFromSessions(join(yourHome, "Library", "Preferences", "kuvo-test"), policy ??= fencePolicy())).toMatch(/~\/Library/)
+  expect(await reviewer.keptFromSessions(join(yourHome, "Library", "Developer", "kuvo-test"), policy)).toBeNull()
   // (Matched as the disk matches names, never wider: a dotless ı isn't an i there.)
-  expect(await reviewer.keptFromSessions(join(homedir(), "Library", "Mob\u0131le Documents", "com~apple~CloudDocs", "kuvo-test"), policy)).toMatch(/~\/Library/)
+  expect(await reviewer.keptFromSessions(join(yourHome, "Library", "Mob\u0131le Documents", "com~apple~CloudDocs", "kuvo-test"), policy)).toMatch(/~\/Library/)
   // iCloud Drive, which commands write, is a place for projects like any.
-  expect(await reviewer.keptFromSessions(join(homedir(), "Library", "Mobile Documents", "com~apple~CloudDocs", "kuvo-test"), policy)).toBeNull()
+  expect(await reviewer.keptFromSessions(join(yourHome, "Library", "Mobile Documents", "com~apple~CloudDocs", "kuvo-test"), policy)).toBeNull()
 })
 
 test("what's a conversation's own in Kuvo Code's folders stays its own where those are in ~/Library, as a Mac app keeps them: a bot's memory", async () => {
