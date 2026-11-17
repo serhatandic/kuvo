@@ -16,6 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import http from "node:http";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
@@ -36,7 +37,7 @@ const build = text => [...text.matchAll(/\/\/ Built from Packages\/Box\/src\/age
 
 /** A machine's box, kept by its keeper (a round a second, or `round`), with the box's server for
  * clients wanted, and its bridge's program as `agents` (the built one by default). */
-function machine(prefix, { agents, round = "1", before, release, kept = true } = {}) {
+function machine(prefix, { agents, round = "1", before, release, kept = true, held = true, feed = null } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   removeAtEnd(base);
   const home = path.join(base, ".kuvo-code");
@@ -93,9 +94,12 @@ esac
       fs.copyFileSync(path.join(unpacked, file), path.join(home, file));
       fs.chmodSync(path.join(home, file), fs.statSync(path.join(unpacked, file)).mode & 0o777);
     }
-    fs.mkdirSync(path.join(home, "updates", "release"), { recursive: true });
-    for (const name of fs.readdirSync(release.out)) fs.copyFileSync(path.join(release.out, name), path.join(home, "updates", "release", name));
-    fs.appendFileSync(path.join(run, "launch.env"), `KUVO_TEST_RELEASE_KEY=${release.pinned}\n`);
+    // (Held, as this box's own updater keeps it; or not, as an older updater left it.)
+    if (held) {
+      fs.mkdirSync(path.join(home, "updates", "release"), { recursive: true });
+      for (const name of fs.readdirSync(release.out)) fs.copyFileSync(path.join(release.out, name), path.join(home, "updates", "release", name));
+    }
+    fs.appendFileSync(path.join(run, "launch.env"), `KUVO_TEST_RELEASE_KEY=${release.pinned}\nKUVO_TEST_FETCH_WAIT=0\n${feed ? `KUVO_TEST_RELEASE_FEED=${feed}\n` : ""}`);
   }
   before?.(home, run);
 
@@ -138,11 +142,19 @@ esac
     return info.status === 200 && info.json?.pid === said.pid ? said.pid : null;
   }, besides ? "a new bridge to answer" : "the bridge to answer");
   /** A look of the box's own (`kuvo-link.js repair`), as its keeper starts one: what it came to. */
-  const repair = (key = release?.pinned) => {
-    const ran = spawnSync(program, ["--config=/dev/null", "--no-env-file", path.join(home, "bin", "kuvo-link.js"), "repair"], { env: { HOME: base, PATH: "/usr/bin:/bin", KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", ...(key ? { KUVO_TEST_RELEASE_KEY: key } : {}) }, encoding: "utf8", timeout: 120_000 });
+  const repair = (key = release?.pinned, feed = null) => {
+    const ran = spawnSync(program, ["--config=/dev/null", "--no-env-file", path.join(home, "bin", "kuvo-link.js"), "repair"], { env: { HOME: base, PATH: "/usr/bin:/bin", KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_TEST_FETCH_WAIT: "0", ...(key ? { KUVO_TEST_RELEASE_KEY: key } : {}), ...(feed ? { KUVO_TEST_RELEASE_FEED: feed } : {}) }, encoding: "utf8", timeout: 120_000 });
     return JSON.parse(ran.stdout.trim().split("\n").pop());
   };
-  return { home, run, until, ask, serving, bridgeUp, repair };
+  /** The same, not holding up this process (whose feed it may fetch from). */
+  const repairing = (key = release?.pinned, feed = null) => new Promise((resolve, reject) => {
+    const child = spawn(program, ["--config=/dev/null", "--no-env-file", path.join(home, "bin", "kuvo-link.js"), "repair"], { env: { HOME: base, PATH: "/usr/bin:/bin", KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_TEST_FETCH_WAIT: "0", ...(key ? { KUVO_TEST_RELEASE_KEY: key } : {}), ...(feed ? { KUVO_TEST_RELEASE_FEED: feed } : {}) }, stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", chunk => { out += chunk; });
+    child.on("error", reject);
+    child.on("close", () => { try { resolve(JSON.parse(out.trim().split("\n").pop())); } catch (error) { reject(error); } });
+  });
+  return { home, run, until, ask, serving, bridgeUp, repair, repairing };
 }
 
 test("a client asking all through a bridge's hand-over to a newer one gets every answer, never 'not running', and the next starts at once", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
@@ -215,10 +227,10 @@ test("a bridge that keeps stopping is said to in one plain sentence with Try Aga
 
 
 /** The release this checkout makes, of 0.10.0 for engine 1.0.0, signed with a key of the test's. */
-function signedRelease() {
+function signedRelease({ version = "0.10.0", url = `https://example.invalid/releases/download/v${version}/box-${version}.tar.gz`, keyPair = crypto.generateKeyPairSync("ed25519") } = {}) {
   const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-release-")));
   removeAtEnd(scratch);
-  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+  const { privateKey, publicKey } = keyPair;
   const root = path.join(scratch, "sources");
   for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
@@ -228,7 +240,7 @@ function signedRelease() {
   const builds = { x86_64: { url: "https://example.invalid/engine-1.0.0.tgz", integrity }, aarch64: { url: "https://example.invalid/engine-1.0.0.tgz", integrity } };
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.0.0", linux: builds, darwin: builds }));
   const out = path.join(scratch, "release");
-  const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), "0.10.0", "https://example.invalid/releases/download/v0.10.0/box-0.10.0.tar.gz", out], {
+  const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), version, url, out], {
     env: { ...process.env, BUN: bun, NODE: process.execPath, BOX_SOURCES: root, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }), KUVO_BOX_SPREADS: "1" }, encoding: "utf8",
   });
   assert.equal(packed.status, 0, packed.stderr);
@@ -327,4 +339,88 @@ test("nothing is repaired while an update is under way", { skip: bun ? false : N
   updating.kill();
   await new Promise(resolve => updating.once("exit", resolve));
   assert.deepEqual(box.repair(), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+});
+
+/** A release feed of the test's own on 127.0.0.1: `/v<version>/boxes.json` and its pack, for each
+ * release given; anything else is 404. */
+async function feedOf() {
+  const served = new Map();
+  const server = http.createServer((request, response) => {
+    const file = served.get(request.url);
+    if (!file) { response.writeHead(404); return response.end(); }
+    response.writeHead(200);
+    response.end(fs.readFileSync(file));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  atEnd(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return {
+    base,
+    /** A release of `version`, signed with `keyPair`, its pack where the feed serves it, served. */
+    sign(version, keyPair) {
+      const made = signedRelease({ version, keyPair });
+      for (const name of fs.readdirSync(made.out)) served.set(`/v${version}/${name}`, path.join(made.out, name));
+      return made;
+    },
+  };
+}
+const testKeys = bun ? crypto.generateKeyPairSync("ed25519") : null;
+const feed = bun ? await feedOf() : null;
+const served = bun ? feed.sign("0.10.0", testKeys) : null;
+
+test("a box that keeps no release (an older updater kept none) keeps bin/.own until it has one: then it fetches the version it runs, repairs from it, and only then lets bin/.own go", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const box = machine("kuvo-no-release-", { release: served, held: false, kept: false, before: home => write(path.join(home, "bin", ".own", "kuvo-wake"), "# the box's own wake-ups\n", 0o755) });
+  const agents = path.join(box.home, "bin", "kuvo-agents.js");
+  write(agents, OLDER_BRIDGE);
+  // No source: nothing to repair from, and what an older Kuvo kept stays, as what the keeper puts back.
+  assert.deepEqual(await box.repairing(served.pinned, `${feed.base}/nothing`), { result: "none", why: "noRelease" });
+  assert.ok(fs.existsSync(path.join(box.home, "bin", ".own", "kuvo-wake")));
+  assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
+  // The feed has it: fetched, checked, kept apart, and repaired from.
+  assert.deepEqual(await box.repairing(served.pinned, feed.base), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  assert.ok(fs.existsSync(path.join(box.home, "updates", "running", "boxes.json")), "kept, to repair from again");
+  assert.ok(!fs.existsSync(path.join(box.home, "bin", ".own")), "and only now, what an older Kuvo kept goes");
+  // Its feed signed by another key: never used.
+  fs.rmSync(path.join(box.home, "updates", "running"), { recursive: true });
+  write(agents, OLDER_BRIDGE);
+  assert.deepEqual(await box.repairing(crypto.randomBytes(32).toString("base64"), feed.base), { result: "none", why: "noRelease" });
+  assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
+});
+
+test("a box holding a newer release than the one it runs fetches the one it runs to repair from, never the newer", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const newer = feed.sign("0.11.0", testKeys);
+  const box = machine("kuvo-other-version-", { release: served, held: false, kept: false });
+  fs.mkdirSync(path.join(box.home, "updates", "release"), { recursive: true });
+  for (const name of fs.readdirSync(newer.out)) fs.copyFileSync(path.join(newer.out, name), path.join(box.home, "updates", "release", name));
+  write(path.join(box.home, "bin", "kuvo-agents.js"), OLDER_BRIDGE);
+  assert.deepEqual(await box.repairing(served.pinned, `${feed.base}/nothing`), { result: "none", why: "otherVersion" });
+  assert.deepEqual(await box.repairing(served.pinned, feed.base), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  assert.equal(fs.readFileSync(path.join(box.home, "bin", "box-version"), "utf8").trim(), "0.10.0", "still the version it ran");
+});
+
+test("a 0.7 Mac's tools put over a machine that keeps no release are put back: the feed's release once it has it", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const box = machine("kuvo-07-no-release-", { release: served, held: false, feed: feed.base });
+  await box.serving();
+  await box.bridgeUp();
+  const wake = path.join(box.home, "bin", "kuvo-wake");
+  const own = fs.readFileSync(wake);
+  write(wake, "# a 0.7 Mac's wake-ups\n", 0o644);
+  write(path.join(box.run, "attached"), "", 0o600);
+  await box.until(() => fs.readFileSync(wake).equals(own), "the release's wake-ups back");
+  assert.equal(fs.statSync(wake).mode & 0o777, 0o755);
+  assert.ok(fs.existsSync(path.join(box.home, "updates", "running", "boxes.json")), "the version it runs, fetched to repair from");
+});
+
+test("the keeper's script with another engine line (a rollback that kept a newer engine wrote it) is as the release says, and stays so", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const box = machine("kuvo-keeper-line-", { release, kept: false });
+  const keeper = path.join(box.home, "bin", "kuvo-start");
+  write(keeper, fs.readFileSync(keeper, "utf8").replace(/^V=.*$/m, "V=1.1.0"), 0o700);
+  const before = fs.readFileSync(keeper);
+  assert.deepEqual(box.repair(), { result: "sound", version: "0.10.0" });
+  assert.deepEqual(box.repair(), { result: "sound", version: "0.10.0" }, "every look");
+  assert.ok(fs.readFileSync(keeper).equals(before), "its engine line as it was");
+  // Something else changed in it: put back, with its engine line.
+  write(keeper, before.toString("utf8") + "# changed\n", 0o700);
+  assert.deepEqual(box.repair(), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-start"] });
+  assert.ok(fs.readFileSync(keeper).equals(before));
 });

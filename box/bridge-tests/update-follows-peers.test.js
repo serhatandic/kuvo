@@ -122,9 +122,11 @@ test("a release from another computer is never taken signed by another key, olde
   link.followPeers();
   assert.equal(holding.asked.length, 1, "that computer isn't asked for it again for a while");
 
-  // Older than this box, or the version it has: nothing asked at all.
+  // Older than this box, or the version it has (one it keeps a copy of, to repair from): nothing
+  // asked at all.
   for (const version of ["0.8.0", "0.9.0", "0.9.0-beta.4"]) {
     box();
+    hold("0.9.0");
     holding = peerHolding(release(version));
     follow({ [mini.pub]: holding });
     says(mini, version);
@@ -151,8 +153,34 @@ test("a release from another computer is never taken signed by another key, olde
   assert.ok(!fs.existsSync(path.join(home, "updates", "incoming")));
 });
 
+test("a computer that keeps no copy of the version it runs takes one from another of yours that holds it, to repair from: never offered as an update, and handed on", () => {
+  box();
+  const holding = peerHolding(release("0.9.0"));
+  // (Whatever blocks updates here, an older Mac say, doesn't block this.)
+  link.fleetWith({ keys: [pinned], blocked: "An older Mac connects here.", clock: () => clock, send: (key, mail) => holding.send(key, mail), offered: () => { offers++; } });
+  says(mini, "0.9.0");
+  assert.deepEqual(holding.asked, [{ want: "0.9.0" }], "asked at once, as its mail came");
+  exchange(mini, holding);
+  assert.equal(offers, 0, "never offered: it's the version here");
+  assert.equal(offered(), null);
+  assert.equal(link.pullUnderWay(), null);
+  assert.ok(fs.existsSync(path.join(home, "updates", "running", "boxes.json")), "kept apart, to repair from");
+  assert.ok(!fs.existsSync(path.join(home, "updates", "incoming")), "nothing left of the pull");
+  // Kept: not asked for again.
+  says(mini, "0.9.0");
+  assert.equal(holding.asked.filter(mail => mail.want).length, 1);
+  // And handed to another computer of yours that asks for it.
+  const told = [];
+  link.fleetWith({ keys: [pinned], blocked: null, clock: () => clock, send: (_key, mail) => { told.push(mail); return true; }, offered: () => {} });
+  link.takeReleaseMail(lab.sender, { want: "0.9.0" });
+  assert.equal(told[0]?.version, "0.9.0");
+  assert.equal(typeof told[0]?.boxes, "string");
+});
+
 test("a computer that was away takes the newer release once it hears from the others again; an exchange cut off goes on at the next minute's look", () => {
   box();
+  // (With a copy of the version it runs: nothing to pull for that.)
+  hold("0.9.0");
   const holding = peerHolding(release("0.10.0"));
   follow({ [mini.pub]: holding });
   // As it was before it went away: the mini as new as it.

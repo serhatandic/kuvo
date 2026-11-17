@@ -266,6 +266,20 @@ keep)
     else
       boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
     fi
+    # COMPAT(0.7 files): the box tools put back from bin/.own. Goes once every box has repaired from a release once.
+    # (Only until this box has repaired its files from a release once, which removes bin/.own: from
+    # then on the repair below puts them back, from the release itself.)
+    # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own
+    # tools over the box's since the box was last marked: the box's back, as the Kuvo Code
+    # that marked it put them there (bin/.own). Not while a Mac puts its files in place, or
+    # the box updates itself.
+    if [ -d "$K/bin/.own" ] && [ "$R/attached" -nt "$K/bin/box-version" ] && [ ! -d "$R/.updating" ] && [ -z "$(find "$R/mac-installing" -mmin -60 2>/dev/null)" ]; then
+      for f in "$K"/bin/.own/*; do
+        n=${f##*/}; t="$K/bin/$n"
+        [ -f "$f" ] && { [ ! -f "$t" ] || [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } || continue
+        if cmp -s "$f" "$t"; then touch -r "$f" "$t"; else cp -p "$f" "$K/bin/.$n.new" && mv -f "$K/bin/.$n.new" "$t"; fi
+      done 2>/dev/null
+    fi
     # Kuvo's own programs here repaired from the signed release this box runs (`kuvo-link.js repair`,
     # PROTOCOL.md, "Updates", Repaired from the release it runs): as the keeper starts, each hour,
     # once an older Kuvo Code on a Mac connected (it touches run/attached, and may put its own tools

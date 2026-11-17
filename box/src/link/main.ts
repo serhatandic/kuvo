@@ -259,7 +259,7 @@ export { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } fro
 export { forgetMigrated as forgetQueueMigrated } from "./work-queue/migrate";
 export { atWorkForSure as queueAtWorkForSure, forgetSettled as forgetQueueSettled, settleStarted as settleQueueStarted } from "./work-queue/started";
 import { atWorkForSure, settleStarted } from "./work-queue/started";
-import { repairFromRelease } from "./updates/repair";
+import { repairWithFetch } from "./updates/repair";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
 export { answerPersonalities, retellBots, takePersonalities, takePersonalitiesDocument } from "./personalities/take";
@@ -1239,8 +1239,10 @@ if (main) {
   // says (`repair`, as the keeper starts it: updates/repair.ts). A test's folder only takes a test's
   // key (`KUVO_TEST_RELEASE_KEY`, from its launch's environment).
   else if (mode === "repair") {
-    const key = process.env.KUVO_TEST_RELEASE_KEY;
-    console.log(JSON.stringify(repairFromRelease(key && !REAL_BOX ? { keys: [key] } : {})));
+    const key = process.env.KUVO_TEST_RELEASE_KEY, feed = process.env.KUVO_TEST_RELEASE_FEED;
+    console.log(JSON.stringify(await repairWithFetch({ ...(key && !REAL_BOX ? { keys: [key] } : {}), ...(feed && !REAL_BOX ? { feed } : {}) })));
+    // (A look, once: nothing it fetched with keeps it running, nor the keeper's next look waiting.)
+    process.exit(0);
   }
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or
@@ -1373,4 +1375,4 @@ if (main) {
 
 export { frameBudget, browserView } from "./browser/view";
 export { viewUpgrade } from "./browser/websocket";
-export { repairFromRelease } from "./updates/repair";
+export { repairFromRelease, repairWithFetch } from "./updates/repair";

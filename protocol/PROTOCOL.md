@@ -3008,8 +3008,15 @@ signature, the pack by the manifest's SHA-256, each file by the SHA-256 the pack
 names (only the names an update would write). A file that's missing or differs is put back from
 the pack, whole, with the pack's mode, in the order an update writes them, under the update's lock
 (`run/.updating`, so no update, rollback or second repair meanwhile); the keeper's own script keeps
-its engine line (`V=`), which is the box's to change;
-`bin/.own`, what an older Kuvo kept apart, goes. Only from the release this box runs
+its engine line (`V=`), which is the box's to change, and one that differs only there is sound.
+`bin/.own`, what an older Kuvo kept apart, goes once a look finds the files `sound` or `repaired`,
+never before. Where no sound release of the version it runs is kept here (an older updater kept
+none, a newer one is held in its place, or the one kept was damaged), the box gets one: the
+`repair` command fetches it from the release feed (`<feed>/v<version>/boxes.json`, and its pack
+beside it), and the fleet pulls it from a computer of yours that holds it (`release` mail, as below,
+whatever blocks updates here, never while one runs), each checked as an update checks a release,
+kept apart in `updates/running` and never offered as an update. A box hands the one it runs, kept
+apart, to a computer of yours that asks for it, as it hands the one it holds. Only from the release this box runs
 (`bin/box-version`): a held release of another version is never used (`none`, `otherVersion`), so a
 repair never goes up or down. A held release whose pack isn't what its manifest says is never used
 and is removed (`damaged`): the box's next update brings a sound one. Tar failing on a pack that
@@ -3024,9 +3031,9 @@ repaired: what keeps them running does.
 A box's files say which Kuvo Code put them there: `~/.kuvo-code/bin/box-version`. It holds that
 app's version, written by a Mac after it sets the box up, or by the box when it updates itself.
 - **Older or unmarked box**: a Mac installs its own engine, bridge, helpers, agents bridge and
-  keeper, then writes its version. (An older Mac also kept copies of the box's tools in `bin/.own`;
-  a box removes that folder at each repair, below, so nothing puts them back.) Its engine launches
-  note `"box": <version>`.
+  keeper, then writes its version. (An older Mac also kept copies of the box's tools in `bin/.own`,
+  which a box keeps until a repair from its release finds its files sound: "Kuvo Code 0.5 to
+  0.7.2".) Its engine launches note `"box": <version>`.
 - **Newer box**: a Mac leaves everything as it is.
   - Every script that would write one of its files reads what it was given and stops.
   - It connects to the engine running there, and doesn't start it over for its own settings.
@@ -11553,11 +11560,15 @@ it ("Session lists").
 **Kuvo Code 0.5 to 0.7.2.** It can go once 0.8.0 has been out three months and no Mac with 0.7 or
 before connects (the box notes one: `run/attached`).
 - **Its files**: such a Mac doesn't know box versions, and puts its own engine, bridge, helpers,
-  agents bridge and keeper over the box's as it connects, touching `run/attached`. The box no
-  longer keeps copies of its tools for it (`bin/.own`, gone): a newer `run/attached` starts a repair
-  from the release the box runs ("Updates", Repaired from the release it runs), which puts each of
-  its files back where it differs. Marking a box, a Mac puts its `kuvo-npx` there only with its own
-  engine version there, which it runs.
+  agents bridge and keeper over the box's as it connects, touching `run/attached`. A newer
+  `run/attached` starts a repair from the release the box runs ("Updates", Repaired from the
+  release it runs), which puts each of its files back where it differs. Until a box has once found
+  its files sound or repaired from a release, it keeps copies of its tools (`bin/.own`, which each
+  update refreshes while it's there), and its keeper puts each back where it differs once
+  `run/attached` is newer than `bin/box-version`, but not while a Mac installs
+  (`run/mac-installing`, an hour at most) or the box updates itself. Marking a box, a Mac puts its
+  `kuvo-npx` there only with its own engine version there, which it runs. This goes once every box
+  has repaired from a release once.
   <!-- compat: 0.7 files -->
 - **Messages it writes itself**: such a Mac, and every Mac and phone from before `messages.send`,
   writes a message's blocks itself and sends its text (`api/session/<id>/prompt`, `queue/add` with

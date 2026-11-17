@@ -14,6 +14,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { writePrivate } from "../files";
+import { fetchedPatiently } from "../engine/client";
 import { IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
 import { HELD, RUNNING, heldKeys } from "./fleet";
 import { BOX_FILE, type BoxFiles, MAC_INSTALLING, UPDATE_LOCK, boxVersion, hexSHA256, installOrder, isUpdating, packName, packedBox, takeUpdateLock, updateOnTrial, verifyBoxes } from "./update";
@@ -30,8 +31,9 @@ export type Repair =
 
 /** Where the last look is noted, for the box to say (`agents-down.ts`) and for logs. */
 export const REPAIR_FILE = path.join(RUN, "repair.json");
-/** What an older Kuvo kept of its tools (`bin/.own`), which the retired Mac app puts back over a
- * release's: gone at each look, so nothing does. */
+/** What an older Kuvo kept of its tools (`bin/.own`), which the keeper (and the retired Mac app) put
+ * back over a release's: gone once a repair finds the files sound or puts them back, so nothing
+ * stale ever goes back. */
 const OWN_LEFT = path.join(K, "bin", ".own");
 /** The keeper's own script: its engine line (`V=`) is the box's to change (a rollback that keeps a
  * newer engine writes it), so it's compared, and put back, with the line it has here. */
@@ -42,13 +44,16 @@ export function repairFromRelease(options: { keys?: string[]; now?: number } = {
   const now = options.now ?? Date.now();
   const said = (repair: Repair): Repair => {
     try { writePrivate(REPAIR_FILE, JSON.stringify({ at: now, ...repair })); } catch {}
+    // COMPAT(0.7 files): `bin/.own`, an older Kuvo's copies of its tools, which its keeper puts back after an older Mac's visit. Goes once every box has repaired from a release once.
+    // Only once this box has a release to repair from, and its files are as it says: until then
+    // it's what the keeper puts back after an older Mac's visit.
+    if (repair.result === "sound" || repair.result === "repaired") fs.rmSync(OWN_LEFT, { recursive: true, force: true });
     if (repair.result === "repaired") console.error(`repaired from the release it runs (${repair.version}): ${repair.files.join(", ")}`);
     if (repair.result === "damaged") console.error(`the release kept (${repair.version}) isn't what its manifest says: not used, and removed`);
     return repair;
   };
   // (A retired Mac app's own box: that app puts its files in place.)
   if (IS_MAC && !OWN_HOME_MAC) return { result: "none", why: "busy" };
-  fs.rmSync(OWN_LEFT, { recursive: true, force: true });
   if (busy(now)) return said({ result: "none", why: "busy" });
 
   const running = boxVersion();
@@ -67,6 +72,10 @@ export function repairFromRelease(options: { keys?: string[]; now?: number } = {
     return said({ result: "none", why: "failed" });
   }
   const files = Object.entries(box.files).filter(([file]) => BOX_FILE.test(file) && !file.split("/").includes(".."));
+  // (The keeper's script, where it differs, read from the pack: one whose only difference is its
+  // engine line is as the release says.)
+  const keeper = files.find(([file, sha]) => file === KEEPER && !matches(file, sha, null));
+  if (keeper) unpacked(pack, KEEPER);
   const wrong = files.filter(([file, sha]) => !matches(file, sha, null)).map(([file]) => file);
   if (!wrong.length) return said({ result: "sound", version: manifest.version });
 
@@ -195,4 +204,44 @@ export function lastRepair(): (Repair & { at: number }) | null {
   } catch {
     return null;
   }
+}
+
+/** Where a release of a version is, by its version (the release feed: `KUVO_TEST_RELEASE_FEED` in a
+ * test's folder). */
+const FEED = "https://github.com/serhatandic/kuvo-code/releases/download";
+
+/** `repair`, as the keeper starts it: a look, and where there's no sound release of the version this
+ * box runs kept here (`noRelease`, `otherVersion`, `damaged`), that version fetched from the release
+ * feed (its signed manifest and pack, checked as an update checks them), kept apart
+ * (`updates/running`), and looked at again. A version the feed doesn't have (a beta from Kuvo
+ * Code's own feed) comes from a computer of yours that holds it, through the fleet (`fleet.ts`,
+ * `repairPull`), and is used at the next look. */
+export async function repairWithFetch(options: { keys?: string[]; feed?: string; now?: number } = {}): Promise<Repair> {
+  const first = repairFromRelease(options);
+  const missing = first.result === "damaged" || (first.result === "none" && (first.why === "noRelease" || first.why === "otherVersion"));
+  const running = boxVersion();
+  if (!missing || !running) return first;
+  const keys = options.keys ?? heldKeys();
+  try {
+    const base = options.feed ?? FEED;
+    const boxes = await fetchedPatiently(`${base}/v${running}/boxes.json`, 1_000_000, 30_000);
+    const manifest = verifyBoxes(boxes.toString("utf8"), keys);
+    if (manifest.version !== running) throw new Error(`the feed's ${running} says ${manifest.version}`);
+    // (Its pack beside its manifest in the feed, by its name: where its own address points, on
+    // the feed; checked by the manifest's SHA-256 whatever it came from.)
+    const pack = await fetchedPatiently(`${base}/v${running}/${packName(manifest)}`, 100_000_000, 300_000);
+    if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error(`the feed's ${running} isn't what its manifest says`);
+    const partial = `${RUNNING}.partial`;
+    fs.rmSync(partial, { recursive: true, force: true });
+    fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(partial, "boxes.json"), boxes, { mode: 0o600 });
+    fs.writeFileSync(path.join(partial, packName(manifest)), pack, { mode: 0o600 });
+    fs.rmSync(RUNNING, { recursive: true, force: true });
+    fs.renameSync(partial, RUNNING);
+    console.error(`${running}, the version here, fetched from the release feed to repair from`);
+  } catch (error) {
+    console.error(`${running} couldn't be fetched to repair from:`, (error as Error).message ?? error);
+    return first;
+  }
+  return repairFromRelease(options);
 }

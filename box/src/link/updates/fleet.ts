@@ -63,22 +63,34 @@ export interface Held {
 /** The pack held, checked against its signed SHA-256 once for each file there (its size and time). */
 let packChecked: { stamp: string; sha: string; ok: boolean } | null = null;
 
-export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS): Held | null {
+export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, folder = HELD): Held | null {
   try {
-    const boxes = fs.readFileSync(path.join(HELD, "boxes.json"), "utf8");
+    const boxes = fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
     const manifest = verifyBoxes(boxes, keys);
     // Only a release signed to go to your other computers (`spreads`): never a build made for
     // trying an update, which would take its version's place on every computer.
     if ((manifest as { spreads?: unknown }).spreads !== true) return null;
-    const pack = path.join(HELD, packName(manifest));
+    const pack = path.join(folder, packName(manifest));
     const stat = fs.statSync(pack);
-    const stamp = `${stat.size} ${stat.mtimeMs}`;
+    const stamp = `${pack} ${stat.size} ${stat.mtimeMs}`;
     if (packChecked?.stamp !== stamp || packChecked.sha !== manifest.pack.sha256) {
       packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto.createHash("sha256").update(fs.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
     }
     if (!packChecked.ok) return null;
     return { version: manifest.version, boxes, pack, size: stat.size };
   } catch { return null; }
+}
+
+/** A sound release of the version this box runs, kept here (held, or apart): one to repair its
+ * files from, and to hand to a computer of yours that has none. */
+export function runningKept(keys: string[] = ownWays().keys ?? UPDATE_KEYS): Held | null {
+  const running = boxVersion();
+  if (!running) return null;
+  for (const folder of [HELD, RUNNING]) {
+    const kept = heldRelease(keys, folder);
+    if (kept?.version === running) return kept;
+  }
+  return null;
 }
 
 /** A release checked here (its signed manifest and pack, checked already) kept as the one this box
@@ -149,6 +161,8 @@ interface Pull {
   progressed: number;
   /** Whole and checked, in `incoming/release`, waiting to be offered. */
   whole?: boolean;
+  /** The version this box runs, pulled to repair its files from (`repair.ts`), never offered. */
+  forRepair?: boolean;
 }
 let pull: Pull | null = null;
 /** Each `<peer> <version>` that couldn't be had from that peer, with when. */
@@ -250,6 +264,26 @@ function heldAround(now: number): { peer: string; version: string }[] {
     .sort((a, b) => (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
 }
 
+/** No sound release of the version this box runs kept here (an older updater kept none, or it was
+ * damaged, or a newer one is held in its place): pulled from a computer of yours that holds it, to
+ * repair its files from, never offered. Whatever blocks updates here doesn't block this; an update
+ * under way does. */
+function repairPull(options: FleetOptions, now: number): void {
+  const mine = boxVersion();
+  if (pull || !mine || isUpdating() || runningKept(options.keys)) return;
+  const told = readPeerAgents();
+  const link = readLink();
+  const peers = new Set(peersOf(link).map(peer => peer.key));
+  const others = yours(link, told).map(box => box.key).filter(key => !peers.has(key) && now - (heldBy.get(key)?.at ?? -Infinity) < HELD_WORD);
+  const holder = [...[...peers].map(key => ({ peer: key, version: told[key]?.computer?.release })), ...others.map(key => ({ peer: key, version: heldBy.get(key)?.version }))]
+    .filter(each => each.version === mine && now - (tried.get(`${each.peer} ${mine}`) ?? -Infinity) >= TRIED_FOR)
+    .sort((a, b) => (a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0))[0];
+  if (!holder) return;
+  pull = { peer: holder.peer, version: mine, got: new Set(), asked: new Map(), heard: now, progressed: now, forRepair: true };
+  fs.rmSync(INCOMING, { recursive: true, force: true });
+  ask(pull, options, now, false);
+}
+
 /** A look: a peer holds a newer release than this box, and nothing's in the way: it's pulled from
  * that peer (or the pull under way goes on, asking again for what it waits for). As peers' agents
  * mail comes, and each minute. */
@@ -261,6 +295,18 @@ export function followPeers(asked: FleetOptions = {}): void {
   // (The newest that can be taken here: one resting after it failed here, or that failed twice,
   // gives way to an older one that's still newer than this box.)
   const best = heldAround(now).find(each => !notThis(each.version, now)) ?? null;
+  if (pull?.forRepair) {
+    // (Another version here meanwhile, or a sound one of its own: it goes.)
+    if (pull.version !== boxVersion() || (!pull.whole && runningKept(options.keys))) return endPull(null);
+    if (pull.whole) return finish(pull, options, now);
+    if (now - pull.progressed >= GIVE_UP) return endPull(`${pull.version} couldn't be had from that computer in time.`, now);
+    // (A newer one to take after all: that goes first.)
+    if (!best || busyHere(blocked)) {
+      if (now - pull.heard >= QUIET) ask(pull, options, now, true);
+      return;
+    }
+    endPull(null);
+  }
   if (pull) {
     // (Caught up meanwhile: it goes.)
     if (!newerVersion(pull.version, boxVersion())) return endPull(null);
@@ -277,7 +323,7 @@ export function followPeers(asked: FleetOptions = {}): void {
     }
     endPull(null);
   }
-  if (!best || busyHere(blocked)) return;
+  if (!best || busyHere(blocked)) return repairPull(options, now);
   pull = { peer: best.peer, version: best.version, got: new Set(), asked: new Map(), heard: now, progressed: now };
   fs.rmSync(INCOMING, { recursive: true, force: true });
   ask(pull, options, now, false);
@@ -323,14 +369,16 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
     return followPeers(asked);
   }
   // Asked: what this box holds, if it's that version.
+  // (The one it holds, or the one it runs, kept apart: a computer with none of its own repairs from it.)
+  const holding = (version: unknown): Held | null => [heldRelease(keys), heldRelease(keys, RUNNING)].find(each => each?.version === version) ?? null;
   if (typeof given.want === "string") {
-    const held = heldRelease(keys);
+    const held = holding(given.want);
     tell(sender.key, held && held.version === given.want ? { version: held.version, boxes: held.boxes, size: held.size } : { version: given.want, none: true }, options);
     return;
   }
   if (typeof given.version !== "string") return;
   if (Number.isInteger(given.part) && given.d === undefined) {
-    const held = heldRelease(keys);
+    const held = holding(given.version);
     const i = given.part as number;
     if (!held || held.version !== given.version || i < 0 || i * PART >= held.size) return;
     const bytes = Buffer.alloc(Math.min(PART, held.size - i * PART));
@@ -353,13 +401,16 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
       return endPull(`what it sent for ${current.version} isn't a release this computer takes: ${(error as Error).message}`, now);
     }
     const size = given.size;
-    // (Exactly what was asked for, newer than this box, and a pack's size a box takes.)
-    if (manifest.version !== current.version || !newerVersion(manifest.version, boxVersion())) return endPull(`what it sent isn't ${current.version}.`, now);
-    // (Never an older engine than the one running: refused before any part is asked.)
-    const behind = engineBehind(manifest.engine);
+    // (Exactly what was asked for, newer than this box (or, to repair from, the version it runs),
+    // and a pack's size a box takes.)
+    const fits = current.forRepair ? manifest.version === boxVersion() : newerVersion(manifest.version, boxVersion());
+    if (manifest.version !== current.version || !fits) return endPull(`what it sent isn't ${current.version}.`, now);
+    // (Never an older engine than the one running: refused before any part is asked. One to repair
+    // from is never taken, so its engine is never started.)
+    const behind = current.forRepair ? null : engineBehind(manifest.engine);
     if (behind) return endPull(`${current.version} isn't taken here: ${behind}`, now);
     if (typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > MOST_PACK) return endPull(`its ${current.version} isn't a size a release can be.`, now);
-    if (notThis(manifest.version, now)) return endPull(null);
+    if (!current.forRepair && notThis(manifest.version, now)) return endPull(null);
     fs.mkdirSync(INCOMING, { recursive: true, mode: 0o700 });
     writePrivate(path.join(INCOMING, `${current.version}.json`), given.boxes);
     fs.writeFileSync(path.join(INCOMING, `${current.version}.pack`), Buffer.alloc(0), { mode: 0o600 });
@@ -400,6 +451,18 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
 // goes, and that computer isn't asked for it again for a while.
 function finish(current: Pull, options: FleetOptions, now: number): void {
   const folder = path.join(INCOMING, "release");
+  // One to repair from: kept apart as the release this box runs (whole and checked already), never
+  // offered; its files are put back at the keeper's next look (`repair.ts`).
+  if (current.forRepair) {
+    if (current.version === boxVersion()) {
+      fs.rmSync(RUNNING, { recursive: true, force: true });
+      fs.renameSync(folder, RUNNING);
+      log(`${current.version}, the version here, came from another of your computers, to repair from.`);
+    }
+    pull = null;
+    fs.rmSync(INCOMING, { recursive: true, force: true });
+    return;
+  }
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
     if (offered.message === UPDATING_ALREADY || isUpdating()) return;
