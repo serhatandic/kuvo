@@ -3301,7 +3301,8 @@ turns, what's sent meanwhile held on the box, never cut:
   coding agents' bridge as built answer `selftest` on the pinned engine and on the one the release
   before ran (`engine-pin.json`'s `previous`), and that one opens what the new one wrote (a data
   folder it made, opened by the new one, which migrates it and writes to it, opened by it again:
-  both conversations listed and read). `box.json` says what it found: `engines` (the pinned one,
+  both conversations listed and read, and written to; where the code doesn't answer on the one
+  before, `engines` names the pinned one alone). `box.json` says what it found: `engines` (the pinned one,
   then the one before; the pinned one alone without a check) and `downgradeSafe` (true only where
   it was found so). A box running one of `engines` takes the release's code at once, its link tried
   with both engines (`selftest`); its engine waits in `engine/<version>`, the new keeper's `V`.
@@ -3313,13 +3314,16 @@ turns, what's sent meanwhile held on the box, never cut:
   (`run/engine-swap.json` names its process). It says where it stands in that file, `{from, to,
   since, stage, holding?, letGo?, pid}`:
   - `waiting`: nothing held. It looks every ten seconds; nothing at work on the engine for half a
-    minute (`api/session/active` empty, and no browser ask waiting), it holds. Failing such a moment,
+    minute, it holds: no conversation at work (`api/session/active`), and, in each folder it has
+    open (`api/debug/location`), no question or permission waiting, no terminal and no command
+    running (as closing a folder counts them), nor a browser ask waiting. Failing such a moment,
     it holds an hour on in the night's window (02:00 to 05:00 in your time zone), or a day on whatever
     the hour; at once after Update Now (`run/engine-swap.now`, which `update --now` writes).
   - `holding`: what's sent to a conversation on the engine waits on the box (below), and the turns
     under way end as they would. Once nothing is at work (looked at twice, a second apart), it swaps.
     Half an hour after it began holding, still not, it lets go (`letGo`): what it held goes to the
-    engine at work, and it holds again an hour on.
+    engine at work, and it holds again only in a night's window at least an hour on (or on Update
+    Now's word); a quiet moment still swaps.
   - `swapping`: what each conversation's inbox in the engine holds (the latest hundred updated in
     the last week) moves onto the box, waiting there in the order it would have gone, held as it was;
     then the keeper's `engine-halt` stops the engine alone (never marked stopped: while
@@ -3334,19 +3338,28 @@ turns, what's sent meanwhile held on the box, never cut:
     after which the new one is tried again; what was held goes to it (`back`). Where it can't go
     back, the keeper keeps starting the new one, and what was held waits on the box until an engine
     answers (`failed`).
+- **The keeper never starts a newer engine by itself**: it notes the engine it last started
+  (`run/engine-ran`), and while one older than its `V` ran, an engine started again (a crash, a
+  restart, the machine's) is that one, until the swapper (whose start it lets through while
+  `run/.engine-swapping` is held) changes it. Its bridge starts on its own `V`'s runtime meanwhile.
+  An update that starts its engine with its code takes that note away first. A swapper started
+  where one went while it held lets go of what that one held first.
 - **What's held**: while the swapper holds, swaps or goes back, and only while its process runs and
   for an hour at most from when it began holding, a message to a conversation on the engine (never
   the coding agents' bridge, whose turns the change never touches) waits on the box as one does in
   a paused queue ("The queue"): `kuvo/sessions/<id>/send`, `…/queue/add`, a wake-up, another agent's
-  letter, a goal's word, a session `start_session` made, and one sent to the engine straight
-  (`POST api/session/<id>/prompt`, answered `{waits: true}`); a command (`…/command`) is answered
-  503 with the line, to send again once it's back. Nothing is started from the box's queue
-  meanwhile; Send Now and Steer put the item first. A group chat's seat on the engine waits to send
-  until the hold ends. The queue's answer carries `line` while what waits on it waits for this
+  letter, a goal's word, a session `start_session` made, a wake-up `kuvo-wake` fires (handed to the
+  box as one for a stopped conversation is), and one sent to the engine straight
+  (`POST api/session/<id>/prompt`, answered `{waits: true}`); a command or shell (`…/command`,
+  `…/shell`) is answered 503 with the line, to send again once it's back. Nothing is started from
+  the box's queue meanwhile; Send Now and Steer put the item first. The coding agents' bridge waits
+  before it starts anything on the engine (a conversation on the engine's models, a review, a group
+  chat's seat) until the hold ends. What the engine's inboxes held is kept on the box before it's
+  taken from the engine, so a swapper cut off between the two leaves it in both, never neither. The queue's answer carries `line` while what waits on it waits for this
   (the box's words; `kuvo/update`'s `engineChange.line` says the same for the computer, as its
   update line in `computers`). Once it's done or let go of, what waits for each conversation the
-  engine has that isn't paused goes, each once and in its order: the first to start a turn, the
-  rest as each was sent.
+  engine has that isn't paused goes, each once and in its order: the first to start a turn where
+  none runs, the rest (and all, into one that runs) as each was sent.
 
 ### The update gate
 
