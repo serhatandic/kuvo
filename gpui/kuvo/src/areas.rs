@@ -856,13 +856,20 @@ impl AreaView {
                 .and_then(|due| time::next_wake(due * 1000., now));
             // These rows have no trailing hover control. The timestamp can stay in place.
             let trail = next.map(|label| {
-                div().flex().items_baseline().flex_none().gap(space::S1)
+                let selector = format!("bot-{}-next-wake", bot.id);
+                div().debug_selector(move || selector).flex().items_baseline().flex_none().gap(space::S1)
                     .text_role(TextRole::Meta).text_color(c.text_muted)
                     .child(Icon::new(kuvo_ui::IconName::Clock).size(IconSize::Indicator).color(c.text_muted))
                     .child(div().child(label))
             });
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
+            let name_selector = format!("{selector}-name");
+            let detail_selector = format!("{selector}-detail");
+            let title = div().flex().items_baseline().gap(space::S2)
+                .child(div().debug_selector(move || name_selector).flex_1().min_w_0().truncate()
+                    .text_role(TextRole::RowTitle).text_color(c.text).child(bot.name.clone()))
+                .children(trail);
             rows.push(
                 div()
                     .id(SharedString::from(selector.clone()))
@@ -879,8 +886,8 @@ impl AreaView {
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
                     .on_click(self.row_click(key, cx))
                     .child(bot_face(&bot.id, &bot.look, px(BOT_FACE)))
-                    .child(two_lines(bot.name.clone(), detail, &c))
-                    .children(trail)
+                    .child(div().flex_1().min_w_0().flex().flex_col().child(title)
+                        .child(detail.debug_selector(move || detail_selector)))
                     .into_any_element(),
             );
         }
