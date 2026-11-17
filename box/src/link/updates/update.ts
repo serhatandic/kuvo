@@ -32,6 +32,8 @@ import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder } from "../h
 import { yourZone } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
+import { keeperEngine, SWAP_NOW } from "./engine-swap";
+import { swapLine, swapUnderWay } from "../../shared/engine-swap";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -165,6 +167,8 @@ export interface UpdateState {
   /** A release offered from a folder here that failed as it was taken: its version, when, whether
    * it was put in place and taken back, and how many times in a row it failed. */
   offerFailed?: { version: string; at: number; takenBack: boolean; tries?: number; message?: string };
+  /** How the last change of engine went (`updates/engine-swap.ts`). */
+  engine?: import("./engine-swap").EngineChangeLast;
 }
 
 /** A change to `run/update.json`: each field given, null to take it away. */
@@ -355,7 +359,7 @@ function backupsSize(): number {
 // The engine's data as it is, the engine stopped, before another engine reads it: kept whole or not
 // at all in `updates/backups/<date>-<engine>-to-<engine>`, and the one before it goes. What it says:
 // how the data was as it was copied (`dataNow`), to tell later whether an engine wrote to it since.
-function keepData(name: string): string {
+export function keepData(name: string): string {
   const folder = path.join(K, "data", "opencode"), partial = path.join(BACKUPS, `.${name}.partial`);
   fs.mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
   // (The one before goes first: its room is what this one takes, `roomForData`.)
@@ -370,14 +374,14 @@ function keepData(name: string): string {
 
 // The engine's data, each file's size and when it was last written (none: "-"): what changes as
 // any engine writes to it.
-function dataNow(): string {
+export function dataNow(): string {
   return ["opencode.db", "opencode.db-wal"].map(each => {
     try { const stat = fs.statSync(path.join(K, "data", "opencode", each)); return `${stat.size}:${stat.mtimeMs}`; } catch { return "-"; }
   }).join(" ");
 }
 
 // Whether there's room to keep the engine's data beside it, with some to spare.
-function roomForData(): boolean {
+export function roomForData(): boolean {
   let size = 0;
   for (const name of ["opencode.db", "opencode.db-wal"]) try { size += fs.statSync(path.join(K, "data", "opencode", name)).size; } catch {}
   const free = ran("df", ["-Pk", K]).output.split("\n").pop()?.trim().split(/\s+/)[3];
@@ -423,7 +427,19 @@ interface BoxFiles {
   engine: string;
   files: Record<string, string>;
   bundles?: Record<string, Record<string, string>>;
+  /** The engines its link and bridge were checked with as it was released: its own, then the one
+   * the release before ran (N-1). A box running one of them takes the code first and its engine
+   * later, at a quiet moment (`engine-swap.ts`). */
+  engines?: string[];
+  /** Whether the engine before (`engines[1]`) opens what this one wrote, as its release checked:
+   * a new engine that doesn't start may go back to it. */
+  downgradeSafe?: boolean;
 }
+
+/** Whether release `box` changes the engine apart from its code: another engine than the one running,
+ * which its release checked its link and bridge with (`engines`). */
+const engineApart = (box: Pick<BoxFiles, "engine" | "engines">, running: string | null): boolean =>
+  !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running);
 
 // Whether a release's files (its `box.json`) aren't all what's in place here: one of them missing,
 // or another, by its SHA-256 (a Mac's bundles too, on a Mac). A release of the box's own version
@@ -486,6 +502,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (fs.existsSync(path.join(RUN, "stopped"))) return { result: "blocked", message: "Its engine is stopped: start it to update it." };
   // Never over an update still on trial: what it kept to go back to would be lost.
   if (updateOnTrial()) return { result: "blocked", message: ON_TRIAL };
+  // Nor while its engine is being changed (the old one stopped, the new one starting): a moment.
+  const changing = swapUnderWay(RUN);
+  if (changing && (changing.stage === "swapping" || changing.stage === "back")) return { result: "busy", message: "Its engine is being updated: try again in a few minutes." };
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
@@ -536,10 +555,13 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const behind = engineBehind(manifest.engine);
     if (behind) return { result: "blocked", message: behind };
     if (!now && !from && clock() - (Date.parse(manifest.released!) || clock()) < RELEASE_AGE) return { result: "waiting", version: manifest.version, message: "It takes a release a few days after it's out." };
-    // Only a release with another engine waits for nothing to be at work (that engine is started in
-    // the one running's place); or now, on your word: a client asks you first, saying what stops.
-    const engineChanges = runningEngineVersion() !== manifest.engine;
-    if (!whileBusy && engineChanges && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    // Only a release with another engine that its code wasn't checked with waits for nothing to be at
+    // work (that engine is started in the one running's place with its code); or now, on your word:
+    // a client asks you first, saying what stops. One whose code was checked with the engine running
+    // stops nothing: its engine changes later, at a quiet moment (`engine-swap.ts`). (Which, its
+    // `box.json` says: looked at once it's here.)
+    const running = runningEngineVersion();
+    const engineChanges = running !== manifest.engine;
 
     step("downloading");
     stage = path.join(UPDATES, manifest.version);
@@ -551,6 +573,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
+    const apart = engineChanges && engineApart(box, running);
+    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { result: "busy", message: "Something is running there now." };
     const files = installOrder(Object.keys(box.files));
     // (Each a file, never a link to one elsewhere.)
     const matches = (file: string, sha: unknown): boolean => fs.lstatSync(file, { throwIfNoEntry: false })?.isFile() === true && hexSHA256(fs.readFileSync(file)) === sha;
@@ -615,8 +639,14 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (staged) checkedEngine = { from: staged, to: path.join(engineFolder, "opencode") };
     const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
     if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
+    // Its engine changing later, the new link runs on the engine at work meanwhile: tried with it too.
+    if (apart) {
+      const before = path.join(K, "engine", running!, "opencode");
+      const triedBefore = fs.existsSync(before) ? ran(before, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }) : null;
+      if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
+    }
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
-    if (!whileBusy && engineChanges && await boxBusy()) return { result: "busy", message: "Something is running there now." };
+    if (!whileBusy && engineChanges && !apart && await boxBusy()) return { result: "busy", message: "Something is running there now." };
 
     // What's there kept; then the new in its place, one file at a time.
     step("installing");
@@ -624,7 +654,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     try { previous = readEngineFile(); } catch {}
     const home = previous?.pid ? engineHome(previous.pid, K) : undefined;
     if (home) keeperEnv = { HOME: home };
-    const otherEngine = previous?.version !== manifest.engine;
+    // (An engine that changes apart from the code isn't stopped here: the swapper changes it later.)
+    const otherEngine = previous?.version !== manifest.engine && !apart;
     if (otherEngine && !roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
     // What's there kept, and how to put it back, before anything changes: a swap the update doesn't
     // get past (the machine going down) is put back too.
@@ -654,6 +685,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       // (A copy of its data, never put back by anything: for you to restore by hand, as a last resort.)
       dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     }
+    // (Its engine changing later: the one running noted as the one that ran, for the keeper to start
+    // it again should it end before the swapper changes it, never the new one on its own.)
+    if (apart && running) writePrivate(path.join(RUN, "engine-ran"), `${running}\n`);
     swapped = true;
     const swappedAt = Date.now();
     swapping();
@@ -674,13 +708,20 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     // (A newer engine about to run on the data: from here, a rollback keeps it.)
     if (newerEngine) writePrivate(ENGINE_STARTED, manifest.engine);
+    // (Its engine started with its code: the keeper starts its own, not the one that ran before.)
+    if (otherEngine) fs.rmSync(path.join(RUN, "engine-ran"), { force: true });
     // The engine started again where it was stopped; otherwise only its keeper, should it have gone
     // (it starts itself again on the new code, as `serve`, `run` and the bridge each do).
     ran("sh", [path.join(K, "bin", "kuvo-start"), otherEngine ? "start" : "box"], keeperEnv);
     step("starting");
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
     // (Not its bundles: the helper's own keeper may put its own back, which is never drift.)
-    writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files }));
+    // (With the engines its code was checked with, and whether the one before opens what the new
+    // writes: what the swapper goes back by, and what a confirm keeps.)
+    writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files, engine: box.engine, ...(Array.isArray(box.engines) ? { engines: box.engines.filter(each => typeof each === "string") } : {}), ...(box.downgradeSafe === true ? { downgradeSafe: true } : {}) }));
+    // Update Now with an engine apart: it's changed as soon as the turns under way end, once the
+    // code is judged well (the swapper holds at once, rather than waiting for a quiet moment).
+    if (apart && now) writePrivate(SWAP_NOW, String(clock()));
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
@@ -753,6 +794,14 @@ function bridgeEngine(): string | null {
   } catch { return null; }
 }
 
+// The engines the release in place names (`updates/installed.json`'s `engines`).
+function installedEngines(): string[] {
+  try {
+    const engines = JSON.parse(fs.readFileSync(path.join(UPDATES, "installed.json"), "utf8"))?.engines;
+    return Array.isArray(engines) ? engines.filter((each): each is string => typeof each === "string" && /^[0-9][0-9A-Za-z.-]*$/.test(each)) : [];
+  } catch { return []; }
+}
+
 // The version of the engine running here, as its record says (null: none noted).
 function runningEngineVersion(): string | null {
   try { return readEngineFile()?.version ?? null; } catch { return null; }
@@ -760,11 +809,24 @@ function runningEngineVersion(): string | null {
 
 /** Whether taking the release offered from a folder here would start another engine than the one
  * running (the one kind of update that waits for nothing to be at work); false where it can't be told. */
+let offeredBox: { stamp: string; box: Pick<BoxFiles, "engine" | "engines"> | null } | null = null;
 export function offerChangesEngine(): boolean {
   try {
     const given = JSON.parse(fs.readFileSync(path.join(OFFERED, "boxes.json"), "utf8"));
-    const engine = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.engine;
-    return typeof engine === "string" && engine !== runningEngineVersion();
+    const manifest = JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"));
+    const running = runningEngineVersion();
+    if (typeof manifest?.engine !== "string" || manifest.engine === running) return false;
+    // (One whose code was checked with the engine running changes its engine later, stopping nothing.
+    // Its `box.json` read from the pack once for each pack there.)
+    const pack = path.join(OFFERED, packName(manifest));
+    let stamp = "";
+    try { const stat = fs.statSync(pack); stamp = `${pack} ${stat.size} ${stat.mtimeMs}`; } catch { return true; }
+    if (offeredBox?.stamp !== stamp) {
+      let box: Pick<BoxFiles, "engine" | "engines"> | null = null;
+      try { box = packedBox(readRelease(pack, 100_000_000), manifest.version); } catch {}
+      offeredBox = { stamp, box };
+    }
+    return !offeredBox.box || !engineApart(offeredBox.box, running);
   } catch { return false; }
 }
 
@@ -816,7 +878,10 @@ export function confirmUpdate(clock = Date.now): boolean {
   // (Not the one the coding agents' bridge still runs on, until it moves to the new: its agents'
   // tools run from it.)
   const bridgeOn = bridgeEngine();
-  if (engine) for (const name of listOf(path.join(K, "engine"))) if (name !== engine && name !== bridgeOn && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
+  // (Nor the keeper's own, which may wait to take the running one's place, nor those the release
+  // names: the one before is kept to go back to, should a new one not start.)
+  const kept = new Set([engine, bridgeOn, keeperEngine(), ...installedEngines()].filter((name): name is string => !!name));
+  if (engine) for (const name of listOf(path.join(K, "engine"))) if (!kept.has(name) && !name.startsWith(".")) fs.rmSync(path.join(K, "engine", name), { recursive: true, force: true });
   dropOldBackups(clock());
   return true;
 }
@@ -932,6 +997,7 @@ export function updateStatus(): UpdateStatus {
   const offered = offeredVersion();
   let engine: string | null = null;
   try { engine = readEngineFile()?.version ?? null; } catch {}
+  const swap = swapUnderWay(RUN);
   return {
     setUp: UPDATE_KEYS.length > 0,
     version: boxVersion(),
@@ -944,6 +1010,8 @@ export function updateStatus(): UpdateStatus {
     // How the release offered from a folder here last went, when taking it failed: its own outcome,
     // apart from the night's (`last`), which Kuvo Code here goes by (#679).
     ...(state.offerFailed ? { offerFailed: { version: state.offerFailed.version, at: state.offerFailed.at, takenBack: state.offerFailed.takenBack, ...(state.offerFailed.message ? { message: state.offerFailed.message } : {}) } } : {}),
+    ...(swap ? { engineChange: { stage: swap.stage, from: swap.from, to: swap.to, line: swapLine(swap)! } } : {}),
+    ...(state.engine ? { engineLast: state.engine } : {}),
   };
 }
 

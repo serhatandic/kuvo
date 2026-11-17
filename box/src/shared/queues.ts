@@ -210,12 +210,13 @@ const fileNames = (files: unknown[] | undefined): string[] => (files ?? []).flat
 export type Place = (state: QueueState, item: Waiting) => QueueState;
 const last: Place = (state, item) => ({ ...state, waiting: [...(state.waiting ?? []), item] });
 
-/** `message` kept on the box while `session`'s queue is paused (see `Shown`), where `place` puts
- * it: true. Not paused, false: it isn't kept. `changed`: as `changeQueue`'s. */
-export function keepWaiting(files: QueueFiles, session: string, message: Outgoing & { id: string }, { from, words, kept: keptText }: Shown = {}, changed?: () => void, place: Place = last): boolean {
+/** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while its engine is
+ * being changed (`holds`, PROTOCOL.md "A new engine"), where `place` puts it: true. Neither, false:
+ * it isn't kept. `changed`: as `changeQueue`'s. */
+export function keepWaiting(files: QueueFiles, session: string, message: Outgoing & { id: string }, { from, words, kept: keptText }: Shown = {}, changed?: () => void, place: Place = last, holds = false): boolean {
   let kept = false;
   changeQueue(files, session, state => {
-    if (!state.paused) return state;
+    if (!state.paused && !holds) return state;
     writePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }));
     kept = true;
     const names = fileNames(message.files);

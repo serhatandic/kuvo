@@ -64,7 +64,14 @@ export class EngineLink {
     if (this.url) for (const resolve of this.waiting.splice(0)) resolve()
   }
 
+  /** Waits, before what would start a turn on the engine, while the engine is being changed
+   * (PROTOCOL.md, "A new engine"): set by the bridge's start, where the box's run folder is known. */
+  beforeTurn?: () => Promise<void>
+
   async request<T = any>(method: string, path: string, body?: unknown, timeout = 30_000, directory?: string): Promise<T> {
+    // (A conversation on the engine's models, a review, a seat in a group chat: each waits for the
+    // new engine rather than starting on the one being stopped, bounded as that hold is.)
+    if (this.beforeTurn && method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command|shell|compact|summarize)$/.test(path)) await this.beforeTurn()
     if (!this.url) throw new Error("The engine isn't running.")
     const response = await fetch(this.url + path, {
       method,
@@ -529,6 +536,12 @@ class EngineThread implements Thread {
     const active = await this.link.request("GET", "/api/session/active").catch(() => undefined)
     if (active?.data?.[id]) await this.link.request("POST", `${path}/interrupt`).catch(() => {})
 
+    // The engine being changed (PROTOCOL.md, "A new engine"): the turn waits for the new one before
+    // it begins (before it listens, or notes when it was sent), and Stop ends the wait.
+    if (this.link.beforeTurn) {
+      await Promise.race([this.link.beforeTurn(), new Promise<void>(resolve => (hooks.signal.aborted ? resolve() : hooks.signal.addEventListener("abort", () => resolve(), { once: true })))])
+      if (hooks.signal.aborted) return { outcome: "interrupted" }
+    }
     const inputID = newID("msg")
     const sentAt = Date.now()
     let step: string | undefined

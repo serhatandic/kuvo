@@ -81,7 +81,7 @@ function writeDue(file: string, due: ModelsDue | null): void {
 const listOf = (answer: unknown): unknown[] => (isObject(answer) && Array.isArray(answer.data) ? answer.data : Array.isArray(answer) ? answer : []);
 
 /** The folders the engine has open now. */
-async function openFolders(engine: Target): Promise<string[]> {
+export async function openFolders(engine: Target): Promise<string[]> {
   const open = await engineGet(engine, "api/debug/location");
   return [...new Set(listOf(open).map(each => (isObject(each) ? each.directory : null)).filter((folder): folder is string => typeof folder === "string" && folder !== ""))];
 }
@@ -89,7 +89,7 @@ async function openFolders(engine: Target): Promise<string[]> {
 /** Of `folders`, those with something going on that closing them would cut: a run under way (the
  * engine's runs are its sessions', each in a folder), a question or a permission waiting on you, a
  * terminal, a command still running. One the engine can't say about counts as at work. */
-async function atWork(engine: Target, folders: string[]): Promise<Set<string>> {
+export async function atWork(engine: Target, folders: string[]): Promise<Set<string>> {
   const busy = new Set<string>();
   try {
     const active = await engineGet(engine, "api/session/active");

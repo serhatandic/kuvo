@@ -127,6 +127,8 @@ struct State {
     queues: HashMap<String, Vec<Value>>,
     /// The conversations whose queue a Stop holds until Resume.
     paused: HashSet<String>,
+    /// Why each session's queue waits, as its box says it (an engine being updated).
+    queue_lines: HashMap<String, String>,
     /// Steer and Send Now as each was asked (`steer <id>`, `now <id>`), in order.
     queue_asked: Vec<String>,
     /// Its repositories and folders.
@@ -821,6 +823,16 @@ impl StandIn {
         state.told(session, Followed::Queue);
     }
 
+    /// Why `session`'s queue waits, as its box says it (its engine being updated), or none.
+    pub fn queue_line(&self, session: &str, line: Option<&str>) {
+        let mut state = self.state();
+        match line {
+            Some(line) => state.queue_lines.insert(session.to_owned(), line.to_owned()),
+            None => state.queue_lines.remove(session),
+        };
+        state.told(session, Followed::Queue);
+    }
+
     /// Whether `session` runs, as its engine says (`api/session/active`).
     pub fn set_running(&self, session: &str, running: bool) {
         let mut state = self.state();
@@ -1273,7 +1285,7 @@ impl State {
     fn followed(&self, session: &str, what: Followed) -> String {
         match what {
             Followed::Asks => json!({ "asks": self.asks.get(session).cloned().unwrap_or_default() }),
-            Followed::Queue => json!({ "paused": self.paused.contains(session), "held": [], "items": self.queues.get(session).cloned().unwrap_or_default() }),
+            Followed::Queue => json!({ "paused": self.paused.contains(session), "held": [], "items": self.queues.get(session).cloned().unwrap_or_default(), "line": self.queue_lines.get(session) }),
         }
         .to_string()
     }
@@ -2057,7 +2069,7 @@ impl StandIn {
                 answer(200, json!({}))
             }
             ("GET", ["kuvo", "sessions", session, "queue"]) if state.sessions.contains_key(*session) => {
-                answer(200, json!({ "paused": state.paused.contains(*session), "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default() }))
+                answer(200, json!({ "paused": state.paused.contains(*session), "held": [], "items": state.queues.get(*session).cloned().unwrap_or_default(), "line": state.queue_lines.get(*session) }))
             }
             // Steer: for the agent's next step (one on the box, or with nothing running, goes now).
             // Send Now: to the agent at once, setting a stopped queue going.

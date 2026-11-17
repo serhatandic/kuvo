@@ -1249,7 +1249,8 @@ the same for every client and with none connected, and keeps them in `run/queues
   as runs end; kept in `run/queues.json` (`waiting`) and, whole, in `run/waiting/<message id>.json`,
   across a restart (one Undo put back goes where it was, below). Send Now sends one at once; `DELETE …/queue/<item>` takes one away.
 - `GET kuvo/sessions/<id>/queue` → `{paused, held: [id…], waiting?: [{id, from?, text, files?,
-  at}]}`: `waiting`, left out when nothing waits on the box, first come first: who it's from (an
+  at}], line?}` (`line`: why what waits on the box waits, while the engine is being changed, "A new
+  engine"): `waiting`, left out when nothing waits on the box, first come first: who it's from (an
   agent's name, `Wake-up`, `Its sessions`, `Your answer`, `Goal`, a group chat's name; none for one of yours), what it
   says, the names of its files, when it came (ms). `GET kuvo/sessions/queues/events` follows them
   all (ndjson: `{"queues": {<session>: {paused, held, waiting?}}}` now and at each change; a session
@@ -2962,7 +2963,8 @@ did: the box keeps working as itself ("For released Macs").
   linux: {x86_64|aarch64: {url, integrity}}, darwin: {x86_64|aarch64: {url, integrity}},
   pack: {url, sha256, size}}`: a box takes the engine for its own system and kind. The signature is
   Ed25519 over `"kuvo-box v1\n"` and the manifest's bytes, by a pinned key
-  (`scripts/sign-box.mjs`). The pack holds `box.json` (each file's SHA-256) and the files, laid
+  (`scripts/sign-box.mjs`). The pack holds `box.json` (each file's SHA-256, and `engines` and
+  `downgradeSafe`, the release check's, "A new engine") and the files, laid
   out as `~/.kuvo-code`: `files`, `bin/<name>`, `bin/runtime/<name>` and
   `config/opencode/plugins/<name>`; and `bundles`, Mac bundles (the box's helper, signed), each
   `{"bin/<name>.app": {<path in it>: <SHA-256>}}`. A box from before bundles passes `bundles` over,
@@ -3015,9 +3017,11 @@ did: the box keeps working as itself ("For released Macs").
 - **When**: the night's window, 02:00 to 05:00 in your time zone ("Your time zone"), once a night, always (there's no
   switch: a machine keeps up with the Macs and phones that use it), for a release at least three
   days old. Or now (Update Now, `POST kuvo/update {now: true}`), whatever its age. Either way, whatever is
-  at work there: an update stops nothing. Only a release with another engine than the one running
-  restarts the engine: that one waits until nothing runs, or Update Now, which a client asks about first, saying what
-  stops (`keepingSelfUp` gives the words; a release that keeps the engine has no question). Where a release
+  at work there: an update stops nothing. A release with another engine than the one running, whose
+  `box.json` lists the running one in `engines`, takes its code at once and changes the engine later,
+  without cutting a turn ("A new engine"). Only one that doesn't list it (or lists none) restarts the
+  engine with its code: that one waits until nothing runs, or Update Now, which a client asks about first, saying what
+  stops (`keepingSelfUp` gives the words; a release that keeps the engine, or changes it apart, has no question). Where a release
   Kuvo Code here offered waits, newer than the box, Update Now takes that one
   (`computers.update.here`), however it rested after failing; `409` with words to show where it
   can't even so (its engine stopped on purpose, its last update not yet said to be well).
@@ -3034,8 +3038,8 @@ did: the box keeps working as itself ("For released Macs").
     update is still being checked: try again in a few minutes." What it kept to go back to stays as
     it was; how the last update went (`last`) stays, and the night's is tried again that night (as
     when something is at work);
-  - with another engine than the one running, while a conversation works there or a browser ask
-    waits, but on your word (Update Now);
+  - with another engine than the one running that its `engines` don't list, while a conversation
+    works there or a browser ask waits, but on your word (Update Now);
   - while a Mac that started the engine in the last 30 days isn't in `tolerantIDs` as `true`;
   - while a Mac with Kuvo Code 0.7 or before connected in the last 30 days, since the box was last
     marked ("For released Macs").
@@ -3046,7 +3050,8 @@ did: the box keeps working as itself ("For released Macs").
      keeper (`sh -n`).
   3. With another engine version, it first checks there's room to keep the engine's data. It keeps
      each file it replaces in `updates/rollback`, and writes `restore.sh` and `run/update-trial`.
-     Nothing is stopped, but with another engine version: then only the engine, its keeper's
+     Nothing is stopped, but with another engine version its `engines` don't list (one they list
+     changes later, "A new engine"): then only the engine, its keeper's
      `engine-stop` (a keeper from before that has none: `stop`, which ends its bridge too), run (as
      its `start` and `restore.sh` are)
      with HOME spelled as the running engine's command line has it, so a keeper of any age knows
@@ -3155,11 +3160,14 @@ did: the box keeps working as itself ("For released Macs").
      Mac takes it further back, says why, and doesn't update itself for 30 days.
   - What the new engine did during a trial that's rolled back is kept: data is never put back.
   - The coding agents' own data (`agents`) isn't kept for a rollback.
-- **State**: `run/update.json` holds `{latest, checked, last: {at, result, message?, from?, to?},
+- **State**: `run/update.json` holds `{latest, checked, last: {at, result, message?, from?, to?}, engine?: {at, result, from, to, message?},
   running?, trial?, night?, offerFailed?: {version, at, takenBack, tries?, message?}}`. `trial` is
   `{from, to, at, swapped?, features?, dataKept?, judged?, healthy?}` (the judging so far, as above).
 - `kuvo/update`:
-  - `GET` answers `{setUp, version, engine, latest, last, updating, blocked}`.
+  - `GET` answers `{setUp, version, engine, latest, last, updating, blocked}`, and while a newer
+    engine waits to take the running one's place or does, `engineChange` `{stage, from, to, line}`
+    (`stage` `waiting`, `holding`, `swapping` or `back`; `line`, the words a client shows), and how the
+    last change of engine went, `engineLast` `{at, result: changed|back|failed, from, to, message?}`.
     `updating` is the step under way (`checking`, `downloading`, `downloading the engine`,
     `checking it`, `installing`, `starting`) or null. `blocked` is why it can't update, or null.
     `offered` is the version of a release offered from a folder here that waits to be taken, and
@@ -3258,8 +3266,9 @@ new version without cutting a turn:
   until it ends; a bridge of this build, even started so, never ends with its engine.
 - **The link** (`kuvo-link.js run`) has no turns: `setup`, which a Mac runs as it connects, starts
   a newer one over the one running, as before.
-- **The engine** isn't ours to hold turns in. A Mac starts a newer one only when it connects and
-  nothing runs there (otherwise it keeps the one at work, and puts nothing in its place).
+- **The engine** isn't ours to hold turns in: its turns end where they began, and it changes between
+  them ("A new engine"). A Mac starts a newer one only when it connects and nothing runs there
+  (otherwise it keeps the one at work, and puts nothing in its place).
 - `bridge.json`, on a machine, says `{pid, port, password, build, renewal}`: `build` as above,
   and `renewal` `{since, holding, waits}` while another build is in its place (`since` in ms;
   `waits` is `quiet`, `holding`, `engine` or `restart`, as above), else null.
@@ -3281,6 +3290,81 @@ new version without cutting a turn:
     `behind` while that one is newer.
   - A client shows a line while one is `behind` (`MachinePieces`, in KuvoClient, its words for
     the coding agents by `waits`), and says nothing otherwise. A Mac's own `kuvo/info` has no `pieces`.
+
+#### A new engine
+
+The engine is unmodified, and its turns live in its process: a turn can't move to another engine,
+and two engines never run on one box's data. So a newer engine takes the old one's place between
+turns, what's sent meanwhile held on the box, never cut:
+
+- **The release check** (`scripts/engine-check.mjs`, run as a release is built): the link and the
+  coding agents' bridge as built answer `selftest` on the pinned engine and on the one the release
+  before ran (`engine-pin.json`'s `previous`), and that one opens what the new one wrote (a data
+  folder it made, opened by the new one, which migrates it and writes to it, opened by it again:
+  both conversations listed and read, and written to; where the code doesn't answer on the one
+  before, `engines` names the pinned one alone). `box.json` says what it found: `engines` (the pinned one,
+  then the one before; the pinned one alone without a check) and `downgradeSafe` (true only where
+  it was found so). A box running one of `engines` takes the release's code at once, its link tried
+  with both engines (`selftest`); its engine waits in `engine/<version>`, the new keeper's `V`.
+  `updates/installed.json` keeps `engine`, `engines` and `downgradeSafe`; a confirm keeps the engine
+  running, the keeper's, the one the bridge runs from and those `engines` names (the one before is
+  kept to go back to).
+- **The swapper**: the keeper starts `kuvo-link.js engine-swap` (on the keeper's engine) each round
+  while an older engine than its `V` runs, no update runs or is on trial, and none runs already
+  (`run/engine-swap.json` names its process). It says where it stands in that file, `{from, to,
+  since, stage, holding?, letGo?, pid}`:
+  - `waiting`: nothing held. It looks every ten seconds; nothing at work on the engine for half a
+    minute, it holds: no conversation at work (`api/session/active`), and, in each folder it has
+    open (`api/debug/location`), no question or permission waiting, no terminal and no command
+    running (as closing a folder counts them), nor a browser ask waiting. The time that comes (below)
+    begins no hold while an open terminal or a question waiting on you is there (holding wouldn't
+    outlast it): `blocked` (`terminal`, `ask`) says so, and its line asks you to close or answer it. Failing such a moment,
+    it holds an hour on in the night's window (02:00 to 05:00 in your time zone), or a day on whatever
+    the hour; at once after Update Now (`run/engine-swap.now`, which `update --now` writes).
+  - `holding`: what's sent to a conversation on the engine waits on the box (below), and the turns
+    under way end as they would. Once nothing is at work (looked at twice, a second apart), it swaps.
+    Half an hour after it began holding, still not, it lets go (`letGo`): what it held goes to the
+    engine at work, and it holds again only in a night's window at least an hour on (or on Update
+    Now's word); a quiet moment still swaps.
+  - `swapping`: what each conversation's inbox in the engine holds (the latest hundred updated in
+    the last week) moves onto the box, waiting there in the order it would have gone, held as it was;
+    then the keeper's `engine-halt` stops the engine alone (never marked stopped: while
+    `run/.engine-swapping` names a swapper that runs, the keeper starts no engine; one that went
+    leaves the keeper to start it), a copy of its data is kept in `updates/backups` as an update
+    keeps one (no room: it rests a day), and `kuvo-start engine` starts the new one. Once that
+    answers `api/session?limit=1` (one whose log grows is still starting, for half an hour at most),
+    what was held goes to it, and the change is noted (`run/update.json`'s `engine`, `changed`).
+  - `back`: a new engine that fails three looks in a row over a minute goes back where the one
+    before opens what it wrote (`downgradeSafe`, or its data unchanged since the copy):
+    `run/engine-back` (`<new> <before> <when, s>`) has the keeper start the one before for a day,
+    after which the new one is tried again; what was held goes to it (`back`). Where it can't go
+    back, the keeper keeps starting the new one, and what was held waits on the box until an engine
+    answers (`failed`).
+- **The keeper never starts a newer engine by itself**: it notes the engine it last started
+  (`run/engine-ran`; each round, the one running), and while one older than its `V` ran, an engine
+  started again (a crash, a restart, the machine's) is that one, until the swapper (whose start it
+  lets through while `run/.engine-swapping` is held, noting it as the one to run before it starts,
+  so a new one that fails is the one started again, never the one before on what it wrote) changes
+  it. Its bridge starts on its own `V`'s runtime meanwhile (as written, whatever rests). An update
+  that leaves its engine at work notes that one; one that starts its engine with its code takes the
+  note away first. A swapper started
+  where one went while it held lets go of what that one held first.
+- **What's held**: while the swapper holds, swaps or goes back, and only while its process runs and
+  for an hour at most from when it began holding, a message to a conversation on the engine (never
+  the coding agents' bridge, whose turns the change never touches) waits on the box as one does in
+  a paused queue ("The queue"): `kuvo/sessions/<id>/send`, `…/queue/add`, a wake-up, another agent's
+  letter, a goal's word, a session `start_session` made, a wake-up `kuvo-wake` fires (handed to the
+  box as one for a stopped conversation is), and one sent to the engine straight
+  (`POST api/session/<id>/prompt`, answered `{waits: true}`); a command or shell (`…/command`,
+  `…/shell`) is answered 503 with the line, to send again once it's back. Nothing is started from
+  the box's queue meanwhile; Send Now and Steer put the item first. The coding agents' bridge waits
+  before it starts anything on the engine (a conversation on the engine's models, a review, a group
+  chat's seat) until the hold ends. What the engine's inboxes held is kept on the box before it's
+  taken from the engine, so a swapper cut off between the two leaves it in both, never neither. The queue's answer carries `line` while what waits on it waits for this
+  (the box's words; `kuvo/update`'s `engineChange.line` says the same for the computer, as its
+  update line in `computers`). Once it's done or let go of, what waits for each conversation the
+  engine has that isn't paused goes, each once and in its order: the first to start a turn where
+  none runs, the rest (and all, into one that runs) as each was sent.
 
 ### The update gate
 

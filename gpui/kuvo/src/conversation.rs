@@ -1010,6 +1010,11 @@ impl ConversationView {
 }
 
 impl ConversationView {
+    /// Why what waits waits, as its box says it (its engine being updated), for tests.
+    pub fn queue_line(&self) -> Option<String> {
+        self.queue.line.clone()
+    }
+
     /// What waits its turn, over the composer, in the order it goes: each message as you wrote it
     /// (who it's from, when it isn't yours), with what can be done with it as 0.7 offered it: Steer
     /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
@@ -1146,6 +1151,8 @@ impl ConversationView {
                             )
                         })),
                 )
+                // Why it waits, in the box's words (its engine being updated): under the count, as plain as it.
+                .children(self.queue.line.clone().map(|line| div().debug_selector(|| "queue-line".into()).px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(line)))
                 .child(div().id("queue-rows").max_h(px(30. * 4.)).overflow_y_scroll().children(rows))
                 .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
                 .into_any_element(),

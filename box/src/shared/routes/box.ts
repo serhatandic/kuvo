@@ -81,6 +81,10 @@ export const UPDATE = object({
   blocked: nullable(string),
   "offered?": string,
   "offerFailed?": object({ version: string, at: number, takenBack: bool, "message?": string }),
+  // A newer engine waiting to take the running one's place, or doing so (PROTOCOL.md, "A new
+  // engine"): where that stands and its line for clients; and how the last such change went.
+  "engineChange?": object({ stage: words("waiting", "holding", "swapping", "back"), from: string, to: string, line: string }),
+  "engineLast?": object({ at: number, result: words("changed", "back", "failed"), from: string, to: string, "message?": string }),
 });
 
 /** A step of moving this Mac's box into a home of its own (PROTOCOL.md, "Moving this Mac's box"). */

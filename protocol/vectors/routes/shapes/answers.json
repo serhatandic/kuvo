@@ -7282,6 +7282,50 @@
         "takenBack": "bool",
         "message?": "string"
        }
+      },
+      "engineChange?": {
+       "object": {
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "holding"
+          },
+          {
+           "literal": "swapping"
+          },
+          {
+           "literal": "back"
+          }
+         ]
+        },
+        "from": "string",
+        "to": "string",
+        "line": "string"
+       }
+      },
+      "engineLast?": {
+       "object": {
+        "at": "number",
+        "result": {
+         "oneOf": [
+          {
+           "literal": "changed"
+          },
+          {
+           "literal": "back"
+          },
+          {
+           "literal": "failed"
+          }
+         ]
+        },
+        "from": "string",
+        "to": "string",
+        "message?": "string"
+       }
       }
      }
     }
@@ -7391,6 +7435,50 @@
         "takenBack": "bool",
         "message?": "string"
        }
+      },
+      "engineChange?": {
+       "object": {
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "holding"
+          },
+          {
+           "literal": "swapping"
+          },
+          {
+           "literal": "back"
+          }
+         ]
+        },
+        "from": "string",
+        "to": "string",
+        "line": "string"
+       }
+      },
+      "engineLast?": {
+       "object": {
+        "at": "number",
+        "result": {
+         "oneOf": [
+          {
+           "literal": "changed"
+          },
+          {
+           "literal": "back"
+          },
+          {
+           "literal": "failed"
+          }
+         ]
+        },
+        "from": "string",
+        "to": "string",
+        "message?": "string"
+       }
       }
      }
     }
@@ -7498,6 +7586,50 @@
         "version": "string",
         "at": "number",
         "takenBack": "bool",
+        "message?": "string"
+       }
+      },
+      "engineChange?": {
+       "object": {
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "holding"
+          },
+          {
+           "literal": "swapping"
+          },
+          {
+           "literal": "back"
+          }
+         ]
+        },
+        "from": "string",
+        "to": "string",
+        "line": "string"
+       }
+      },
+      "engineLast?": {
+       "object": {
+        "at": "number",
+        "result": {
+         "oneOf": [
+          {
+           "literal": "changed"
+          },
+          {
+           "literal": "back"
+          },
+          {
+           "literal": "failed"
+          }
+         ]
+        },
+        "from": "string",
+        "to": "string",
         "message?": "string"
        }
       }
@@ -14106,7 +14238,8 @@
             "at": "number"
            }
           }
-         }
+         },
+         "line?": "string"
         }
        }
       }
@@ -14839,6 +14972,7 @@
         }
        }
       },
+      "line?": "string",
       "items?": {
        "oneOf": [
         {
@@ -14915,6 +15049,7 @@
         }
        }
       },
+      "line?": "string",
       "items": {
        "oneOf": [
         {
@@ -15782,7 +15917,8 @@
          "at": "number"
         }
        }
-      }
+      },
+      "line?": "string"
      }
     },
     "404": {
@@ -15824,7 +15960,8 @@
          "at": "number"
         }
        }
-      }
+      },
+      "line?": "string"
      }
     },
     "404": {
@@ -15866,7 +16003,8 @@
          "at": "number"
         }
        }
-      }
+      },
+      "line?": "string"
      }
     },
     "404": {
@@ -15908,7 +16046,8 @@
          "at": "number"
         }
        }
-      }
+      },
+      "line?": "string"
      }
     },
     "404": {
@@ -15950,7 +16089,8 @@
          "at": "number"
         }
        }
-      }
+      },
+      "line?": "string"
      }
     },
     "404": {
@@ -15993,6 +16133,7 @@
         }
        }
       },
+      "line?": "string",
       "waits": "bool"
      }
     },
@@ -16041,6 +16182,7 @@
         }
        }
       },
+      "line?": "string",
       "removed?": {
        "object": {
         "id": "string",

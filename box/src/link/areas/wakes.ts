@@ -431,7 +431,7 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     const summary = LETTERS.test(chosen.letters) ? (textOf(path.join(folder, "summaries", chosen.letters)) ?? "").trim() : "";
     const message = { id: messageID(), text: WAKE_MARKER + note, delivery: "queue" as const, ...(summary ? { metadata: wakeMark(summary) } : {}) };
     // Its conversation stopped by you: it waits there with the queue, and goes once it goes on.
-    if (!keepWaiting(session, message, { from: "Wake-up", words: note })) {
+    if (!keepWaiting(session, message, { from: "Wake-up", words: note }, undefined, target)) {
       let response: Response;
       try {
         response = await fetch(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/prompt`, {

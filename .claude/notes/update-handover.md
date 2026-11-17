@@ -350,3 +350,42 @@ folder), `uninstall.md` and `privacy.md` (`updates/backups`, `run/agents/hold`),
   - An engine change still restarts the engine, with no hold (step 6).
   - The engine folder kept for a bridge is pruned only at the next confirm.
   - BusyBox `ps` has no `-p`, so old processes aren't ended there.
+
+## Status, 2026-11-17: step 6 built (branch kuvo/updates-p2-an-engine-change-swaps-the)
+
+- **The swapper:** `box/src/link/updates/engine-swap.ts` (`kuvo-link.js engine-swap`), started by the
+  keeper while an older engine than its `V` runs and no update runs or is on trial. State in
+  `run/engine-swap.json` (`waiting` → `holding` → `swapping` → done, or `back`). Quiet 30 s, else an
+  hour on at night or a day on; Update Now writes `run/engine-swap.now` (holds at once, still never
+  cuts). Hold bounded at 30 min (let go, held prompts to the old engine, again an hour on), and
+  `swapHolds` ends any hold whose swapper is gone or that's over an hour old.
+- **The hold:** `shared/engine-swap.ts` `swapHolds`; `link/engine/queue.ts` `swapHoldsFor(target)`
+  (engine only, never the bridge) → `keepWaiting(..., target)` keeps the message on the box. Sites:
+  send route, queue/add, sendInto (letters, notes), wake-ups, `start_session`'s first prompt, goals'
+  /goal, the raw forward (`api/session/<id>/prompt` → `{waits:true}`; command → 503 with the line),
+  `drain`/Send Now/Steer (no start; Send Now/Steer put it first), the bridge's group seats (wait in
+  `untilSwapLets`). Before the stop, `moveInboxToBox` moves every engine inbox (latest 100 sessions,
+  a week) onto the box. After: `releaseWaiting` sends each non-paused session's waiting items, once,
+  in order (first as steer).
+- **Engines:** keeper `engine-halt` (no `stopped` mark), no engine start while `run/.engine-swapping`
+  names a live swapper, `pick` each round honouring `run/engine-back` for a day. `update()`:
+  `engineApart` (box.json `engines` lists the running engine) → code only, link selftest on both
+  engines, `installed.json` keeps `engine/engines/downgradeSafe`; confirm keeps those engines.
+  Release: `scripts/engine-check.mjs` (release.yml step) → `ENGINE_CHECK` → box.json `engines`,
+  `downgradeSafe`; `engine-pin.json` gains `previous` at the next engine bump (docs/upstreams.md).
+- **Words:** `kuvo/update` `engineChange {stage, from, to, line}` and `engineLast`; queue answers'
+  `line`; this computer's update line (`keepingSelfUp`). gpui draws the queue's `line`.
+- **Test:** `box/bridge-tests/engine-swap.test.js` (swap with held prompts and a running coding
+  agent turn; a new engine that fails goes back with held prompts; a bounded hold lets go).
+- **After two reviews:** the keeper never starts a newer engine by itself (`run/engine-ran`, noted
+  each round and before the swapper's start; `W`/`B` in `pick`); the busy rule is `models.ts`'s
+  (shells, ptys, asks), an open terminal or ask blocks the timed hold and says so; the bridge's own
+  engine turns wait before they begin (`EngineLink.beforeTurn`), and `kuvo-wake` hands wake-ups to
+  the box during a hold.
+- **Not done:** the phone's queue doesn't draw `line` yet; a group chat seat's or a review's turn on
+  the engine waits inside its request, after it began listening (the bridge's own engine turns wait
+  before); tests don't kill the swapper midway, nor cover the raw forward and seats, and they run in
+  order on one box; commands are refused (503 with the line) rather than queued during a hold;
+  child sessions' inboxes aren't moved; the "together" path (a release whose
+  `engines` don't list the running engine) still stops and starts the engine with no hold;
+  `untilFree` (COMPAT installer) still waits for quiet for any engine change.

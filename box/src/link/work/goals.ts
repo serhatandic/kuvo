@@ -21,7 +21,7 @@ import { isLimit, resetsIn, resetTime } from "../../shared/limits";
 import { pause } from "../../shared/wait";
 import { botHere } from "../bots/here";
 import { asked, bridgeTarget, call } from "../engine/client";
-import { changeQueue, queueOf, readQueues, resumeQueue, sendInto, stopSession } from "../engine/queue";
+import { changeQueue, keepWaiting, queueOf, readQueues, resumeQueue, sendInto, stopSession } from "../engine/queue";
 import { PAUSED_BY_YOU } from "../../shared/goals";
 import { boxNote } from "../../shared/queues";
 import { messageID } from "../engine/sessions";
@@ -868,12 +868,10 @@ export async function askGoal(session: string, words: string, targets: () => Tar
   // You asked for it now: as a message of yours to go now, the queue goes on.
   changeQueue(session, state => ({ ...state, paused: false }));
   const asking = [said, "", "<sent-with>", GOAL_ASKED, "/goal", ...GOAL_PLANNING, "</sent-with>"].join("\n");
-  const sent = await asked(place.target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, {
-    id: messageID(),
-    text: asking,
-    delivery: "queue",
-    metadata: withParts(undefined, partsOf(asking)),
-  }).then(() => true, () => false);
+  const message = { id: messageID(), text: asking, delivery: "queue" as const, metadata: withParts(undefined, partsOf(asking)) };
+  // (Its engine being changed: it waits on the box, and goes once the new one runs.)
+  const sent = keepWaiting(session, message, {}, undefined, place.target)
+    || await asked(place.target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message).then(() => true, () => false);
   return sent ? { text: "Asked for a plan." } : { refused: { status: 404, message: "The conversation can't be reached now." } };
 }
 

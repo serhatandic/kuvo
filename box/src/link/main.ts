@@ -117,6 +117,7 @@ import { keepMachinesUp } from "./add/keep-up";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
+import { swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
@@ -1201,6 +1202,12 @@ if (main) {
   // (its updater went first: the machine went down, or an update from before this rule).
   else if (mode === "update" && process.argv.includes("--settle")) {
     console.log(JSON.stringify({ settled: await settleUpdate({ well: updateIsWell }) }));
+  }
+  // A newer engine than the one at work, put in place by an update (the keeper's `V`): changed at a
+  // quiet moment, what's sent meanwhile held on the box (`engine-swap`, as the keeper starts it;
+  // updates/engine-swap.ts). Stays until it's done.
+  else if (mode === "engine-swap") {
+    console.log(JSON.stringify({ swapped: await swapEngine() }));
   }
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or

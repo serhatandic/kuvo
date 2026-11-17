@@ -5,6 +5,7 @@
 #   kuvo-start start     starts the engine, after a stop
 #   kuvo-start stop      stops the engine until it's started again
 #   kuvo-start engine-stop  the same, its coding agents' bridge left running (an update's new engine)
+#   kuvo-start engine-halt  the engine alone stopped, for the swapper to start the new one (not marked stopped)
 #   kuvo-start restart   starts the engine over
 #   kuvo-start bridge    starts the coding agents' bridge, while the engine runs and it doesn't
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
@@ -22,7 +23,30 @@ up() { is "$(engine)" "$K/engine/"; }
 # The engine's version to start: this one's, or while that isn't there (Kuvo Code updated
 # while an engine of another version was at work), the newest one there is.
 V=@ENGINE@
-[ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+P=$V
+# The swapper changing the engine has it stopped on purpose for a moment: no engine started meanwhile.
+swapping() { is "$(cat "$R/.engine-swapping/pid" 2>/dev/null)" kuvo-link; }
+# (Worked out again at each round of the keeper.) A new engine that didn't start (run/engine-back:
+# "<it> <the one before> <when>", the swapper's): the one before, for a day, while it's there
+# (PROTOCOL.md, "A new engine").
+pick() {
+  V=$P
+  [ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  B=$V
+  if [ -f "$R/engine-back" ] && read -r bv bf bt <"$R/engine-back" 2>/dev/null; then
+    case $bt in '' | *[!0-9]*) bt=0 ;; esac
+    if [ "$bv" = "$V" ] && [ -n "$bf" ] && [ -x "$K/engine/$bf/opencode" ] && [ $(($(date +%s) - bt)) -lt 86400 ]; then V=$bf; fi
+  fi
+  # A newer engine than the one it last started (run/engine-ran) waits for the swapper, which alone
+  # starts it, between turns, its data copied first: until then an engine started again (a crash,
+  # a restart, the machine's) is the one that ran, never the newer one on its own.
+  W=$V
+  if [ -f "$R/engine-ran" ] && ! swapping; then
+    ran_last=$(tr -d ' \t\r\n' <"$R/engine-ran" 2>/dev/null)
+    if [ -n "$ran_last" ] && [ "$ran_last" != "$V" ] && [ -x "$K/engine/$ran_last/opencode" ] && [ "$(printf '%s\n%s\n' "$ran_last" "$V" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$V" ]; then V=$ran_last; fi
+  fi
+}
+pick
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
 # How its engine starts (`run/launch.env`), noted once. A machine's is noted by the start that
@@ -202,6 +226,13 @@ keep)
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
+    # The engine running noted as the one that ran (run/engine-ran), as it runs: a box whose engine a
+    # keeper from before started has it noted too.
+    if up; then
+      rv=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
+      if [ -n "$rv" ] && [ -x "$K/engine/$rv/opencode" ] && [ "$(tr -d ' \t\r\n' <"$R/engine-ran" 2>/dev/null)" != "$rv" ] && ! swapping; then echo "$rv" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
+    fi
+    pick
     # COMPAT(0.7 keeper): checked each round. Goes 3 months after 0.8.0.
     # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
     # mark left as it is, so that Mac doesn't put its own there again).
@@ -231,7 +262,7 @@ keep)
       unlock
     fi
     now=$(date +%s)
-    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ]; then
+    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && ! swapping; then
       # Down: one this started that ran under ten minutes counts as failing, and makes it
       # wait longer before the next start; one that ran longer starts the count again.
       if [ -n "$started" ]; then
@@ -308,6 +339,16 @@ keep)
         "$S" sh "$me" rollback >/dev/null 2>&1
       fi
     fi
+    # An older engine than its own (W: V before it keeps the one that ran) at work, the update that brought it confirmed: the swapper
+    # (`kuvo-link.js engine-swap`) changes it at a quiet moment, holding what's sent meanwhile on the
+    # box (PROTOCOL.md, "A new engine"). One at a time; not while an update runs or is on trial, nor
+    # with a link that has no swapper (one put back from before).
+    if up && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && [ ! -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && ! is "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/engine-swap.json" 2>/dev/null)" kuvo-link; then
+      ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
+      if [ -n "$ran" ] && [ "$ran" != "$W" ] && [ "$(printf '%s\n%s\n' "$ran" "$W" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$W" ] && grep -q 'engine-swap' "$K/bin/kuvo-link.js" 2>/dev/null; then
+        (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap >"$R/engine-swap.log" 2>&1 </dev/null &)
+      fi
+    fi
     # The browser agents use here: the box sets it up itself (PROTOCOL.md, "The browser on a
     # machine"), as the keeper starts (a newer Kuvo Code may pin a newer one) and, each
     # minute, while it's missing or its last setup didn't go well, once the box says it may
@@ -351,9 +392,13 @@ engine)
   [ -f "$R/launch.env" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] || exit 0
   up && exit 0
   notes=$(cat "$R/launch.notes" 2>/dev/null); [ -n "$notes" ] || notes='{}'
+  # The swapper's start (it holds run/.engine-swapping): noted as the engine to run from now on
+  # before it starts, so one that fails to come up (its data perhaps migrated already) is the one
+  # the keeper starts again, never the one before on what it wrote.
+  if swapping; then echo "$V" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
   for try in 1 2 3; do
     port=$(number); password=$(word); record="\"port\":$port,\"password\":\"$password\",\"version\":\"$V\",\"notes\":$notes"
-    { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && exit 0
+    { cat "$R/launch.env"; printf 'KUVO_BOOT=1\nKUVO_VERSION=%s\nOPENCODE_PASSWORD=%s\nKUVO_PORT=%s\nKUVO_RECORD=%s}\n' "$V" "$password" "$port" "$record"; printf '\n'; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1 && up && { echo "$V" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; exit 0; }
     { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
     sleep 2
   done
@@ -369,7 +414,9 @@ bridge)
   launch_noted
   [ -f "$R/launch.env" ] || exit 0
   bridge_runs && exit 0
-  { cat "$R/launch.env"; printf 'KUVO_BRIDGE=1\nKUVO_VERSION=%s\nKUVO_AGENTS_PORT=%s\nKUVO_AGENTS_PASSWORD=%s\n\n' "$V" "$(number)" "$(word)"; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1
+  # (On the keeper's own engine's runtime, B, though the engine that ran (or the one before a new
+  # one that didn't start) runs on: the bridge makes way for that one, and its code was checked with both.)
+  { cat "$R/launch.env"; printf 'KUVO_BRIDGE=1\nKUVO_VERSION=%s\nKUVO_AGENTS_PORT=%s\nKUVO_AGENTS_PASSWORD=%s\n\n' "$B" "$(number)" "$(word)"; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1
   bridge_runs
   ;;
 serve)
@@ -406,6 +453,15 @@ engine-stop)
   trap 'trap "" HUP INT TERM; unlock' EXIT
   trap 'exit 1' HUP INT TERM
   touch "$R/stopped"
+  halt_engine
+  ;;
+engine-halt)
+  # The engine alone, for the swapper, which starts the new one next (`engine`) and holds the keeper
+  # from starting one meanwhile (run/.engine-swapping): never marked stopped, so a swapper that goes
+  # midway leaves the keeper to start the engine again.
+  lock || { echo "A start of the engine is under way there." >&2; exit 4; }
+  trap 'trap "" HUP INT TERM; unlock' EXIT
+  trap 'exit 1' HUP INT TERM
   halt_engine
   ;;
 restart)

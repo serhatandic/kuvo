@@ -41,6 +41,7 @@ import { leftSignIns } from "./signin"
 import { commandLineOf } from "../shared/platform"
 import { isRealBridgeFolder } from "../shared/account"
 import { updateUnderWay } from "../shared/updating"
+import { untilSwapLets } from "../shared/engine-swap"
 import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
 import type { RenewalRecord } from "../shared/records"
@@ -246,6 +247,9 @@ const agentsFile = onMachine ? join(machineHome!, "run", "agents.json") : proces
 const runFolder = onMachine ? join(machineHome!, "run") : process.env.KUVO_RUN || undefined
 // Sessions' turns held with the box's link, in its run folder.
 notesBeside(runFolder)
+// What would start a turn on the engine waits while the engine is being changed (PROTOCOL.md, "A
+// new engine"), bounded as that hold is: it goes to the new one.
+if (runFolder) link.beforeTurn = () => untilSwapLets(runFolder)
 // Nor do the agents get these.
 for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO_AGENTS_FILE", "KUVO_ARTIFACTS", "KUVO_RUN", ...(onMachine ? [] : ["KUVO_BOTS"])]) delete process.env[name]
 if (groupFolders) {

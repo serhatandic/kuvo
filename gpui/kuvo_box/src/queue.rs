@@ -17,6 +17,10 @@ pub struct Queue {
     pub paused: bool,
     /// Every message waiting, in order; none while where it runs can't be read.
     pub items: Option<Vec<Item>>,
+    /// Why what waits on the box waits, in its words, while its engine is being updated (PROTOCOL.md,
+    /// "A new engine"); none otherwise.
+    #[serde(default)]
+    pub line: Option<String>,
 }
 
 /// One message waiting: your words (without what the box adds for the agent), its files' names, the

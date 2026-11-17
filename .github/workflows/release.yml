@@ -288,10 +288,18 @@ jobs:
       # the files this version puts on every box, from the box's sources, with Kuvo Helper, packed,
       # and boxes.json, a manifest naming the pack and the engine's builds, signed. The key goes to
       # this step alone.
+      # The release check of its engines (protocol/PROTOCOL.md, "A new engine"): the link and the
+      # bridge answer selftest on the pinned engine and the one the release before ran, and that one
+      # opens what the new one wrote. What it found goes in box.json (`engines`, `downgradeSafe`).
+      - name: Check the engines
+        shell: bash
+        run: node scripts/engine-check.mjs "$RUNNER_TEMP/engine-check.json"
+
       - name: Package the box release
         shell: bash
         env:
           KUVO_BOX_SIGNING_KEY: ${{ secrets.KUVO_BOX_SIGNING_KEY }}
+          ENGINE_CHECK: ${{ runner.temp }}/engine-check.json
         run: |
           set -euo pipefail
           mkdir dist

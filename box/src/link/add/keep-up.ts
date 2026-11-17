@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ComputerAction, ComputerUpdate, ListedComputer } from "../../shared/routes/box";
 import { isObject } from "../../shared/json";
+import { swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { peerReach } from "../areas/computers";
 import { writePrivate } from "../files";
 import { IS_MAC, RUN } from "../home";
@@ -238,7 +239,9 @@ const sentence = (words: string): string => (words.trim() ? `${words.trim()}${/[
  * update (blocked, its engine stopped on purpose, an update on trial: `offerHeld`). */
 export function keepingSelfUp(name: string, working: number | undefined, blocked?: string | null): { update?: ComputerUpdate; actions: ComputerAction[] } {
   const none = { actions: [] };
-  if (!offerWaits()) return none;
+  // A newer engine taking the running one's place (PROTOCOL.md, "A new engine"): said in its line.
+  const swap = swapUnderWay(RUN);
+  if (!offerWaits()) return swap ? { update: { state: swap.stage === "waiting" ? "waiting" : "updating", title: swapLine(swap)!, detail: "" }, actions: [] } : none;
   const status = updateStatus();
   if (blocked !== undefined) status.blocked = blocked;
   const line = (state: ComputerUpdate["state"], title: string): ComputerUpdate => ({ state, title, detail: "" });

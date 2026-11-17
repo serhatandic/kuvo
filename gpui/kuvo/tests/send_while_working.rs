@@ -183,3 +183,23 @@ fn a_right_click_on_a_queued_message_offers_what_can_be_done_with_it(cx: &mut Te
     click(cx, "menu-item-Send Now");
     assert_eq!(stand_in.queue_asked(), vec!["now msg_q1"]);
 }
+
+#[gpui::test]
+fn a_queue_held_for_an_engine_update_says_why_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_running("ses_signup", false);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (view, _composer) = open_session(&workspace, "ses_signup", cx);
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert!(bounds(cx, "queue").is_some());
+    assert!(bounds(cx, "queue-line").is_none(), "nothing said while nothing holds it");
+    let line = "Kuvo’s engine is updating. New messages wait and go once it’s back.";
+    stand_in.queue_line("ses_signup", Some(line));
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert!(bounds(cx, "queue-line").is_some(), "the box's line, under the count");
+    assert_eq!(view.read_with(cx, |view, _| view.queue_line()), Some(line.to_owned()));
+    assert!(bounds(cx, "queue-resume").is_none(), "not paused: nothing to resume");
+    stand_in.queue_line("ses_signup", None);
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert!(bounds(cx, "queue-line").is_none(), "gone once the engine is back");
+}
