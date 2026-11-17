@@ -262,17 +262,15 @@ impl BotsView {
             .self_start()
             .max_w_full()
             .items_center()
-            .gap(space::S1)
             .px(space::S1)
             .rounded(radius::NAV)
             .tab_index(0)
-            .cursor_pointer()
+            .cursor_text()
             .hover(|s| s.bg(c.hover))
             .focus_visible(|s| s.bg(c.hover))
             .tooltip(move |_, cx| Tooltip::new(help).build(cx))
             .on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx)))
             .child(text)
-            .child(div().flex_none().child(Icon::new(IconName::Pencil).size(IconSize::Indicator).color(c.icon)))
     }
 
     fn editor_error(&self, cx: &App) -> Option<impl IntoElement> {

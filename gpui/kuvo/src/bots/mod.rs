@@ -579,12 +579,10 @@ impl BotsView {
         items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
 
         items.push(Item::Group("Location".into()));
-        let machine = bot.machine.clone().filter(|name| !name.trim().is_empty()).unwrap_or_else(|| self.this_box.clone());
+        items.push(Item::Row { row: Box::new(self.lives_on_row(bot)), first: true, last: false });
         let folder = bot.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into());
-        for (key, title, value, first) in [("bot-lives", "Lives on", machine, true), ("bot-works", "Works in", folder, false)] {
-            let row = Row { key: key.into(), title: title.into(), detail: String::new(), control: Control::Text(value) };
-            items.push(Item::Row { row: Box::new(row), first, last: !first });
-        }
+        let works_in = Row { key: "bot-works".into(), title: "Works in".into(), detail: String::new(), control: Control::Text(folder) };
+        items.push(Item::Row { row: Box::new(works_in), first: false, last: true });
 
         items.push(Item::Group("Recent sessions".into()));
         match &self.work {
@@ -642,6 +640,16 @@ impl BotsView {
         items
     }
 
+    fn lives_on_row(&self, bot: &Bot) -> Row {
+        let machine = bot.machine.as_ref().filter(|name| !name.trim().is_empty()).unwrap_or(&self.this_box);
+        Row {
+            key: "bot-lives".into(),
+            title: "Lives on".into(),
+            detail: String::new(),
+            control: Control::Text(machine.clone()),
+        }
+    }
+
     fn personality_row(&self, bot: &Bot) -> Row {
         let (name, description) = match (&self.templates, &bot.personality) {
             (_, None) => (OWN_WAY.into(), OWN_WAY_DESCRIPTION.into()),
@@ -667,11 +675,11 @@ impl BotsView {
             if self.editable_personality().is_some() {
                 choices.push(("Edit personality…".into(), String::new(), Act::EditPersonality, false));
             }
-            Control::Menu { shown: name.clone(), choices, personality: true }
+            Control::Menu { shown: name, choices, personality: true }
         } else {
-            Control::Text(String::new())
+            Control::Text(name)
         };
-        Row { key: "bot-personality".into(), title: name, detail: description, control }
+        Row { key: "bot-personality".into(), title: "Personality".into(), detail: description, control }
     }
 
     fn setting_rows(&self, bot: &Bot) -> Vec<Row> {
