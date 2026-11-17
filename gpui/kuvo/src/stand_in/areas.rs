@@ -564,7 +564,7 @@ fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
             _ => None,
         };
         // (Signed in on this computer, as its box says: `boxes`, `here`.)
-        let mut row = json!({ "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE, "boxes": [{ "key": "here-key", "name": "This Mac", "here": true }] });
+        let mut row = json!({ "id": title, "service": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE, "boxes": [{ "key": "here-key", "name": "This Mac", "here": true }] });
         if let Some(bar) = bar {
             row["bar"] = json!(bar);
         }

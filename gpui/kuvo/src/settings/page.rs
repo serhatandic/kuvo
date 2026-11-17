@@ -3,9 +3,11 @@
 //! labels, a card of rows for each group, each row's name and line on the left and its control on
 //! the right), with what the box refused over it, a confirm, or the sign-in sheet.
 
+use std::{cell::Cell, rc::Rc};
+
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
+    AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, list,
     prelude::FluentBuilder as _, px,
 };
 use kuvo_box::areas::{Level, UsageMeter};
@@ -20,15 +22,13 @@ use kuvo_ui::{
 
 use super::rows::{Act, Control, FlowDrawn, Layout, Leading, Meter, Part, Push, Row, Tone};
 use kuvo_box::settings_pages::{BadgeTone, FlowState};
+use super::usage_columns::{PAGE_WIDTH as USAGE_PAGE_WIDTH, UsageColumns};
 use super::{AddMachine, Drawn, Item, PAGE_WIDTH, Pick, SettingsView, Side, Standing, box_key, yours_key};
 use crate::areas::{Reading, computer_line};
 use crate::time;
 
 /// How wide the computer picker and its menu are: the sidebar's, inside its padding.
 const PICKER_WIDTH: f32 = crate::sidebar::WIDTH - 24.;
-const USAGE_CARD_WIDTH: f32 = 344.;
-const USAGE_CARD_GAP: f32 = 12.;
-const USAGE_PAGE_WIDTH: f32 = 3. * USAGE_CARD_WIDTH + 2. * USAGE_CARD_GAP;
 
 impl SettingsView {
     /// The sidebar of the side shown: whose settings these are (a computer's is its picker), the
@@ -198,7 +198,7 @@ impl SettingsView {
         self.picker.open(menu, window, cx);
     }
 
-    fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn item(&mut self, ix: usize, page_width: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let Some(item) = self.items.get(ix).cloned() else { return div().into_any_element() };
         let body: AnyElement = match item {
@@ -218,13 +218,14 @@ impl SettingsView {
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(cx))))
                     .into_any_element()
             }
-            Item::UsageCards(rows) => div()
-                .flex()
-                .flex_wrap()
-                .items_start()
-                .gap(px(USAGE_CARD_GAP))
-                .children(rows.into_iter().map(|row| self.row(row, true, true, cx)))
-                .into_any_element(),
+            Item::UsageCards(rows) => {
+                let width = (page_width - 2. * space::S8).clamp(px(0.), px(USAGE_PAGE_WIDTH));
+                let cards = rows.into_iter().map(|row| {
+                    let Control::Usage { account, .. } = &row.control else { unreachable!("usage account") };
+                    (account.clone(), self.row(row, true, true, cx))
+                }).collect();
+                UsageColumns { width, placement: self.usage_placement.clone(), cards }.into_any_element()
+            }
             Item::Group { label, words } => div()
                 .pt(space::S6)
                 .pb(space::S2)
@@ -303,7 +304,7 @@ impl SettingsView {
                 .when(last, |d| d.rounded_b(radius::POPOVER).border_b_1())
                 .px(space::S5)
         };
-        if let Control::Usage { plan, meters } = &control {
+        if let Control::Usage { plan, meters, .. } = &control {
             let selector = key.clone();
             let now = self.now.unwrap_or_else(time::now_ms);
             let plan = plan.as_ref().filter(|plan| !plan.is_empty()).map(|plan| {
@@ -311,7 +312,7 @@ impl SettingsView {
                     .px(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child(plan.clone())
             });
             return div().id(SharedString::from(key.clone())).debug_selector(move || selector)
-                    .w(px(USAGE_CARD_WIDTH)).max_w(gpui::relative(1.)).flex_none()
+                    .w_full().min_w_0()
                     .rounded(radius::POPOVER).border_1().border_color(c.border).bg(c.card)
                     .px(space::S3).py(space::S2).flex().flex_col().gap(space::S1_5)
                     .child(
@@ -1013,9 +1014,11 @@ impl Render for SettingsView {
         self.hear_blurs(window, cx);
         let loading = self.items.iter().all(|item| matches!(item, Item::Title(_) | Item::End | Item::Note { busy: true, .. } | Item::Whose(_)))
             .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
+        let page_width = Rc::new(Cell::new(px(0.)));
+        let measured_width = page_width.clone();
         let page = match loading {
             Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("page-loading", words)).into_any_element(),
-            None => list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full().into_any_element(),
+            None => list(self.list.clone(), cx.processor(move |this, ix, _, cx| this.item(ix, measured_width.get(), cx))).size_full().into_any_element(),
         };
         let problem = self.problem.clone().map(|problem| {
             // Over the page, which starts under it: never over its title.
@@ -1190,6 +1193,11 @@ impl Render for SettingsView {
             .relative()
             .size_full()
             .bg(c.sidebar)
+            // Prepaint this before the list asks for Usage cards, including after a sidebar resize.
+            .when(self.side() == Side::Computer && self.section() == "usage", |d| {
+                d.child(canvas(move |bounds, _, _| page_width.set(bounds.size.width), |_, _, _, _| {})
+                    .absolute().size_full())
+            })
             .child(div().size_full().flex().flex_col().children(problem).child(div().flex_1().min_h_0().child(page)))
             .children(confirm)
             .children(sign_in)

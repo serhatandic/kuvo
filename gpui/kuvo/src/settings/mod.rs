@@ -19,6 +19,7 @@ pub(crate) mod page;
 mod rows;
 pub mod shortcuts;
 pub mod sign_in;
+mod usage_columns;
 
 use std::{collections::HashMap, time::{Duration, Instant, SystemTime}};
 
@@ -189,6 +190,7 @@ pub struct SettingsView {
     accounts: Reading<Accounts>,
     limits: Reading<Vec<Account>>,
     usage_read_started: Option<(Instant, SystemTime)>,
+    usage_placement: std::rc::Rc<std::cell::RefCell<usage_columns::Placement>>,
     config: Reading<Config>,
     offered: Reading<Offered>,
     usage: Reading<UsageSettings>,
@@ -334,6 +336,7 @@ impl SettingsView {
             accounts: Reading::NotYet,
             limits: Reading::NotYet,
             usage_read_started: None,
+            usage_placement: Default::default(),
             config: Reading::NotYet,
             offered: Reading::NotYet,
             usage: Reading::NotYet,
@@ -550,6 +553,7 @@ impl SettingsView {
         self.accounts = Reading::NotYet;
         self.limits = Reading::NotYet;
         self.usage_read_started = None;
+        self.usage_placement = Default::default();
         self.config = Reading::NotYet;
         self.offered = Reading::NotYet;
         self.usage = Reading::NotYet;

@@ -560,6 +560,9 @@ impl UsageMeter {
 /// An account across your computers, as the limits' `rows` list it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Account {
+    /// Stable identity of this limits row across readings.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Its mark and colour: `claude`, `codex`, `grok`, `cursor`, `antigravity`, `copilot`,
     /// `openrouter`, `zai`, `ollama`, `opencode`.
     pub service: String,

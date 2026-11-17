@@ -263,7 +263,7 @@ pub enum Control {
     /// Windows of use, each with its share and when it starts over.
     Windows(Vec<Meter>),
     /// The Usage page account row and its display-ready plan limits.
-    Usage { plan: Option<String>, meters: Vec<UsageMeter> },
+    Usage { account: String, plan: Option<String>, meters: Vec<UsageMeter> },
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
     Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
@@ -692,8 +692,9 @@ fn usage(facts: &Facts) -> Vec<Block> {
                 .enumerate()
                 .map(|(ix, account)| {
                     let key = format!("usage-{ix}");
+                    let identity = account.id.clone().unwrap_or_else(|| key.clone());
                     let Some(display) = &account.usage else {
-                        return Row::new(key, account.title.clone(), "", Control::Usage { plan: account.plan.clone(), meters: Vec::new() })
+                        return Row::new(key, account.title.clone(), "", Control::Usage { account: identity, plan: account.plan.clone(), meters: Vec::new() })
                             .leading(Leading::Mark(account.service.clone()));
                     };
                     let status = display.status.as_ref();
@@ -702,7 +703,7 @@ fn usage(facts: &Facts) -> Vec<Block> {
                         .map(|computer| computer.name.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
-                    Row::new(key, display.title.clone(), computers, Control::Usage { plan: account.plan.clone(), meters: display.meters.clone() })
+                    Row::new(key, display.title.clone(), computers, Control::Usage { account: identity, plan: account.plan.clone(), meters: display.meters.clone() })
                         .leading(Leading::Mark(account.service.clone()))
                         .why(status.map(|status| status.words.clone()))
                         .warning(status.is_some_and(|status| status.warning))

@@ -900,8 +900,9 @@ fn usage_wraps_equal_width_cards_and_stacks_their_limits(cx: &mut TestAppContext
     assert_eq!(first.origin.y, second.origin.y);
     assert!(first.origin.x < second.origin.x);
     assert!(first.size.height > second.size.height);
-    assert_eq!(first.origin.x, third.origin.x);
-    assert!(third.origin.y > first.origin.y);
+    assert_eq!(second.origin.x, third.origin.x);
+    assert_eq!(third.origin.y, second.origin.y + second.size.height + px(12.));
+    assert!(third.origin.y < first.origin.y + first.size.height);
     assert_eq!(first.size.width, second.size.width);
     assert_eq!(first.size.width, third.size.width);
     let [session, weekly, sonnet] = [0, 1, 2].map(|ix| bounds(cx, &format!("usage-0-window-{ix}")).expect("usage window"));
