@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{prelude::FluentBuilder as _, AnyElement, App, EntityId, Global, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Task, Window, canvas, div, px};
+use gpui::{prelude::FluentBuilder as _, AnyElement, App, EntityId, Global, InteractiveElement, IntoElement, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Task, Window, canvas, div, px};
 use kuvo_box::areas::{Bot, BotNow, BotState, Look};
-use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, theme::{Colors, radius}};
+use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, menu::Tooltip, theme::{Colors, radius}};
 use kuvo_ui::bot::{Motion, Shape, State, paint_bot, seed_of};
 
 /// The shortest time between two frames a view asks for: 60 a second, with a little slack so a
@@ -97,6 +97,16 @@ impl SidebarMark {
             })
             .into_any_element()
     }
+}
+
+pub(crate) fn sidebar_avatar(id: &str, name: &str, face: AnyElement, mark: Option<SidebarMark>, colors: &Colors) -> AnyElement {
+    let tooltip = mark.as_ref().map_or_else(|| name.to_owned(), |mark| mark.tooltip(name));
+    let badge = mark.as_ref().map(|mark| mark.badge(colors));
+    let selector = format!("bot-{id}-avatar");
+    div().id(SharedString::from(selector.clone())).debug_selector(move || selector)
+        .relative().flex_none()
+        .tooltip(move |_, cx| Tooltip::new(tooltip.clone()).build(cx))
+        .child(face).children(badge).into_any_element()
 }
 
 /// One bot's creature: its motion, when it was last stepped, and a state waiting for Done's

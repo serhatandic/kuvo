@@ -135,7 +135,7 @@ export async function wakeTool(name: WakeToolName, args: Record<string, unknown>
       resolve({ text: text || (error ? "That didn't work." : "Done."), isError: Boolean(error) });
     });
   });
-  if (name !== "list_wake_ups") wakesChanged();
+  if (name !== "list_wake_ups") wakesChanged(owner);
   return answer;
 }
 

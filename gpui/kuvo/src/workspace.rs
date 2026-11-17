@@ -716,10 +716,11 @@ impl Workspace {
     /// it's been had, where that isn't known yet.
     fn box_changed(&mut self, cx: &mut Context<Self>) {
         // The box's bots are drawn offline while it can't be reached (a box can't say so itself).
-        let reached = !matches!(self.box_state, BoxState::Unreachable(_));
+        let reached = !matches!(self.box_state, BoxState::Unreachable(_)) && !matches!(self.lists, Lists::Failed(_));
         if let Some(view) = self.area_view(Area::Bots).cloned() {
             view.update(cx, |view, cx| view.set_reached(reached, cx));
         }
+        self.refresh_conversation_wakes(cx);
         if let Some(run) = self.first_run().cloned() {
             let (state, name) = (self.box_state.clone(), self.box_name());
             run.update(cx, |run, cx| run.set_box(state, name, cx));
@@ -1649,9 +1650,13 @@ impl Workspace {
     }
 
     fn wire_wakes(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) {
-        let status = self.area_view(Area::Bots).and_then(|area| match area.read(cx).bots() {
-            Reading::Ready(bots) => bots.bots.iter().find(|bot| bot.session == session).map(crate::wakes::Status::from),
-            _ => None,
+        let status = self.area_view(Area::Bots).and_then(|area| {
+            let area = area.read(cx);
+            let Reading::Ready(bots) = area.bots() else { return None };
+            let bot = bots.bots.iter().find(|bot| bot.session == session)?;
+            let mut status = crate::wakes::Status::from(bot);
+            status.waking &= area.has_fresh_bots();
+            Some(status)
         });
         let computer = self.info.as_ref().map(|info| info.name.clone()).unwrap_or_else(|| self.box_name().into());
         view.update(cx, |view, cx| view.set_wakes(status, computer, self.now, cx));

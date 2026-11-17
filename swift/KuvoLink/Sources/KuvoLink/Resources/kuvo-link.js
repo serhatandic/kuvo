@@ -17202,23 +17202,28 @@ function followersOf(...sets) {
   };
   return all;
 }
-async function* followed(read, followers, signal, { folders = [], recursive = true, watch = watchFolders } = {}) {
+async function* followed(read, followers, signal, { folders = [], recursive = true, watch = watchFolders, coalesce = false } = {}) {
   let wake = null;
   const queue = [];
+  let dirty = false;
   const told = () => {
-    queue.push(JSON.stringify(read()));
+    if (coalesce)
+      dirty = true;
+    else
+      queue.push(JSON.stringify(read()));
     wake?.();
   };
   followers.add(told);
   const watching = watch(folders, told, { recursive });
-  queue.push(JSON.stringify(read()));
+  told();
   const settled = WATCH_SETTLES.map((ms) => setTimeout(told, ms));
   signal?.addEventListener("abort", () => wake?.(), { once: true });
   try {
     let last = "";
     while (!signal?.aborted) {
-      while (queue.length) {
-        const line = queue.shift();
+      while (dirty || queue.length) {
+        const line = dirty ? JSON.stringify(read()) : queue.shift();
+        dirty = false;
         if (line !== last) {
           yield { body: Buffer.from(line + `
 `) };
@@ -17235,7 +17240,7 @@ async function* followed(read, followers, signal, { folders = [], recursive = tr
         };
       });
       wake = null;
-      queue.push(JSON.stringify(read()));
+      told();
     }
   } finally {
     for (const timer of settled)
@@ -19817,6 +19822,7 @@ import { execFile as execFile10 } from "node:child_process";
 import fs126 from "node:fs";
 import path131 from "node:path";
 init_text();
+init_records();
 init_files2();
 // box/src/link/notices/news.ts
 init_text();
@@ -23132,7 +23138,7 @@ function endWakeUps(session) {
   const folder = path75.join(SESSION_WAKES, session);
   for (const kind of ["wakes", "watches"])
     fs71.rmSync(path75.join(folder, kind), { recursive: true, force: true });
-  wakesChanged();
+  wakesChanged(session);
 }
 async function endBackground(target, session, file = WORK_BACKGROUND) {
   const answered = await call(target, "DELETE", `/api/session/${encodeURIComponent(session)}/background`).then(() => true, () => false);
@@ -23631,16 +23637,18 @@ function beganBy(turn) {
   const source = isObject(first.metadata) ? first.metadata.source : undefined;
   return { kind: source === "shell" || source === "subagent" || source === "agent" ? "left" : "other", at };
 }
-async function latestMessages(target, session) {
+async function latestMessages(target, session, whole = false) {
   const address = encodeURIComponent(session);
   const messages = [];
   let query = "limit=50&order=desc";
   for (let pages = 0;pages < 20; pages++) {
     const page = await engineGet(target, `api/session/${address}/message?${query}`).catch((error) => {
-      if (pages === 0)
+      if (whole || pages === 0)
         throw error;
       return null;
     });
+    if (whole && !Array.isArray(page?.data))
+      throw new Error("The turn could not be read.");
     const data = Array.isArray(page?.data) ? page.data : [];
     for (const message of data)
       if (isObject(message) && typeof message.id === "string")
@@ -23653,7 +23661,7 @@ async function latestMessages(target, session) {
   return messages;
 }
 async function wakeTurnIsOpen(target, session) {
-  const messages = await latestMessages(target, session);
+  const messages = await latestMessages(target, session, true);
   const { from, before } = turnIn(messages);
   if (from !== 0)
     return false;
@@ -33649,7 +33657,7 @@ async function wakeTool(name, args, calling, bridge) {
     });
   });
   if (name !== "list_wake_ups")
-    wakesChanged();
+    wakesChanged(owner);
   return answer;
 }
 async function setJobTool(args, calling, readEngine, bridge) {
@@ -41961,6 +41969,8 @@ function holdArchived(session, archived) {
 function wakeFolder(session) {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(session))
     return null;
+  if (awaySessions().includes(session))
+    return null;
   for (const id of listOf(BOTS)) {
     if ((textOf(path131.join(BOTS, id, "session")) ?? "").trim() === session)
       return path131.join(BOTS, id);
@@ -41969,11 +41979,12 @@ function wakeFolder(session) {
   return textOf(path131.join(own, "session")) === null ? null : own;
 }
 function listWakes() {
+  const away = new Set(awaySessions());
   const sessions = [];
   for (const name of listOf(SESSION_WAKES)) {
     const folder = path131.join(SESSION_WAKES, name);
     const session = (textOf(path131.join(folder, "session")) ?? "").trim();
-    if (!session)
+    if (!session || away.has(session))
       continue;
     const { wakes, watches, paused } = readWakes(folder);
     if (!wakes.length && !watches.length)
@@ -42013,10 +42024,11 @@ function readWakes(folder, { whole = false } = {}) {
 }
 var listedWake = ({ id, due, note, every, summary, cancelKey }) => ({ id, due, note, summary, cancelKey, every: every ?? undefined });
 function allWakes() {
+  const away = new Set(awaySessions());
   const sessions = [];
   const add = (folder) => {
     const session = (textOf(path131.join(folder, "session")) ?? "").trim();
-    if (!session)
+    if (!session || away.has(session))
       return;
     const { wakes, watches, paused } = readWakes(folder, { whole: true });
     if (wakes.length || watches.length || paused)
@@ -42105,7 +42117,8 @@ function sendWakes() {
   };
 }
 var wakeFollowers = new Set;
-var wakesChanged = () => {
+var wakesChanged = (session) => {
+  schedules?.changed(session);
   for (const tell of wakeFollowers)
     tell();
 };
@@ -42176,12 +42189,14 @@ async function waitForTools(port, authorization, directory, signal) {
 var wakingNow = new Set;
 async function* answerWakes(session, action, request, readEngine, bridge, signal) {
   const changed = function* (status, value) {
-    wakesChanged();
+    wakesChanged(session);
     yield* json(status, value);
   };
   const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const method = request.method.toUpperCase();
   let folder = wakeFolder(session);
+  if (method === "POST" && awaySessions().includes(session))
+    return yield* json(409, { message: MOVING });
   const listed = () => listedWakes(folder);
   if (!action && (method === "GET" || method === "HEAD"))
     return yield* json(200, listed());
@@ -42262,7 +42277,30 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   const chosen = typeof given.wake === "string" ? wakes.find((each) => each.id === given.wake || each.letters === given.wake) : undefined;
   if (action === "cancel") {
     if (chosen && LETTERS.test(chosen.letters)) {
-      cancelWake(folder, chosen.letters);
+      const lock = path131.join(path131.dirname(folder), ".firing");
+      const until = Date.now() + 2000;
+      for (;; ) {
+        try {
+          fs126.mkdirSync(lock);
+          break;
+        } catch (error) {
+          if (error.code !== "EEXIST")
+            throw error;
+          if (signal?.aborted || Date.now() >= until)
+            return yield* json(409, { message: "A wake-up is being sent. Try canceling again in a moment." });
+          await sleep(25);
+        }
+      }
+      let moved;
+      try {
+        moved = isMoving(folder) || awaySessions().includes(session);
+        if (!moved)
+          cancelWake(folder, chosen.letters);
+      } finally {
+        fs126.rmdirSync(lock);
+      }
+      if (moved)
+        return yield* json(409, { message: MOVING });
       return yield* changed(200, {});
     }
     const watch = typeof given.watch === "string" ? watches.find((each) => each.letters === given.watch) : undefined;
@@ -42330,13 +42368,118 @@ async function* wakeEventsRoute(context) {
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ sessions: allWakes() }), wakeFollowers, signal, { folders: [BOTS, SESSION_WAKES] });
+  return yield* followed(() => ({ sessions: allWakes() }), followersOf(wakeFollowers, moveFollowers), signal, { folders: [BOTS, SESSION_WAKES, MOVES], coalesce: true });
 }
 function listedWakes(folder) {
   if (!folder)
     return { wakes: [], watches: [], paused: false };
   const { wakes, watches, paused } = readWakes(folder);
   return { wakes: wakes.map(listedWake), watches, paused };
+}
+
+class Schedules {
+  byFolder = new Map;
+  bySession = new Map;
+  listeners = new Map;
+  away = new Set;
+  watchers = [];
+  timer;
+  constructor() {
+    this.refresh();
+    for (const root of [BOTS, SESSION_WAKES, MOVES]) {
+      try {
+        fs126.mkdirSync(root, { recursive: true });
+        const watcher = watchFolder(root, (_, name) => {
+          if (root === MOVES)
+            return this.ownership();
+          if (!name)
+            return this.refresh(true);
+          const [id, file] = name.split(path131.sep);
+          if (!id || id.startsWith("."))
+            return;
+          const folder = path131.join(root, id);
+          if (!file || file === "session")
+            this.index(folder);
+          else if (["wakes", "watches", "summaries", "paused"].includes(file))
+            this.changed(this.byFolder.get(folder) ?? null);
+        }, { recursive: root !== MOVES, missed: () => {} });
+        watcher.on("error", () => watcher.close());
+        this.watchers.push(watcher);
+      } catch {}
+    }
+    moveFollowers.add(this.ownership);
+    this.timer = setInterval(() => this.refresh(true), this.watchers.length === 3 ? 30000 : 1000);
+    this.timer.unref?.();
+  }
+  index(folder) {
+    const before = this.byFolder.get(folder);
+    const session = (textOf(path131.join(folder, "session")) ?? "").trim();
+    if (before && before !== session) {
+      this.byFolder.delete(folder);
+      if (this.bySession.get(before) === folder)
+        this.bySession.delete(before);
+      this.changed(before);
+    }
+    if (!session)
+      return;
+    this.byFolder.set(folder, session);
+    if (!this.bySession.has(session) || path131.dirname(folder) === BOTS)
+      this.bySession.set(session, folder);
+    this.changed(session);
+  }
+  refresh(tell = false) {
+    this.byFolder.clear();
+    this.bySession.clear();
+    for (const root of [BOTS, SESSION_WAKES]) {
+      for (const id of listOf(root))
+        this.index(path131.join(root, id));
+    }
+    this.ownership();
+    if (tell)
+      this.changed();
+  }
+  ownership = () => {
+    const away = new Set(awaySessions());
+    const before = this.away;
+    this.away = away;
+    for (const session of this.listeners.keys())
+      if (away.has(session) !== before.has(session))
+        this.changed(session);
+  };
+  folder(session) {
+    return this.away.has(session) ? null : this.bySession.get(session) ?? null;
+  }
+  changed(session) {
+    if (session === null)
+      return;
+    const listeners = session === undefined ? this.listeners.values() : [this.listeners.get(session)];
+    for (const list of listeners)
+      if (list)
+        for (const tell of list)
+          tell();
+  }
+  follow(session, changed) {
+    const list = this.listeners.get(session) ?? new Set;
+    list.add(changed);
+    this.listeners.set(session, list);
+    return () => {
+      list.delete(changed);
+      if (!list.size)
+        this.listeners.delete(session);
+      if (this.listeners.size)
+        return;
+      clearInterval(this.timer);
+      moveFollowers.delete(this.ownership);
+      for (const watcher of this.watchers)
+        watcher.close();
+      schedules = null;
+    };
+  }
+}
+var schedules = null;
+function followSchedule(session, changed) {
+  schedules ??= new Schedules;
+  return { whole: true, close: schedules.follow(session, changed) };
 }
 async function* sessionWakesRoute(context, wakes) {
   const { request, signal, readEngine, bridge, text } = context;
@@ -42350,7 +42493,11 @@ async function* sessionWakesRoute(context, wakes) {
     if (request.method.toUpperCase() !== "GET")
       return yield* context.json(405, {});
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => listedWakes(wakeFolder(session)), wakeFollowers, signal, { folders: [BOTS, SESSION_WAKES] });
+    const followers = new Set;
+    return yield* followed(() => listedWakes(schedules?.folder(session) ?? null), followers, signal, {
+      coalesce: true,
+      watch: (_, changed) => followSchedule(session, changed)
+    });
   }
   return yield* answerWakes(session, wakes[2], request, readEngine, bridge, signal);
 }
@@ -44651,7 +44798,11 @@ function keepList() {
     asked5.clear();
     deleted.clear();
     moments.clear();
+    for (const place of places3.values())
+      for (const timer of place.wakeRetries.values())
+        clearTimeout(timer);
     places3.clear();
+    runningReads.clear();
     placeTargets.clear();
     reading3.clear();
     wholeReads.clear();
@@ -44659,6 +44810,7 @@ function keepList() {
 }
 var placeTargets = new Map;
 var reading3 = new Map;
+var runningReads = new Map;
 var wholeReads = new Map;
 function listPlaceHeard(name, target) {
   if (!keeping2)
@@ -44688,20 +44840,44 @@ function readPlace(name, target) {
   wholeReads.set(name, read);
   return read.done;
 }
+async function readRunningSnapshot(name, target, alongside) {
+  const changed = new Set;
+  runningReads.set(name, changed);
+  try {
+    const [running] = await Promise.all([readRunning(target), alongside]);
+    return { running, changed };
+  } finally {
+    if (runningReads.get(name) === changed)
+      runningReads.delete(name);
+  }
+}
+function applyRunning(place, snapshot) {
+  if (!snapshot.running)
+    return;
+  const { running, changed } = snapshot;
+  for (const id of changed) {
+    if (place.running.has(id))
+      running.add(id);
+    else
+      running.delete(id);
+  }
+  place.running = running;
+}
 async function readOnce(name, target) {
   const touched = new Set;
   reading3.set(name, touched);
   let sessions = null;
-  let running = null;
+  let running;
   try {
-    [sessions, running] = await Promise.all([readSessions(target), readRunning(target)]);
+    const listed = readSessions(target);
+    [sessions, running] = await Promise.all([listed, readRunningSnapshot(name, target, listed)]);
   } finally {
     if (reading3.get(name) === touched)
       reading3.delete(name);
   }
   if (!keeping2 || !sessions)
     return;
-  const place = places3.get(name) ?? { sessions: new Map, running: new Set, wakeReads: new Map, waking: new Set };
+  const place = places3.get(name) ?? { sessions: new Map, running: new Set, wakeReads: new Map, wakeRetries: new Map, waking: new Set };
   const gone = deleted.get(name);
   place.sessions = new Map(sessions.filter((each) => !gone?.has(each.id)).map((each) => [each.id, withViewed(each, place.sessions.get(each.id))]));
   deleted.delete(name);
@@ -44709,16 +44885,16 @@ async function readOnce(name, target) {
     if (key.startsWith(name + " "))
       asked5.delete(key);
   known2 = null;
-  if (running)
-    place.running = running;
+  applyRunning(place, running);
   places3.set(name, place);
   if (touched.size) {
     await Promise.all([...touched].map((id) => readOne3(name, target, id)));
-    const now = await readRunning(target);
-    if (now)
-      place.running = now;
+    const refreshed = await readRunningSnapshot(name, target);
+    if (!keeping2 || places3.get(name) !== place)
+      return;
+    applyRunning(place, refreshed);
   }
-  for (const id of new Set([...place.wakeReads.keys(), ...place.waking]))
+  for (const id of new Set([...place.wakeReads.keys(), ...place.wakeRetries.keys(), ...place.waking]))
     if (!place.running.has(id))
       clearWakeTurn(place, id);
   const bots = readBoxKnows().botSessions;
@@ -44727,15 +44903,27 @@ async function readOnce(name, target) {
 }
 function clearWakeTurn(place, id) {
   place.wakeReads.delete(id);
+  clearTimeout(place.wakeRetries.get(id));
+  place.wakeRetries.delete(id);
   place.waking.delete(id);
 }
 async function readWakeTurn(place, target, id) {
+  clearTimeout(place.wakeRetries.get(id));
+  place.wakeRetries.delete(id);
   const read = {};
   place.wakeReads.set(id, read);
-  const waking = await wakeTurnIsOpen(target, id).catch(() => false);
+  const waking = await wakeTurnIsOpen(target, id).catch(() => null);
   if (place.wakeReads.get(id) !== read || !place.running.has(id))
     return;
   place.wakeReads.delete(id);
+  if (waking === null) {
+    if (!keeping2 || ![...places3.values()].includes(place))
+      return;
+    const retry = setTimeout(() => void readWakeTurn(place, target, id), 250);
+    retry.unref?.();
+    place.wakeRetries.set(id, retry);
+    return;
+  }
   if (waking)
     place.waking.add(id);
   else
@@ -44784,6 +44972,8 @@ async function noteListEvent(name, target, event) {
   if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS2.has(event.type) && !RELOADS.has(event.type))
     return;
   reading3.get(name)?.add(id);
+  if (event.type === STARTS || ENDS2.has(event.type) || event.type === "session.deleted")
+    runningReads.get(name)?.add(id);
   const mine = ++eventCount;
   asked5.set(`${name} ${id}`, mine);
   if (event.type === "session.deleted") {
@@ -45257,7 +45447,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "eac7755e40f0";
+var BRIDGE_VERSION = "f8786caa6279";
 
 // box/src/link/rehome/move.ts
 init_outside();

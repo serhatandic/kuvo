@@ -10,6 +10,7 @@ import { wakeSummary } from "../../shared/message-words";
 import { wakeMark } from "../../shared/queues";
 import { oneLine } from "../../shared/text";
 import { sleep } from "../../shared/wait";
+import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { isMoving, MOVING } from "../bots/here";
 import { engineGet } from "../engine/client";
 import type { EngineAnswer } from "../engine/client";
@@ -17,7 +18,8 @@ import { keepWaiting } from "../engine/queue";
 import { messageID } from "../engine/sessions";
 import type { EngineSession } from "../engine/sessions";
 import { listOf, textOf } from "../files";
-import { followed, watchFolders } from "../follow";
+import { watchFolder } from "../../shared/watch";
+import { followed, followersOf, watchFolders } from "../follow";
 import { stopIfWaiting } from "../work/answers";
 import { BOTS, OWN_RUNTIME, RUN, SCRIPT, SESSION_WAKES, WAKE_COMMAND } from "../home";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
@@ -79,6 +81,7 @@ export function holdArchived(session: string, archived: boolean): void {
 // The folder keeping a session's wake-ups: its bot's, or its own in `wakes`; null for none.
 export function wakeFolder(session: string): string | null {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(session)) return null;
+  if (awaySessions().includes(session)) return null;
   for (const id of listOf(BOTS)) {
     if ((textOf(path.join(BOTS, id, "session")) ?? "").trim() === session) return path.join(BOTS, id);
   }
@@ -89,11 +92,12 @@ export function wakeFolder(session: string): string | null {
 // Each session here with a wake-up or a watch, as the Mac lists them in `kuvo/wakes`: its soonest
 // wake-up, whether it watches, and its wake-ups, watches and pause whole. Bots' come with `kuvo/bots`.
 export function listWakes(): WakeList["sessions"] {
+  const away = new Set(awaySessions());
   const sessions: WakeList["sessions"][number][] = [];
   for (const name of listOf(SESSION_WAKES)) {
     const folder = path.join(SESSION_WAKES, name);
     const session = (textOf(path.join(folder, "session")) ?? "").trim();
-    if (!session) continue;
+    if (!session || away.has(session)) continue;
     const { wakes, watches, paused } = readWakes(folder);
     if (!wakes.length && !watches.length) continue;
     sessions.push({ session, ...(wakes.length ? { next: wakes[0].due } : {}), watching: watches.length > 0, wakes: wakes.map(listedWake), watches, paused });
@@ -146,10 +150,11 @@ export interface SessionWakes extends Wakes {
 // Every conversation here with wake-ups, watches or a pause, a bot's or its own, whole: what a
 // client keeps of them, followed (`kuvo/wakes/events`).
 export function allWakes(): SessionWakes[] {
+  const away = new Set(awaySessions());
   const sessions: SessionWakes[] = [];
   const add = (folder: string) => {
     const session = (textOf(path.join(folder, "session")) ?? "").trim();
-    if (!session) return;
+    if (!session || away.has(session)) return;
     const { wakes, watches, paused } = readWakes(folder, { whole: true });
     if (wakes.length || watches.length || paused) sessions.push({ session, wakes: wakes.map(listedWake), watches, paused });
   };
@@ -239,7 +244,8 @@ export function sendWakes(): () => Promise<void> {
 // Those following them (`kuvo/wakes/events`), told of each change made here; `kuvo-wake fire`'s
 // as the system sees their folders change.
 export const wakeFollowers = new Set<() => void>();
-export const wakesChanged = () => {
+export const wakesChanged = (session?: string) => {
+  schedules?.changed(session);
   for (const tell of wakeFollowers) tell();
 };
 
@@ -330,12 +336,13 @@ interface KuvoWakeRefusal {
 // with {"every", "check", "note"}, a watch made as its agent makes one.
 export async function* answerWakes(session: string, action: WakeAction | undefined, request: LinkRequest, readEngine: () => EngineRecord, bridge: () => BridgeRecord | null, signal: AbortSignal | undefined): AsyncGenerator<AnswerPiece> {
   const changed = function* (status: number, value: Wakes | Record<string, never>) {
-    wakesChanged();
+    wakesChanged(session);
     yield* json(status, value);
   };
   const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const method = request.method.toUpperCase();
   let folder = wakeFolder(session);
+  if (method === "POST" && awaySessions().includes(session)) return yield* json(409, { message: MOVING });
   const listed = () => listedWakes(folder);
   if (!action && (method === "GET" || method === "HEAD")) return yield* json(200, listed());
   if (method !== "POST") return yield* json(405, {});
@@ -410,7 +417,25 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
   const chosen = typeof given.wake === "string" ? wakes.find(each => each.id === given.wake || each.letters === given.wake) : undefined;
   if (action === "cancel") {
     if (chosen && LETTERS.test(chosen.letters)) {
-      cancelWake(folder, chosen.letters);
+      // The keeper holds this directory around both delivery and advancing the filename.
+      const lock = path.join(path.dirname(folder), ".firing");
+      const until = Date.now() + 2000;
+      for (;;) {
+        try { fs.mkdirSync(lock); break; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          if (signal?.aborted || Date.now() >= until) return yield* json(409, { message: "A wake-up is being sent. Try canceling again in a moment." });
+          await sleep(25);
+        }
+      }
+      let moved: boolean;
+      try {
+        moved = isMoving(folder) || awaySessions().includes(session);
+        if (!moved) cancelWake(folder, chosen.letters);
+      } finally {
+        fs.rmdirSync(lock);
+      }
+      if (moved) return yield* json(409, { message: MOVING });
       return yield* changed(200, {});
     }
     const watch = typeof given.watch === "string" ? watches.find(each => each.letters === given.watch) : undefined;
@@ -476,13 +501,108 @@ export async function* wakeEventsRoute(context: RouteContext): AsyncGenerator<An
   const { request, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ sessions: allWakes() }), wakeFollowers, signal, { folders: [BOTS, SESSION_WAKES] });
+  return yield* followed(() => ({ sessions: allWakes() }), followersOf(wakeFollowers, moveFollowers), signal, { folders: [BOTS, SESSION_WAKES, MOVES], coalesce: true });
 }
 
 function listedWakes(folder: string | null): Wakes {
   if (!folder) return { wakes: [], watches: [], paused: false };
   const { wakes, watches, paused } = readWakes(folder);
   return { wakes: wakes.map(listedWake), watches, paused };
+}
+
+// One directory index and watcher per process, shared by the open per-session streams.
+class Schedules {
+  private readonly byFolder = new Map<string, string>();
+  private readonly bySession = new Map<string, string>();
+  private readonly listeners = new Map<string, Set<() => void>>();
+  private away = new Set<string>();
+  private readonly watchers: fs.FSWatcher[] = [];
+  private readonly timer: ReturnType<typeof setInterval>;
+
+  constructor() {
+    this.refresh();
+    for (const root of [BOTS, SESSION_WAKES, MOVES]) {
+      try {
+        fs.mkdirSync(root, { recursive: true });
+        const watcher = watchFolder(root, (_, name) => {
+          if (root === MOVES) return this.ownership();
+          if (!name) return this.refresh(true);
+          const [id, file] = name.split(path.sep);
+          if (!id || id.startsWith(".")) return;
+          const folder = path.join(root, id);
+          if (!file || file === "session") this.index(folder);
+          else if (["wakes", "watches", "summaries", "paused"].includes(file)) this.changed(this.byFolder.get(folder) ?? null);
+        }, { recursive: root !== MOVES, missed: () => {} });
+        watcher.on("error", () => watcher.close());
+        this.watchers.push(watcher);
+      } catch {}
+    }
+    moveFollowers.add(this.ownership);
+    this.timer = setInterval(() => this.refresh(true), this.watchers.length === 3 ? 30_000 : 1_000);
+    this.timer.unref?.();
+  }
+
+  private index(folder: string) {
+    const before = this.byFolder.get(folder);
+    const session = (textOf(path.join(folder, "session")) ?? "").trim();
+    if (before && before !== session) {
+      this.byFolder.delete(folder);
+      if (this.bySession.get(before) === folder) this.bySession.delete(before);
+      this.changed(before);
+    }
+    if (!session) return;
+    this.byFolder.set(folder, session);
+    if (!this.bySession.has(session) || path.dirname(folder) === BOTS) this.bySession.set(session, folder);
+    this.changed(session);
+  }
+
+  private refresh(tell = false) {
+    this.byFolder.clear();
+    this.bySession.clear();
+    for (const root of [BOTS, SESSION_WAKES]) {
+      for (const id of listOf(root)) this.index(path.join(root, id));
+    }
+    this.ownership();
+    if (tell) this.changed();
+  }
+
+  private ownership = () => {
+    const away = new Set(awaySessions());
+    const before = this.away;
+    this.away = away;
+    for (const session of this.listeners.keys()) if (away.has(session) !== before.has(session)) this.changed(session);
+  };
+
+  folder(session: string): string | null {
+    return this.away.has(session) ? null : this.bySession.get(session) ?? null;
+  }
+
+  changed(session?: string | null) {
+    if (session === null) return;
+    const listeners = session === undefined ? this.listeners.values() : [this.listeners.get(session)];
+    for (const list of listeners) if (list) for (const tell of list) tell();
+  }
+
+  follow(session: string, changed: () => void) {
+    const list = this.listeners.get(session) ?? new Set();
+    list.add(changed);
+    this.listeners.set(session, list);
+    return () => {
+      list.delete(changed);
+      if (!list.size) this.listeners.delete(session);
+      if (this.listeners.size) return;
+      clearInterval(this.timer);
+      moveFollowers.delete(this.ownership);
+      for (const watcher of this.watchers) watcher.close();
+      schedules = null;
+    };
+  }
+}
+
+let schedules: Schedules | null = null;
+function followSchedule(session: string, changed: () => void) {
+  schedules ??= new Schedules();
+  return { whole: true, close: schedules.follow(session, changed) };
 }
 
 export async function* sessionWakesRoute(context: RouteContext, wakes: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
@@ -496,7 +616,11 @@ export async function* sessionWakesRoute(context: RouteContext, wakes: RegExpMat
   if (wakes[2] === "events") {
     if (request.method.toUpperCase() !== "GET") return yield* context.json(405, {});
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => listedWakes(wakeFolder(session)), wakeFollowers, signal, { folders: [BOTS, SESSION_WAKES] });
+    const followers = new Set<() => void>();
+    return yield* followed(() => listedWakes(schedules?.folder(session) ?? null), followers, signal, {
+      coalesce: true,
+      watch: (_, changed) => followSchedule(session, changed),
+    });
   }
   return yield* answerWakes(session, wakes[2] as WakeAction | undefined, request, readEngine, bridge, signal);
 }

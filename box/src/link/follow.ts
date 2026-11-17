@@ -55,17 +55,19 @@ export async function* followed(
   read: () => unknown,
   followers: Set<() => void>,
   signal: AbortSignal | undefined,
-  { folders = [], recursive = true, watch = watchFolders }: { folders?: string[]; recursive?: boolean; watch?: typeof watchFolders } = {},
+  { folders = [], recursive = true, watch = watchFolders, coalesce = false }: { folders?: string[]; recursive?: boolean; watch?: typeof watchFolders; coalesce?: boolean } = {},
 ): AsyncGenerator<AnswerPiece> {
   let wake: (() => void) | null = null;
   const queue: string[] = [];
+  let dirty = false;
   const told = () => {
-    queue.push(JSON.stringify(read()));
+    if (coalesce) dirty = true;
+    else queue.push(JSON.stringify(read()));
     wake?.();
   };
   followers.add(told);
   const watching = watch(folders, told, { recursive });
-  queue.push(JSON.stringify(read()));
+  told();
   // (Later still under load: looked at again a little later, then a little later again; what
   // didn't change isn't sent twice.)
   const settled = WATCH_SETTLES.map(ms => setTimeout(told, ms));
@@ -74,8 +76,9 @@ export async function* followed(
   try {
     let last = "";
     while (!signal?.aborted) {
-      while (queue.length) {
-        const line = queue.shift()!;
+      while (dirty || queue.length) {
+        const line = dirty ? JSON.stringify(read()) : queue.shift()!;
+        dirty = false;
         if (line !== last) {
           yield { body: Buffer.from(line + "\n") };
           last = line;
@@ -88,7 +91,7 @@ export async function* followed(
         wake = () => { clearTimeout(timer); done(); };
       });
       wake = null;
-      queue.push(JSON.stringify(read()));
+      told();
     }
   } finally {
     for (const timer of settled) clearTimeout(timer);

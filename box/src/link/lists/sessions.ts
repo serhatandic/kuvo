@@ -52,6 +52,7 @@ interface Place {
   sessions: Map<string, EngineSession>;
   running: Set<string>;
   wakeReads: Map<string, object>;
+  wakeRetries: Map<string, ReturnType<typeof setTimeout>>;
   waking: Set<string>;
 }
 
@@ -430,7 +431,9 @@ export function keepList(): () => void {
     asked.clear();
     deleted.clear();
     moments.clear();
+    for (const place of places.values()) for (const timer of place.wakeRetries.values()) clearTimeout(timer);
     places.clear();
+    runningReads.clear();
     placeTargets.clear();
     reading.clear();
     wholeReads.clear();
@@ -442,6 +445,7 @@ const placeTargets = new Map<string, Target>();
 // The sessions each place's events named while it was read whole, to read again once it's in.
 const reading = new Map<string, Set<string>>();
 // Each place's whole read under way: one at a time, and one more after it if it's asked for meanwhile.
+const runningReads = new Map<string, Set<string>>();
 const wholeReads = new Map<string, { done: Promise<void>; again: boolean; target: Target }>();
 
 /** A place heard (it started, or its events came back after they couldn't be): read whole now, as
@@ -476,19 +480,40 @@ function readPlace(name: string, target: Target): Promise<void> {
   return read.done;
 }
 
+async function readRunningSnapshot(name: string, target: Target, alongside?: Promise<unknown>) {
+  const changed = new Set<string>();
+  runningReads.set(name, changed);
+  try {
+    const [running] = await Promise.all([readRunning(target), alongside]);
+    return { running, changed };
+  }
+  finally { if (runningReads.get(name) === changed) runningReads.delete(name); }
+}
+
+function applyRunning(place: Place, snapshot: Awaited<ReturnType<typeof readRunningSnapshot>>): void {
+  if (!snapshot.running) return;
+  const { running, changed } = snapshot;
+  for (const id of changed) {
+    if (place.running.has(id)) running.add(id);
+    else running.delete(id);
+  }
+  place.running = running;
+}
+
 async function readOnce(name: string, target: Target): Promise<void> {
   const touched = new Set<string>();
   reading.set(name, touched);
   let sessions: EngineSession[] | null = null;
-  let running: Set<string> | null = null;
+  let running: Awaited<ReturnType<typeof readRunningSnapshot>>;
   try {
-    [sessions, running] = await Promise.all([readSessions(target), readRunning(target)]);
+    const listed = readSessions(target);
+    [sessions, running] = await Promise.all([listed, readRunningSnapshot(name, target, listed)]);
   } finally {
     if (reading.get(name) === touched) reading.delete(name);
   }
   if (!keeping || !sessions) return;
   // (Only a whole read makes a place: until then its events have nothing to change.)
-  const place = places.get(name) ?? { sessions: new Map(), running: new Set(), wakeReads: new Map(), waking: new Set() };
+  const place = places.get(name) ?? { sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
   // (Not one deleted as it was read: a read begun before says it's there.)
   const gone = deleted.get(name);
   place.sessions = new Map(sessions.filter(each => !gone?.has(each.id)).map(each => [each.id, withViewed(each, place.sessions.get(each.id))]));
@@ -497,15 +522,16 @@ async function readOnce(name: string, target: Target): Promise<void> {
   for (const key of asked.keys()) if (key.startsWith(name + " ")) asked.delete(key);
   // And what the box knows read again, in case a watch missed a change.
   known = null;
-  if (running) place.running = running;
+  applyRunning(place, running);
   places.set(name, place);
   // What its events said meanwhile may be newer than what was read: read those again.
   if (touched.size) {
     await Promise.all([...touched].map(id => readOne(name, target, id)));
-    const now = await readRunning(target);
-    if (now) place.running = now;
+    const refreshed = await readRunningSnapshot(name, target);
+    if (!keeping || places.get(name) !== place) return;
+    applyRunning(place, refreshed);
   }
-  for (const id of new Set([...place.wakeReads.keys(), ...place.waking])) if (!place.running.has(id)) clearWakeTurn(place, id);
+  for (const id of new Set([...place.wakeReads.keys(), ...place.wakeRetries.keys(), ...place.waking])) if (!place.running.has(id)) clearWakeTurn(place, id);
   const bots = readBoxKnows().botSessions;
   await Promise.all([...place.running].filter(id => bots.has(id) && !place.wakeReads.has(id)).map(id => readWakeTurn(place, target, id)));
   workOut();
@@ -513,16 +539,27 @@ async function readOnce(name: string, target: Target): Promise<void> {
 
 function clearWakeTurn(place: Place, id: string): void {
   place.wakeReads.delete(id);
+  clearTimeout(place.wakeRetries.get(id));
+  place.wakeRetries.delete(id);
   place.waking.delete(id);
 }
 
 async function readWakeTurn(place: Place, target: Target, id: string): Promise<void> {
   // An end (or the next start) invalidates a read of the preceding turn, even if it lands later.
+  clearTimeout(place.wakeRetries.get(id));
+  place.wakeRetries.delete(id);
   const read = {};
   place.wakeReads.set(id, read);
-  const waking = await wakeTurnIsOpen(target, id).catch(() => false);
+  const waking = await wakeTurnIsOpen(target, id).catch(() => null);
   if (place.wakeReads.get(id) !== read || !place.running.has(id)) return;
   place.wakeReads.delete(id);
+  if (waking === null) {
+    if (!keeping || ![...places.values()].includes(place)) return;
+    const retry = setTimeout(() => void readWakeTurn(place, target, id), 250);
+    retry.unref?.();
+    place.wakeRetries.set(id, retry);
+    return;
+  }
   if (waking) place.waking.add(id);
   else place.waking.delete(id);
   scheduleWorkOut();
@@ -581,6 +618,7 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type) && !RELOADS.has(event.type)) return;
   // (Read whole now: it's read again once that's in.)
   reading.get(name)?.add(id);
+  if (event.type === STARTS || ENDS.has(event.type) || event.type === "session.deleted") runningReads.get(name)?.add(id);
   const mine = ++eventCount;
   asked.set(`${name} ${id}`, mine);
   if (event.type === "session.deleted") {

@@ -700,6 +700,7 @@ fn moved_bot_wakes_are_followed_before_opening_bots(cx: &mut TestAppContext) {
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
     cx.simulate_resize(size(px(1280.), px(900.)));
+    workspace.update_in(cx, |workspace, _, cx| workspace.set_now(NOW, cx));
     cx.run_until_parked();
     stand_in.move_bot("bot_mira", "devbox");
     peer.add_bot("bot_mira", "Mira", json!({"color":"mint","shape":"round","face":"calm"}));
@@ -721,6 +722,7 @@ fn moved_bot_wakes_are_followed_before_opening_bots(cx: &mut TestAppContext) {
         if shown(cx, "open-wake-schedule") { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    assert!(shown(cx, "bot-avatar-wake"), "the destination's schedule also marks its avatar");
     click(cx, "open-wake-schedule");
     for _ in 0..400 {
         cx.run_until_parked();
@@ -783,4 +785,35 @@ fn wake_badge_sits_on_the_avatar_and_yields_to_activity(cx: &mut TestAppContext)
     assert_eq!(wake.bottom(), avatar.bottom() - px(3.));
     assert_eq!(wake.size, bounds(cx, "bot-avatar-needs-you").unwrap().size);
     assert_eq!(wake.size, bounds(cx, "bot-avatar-at-work").unwrap().size);
+}
+
+#[gpui::test]
+fn wake_chip_drops_cached_activity_on_disconnect_until_a_fresh_bot_snapshot(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_now("bot_mira", json!({"working":1,"asking":0,"state":"working","waking":true}));
+    let client = BoxClient::new(stand_in.clone());
+    let (workspace, cx) = open(cx, stand_in.clone());
+    bot(&workspace, cx, "bot_mira");
+    click(cx, "bot-chat");
+    assert!(shown(cx, "open-wake-schedule"));
+
+    stand_in.set_down(true);
+    workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "bot-chat-strip"));
+    assert!(!shown(cx, "open-wake-schedule"));
+
+    stand_in.set_down(false);
+    workspace.update_in(cx, |workspace, _, cx| workspace.connected(client.connect(), cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "open-wake-schedule"), "the old snapshot stays stale after reconnect");
+    let bots = workspace.read_with(cx, |workspace, _| workspace.area_view(Area::Bots).unwrap().clone());
+    bots.update(cx, |bots, cx| bots.shown(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "open-wake-schedule"), "a fresh active turn can claim the chip again");
+
+    stand_in.set_bot_now("bot_mira", json!({"working":0,"asking":0,"state":"idle"}));
+    bots.update(cx, |bots, cx| bots.shown(cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "open-wake-schedule"));
 }
