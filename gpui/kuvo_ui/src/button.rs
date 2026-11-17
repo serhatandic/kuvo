@@ -93,6 +93,7 @@ pub struct Button {
     style: ButtonStyle,
     size: ButtonSize,
     icon_size: IconSize,
+    icon_color: Option<Hsla>,
     pill: bool,
     square: bool,
     disabled: bool,
@@ -122,6 +123,7 @@ impl Button {
             style: ButtonStyle::default(),
             size: ButtonSize::default(),
             icon_size: IconSize::Nav,
+            icon_color: None,
             pill: false,
             square: false,
             disabled: false,
@@ -178,6 +180,12 @@ impl Button {
     /// The icon's size (16 px in the title bar and toolbars); the button keeps its size.
     pub fn icon_size(mut self, size: IconSize) -> Self {
         self.icon_size = size;
+        self
+    }
+
+    /// Match the icon and its loading spinner to adjacent text.
+    pub fn icon_color(mut self, color: Hsla) -> Self {
+        self.icon_color = Some(color);
         self
     }
 
@@ -329,11 +337,11 @@ impl RenderOnce for Button {
         };
         // A ghost button's icons are drawn as the rail's and the rows' are: the icon grey at rest,
         // a step up when it's on (its wash says so), never the text's near-black.
-        let icon_color = match self.style {
+        let icon_color = self.icon_color.unwrap_or(match self.style {
             ButtonStyle::Ghost if self.selected => c.icon_on,
             ButtonStyle::Ghost => c.icon,
             _ => look.text,
-        };
+        });
         let disabled = self.disabled;
 
         // Found by its id in tests (`debug_bounds`).

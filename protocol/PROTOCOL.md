@@ -5837,6 +5837,22 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     (`kuvo.limits.updated`) the moment a window listed starts over, so no client watches a clock
     for it. `title`, its name (`limits.titles`): `name`, else `model`, else by its length
     ("Session" for 300 minutes, "Weekly" for 10080, "Monthly", "3-day", "8-hour"), else "Limit".
+  - `usage` (HTTP `rows`): display facts for the Usage page. `title` is the account title without
+    a computer suffix. `computers` lists the named reading sources with `here` relative to the
+    answering computer. With no windows it lists where the account is signed in. `status?` is
+    `{words, warning}`. Each meter has `title, share, value, level, readAt, resetsAt?, resetLabels, freshForMs`.
+    Each `resetLabels` entry is `{at, words}`, effective from `at`. Countdowns under a day round up.
+    Before the first label, show “resets” followed by the local weekday and time of `resetsAt`.
+    The timestamps are Unix milliseconds for the client to format in the viewer's time zone. These
+    facts retain the historical reading after a reset. Draw it as old at once for an away or failing
+    source, or when the time supplied in `freshForMs` has passed. That time ends at the earlier of
+    the next reset, the source going away, or 30 minutes from the reading.
+    The limits response also includes `usageUpdatedAt?`, the latest timestamp represented by the
+    rows, including status-only accounts. Refresh may answer with `refreshPending: true`; follow
+    `GET kuvo/agents/api/kuvo/limits/events` and GET the latest snapshot on each line. The stream
+    signals once when it opens and on `kuvo.limits.updated`, including refresh completion.
+    `refreshCompletedAt?` is the latest successful manual refresh time. `refreshFailed` reports
+    whether the last refresh could not finish.
   - `balance` `{left, limit?, unit}`: credits left to spend, where the account has them.
   - `balance` with `limit`: what was bought (OpenRouter's total credits), so a client draws what's
     left of it as a meter.

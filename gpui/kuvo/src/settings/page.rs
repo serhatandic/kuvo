@@ -3,12 +3,14 @@
 //! labels, a card of rows for each group, each row's name and line on the left and its control on
 //! the right), with what the box refused over it, a confirm, or the sign-in sheet.
 
+use std::{cell::Cell, rc::Rc};
+
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
+    AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, list,
     prelude::FluentBuilder as _, px,
 };
-use kuvo_box::areas::Level;
+use kuvo_box::areas::{Level, UsageMeter};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
     button::{Button, ButtonSize},
@@ -20,6 +22,7 @@ use kuvo_ui::{
 
 use super::rows::{Act, Control, FlowDrawn, Layout, Leading, Meter, Part, Push, Row, Tone};
 use kuvo_box::settings_pages::{BadgeTone, FlowState};
+use super::usage_columns::{PAGE_WIDTH as USAGE_PAGE_WIDTH, CardMeasure, UsageColumns, CARD_WIDTH};
 use super::{AddMachine, Drawn, Item, PAGE_WIDTH, Pick, SettingsView, Side, Standing, box_key, yours_key};
 use crate::areas::{Reading, computer_line};
 use crate::time;
@@ -195,12 +198,48 @@ impl SettingsView {
         self.picker.open(menu, window, cx);
     }
 
-    fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// The timestamp or manual refresh status shown beside the refresh button.
+    pub fn usage_update_words(&self) -> String {
+        if self.usage_refreshing() {
+            return "Updating…".into();
+        }
+        let updated = self.usage_updated_at
+            .map(|at| usage_updated(at, self.now.unwrap_or_else(time::now_ms)));
+        if self.usage_refresh_failed {
+            return updated.map_or_else(|| "Couldn’t update usage".into(), |last| format!("Couldn’t update usage · {last}"));
+        }
+        updated.unwrap_or_default()
+    }
+
+    fn item(&mut self, ix: usize, page_width: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let Some(item) = self.items.get(ix).cloned() else { return div().into_any_element() };
         let body: AnyElement = match item {
             Item::Title(title) => div().pt(space::S8).text_ui(TypeSize::Title).medium().text_color(c.text).child(title).into_any_element(),
             Item::Whose(words) => div().debug_selector(|| "settings-whose".into()).pt(space::S1).text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element(),
+            Item::UsageSummary => {
+                let busy = self.usage_refreshing();
+                div().flex().items_center().gap(space::S0_5).pt(space::S0_5).pb(space::S2)
+                    .child(div().debug_selector(|| "usage-updated".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(self.usage_update_words()))
+                    .child(Button::icon_only("usage-refresh", IconName::Refresh, "Refresh usage").ghost().size(ButtonSize::Small)
+                        .icon_size(IconSize::XSmall).icon_color(c.text_muted).loading(busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(cx))))
+                    .into_any_element()
+            }
+            Item::UsageCards(rows) => {
+                let width = (page_width - 2. * space::S8).clamp(px(0.), px(USAGE_PAGE_WIDTH));
+                let cards = rows.into_iter().map(|row| {
+                    let Control::Usage { account, meters, .. } = &row.control else { unreachable!("usage account") };
+                    let measure = CardMeasure {
+                        width: width.min(px(CARD_WIDTH)),
+                        text_scale: kuvo_ui::theme::scaled(px(12.)),
+                        meter_count: meters.len(),
+                        status: row.why.clone(),
+                    };
+                    (account.clone(), measure, self.row(row, true, true, cx))
+                }).collect();
+                UsageColumns { width, placement: self.usage_placement.clone(), cards }.into_any_element()
+            }
             Item::Group { label, words } => div()
                 .pt(space::S6)
                 .pb(space::S2)
@@ -245,8 +284,9 @@ impl SettingsView {
                 .into_any_element(),
             Item::End => div().h(space::S10).into_any_element(),
         };
-        // Each item in a column as wide as a page's cards, in the middle.
-        div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(PAGE_WIDTH)).child(body)).into_any_element()
+        // Usage has room for three cards. The other settings pages use the usual column.
+        let width = if self.side() == Side::Computer && self.section() == "usage" { USAGE_PAGE_WIDTH } else { PAGE_WIDTH };
+        div().w_full().flex().justify_center().px(space::S8).child(div().w_full().max_w(px(width)).child(body)).into_any_element()
     }
 
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -255,11 +295,12 @@ impl SettingsView {
             return self.bare_row(row, cx);
         }
         let Row { key, leading, title, detail, tone, why, control, badge, notice, flow, aside, .. } = row;
+        let tile = if matches!(&control, Control::Usage { .. }) { px(22.) } else { px(28.) };
         let (mark, letter) = (format!("{key}-mark"), format!("{key}-initial"));
         let leading: Option<AnyElement> = match leading {
             Leading::None => None,
             Leading::Mark(service) => Some(match kuvo_ui::icon::Mark::of_service(&service) {
-                Some(drawn) => div().debug_selector(move || mark).flex().flex_none().items_center().justify_center().size(px(28.)).rounded(radius::PILL).bg(c.sunken).child(drawn.in_tile(px(28.))).into_any_element(),
+                Some(drawn) => div().debug_selector(move || mark).flex().flex_none().items_center().justify_center().size(tile).rounded(radius::PILL).bg(c.sunken).child(drawn.in_tile(tile)).into_any_element(),
                 // A service a newer box names, with no mark here: its first letter.
                 None => div().debug_selector(move || letter).child(initial(&service, cx)).into_any_element(),
             }),
@@ -277,6 +318,29 @@ impl SettingsView {
                 .when(last, |d| d.rounded_b(radius::POPOVER).border_b_1())
                 .px(space::S5)
         };
+        if let Control::Usage { plan, meters, .. } = &control {
+            let selector = key.clone();
+            let now = self.now.unwrap_or_else(time::now_ms);
+            let plan = plan.as_ref().filter(|plan| !plan.is_empty()).map(|plan| {
+                div().flex_none().max_w(px(110.)).truncate().rounded(radius::PILL).bg(c.sunken)
+                    .px(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child(plan.clone())
+            });
+            return div().id(SharedString::from(key.clone())).debug_selector(move || selector)
+                    .w_full().min_w_0()
+                    .rounded(radius::POPOVER).border_1().border_color(c.border).bg(c.card)
+                    .px(space::S3).py(space::S2).flex().flex_col().gap(space::S1_5)
+                    .child(
+                        div().flex().items_center().gap(space::S2).children(leading)
+                            .child(div().min_w_0().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
+                            .children(plan)
+                            .when(!detail.is_empty(), |d| d.child(div().ml_auto().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_muted).child(detail))),
+                    )
+                    .children(why.map(|words| {
+                        div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(words)
+                    }))
+                    .when(!meters.is_empty(), |d| d.child(usage_meters(&key, meters, now, self.usage_elapsed(), cx)))
+                    .into_any_element();
+        }
         if matches!(&control, Control::Field { save: Act::Filter, .. }) {
             let selector = key.clone();
             let control = self.control(&key, control, cx);
@@ -694,6 +758,7 @@ impl SettingsView {
                 .into_any_element()
             }
             Control::Windows(meters) => windows(key, &meters, self.now.unwrap_or_else(time::now_ms), cx),
+            Control::Usage { .. } => unreachable!("usage meters are drawn in their account row"),
             Control::Thing { buttons, menu, switch } => {
                 let menu = (!menu.is_empty()).then(|| self.control(key, Control::Menu { shown: None, choices: menu.into_iter().map(|push| (push.label, None, push.act, false)).collect() }, cx));
                 let switch = switch.map(|(on, act)| self.control(key, Control::Switch { on, act }, cx));
@@ -875,6 +940,75 @@ fn windows(key: &str, meters: &[Meter], now: f64, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+fn usage_updated(at: f64, now: f64) -> String {
+    let minutes = ((now - at) / 60_000.).max(0.) as u64;
+    match minutes {
+        0 => "Updated just now".into(),
+        1..60 => format!("Updated {minutes} min ago"),
+        60..1440 => format!("Updated {} h ago", minutes / 60),
+        _ => format!("Updated {} d ago", minutes / 1440),
+    }
+}
+
+/// The bridge chooses the countdown wording. Only distant dates need the viewer's time zone.
+fn usage_reset(meter: &UsageMeter, now: f64) -> String {
+    if let Some(label) = meter.reset_labels.iter().rev().find(|label| label.at <= now) {
+        return label.words.clone();
+    }
+    let Some(at) = meter.resets_at else { return "Reset time unavailable".into() };
+    usage_local_reset(at, crate::pasted::utc_offset((at / 1000.) as i64))
+}
+
+fn usage_local_reset(at: f64, utc_offset: i64) -> String {
+    let seconds = (at / 1000.) as i64 + utc_offset;
+    let local_day = seconds.div_euclid(86_400);
+    let of_day = seconds.rem_euclid(86_400);
+    let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][local_day.rem_euclid(7) as usize];
+    format!("resets {weekday} {:02}:{:02}", of_day / 3600, of_day % 3600 / 60)
+}
+
+/// Stack full-width meters so all tracks have the same length.
+fn usage_meters(key: &str, meters: &[UsageMeter], now: f64, elapsed: std::time::Duration, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    div()
+        .flex()
+        .flex_col()
+        .gap(space::S2)
+        .children(meters.iter().enumerate().map(|(ix, meter)| {
+            let selector = format!("{key}-window-{ix}");
+            let old = meter.old_at(elapsed);
+            let color = if old || matches!(meter.level, Level::Calm | Level::Unknown) { c.text_muted } else { crate::rail::level_color(meter.level, cx) };
+            let detail = if old { format!("old {}", time::when(meter.read_at, now)) } else { usage_reset(meter, now) };
+            div()
+                .debug_selector(move || selector)
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(space::S0_5)
+                .child(div().truncate().text_ui(TypeSize::Small).text_color(c.text).child(meter.title.clone()))
+                .child(div().h(px(3.)).w_full().rounded(radius::PILL).bg(c.border)
+                    .child(div().h_full().w(gpui::relative(meter.share)).rounded(radius::PILL).bg(color)))
+                .child(div().flex().gap(space::S1).min_w_0().text_ui(TypeSize::Caption)
+                    .child(div().flex_none().text_color(color).child(meter.value.clone()))
+                    .child(div().min_w_0().truncate().text_color(if old { c.warning } else { c.text_muted }).child(format!("· {detail}"))))
+        }))
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn usage_time_labels_are_short_and_local() {
+        assert_eq!(usage_updated(0., 120_000.), "Updated 2 min ago");
+        // 01:59 EST is followed by 03:00 EDT on the same Sunday.
+        let sunday = (crate::time::day_number(2026, 3, 8) * 86_400 + 6 * 3600 + 59 * 60) as f64 * 1000.;
+        assert_eq!(usage_local_reset(sunday, -5 * 3600), "resets Sun 01:59");
+        assert_eq!(usage_local_reset(sunday + 60_000., -4 * 3600), "resets Sun 03:00");
+    }
+}
+
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
@@ -891,9 +1025,11 @@ impl Render for SettingsView {
         self.hear_blurs(window, cx);
         let loading = self.items.iter().all(|item| matches!(item, Item::Title(_) | Item::End | Item::Note { busy: true, .. } | Item::Whose(_)))
             .then(|| self.items.iter().find_map(|item| match item { Item::Note { words, busy: true, .. } => Some(words.clone()), _ => None })).flatten();
+        let page_width = Rc::new(Cell::new(px(0.)));
+        let measured_width = page_width.clone();
         let page = match loading {
             Some(words) => div().size_full().flex().items_center().justify_center().child(kuvo_ui::small::LoadingLabel::new("page-loading", words)).into_any_element(),
-            None => list(self.list.clone(), cx.processor(|this, ix, _, cx| this.item(ix, cx))).size_full().into_any_element(),
+            None => list(self.list.clone(), cx.processor(move |this, ix, _, cx| this.item(ix, measured_width.get(), cx))).size_full().into_any_element(),
         };
         let problem = self.problem.clone().map(|problem| {
             // Over the page, which starts under it: never over its title.
@@ -1068,6 +1204,11 @@ impl Render for SettingsView {
             .relative()
             .size_full()
             .bg(c.sidebar)
+            // Prepaint this before the list asks for Usage cards, including after a sidebar resize.
+            .when(self.side() == Side::Computer && self.section() == "usage", |d| {
+                d.child(canvas(move |bounds, _, _| page_width.set(bounds.size.width), |_, _, _, _| {})
+                    .absolute().size_full())
+            })
             .child(div().size_full().flex().flex_col().children(problem).child(div().flex_1().min_h_0().child(page)))
             .children(confirm)
             .children(sign_in)

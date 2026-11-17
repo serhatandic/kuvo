@@ -180,7 +180,7 @@ export class LimitsPeers {
   }
 
   /** Every computer's accounts, this box's first, then each peer's by name. */
-  rows(own: AccountLimits[]): LimitRow[] {
+  rows(own: AccountLimits[], presentUsage = false): LimitRow[] {
     const now = this.now()
     const self = this.directory.own()
     const boxes: LimitsBox[] = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }]
@@ -189,9 +189,10 @@ export class LimitsPeers {
       const ours = this.ours(key)
       const accounts = ours ? kept.accounts : forVouched(kept.accounts)
       const visible = this.noticePeer(key, kept) ? accounts.map(a => ({ ...a, ...(a.notices ? { notices: a.notices.filter(n => currentNotice(n, now)) } : {}) })) : withoutNotices(accounts)
-      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now - kept.heard > PEER_AWAY, ...(!ours ? { vouched: true } : {}), accounts: visible })
+      const awayAt = kept.heard + PEER_AWAY
+      boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, ...(!ours ? { vouched: true } : {}), accounts: visible })
     }
-    return limitRows(boxes, now)
+    return limitRows(boxes, now, presentUsage)
   }
 
   /**
