@@ -318,14 +318,32 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
   const machine = path.join(support, "machine");
   fs.mkdirSync(path.join(machine, "run"), { recursive: true });
   const env = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machine, TMPDIR: support };
-  atEnd(() => {
-    try { process.kill(Number(fs.readFileSync(path.join(machine, "run", "link.pid"), "utf8")), "SIGTERM"); } catch {}
+  // The bridge setup starts on the machine (detached, outliving setup): it names itself in link.pid
+  // once it has loaded, which on a busy computer is after setup has returned.
+  const alive = pid => { try { return pid > 0 && process.kill(pid, 0); } catch { return false; } };
+  const bridgePid = () => { try { return Number(fs.readFileSync(path.join(machine, "run", "link.pid"), "utf8")) || 0; } catch { return 0; } };
+  const bridgeVersion = () => { try { return fs.readFileSync(path.join(machine, "run", "link.version"), "utf8").trim(); } catch { return ""; } };
+  const until = async (done, what) => {
+    for (let tries = 0; !done(); tries++) {
+      if (tries === 600) assert.fail(`${what}, after 30 seconds`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  };
+  // Stopped, and gone, before its folder is removed: one still running writes in it as it goes.
+  atEnd(async () => {
+    const pid = bridgePid();
+    if (!pid) return;
+    try { process.kill(pid, "SIGTERM"); } catch {}
+    await until(() => !alive(pid), "the machine's bridge never stopped");
   });
-  // Set up as the app sets it up: what this Mac's box gives (kuvo/link/setup), over SSH.
+  // Set up as the app sets it up: what this Mac's box gives (kuvo/link/setup), over SSH. Its bridge
+  // up before the next step, so setting up again finds it running rather than starting a second.
   const setUp = async () => {
     const given = (await route("GET", "kuvo/link/setup")).json;
     const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }), env, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
+    // (Its version too, written just after: without it, setting up again starts a newer one.)
+    await until(() => alive(bridgePid()) && bridgeVersion() !== "", "the machine's bridge never started");
     return { given, link: read(path.join(machine, "run", "link.json")) };
   };
   const first = await setUp();
