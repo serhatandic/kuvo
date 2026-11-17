@@ -54,7 +54,7 @@ const ours = pid => homes.some(home => (spawnSync("/bin/ps", ["-ww", "-o", "comm
 atEnd(async () => {
   for (const home of homes) {
     for (const line of read(path.join(home, "helpers.log")).split("\n")) if (Number(line.split(" ")[0]) > 1) started.add(Number(line.split(" ")[0]));
-    for (const file of ["turn.pid", "box.pid"]) if (Number(read(path.join(home, ".kuvo-code", "run", file))) > 1) started.add(Number(read(path.join(home, ".kuvo-code", "run", file))));
+    for (const file of ["turn.pid", "keepers.log"]) for (const line of read(path.join(home, ".kuvo-code", "run", file)).split("\n")) if (Number(line) > 1) started.add(Number(line));
   }
   const left = [...started].filter(pid => alive(pid) && ours(pid));
   for (const pid of left) { try { process.kill(pid, "SIGTERM"); } catch {} }
