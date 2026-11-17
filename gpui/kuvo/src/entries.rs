@@ -480,7 +480,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
             units
         }
         // (As the box's copy will be: what you wrote.)
-        Entry::Outgoing { words, .. } if !quoted(words).1.is_empty() => vec![Unit::new(&[0], quoted(words).1, Lead::Paragraph)],
+        Entry::Outgoing { words, .. } => words_units(words),
         _ => Vec::new(),
     }
 }
@@ -489,8 +489,7 @@ pub fn units(entry: &Entry, open: &HashSet<Fold>) -> Vec<Unit> {
 pub fn message_units(message: &Message, open: &HashSet<Fold>) -> Vec<Unit> {
     match message {
         Message::User(user) => {
-            let words = quoted(&user.parts().words).1;
-            if words.is_empty() { Vec::new() } else { vec![Unit::new(&[0], words, Lead::Paragraph)] }
+            words_units(&user.parts().words)
         }
         Message::Shell(run) => run.output.as_ref().map(|output| well_units(&output.output, Some(&run.command), open.contains(&Fold::Whole(run.id.clone(), 0, 0)), &[0])).unwrap_or_default(),
         Message::Assistant(step) => {
@@ -575,12 +574,35 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
         .into_any_element()
 }
 
-/// A message's words as what it quotes (each quote, in order) and what it says itself.
-fn quoted(words: &str) -> (Vec<String>, String) {
-    let segments = kuvo_box::quoting::segments(words);
-    let quotes = segments.iter().filter_map(|(quote, _)| quote.clone()).collect();
-    let own = segments.into_iter().map(|(_, text)| text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n");
-    (quotes, own)
+/// A part of a message's words as it shows them: what it quotes, if anything, and the words under
+/// it with their unit's place among the message's selectable text (none when it has no words).
+struct Piece {
+    quote: Option<String>,
+    text: String,
+    unit: Option<u32>,
+}
+
+/// A message's words as it shows them, in the order written: each quote it replies to, with the
+/// words that answer it under it (KuvoClient's `Quoting.segments`, as the phone draws them).
+fn pieces(words: &str) -> Vec<Piece> {
+    let mut units = 0u32;
+    kuvo_box::quoting::segments(words)
+        .into_iter()
+        .filter(|(quote, text)| quote.is_some() || !text.is_empty())
+        .map(|(quote, text)| {
+            let unit = (!text.is_empty()).then(|| {
+                units += 1;
+                units - 1
+            });
+            Piece { quote, text, unit }
+        })
+        .collect()
+}
+
+/// The selectable text of a message's words, as [`user_message`] draws it: each part of its own
+/// words, in order, a paragraph apart (what it quotes isn't selectable).
+fn words_units(words: &str) -> Vec<Unit> {
+    pieces(words.trim()).into_iter().filter_map(|piece| piece.unit.map(|at| Unit::new(&[at], piece.text, Lead::Paragraph))).collect()
 }
 
 fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {
@@ -610,24 +632,34 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     for (n, agent) in parts.agents.iter().enumerate() {
         below.push(Chip::new(("named", ix * 1000 + n), format!("&{}", agent.name)).icon(IconName::Bot).into_any_element());
     }
-    // What it replies to, in its bubble above its own words.
-    let (quotes, words) = quoted(parts.words.trim());
-    let quote_blocks: Vec<AnyElement> = quotes
+    // What it replies to, in its bubble, each quote above the words that answer it, in the order
+    // they were written.
+    let blocks: Vec<AnyElement> = pieces(parts.words.trim())
         .into_iter()
         .enumerate()
-        .map(|(n, quote)| {
-            div()
-                .debug_selector(move || format!("quoted-{ix}-{n}"))
-                .pl(space::S2)
-                .border_l_2()
-                .border_color(c.border_strong)
-                .text_ui(TypeSize::Small)
-                .text_color(c.text_muted)
-                .child(quote)
-                .into_any_element()
+        .flat_map(|(n, Piece { quote, text, unit })| {
+            let quote = quote.map(|quote| {
+                div()
+                    .debug_selector(move || format!("quoted-{ix}-{n}"))
+                    // (A little apart from the answer before it, so each quote reads with its own, as the phone draws it.)
+                    .when(n > 0, |d| d.mt(space::S1))
+                    .pl(space::S2)
+                    .border_l_2()
+                    .border_color(c.border_strong)
+                    .text_ui(TypeSize::Small)
+                    .text_color(c.text_muted)
+                    .child(quote)
+                    .into_any_element()
+            });
+            let words = unit.map(|at| {
+                div()
+                    .debug_selector(move || format!("said-{ix}-{n}"))
+                    .child(SelectableText::new(("words", ix * 1000 + at as usize), text).selectable(Some(sel.unit(&[at]))))
+                    .into_any_element()
+            });
+            quote.into_iter().chain(words)
         })
         .collect();
-    let has_quotes = !quote_blocks.is_empty();
     // (The whole column's width, so its bubble is as wide as words need, with pictures over it or not.)
     div()
         .w_full()
@@ -644,7 +676,7 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
                 .items_end()
                 .gap(space::S1_5)
                 .children(keyword)
-                .when(!words.is_empty() || has_quotes, |d| {
+                .when(!blocks.is_empty(), |d| {
                     d.child(
                         div()
                             .debug_selector(move || format!("bubble-{ix}"))
@@ -657,8 +689,7 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
                             .gap(space::S2)
                             .text_ui(TypeSize::Body)
                             .text_color(c.text)
-                            .children(quote_blocks)
-                            .when(!words.is_empty(), |d| d.child(SelectableText::new(("words", ix), words).selectable(Some(sel.unit(&[0]))))),
+                            .children(blocks),
                     )
                 }),
         )

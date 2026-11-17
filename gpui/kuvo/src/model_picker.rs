@@ -19,7 +19,7 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px, svg, uniform_list,
+    AnyElement, App, AppContext as _, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement, IntoElement, KeyBinding, ParentElement, Render, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, px, uniform_list,
 };
 use kuvo_box::{
     client::BoxClient,
@@ -652,7 +652,7 @@ impl ModelPicker {
                 };
                 let star_selector = selector.replacen("model-row-", "model-star-", 1);
                 let mark = mark.map(|(path, color)| match path {
-                    Some(path) => svg().path(path).flex_none().size(px(11.)).text_color(color.unwrap_or(c.text_muted)).into_any_element(),
+                    Some(path) => kuvo_ui::icon::Mark::new(path).icon_size(IconSize::Indicator).color(color.unwrap_or(c.text_muted)).into_any_element(),
                     None => Icon::new(IconName::Sparkle).size(IconSize::Indicator).color(c.text_faint).into_any_element(),
                 });
                 Some(
@@ -754,7 +754,7 @@ impl ModelPicker {
         }
         for (ix, rail) in self.catalog.rails.iter().enumerate() {
             let mark = match rail.mark {
-                Some(path) => svg().path(path).size(px(18.)).text_color(rail.color.unwrap_or(c.text)).into_any_element(),
+                Some(path) => kuvo_ui::icon::Mark::new(path).icon_size(IconSize::Medium).color(rail.color.unwrap_or(c.text)).into_any_element(),
                 None => div().text_ui(TypeSize::Small).medium().text_color(c.text_muted).child(rail.name.chars().next().map(|first| first.to_uppercase().to_string()).unwrap_or_default()).into_any_element(),
             };
             items.push(button(format!("model-rail-{}", rail.id), Shown::Rail(ix), rail.name.clone(), mark, cx).into_any_element());

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
-    StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, canvas, div, point, prelude::FluentBuilder as _, px, svg,
+    StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, canvas, div, point, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::areas::{Account, Level};
 use kuvo_box::error::Offered;
@@ -518,9 +518,10 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Opt
             })
             .collect()
     };
-    let mark_size = if rings.len() > 1 { px(12.) } else { px(15.) };
-    let mark: AnyElement = match kuvo_ui::icon::mark_path(&account.service) {
-        Some(path) => svg().path(path).size(mark_size).flex_none().text_color(kuvo_ui::icon::mark_color(&account.service).unwrap_or(c.text)).into_any_element(),
+    // The mark sits in the circle inside the innermost ring: the standard's share of it.
+    let innermost = RING - (STROKE + INNER_GAP) * 2. * rings.len().saturating_sub(1) as f32;
+    let mark: AnyElement = match kuvo_ui::icon::Mark::of_service(&account.service) {
+        Some(mark) => mark.in_tile(innermost - STROKE * 2.).into_any_element(),
         // A service a newer box names, with no mark here: its first letter.
         None => div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(account.service.chars().next().map(|first| first.to_uppercase().to_string()).unwrap_or_default()).into_any_element(),
     };

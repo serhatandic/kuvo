@@ -352,6 +352,60 @@ fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_a
     assert!(quoted.is_some_and(|text| text.contains("completely wiped if the email is already taken")));
 }
 
+/// Where each of a message's quotes and answers shows in row `ix`, top to bottom, by what it is
+/// (`quoted-<ix>-<n>`, `said-<ix>-<n>`, `n` its place in the message).
+fn drawn_order(ix: usize, cx: &mut VisualTestContext) -> Vec<String> {
+    let mut found: Vec<(Pixels, String)> = (0..8)
+        .flat_map(|n| [format!("quoted-{ix}-{n}"), format!("said-{ix}-{n}")])
+        .filter_map(|name| {
+            let selector: &'static str = Box::leak(name.clone().into_boxed_str());
+            cx.debug_bounds(selector).map(|bounds| (bounds.top(), name))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    found.into_iter().map(|(_, name)| name).collect()
+}
+
+#[gpui::test]
+fn a_reply_to_two_quotes_shows_each_answer_under_its_quote_in_the_order_written(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    let composer = view.read_with(cx, |view, _| view.composer().clone());
+    // Two quotes, each answered under it, and words after them, sent as the user writes them.
+    for (at, (quote, answer)) in [("Keep what was typed", "Yes, keep it"), ("Show the error under the field", "ok")].into_iter().enumerate() {
+        view.update_in(cx, |view, window, cx| view.quote(quote, window, cx));
+        let field = composer.read_with(cx, |composer, _| composer.answer_field(at)).expect("its answer's field");
+        field.update(cx, |field, cx| field.set_text(answer, cx));
+    }
+    // (The keyboard is in the last answer, as quoting leaves it; Return there sends.)
+    let field = composer.read_with(cx, |composer, _| composer.field().clone());
+    field.update(cx, |field, cx| field.set_text("Then run the tests", cx));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let written = "> Keep what was typed\n\nYes, keep it\n\n> Show the error under the field\n\nok\n\n---\n\nThen run the tests";
+    let (ix, sent) = view.read_with(cx, |view, _| {
+        view.entries().iter().enumerate().rev().find_map(|(ix, entry)| match entry {
+            kuvo::entries::Entry::Outgoing { words, .. } => Some((ix, words.clone())),
+            _ => None,
+        })
+    }).expect("on its way");
+    assert_eq!(sent, written, "sent in the order written");
+    let in_order = |ix: usize| vec![format!("quoted-{ix}-0"), format!("said-{ix}-0"), format!("quoted-{ix}-1"), format!("said-{ix}-1"), format!("said-{ix}-2")];
+    assert_eq!(drawn_order(ix, cx), in_order(ix), "on its way: each answer under its quote");
+
+    // The box's copy, as the engine keeps it: the same, and copied in that order.
+    show(&view, json!([{ "type": "user", "id": "m1", "time": { "created": 1000 }, "text": written }]), cx);
+    let ix = view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == "m1")).expect("its row");
+    assert_eq!(drawn_order(ix, cx), in_order(ix), "sent: each answer under its quote");
+    // Each answer selects as drawn: a drag over one copies it, and ⌘A all of them, in order.
+    drag(at(&view, "m1", &[1], "ok", false, cx), at(&view, "m1", &[1], "ok", true, cx), cx);
+    assert_eq!(copied(cx), "ok");
+    drag(at(&view, "m1", &[2], "run", false, cx), at(&view, "m1", &[2], "tests", true, cx), cx);
+    assert_eq!(copied(cx), "run the tests");
+    clicks(at(&view, "m1", &[0], "keep", false, cx), 1, cx);
+    cx.simulate_keystrokes("cmd-a");
+    assert_eq!(copied(cx), "Yes, keep it\n\nok\n\nThen run the tests");
+}
+
 #[gpui::test]
 fn finishing_a_selection_shows_add_to_chat_near_its_end_until_it_is_cleared_or_used(cx: &mut TestAppContext) {
     let (view, cx) = open(cx, "ses_signup");

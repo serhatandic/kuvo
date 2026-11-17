@@ -421,6 +421,70 @@ impl RenderOnce for Icon {
     }
 }
 
+/// How much of a round (or square) tile's width a mark's longest side takes: the ring's inner
+/// circle, an account's tile, a bot's badge. Zed puts a 16 px icon in a 24 px button, two thirds.
+pub const MARK_IN_TILE: f32 = 0.63;
+
+/// A provider's or service's mark: the one way a logo is drawn, wherever it shows.
+///
+/// Every file in `assets/marks` is framed to one standard (`examples/normalize_marks.rs`, held by
+/// `tests/marks.rs`): a square whose size is the size the mark is drawn at, with the artwork
+/// centred in it, its box never larger than the square and its optical size (a round mark looks
+/// bigger than a square one of the same width) the same for every logo. So a mark's `size` is
+/// like an icon's: [`IconSize`]'s for a bare mark in a row or a rail, or
+/// [`Mark::in_tile`] for one inside a round or square tile.
+#[derive(IntoElement)]
+pub struct Mark {
+    path: &'static str,
+    size: Pixels,
+    color: Option<Hsla>,
+}
+
+impl Mark {
+    pub fn new(path: &'static str) -> Self {
+        Self { path, size: IconSize::Nav.pixels(), color: None }
+    }
+
+    /// A service's mark, in its maker's colour where it has one; `None` for a service Kuvo has none for.
+    pub fn of_service(service: &str) -> Option<Self> {
+        let mark = Self::new(mark_path(service)?);
+        Some(match mark_color(service) {
+            Some(color) => mark.color(color),
+            None => mark,
+        })
+    }
+
+    /// Drawn at an icon's size.
+    pub fn icon_size(mut self, size: IconSize) -> Self {
+        self.size = size.pixels();
+        self
+    }
+
+    /// Drawn at `size` (the square its artwork is framed in).
+    pub fn size(mut self, size: Pixels) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Drawn to sit in a round or square tile `tile` wide: [`MARK_IN_TILE`] of it.
+    pub fn in_tile(mut self, tile: Pixels) -> Self {
+        self.size = tile * MARK_IN_TILE;
+        self
+    }
+
+    pub fn color(mut self, color: Hsla) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+impl RenderOnce for Mark {
+    fn render(self, _window: &mut Window, cx: &mut gpui::App) -> impl IntoElement {
+        use crate::theme::ActiveTheme;
+        svg().path(self.path).size(self.size).flex_none().text_color(self.color.unwrap_or(cx.theme().colors.text))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

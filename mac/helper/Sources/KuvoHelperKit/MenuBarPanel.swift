@@ -412,8 +412,11 @@ private struct Rings: View {
             // The service's mark, as the desktop app's rail has it; one Kuvo has no mark for (a
             // service a newer box names), its first letter.
             if let mark = ServiceMark.image(account.service) {
+                // The files are framed so a mark's size is its slot's (gpui/kuvo_ui/src/icon.rs, `Mark`):
+                // 63% of the circle inside the innermost ring, as the desktop app's rail draws it.
+                let inner = size - (stroke + 1.5) * 2 * CGFloat(max(rings.count - 1, 0)) - stroke * 2
                 Image(nsImage: mark).renderingMode(.template).resizable().scaledToFit()
-                    .frame(width: rings.count > 1 ? 10 : 13, height: rings.count > 1 ? 10 : 13).foregroundStyle(p.muted)
+                    .frame(width: inner * 0.63, height: inner * 0.63).foregroundStyle(p.muted)
             } else {
                 Text(account.service.prefix(1).uppercased()).font(.system(size: rings.count > 1 ? 7 : 9, weight: .semibold)).foregroundStyle(p.muted)
             }
