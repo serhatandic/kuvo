@@ -1,6 +1,8 @@
 // Updates (PROTOCOL.md, "Updates")
-// A box updates itself to a newer Kuvo Code's release: at night (02:00 to 05:00 where you are) when
-// nothing runs on it, or now (Update Now, from a Mac or a phone). Never to an older one, only what
+// A box updates itself to a newer Kuvo Code's release: one it finds itself (its release check, every
+// six hours at any hour), one Kuvo Code on this Mac offers, one another of your computers hands it
+// (`updates/fleet.ts`), or now (Update Now, from a Mac or a phone). None waits for night or for
+// work to end: an update stops nothing (but see `engineApart`). Never to an older one, only what
 // a key pinned here signed, only in a machine's own ~/.kuvo-code (not a test's or a demo's), and
 // only while every Mac that started its engine lately leaves a newer box as it is. It checks what
 // it got, tries the new engine and bridge, keeps what it had, swaps its files one by one and
@@ -16,7 +18,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
-import { nightOf } from "../../shared/night";
 import { updateUnderWay } from "../../shared/updating";
 import type { Body } from "../../shared/json";
 import { alive, commandLineOf, engineHome, engineRole, processRuns as runs, runsAs } from "../../shared/platform";
@@ -29,11 +30,11 @@ import { asked, fetchedPatiently, readBridgeFile, readEngineFile } from "../engi
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, textOf, writePrivate } from "../files";
 import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder } from "../home";
-import { yourZone } from "../../shared/zone";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink, type LinkState } from "../state";
 import { keeperEngine, SWAP_NOW } from "./engine-swap";
 import { swapLine, swapUnderWay } from "../../shared/engine-swap";
+import { HELD, keepRelease } from "./fleet";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -48,7 +49,8 @@ const ROLLBACK = path.join(UPDATES, "rollback");
 const LAUNCHERS = path.join(RUN, "launchers.json");
 const ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
 // A release this old before a box takes it by itself (most Macs have updated by then, and a bad
-// one doesn't reach every box the night it's out).
+// one doesn't reach every box the day it's out). Only its own release check waits so: one an app
+// offers, or another of your computers hands it, is taken at once.
 const RELEASE_AGE = 3 * 86_400_000;
 const MAC_MEMORY = 30 * 86_400_000;
 const BOX_FILE = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
@@ -154,7 +156,7 @@ export interface UpdateTrial {
 }
 
 /** `run/update.json`: the newest release heard of (and when it was looked for), an update being
- * tried, the step under way, how the last went, and the night it last tried. */
+ * tried, the step under way, how the last went, and the release check's round it last looked in. */
 export interface UpdateState {
   latest?: string;
   checked?: number;
@@ -163,7 +165,8 @@ export interface UpdateState {
   running?: UpdateStep;
   /** How the last update went, when (shared/routes/box.ts, `LAST_UPDATE`). */
   last?: LastUpdate;
-  night?: string;
+  /** The release check's round it last looked in (`releaseRound`). */
+  round?: string;
   /** A release offered from a folder here that failed as it was taken: its version, when, whether
    * it was put in place and taken back, and how many times in a row it failed. */
   offerFailed?: { version: string; at: number; takenBack: boolean; tries?: number; message?: string };
@@ -249,7 +252,7 @@ export const UPDATING_ALREADY = "It's updating already.";
 export const ON_TRIAL = "Its last update is still being checked: try again in a few minutes.";
 
 /** An update's outcome that says nothing of how updates go (something at work, or the last update
- * still on trial): it neither replaces how the last one went nor ends the night's try. */
+ * still on trial): it neither replaces how the last one went nor ends the round's look. */
 export const passingOutcome = (outcome: UpdateOutcome | null | undefined): boolean => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL);
 
 // An update under way, by its process (`run/.updating/pid`): one at a time, and one whose process
@@ -398,7 +401,7 @@ const OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"]
 // the keeper's mark last (the keeper starts its new script only once the script is there).
 const installOrder = (files: string[]): string[] => [...files].sort((a, b) => (a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1));
 
-/** How `update` runs: now (Update Now) or by night, from a folder on this computer (`from`, with
+/** How `update` runs: now (Update Now) or by its release check, from a folder on this computer (`from`, with
  * `boxes.json` and the pack it names) rather than GitHub, and for a test, its keys, address,
  * block, clock, steps and how long the new version has to come up. */
 export interface UpdateOptions {
@@ -725,6 +728,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // On trial from here: judged by the one health rule (`updates/health.ts`), by this process once
     // it's done here, or by the judge the keeper starts should this one go first.
     noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...(features ? { features } : {}), ...(dataKept !== null ? { dataKept } : {}) } });
+    // The signed release it runs now, kept for your other computers to take from it once it's
+    // judged well here (`updates/fleet.ts`).
+    keepRelease(released, pack);
     return { result: "updated", version: manifest.version };
   } catch (error) {
     brokeOff = fetching;
@@ -858,9 +864,10 @@ function packName(manifest: BoxRelease): string {
 /** What an update staged in `updates` taken away as it ends, whatever came of it: never what's kept
  * there for good (its rollback, what it installed, a release offered from a folder here, the copy
  * of the engine's data its last engine change kept (`backups`), and a move of this Mac's box, `rehome`: its state and kept originals, which `rehome/state.ts` keeps
- * there). */
+ * there, the signed release it runs, which it hands to your other computers (`release`), and one
+ * being pulled from one of them (`incoming`, `updates/fleet.ts`). */
 export function clearUpdateStaging(folder = UPDATES): void {
-  const kept = new Set(["rollback", "installed.json", "rehome", "offered", "backups"]);
+  const kept = new Set(["rollback", "installed.json", "rehome", "offered", "backups", "release", "incoming"]);
   for (const name of listOf(folder)) if (!kept.has(name)) fs.rmSync(path.join(folder, name), { recursive: true, force: true });
 }
 
@@ -968,9 +975,13 @@ export function checkDrift(now = Date.now()): boolean {
   return true;
 }
 
-// Whether it's the night's window where you are (02:00 to 05:00 in your time zone), and which night.
-export function updateNight(date = new Date(), zone: string | undefined = yourZone()): string | null {
-  return nightOf(date, zone);
+/** How often a box looks for a newer release by itself: needed only where no app opens and no peer
+ * brings one (a phone-only fleet, Linux machines alone), so security fixes still come. */
+export const RELEASE_CHECK = 6 * 3600_000;
+
+/** The release check's round `now` falls in: one look in each, at any hour. */
+export function releaseRound(now = Date.now()): string {
+  return String(Math.floor(now / RELEASE_CHECK));
 }
 
 // What `kuvo/update` says: whether updates are set up, this version and the newest heard of, how
@@ -987,7 +998,10 @@ export function noteTrialEnded(reason = ""): void {
   const message = back
     ? `${trial.to} didn't run well here${reason}, so it went back to ${from}. Your conversations stay as they are.`
     : `${trial.to} didn't run well here${reason}, and not all of it could go back to ${from}: Kuvo updates again later. Your conversations stay as they are.`;
-  noteUpdate({ trial: null, last: { at: Date.now(), result: "failed", message, from: trial.from, to: trial.to }, offerFailed: { version: trial.to, at: Date.now(), takenBack: back, message } });
+  // (Counted with the failures of that version before it: twice, and Update Now is offered.)
+  const before = updateState().offerFailed;
+  const tries = before?.version === trial.to ? (before.tries ?? 1) + 1 : 1;
+  noteUpdate({ trial: null, last: { at: Date.now(), result: "failed", message, from: trial.from, to: trial.to }, offerFailed: { version: trial.to, at: Date.now(), takenBack: back, tries, message } });
 }
 
 export function updateStatus(): UpdateStatus {
@@ -1008,26 +1022,26 @@ export function updateStatus(): UpdateStatus {
     blocked: updatesBlocked(),
     ...(offered ? { offered } : {}),
     // How the release offered from a folder here last went, when taking it failed: its own outcome,
-    // apart from the night's (`last`), which Kuvo Code here goes by (#679).
+    // apart from the release check's (`last`), which Kuvo Code here goes by (#679).
     ...(state.offerFailed ? { offerFailed: { version: state.offerFailed.version, at: state.offerFailed.at, takenBack: state.offerFailed.takenBack, ...(state.offerFailed.message ? { message: state.offerFailed.message } : {}) } } : {}),
     ...(swap ? { engineChange: { stage: swap.stage, from: swap.from, to: swap.to, line: swapLine(swap)! } } : {}),
     ...(state.engine ? { engineLast: state.engine } : {}),
   };
 }
 
-// An update in a process of its own (`kuvo-link.js update [--now] [--offered] [--night <night>]`,
-// as the offered release's is): a phone's or a Mac's Update Now, or the night's. Never in the
+// An update in a process of its own (`kuvo-link.js update [--now] [--offered] [--round <round>]`,
+// as the offered release's is): a phone's or a Mac's Update Now, or the release check's. Never in the
 // process that asks (a client's server, a machine's bridge), which the update restarts, or which may
 // be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Once
 // "updated", it stops a machine's bridge for the keeper to start the new one (a Mac's server goes
 // by itself, its files changed). One at a time: false when one runs, or this process just started
-// one. `night`: the night it's for, noted by it unless something was at work. `keys` and `url`: a
+// one. `round`: the release check's round it's for, noted by it unless something was at work. `keys` and `url`: a
 // test's (a test's folder only).
 let updateStarted: ChildProcess | null = null;
-export function startUpdate({ now = false, offered = false, night, keys, url }: { now?: boolean; offered?: boolean; night?: string; keys?: string[]; url?: string } = {}): boolean {
+export function startUpdate({ now = false, offered = false, round, keys, url }: { now?: boolean; offered?: boolean; round?: string; keys?: string[]; url?: string } = {}): boolean {
   if (updateStarted || isUpdating()) return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...(url ? ["--url", url] : [])] : [];
-  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(night ? ["--night", night] : []), ...test];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...test];
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: K, env: process.env });
   updateStarted = child;
   const done = () => { if (updateStarted === child) updateStarted = null; };
@@ -1057,6 +1071,15 @@ export async function* updateRoute(context: RouteContext): AsyncGenerator<Answer
     return yield* (startUpdate({ now: true, offered }) ? json(202, { ...updateStatus(), updating: "checking" }) : json(409, { message: UPDATING_ALREADY }));
   }
   return yield* json(405, {});
+}
+
+// The version of the signed release this box keeps to hand over (`updates/release`), whatever it
+// runs, or null.
+function heldVersion(): string | null {
+  try {
+    const given = JSON.parse(fs.readFileSync(path.join(HELD, "boxes.json"), "utf8"));
+    return JSON.parse(Buffer.from(given.manifest, "base64").toString("utf8"))?.version ?? null;
+  } catch { return null; }
 }
 
 // The version of the release offered from a folder here (`updates/offered`), or null: checked as
@@ -1117,13 +1140,19 @@ export interface Offered {
 // the update to it was taken back by the keeper (its new bridge never said it was well: the trial
 // says it's on its way to it, and the box is back where it was).
 /** Whether the offered release `version` failed more than once in a row as it was taken, or was put
- * in place and taken back: then it rests a day, and is said to have failed (`keepingSelfUp`); one
- * failure that changed nothing is tried again in an hour, said as waiting. */
+ * in place and taken back: then it rests a day; one failure that changed nothing is tried again in
+ * an hour. */
 export function offerFailedAgain(version: string | null | undefined, failed: UpdateState["offerFailed"] = updateState().offerFailed): boolean {
   return !!failed && failed.version === version && (failed.takenBack || (failed.tries ?? 1) > 1);
 }
 
-function offerRests(version: string, now: number): boolean {
+/** Whether the offered release `version` failed here twice in a row (put in place and taken back, or
+ * before anything changed): what a box can't get past by itself, so Update Now is offered. */
+export function offerFailedTwice(version: string | null | undefined, failed: UpdateState["offerFailed"] = updateState().offerFailed): boolean {
+  return !!failed && failed.version === version && (failed.tries ?? 1) > 1;
+}
+
+export function offerRests(version: string, now: number): boolean {
   const { offerFailed: failed, trial } = updateState();
   if (failed?.version === version && now - failed.at < (offerFailedAgain(version, failed) ? OFFER_REST : OFFER_RETRY)) return true;
   return trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
@@ -1182,7 +1211,12 @@ export function offerUpdate(from: unknown, { keys = UPDATE_KEYS, blocked = updat
       } catch {
         return { status: 422, message: "The release's files aren't what it says." };
       }
-      if (!differs) return { status: 409, message: `It has ${before} already, with these same files.` };
+      if (!differs) {
+        // (The release it runs, signed: kept to hand to your other computers, where it holds none
+        // of its version yet, as a box an app installed does.)
+        if (heldVersion() !== manifest.version) keepRelease(boxes, pack);
+        return { status: 409, message: `It has ${before} already, with these same files.` };
+      }
     }
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
@@ -1230,7 +1264,7 @@ export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutc
   const outcome = await update({ ...options, from: OFFERED, swapping: () => { takenBack = true; }, taking: taken => { version = taken; } });
   if (outcome.result === "failed") {
     const before = updateState().offerFailed;
-    const tries = before?.version === version && !before.takenBack ? (before.tries ?? 1) + 1 : 1;
+    const tries = before?.version === version ? (before.tries ?? 1) + 1 : 1;
     noteUpdate({ offerFailed: { version, at: (options.clock ?? Date.now)(), takenBack, tries, ...(outcome.message ? { message: outcome.message } : {}) } });
   }
   if (outcome.result === "updated" || outcome.result === "current") noteUpdate({ offerFailed: null });

@@ -56,7 +56,7 @@ import { letDevicesConnect } from "../mac/routes";
 import { freshBoxPermissions } from "../permissions";
 import type { BoxPermissions } from "../../shared/routes/box";
 import { macLink } from "../state";
-import { agentsWorking, newerVersion, offerChangesEngine, offerHeld, updateRoute, updateStatus } from "../updates/update";
+import { agentsWorking, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, holdsVault } from "../vault/holder";
 import { hasZoneRules, readZoneSetting, setZone, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
@@ -679,6 +679,8 @@ export const computerFacts = {
   offerHeld: (): string | null => offerHeld(),
   /** Whether the release Kuvo Code here offered brings another engine (the one kind that waits). */
   offerChangesEngine: (): boolean => offerChangesEngine(),
+  /** Whether the release offered here failed twice as it was taken: then, and only then, Update Now. */
+  offerFailedTwice: (version: string): boolean => offerFailedTwice(version),
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
   devices: (): boolean | null => macLink.config?.phones ?? null,
@@ -737,16 +739,21 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   const looking = update.updating === "checking";
   if (update.updating) rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
   else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...(update.blocked ? { tone: "warning" as const } : {}) }));
-  else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs by itself at night, or now.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: ready, actions: [now("Update Now")] }));
-  // (The release Kuvo Code here offered: taken in a moment, as it stops nothing; one with another
-  // engine as soon as nothing's at work, or now, asked first.)
+  // (A newer release its own check found: it installs by itself, nothing to press, unless its
+  // update failed.)
+  else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs by itself soon.", ...(failed ? { tone: "warning" as const, kind: "actions", actions: [now("Update Now")] } : { kind: "status" }), value: ready }));
+  // (The release Kuvo Code here offered, or another of your computers handed it: taken in a moment,
+  // as it stops nothing; one with another engine as soon as nothing's at work. Update Now only once
+  // it failed twice: what it can't get past by itself.)
   else if (update.offered && newerVersion(update.offered, update.version)) {
     const held = computerFacts.offerHeld();
     const engine = computerFacts.offerChangesEngine();
+    const stuck = computerFacts.offerFailedTwice(update.offered);
     const action = engine ? now("Update Now") : { id: "update", title: "Update Now" };
-    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...(held ? { line: held, kind: "status" } : { line: engine ? "It installs once nothing’s at work, or now." : "It installs in a moment, or now.", kind: "actions", actions: [action] }), value: update.offered }));
+    const line = stuck ? `It couldn’t be installed twice${update.offerFailed?.message ? `: ${update.offerFailed.message}` : "."}` : engine ? "It installs once nothing’s at work." : "It installs in a moment.";
+    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...(held ? { line: held, kind: "status" } : stuck ? { line, tone: "warning" as const, kind: "actions", actions: [action] } : { line, kind: "status" }), value: update.offered }));
   }
-  else rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself at night.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: update.version, actions: [now("Check Now")] }));
+  else rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: update.version, actions: [now("Check Now")] }));
 
   // "Let my devices connect": a Mac's switch. A computer you added always lets them in.
   const devices = computerFacts.devices();

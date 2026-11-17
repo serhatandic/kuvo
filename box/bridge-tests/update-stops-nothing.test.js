@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
 import { CODEX_STAND_IN } from "./codex-stand-in.js";
+import { peerHolding } from "./peer-release.js";
 
 const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
@@ -190,7 +191,7 @@ const linkUp = besides => until(() => {
 }, besides ? "a new link to run" : "the link to run");
 const turns = fake => { try { return fs.readFileSync(path.join(fake, "turns.log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
 
-test("an update while a coding agent's turn and an engine's turn run stops neither: both finish, and the new code is live in the server, the link and the bridge", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+test("an update another of your computers hands over while a coding agent's turn and an engine's turn run stops neither: both finish, and the new code is live in the server, the link and the bridge", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
   const { fake } = box();
   keep();
   const engine = await until(() => { const said = readJSON(path.join(RUN, "engine.json")); return said?.pid && runs(said.pid) ? said : null; }, "the engine to run");
@@ -208,9 +209,20 @@ test("an update while a coding agent's turn and an engine's turn run stops neith
   await until(() => turns(fake).length === 1, "the agent's turn to start");
   write(path.join(scratch, "engine-busy"), "");
 
-  // The release, taken as the box takes one an app offers: at once, though both work.
+  // The release, held by another of your computers (the mini, whose app updated): its mail says so,
+  // and this box pulls it from it over peer mail in that one exchange, checks it, and takes it at
+  // once, though both work.
   const { out, pinned } = pack();
-  assert.deepEqual(link.offerUpdate(out, { keys: [pinned], blocked: null }), { status: 202, version: "0.10.0" });
+  const mini = peerHolding(out);
+  const miniKey = link.publicOf(link.newKey()).toString("base64url");
+  const lab = readJSON(path.join(RUN, "link.json"));
+  link.writeLink({ ...lab, mac: miniKey, macs: [miniKey], legacy: { [miniKey]: { at: 1, peers: [{ key: miniKey, address: link.addressOf(crypto.randomBytes(32)).toString("base64url"), name: "mini", kind: "mac" }] } } });
+  let offered = 0;
+  link.fleetWith({ keys: [pinned], blocked: null, send: mini.send, offered: () => { offered++; } });
+  link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0" } } }, null);
+  mini.drain(reply => link.takeReleaseMail({ key: miniKey, kind: "mac" }, reply));
+  assert.equal(offered, 1, "pulled and offered here in one exchange");
+  assert.equal(link.offeredVersion(), "0.10.0");
   assert.deepEqual(await link.takeOffer({ keys: [pinned], blocked: null }), { result: "updated", version: "0.10.0" }, "taken though both are at work: it stops nothing");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8").trim(), "0.10.0");
   assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid, "the engine never stopped");

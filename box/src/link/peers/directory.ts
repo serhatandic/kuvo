@@ -116,6 +116,9 @@ export const keptAsking = (given: unknown[]): AskingSession[] => given.filter((e
 
 /** What a peer said of itself, checked: only what's of a size it would have. What it didn't say
  * (an older box says no `working`) is left out, never taken as none. */
+// A version as a peer says it (`computer.kuvo`, `computer.release`), or undefined.
+const toldVersion = (given: unknown): string | undefined => (typeof given === "string" && /^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given) ? given : undefined);
+
 export function keptComputer(given: unknown): ToldComputer | undefined {
   if (!isObject(given)) return undefined;
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
@@ -124,7 +127,8 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
   return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
     ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
     ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
-    ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}) };
+    ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}),
+    ...(toldVersion(given.kuvo) ? { kuvo: toldVersion(given.kuvo) } : {}), ...(toldVersion(given.release) ? { release: toldVersion(given.release) } : {}) };
 }
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));

@@ -727,7 +727,7 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
   expect(shown.groups.map((group: any) => [group.title, group.rows.map((row: any) => [row.title, row.line, row.value])])).toEqual([
     [undefined, [
       ["Running", "Kuvo Helper keeps it running, and starts it at login.", true],
-      ["Kuvo Code 1.0.0", "Up to date. It updates itself at night.", "1.0.0"],
+      ["Kuvo Code 1.0.0", "Up to date. It updates itself.", "1.0.0"],
       ["Let my devices connect", "Your phone and other computers reach this Mac, end to end encrypted.", true],
     ]],
     ["What macOS Allows Kuvo Helper", [
@@ -741,29 +741,35 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
   expect(JSON.stringify(shown)).not.toMatch(/\bbox\b|Kuvo Core/i)
 })
 
-test.if(onMac)("what needs you on This Mac is a warning with the way to it: Login Items off, a permission not allowed, an update that's ready", async () => {
+test.if(onMac)("what needs you on This Mac is a warning with the way to it: Login Items off, a permission not allowed, an update that failed twice; an update that's ready installs by itself", async () => {
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ latest: "1.0.1" }), working: async () => true })
   const shown = (await fromApp("GET", "kuvo/settings/computer")).json
   expect(rowOf(shown, "state").line).toBe("Kuvo Helper keeps it running.")
   expect(rowOf(shown, "login-items")).toMatchObject({ tone: "warning", line: "Off, so Kuvo on this Mac doesn’t start at login.", actions: [{ id: "open-login-items", title: "Open Login Items", opens: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension" }] })
   expect(rowOf(shown, "allows-screenRecording")).toMatchObject({ tone: "warning", line: "Not allowed. Agents can’t look at the screen.", actions: [{ title: "Open System Settings", opens: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" }] })
   expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet" })
-  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself at night, or now." })
-  // Work under way is said before it's stopped.
-  expect(rowOf(shown, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
+  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself soon.", kind: "status" })
+  expect(rowOf(shown, "version").actions).toBeUndefined()
+  // Its update failed: Update Now, and work under way is said before it's stopped.
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ latest: "1.0.1", last: { at: 1, result: "failed", message: "No room." } }), working: async () => true })
+  expect(rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
   expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
 
-  // The release Kuvo Code here carries, offered: one that keeps the engine stops nothing, so it's
-  // taken in a moment, and Update Now asks nothing.
+  // The release Kuvo Code here carries, offered (or another of your computers handed it): one that
+  // keeps the engine stops nothing, so it's taken in a moment, with nothing to press.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true })
   const offeredSame = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(offeredSame).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs in a moment, or now.", kind: "actions" })
-  expect(offeredSame.actions[0]).toEqual({ id: "update", title: "Update Now" })
-  // One that brings another engine waits for work to end: Update Now takes it now, asked first.
+  expect(offeredSame).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs in a moment.", kind: "status" })
+  expect(offeredSame.actions).toBeUndefined()
+  // One that brings another engine waits for work to end, by itself.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerChangesEngine: () => true })
   const offered = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(offered).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs once nothing’s at work, or now.", kind: "actions" })
-  expect(offered.actions[0]).toMatchObject({ id: "update", title: "Update Now", confirm: { button: "Update Now" } })
+  expect(offered).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs once nothing’s at work.", kind: "status" })
+  // Failed twice: what it can't get past by itself, so Update Now, asked first where it stops work.
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2", offerFailed: { version: "1.0.2", at: 1, takenBack: true, message: "It didn’t run well here." } }), working: async () => true, offerChangesEngine: () => true, offerFailedTwice: () => true })
+  const stuck = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
+  expect(stuck).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It couldn’t be installed twice: It didn’t run well here.", tone: "warning", kind: "actions" })
+  expect(stuck.actions[0]).toMatchObject({ id: "update", title: "Update Now", confirm: { button: "Update Now" } })
   // Not even on your word while its engine is stopped on purpose: said, with nothing to press.
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerHeld: () => "Its engine is stopped: start it to update it." })
   const held = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")

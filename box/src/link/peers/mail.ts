@@ -20,6 +20,7 @@ import { attentionGiven } from "../notices/hold";
 import { macSign, readLink, updateLink } from "../state";
 import { announce, toldPeers, writeAgents } from "./agents";
 import { takeZone } from "../zone/setting";
+import { followPeers, takeReleaseMail } from "../updates/fleet";
 import { takeAgents, vouchedOf } from "./directory";
 import { forgetOldMacs, macsOf, mailFor, openMail, peersOf, takeLegacyPeers } from "./known";
 import { bridgeAsk, takeLimits, takeSeat } from "./seats";
@@ -48,7 +49,12 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     writeAgents();
     // (Its bots show in this box's list of those elsewhere: its followers hear at once.)
     noteBotsChanged();
+    // A newer signed release it holds is taken from it now (PROTOCOL.md, "Updates", Your computers
+    // follow each other).
+    try { followPeers(); } catch {}
   }
+  // A release asked for, or handed over in parts (`updates/fleet.ts`).
+  if (isObject(payload.release)) try { takeReleaseMail(sender, payload.release); } catch {}
   // Your time zone (`zone/setting.ts`), from any of your computers.
   if (isObject(payload.zone)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.

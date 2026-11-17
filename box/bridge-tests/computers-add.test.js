@@ -497,7 +497,7 @@ test("setting a computer up again finds its files in place and leaves its runnin
   assert.equal(link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine").key, peer.key, "the same computer, once");
 });
 
-test("a machine whose Kuvo is older is brought up to date by this box whatever is at work there, its running engine left alone; Update Now asks nothing", async () => {
+test("a machine whose Kuvo is older is brought up to date by this box whatever is at work there, its running engine left alone; Try Again only once it couldn't be reached for days", async () => {
   const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
   const versionFile = path.join(remote, "bin", "box-version");
   const engine = read(path.join(remote, "run", "engine.json")).pid;
@@ -516,11 +516,19 @@ test("a machine whose Kuvo is older is brought up to date by this box whatever i
   } finally {
     fs.rmSync(path.join(fake, "refuse"), { force: true });
   }
+  // (It goes on trying by itself: nothing to press yet.)
   const missed = await listed();
-  assert.deepEqual([missed.update.state, missed.update.title], ["failed", "Couldn’t reach studio"]);
-  assert.match(missed.update.detail, /^studio didn’t accept Studio’s SSH keys\..* Kuvo also tries again by itself later\.$/);
-  assert.deepEqual(missed.actions.find(each => each.id === "update")?.label, "Try Again", "a way on, never a card alone");
+  assert.deepEqual([missed.update.state, missed.update.title], ["waiting", "Kuvo on studio updates once Studio can reach it"]);
+  assert.equal(missed.actions.some(each => each.id === "update"), false);
   assert.equal(read(link.KEEP_UP_FILE)[peer.key].failed, undefined);
+  // Not reached for three days: said, with Try Again.
+  const kept = read(link.KEEP_UP_FILE);
+  kept[peer.key].unreachedSince -= 3 * 86_400_000;
+  fs.writeFileSync(link.KEEP_UP_FILE, JSON.stringify(kept));
+  const days = await listed();
+  assert.deepEqual([days.update.state, days.update.title], ["failed", "Couldn’t reach studio"]);
+  assert.match(days.update.detail, /^studio didn’t accept Studio’s SSH keys\..* Kuvo also tries again by itself later\.$/);
+  assert.deepEqual(days.actions.find(each => each.id === "update")?.label, "Try Again", "a way on, never a card alone");
   // Two sessions at work there: the round brings it up all the same (nothing there stops), its
   // running engine left alone.
   const busy = path.join(there, "busy");
@@ -547,7 +555,7 @@ test("a machine whose Kuvo is older is brought up to date by this box whatever i
   assert.deepEqual(current.steps.map(step => [step.id, step.state, step.detail]).slice(1), ["files", "engine", "starting", "joining"].map(id => [id, "done", "It’s up to date already"]));
 });
 
-test("a machine heard from that never says its version (a box from before they said it) is offered Update Now at once, before any look over SSH; a look that finds it as new clears it", async () => {
+test("a machine heard from that never says its version (a box from before they said it) updates in a moment, before any look over SSH, with nothing to press; a look that finds it as new clears it", async () => {
   const peer = link.macPeersBody(link.readLink()).boxes.find(each => each.kind === "machine");
   const listed = async () => (await ask("GET", "kuvo/computers")).body.computers.find(each => each.key === peer.key);
   const told = path.join(home, "run", "peer-agents.json");
@@ -560,8 +568,8 @@ test("a machine heard from that never says its version (a box from before they s
     const it = await listed();
     assert.equal(it.reach, "connected");
     assert.equal(it.version, undefined, "it never said");
-    assert.equal(it.update.state, "waiting");
-    assert.ok(it.actions.some(each => each.id === "update" && each.label === "Update Now"), "never a dead end");
+    assert.deepEqual(it.update, { state: "waiting", title: "Kuvo on studio updates in a moment", detail: "" });
+    assert.equal(it.actions.some(each => each.id === "update"), false, "it's brought up by itself");
     // One this box didn't set up over SSH (its record didn't come along): it can't be brought up
     // from here until it is, which is what it offers, never nothing.
     const list = path.join(home, "machines.json");

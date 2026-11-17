@@ -109,6 +109,11 @@ export interface ToldComputer {
    * its name, its other networks' (IPv4). What a Mac tries where the address it set it up at
    * doesn't answer. */
   addresses?: string[];
+  /** The Kuvo version this box runs (`bin/box-version`): on a Mac, `version` is its app's. */
+  kuvo?: string;
+  /** The version of the signed release this box holds and hands to your other computers that are
+   * behind (PROTOCOL.md, "Updates", Your computers follow each other). */
+  release?: string;
 }
 
 /** A session at work on a computer: its id there, and its title (none for one that has none yet). */

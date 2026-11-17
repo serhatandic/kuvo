@@ -25,6 +25,7 @@ import { isObject, parsed } from "../../shared/json";
 import { writePrivate } from "../../shared/files";
 import { OWN_HOME_MAC, RUN } from "../home";
 import { appHost, proveHost } from "../host-interface";
+import { newerVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const APP_FILE = () => path.join(RUN, "app.json");
@@ -61,6 +62,8 @@ export interface AppRecord {
   tools: { url: string; token: string } | null;
   host: { url: string; password: string } | null;
   at: number;
+  /** The desktop app's version, as it said it with `desktop`. */
+  desktopVersion?: string;
 }
 
 function readJSON(file: string): unknown {
@@ -98,7 +101,21 @@ function hostOf(given: unknown): AppRecord["host"] {
 export function readApp(): AppRecord | null {
   const said = readJSON(APP_FILE());
   if (!isObject(said)) return null;
-  return { bundle: bundleOf(said.bundle), desktop: bundleOf(said.desktop), tools: toolsOf(said.tools), host: hostOf(said.host), at: typeof said.at === "number" ? said.at : 0 };
+  const desktopVersion = versionOf(said.desktopVersion);
+  return { bundle: bundleOf(said.bundle), desktop: bundleOf(said.desktop), tools: toolsOf(said.tools), host: hostOf(said.host), at: typeof said.at === "number" ? said.at : 0, ...(desktopVersion ? { desktopVersion } : {}) };
+}
+
+/** A version as an app says it ("1.0.2", "1.1.0-beta.3"), or null. */
+function versionOf(given: unknown): string | null {
+  return typeof given === "string" && /^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given) ? given : null;
+}
+
+/** The Kuvo version this Mac runs, when it's newer than the desktop app that last opened with it:
+ * that app checks for its own update then (`kuvo/computers`' `appCheck`, "This Mac's app"). Null
+ * where it isn't, or that app didn't say its version. */
+export function appBehind(kuvo: string | null): string | null {
+  const app = readApp()?.desktopVersion;
+  return kuvo && app && newerVersion(kuvo, app) ? kuvo : null;
 }
 
 /** Whether the app has said where its tools answer (and hasn't said it quit). */
@@ -128,7 +145,7 @@ export function updating(now = Date.now()): boolean {
 export function registerApp(given: { tools: AppRecord["tools"]; bundle?: string | null; host?: AppRecord["host"] }, now = Date.now()): AppRecord {
   const before = readApp();
   const host = given.tools === null ? null : given.host ?? null;
-  const record: AppRecord = { bundle: given.bundle ?? before?.bundle ?? null, desktop: before?.desktop ?? null, tools: given.tools, host, at: now };
+  const record: AppRecord = { bundle: given.bundle ?? before?.bundle ?? null, desktop: before?.desktop ?? null, tools: given.tools, host, at: now, ...(before?.desktopVersion ? { desktopVersion: before.desktopVersion } : {}) };
   writePrivate(APP_FILE(), JSON.stringify(record));
   if (record.tools) {
     fs.rmSync(FAILED_FILE(), { force: true });
@@ -139,9 +156,9 @@ export function registerApp(given: { tools: AppRecord["tools"]; bundle?: string 
 
 /** Kuvo's desktop app opened with this box, from `desktop` (its whole path): kept as where Open Kuvo
  * opens it, whatever else the record says left as it is. */
-export function registerDesktop(desktop: string, now = Date.now()): AppRecord {
+export function registerDesktop(desktop: string, now = Date.now(), version: string | null = null): AppRecord {
   const before = readApp();
-  const record: AppRecord = { bundle: before?.bundle ?? null, desktop, tools: before?.tools ?? null, host: before?.host ?? null, at: before?.at ?? now };
+  const record: AppRecord = { bundle: before?.bundle ?? null, desktop, tools: before?.tools ?? null, host: before?.host ?? null, at: before?.at ?? now, ...(version ? { desktopVersion: version } : {}) };
   writePrivate(APP_FILE(), JSON.stringify(record));
   return record;
 }
@@ -334,7 +351,7 @@ export async function* appRoute({ request, json }: RouteContext): AsyncGenerator
     if (!request.fromApp) return yield* json(403, { message: "Only Kuvo itself says where its desktop app is." });
     const desktop = bundleOf(given.desktop);
     if (!desktop) return yield* json(400, { message: "Say where the desktop app is: a whole path to it (…/Kuvo.app)." });
-    registerDesktop(desktop);
+    registerDesktop(desktop, Date.now(), versionOf(given.version));
     return yield* json(200, appStatus());
   }
   if (!("tools" in given)) return yield* json(400, { message: "Say where its tools answer (tools), or that it quits (tools: null)." });

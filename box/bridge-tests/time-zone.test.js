@@ -137,17 +137,6 @@ test("a machine updated from 0.5 to 0.7 keeps the zone its Mac last gave it, not
   assert.equal(read(setting), null);
 });
 
-test("the box's other clocks go by your zone too: the night's window it updates in", () => {
-  write(setting, JSON.stringify({ kuvo: 1, zone: "Asia/Tokyo", n: 3 }));
-  const ran = spawnSync(process.execPath, ["--input-type=module", "-e", `
-    const link = await import(${JSON.stringify(script)});
-    // 2030-01-01T18:30Z is 03:30 on the 2nd in Tokyo: the night's window there, not in UTC.
-    console.log(JSON.stringify(link.updateNight(new Date(Date.UTC(2030, 0, 1, 18, 30)))));
-  `], { env, encoding: "utf8" });
-  assert.equal(ran.status, 0, ran.stderr);
-  assert.equal(JSON.parse(ran.stdout.trim()), "2030-01-02");
-});
-
 test("a Linux machine without time zone data takes your pick with its rules, and keeps them where kuvo-wake reads them; not rules that aren't a zone's", () => {
   const folder = bot("bot_scout00001");
   const empty = path.join(home, "no-zoneinfo");

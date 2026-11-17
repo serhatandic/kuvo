@@ -120,7 +120,8 @@ import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { swapEngine } from "./updates/engine-swap";
-import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, updateNight, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { type UpdateOptions, ON_TRIAL, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
+import { clearIncoming, followOver, followPeers } from "./updates/fleet";
 import { BRIDGE_VERSION } from "./version";
 import type { AddressInfo } from "node:net";
 import type { SignedDoc } from "../shared/documents";
@@ -194,10 +195,12 @@ export { KEEP_FOR, SEEN_FILE, forgetPhones, phoneSeenLately } from "./compat/lea
 export { engineConnect, engineControl, toolRun } from "./areas/engine";
 export { botPersonalities, changePersonalities, mergePersonalities, personalitiesDocument, readPersonalities } from "./personalities/library";
 export { keyFilesWait, syncKeyFiles } from "./keys";
-export { KEEP_UP_FILE, keepUpRound, keepingSelfUp } from "./add/keep-up";
+export { KEEP_UP_FILE, keepUpRound, keepingSelfUp, keepingUp } from "./add/keep-up";
 export { codeCheck, codeInPlace } from "./updates/code-in-place";
 export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/health";
-export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, startUpdate, takeOffer, update, updateNight, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { appBehind, registerDesktop } from "./mac/app";
+export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail } from "./updates/fleet";
+export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, noteOlderMacs, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -468,21 +471,26 @@ async function run(): Promise<void> {
   refreshOwn(readEngineFile).catch(() => {});
   // Your time zone in its bots' and conversations' folders, kept so as it runs.
   keepZone();
-  // Updates: each night's window, one; a release Kuvo Code here offered, at the next round
-  // (PROTOCOL.md, "Updates"). Whether one is well is its judge's to say (updates/health.ts).
-  const nightly = () => {
+  // Updates (PROTOCOL.md, "Updates"): a release Kuvo Code here offered, at the next round; one a
+  // peer holds, as its mail says it (`updates/fleet.ts`), and looked at again each minute; and the
+  // release check, once in each six hours at any hour, waiting for no quiet moment. Whether one is
+  // well is its judge's to say (updates/health.ts).
+  followOver(() => current);
+  clearIncoming();
+  setInterval(() => { try { followPeers(); } catch {} }, 60_000).unref?.();
+  const rounds = () => {
     noteLauncher();
     noteOlderMacs();
     try { checkDrift(); } catch {}
     try { dropOldBackups(); } catch {}
     startOfferedUpdate().catch(() => {});
-    const night = updateNight();
-    if (!night || updateState().night === night || !UPDATE_KEYS.length) return;
-    // (In a process of its own, which notes the night once it went, unless something was at work.)
-    startUpdate({ night });
+    const round = releaseRound();
+    if (updateState().round === round || !UPDATE_KEYS.length) return;
+    // (In a process of its own, which notes the round once it went, unless something was at work.)
+    startUpdate({ round });
   };
-  setTimeout(nightly, 60_000);
-  setInterval(nightly, 600_000);
+  setTimeout(rounds, 60_000);
+  setInterval(rounds, 600_000);
   // While a release Kuvo Code here offered waits, it's taken as soon as nothing's at work (a look
   // at the engine here every 20 seconds, only then), not at the next ten-minute round.
   setInterval(() => { if (offerWaits()) startOfferedUpdate().catch(() => {}); }, 20_000).unref?.();
@@ -1222,8 +1230,8 @@ if (main) {
   else if (mode === "update") {
     // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or
     // `update --offered` (the one Kuvo Code here offered, `kuvo/box/update`, when it's due: nothing
-    // to do otherwise; with `--now`, on your word, whatever is at work); `--night <night>`: the
-    // night's, which it notes once it went; and for a test's folder only, `--url <boxes.json> --key <public key>` (or
+    // to do otherwise; with `--now`, on your word, whatever is at work); `--round <round>`: the
+    // release check's, which it notes once it went; and for a test's folder only, `--url <boxes.json> --key <public key>` (or
     // `--key` alone, with `--from` or `--offered`). Once it's updated, it stays to judge it
     // (updates/health.ts); nothing is stopped: each piece takes the new code by itself.
     const args = process.argv.slice(3);
@@ -1275,10 +1283,10 @@ if (main) {
     // (None due, or another process took it just before this one: nothing happened to note.)
     // (Something at work, or the last update still on trial: how the last went stays as it was.)
     if (outcome && !(outcome.result === "busy" && (offered || outcome.message === UPDATING_ALREADY))) noteUpdate({ running: null, ...(outcome.result === "updated" || passingOutcome(outcome) ? {} : { last: { at: Date.now(), ...outcome } }) });
-    // (The night's, started by the bridge: that night's done, unless something was at work or the
-    // last update is still on trial, when it's tried again that night.)
-    const night = option("--night");
-    if (night && outcome && !passingOutcome(outcome)) noteUpdate({ night });
+    // (The release check's, started by the bridge: that round's done, unless something was at work
+    // or the last update is still on trial, when it's tried again in that round.)
+    const round = option("--round");
+    if (round && outcome && !passingOutcome(outcome)) noteUpdate({ round });
     console.log(JSON.stringify(outcome ?? { result: "current", message: "No offered release is due." }));
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
     // Judged here, by the one health rule (updates/health.ts), this process staying until it's well

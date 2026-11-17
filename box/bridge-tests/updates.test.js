@@ -235,13 +235,6 @@ test("a release counts only signed with a pinned key, over what it says", () => 
   assert.throws(() => link.verifyBoxes(JSON.stringify({ ...given, signature: bare }), [pinned]), /signature doesn't match/);
 });
 
-test("the night's window is 02:00 to 05:00 where you are", () => {
-  assert.equal(link.updateNight(new Date("2026-10-23T02:30:00Z"), "UTC"), "2026-10-23");
-  assert.equal(link.updateNight(new Date("2026-10-23T05:00:00Z"), "UTC"), null);
-  assert.equal(link.updateNight(new Date("2026-10-22T23:30:00Z"), "Europe/Istanbul"), "2026-10-23", "02:30 in Istanbul");
-  assert.equal(link.updateNight(new Date("2026-10-23T02:30:00Z"), "Not/AZone"), null);
-});
-
 test("a box updates itself only while every Mac that started its engine lately leaves a newer box as it is, and only in its own folder", () => {
   const own = path.join(os.homedir(), ".kuvo-code");
   assert.match(link.updatesBlocked({}, Date.now(), home), /own Kuvo Code folder/);
@@ -269,7 +262,7 @@ test("a box updates to a newer release: its engine and files swapped, started ag
   engines.add(read(engineFile).pid);
   assert.ok(fs.existsSync(path.join(home, "updates", "rollback", "restore.sh")));
   assert.ok(fs.existsSync(path.join(home, "run", "update-trial")));
-  assert.equal(fs.readdirSync(path.join(home, "updates")).sort().join(), "backups,installed.json,rollback", "what was downloaded goes; what it put there is noted; its engine changed, a copy of the data from before is kept aside");
+  assert.equal(fs.readdirSync(path.join(home, "updates")).sort().join(), "backups,installed.json,release,rollback", "what was downloaded goes; what it put there is noted; its engine changed, a copy of the data from before is kept aside; the signed release kept, to hand to your other computers");
 
   // Judged well: what was kept, and the old engine, go.
   assert.equal(await settle(), "well");
@@ -517,7 +510,7 @@ test("no update goes over one still on trial, whichever way it's asked for: what
   const { folder } = release({ version: "0.11.0" });
   const onTrial = { result: "blocked", message: "Its last update is still being checked: try again in a few minutes." };
   assert.deepEqual(await update(), onTrial, "Update Now");
-  assert.deepEqual(await update({ now: false }), onTrial, "the night's");
+  assert.deepEqual(await update({ now: false }), onTrial, "the release check's");
   assert.deepEqual(await update({ from: folder }), onTrial, "from a folder (the installer's)");
   assert.equal(offer(folder).status, 202);
   assert.equal(await take({ now: true }), null, "the offered one, on your word");
@@ -527,7 +520,7 @@ test("no update goes over one still on trial, whichever way it's asked for: what
   fs.rmSync(offered, { recursive: true, force: true });
 });
 
-test("the night's update while the last is on trial: tried again that night, and how the last went stays as it was", async () => {
+test("the release check's update while the last is on trial: tried again in that round, and how the last went stays as it was", async () => {
   machine();
   release();
   assert.deepEqual(await update(), { result: "updated", version: "0.10.0" });
@@ -536,11 +529,11 @@ test("the night's update while the last is on trial: tried again that night, and
   const state = path.join(home, "run", "update.json");
   const before = read(state);
   release({ version: "0.11.0" });
-  // As the bridge starts it at night, in a process of its own.
-  const night = spawnSync(process.execPath, [script, "update", "--night", "2026-11-17", "--url", `${base}/boxes.json`, "--key", pinned], { env: process.env, encoding: "utf8", timeout: 60_000 });
-  assert.deepEqual(JSON.parse(night.stdout.trim().split("\n").at(-1)), { result: "blocked", message: "Its last update is still being checked: try again in a few minutes." });
+  // As the bridge starts its release check, in a process of its own.
+  const round = spawnSync(process.execPath, [script, "update", "--round", link.releaseRound(), "--url", `${base}/boxes.json`, "--key", pinned], { env: process.env, encoding: "utf8", timeout: 60_000 });
+  assert.deepEqual(JSON.parse(round.stdout.trim().split("\n").at(-1)), { result: "blocked", message: "Its last update is still being checked: try again in a few minutes." });
   const after = read(state);
-  assert.equal(after.night, undefined, "not the night's try: it goes again that night");
+  assert.equal(after.round, undefined, "not the round's look: it goes again in that round");
   assert.deepEqual(after.last, before.last, "how the last went, as it was");
   assert.deepEqual(after.trial, before.trial);
   assert.equal(boxVersion(), "0.10.0");
@@ -923,20 +916,20 @@ test("an offered release waits while something runs, and is taken once nothing d
   assert.equal(await settle(), "well");
 });
 
-test("Update Now takes the offered release whatever is at work, and this box's own row says how its update stands until then", async t => {
+test("Update Now takes the offered release whatever is at work, and this box's own row says how its update stands until then, with nothing to press while it takes it by itself", async t => {
   machine();
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null), { actions: [] }, "nothing offered: nothing said");
   assert.equal(offer(release().folder).status, 202);
   assert.equal(link.offerWaits(), true);
-  // Two sessions at work: it waits for them, and Update Now asks first, saying what stops.
+  // Two sessions at work: it waits for them, by itself.
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), {
     update: { state: "waiting", title: "Kuvo on Studio Mac updates once your sessions there finish.", detail: "" },
-    actions: [{ id: "update-here", label: "Update Now", confirm: { title: "Update Kuvo on Studio Mac now?", message: "2 sessions are at work on Studio Mac: what they’re doing stops as Kuvo restarts there.", label: "Update Now" } }],
+    actions: [],
   });
-  // No session counted at work: as soon as nothing is (a browser ask may wait), still asked first.
+  // No session counted at work: as soon as nothing is (a browser ask may wait).
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null), {
     update: { state: "waiting", title: "Kuvo on Studio Mac updates as soon as nothing’s at work there.", detail: "" },
-    actions: [{ id: "update-here", label: "Update Now", confirm: { title: "Update Kuvo on Studio Mac now?", message: "Whatever is at work on Studio Mac stops as Kuvo restarts there.", label: "Update Now" } }],
+    actions: [],
   });
   // A box that can't update (an older Mac connects), or not even on your word now (its engine
   // stopped on purpose): nothing offered that couldn't be done.
@@ -956,12 +949,11 @@ test("Update Now takes the offered release whatever is at work, and this box's o
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), { actions: [] });
   assert.equal(await settle(), "well");
 
-  // One that keeps the engine running stops nothing: it's taken in a moment, whatever is at work,
-  // and Update Now asks nothing.
+  // One that keeps the engine running stops nothing: it's taken in a moment, whatever is at work.
   assert.equal(offer(release({ version: "0.11.0", engine: "1.1.0" }).folder).status, 202);
   assert.deepEqual(link.keepingSelfUp("Studio Mac", 2, null), {
     update: { state: "waiting", title: "Kuvo on Studio Mac updates in a moment.", detail: "" },
-    actions: [{ id: "update-here", label: "Update Now" }],
+    actions: [],
   });
   assert.deepEqual(await take(), { result: "updated", version: "0.11.0" }, "by itself, with something at work");
   assert.equal(await settle(), "well");
@@ -1148,8 +1140,9 @@ test("an offered release that fails before anything changes (its engine's downlo
   const at = hours => ({ clock: () => Date.now() + hours * 3_600_000 + 1000 });
   assert.equal((await take(at(1))).result, "failed");
   assert.equal(read(path.join(home, "run", "update.json")).offerFailed.tries, 2);
-  // Failing again: said, with Update Now.
-  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated. It tries again later.", detail: "" });
+  // Failing again: what it can't get past by itself, said, with Update Now.
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).update, { state: "failed", title: "Kuvo on Studio Mac couldn’t be updated twice. It tries again later.", detail: "" });
+  assert.deepEqual(link.keepingSelfUp("Studio Mac", 0, null).actions.map(action => action.label), ["Update Now"]);
   assert.equal(await take(at(2)), null, "not an hour on");
   assert.equal(link.offeredVersion(), "0.10.0");
   served["/engine.tgz"] = engine;

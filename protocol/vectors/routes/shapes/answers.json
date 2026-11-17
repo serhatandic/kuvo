@@ -5327,7 +5327,8 @@
             "literal": true
            }
           }
-         }
+         },
+         "appCheck?": "string"
         }
        }
       }
@@ -5516,7 +5517,8 @@
             "literal": true
            }
           }
-         }
+         },
+         "appCheck?": "string"
         }
        }
       }

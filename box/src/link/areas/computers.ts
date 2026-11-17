@@ -18,6 +18,8 @@ import { FEATURES } from "../../shared/features";
 import { isObject, parsed, type Body } from "../../shared/json";
 import type { ListedComputer } from "../../shared/routes/box";
 import { macFeatures } from "../../shared/routes/mac";
+import { fleetFacts } from "../updates/fleet";
+import { appBehind } from "../mac/app";
 import type { AskingSession, AtWorkSession, Target, ToldComputer } from "../../shared/records";
 import { call, readEngineFile } from "../engine/client";
 import { followedLive } from "../follow";
@@ -123,6 +125,8 @@ export function ownComputer(): ToldComputer {
     asking: asking.slice(0, MOST_ASKING),
     ...(oldAppAttached() ? { oldApp: true as const } : {}),
     ...(IS_MAC ? {} : { addresses: ownAddresses() }),
+    // The Kuvo it runs, and the signed release it hands to your other computers that are behind.
+    ...fleetFacts(),
   };
 }
 
@@ -234,17 +238,21 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     working: atWork.length,
     atWork: atWork.slice(0, MOST_HERE),
     limits: limits.get("here") ?? (own ? limits.get(own) : undefined) ?? [],
+    // (Kuvo on this Mac ahead of its desktop app: the app checks for its update.)
+    ...(IS_MAC && appBehind(boxVersion()) ? { appCheck: appBehind(boxVersion())! } : {}),
   }];
   const withActions = (): ListedComputer[] => {
     const here = computers[0]!.name;
     const facts = writerFacts(link);
     return computers.map(computer => {
       // (Brought up to date by this box, where it set it up and it's older: how that stands, and Update Now.)
-      const keeping = keepingUp(computer as ListedComputer, here, now);
+      const keeping = keepingUp({ ...(computer as ListedComputer), ...(kuvoOf.has(computer.key) ? { kuvo: kuvoOf.get(computer.key) } : {}) }, here, now);
       return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(keeping.update ? { update: keeping.update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
   const peers = peersOf(link);
+  // The Kuvo each peer runs, where it says (one that follows the others: `updates/fleet.ts`).
+  const kuvoOf = new Map(peers.flatMap(peer => (told[peer.key]?.computer?.kuvo ? [[peer.key, told[peer.key]!.computer!.kuvo!] as const] : [])));
   const reach = readReach();
   const leads = followedSetup(link)?.role === "primary";
   for (const peer of byName(peers)) {

@@ -371,6 +371,9 @@ export const LISTED_COMPUTER = object({
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
   "update?": COMPUTER_UPDATE,
+  // (This Mac's own row: Kuvo here runs this version, newer than the desktop app that opened with
+  // it, which checks for its own update then.)
+  "appCheck?": string,
 });
 export const COMPUTERS = object({ computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
