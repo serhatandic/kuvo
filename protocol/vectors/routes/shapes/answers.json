@@ -5223,6 +5223,24 @@
          "features?": {
           "list": "string"
          },
+         "agents?": {
+          "object": {
+           "state": {
+            "oneOf": [
+             {
+              "literal": "running"
+             },
+             {
+              "literal": "restarting"
+             },
+             {
+              "literal": "down"
+             }
+            ]
+           },
+           "why?": "string"
+          }
+         },
          "via": {
           "oneOf": [
            {
@@ -5412,6 +5430,24 @@
          "system?": "string",
          "features?": {
           "list": "string"
+         },
+         "agents?": {
+          "object": {
+           "state": {
+            "oneOf": [
+             {
+              "literal": "running"
+             },
+             {
+              "literal": "restarting"
+             },
+             {
+              "literal": "down"
+             }
+            ]
+           },
+           "why?": "string"
+          }
          },
          "via": {
           "oneOf": [
@@ -9887,6 +9923,34 @@
    "answers": {
     "202": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/agents/start",
+   "answers": {
+    "200": {
+     "object": {}
+    },
+    "405": {
+     "object": {}
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "reason": "string",
+      "action?": {
+       "object": {
+        "label": "string",
+        "route": "string"
+       }
+      }
+     }
     }
    }
   },
