@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- In the desktop app, a message replying to several quotes now shows each of your answers under the quote it answers, in the order you wrote them, as the composer showed it. Before, the quotes were stacked at the top and your answers below them. (The agent always got them in the right order.)
 - Update one computer and all of them follow. As soon as any of your computers gets a newer version of Kuvo (its app updated, or it found the update itself), your other Macs and machines take it from that computer at once, all updating together, by themselves, without stopping what's running there. A computer that was off or away catches up as soon as it's back. Each one checks the update is signed by Kuvo Code before taking it, and never goes back to an older version. On a Mac, the app then looks for its own update too.
 - **Update Now** is now only for the rare case a computer can't update by itself: when an update failed there twice, or a machine couldn't be reached for days. Otherwise your computers say "updates in a moment" and do it. Kuvo also no longer waits for the night to look for a new version: it looks every few hours.
 

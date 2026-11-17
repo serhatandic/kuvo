@@ -135,6 +135,16 @@ describe("kuvo/sessions/<id>/send", () => {
     expect(sent.body.metadata.kuvo.parts).toEqual({ words: "Have a look", keyword: "/plan", comments, paths: ["/x/y.txt"] })
   })
 
+  test("a reply to two quotes keeps each answer under its quote, as written, for the agent and kept", async () => {
+    // As every client writes it (KuvoClient's `Quoting.message`): each quote, its answer under it.
+    const words = "> Keep what was typed\n\nYes, keep it\n\n> Show the error under the field\n\nok\n\n---\n\nThen run the tests"
+    await send("ses_main", { id: "msg_quotes", words }, "mac")
+    const [sent] = prompted(engineAsked)
+    expect(sent.body.text).toBe(words)
+    expect(partsOf(sent.body.text).words).toBe(words)
+    expect(sent.body.metadata?.kuvo?.parts?.words ?? words).toBe(words)
+  })
+
   test("a phone's says it's from the phone; a Mac's doesn't", async () => {
     await send("ses_main", { id: "msg_phone", words: "What's in the report?" }, "phone")
     await send("ses_main", { id: "msg_mac", words: "What's in the report?" }, "mac")

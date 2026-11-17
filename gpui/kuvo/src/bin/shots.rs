@@ -58,6 +58,23 @@ fn quotes_answered(workspace: &mut Workspace, window: &mut Window, cx: &mut Cont
     view.update(cx, |view, cx| view.quote("The 409 now sets the error on the email field.", window, cx));
 }
 
+/// Two quotes answered, sent: in the conversation, each answer under its quote, in the order written.
+fn quotes_sent(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let view = workspace.conversation().expect("the conversation").clone();
+    let composer = view.read(cx).composer().clone();
+    let answers = [
+        ("Moving reset() into the success path keeps what was typed.", "Yes, do that, and keep the focus on the email field."),
+        ("The 409 now sets the error on the email field.", "Good. Say which address is taken in the message too."),
+    ];
+    for (at, (quote, answer)) in answers.into_iter().enumerate() {
+        view.update(cx, |view, cx| view.quote(quote, window, cx));
+        if let Some(field) = composer.read(cx).answer_field(at) {
+            field.update(cx, |field, cx| field.set_text(answer, cx));
+        }
+    }
+    composer.update(cx, |composer, cx| composer.send(cx));
+}
+
 /// The menu beside Send open, as a click opens it.
 fn send_menu_open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let composer = workspace.conversation().expect("the conversation").read(cx).composer().clone();
@@ -102,6 +119,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "send-while-working", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // Replying to two parts of a conversation, each with its answer (0.7's `QuoteList`).
     Screen { slug: "quotes-answers", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Then run the sign-up tests again"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(quotes_answered) },
+    // Then sent: each answer under its quote in the conversation, in the order written.
+    Screen { slug: "quotes-sent", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Then run the sign-up tests again"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(quotes_sent) },
     Screen { slug: "send-while-working-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Also keep the focus on the email field after the error shows"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(send_menu_open) },
     // What the agent did between its words, grouped: folded to a line (one that failed shows
     // anyway; the one under way on its line), then opened; and messages from other agents as cards.
