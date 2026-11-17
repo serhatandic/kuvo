@@ -350,3 +350,87 @@ folder), `uninstall.md` and `privacy.md` (`updates/backups`, `run/agents/hold`),
   - An engine change still restarts the engine, with no hold (step 6).
   - The engine folder kept for a bridge is pruned only at the next confirm.
   - BusyBox `ps` has no `-p`, so old processes aren't ended there.
+
+## Spikes S1, S2 and ACP: results (step 7, 2026-11-17)
+
+Question: can a NEW controller re-attach to an agent's turn that an OLD (killed) controller started,
+without the turn noticing? All runs: the agents' real binaries, a stub model API on 127.0.0.1, a
+temporary HOME and the agent's own home under it, a made-up API key. No sign-in was read or needed.
+Each controller is its own process and is killed with SIGKILL (Claude) or has its socket closed
+(Codex, Grok) mid-turn. The scripts are in `.claude/notes/spikes/` (`hold-spike.mjs` is the
+throwaway holder: the agent as its child on pipes, a unix socket, the newest controller fences the
+older one, a journal of every line). Run them with `bun <script> <args>`, as each one's header says.
+
+**S1, Claude Code 2.1.325 with Agent SDK 0.3.303: YES, and the CLI is built for it.**
+- Setup (`s1-claude.mjs`): controller A is a `query()` whose `spawnClaudeCodeProcess` starts the
+  holder (detached) and returns the holder's socket as stdin/stdout. B and C are fresh `query()`s
+  whose `spawnClaudeCodeProcess` only connects. The stub makes the model run `echo one`, then
+  `echo two`, then stream ten words 400 ms apart.
+- A killed while its `canUseTool` was open: holder and CLI live on. B's `query()` sends a **second
+  `initialize`, which succeeds**, and the CLI puts the open ask in the reply's
+  `pending_permission_requests` (documented in sdk.d.ts: "a client joining an already-initialized
+  session learns about in-flight prompts", from Claude Code 2.1.268). B's `canUseTool` ran, the
+  command ran once (`one.txt`; the model saw exactly one tool result).
+- **The holder must not replay control requests for Claude.** With replay on, B's `canUseTool` ran
+  twice for one request_id (once from the replay, once from `pending_permission_requests`); the
+  second answer was ignored by the CLI. The SDK says receivers must tolerate a request_id arriving
+  both ways and "render it once": the bridge dedupes asks by request_id.
+- **A hook callback open at the kill is cancelled by the CLI, not executed**: on B's `initialize`
+  the CLI sends `control_cancel_request` for it and gives the model the tool result
+  `PreToolUse:Bash hook error: The SDK host reconnected before its PreToolUse hook answered, so this
+  tool call was not executed. No one denied it; retry the same tool call.` (`is_error`). The turn
+  goes on (a real model retries); nothing runs that the bridge didn't check. Replaying the hook
+  callback doesn't help: the CLI cancels it before reading the answer.
+- Hooks after the attach route to the new controller: its `initialize` registers its own
+  `hook_0` (ids are `hook_<n>` in registration order, per `query()`), and B's `PreToolUse` ran for
+  `echo two`.
+- The stream simply continues: B saw `STREAM1-2`, was killed, C attached mid-message and saw
+  `STREAM3-10`, the whole `assistant` message and `result` (`success`, `num_turns: 3`). What came
+  while no one was attached is in the holder's journal; the final `assistant` message carries the
+  whole text anyway.
+- Limits: the new `query()`'s command-line options don't apply (the process is already running:
+  model, permission mode, `resume`, plugins, settings, env stay the first bridge's). Only what
+  `initialize` carries is renewed (hooks, system prompt fields, agents, SDK MCP servers). So an
+  adopting bridge takes the recorded `opened` key from the holder's record, not its own options.
+- The CLI exits on stdin EOF (the holder closing its stdin ended it, exit 0): §1's [A] holds for
+  Claude Code.
+
+**S2, Codex 0.169.0 `app-server`: YES over stdio under a holder; NO through Codex's own socket.**
+- Holder (`MODE=holder s2-codex.mjs`): A starts a thread (`approvalPolicy: untrusted`) and a
+  turn; the model calls `exec_command`; Codex sends `item/commandExecution/requestApproval` (id 0).
+  A's socket closes. Codex sees nothing (its pipes are the holder's). B attaches: the holder replays
+  the open request, B answers `{decision: "accept"}`, the command runs once (`one.txt`), the
+  stream goes on; C attaches mid-stream and sees `STREAM3-10`, `item/completed` with the whole
+  text, and `turn/completed` (`completed`).
+- **A second `initialize` is refused** (`-32600 Already initialized`), harmlessly: an adopting
+  bridge skips `initialize`/`initialized`.
+- Ids: Codex's own request ids are its own (0, 1, …): answer them by id. Answers to requests the
+  old bridge sent go to whoever is attached: the new bridge matches them from the handover's
+  in-flight list, and starts its own ids in a range of its generation (RPC `firstID`) so they never
+  collide with an old bridge's.
+- Codex exits on stdin EOF (exit 0 when the holder closed it).
+- Codex's own multi-client transport (`app-server --listen unix://PATH`, `app-server proxy`):
+  **not usable.** It makes its real socket and a lock under `/private/tmp/codex-daemon-<uid>/` (a
+  symlink at PATH), against the footprint rule, and in 0.169.0 neither a line-JSON client nor
+  `app-server proxy --sock` got an answer to `initialize` within 90 s. Not pursued further.
+
+**ACP, Grok 1.0.77 (`grok agent stdio`): YES under a holder.** (`s3-acp.mjs`; Grok takes
+`GROK_XAI_API_BASE_URL`, `XAI_API_KEY` and an OpenAI-style `chat/completions` stub.)
+- A's turn asks `session/request_permission` (id 0) for `run_terminal_command`; A's socket closes;
+  B attaches, **sends `initialize` again, which Grok accepts**, answers the replayed ask with
+  `allow-once`; the command runs once; C attaches mid-stream, sees `STREAM3-10` and then the answer
+  to A's `session/prompt` (id 4, `stopReason: end_turn`), a request C never sent: as for Codex,
+  matched from the in-flight list.
+- **Antigravity: not run** (same ACP code path in the bridge, but I found no stub route for its
+  model in the time). Counted as not adoptable until a spike shows it. **Cursor**: its worker is
+  our own (`cursor-worker.ts`), so holding it is ours to make safe; not adopted in step 8.
+
+**What this means for steps 8-9.**
+- The holder is protocol-agnostic for transport, but replay is per kind: `jsonrpc` (Codex, ACP)
+  replays requests the agent sent that no controller answered; `claude` replays none (the CLI
+  re-sends asks on `initialize` and cancels hook callbacks itself).
+- Every adopter must tolerate an ask seen twice (same id) and answers to ids it didn't send.
+- Adoption needs, per holder: the SDK/agent version it started with (the `sdk` field), the
+  provider, the agent's own ids (Claude session, Codex thread, ACP session), and what the bridge
+  had open (`opened`, in-flight request ids, the turn's message): S1/S2 show the agent side holds;
+  the bridge side is what steps 8-9 build.
