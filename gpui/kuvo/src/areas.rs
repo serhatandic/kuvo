@@ -488,6 +488,9 @@ impl AreaView {
             if let Some(page) = &self.page {
                 page.update(cx, |page, cx| page.set_this_box(&name, cx));
             }
+            if let Some(groups) = &self.groups {
+                groups.update(cx, |groups, cx| groups.set_this_box(&name, cx));
+            }
             if let Some(page) = &self.queue_page {
                 page.update(cx, |page, cx| page.set_this_box(&name, cx));
             }

@@ -2755,8 +2755,7 @@ impl Workspace {
             .children(move_status.or_else(|| listed.as_ref().map(|bot| {
                 let words = bot.job.clone();
                 div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element()
-            })))
-            .child(crate::moves::MovesView::head_button(&self.moves, target, cx));
+            })));
         div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
     }
 
@@ -3012,7 +3011,6 @@ impl Workspace {
     }
 
     pub fn open_title_menu(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
-        let move_chat = self.is_move_chat(session);
         if !self.live {
             let result = self.client.session_actions(session);
             if let Ok(actions) = &result {
@@ -3023,7 +3021,7 @@ impl Workspace {
                 session.to_owned(),
                 PopoverAnchor::TitleBar,
                 cx.entity().downgrade(),
-                move_chat,
+                false,
                 cx,
             );
         }
@@ -3033,7 +3031,7 @@ impl Workspace {
             session.to_owned(),
             PopoverAnchor::TitleBar,
             cx.entity().downgrade(),
-            move_chat,
+            false,
             window,
             cx,
         )

@@ -29,8 +29,8 @@ pub struct OpenMoved {
     pub target: Target,
 }
 
-#[derive(Clone)]
-pub(crate) struct RemoteSource {
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteSource {
     key: String,
     name: String,
 }
@@ -84,7 +84,7 @@ pub struct MovesView {
     notices: Vec<Notice>,
     focus: FocusHandle,
     return_to: Option<FocusHandle>,
-    head_menu: PopoverMenuHandle,
+    settings_menu: PopoverMenuHandle,
     _follow: Option<Follow<Followed<Moves>>>,
     retrying: Option<Task<()>>,
     _tasks: Vec<Task<()>>,
@@ -105,7 +105,7 @@ impl MovesView {
             notices: Vec::new(),
             focus: cx.focus_handle(),
             return_to: None,
-            head_menu: PopoverMenuHandle::default(),
+            settings_menu: PopoverMenuHandle::default(),
             _follow: None,
             retrying: None,
             _tasks: Vec::new(),
@@ -164,33 +164,40 @@ impl MovesView {
         })
     }
 
-    pub fn head_button(view: &Entity<Self>, target: Target, cx: &App) -> AnyElement {
-        Self::head_button_from(view, target, None, cx)
-    }
-
-    pub(crate) fn head_button_from(
+    pub(crate) fn settings_button(
         view: &Entity<Self>,
+        key: &str,
         target: Target,
         source: Option<RemoteSource>,
         cx: &App,
     ) -> AnyElement {
         let state = view.read(cx);
-        let trigger = Button::new("bot-move-trigger", "Move to…")
-            .ghost()
-            .disabled(state.busy(&target));
-        let handle = state.head_menu.clone();
+        let trigger = Button::new(
+            gpui::SharedString::from(format!("{key}-button")),
+            "Move to…",
+        )
+        .size(ButtonSize::Small)
+        .disabled(state.busy(&target));
+        let handle = state.settings_menu.clone();
         let view = view.clone();
-        PopoverMenu::new("bot-move-menu", trigger, move |window, cx| {
-            Self::menu_from(&view, target.clone(), source.clone(), window, cx)
-        })
+        PopoverMenu::new(
+            gpui::SharedString::from(format!("{key}-menu")),
+            trigger,
+            move |window, cx| Self::menu_from(&view, target.clone(), source.clone(), window, cx),
+        )
         .with_handle(handle)
         .align_right()
         .into_any_element()
     }
 
     #[cfg(feature = "shots")]
-    pub fn open_head_menu(view: &Entity<Self>, target: Target, window: &mut Window, cx: &mut App) {
-        let handle = view.read(cx).head_menu.clone();
+    pub fn open_settings_menu(
+        view: &Entity<Self>,
+        target: Target,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let handle = view.read(cx).settings_menu.clone();
         handle.open(Self::menu(view, target, window, cx), window, cx);
     }
 

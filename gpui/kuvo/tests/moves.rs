@@ -43,10 +43,10 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
 }
 
-fn move_menu(cx: &mut VisualTestContext) {
+fn right_click(cx: &mut VisualTestContext, selector: &'static str) {
     let at = cx
-        .debug_bounds("bot-bot_mira")
-        .expect("Mira's row")
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("{selector} isn’t drawn"))
         .center();
     cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
     cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
@@ -59,7 +59,7 @@ fn bot_move_confirms_and_the_row_follows_the_receipt(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, &stand_in, Scenario::Ready);
     click(cx, "bot-bot_mira");
 
-    move_menu(cx);
+    right_click(cx, "bot-bot_mira");
     click(cx, "menu-item-MacBook Air");
     assert!(cx.debug_bounds("move-confirm").is_none());
     click(cx, "menu-item-Studio");
@@ -67,7 +67,7 @@ fn bot_move_confirms_and_the_row_follows_the_receipt(cx: &mut TestAppContext) {
     assert!(stand_in.seen_at("POST", "kuvo/moves").is_empty());
     click(cx, "move-cancel");
 
-    move_menu(cx);
+    right_click(cx, "bot-bot_mira");
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
     let sent = stand_in.seen_at("POST", "kuvo/moves");
@@ -91,7 +91,7 @@ fn bot_move_failure_can_retry_with_a_fresh_confirmation(cx: &mut TestAppContext)
     let stand_in = StandIn::at(Replies::Never, 1_794_650_000_000.0);
     let (_, cx) = open(cx, &stand_in, Scenario::Failed);
 
-    move_menu(cx);
+    right_click(cx, "bot-bot_mira");
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
     assert!(cx.debug_bounds("move-failed").is_some());
@@ -119,13 +119,16 @@ fn bot_move_draws_the_sources_transfer_progress(cx: &mut TestAppContext) {
 fn bot_move_controls_also_open_for_chats_and_group_chats(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, 1_794_650_000_000.0);
     let (workspace, cx) = open(cx, &stand_in, Scenario::Ready);
-    let chat = workspace.update_in(cx, |workspace, window, cx| {
-        let chat = workspace.listing().sidebar().chats[0].clone();
-        workspace.open_read_at_once(&chat, window, cx);
-        chat
+    let chat = "ses_recipes";
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.open_read_at_once(chat, window, cx)
     });
     cx.run_until_parked();
     click(cx, "session-more");
+    assert!(cx.debug_bounds("menu-item-Move to…").is_none());
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    right_click(cx, "session-chat-ses_recipes");
     click(cx, "menu-item-Move to…");
     assert!(cx.debug_bounds("menu-item-Studio").is_some());
     assert!(
@@ -147,7 +150,9 @@ fn bot_move_controls_also_open_for_chats_and_group_chats(cx: &mut TestAppContext
             });
     });
     cx.run_until_parked();
-    click(cx, "bot-move-trigger");
+    assert!(cx.debug_bounds("group-computer-button").is_none());
+    click(cx, "group-edit");
+    click(cx, "group-computer-button");
     assert!(cx.debug_bounds("menu-item-Studio").is_some());
     assert!(
         stand_in
@@ -182,7 +187,8 @@ fn bot_move_from_other_computers_uses_the_bots_source(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     click(cx, "elsewhere-bot_mira");
-    click(cx, "bot-move-trigger");
+    assert!(cx.debug_bounds("bot-computer-detail").is_some());
+    click(cx, "bot-computer-button");
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
     assert!(cx.debug_bounds("move-failed").is_some());
@@ -193,4 +199,23 @@ fn bot_move_from_other_computers_uses_the_bots_source(cx: &mut TestAppContext) {
     assert_eq!(devbox.seen_at("GET", "kuvo/moves/places").len(), 2);
     assert!(stand_in.seen_at("POST", "kuvo/moves").is_empty());
     assert!(stand_in.seen_at("GET", "kuvo/moves/places").is_empty());
+}
+
+#[gpui::test]
+fn bot_move_settings_row_is_below_the_header(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, 1_794_650_000_000.0);
+    let (_, cx) = open(cx, &stand_in, Scenario::Ready);
+    cx.simulate_resize(size(px(1280.), px(1180.)));
+    cx.run_until_parked();
+    click(cx, "bot-bot_mira");
+    assert!(cx.debug_bounds("bot-computer-button").is_none());
+    click(cx, "bot-chat-settings");
+    let chat = cx.debug_bounds("bot-chat").expect("Chat button");
+    let row = cx
+        .debug_bounds("bot-computer-detail")
+        .expect("Computer settings row");
+    assert!(row.center().y > chat.center().y);
+    click(cx, "bot-computer-button");
+    assert!(cx.debug_bounds("menu-item-MacBook Air").is_some());
+    assert!(cx.debug_bounds("menu-item-Studio").is_some());
 }

@@ -76,6 +76,7 @@ struct Form {
 pub struct GroupsView {
     client: BoxClient,
     moves: Option<Entity<crate::moves::MovesView>>,
+    this_box: String,
     live: bool,
     shown: Shown,
     /// The chats as the box lists them, and its bots (who wrote a message in a chat they've left).
@@ -108,6 +109,11 @@ impl Focusable for GroupsView {
 }
 
 impl GroupsView {
+    pub fn set_this_box(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.this_box = name.to_owned();
+        cx.notify();
+    }
+
     pub fn set_moves(&mut self, moves: Entity<crate::moves::MovesView>, cx: &mut Context<Self>) {
         self.moves = Some(moves);
         cx.notify();
@@ -116,7 +122,7 @@ impl GroupsView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> GroupsView {
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let purpose = cx.new(|cx| TextField::new(cx).placeholder("Optional"));
-        GroupsView { client, moves: None, live, shown: Shown::Nothing, groups: Vec::new(), bots: Vec::new(), chats: HashMap::new(), joinable: Reading::NotYet, name, purpose, form: Form::default(), listed: false, on_screen: false, now: None, focus: cx.focus_handle(), tasks: Vec::new() }
+        GroupsView { client, moves: None, this_box: "This Mac".into(), live, shown: Shown::Nothing, groups: Vec::new(), bots: Vec::new(), chats: HashMap::new(), joinable: Reading::NotYet, name, purpose, form: Form::default(), listed: false, on_screen: false, now: None, focus: cx.focus_handle(), tasks: Vec::new() }
     }
 
     pub fn shown(&self) -> &Shown {
@@ -489,9 +495,6 @@ impl GroupsView {
             .border_color(c.border)
             .children(group.map(|group| faces(group, px(20.), cx)))
             .child(div().debug_selector(|| "group-members".into()).flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(joined(&names)))
-            .children(self.moves.as_ref().zip(group).map(|(moves, group)| crate::moves::MovesView::head_button(
-                moves, kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Group, &group.id), cx,
-            )))
             .child(
                 div().debug_selector(|| "group-edit".into()).child(
                     Button::new("group-edit", "Edit")
@@ -511,7 +514,7 @@ impl GroupsView {
         let c = cx.theme().colors.clone();
         let editing = matches!(self.shown, Shown::Edit(_));
         let title = if editing { "Edit Group" } else { "New Group" };
-        let field_row = |key: &'static str, title: &'static str, detail: &'static str, field: Entity<TextField>, last: bool| {
+        let field_row = |key: &'static str, title: &'static str, detail: String, control: AnyElement, last: bool| {
             div()
                 .debug_selector(move || key.into())
                 .flex()
@@ -530,13 +533,24 @@ impl GroupsView {
                         .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
                         .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)),
                 )
-                .child(div().flex_none().w(px(280.)).child(field))
+                .child(div().flex_none().child(control))
         };
         let card = |rows: Vec<AnyElement>| div().flex().flex_col().rounded(radius::POPOVER).bg(c.card).shadow(cx.theme().card_shadow()).overflow_hidden().children(rows);
-        let about = card(vec![
-            field_row("group-name", "Name", "What the chat is called.", self.name.clone(), false).into_any_element(),
-            field_row("group-purpose", "What it’s for", "The bots read it as they talk.", self.purpose.clone(), true).into_any_element(),
-        ]);
+        let computer = match (&self.shown, &self.moves) {
+            (Shown::Edit(id), Some(moves)) if self.group(id).is_some() => {
+                let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Group, id);
+                Some(field_row("group-computer", "Computer", format!("Lives on {}", self.this_box),
+                    crate::moves::MovesView::settings_button(moves, "group-computer", target, None, cx), true).into_any_element())
+            }
+            _ => None,
+        };
+        let field = |field: Entity<TextField>| div().w(px(280.)).child(field).into_any_element();
+        let mut rows = vec![
+            field_row("group-name", "Name", "What the chat is called.".into(), field(self.name.clone()), false).into_any_element(),
+            field_row("group-purpose", "What it’s for", "The bots read it as they talk.".into(), field(self.purpose.clone()), computer.is_none()).into_any_element(),
+        ];
+        rows.extend(computer);
+        let about = card(rows);
         let offered = self.offered();
         let bots: AnyElement = match (&self.joinable, offered.is_empty()) {
             (Reading::NotYet, true) => kuvo_ui::small::LoadingLabel::new("joinable-loading", "Loading the bots…").compact().into_any_element(),

@@ -185,7 +185,8 @@ const SCREENS: &[Screen] = &[
     // Bots (`kuvo/src/bots`): a bot's page, its conversation, New Bot, each sheet, a bot waiting
     // for another computer, a narrow window and the first run.
     Screen { slug: "bot-page", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
-    Screen { slug: "bot-move-menu", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_menu) },
+    Screen { slug: "bot-move-row", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-move-menu", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_menu) },
     Screen { slug: "bot-move-confirm", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_confirm) },
     Screen { slug: "bot-move-moving", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-move-failed", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_result) },
@@ -423,7 +424,7 @@ fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
 
 fn bot_move_menu(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
-    kuvo::moves::MovesView::open_head_menu(workspace.moves(), MoveTarget::new(MoveKind::Bot, "bot_mira"), window, cx);
+    kuvo::moves::MovesView::open_settings_menu(workspace.moves(), MoveTarget::new(MoveKind::Bot, "bot_mira"), window, cx);
 }
 
 fn bot_move_confirm(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

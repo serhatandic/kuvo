@@ -41,7 +41,6 @@ impl BotsView {
                     Some(look) if status.is_some() => crate::bot_face::still_bot_face(&key, look, px(64.)),
                     _ => face_or_blank(&key, look.as_ref(), px(64.), cx),
                 };
-                let source = self.move_source(&key);
                 let detail = status.unwrap_or_else(|| div().text_ui(TypeSize::Body).text_color(c.text_muted).child(line).into_any_element());
                 div()
                     .debug_selector(move || format!("elsewhere-head-{key}"))
@@ -56,9 +55,6 @@ impl BotsView {
                             .child(div().truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(name))
                             .child(detail),
                     )
-                    .children(self.moves.as_ref().zip(source).map(|(moves, source)| {
-                        crate::moves::MovesView::head_button_from(moves, target, Some(source), cx)
-                    }))
                     .into_any_element()
             }
             Item::Notice { key, tone, title, words } => {
@@ -188,9 +184,6 @@ impl BotsView {
                     .when(!bot.job.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(bot.job.clone())))
                     .children(moving.or_else(|| now.map(IntoElement::into_any_element))),
             )
-            .children(self.moves.as_ref().map(|moves| crate::moves::MovesView::head_button(
-                moves, target, cx,
-            )))
             .child(div().flex_none().child(Button::new("bot-chat", "Chat").primary().icon(IconName::Message).on_click(cx.listener(|this, _, _, cx| this.act(Act::Chat, cx)))))
             .into_any_element()
     }
@@ -253,6 +246,13 @@ impl BotsView {
                 }
             },
             Control::Button(label, act) => button(key, label, act, false, cx).into_any_element(),
+            Control::MoveTo { bot, source } => {
+                let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
+                self.moves.as_ref().map_or_else(
+                    || div().into_any_element(),
+                    |moves| crate::moves::MovesView::settings_button(moves, key, target, source, cx),
+                )
+            }
             Control::Danger(label, act) => button(key, label, act, true, cx).into_any_element(),
             Control::Face(look, label, act) => {
                 let id = self.face_key();
