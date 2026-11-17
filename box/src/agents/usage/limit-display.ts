@@ -6,6 +6,9 @@ import type { LimitsBox, LimitLevel } from "../limits-rows"
 // Readers run every 10–15 minutes in the ordinary case. Give them one missed round.
 const FRESH_FOR = 30 * 60_000
 const DAY = 24 * 60
+const MINUTE_MS = 60_000
+const HOUR_MS = 60 * MINUTE_MS
+const DAY_MS = 24 * HOUR_MS
 
 export interface UsageMeter {
   title: string
@@ -14,11 +17,13 @@ export interface UsageMeter {
   level: LimitLevel
   readAt: number
   resetsAt?: number
+  resetLabels: { at: number; words: string }[]
   freshForMs: number
 }
 
 export interface LimitDisplay {
   title: string
+  updatedAt?: number
   computers: { name: string; here: boolean }[]
   status?: { words: string; warning: boolean }
   meters: UsageMeter[]
@@ -29,31 +34,60 @@ type Member = { box: LimitsBox; account: AccountLimits }
 export function limitDisplay(account: AccountLimits, members: Member[], now: number, title: string): LimitDisplay {
   const problem = account.problem?.kind
   const computers = new Set<LimitsBox>()
-  const meters = problem === "ended" ? [] : account.windows.map(window => {
-    // The merge keeps the winning window object, including when different windows came from
-    // different computers. Use that reading's source, rather than the last account check.
-    const source = members.find(member => member.account.windows.includes(window))!
+  const meter = (source: Member, title: string, used: number, readAt: number, resetsAt?: number): UsageMeter => {
     computers.add(source.box)
-    const share = Math.min(1, Math.max(0, window.used))
-    const freshUntil = Math.min(window.read + FRESH_FOR, window.resetsAt ?? Infinity, source.box.awayAt ?? Infinity)
+    const share = Math.min(1, Math.max(0, used))
+    const freshUntil = Math.min(readAt + FRESH_FOR, resetsAt ?? Infinity, source.box.awayAt ?? Infinity)
+    const freshForMs = source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now))
     return {
-      title: usageTitle(window),
-      share,
-      value: `${Math.round(share * 100)}%`,
-      level: share > 0.7 ? levelOf(share) : "calm",
-      readAt: window.read,
-      resetsAt: window.resetsAt,
-      freshForMs: source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now)),
+      title, share, value: `${Math.round(share * 100)}%`, level: share > 0.7 ? levelOf(share) : "calm",
+      readAt, resetsAt, freshForMs, resetLabels: resetLabels(resetsAt, now, now + freshForMs),
     }
+  }
+  const meters = problem === "ended" ? [] : account.windows.map(window => {
+    // Merging preserves the reading object, so its source is still identifiable.
+    const source = members.find(member => member.account.windows.includes(window))!
+    return meter(source, usageTitle(window), window.used, window.read, window.resetsAt)
   })
+  if (problem !== "ended") {
+    const balance = account.balance
+    if (balance?.limit && balance.limit > 0) {
+      const source = members.find(member => member.account.balance === balance)
+      if (source) meters.push(meter(source, "Credits", 1 - balance.left / balance.limit, source.account.checked ?? 0))
+    }
+    for (const extra of account.extras ?? []) {
+      if (extra.kind !== "capped" || extra.amount === undefined || !(extra.limit && extra.limit > 0)) continue
+      const source = members.find(member => member.account.extras?.includes(extra))
+      if (source) meters.push(meter(source, extra.name, extra.amount / extra.limit, source.account.checked ?? 0, extra.resetsAt))
+    }
+  }
   if (!meters.length) for (const member of members) computers.add(member.box)
   const status = statusOf(problem, meters.length > 0, account.checked !== undefined)
   return {
     title,
+    updatedAt: Math.max(account.checked ?? 0, ...meters.map(meter => meter.readAt)) || undefined,
     computers: [...computers].map(box => ({ name: box.name || (box.here ? hostname() : "Another computer"), here: box.here })),
     ...(status ? { status } : {}),
     meters,
   }
+}
+
+/** Round up so a countdown never promises an earlier reset. Past a day use the viewer's local date. */
+export function resetLabels(at: number | undefined, now: number, until: number): UsageMeter["resetLabels"] {
+  if (at === undefined) return [{ at: now, words: "Reset time unavailable" }]
+  if (at <= now) return [{ at: now, words: "Reset due" }]
+  const labels: UsageMeter["resetLabels"] = []
+  // A missing current label tells the client to show the reset's local weekday and time.
+  let start = Math.max(now, at - DAY_MS + 1)
+  while (start <= until && start < at) {
+    const left = at - start
+    const unit = Math.ceil(left / MINUTE_MS) >= 60 ? HOUR_MS : MINUTE_MS
+    const count = Math.ceil(left / unit)
+    labels.push({ at: start, words: `resets in ${count} ${unit === HOUR_MS ? "h" : "min"}` })
+    start = at - (count - 1) * unit
+    if (unit === HOUR_MS) start = Math.min(start, at - HOUR_MS + MINUTE_MS)
+  }
+  return labels
 }
 
 function usageTitle(window: LimitWindow): string {

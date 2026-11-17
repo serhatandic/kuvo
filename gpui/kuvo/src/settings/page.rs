@@ -22,7 +22,7 @@ use kuvo_ui::{
 
 use super::rows::{Act, Control, FlowDrawn, Layout, Leading, Meter, Part, Push, Row, Tone};
 use kuvo_box::settings_pages::{BadgeTone, FlowState};
-use super::usage_columns::{PAGE_WIDTH as USAGE_PAGE_WIDTH, UsageColumns};
+use super::usage_columns::{PAGE_WIDTH as USAGE_PAGE_WIDTH, CardMeasure, UsageColumns, CARD_WIDTH};
 use super::{AddMachine, Drawn, Item, PAGE_WIDTH, Pick, SettingsView, Side, Standing, box_key, yours_key};
 use crate::areas::{Reading, computer_line};
 use crate::time;
@@ -198,6 +198,19 @@ impl SettingsView {
         self.picker.open(menu, window, cx);
     }
 
+    /// The timestamp or manual refresh status shown beside the refresh button.
+    pub fn usage_update_words(&self) -> String {
+        if self.usage_refreshing() {
+            return "Updating…".into();
+        }
+        let updated = self.usage_updated_at
+            .map(|at| usage_updated(at, self.now.unwrap_or_else(time::now_ms)));
+        if self.usage_refresh_failed {
+            return updated.map_or_else(|| "Couldn’t update usage".into(), |last| format!("Couldn’t update usage · {last}"));
+        }
+        updated.unwrap_or_default()
+    }
+
     fn item(&mut self, ix: usize, page_width: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let Some(item) = self.items.get(ix).cloned() else { return div().into_any_element() };
@@ -206,23 +219,24 @@ impl SettingsView {
             Item::Whose(words) => div().debug_selector(|| "settings-whose".into()).pt(space::S1).text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element(),
             Item::UsageSummary => {
                 let busy = self.usage_refreshing();
-                let words = if busy {
-                    "Refreshing…".to_owned()
-                } else {
-                    self.usage_updated_at().map(|at| usage_updated(at, self.now.unwrap_or_else(time::now_ms))).unwrap_or_default()
-                };
-                div().flex().items_center().justify_between().gap(space::S2).pt(space::S0_5).pb(space::S2)
-                    .child(div().debug_selector(|| "usage-updated".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(words))
+                div().flex().items_center().gap(space::S0_5).pt(space::S0_5).pb(space::S2)
+                    .child(div().debug_selector(|| "usage-updated".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(self.usage_update_words()))
                     .child(Button::icon_only("usage-refresh", IconName::Refresh, "Refresh usage").ghost().size(ButtonSize::Small)
-                        .disabled(busy)
+                        .icon_size(IconSize::XSmall).icon_color(c.text_muted).loading(busy)
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_usage(cx))))
                     .into_any_element()
             }
             Item::UsageCards(rows) => {
                 let width = (page_width - 2. * space::S8).clamp(px(0.), px(USAGE_PAGE_WIDTH));
                 let cards = rows.into_iter().map(|row| {
-                    let Control::Usage { account, .. } = &row.control else { unreachable!("usage account") };
-                    (account.clone(), self.row(row, true, true, cx))
+                    let Control::Usage { account, meters, .. } = &row.control else { unreachable!("usage account") };
+                    let measure = CardMeasure {
+                        width: width.min(px(CARD_WIDTH)),
+                        text_scale: kuvo_ui::theme::scaled(px(12.)),
+                        meter_count: meters.len(),
+                        status: row.why.clone(),
+                    };
+                    (account.clone(), measure, self.row(row, true, true, cx))
                 }).collect();
                 UsageColumns { width, placement: self.usage_placement.clone(), cards }.into_any_element()
             }
@@ -936,21 +950,21 @@ fn usage_updated(at: f64, now: f64) -> String {
     }
 }
 
-fn usage_reset(at: Option<f64>, now: f64) -> String {
-    let Some(at) = at else { return "Reset time unavailable".into() };
-    let minutes = (at - now) / 60_000.;
-    match minutes.floor() as i64 {
-        ..=-1 => "Reset due".into(),
-        0 if minutes == 0. => "Reset due".into(),
-        0..60 => format!("resets in {} min", minutes.ceil() as u64),
-        60..1440 => format!("resets in {} h", (minutes / 60.) as u64),
-        _ => {
-            let seconds = (at / 1000.) as i64;
-            let local_day = (seconds + crate::pasted::utc_offset(seconds)).div_euclid(86_400);
-            let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][local_day.rem_euclid(7) as usize];
-            format!("resets {weekday} {}", time::clock(at))
-        }
+/// The bridge chooses the countdown wording. Only distant dates need the viewer's time zone.
+fn usage_reset(meter: &UsageMeter, now: f64) -> String {
+    if let Some(label) = meter.reset_labels.iter().rev().find(|label| label.at <= now) {
+        return label.words.clone();
     }
+    let Some(at) = meter.resets_at else { return "Reset time unavailable".into() };
+    usage_local_reset(at, crate::pasted::utc_offset((at / 1000.) as i64))
+}
+
+fn usage_local_reset(at: f64, utc_offset: i64) -> String {
+    let seconds = (at / 1000.) as i64 + utc_offset;
+    let local_day = seconds.div_euclid(86_400);
+    let of_day = seconds.rem_euclid(86_400);
+    let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][local_day.rem_euclid(7) as usize];
+    format!("resets {weekday} {:02}:{:02}", of_day / 3600, of_day % 3600 / 60)
 }
 
 /// Stack full-width meters so all tracks have the same length.
@@ -964,7 +978,7 @@ fn usage_meters(key: &str, meters: &[UsageMeter], now: f64, elapsed: std::time::
             let selector = format!("{key}-window-{ix}");
             let old = meter.old_at(elapsed);
             let color = if old || matches!(meter.level, Level::Calm | Level::Unknown) { c.text_muted } else { crate::rail::level_color(meter.level, cx) };
-            let detail = if old { format!("old {}", time::when(meter.read_at, now)) } else { usage_reset(meter.resets_at, now) };
+            let detail = if old { format!("old {}", time::when(meter.read_at, now)) } else { usage_reset(meter, now) };
             div()
                 .debug_selector(move || selector)
                 .min_w_0()
@@ -988,13 +1002,10 @@ mod usage_tests {
     #[test]
     fn usage_time_labels_are_short_and_local() {
         assert_eq!(usage_updated(0., 120_000.), "Updated 2 min ago");
-        assert_eq!(usage_reset(Some(3. * 3_600_000.), 0.), "resets in 3 h");
-        let noon = 86_400 + 43_200;
-        let afternoon = (noon - crate::pasted::utc_offset(noon)) as f64 * 1000.;
-        let reset = usage_reset(Some(afternoon), afternoon - 2. * 86_400_000.);
-        assert!(reset.starts_with("resets Fri "));
-        assert!(reset.ends_with(&time::clock(afternoon)));
-        assert!(!reset.contains("UTC"));
+        // 01:59 EST is followed by 03:00 EDT on the same Sunday.
+        let sunday = (crate::time::day_number(2026, 3, 8) * 86_400 + 6 * 3600 + 59 * 60) as f64 * 1000.;
+        assert_eq!(usage_local_reset(sunday, -5 * 3600), "resets Sun 01:59");
+        assert_eq!(usage_local_reset(sunday + 60_000., -4 * 3600), "resets Sun 03:00");
     }
 }
 

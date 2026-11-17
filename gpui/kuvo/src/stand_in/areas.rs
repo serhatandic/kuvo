@@ -13,6 +13,10 @@ pub struct Areas {
     /// A first run: no bots, chats, other computers or accounts.
     pub empty: bool,
     pub usage: UsageSample,
+    pub usage_refresh_failed: bool,
+    pub usage_refresh_delayed: bool,
+    pub usage_refresh_pending: bool,
+    pub usage_refresh_completed: bool,
     /// Its list of computers can't be read now (503).
     pub computers_down: bool,
     /// Its list of computers has this computer alone (the rest of the sample stays).
@@ -115,6 +119,9 @@ fn update_said(updating: &Updating, name: &str) -> (Value, Option<Value>) {
 /// sessions "Needs you" lists.
 pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize, bots_asking: usize) -> Option<(u16, Value)> {
     let refresh = (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh");
+    if refresh && areas.usage_refresh_failed {
+        return Some((503, json!({ "message": "Usage could not be refreshed." })));
+    }
     if method != "GET" && !refresh {
         return None;
     }
@@ -123,7 +130,13 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
     }
     let answer = match route {
         "kuvo/computers" => json!({ "computers": listed(areas) }),
-        "kuvo/agents/api/kuvo/limits" | "kuvo/agents/api/kuvo/limits/refresh" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now, areas.usage) } } }),
+        "kuvo/agents/api/kuvo/limits" | "kuvo/agents/api/kuvo/limits/refresh" => {
+            let rows = if areas.empty { Vec::new() } else { accounts(now, areas.usage) };
+            let updated = rows.iter().filter_map(|row| row["usage"]["updatedAt"].as_f64()).max_by(f64::total_cmp);
+            json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"],
+                "rows": rows, "usageUpdatedAt": updated, "refreshPending": areas.usage_refresh_pending,
+                "refreshCompletedAt": areas.usage_refresh_completed.then_some(now) } })
+        }
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
         "kuvo/box/at-work" => json!({ "applies": !areas.no_menu_bar, "working": 0, "sessions": [], "asking": [], "waiting": { "sessions": needing, "bots": bots_asking, "queue": 0 }, "background": 0, "busy": false, "rings": [] }),
         _ => return None,
@@ -651,10 +664,14 @@ fn usage_display(row: &Value, now: f64) -> Value {
         let read = window["read"].as_f64().unwrap_or(now);
         json!({
             "title": title, "share": share, "value": format!("{:.0}%", share * 100.0),
-            "level": window["level"], "resetsAt": reset, "readAt": read, "freshForMs": if row["boxes"][0]["away"] == json!(true) { 0 } else { 28 * MINUTE as u64 },
+            "level": window["level"], "resetsAt": reset, "readAt": read,
+            "resetLabels": reset.filter(|at| at - now < DAY).map(|at| json!([
+                { "at": now, "words": format!("resets in {} h", ((at - now) / HOUR).ceil()) }
+            ])).unwrap_or_else(|| json!([])), "freshForMs": if row["boxes"][0]["away"] == json!(true) { 0 } else { 28 * MINUTE as u64 },
         })
     }).collect();
-    json!({ "title": title, "computers": [computer], "status": status, "meters": meters })
+    let updated = meters.iter().filter_map(|meter| meter["readAt"].as_f64()).max_by(f64::total_cmp);
+    json!({ "title": title, "computers": [computer], "status": status, "meters": meters, "updatedAt": updated })
 }
 
 fn level(used: f64) -> &'static str {

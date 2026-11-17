@@ -538,6 +538,26 @@ pub struct LimitStatus {
     pub warning: bool,
 }
 
+/// A countdown label starts at this instant. Before the first label, show the local reset date.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ResetLabel {
+    pub at: f64,
+    pub words: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageSnapshot {
+    #[serde(deserialize_with = "readable")]
+    pub rows: Vec<Account>,
+    pub usage_updated_at: Option<f64>,
+    pub refresh_completed_at: Option<f64>,
+    #[serde(default)]
+    pub refresh_pending: bool,
+    #[serde(default)]
+    pub refresh_failed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageMeter {
@@ -547,6 +567,8 @@ pub struct UsageMeter {
     pub level: Level,
     pub read_at: f64,
     pub resets_at: Option<f64>,
+    #[serde(default)]
+    pub reset_labels: Vec<ResetLabel>,
     /// Time left before the client must mark this snapshot old, as decided by the box.
     pub fresh_for_ms: u64,
 }
@@ -750,27 +772,29 @@ impl BoxClient {
 
     /// Every account across your computers, in the box's order (its limits' `rows`).
     pub fn accounts(&self) -> Result<Vec<Account>> {
-        self.read_accounts(&Request::get("kuvo/agents/api/kuvo/limits"))
+        self.usage_snapshot().map(|snapshot| snapshot.rows)
     }
 
-    pub fn refresh_accounts(&self) -> Result<Vec<Account>> {
-        self.read_accounts(&Request::post("kuvo/agents/api/kuvo/limits/refresh", serde_json::json!({})))
+    pub fn usage_snapshot(&self) -> Result<UsageSnapshot> {
+        self.read_usage(&Request::get("kuvo/agents/api/kuvo/limits"))
     }
 
-    fn read_accounts(&self, request: &Request) -> Result<Vec<Account>> {
-        #[derive(Deserialize)]
-        struct Data {
-            rows: Option<Vec<serde_json::Value>>,
-        }
+    pub fn refresh_accounts(&self) -> Result<UsageSnapshot> {
+        self.read_usage(&Request::post("kuvo/agents/api/kuvo/limits/refresh", serde_json::json!({})))
+    }
+
+    fn read_usage(&self, request: &Request) -> Result<UsageSnapshot> {
         #[derive(Deserialize)]
         struct Answer {
-            data: Data,
+            data: UsageSnapshot,
         }
-        let answer: Answer = self.value(request)?;
-        // A coding agents' bridge from before `rows` (one still running after its box updated, until
-        // it restarts) lists none across your computers: not "no accounts", but none it says.
-        let rows = answer.data.rows.ok_or_else(|| Error::BadAnswer("This computer's Kuvo is from before it listed your accounts' limits: they show once it restarts.".into()))?;
-        Ok(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
+        self.value::<Answer>(request).map(|answer| answer.data)
+    }
+
+    /// A signal to read the latest snapshot, also sent when first connecting to cover missed events.
+    pub fn follow_usage(&self, timing: Timing) -> Follow<Followed<serde_json::Value>> {
+        let route = "kuvo/agents/api/kuvo/limits";
+        follow_lines(self, "kuvo-box usage", format!("{route}/events"), route.into(), timing)
     }
 
     /// What's at work in Kuvo on this box's computer, as it says it for its menu bar.

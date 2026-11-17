@@ -95,6 +95,7 @@ struct State {
     /// those following your computers (`kuvo/computers/events`), which stay as they are.
     waits: HashMap<u64, Sender<String>>,
     computers: HashMap<u64, Sender<String>>,
+    usage_followers: HashMap<u64, Sender<String>>,
     /// Those following a conversation's asks or queue (`…/asks/events`, `…/queue/events`): its
     /// session, which, and where its lines go.
     followers: HashMap<u64, (String, Followed, Sender<String>)>,
@@ -592,6 +593,23 @@ impl StandIn {
 
     pub fn set_usage_sample(&self, sample: areas::UsageSample) {
         self.state().areas.usage = sample;
+    }
+
+    pub fn fail_usage_refresh(&self, failed: bool) {
+        self.state().areas.usage_refresh_failed = failed;
+    }
+
+    pub fn delay_usage_refresh(&self) {
+        self.state().areas.usage_refresh_delayed = true;
+    }
+
+    pub fn complete_usage_refresh(&self, sample: areas::UsageSample) {
+        let mut state = self.state();
+        state.areas.usage_refresh_pending = false;
+        state.areas.usage_refresh_delayed = false;
+        state.areas.usage_refresh_completed = true;
+        state.areas.usage = sample;
+        state.usage_followers.retain(|_, sender| sender.send("{}".into()).is_ok());
     }
 
     /// What its box says of an account from now on (`state`, `line`, `actions`), whatever the
@@ -1733,6 +1751,10 @@ impl StandIn {
             }
             return answer(status, value);
         }
+        if (method, route) == ("POST", "kuvo/agents/api/kuvo/limits/refresh") && !state.areas.usage_refresh_failed {
+            state.areas.usage_refresh_pending = state.areas.usage_refresh_delayed;
+            state.areas.usage_refresh_completed = !state.areas.usage_refresh_pending;
+        }
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
@@ -2559,17 +2581,22 @@ impl Transport for StandIn {
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
         // What waits on you, or your computers, followed: as it is now, then a line as it changes.
-        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/computers")) {
+        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/computers" | "kuvo/agents/api/kuvo/limits")) {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();
                 state.seen.push(Seen { method: request.method.clone(), path: request.path.clone(), body: None });
                 let id = state.next;
                 state.next += 1;
-                if let Some((_, now)) = state.area("GET", once) {
-                    let _ = sender.send(now.to_string());
+                if once == "kuvo/agents/api/kuvo/limits" {
+                    let _ = sender.send("{}".into());
+                    state.usage_followers.insert(id, sender);
+                } else {
+                    if let Some((_, now)) = state.area("GET", once) {
+                        let _ = sender.send(now.to_string());
+                    }
+                    if once == "kuvo/waiting" { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
                 }
-                if once == "kuvo/waiting" { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
                 id
             };
             let inner = self.inner.clone();
@@ -2577,6 +2604,7 @@ impl Transport for StandIn {
                 let mut state = inner.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.waits.remove(&id);
                 state.computers.remove(&id);
+                state.usage_followers.remove(&id);
             });
             if !hold(closer.clone()) {
                 closer.close();

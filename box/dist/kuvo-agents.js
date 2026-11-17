@@ -11270,34 +11270,76 @@ async function resetRoutes(resets, method, rest, body) {
 import { hostname } from "os";
 var FRESH_FOR = 30 * 60000;
 var DAY = 24 * 60;
+var MINUTE_MS = 60000;
+var HOUR_MS = 60 * MINUTE_MS;
+var DAY_MS = 24 * HOUR_MS;
 function limitDisplay(account, members, now, title) {
   const problem = account.problem?.kind;
   const computers = new Set;
-  const meters = problem === "ended" ? [] : account.windows.map((window) => {
-    const source = members.find((member) => member.account.windows.includes(window));
+  const meter = (source, title, used, readAt, resetsAt) => {
     computers.add(source.box);
-    const share = Math.min(1, Math.max(0, window.used));
-    const freshUntil = Math.min(window.read + FRESH_FOR, window.resetsAt ?? Infinity, source.box.awayAt ?? Infinity);
+    const share = Math.min(1, Math.max(0, used));
+    const freshUntil = Math.min(readAt + FRESH_FOR, resetsAt ?? Infinity, source.box.awayAt ?? Infinity);
+    const freshForMs = source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now));
     return {
-      title: usageTitle(window),
+      title,
       share,
       value: `${Math.round(share * 100)}%`,
       level: share > 0.7 ? levelOf(share) : "calm",
-      readAt: window.read,
-      resetsAt: window.resetsAt,
-      freshForMs: source.box.away || source.account.problem ? 0 : Math.max(0, Math.floor(freshUntil - now))
+      readAt,
+      resetsAt,
+      freshForMs,
+      resetLabels: resetLabels(resetsAt, now, now + freshForMs)
     };
+  };
+  const meters = problem === "ended" ? [] : account.windows.map((window) => {
+    const source = members.find((member) => member.account.windows.includes(window));
+    return meter(source, usageTitle(window), window.used, window.read, window.resetsAt);
   });
+  if (problem !== "ended") {
+    const balance = account.balance;
+    if (balance?.limit && balance.limit > 0) {
+      const source = members.find((member) => member.account.balance === balance);
+      if (source)
+        meters.push(meter(source, "Credits", 1 - balance.left / balance.limit, source.account.checked ?? 0));
+    }
+    for (const extra of account.extras ?? []) {
+      if (extra.kind !== "capped" || extra.amount === undefined || !(extra.limit && extra.limit > 0))
+        continue;
+      const source = members.find((member) => member.account.extras?.includes(extra));
+      if (source)
+        meters.push(meter(source, extra.name, extra.amount / extra.limit, source.account.checked ?? 0, extra.resetsAt));
+    }
+  }
   if (!meters.length)
     for (const member of members)
       computers.add(member.box);
   const status = statusOf(problem, meters.length > 0, account.checked !== undefined);
   return {
     title,
+    updatedAt: Math.max(account.checked ?? 0, ...meters.map((meter) => meter.readAt)) || undefined,
     computers: [...computers].map((box) => ({ name: box.name || (box.here ? hostname() : "Another computer"), here: box.here })),
     ...status ? { status } : {},
     meters
   };
+}
+function resetLabels(at, now, until) {
+  if (at === undefined)
+    return [{ at: now, words: "Reset time unavailable" }];
+  if (at <= now)
+    return [{ at: now, words: "Reset due" }];
+  const labels = [];
+  let start = Math.max(now, at - DAY_MS + 1);
+  while (start <= until && start < at) {
+    const left = at - start;
+    const unit = Math.ceil(left / MINUTE_MS) >= 60 ? HOUR_MS : MINUTE_MS;
+    const count = Math.ceil(left / unit);
+    labels.push({ at: start, words: `resets in ${count} ${unit === HOUR_MS ? "h" : "min"}` });
+    start = at - (count - 1) * unit;
+    if (unit === HOUR_MS)
+      start = Math.min(start, at - HOUR_MS + MINUTE_MS);
+  }
+  return labels;
 }
 function usageTitle(window) {
   if (window.name)
@@ -12047,6 +12089,27 @@ class Limits {
   }
   alsoServices = [];
   covers = () => [];
+  refreshing;
+  refreshFailed = false;
+  refreshCompletedAt;
+  refreshUsage() {
+    if (this.refreshing)
+      return this.refreshing;
+    const before = new Map([...this.entries].map(([id, entry]) => [id, entry.checked]));
+    this.refreshing = this.refresh().then(() => {
+      const checked = [...this.entries].filter(([id, entry]) => entry.checked !== before.get(id));
+      this.refreshFailed = checked.length > 0 && checked.every(([, entry]) => entry.problem && entry.problem.kind !== "ended");
+      if (!this.refreshFailed)
+        this.refreshCompletedAt = this.now();
+      this.peers?.refreshElsewhere(this.rows(), this.reads());
+    }, () => {
+      this.refreshFailed = true;
+    }).finally(() => {
+      this.refreshing = undefined;
+      emit("kuvo.limits.updated", { accounts: this.shown(), rows: this.rows(), notices: this.notices(), ownNotices: this.pushableNotices(), notificationAvailability: notificationAvailability(), refreshFinished: true });
+    });
+    return this.refreshing;
+  }
   async refresh(only) {
     const at = this.now();
     for (const account of this.accounts()) {
@@ -12437,15 +12500,54 @@ async function limitsRoutes(limits, method, rest, body = async () => {
     return json7({ message: "Plan limits aren't read on this computer." }, 503);
   if (rest[0] === "reset")
     return resetRoutes(limits.resets, method, rest.slice(1), body);
-  const answer = () => json7({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(true), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } });
+  const answer = () => {
+    const rows = limits.rows(true);
+    const usageUpdatedAt = Math.max(0, ...rows.map((row) => row.usage?.updatedAt ?? 0)) || undefined;
+    return json7({ data: {
+      accounts: limits.shown(),
+      services: limits.services(),
+      rows,
+      usageUpdatedAt,
+      refreshPending: !!limits.refreshing,
+      refreshFailed: limits.refreshFailed,
+      refreshCompletedAt: limits.refreshCompletedAt,
+      notificationAvailability: notificationAvailability(),
+      notices: limits.notices(),
+      ownNotices: limits.pushableNotices()
+    } });
+  };
   if (!rest.length && method === "GET")
     return answer();
+  if (rest.length === 1 && rest[0] === "events" && method === "GET")
+    return limitsEvents();
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
-    const reading = limits.refresh().finally(() => limits.peers?.refreshElsewhere(limits.rows(), limits.reads()));
-    await Promise.race([reading, new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
+    await Promise.race([limits.refreshUsage(), new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
     return answer();
   }
   return json7({ message: "Not available for this agent." }, 404);
+}
+function limitsEvents() {
+  const line = new TextEncoder().encode(`{}
+`);
+  let stop = () => {};
+  const stream = new ReadableStream({
+    start(controller) {
+      const unsubscribe = subscribe((event) => {
+        if (event.type === "kuvo.limits.updated")
+          controller.enqueue(line);
+      });
+      const heartbeat = setInterval(() => controller.enqueue(line), 15000).unref();
+      stop = () => {
+        unsubscribe();
+        clearInterval(heartbeat);
+      };
+      controller.enqueue(line);
+    },
+    cancel() {
+      stop();
+    }
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
 }
 var AGENT_SERVICES = { claude: "claude", codex: "codex", grok: "grok", cursor: "cursor", antigravity: "antigravity" };
 function agentAccounts(agents) {
@@ -12676,9 +12778,9 @@ async function send(url, init, timeout) {
 }
 
 // box/src/agents/usage/cursor-plan.ts
-var DAY_MS = 24 * 60 * 60000;
-var BILLING_PERIOD_MS = 30 * DAY_MS;
-var WEEK_MS = 7 * DAY_MS;
+var DAY_MS2 = 24 * 60 * 60000;
+var BILLING_PERIOD_MS = 30 * DAY_MS2;
+var WEEK_MS = 7 * DAY_MS2;
 
 class CursorPlanError extends Error {
   ended;
@@ -39520,4 +39622,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 1617ddd90098e26d2f34390445db311254631285d1eb5f73ecd1ae2ee7e74668
+// Built from Packages/Box/src/agents 1b96dd16f6ba41bef3eade70f05a9c4c1d2dadc9f3760458be11ec2d523b2c04

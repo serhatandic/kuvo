@@ -263,7 +263,7 @@ pub enum Control {
     /// Windows of use, each with its share and when it starts over.
     Windows(Vec<Meter>),
     /// The Usage page account row and its display-ready plan limits.
-    Usage { account: String, plan: Option<String>, meters: Vec<UsageMeter> },
+    Usage { account: std::rc::Rc<str>, plan: Option<String>, meters: Vec<UsageMeter> },
     /// A thing in a list: what it offers now (buttons), what asks first (a "…" menu), and its
     /// switch, last, at the edge.
     Thing { buttons: Vec<Push>, menu: Vec<Push>, switch: Option<(bool, Option<Act>)> },
@@ -358,7 +358,11 @@ impl Row {
 
     /// Whether `query` (lowercase) is in its name or its line.
     pub fn matches(&self, query: &str) -> bool {
-        self.title.to_lowercase().contains(query) || self.detail.to_lowercase().contains(query)
+        let contains = |words: &str| words.to_lowercase().contains(query);
+        contains(&self.title) || contains(&self.detail) || matches!(
+            &self.control,
+            Control::Usage { plan, .. } if plan.as_deref().is_some_and(contains) || self.why.as_deref().is_some_and(contains)
+        )
     }
 
     pub fn why(mut self, why: Option<String>) -> Row {
@@ -692,7 +696,7 @@ fn usage(facts: &Facts) -> Vec<Block> {
                 .enumerate()
                 .map(|(ix, account)| {
                     let key = format!("usage-{ix}");
-                    let identity = account.id.clone().unwrap_or_else(|| key.clone());
+                    let identity = std::rc::Rc::from(account.id.as_deref().unwrap_or(&key));
                     let Some(display) = &account.usage else {
                         return Row::new(key, account.title.clone(), "", Control::Usage { account: identity, plan: account.plan.clone(), meters: Vec::new() })
                             .leading(Leading::Mark(account.service.clone()));
@@ -824,6 +828,17 @@ mod tests {
         assert_eq!(found(true, blocks.clone(), "browser").len(), 2, "the section's name keeps it whole");
         assert!(found(false, blocks, "nothing like it").is_empty());
     }
+
+    #[test]
+    fn usage_search_matches_plan_and_visible_status() {
+        let row = Row::new("usage", "Claude", "", Control::Usage {
+            account: "account".into(), plan: Some("Max 20x".into()), meters: Vec::new(),
+        }).why(Some("Plan ended.".into()));
+        assert!(row.matches("max"));
+        assert!(row.matches("ended"));
+        assert!(!row.matches("work"));
+    }
+
 }
 
 #[cfg(test)]

@@ -190,6 +190,9 @@ pub struct SettingsView {
     accounts: Reading<Accounts>,
     limits: Reading<Vec<Account>>,
     usage_read_started: Option<(Instant, SystemTime)>,
+    usage_refresh_failed: bool,
+    usage_updated_at: Option<f64>,
+    usage_follow: Option<Follow<Followed<Value>>>,
     usage_placement: std::rc::Rc<std::cell::RefCell<usage_columns::Placement>>,
     config: Reading<Config>,
     offered: Reading<Offered>,
@@ -336,6 +339,9 @@ impl SettingsView {
             accounts: Reading::NotYet,
             limits: Reading::NotYet,
             usage_read_started: None,
+            usage_refresh_failed: false,
+            usage_updated_at: None,
+            usage_follow: None,
             usage_placement: Default::default(),
             config: Reading::NotYet,
             offered: Reading::NotYet,
@@ -553,6 +559,9 @@ impl SettingsView {
         self.accounts = Reading::NotYet;
         self.limits = Reading::NotYet;
         self.usage_read_started = None;
+        self.usage_refresh_failed = false;
+        self.usage_updated_at = None;
+        self.usage_follow = None;
         self.usage_placement = Default::default();
         self.config = Reading::NotYet;
         self.offered = Reading::NotYet;
@@ -1113,19 +1122,10 @@ impl SettingsView {
         self.tasks.insert(name, task);
     }
 
-    fn usage_updated_at(&self) -> Option<f64> {
-        let Reading::Ready(accounts) = &self.limits else { return None };
-        accounts.iter()
-            .filter_map(|account| account.usage.as_ref())
-            .flat_map(|usage| &usage.meters)
-            .map(|meter| meter.read_at)
-            .max_by(f64::total_cmp)
-    }
-
     fn refresh_usage(&mut self, cx: &mut Context<Self>) {
         if !self.held() && self.client.is_some() && !self.usage_refreshing() {
-            self.problem = None;
-            self.set_busy("usage-refresh", "Refreshing…");
+            self.usage_refresh_failed = false;
+            self.set_busy("usage-refresh", "Updating…");
             self.read_limits(true, cx);
             cx.notify();
         }
@@ -1136,19 +1136,40 @@ impl SettingsView {
     }
 
     fn read_limits(&mut self, refresh: bool, cx: &mut Context<Self>) {
-        if !refresh && self.usage_refreshing() {
-            return;
-        }
         let started = (Instant::now(), SystemTime::now());
         self.run("read-limits", move |client| {
-            if refresh { client.refresh_accounts() } else { client.accounts() }
+            if refresh { client.refresh_accounts() } else { client.usage_snapshot() }
         }, move |this, read, cx| {
-            if refresh {
-                this.done("usage-refresh");
-                if read.is_err() {
-                    this.problem = Some("Couldn’t refresh usage. Check the computer’s connection and try again.".into());
+            let completing = refresh || this.usage_follow.is_some();
+            let read = match read {
+                Ok(snapshot) => {
+                    if completing && snapshot.refresh_pending {
+                        this.follow_usage_refresh(cx);
+                        return;
+                    }
+                    if completing {
+                        this.finish_usage_refresh(snapshot.refresh_failed);
+                        if !snapshot.refresh_failed {
+                            this.usage_updated_at = snapshot.refresh_completed_at.or(snapshot.usage_updated_at);
+                        }
+                    }
+                    if !snapshot.refresh_failed || !completing {
+                        this.usage_updated_at = this.usage_updated_at.into_iter().chain(snapshot.usage_updated_at).max_by(f64::total_cmp);
+                    }
+                    Ok(snapshot.rows)
                 }
-            }
+                Err(error) => {
+                    if this.usage_follow.is_some() {
+                        // The event stream reconnects and signals another GET. A transient GET
+                        // failure doesn't tell us whether the provider has finished.
+                        return;
+                    }
+                    if refresh {
+                        this.finish_usage_refresh(true);
+                    }
+                    Err(error)
+                }
+            };
             this.usage_read_started = read.is_ok().then_some(started);
             this.agents_limits = agents_state(&read);
             this.limits = reading(read, &this.limits);
@@ -1156,6 +1177,38 @@ impl SettingsView {
             let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
             this.again_while_restarting("usage", restarting, cx);
         }, cx);
+    }
+
+    fn follow_usage_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.usage_follow.is_some() {
+            return;
+        }
+        let Some(client) = &self.client else { return };
+        let follow = client.follow_usage(Timing::default());
+        let updates = follow.updates().clone();
+        self.usage_follow = Some(follow);
+        let task = cx.spawn(async move |this, cx| {
+            while let Ok(update) = updates.recv().await {
+                if matches!(update, Followed::Now(_)) {
+                    let took = this.update(cx, |this, cx| {
+                        if this.usage_follow.is_some() {
+                            this.read_limits(false, cx);
+                        }
+                    });
+                    if took.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        self.tasks.insert("follow-usage-refresh".into(), task);
+    }
+
+    fn finish_usage_refresh(&mut self, failed: bool) {
+        self.usage_refresh_failed = failed;
+        self.done("usage-refresh");
+        self.usage_follow = None;
+        self.tasks.remove("follow-usage-refresh");
     }
 
     fn usage_elapsed(&self) -> Duration {
@@ -1312,7 +1365,9 @@ impl SettingsView {
                 this.again_while_restarting("accounts", restarting, cx);
             }, cx),
             (Some(Drawn::Own), "usage") => {
-                self.read_limits(false, cx);
+                if !self.usage_refreshing() {
+                    self.read_limits(false, cx);
+                }
                 self.run("read-usage", |client| client.usage_settings(), |this, read, _| {
                     this.agents_usage = agents_state(&read);
                     this.usage = reading(read, &this.usage);

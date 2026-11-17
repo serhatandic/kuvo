@@ -889,8 +889,7 @@ fn the_theme_row_switches_light_and_dark(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn usage_wraps_equal_width_cards_and_stacks_their_limits(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    let (workspace, cx) = open(cx, stand_in.clone());
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     let view = section(&workspace, cx, "Usage");
     for row in ["usage-0", "usage-1", "usage-2", "usage-3", "usage-4", "usage-5"] {
         assert!(shown(cx, row), "{row}");
@@ -924,9 +923,57 @@ fn usage_wraps_equal_width_cards_and_stacks_their_limits(cx: &mut TestAppContext
     assert_eq!(view.read_with(cx, |view, _| view.row_detail("usage-2")).as_deref(), Some("mini-local"));
     assert_eq!(view.read_with(cx, |view, _| view.row_detail("usage-0")).as_deref(), Some(""));
     assert!(!shown(cx, "settings-whose"));
-    assert!(shown(cx, "usage-updated"));
+}
+
+#[gpui::test]
+fn usage_refresh_is_inline_and_shows_success_and_failure(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Usage");
+    let updated = bounds(cx, "usage-updated").unwrap();
+    let refresh = bounds(cx, "usage-refresh").unwrap();
+    assert!(refresh.origin.x >= updated.origin.x + updated.size.width);
+    assert!(refresh.origin.x <= updated.origin.x + updated.size.width + px(4.));
+    assert!((updated.center().y - refresh.center().y).abs() <= px(1.));
+    let words = |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.usage_update_words());
+    assert_eq!(words(cx), "Updated 2 min ago");
+
+    stand_in.fail_usage_refresh(true);
+    click(cx, "usage-refresh");
+    assert_eq!(words(cx), "Couldn’t update usage · Updated 2 min ago");
+    stand_in.fail_usage_refresh(false);
+    click(cx, "usage-refresh");
+    assert_eq!(words(cx), "Updated just now");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/kuvo/limits/refresh").len(), 2);
+}
+
+#[gpui::test]
+fn usage_refresh_waits_for_the_provider_and_ignores_repeat_presses(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.delay_usage_refresh();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    cx.executor().allow_parking();
+    let view = section(&workspace, cx, "Usage");
+    let initial_reads = stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len();
+    click(cx, "usage-refresh");
+    assert_eq!(view.read_with(cx, |view, _| view.usage_update_words()), "Updating…");
     click(cx, "usage-refresh");
     assert_eq!(stand_in.seen_at("POST", "kuvo/agents/api/kuvo/limits/refresh").len(), 1);
+
+    let wait_for = |cx: &mut VisualTestContext, ready: &dyn Fn(&mut VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !ready(cx) {
+            assert!(std::time::Instant::now() < deadline, "the usage update should arrive");
+            std::thread::yield_now();
+            cx.run_until_parked();
+        }
+    };
+    wait_for(cx, &|_| stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len() > initial_reads);
+    let reads_before = stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len();
+    stand_in.complete_usage_refresh(kuvo::stand_in::areas::UsageSample::One);
+    wait_for(cx, &|cx| view.read_with(cx, |view, _| view.usage_update_words()) == "Updated just now");
+    assert!(stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits").len() > reads_before);
+    assert!(shown(cx, "usage-0") && !shown(cx, "usage-1"));
 }
 
 #[gpui::test]
