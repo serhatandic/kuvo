@@ -16,7 +16,7 @@
 //         Code sends its open asks again itself when a new SDK client initializes, and cancels open
 //         hook callbacks, so a replayed one would be asked twice), or "raw" (lines as written).
 //   key:  what a bridge gives first (never in an environment or on a command line)
-//   spec: {command: [program, ...args], cwd, meta, holder, bun?, journalBytes?, linger?, orphan?}
+//   spec: {command: [program, ...args], cwd, meta, holder, bridge (its pid), bun?, journalBytes?, linger?, orphan?}
 //   env:  the agent's
 //
 // Frames, one JSON object per line. A bridge sends first {hello: "hold/1", key, generation, from?};
@@ -98,7 +98,7 @@ const child = spawn(spec.command[0], spec.command.slice(1), { cwd: spec.cwd || u
 child.stdin.on("error", () => {})
 
 function writeRecord() {
-  const record = { proto: PROTO, holder: spec.holder ?? null, id, kind, pid: process.pid, child: child.pid ?? null, program: spec.command[0], cwd: spec.cwd ?? null, started, generation, exited, meta, key: key.toString() }
+  const record = { proto: PROTO, holder: spec.holder ?? null, id, kind, pid: process.pid, child: child.pid ?? null, program: spec.command[0], cwd: spec.cwd ?? null, started, bridge: spec.bridge ?? null, generation, exited, meta, key: key.toString() }
   const temporary = `${recordPath}.${randomBytes(4).toString("hex")}`
   try {
     writeFileSync(temporary, JSON.stringify(record), { mode: 0o600 })
@@ -110,7 +110,9 @@ function writeRecord() {
 
 const idKey = (value) => (value === undefined || value === null ? undefined : JSON.stringify(value))
 
-/** What a line of the agent's says of the asks open: a new one, or one it settled itself. */
+/** What a line of the agent's says of the asks open: a new one, or one it settled itself. (Both
+ * kinds keep `ask` on a journal line that's never to be replayed: Claude Code's control requests,
+ * and a JSON-RPC ask once it's answered or settled.) */
 function noteAsks(line) {
   let message
   try {
@@ -129,7 +131,7 @@ function noteAsks(line) {
   if (message.method === "serverRequest/resolved" || message.method === "$/cancelRequest") {
     const settled = message.params?.requestId ?? message.params?.id
     if (settled === undefined || settled === null) return
-    for (const each of [settled, String(settled), Number(settled)]) pending.delete(idKey(each))
+    for (const each of [settled, String(settled), Number(settled)]) settle(idKey(each))
   }
 }
 
@@ -154,13 +156,22 @@ function fromAgent(line) {
   send(controller, { s: seq, o: line })
 }
 
+/** An ask no longer open: not sent again, nor replayed (a new bridge would ask it again). */
+function settle(found) {
+  const open = pending.get(found)
+  if (!open) return
+  pending.delete(found)
+  const entry = journal.find((each) => each.s === open.s)
+  if (entry) entry.ask = true
+}
+
 /** A line a bridge sent the agent: an answer to one of its requests is no longer open. */
 function toAgent(line) {
   if (kind === "jsonrpc") {
     try {
       const message = JSON.parse(line)
       const answered = message && typeof message === "object" && message.method === undefined ? idKey(message.id) : undefined
-      if (answered !== undefined) pending.delete(answered)
+      if (answered !== undefined) settle(answered)
     } catch {}
   }
   if (!exited) child.stdin.write(line + "\n")

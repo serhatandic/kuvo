@@ -291,9 +291,7 @@ process.stdin.on("end", () => process.exit(0));
   })
 })
 
-test("a box's holders are in its run folder; one too deep for a socket's path on macOS goes in Kuvo Code's short folder in /tmp", () => {
+test("a box's holders are in its run folder; one too deep for a socket's path holds none", () => {
   expect(holdFolder("/home/me/.kuvo-code")).toBe("/home/me/.kuvo-code/run/agents/hold")
-  const deep = `/Users/me/${"deep/".repeat(20)}.kuvo-code`
-  if (process.platform === "darwin") expect(holdFolder(deep)).toMatch(/^\/private\/tmp\/kuvo-ssh-\d+\/hold-[0-9a-f]{8}$/)
-  else expect(holdFolder(deep)).toBeUndefined()
+  expect(holdFolder(`/Users/me/${"deep/".repeat(20)}.kuvo-code`)).toBeUndefined()
 })

@@ -33,6 +33,8 @@ export class RPC {
     throw new RPCError(-32601, `Method not found: ${method}`)
   }
   onExit: (code: number) => void = () => {}
+  /** An answer to a request this RPC didn't send: one an earlier bridge sent the agent under a holder. */
+  onStray: (id: number | string, result: unknown, error?: { code?: number; message?: string }) => void = () => {}
   readonly exited: Promise<number>
 
   /**
@@ -96,6 +98,11 @@ export class RPC {
     return this.child ? this.child.pid : this.held!.pid
   }
 
+  /** The holder it runs under, if it does. */
+  get holder(): Held | undefined {
+    return this.held
+  }
+
   get isClosed() {
     return this.closed
   }
@@ -134,7 +141,7 @@ export class RPC {
       this.onNotification(message.method, message.params)
     } else if (message.id !== undefined) {
       const pending = this.pending.get(message.id)
-      if (!pending) return
+      if (!pending) return this.onStray(message.id, message.result, message.error)
       this.pending.delete(message.id)
       if (message.error) pending.reject(new RPCError(message.error.code ?? -32000, message.error.message ?? "The agent refused.", message.error.data))
       else pending.resolve(message.result)
@@ -183,11 +190,7 @@ export class RPC {
 
   kill() {
     if (this.closed) return
-    if (this.held) {
-      this.held.end()
-      this.held.kill()
-      return
-    }
+    if (this.held) return this.held.stop()
     try {
       this.child!.stdin.end()
     } catch {}

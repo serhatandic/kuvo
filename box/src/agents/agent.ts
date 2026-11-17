@@ -7,6 +7,7 @@ import type { LimitsSource } from "./limits"
 import type { InstallResult, Maintenance, UpdateResult } from "./maintenance"
 import type { Deps } from "./deps"
 import type { Turn, Outcome } from "./turn"
+import type { HeldTurn } from "./hold/adopt"
 import type { Decision, FormAnswer, FormField, IntegrationMethod, Model, ModelRef, OAuthStatus, PermissionRule, Session, StructuredError } from "./wire"
 import { run } from "./proc"
 
@@ -153,6 +154,12 @@ export interface RunInput {
   adopt?: boolean
   /** No message: the agent summarizes its conversation, as you asked (`Agent.compacts`). Says nothing in it. */
   compact?: boolean
+  /**
+   * A turn an earlier bridge started in an agent's process under a holder, taken up again (it ended
+   * without stopping it: a crash): nothing to send; the turn is made again from what the agent said
+   * since it began, and goes on to its end (hold/adopt.ts).
+   */
+  held?: HeldTurn
 }
 
 /** What began a turn an agent started on its own, as the conversation says it. */

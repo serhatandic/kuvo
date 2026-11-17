@@ -14,8 +14,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import net from "node:net"
-import { userInfo } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { PassThrough, Writable } from "node:stream"
 import program from "./program.js" with { type: "text" }
 
@@ -36,6 +35,8 @@ export interface HoldRecord {
   program: string
   cwd: string | null
   started: number
+  /** The bridge that started it. */
+  bridge: number | null
   generation: number
   acked: number
   exited: { code: number | null; signal: string | null } | null
@@ -44,17 +45,14 @@ export interface HoldRecord {
 }
 
 /**
- * Where a box's holders go: `run/agents/hold` in its folder. A socket's path is at most 104 bytes
- * on macOS, so one whose folder is too deep (a test's) goes in Kuvo Code's short folder in `/tmp`
- * for sockets, as the SSH agents' do (link/home.ts `SSH_AGENTS`). Elsewhere a folder too deep is
- * none at all: its agents run as they always have, unheld.
+ * Where a box's holders go: `run/agents/hold` in its folder, which `kuvo-start stop` looks in to
+ * stop them with the box. One too deep for a socket's path (104 bytes on macOS) is none: its agents
+ * run as they always have, unheld.
  */
 export function holdFolder(boxHome: string): string | undefined {
   const own = join(boxHome, "run", "agents", "hold")
   // (A slash, a 12-letter id and ".sock": 18 bytes.)
-  if (Buffer.byteLength(own) + 18 < (process.platform === "darwin" ? 104 : 108)) return own
-  if (process.platform !== "darwin") return undefined
-  return join("/private/tmp", `kuvo-ssh-${userInfo().uid}`, `hold-${createHash("sha256").update(boxHome).digest("hex").slice(0, 8)}`)
+  return Buffer.byteLength(own) + 18 < (process.platform === "darwin" ? 104 : 108) ? own : undefined
 }
 
 /** A folder that's this user's alone: a folder (not a link), theirs, open to no one else. */
@@ -67,19 +65,9 @@ function ownFolder(path: string): boolean {
   }
 }
 
-/**
- * The program in the folder, as this bridge has it (written whole, before it can be run, and
- * written again should what's there differ). In the short folder in `/tmp`, which anyone could have
- * made first, only if that folder is this user's alone, as the SSH agents' (vault/ssh.ts).
- */
+/** The program in the folder, as this bridge has it (written whole, before it can be run, and
+ * written again should what's there differ), in a folder that's this user's alone. */
 function programIn(folder: string): string {
-  if (folder.startsWith("/private/tmp/")) {
-    const parent = dirname(folder)
-    try {
-      mkdirSync(parent, { mode: 0o700 })
-    } catch {}
-    if (!ownFolder(parent)) throw new Error(`${parent} isn't this user's alone: no agent is held there.`)
-  }
   mkdirSync(folder, { recursive: true, mode: 0o700 })
   chmodSync(folder, 0o700)
   if (!ownFolder(folder)) throw new Error(`${folder} isn't this user's alone: no agent is held there.`)
@@ -152,7 +140,7 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
   // The engine's binary is Bun when told so (the holder takes it out of the agent's, but for the
   // agent's own, `bun`).
   env.BUN_BE_BUN = "1"
-  const spec = { command, cwd: options.cwd, meta: options.meta ?? {}, holder: HOLDER, bun: options.env.BUN_BE_BUN, journalBytes: options.journalBytes, linger: options.linger, orphan: options.orphan }
+  const spec = { command, cwd: options.cwd, meta: options.meta ?? {}, holder: HOLDER, bridge: process.pid, bun: options.env.BUN_BE_BUN, journalBytes: options.journalBytes, linger: options.linger, orphan: options.orphan }
   // In a session of its own (no group signal reaches it), started in its own folder with no Bun
   // settings or .env of the project's read into it, and so into the agent's. Its key and what it
   // runs come on its stdin, never on a command line or in an environment.
@@ -228,7 +216,8 @@ export class Held {
   readonly closed: Promise<void>
   /** A newer bridge took this agent over: nothing this one writes reaches it any more. */
   fenced = false
-  private seen = 0
+  /** The last line of the agent's this bridge has taken in: where a turn it starts now begins (`from`). */
+  seen = 0
   private lineListeners: ((line: string, again: boolean) => void)[] = []
   private errorListeners: ((text: string) => void)[] = []
   /** What came before anyone listened (the replay right after the hello), given to the first listener. */
@@ -363,6 +352,16 @@ export class Held {
 
   kill(signal: NodeJS.Signals = "SIGTERM") {
     if (!this.fenced) this.send({ signal })
+  }
+
+  /** Stops the agent as a bridge stops one, through its holder's own process (no frame that a bridge
+   * exiting at once could leave unsent): its stdin closed, then told, then made to; the holder goes
+   * once it has. Not after a newer bridge took it over. */
+  stop() {
+    if (this.fenced) return
+    try {
+      process.kill(this.holder, "SIGTERM")
+    } catch {}
   }
 
   /** More for its record: what a bridge adopting it reads (a thread's id once it's known, say). */

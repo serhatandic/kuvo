@@ -33,6 +33,7 @@ import type { AssistantMessage, Attachment, CompactionMessage, Decision, FormAns
 import { plain } from "./proc"
 import type { Snapshots } from "./snapshots"
 import { AGENTS_TEXT_BYTES } from "../shared/text"
+import type { HeldTurn } from "./hold/adopt"
 import { noTokens } from "./wire"
 
 type Delivery = "steer" | "queue"
@@ -52,6 +53,8 @@ interface Input {
   compact?: boolean
   /** Held for a newer bridge that takes this one's place (renewal.ts): it goes first there. */
   held?: boolean
+  /** Not a message: the turn of this one (its id) an earlier bridge left under way in a held agent, taken up again (`resumeHeld`). */
+  resume?: HeldTurn
 }
 
 /** A turn under way. */
@@ -924,7 +927,14 @@ export class Sessions {
     private readonly snapshots?: Snapshots,
     /** The model you picked for sessions' titles (Settings › Agents), an engine's. */
     private readonly titleModel?: (directory: string) => Promise<ModelRef | undefined>,
+    /** Turns an earlier bridge left under way in agents' processes under holders, by session (hold/adopt.ts). */
+    held: Map<string, HeldTurn> = new Map(),
   ) {
+    // Those taken up again (`resumeHeld`); the others' agents let go of (their turns end as below).
+    for (const [id, turn] of held) {
+      if (this.resumable(id, turn)) this.resuming.set(id, turn)
+      else turn.gate.drop(turn.thread)
+    }
     // Turns a quit or crash cut short: ended, as Stop ends one.
     for (const session of store.all()) this.repair(session.id)
     for (const session of store.all()) this.readCitations(session.id)
@@ -1024,10 +1034,35 @@ export class Sessions {
     return slots
   }
 
+  /** Turns left under way in held agents that this bridge takes up again, by session. */
+  private resuming = new Map<string, HeldTurn>()
+
+  /**
+   * Whether a turn left under way in a held agent can be taken up here: its session's last turn is
+   * open, on that agent (not Auto, which went through models of its own), and began with a message
+   * (not a summary, nor a subagent's task, which its parent's turn runs).
+   */
+  private resumable(id: string, held: HeldTurn): boolean {
+    const record = this.store.get(id)
+    if (!record || record.session.parentID || record.session.model?.providerID !== held.meta.provider) return false
+    const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic" || message.type === "compaction")
+    const message = record.messages[lastUser]
+    if (!message || message.type === "compaction") return false
+    return !record.messages.slice(lastUser).some((each) => each.type === "idle")
+  }
+
   /** A turn the bridge stopped in the middle of (it quit): its steps and tools closed, and its end marked. */
   private repair(id: string) {
     const record = this.store.get(id)
     if (!record) return
+    // Under way still, in its agent: what it said is made again from the agent's own lines, so the
+    // steps kept of it go (`resumeHeld`).
+    if (this.resuming.has(id)) {
+      const lastUser = record.messages.findLastIndex((message) => message.type === "user" || message.type === "synthetic")
+      record.messages.splice(lastUser + 1, record.messages.length, ...record.messages.slice(lastUser + 1).filter((message) => message.type !== "assistant"))
+      this.store.save(id, true)
+      return
+    }
     let changed = false
     // A turn starts with your message, or with a note from the app (a mid-turn model switch), and
     // a summary you asked for is one too.
@@ -2081,6 +2116,7 @@ export class Sessions {
     const session = record.session
     const directory = session.location.directory
     const model = session.model!
+    if (input.resume) return this.runResumed(id, live, record, run, input, input.resume)
     // A message after an undo makes it final: first, since the app takes away what comes from the
     // undone message on (this message too, were it there already).
     this.commitRevert(id, record, live)
@@ -2166,6 +2202,53 @@ export class Sessions {
     // The agent that ended the turn knows how it ended: that's not news to hand it later.
     if (run.last && run.last.seen === before) run.last.seen = record.messages[record.messages.length - 1]?.id
     this.settleAsks(id, live)
+    await this.turnEnded(id, live, run, outcome, note)
+  }
+
+  /**
+   * A turn taken up again from a held agent (`resumeHeld`): its message is in, and its files as
+   * they were before it are kept from then; it runs on the agent it began on, sending nothing.
+   */
+  private async runResumed(id: string, live: Live, record: Record_, run: Run, input: Input, held: HeldTurn): Promise<void> {
+    const { turn, abort } = run
+    const session = record.session
+    const directory = session.location.directory
+    const model = session.model!
+    const kept = this.notes(record)[input.id]
+    const note = kept?.before && !kept.files && !kept.failed ? kept : undefined
+    const blocks = this.policies ? await this.policies(directory).catch(() => undefined) : []
+    if (blocks !== undefined) live.blocks = blocks
+    const agentName = session.agent ?? "build"
+    const info = this.agentInfo ? await this.agentInfo(agentName, directory).catch(() => undefined) : undefined
+    if (info?.permissions) live.agentRules = info.permissions
+    live.rulesFor = agentName
+    const own = session.agent && session.agent !== "build" && session.agent !== "plan" ? session.agent : undefined
+    live.agentPrompt = own ? info?.system : undefined
+    let result: RunResult
+    try {
+      result = await this.runOn(id, record, live, run, model, { text: "", files: [], model, plan: session.agent === "plan", held }, input.id)
+    } catch (error) {
+      result = { outcome: "failed", error: failure(error) }
+    }
+    const outcome: Outcome = abort.signal.aborted ? "interrupted" : result.outcome
+    const before = record.messages[record.messages.length - 1]?.id
+    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error)
+    for (const [child, childTurn] of [...live.subagents]) {
+      if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded) continue
+      const subagent = live.runs.get(child)
+      if (subagent?.turn === childTurn) subagent.end(outcome === "failed" ? "interrupted" : outcome)
+      else childTurn.finish(outcome === "failed" ? "interrupted" : outcome)
+      live.subagents.delete(child)
+      live.background.delete(child)
+    }
+    if (run.last && run.last.seen === before) run.last.seen = record.messages[record.messages.length - 1]?.id
+    this.settleAsks(id, live)
+    await this.turnEnded(id, live, run, outcome, note)
+  }
+
+  /** After a turn: what it changed is read for Undo (the session waits for that), and the session is free. */
+  private async turnEnded(id: string, live: Live, run: Run, outcome: Outcome, note: SnapshotNote | undefined) {
+    const directory = this.store.get(id)?.session.location.directory ?? ""
     // Deleted meanwhile: nothing more for it.
     if (runOf(live.doing) !== run) return
     // What the turn changed (the session waits for it, as for its turn), from your message and
@@ -2297,13 +2380,19 @@ export class Sessions {
       if (input.adopt && !reached) live.threads.get(model.providerID)?.turnAway?.()
     }
     const agent = this.agent(model.providerID)
+    // (A held turn the agent never takes up lets go of its process, which then stops.)
+    let heldTaken = false
+    const letHeldGo = () => {
+      if (input.held && !heldTaken) input.held.gate.drop(input.held.thread)
+    }
     if (!agent) {
       turnAway()
+      letHeldGo()
       return { outcome: "failed", error: { type: "agent", message: "This model's agent isn't available: sign in to it in Settings › Accounts, or pick another model." } }
     }
     // Its account signed out of: said at once, rather than sent where it would be dropped without
     // a word (the engine's), or fail only after its agent started and tried (a coding agent's).
-    if (!input.adopt && (await Promise.race([signedOut(agent).catch(() => false), Bun.sleep(10_000).then(() => false)]))) {
+    if (!input.adopt && !input.held && (await Promise.race([signedOut(agent).catch(() => false), Bun.sleep(10_000).then(() => false)]))) {
       turnAway()
       // The apps may still take it for signed in (one Claude turned away as it ran): shown now.
       if (agent.id !== "engine") emit("integration.updated", { integrationID: agent.providerID })
@@ -2331,6 +2420,14 @@ export class Sessions {
     run.agent = working
     const from = record.messages.length
     try {
+      // Under way in its agent already: taken up where it is, sending nothing.
+      if (input.held) {
+        heldTaken = true
+        const result = await Promise.race([thread.run({ ...input, model }, turn, hooks), abandoned])
+        if (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork)) slot.seen = record.messages[record.messages.length - 1]?.id
+        run.last = slot
+        return result
+      }
       // Its conversation, ready (Stop gives up on it as on a run): one it had that couldn't be
       // picked up again starts over, and is handed all that came before. (Not for a turn it
       // began on its own: it's at work already, and getting it ready could start it over.)
@@ -2382,6 +2479,7 @@ export class Sessions {
       throw error
     } finally {
       turnAway()
+      letHeldGo()
       if (run.agent === working) run.agent = undefined
       this.store.save(id, true)
     }
@@ -3159,6 +3257,25 @@ export class Sessions {
    * night), it isn't woken (not a turn for each such session at once): the note waits for its next
    * message instead. (While an undo is staged it waits too, for Redo or that message.)
    */
+  /**
+   * The turns an earlier bridge left under way in held agents (it crashed): each taken up again in
+   * its session, as a turn of the message that began it, which sends nothing new and goes on to its
+   * end. What came while it was gone came to the agent's holder, and is made again into the turn.
+   */
+  resumeHeld() {
+    for (const [id, held] of this.resuming) {
+      this.resuming.delete(id)
+      const record = this.store.get(id)
+      const live = this.state(id)
+      const message = record?.messages.findLast((each) => each.type === "user" || each.type === "synthetic")
+      if (!record || !message || live.doing.kind !== "idle") {
+        held.gate.drop(held.thread)
+        continue
+      }
+      this.start(id, live, { id: message.id, text: "", files: [], delivery: "steer", resume: held })
+    }
+  }
+
   /** Messages held for this bridge by the one before it (renewal.ts), or by this one while it waited to
    * make way: they go now, each once. */
   wakeHeld() {

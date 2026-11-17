@@ -45,6 +45,7 @@ import { spawn } from "node:child_process"
 import { bundleBuild } from "../shared/bundle"
 import type { RenewalRecord } from "../shared/records"
 import { Sessions } from "./sessions"
+import { adoptHeld } from "./hold/adopt"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
 import { useSavedLoginPath } from "./proc"
 import { setSkillSource } from "./skills"
@@ -192,6 +193,9 @@ function engineAgent(providerID: string): EngineAgent | undefined {
   if (!agent) engineAgents.set(providerID, (agent = new EngineAgent(link, providerID)))
   return agent
 }
+// Agents' processes an earlier bridge left under holders (it crashed): those with turns under way
+// are taken up again, the others stopped as it would have stopped them (hold/adopt.ts).
+const heldTurns = onMachine ? await adoptHeld() : new Map()
 const sessions = new Sessions(
   store,
   roster,
@@ -201,6 +205,7 @@ const sessions = new Sessions(
   (name, directory) => link.agent(name, directory),
   new Snapshots(join(home, "snapshots")),
   (directory) => link.titleModel(directory),
+  heldTurns,
 )
 // Tells the box's link, as it changes, whether every agent's process here runs in its sandbox
 // (none started before it came on still runs): only then do agents use the vault.
@@ -435,6 +440,8 @@ if (artifactsFolder) {
 // listens once the box has set up its sandbox: on this Mac the app starts it before the box, so an
 // agent started then would run outside the sandbox until it stops.
 await untilSandboxDecided()
+// The turns it left under way go on here, before anything can be sent to their sessions.
+sessions.resumeHeld()
 limits.start()
 usage.start()
 const carrying = new Carrying(sessions, store, (provider) => sessions.agent(provider), (kind) => roster.all().filter((agent) => parseProvider(agent.providerID)?.kind === kind))

@@ -25,6 +25,8 @@ import { which } from "../proc"
 import { chatGPTIdentity, LimitsProblem, type LimitExtra, type LimitReading, type LimitsSource, type LimitWindow } from "../limits"
 import { codexCredits, readCodexResets, spendCodexReset, type ChatGPTSignIn } from "../codex-resets"
 import { RPC, RPCError } from "../rpc"
+import { hold, type Held } from "../hold/client"
+import { agentHoldFolder, noteTurn, type HeldTurn } from "../hold/adopt"
 import { CodexCitations, plainCitations, type Said } from "./codex-citations"
 import { engineSkills, skillsFolder, skillsFor, skillsRoot, turnedOff, upward, within } from "../skills"
 import { codexSubagents, subagentsFor, subagentsRoot } from "../subagents"
@@ -462,24 +464,22 @@ export class CodexAgent implements Agent {
     if (key !== SHARED && !fence) throw new Error("Codex runs in the sandbox here, and it isn't ready: restart Kuvo Code.")
     const args = ["app-server", ...noComputerUse.flatMap((plugin) => ["-c", `plugins.${plugin}.enabled=false`])]
     const env = { ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
-    const rpc = new RPC(fence ? [fence.command, ...args] : [executable, ...args], { cwd: fence ? directory : this.context.temporary, env })
-    this.signedInAs.set(rpc, this.chatGPTAccount())
+    const argv = fence ? [fence.command, ...args] : [executable, ...args]
+    const cwd = fence ? directory : this.context.temporary
+    // Under a holder on a box, so a bridge that crashes doesn't take its turns with it (hold/adopt.ts):
+    // as a process of the bridge's own if one can't start.
+    const holdIn = agentHoldFolder("codex")
+    const held = holdIn
+      ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+          console.error("Codex's holder didn't start:", error?.message ?? error)
+          return undefined
+        })
+      : undefined
+    const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env })
     slot.fence = fenceNow
-    if (fence) this.fencedServers.add(rpc)
-    else this.unfencedServers.add(rpc)
-    rpc.onNotification = (method, params) => this.notification(method, params, rpc)
-    rpc.onRequest = (method, params, id) => this.request(rpc, method, params, id)
+    this.serve(rpc, slot, Boolean(fence), () => fence?.ended())
     slot.opening = rpc
-    rpc.onExit = () => {
-      fence?.ended()
-      this.unfencedServers.delete(rpc)
-      // A title or commit text it was writing won't come.
-      for (const oneOff of this.oneOffs.values()) if (oneOff.rpc === rpc) oneOff.fail(new Error("Codex stopped."))
-      // Stopped on purpose: the threads were told then (they may be on a newer one by now).
-      if (slot.server !== rpc) return
-      slot.server = undefined
-      for (const each of this.threads.values()) each.serverStopped(rpc)
-    }
+    rpc.start()
     try {
       await rpc.request("initialize", { clientInfo: { name: "kuvo-code", title: "Kuvo Code", version: "1" }, capabilities: { experimentalApi: true, optOutNotificationMethods: ["turn/diff/updated"] } }, 30_000)
     } catch (error) {
@@ -500,6 +500,56 @@ export class CodexAgent implements Agent {
   }
 
   /** Stops an app-server: its threads are loaded again, in a new one, as they're next used. */
+  /** What an app-server says goes where it should, and what its end ends. */
+  private serve(rpc: RPC, slot: Slot, fenced: boolean, ended: () => void) {
+    this.signedInAs.set(rpc, this.chatGPTAccount())
+    if (fenced) this.fencedServers.add(rpc)
+    else this.unfencedServers.add(rpc)
+    rpc.onNotification = (method, params) => this.notification(method, params, rpc)
+    rpc.onRequest = (method, params, id) => this.request(rpc, method, params, id)
+    rpc.onExit = () => {
+      ended()
+      this.unfencedServers.delete(rpc)
+      // A title or commit text it was writing won't come.
+      for (const oneOff of this.oneOffs.values()) if (oneOff.rpc === rpc) oneOff.fail(new Error("Codex stopped."))
+      // Stopped on purpose: the threads were told then (they may be on a newer one by now).
+      if (slot.server !== rpc) return
+      slot.server = undefined
+      for (const each of this.threads.values()) each.serverStopped(rpc)
+    }
+  }
+
+  /** App-servers an earlier bridge left under holders, taken up here, by their holder. */
+  private adopted = new Map<Held, RPC>()
+
+  /**
+   * The app-server an earlier bridge left a turn under way in (it crashed), taken up as this
+   * bridge's own for its key: initialized already (Codex refuses a second time), its lines coming
+   * once each turn taken up there is ready for them; those let go of are stopped.
+   */
+  adoptServer(taken: HeldTurn): RPC {
+    const found = this.adopted.get(taken.held)
+    if (found) return found
+    const meta = taken.meta
+    // (Its own ids past those any earlier bridge sent it.)
+    const rpc = new RPC(taken.held, { firstID: taken.held.generation * 1_000_000_000 })
+    this.adopted.set(taken.held, rpc)
+    const slot = this.slot(String(meta.key ?? SHARED))
+    slot.fence = String(meta.fence ?? "")
+    this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(taken.held))
+    if (!slot.server || slot.server.isClosed) slot.server = rpc
+    slot.lastUse = Date.now()
+    taken.gate.onOpen((dropped) => {
+      rpc.start()
+      for (const thread of dropped) {
+        const turn = meta.turns[thread]?.turn
+        if (turn) void rpc.request("turn/interrupt", { threadId: thread, turnId: turn }, 30_000).catch(() => {})
+        noteTurn(taken.held, thread, undefined)
+      }
+    })
+    return rpc
+  }
+
   private stop(key: string) {
     const slot = this.slots.get(key)
     // One still starting too (its start then fails).
@@ -584,15 +634,22 @@ export class CodexAgent implements Agent {
       if (method === "mcpServer/elicitation/request") return { action: "decline" }
       throw new RPCError(-32601, `No session for ${method}.`)
     }
-    const controller = new AbortController()
     const key = String(id ?? newID("call"))
+    // (Asked again under the same id, as it's taken up from its holder: the one ask, answered once.)
+    const open = this.answering.get(key)
+    if (open) return open
+    const controller = new AbortController()
     this.asked.set(key, controller)
-    try {
-      return await thread.request(method, params, controller.signal, this.isFenced(rpc))
-    } finally {
+    const answer = thread.request(method, params, controller.signal, this.isFenced(rpc)).finally(() => {
       this.asked.delete(key)
-    }
+      this.answering.delete(key)
+    })
+    this.answering.set(key, answer)
+    return answer
   }
+
+  /** The answers to asks under way, by Codex's request. */
+  private answering = new Map<string, Promise<unknown>>()
 
   private threadFor(nativeID: string): CodexThread | undefined {
     for (const thread of this.threads.values()) if (thread.nativeID === nativeID) return thread
@@ -1507,7 +1564,41 @@ class CodexThread implements Thread {
     this.sleep = undefined
   }
 
+  /**
+   * A turn an earlier bridge left under way in this thread's app-server (hold/adopt.ts): taken up
+   * as it is, sending nothing; what Codex said since it began comes again, and the turn is made
+   * from it.
+   */
+  private resumeTurn(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
+    const taken = input.held!
+    const rpc = this.agent.adoptServer(taken)
+    this.server = rpc
+    this.nativeID = taken.thread
+    this.loaded = true
+    return new Promise<RunResult>((resolve) => {
+      this.answered = []
+      this.wokeUp()
+      const active: Active = { turn, hooks, resolve, streamed: new Set(), changes: new Map(), output: new Map(), toolsSinceText: false, subagents: new Map(), spawning: [], auto: input.auto, model: input.model.id, planning: input.plan, turnID: taken.note.turn }
+      active.resolve = (result) => {
+        for (const [threadID, lane] of active.subagents) {
+          if (lane.ended) continue
+          if (result.outcome === "succeeded") this.backgroundLanes.set(threadID, lane)
+          else {
+            void this.interruptLane(threadID, lane, rpc)
+            this.endSubagent(lane, "interrupted")
+          }
+        }
+        noteTurn(taken.held, taken.thread, undefined)
+        resolve(result)
+      }
+      this.active = active
+      turn.startStep()
+      taken.gate.ready(taken.thread)
+    })
+  }
+
   private async runTurn(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
+    if (input.held) return this.resumeTurn(input, turn, hooks)
     const rpc = await this.ensureThread(input, hooks)
     // Stopped while Codex was starting.
     if (hooks.signal.aborted) return { outcome: "interrupted" }
@@ -1530,6 +1621,7 @@ class CodexThread implements Thread {
     }
     if (others.length) items[0].text += `\n\nAttached files:\n${others.map((path) => `- ${path}`).join("\n")}`
     const effort = input.model.variant
+    const held = rpc.holder
     const params: Record<string, unknown> = {
       threadId: this.nativeID,
       input: items,
@@ -1564,6 +1656,7 @@ class CodexThread implements Thread {
           this.state.codexTold = instructions
           hooks.saveState()
         }
+        if (held && !input.compact && this.nativeID) noteTurn(held, this.nativeID, undefined)
         resolve(result)
       }
       this.active = active
@@ -1571,12 +1664,17 @@ class CodexThread implements Thread {
       // a turn runs it stops that turn, so the session waits for the turn to end first.)
       if (input.compact) active.compacting = true
       else turn.startStep()
+      // Under a holder: where this turn's lines begin, for a bridge taking it up after a crash.
+      const thread = this.nativeID!
+      if (held && !input.compact) noteTurn(held, thread, { session: this.session.id, from: held.seen })
       const asked = input.compact ? rpc.request("thread/compact/start", { threadId: this.nativeID }, 60_000) : rpc.request("turn/start", params, 60_000)
       asked.then(
         (result: any) => {
           if (result?.turn?.id) active.turnID ??= result.turn.id
+          if (held && !input.compact && result?.turn?.id && this.active === active) noteTurn(held, thread, { session: this.session.id, from: (held.meta.turns as any)?.[thread]?.from ?? 0, turn: result.turn.id })
         },
         (error) => {
+          if (held && !input.compact) noteTurn(held, thread, undefined)
           if (this.active !== active) return
           this.active = undefined
           resolve({ outcome: "failed", error: failure(error) })
