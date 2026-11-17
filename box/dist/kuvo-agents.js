@@ -9488,7 +9488,7 @@ function heldProcess(holding, fallback) {
       events.emit("close", exit.code, process_.signalCode);
     });
   }, (error) => {
-    const own = fallback?.();
+    const own = process_.killed ? undefined : fallback?.();
     if (own?.stdin && own.stdout) {
       for (const line of waiting.splice(0))
         own.stdin.write(line + `
@@ -9691,6 +9691,7 @@ class AcpThread {
     if (this.rpc && !this.rpc.isClosed && this.tasks.size)
       this.cut.push(...this.taskWork());
     this.close();
+    const closes = this.closes;
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) });
     const launch = await this.flavor.command(mode);
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents]);
@@ -9707,6 +9708,13 @@ class AcpThread {
       console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
       return;
     }) : undefined;
+    if (this.closes !== closes) {
+      held?.stop();
+      await held?.exited;
+      launch.onExit?.();
+      ended?.();
+      throw new Error(`${this.name} stopped.`);
+    }
     const rpc = new RPC(held ?? argv, {
       cwd,
       env,
@@ -10608,7 +10616,9 @@ ${text}`;
     if (had)
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
   }
+  closes = 0;
   close() {
+    this.closes++;
     this.rpc?.kill();
     this.rpc = undefined;
     this.leftRunning();
@@ -18959,11 +18969,18 @@ class CodexAgent {
     const env = { ...this.instance.home ? { CODEX_HOME: this.instance.home } : {}, ...thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}, ...fence?.env };
     const argv = fence ? [fence.command, ...args] : [executable, ...args];
     const cwd = fence ? directory : this.context.temporary;
+    const stops = slot.stops;
     const holdIn = agentHoldFolder("codex");
     const held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
       console.error("Codex's holder didn't start:", error?.message ?? error);
       return;
     }) : undefined;
+    if (slot.stops !== stops || this.slots.get(key) !== slot) {
+      held?.stop();
+      await held?.exited;
+      fence?.ended();
+      throw new Error("Codex stopped.");
+    }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env });
     slot.fence = fenceNow;
     this.serve(rpc, slot, Boolean(fence), () => fence?.ended());
@@ -19046,6 +19063,8 @@ class CodexAgent {
   }
   stop(key) {
     const slot = this.slots.get(key);
+    if (slot)
+      slot.stops = (slot.stops ?? 0) + 1;
     slot?.opening?.kill();
     const server = slot?.server;
     if (!slot || !server)
@@ -39390,4 +39409,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents b3f93961de3f053fef298906618f0fb6d58ae0ad4e7a21cdda662a46678756c2
+// Built from Packages/Box/src/agents 784ce55b6593d055584df7796e1a1361823f50a8ac089c5b01a75eb489feb3ec
