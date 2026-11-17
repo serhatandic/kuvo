@@ -142,7 +142,7 @@ describe("kuvo/sessions/<id>/send", () => {
     const [sent] = prompted(engineAsked)
     expect(sent.body.text).toBe(words)
     expect(partsOf(sent.body.text).words).toBe(words)
-    expect(sent.body.metadata?.kuvo?.parts?.words ?? words).toBe(words)
+    expect(sent.body.metadata.kuvo.parts).toEqual({ words })
   })
 
   test("a phone's says it's from the phone; a Mac's doesn't", async () => {

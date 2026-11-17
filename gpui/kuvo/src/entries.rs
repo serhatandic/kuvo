@@ -574,22 +574,35 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
         .into_any_element()
 }
 
+/// A part of a message's words as it shows them: what it quotes, if anything, and the words under
+/// it with their unit's place among the message's selectable text (none when it has no words).
+struct Piece {
+    quote: Option<String>,
+    text: String,
+    unit: Option<u32>,
+}
+
 /// A message's words as it shows them, in the order written: each quote it replies to, with the
 /// words that answer it under it (KuvoClient's `Quoting.segments`, as the phone draws them).
-fn pieces(words: &str) -> Vec<(Option<String>, String)> {
-    kuvo_box::quoting::segments(words).into_iter().filter(|(quote, text)| quote.is_some() || !text.is_empty()).collect()
+fn pieces(words: &str) -> Vec<Piece> {
+    let mut units = 0u32;
+    kuvo_box::quoting::segments(words)
+        .into_iter()
+        .filter(|(quote, text)| quote.is_some() || !text.is_empty())
+        .map(|(quote, text)| {
+            let unit = (!text.is_empty()).then(|| {
+                units += 1;
+                units - 1
+            });
+            Piece { quote, text, unit }
+        })
+        .collect()
 }
 
 /// The selectable text of a message's words, as [`user_message`] draws it: each part of its own
 /// words, in order, a paragraph apart (what it quotes isn't selectable).
 fn words_units(words: &str) -> Vec<Unit> {
-    pieces(words.trim())
-        .into_iter()
-        .map(|(_, text)| text)
-        .filter(|text| !text.is_empty())
-        .enumerate()
-        .map(|(n, text)| Unit::new(&[n as u32], text, Lead::Paragraph))
-        .collect()
+    pieces(words.trim()).into_iter().filter_map(|piece| piece.unit.map(|at| Unit::new(&[at], piece.text, Lead::Paragraph))).collect()
 }
 
 fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyElement {
@@ -621,11 +634,10 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
     }
     // What it replies to, in its bubble, each quote above the words that answer it, in the order
     // they were written.
-    let mut said = 0u32;
     let blocks: Vec<AnyElement> = pieces(parts.words.trim())
         .into_iter()
         .enumerate()
-        .flat_map(|(n, (quote, text))| {
+        .flat_map(|(n, Piece { quote, text, unit })| {
             let quote = quote.map(|quote| {
                 div()
                     .debug_selector(move || format!("quoted-{ix}-{n}"))
@@ -639,9 +651,7 @@ fn user_message(ix: usize, parts: &Parts, sel: Selectable, cx: &App) -> AnyEleme
                     .child(quote)
                     .into_any_element()
             });
-            let words = (!text.is_empty()).then(|| {
-                let at = said;
-                said += 1;
+            let words = unit.map(|at| {
                 div()
                     .debug_selector(move || format!("said-{ix}-{n}"))
                     .child(SelectableText::new(("words", ix * 1000 + at as usize), text).selectable(Some(sel.unit(&[at]))))

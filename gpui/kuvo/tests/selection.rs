@@ -396,6 +396,11 @@ fn a_reply_to_two_quotes_shows_each_answer_under_its_quote_in_the_order_written(
     show(&view, json!([{ "type": "user", "id": "m1", "time": { "created": 1000 }, "text": written }]), cx);
     let ix = view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == "m1")).expect("its row");
     assert_eq!(drawn_order(ix, cx), in_order(ix), "sent: each answer under its quote");
+    // Each answer selects as drawn: a drag over one copies it, and ⌘A all of them, in order.
+    drag(at(&view, "m1", &[1], "ok", false, cx), at(&view, "m1", &[1], "ok", true, cx), cx);
+    assert_eq!(copied(cx), "ok");
+    drag(at(&view, "m1", &[2], "run", false, cx), at(&view, "m1", &[2], "tests", true, cx), cx);
+    assert_eq!(copied(cx), "run the tests");
     clicks(at(&view, "m1", &[0], "keep", false, cx), 1, cx);
     cx.simulate_keystrokes("cmd-a");
     assert_eq!(copied(cx), "Yes, keep it\n\nok\n\nThen run the tests");
