@@ -2,6 +2,8 @@
 // add one, read it whole, change it, delete it or bring it back. The same whether your client asked this box
 // (`kuvo/work-queue/items/…`) or another of your computers' boxes handed it on (`forward.ts`).
 
+import { isObject } from "../../shared/json";
+import { references, relationsOf, setRelation } from "./relations";
 import fs from "node:fs";
 import path from "node:path";
 import { ownName } from "../letters/start";
@@ -75,12 +77,14 @@ export function addHere(given: Record<string, unknown>, local = false): Acted {
 export async function actHere({ method, action, ref, given = {}, targets, signal, local = false }: { method: Act["method"]; action?: "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null; local?: boolean }): Promise<Acted> {
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   if (method === "GET") {
-    const item = find(allItems());
+    const items = allItems();
+    const item = find(items);
     if (!item) return { status: 404, value: { message: "There's no such item." } };
     const facts = await factsOf(targets, signal ?? undefined);
     await readSeen([item], GITHUB_WAIT);
     const { titles } = await ownersOf(item.owner, [item], facts, targets);
-    return { status: 200, value: { item: withCan(wholeOf(item, facts.working, titles, assignable())) } };
+    const whole = wholeOf(item, facts.working, titles, assignable());
+    return { status: 200, value: { item: { ...withCan(whole), itemRelations: relationsOf(item, items), bodyMentions: references(whole.body), canLinkItems: !item.removed && !item.handing && !frozen().has(item.owner) } } };
   }
   const now = Date.now();
   const primary = primaryOf();
@@ -113,6 +117,19 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
       refuseLiveElsewhere(item, book.items(), titled);
       restoreItem(book, item, YOU, now);
     }));
+  }
+  if (given.itemRelation !== undefined) {
+    const relation = given.itemRelation;
+    const applied = changed(inBook((item, book) => {
+      if (item.removed || !isObject(relation) || typeof relation.item !== "string") throw new Refusal("Choose two items that are still in the Work Queue.");
+      const other = book.items().find(each => each.id === relation.item && !each.removed);
+      if (!other) throw new Refusal("Choose an item kept on the same computer and try again.");
+      refuseMoving([other.owner]);
+      refuseHanding(other);
+      setRelation(item, other, relation.kind);
+    }));
+    if (applied.status === 200 && isObject(applied.value)) applied.value.itemRelationApplied = true;
+    return applied;
   }
   let staged: ReturnType<typeof stageClientFiles> | undefined;
   try {

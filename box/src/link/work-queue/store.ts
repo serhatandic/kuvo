@@ -7,6 +7,7 @@
 //
 // (Named apart from `engine/queue.ts`, which is a conversation's queue of messages.)
 
+import { mentionLinkOf, relationOf, syncMentions, type MentionLink, type Relation } from "./relations";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -70,7 +71,7 @@ export interface Note { at: number; by: Who; text: string }
  * (as its agent said), it `moved` (`from` and `to` its statuses, `top` when it went to the top),
  * it was `done`. A newer box may keep other kinds, kept as they came. */
 export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true }
-export interface KeptFile { name: string; size: number; type: string; at: number }
+export interface KeptFile { name: string; size: number; type: string; at: number; anchor?: string }
 /** An outside link; `kind` (`pr`, `mr`, `issue`, `doc`) and `ref` kept for outside sources later. */
 export interface Link { url: string; title?: string; kind?: string; ref?: string }
 /** A session linked to an item; `box` where it runs, when that's another computer (kept as given). */
@@ -124,6 +125,8 @@ export interface Item {
   events?: ItemEvent[];
   files: KeptFile[];
   links: Link[];
+  relations?: Relation[];
+  mentionLinks?: MentionLink[];
   sessions: Linked[];
   handed?: Handed[];
   /** The first owner that handed it on: it stays in that one's view for good. */
@@ -217,6 +220,8 @@ export function itemOf(given: unknown, owner: string): Item | null {
     notes: list<Note>(given.notes, each => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
     ...(Array.isArray(given.events) ? { events: list<ItemEvent>(given.events, eventKept).slice(-MOST_EVENTS) } : {}),
     files: list<KeptFile>(given.files, each => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
+    ...(Array.isArray(given.relations) ? { relations: list<Relation>(given.relations, relationOf) } : {}),
+    ...(Array.isArray(given.mentionLinks) ? { mentionLinks: list<MentionLink>(given.mentionLinks, mentionLinkOf) } : {}),
     links: list<Link>(given.links, each => typeof each.url === "string"),
     sessions: list<Linked>(given.sessions, each => typeof each.session === "string" && SESSION.test(each.session)),
     ...(Array.isArray(given.handed) ? { handed: list<Handed>(given.handed, each => typeof each.from === "string" && typeof each.to === "string") } : {}),
@@ -485,6 +490,7 @@ export function changeQueues<T>(work: (book: Book) => T, now = Date.now(), { onI
       purged.push(...gone.map(item => item.id));
     }
     const value = work(book);
+    syncMentions(book.items());
     const changed = book.save();
     // (Their files only once the queues no longer list them: a refused change leaves both.)
     for (const id of purged) fs.rmSync(path.join(FILES, id), { recursive: true, force: true });

@@ -133,7 +133,7 @@ export function stageFile(given: string, places: FilePlaces, staging: string): S
 }
 
 /** A file read for an item, waiting in the staging folder until the change that keeps it. */
-export interface Staged { staged: string; name: string; size: number }
+export interface Staged { staged: string; name: string; size: number; clientIndex?: number }
 
 /** The files an agent named, read before the queue's lock is taken: what was read, and a way to
  * clear what's left of it. */
@@ -196,7 +196,7 @@ export function stageClientFiles(given: unknown, local: boolean): { staged: Stag
       fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
       const staged = path.join(folder, String(index));
       fs.writeFileSync(staged, bytes, { mode: 0o600 });
-      return { staged, name, size: bytes.length };
+      return { staged, name, size: bytes.length, clientIndex: index };
     });
     return { staged, clear };
   } catch (error) { clear(); throw error; }
@@ -222,7 +222,7 @@ export function carriedFiles(given: unknown, local: boolean, there: string, most
 }
 
 const TYPES: Record<string, string> = {
-  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic", ".svg": "image/svg+xml",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic", ".bmp": "image/bmp", ".tiff": "image/tiff", ".tif": "image/tiff", ".svg": "image/svg+xml",
   ".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain", ".json": "application/json", ".csv": "text/csv", ".mp4": "video/mp4", ".mov": "video/quicktime",
 };
 export const typeOf = (name: string) => TYPES[path.extname(name).toLowerCase()] ?? "application/octet-stream";
@@ -555,16 +555,28 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
   if (left.length + staged.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most: take some away first (remove).`);
   for (const file of item.files) if (gone.has(file.name)) acting.fileOps.push(() => fs.rmSync(path.join(filesOf(item.id), file.name), { force: true }));
   item.files = left;
+  const anchors = new Map<number, string>();
   for (const each of staged) {
     const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
     const ext = path.extname(base);
     let name = base;
     for (let n = 2; item.files.some(file => file.name === name); n++) name = `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
-    item.files.push({ name, size: each.size, type: typeOf(name), at: now });
+    const anchor = each.clientIndex === undefined ? undefined : crypto.randomBytes(12).toString("hex");
+    if (anchor && each.clientIndex !== undefined) anchors.set(each.clientIndex, anchor);
+    item.files.push({ name, size: each.size, type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) });
     acting.fileOps.push(() => {
       fs.mkdirSync(filesOf(item.id), { recursive: true, mode: 0o700 });
       fs.renameSync(each.staged, path.join(filesOf(item.id), name));
     });
+  }
+  if (fields.body !== undefined && anchors.size) {
+    item.body = text(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
+      const anchor = anchors.get(Number(index));
+      const file = anchor && item.files.find(file => file.anchor === anchor);
+      if (!file) return marker;
+      const label = file.name.replace(/[\\[\]]/g, char => "\\" + char).replace(/[\r\n]/g, " ");
+      return `![${label}](kuvo-attachment:file/${anchor})`;
+    }), MOST_BODY, "The description (body)");
   }
   item.updated = { at: now, by: who };
 }

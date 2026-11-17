@@ -1,3 +1,4 @@
+import { relationsOf } from "./relations";
 // The Work Queue's tools (PROTOCOL.md, "The Work Queue", "Tools"): how every agent, whatever runs
 // it (the engine, Claude Code, Codex, Cursor, Grok, Antigravity), keeps its work items. The box
 // lists them and carries them out (`kuvo/work-queue/tools`); the tool servers on a Mac and a machine
@@ -27,7 +28,7 @@ import { readPeerAgents } from "../peers/directory";
 import { awaySince } from "../peers/reach";
 import type { Peer } from "../peers/known";
 import { askGroups } from "../areas/groups";
-import { agoWords, factsOf, inView, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, type Facts } from "./view";
+import { agoWords, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, type Facts } from "./view";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Caller } from "../vault/who";
 
@@ -598,6 +599,7 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
   const status = statusName(item.status);
   const read = seenOf(item.source);
   const names = new Map(labels().map(each => [each.id, each.name]));
+  const related = relationsOf(item, allItems().filter(each => inView(caller.owner, each, overseenBy(caller.owner, facts.all)) || linkedTo(caller.owner, each)));
   const parts = [
     `${nameOf({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
     item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords(read.value.state)} before)` : `${seenWords(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",
@@ -606,6 +608,7 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
     item.sessions.length ? `Sessions on it: ${item.sessions.map(each => `${title(each.session)} (${each.session}) ${facts.working.has(each.session) ? "at work" : "not at work"}`).join("; ")}` : "",
     item.body ? `\n${item.source ? githubText(item.body, item.source.ref) : item.body}` : "",
     item.links.length ? `\nLinks:\n${item.links.map(each => `- ${each.title ? `${each.title}: ` : ""}${each.url}`).join("\n")}` : "",
+    related.length ? `\nItem links:\n${related.map(each => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? "" : `#${each.number} `}${each.title}`).join("\n")}` : "",
     item.files.length ? `\nFiles: ${item.files.map(each => each.name).join(", ")}` : "",
     item.notes.length ? `\nNotes:\n${item.notes.slice(-20).map(each => `- ${agoWords(each.at, now)}, ${whoWords(each.by)}: ${each.text}`).join("\n")}` : "",
     item.handed?.length ? `\nHanded: ${item.handed.map(each => `${title(each.from)} → ${title(each.to)} ${agoWords(each.at, now)}`).join("; ")}` : "",

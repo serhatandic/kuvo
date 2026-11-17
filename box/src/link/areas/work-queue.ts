@@ -4,6 +4,7 @@
 // bring back, keep the labels, and import an old backlog. Agents do the same through the tools
 // (`kuvo/work-queue/tools`).
 
+import { references } from "../work-queue/relations";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
@@ -25,7 +26,7 @@ import { readLink } from "../state";
 import { ownKey } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import type { QueueCounts } from "../../shared/routes/work-queue";
-import { allItems, changeQueues, matching, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
+import { allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
@@ -215,6 +216,10 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     // (GET with `refs=243,12`; POST `{refs: [...], conversation?}`, a list, so a ref with a comma in
     // it, an outside one later, goes whole.)
     if (method !== "GET" && method !== "POST") return yield* json(405, {});
+    if (method === "POST" && typeof given.text === "string") {
+      if (!fromClient(context)) return yield* json(403, { message: notClient(context) });
+      return yield* json(200, { mentions: references(given.text.slice(0, MOST_BODY)) });
+    }
     const listed = method === "POST" ? (Array.isArray(given.refs) ? given.refs : []) : (queryOf(request).get("refs") ?? "").split(",");
     const wanted = listed.filter((each): each is string => typeof each === "string").map(each => each.trim()).filter(each => each && each.length <= 300).slice(0, 200);
     const items = allItems();
@@ -394,8 +399,11 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
-  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files } } : {}) }, signal);
+  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files, itemRelation: given.itemRelation } } : {}) }, signal);
   if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
+  if (given.itemRelation !== undefined && there.status === 200 && (!isObject(there.value) || there.value.itemRelationApplied !== true)) {
+    return yield* json(409, { message: `Update Kuvo on ${far.computer.name} to link items there, then try again.`, computer: far.computer });
+  }
   // What this box has of it now, as that computer's box answered (not when it next tells).
   if (there.status === 200 && isObject(there.value) && isObject(there.value.item) && there.value.item.id === far.id) changedThere(far.computer.key, asked.method === "DELETE" ? "delete" : asked.action ?? "change", there.value.item);
   // (As this box names that computer, so a client knows where it is.)
