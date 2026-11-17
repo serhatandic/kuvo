@@ -32,7 +32,7 @@ use crate::groups::{GroupsEvent, GroupsView};
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{AddMachine, Opened, Pick, SettingsView};
-use crate::time;
+use crate::{time, wakes};
 
 
 /// How an area's list stands.
@@ -129,6 +129,7 @@ pub struct AreaView {
     /// The group chats followed, in Bots (the app): the list as it changes.
     _groups_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<kuvo_box::groups::Groups>>, Task<()>)>,
     /// The bots followed, in Bots (the app): what each is doing, as it changes.
+    remote_bots: std::collections::HashMap<String, RemoteBots>,
     _bots_follow: Option<(kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>, Task<()>)>,
     /// Whether the box is reached: its bots are drawn offline while it isn't.
     reached: bool,
@@ -138,6 +139,14 @@ pub struct AreaView {
     /// The bots' latest followed line, heard while their list was being read: it's newer than
     /// that read, so it's taken after it.
     followed_meanwhile: Option<BotsSaid>,
+}
+
+struct RemoteBots {
+    client: BoxClient,
+    bots: Vec<Bot>,
+    reached: bool,
+    _follow: kuvo_box::Follow<kuvo_box::follow::Followed<BotsSaid>>,
+    _task: Task<()>,
 }
 
 pub struct QueueDelivered(pub Option<QueueSaid>);
@@ -276,7 +285,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { remote_bots: Default::default(), _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -311,13 +320,14 @@ impl AreaView {
     }
 
     /// The bots as the box says them now (followed): drawn in the sidebar and handed to their page,
-    /// the group chats staying as they were read. Before the list's first read, its read stands.
+    /// the group chats staying as they were read.
     fn take_bots(&mut self, said: BotsSaid, cx: &mut Context<Self>) {
-        let Reading::Ready(before) = &self.bots else {
+        if self.reading.is_some() {
             self.followed_meanwhile = Some(said);
             return;
-        };
-        let bots = Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups: before.groups.clone(), groups_failed: None };
+        }
+        let groups = ready(&self.bots).map(|before| before.groups.clone()).unwrap_or_default();
+        let bots = Bots { bots: said.bots, elsewhere: said.elsewhere, held: said.held, refused: said.refused, held_unsaid: said.held_unsaid, groups, groups_failed: None };
         if matches!(&self.bots, Reading::Ready(before) if before.bots == bots.bots && before.elsewhere == bots.elsewhere && before.held == bots.held && before.refused == bots.refused) {
             return;
         }
@@ -475,6 +485,7 @@ impl AreaView {
 
     /// Your computers, as the window read them.
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
+        if let Reading::Ready(ready) = &computers { self.follow_remote_bots(ready, cx); }
         if self.computers != computers {
             if let Some(page) = &self.computers_page {
                 let computers = computers.clone();
@@ -487,6 +498,37 @@ impl AreaView {
             self.computers = computers;
             self.tell_faces(cx);
             cx.notify();
+        }
+    }
+
+    pub(crate) fn follow_remote_bots(&mut self, computers: &[Computer], cx: &mut Context<Self>) {
+        if self.area != Area::Bots || !self.live { return; }
+        self.remote_bots.retain(|key, _| computers.iter().any(|computer| &computer.key == key && !computer.here));
+        for computer in computers.iter().filter(|computer| !computer.here && !computer.key.is_empty()) {
+            let key = computer.key.clone();
+            let Some(client) = self.client.computer(computer) else {
+                if let Some(remote) = self.remote_bots.get_mut(&key) { remote.reached = false; }
+                continue;
+            };
+            let before = self.remote_bots.get(&key);
+            if before.is_some_and(|remote| remote.client.same_connection(&client)) { continue; }
+            let bots = before.map(|remote| remote.bots.clone()).unwrap_or_default();
+            let follow = client.follow_bots(kuvo_box::Timing::default());
+            let updates = follow.updates().clone();
+            let followed_key = key.clone();
+            let task = cx.spawn(async move |this, cx| {
+                while let Ok(update) = updates.recv().await {
+                    if this.update(cx, |this, cx| {
+                        let Some(remote) = this.remote_bots.get_mut(&followed_key) else { return };
+                        match update {
+                            kuvo_box::follow::Followed::Now(said) => { remote.bots = said.bots; remote.reached = true; }
+                            kuvo_box::follow::Followed::Failed(_) => remote.reached = false,
+                        }
+                        cx.notify();
+                    }).is_err() { break; }
+                }
+            });
+            self.remote_bots.insert(key, RemoteBots { client, bots, reached: false, _follow: follow, _task: task });
         }
     }
 
@@ -522,7 +564,7 @@ impl AreaView {
         }
         self.reading = Some(cx.spawn(async move |this, cx| {
             let read = cx.background_executor().spawn(async move { read(area, &client) }).await;
-            this.update(cx, |this, cx| this.take(read, cx)).ok();
+            this.update(cx, |this, cx| { this.reading = None; this.take(read, cx); }).ok();
         }));
     }
 
@@ -738,7 +780,7 @@ fn ready<T>(reading: &Reading<T>) -> Option<&T> {
 }
 
 impl Render for AreaView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(settings) = self.settings.clone() {
             return div().id("area-settings").size_full().child(settings.update(cx, |settings, cx| settings.sidebar(cx)));
         }
@@ -746,7 +788,7 @@ impl Render for AreaView {
             return div().id("area-frame").debug_selector(|| "held-area-sidebar".into()).size_full();
         }
         let rows = match self.area {
-            Area::Bots => self.bots_rows(cx),
+            Area::Bots => self.bots_rows(window, cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
             Area::Settings => Vec::new(),
@@ -772,7 +814,7 @@ impl AreaView {
         self.selected.as_deref() == Some(key)
     }
 
-    fn bots_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn bots_rows(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         // The area's name, with New Bot beside it.
         let header = div()
@@ -801,7 +843,11 @@ impl AreaView {
             // What it's doing now is the box's (`now`): its sessions at work and waiting on you,
             // or when the newest finished; with none of them, its job. Its face shows it too (no
             // spinner or badge beside it: the bot says it). Only what waits on you is coloured.
-            let (words, waiting) = doing_parts(&bot.now, self.now()).map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
+            let (words, waiting) = if self.reached {
+                bot_row_words(bot, self.now())
+            } else {
+                (bot.job.clone(), None)
+            };
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
             rows.push(
@@ -825,16 +871,27 @@ impl AreaView {
             );
         }
         // The bots that live on your other computers, as the box says each last told it.
-        let elsewhere = bots.there();
-        if !elsewhere.is_empty() {
+        if !bots.elsewhere.is_empty() {
             rows.push(SectionHeader::new("elsewhere", "On Other Computers").into_any_element());
-            for there in elsewhere {
+            for listed in &bots.elsewhere {
+                let there = There::of(listed);
                 let key = format!("elsewhere:{}", there.id);
                 let selected = self.is_selected(&key);
                 let (hover, selected_bg) = (c.hover, c.selected);
                 let selector = format!("elsewhere-{}", there.id);
                 let computer = there.computer.as_str();
                 // What waits for it or was refused, else where it lives.
+                let remote = self.remote_bots.get(&listed.computer_key);
+                let away = ready(&self.computers).is_some_and(|computers| computers.iter().any(|each| each.key == listed.computer_key && each.reach == "away"));
+                let wake_chip = remote.and_then(|remote| {
+                    let bot = remote.bots.iter().find(|bot| bot.id == listed.id)?;
+                    let status = wakes::Status::from(bot);
+                    let handle = window.use_keyed_state(SharedString::from(format!("remote-wakes-handle-{}", listed.id)), cx, |_, _| kuvo_ui::menu::PopoverMenuHandle::default()).read(cx).clone();
+                    let label = status.chip_label(self.now()).or_else(|| handle.is_open().then(|| "Wake-ups".into()))?;
+                    let label = if remote.reached && !away { label } else { "Wake-ups".into() };
+                    let source = wakes::Source { client: remote.client.clone(), session: bot.session.clone(), computer: computer.to_owned(), live: self.live, now: self.now };
+                    Some(wakes::chip(SharedString::from(format!("remote-wakes-{}", listed.id)), label, source, false, handle))
+                });
                 let line = if there.waiting {
                     format!("Waiting for {computer}")
                 } else if there.refused {
@@ -863,6 +920,7 @@ impl AreaView {
                         .on_click(self.row_click(key, cx))
                         .child(face)
                         .child(two_lines(there.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(line), &c))
+                        .children(wake_chip)
                         .into_any_element(),
                 );
             }
@@ -1119,6 +1177,20 @@ impl Doing {
     pub fn into_parts(self) -> (String, Option<std::ops::Range<usize>>) {
         (self.words, self.waiting)
     }
+}
+
+fn bot_row_words(bot: &Bot, now: f64) -> (String, Option<std::ops::Range<usize>>) {
+    let wake = wakes::Status::from(bot);
+    if wake.waking && bot.now.asking == 0 && bot.now.state != kuvo_box::areas::BotState::Blocked {
+        return ("Waking up…".into(), None);
+    }
+    if bot.now.working == 0 && bot.now.asking == 0
+        && !matches!(bot.now.state, kuvo_box::areas::BotState::Blocked | kuvo_box::areas::BotState::Done)
+        && let Some(words) = wake.scheduled(now)
+    {
+        return (words, None);
+    }
+    doing_parts(&bot.now, now).map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None))
 }
 
 pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {

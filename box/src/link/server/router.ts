@@ -240,7 +240,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/moves/places", answer: movePlacesRoute },
   { when: route => route === "kuvo/wakes", answer: wakesRoute },
   { when: route => route === "kuvo/wakes/events", answer: wakeEventsRoute },
-  { when: route => route.match(/^kuvo\/wakes\/([^/]+)(?:\/(cancel|now|pause|watch))?$/), answer: sessionWakesRoute },
+  { when: route => route.match(/^kuvo\/wakes\/([^/]+)(?:\/(cancel|now|pause|watch|events))?$/), answer: sessionWakesRoute },
 ];
 
 // The handler LinkHost runs for each request. `hold`: the running bridge's notices held while

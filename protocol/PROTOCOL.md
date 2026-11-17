@@ -5603,6 +5603,12 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   time they change (added, fired, canceled, paused), `{"sessions": [{session, wakes: [{id, due,
   note, every}], watches: [{letters, every, check, note}], paused}]}` with notes and checks whole,
   and only conversations that have any or are paused.
+  `GET kuvo/wakes/<session>/events` (`bots.wake-ups`) follows just that conversation in the
+  same shape as its GET, including an empty schedule. Both routes give each entry a `summary`
+  from the keeper, or the first sentence of the note if the keeper has none. A wake-up's
+  `cancelKey`, where present, can be sent as `wake` even after that repeat advances.
+  A watch's `next` is its next check in seconds since 1970. A check wakes the bot only if the
+  watch finds a change.
 - `kuvo/asks` (`GET` or `HEAD`): what agents ask you for while they browse (a box's own; a Mac's, its machines' too): a
   sign-in (the fields the page has, and the accounts Passwords keeps for the site, never
   their passwords), a one-time code, or a step only you can do. `kuvo/asks/events` is the same
@@ -7537,6 +7543,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `bots.make` | `kuvo/bots/templates` and `POST kuvo/bots` |
 | `bots.now` | `now` on each bot in `kuvo/bots` and `kuvo/bots/events`: its sessions at work and waiting on you ("What waits on you", #711) |
 | `bots.state` | `state`, `since`, `thinking`, `blocked` and `blockedBy` in each bot's `now`, and `POST kuvo/bots/<id>/seen`; `thinking`, `blocked`, `retrying` and `unread` in the session list's facts; the shapes `loaf`, `capsule` and `dome` ("What waits on you": "The one state a bot is in") |
+| `bots.wake-ups` | `bots.now.waking` while a wake-up turn is active, and a followed schedule with summaries, watch check times and stable cancellation keys. |
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |

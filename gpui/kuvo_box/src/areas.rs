@@ -34,6 +34,8 @@ pub struct Look {
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct BotNow {
     #[serde(default)]
+    pub waking: bool,
+    #[serde(default)]
     pub working: usize,
     #[serde(default)]
     pub asking: usize,
@@ -94,6 +96,10 @@ pub struct Bot {
     pub job: String,
     #[serde(default)]
     pub paused: bool,
+    #[serde(default)]
+    pub wakes: Option<f64>,
+    #[serde(default)]
+    pub watching: usize,
     #[serde(default)]
     pub machine: Option<String>,
     /// What it's doing now.

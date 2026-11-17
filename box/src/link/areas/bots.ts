@@ -10,13 +10,17 @@ import { botTemplates, NO_KIT, readKit } from "../bots/kit";
 import { listBots } from "../bots/list";
 import { makeBot, startingModelHere } from "../bots/make";
 import { freshenBots, settleBot } from "../bots/tell";
-import { followed, followersOf } from "../follow";
+import { followed, followersOf, watchFolders } from "../follow";
 import { judgedTurns, listNow, noteViewed } from "../lists/sessions";
 import { afterListSettles, keepOnly, nextTurn, nowOf, statesNow } from "../bots/now";
 import { noteSeen, SEEN_FOLDER, seenFollowers } from "../bots/seen";
 import { call } from "../engine/client";
 import { botsNowHere } from "./waiting";
-import { BOTS } from "../home";
+import { wakeFollowers } from "./wakes";
+import { awaySessions, moveFollowers } from "../moves/records";
+import { PEER_AGENTS_FILE } from "../peers/directory";
+import fs from "node:fs";
+import { BOTS, RUN } from "../home";
 import type { Target } from "../../shared/records";
 import type { BotChange } from "../bots/edit";
 import type { GivenBot } from "../bots/make";
@@ -91,7 +95,8 @@ export async function* retellRoute(context: RouteContext): AsyncGenerator<Answer
 function botsWithNow(machine?: string) {
   const counts = botsNowHere();
   const at = Date.now();
-  const bots = listBots(machine);
+  const away = new Set(awaySessions());
+  const bots = listBots(machine).filter(bot => !away.has(bot.session));
   keepOnly(bots.map(bot => bot.id));
   return bots.map(bot => ({ ...bot, now: nowOf(bot.id, counts[bot.id], bot, at) }));
 }
@@ -138,9 +143,19 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
     }
     return bots;
   };
+  const peerStamp = () => { try { return fs.statSync(PEER_AGENTS_FILE).mtimeMs; } catch { return 0; } };
+  const watch: typeof watchFolders = (folders, changed, options) => {
+    const bots = watchFolders(folders, changed, options);
+    let stamp = peerStamp();
+    const peers = watchFolders([RUN], () => {
+      const next = peerStamp();
+      if (next !== stamp) { stamp = next; changed(); }
+    }, { recursive: false });
+    return { get whole() { return bots.whole && peers.whole; }, close() { bots.close(); peers.close(); } };
+  };
   try {
     // (And as a bot is seen, here or in another process: its done or blocked may be over.)
-    return yield* followed(said, followersOf(botFollowers, nowChanged, seenFollowers), signal, { folders: [BOTS, HELD, SEEN_FOLDER] });
+    return yield* followed(said, followersOf(botFollowers, nowChanged, seenFollowers, wakeFollowers, moveFollowers), signal, { folders: [BOTS, HELD, SEEN_FOLDER], watch });
   } finally {
     stopFollowing();
     clearTimeout(turning);

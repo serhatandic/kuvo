@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Wake, WakeList, Wakes, Watch } from "../../shared/routes/wakes";
+import { wakeSummary } from "../../shared/message-words";
 import { wakeMark } from "../../shared/queues";
 import { oneLine } from "../../shared/text";
 import { sleep } from "../../shared/wait";
@@ -44,6 +45,8 @@ export interface PendingWake {
   note: string;
   every: string | null;
   letters: string;
+  summary?: string;
+  cancelKey?: string;
 }
 
 // A wake-up from its file's name (the app's Wakes.Pending): when it's due, in seconds since 1970,
@@ -110,20 +113,30 @@ export interface FolderWakes {
 export function readWakes(folder: string, { whole = false }: { whole?: boolean } = {}): FolderWakes {
   const line = (text: string, limit: number) => whole ? text : oneLine(text, limit);
   const wakes = (listOf(path.join(folder, "wakes"))
-    .map(name => wakeOf(name, line(textOf(path.join(folder, "wakes", name)) ?? "", 400)))
+    .map(name => {
+      const wake = wakeOf(name, textOf(path.join(folder, "wakes", name)) ?? "");
+      if (!wake) return null;
+      const cancelKey = LETTERS.test(wake.letters) ? wake.letters : undefined;
+      const summary = wakeSummary(wake.note, cancelKey ? textOf(path.join(folder, "summaries", cancelKey)) : null);
+      return { ...wake, note: line(wake.note, 400), summary, cancelKey };
+    })
     .filter(Boolean) as PendingWake[])
     .sort((a, b) => a.due - b.due);
   const watches = listOf(path.join(folder, "watches")).sort().map((letters): Watch | null => {
     const at = path.join(folder, "watches", letters);
     const check = textOf(path.join(at, "check")) ?? "";
     if (!check) return null;
-    return { letters, every: (textOf(path.join(at, "every")) ?? "").trim(), check: line(check, 300), note: line(textOf(path.join(at, "note")) ?? "", 400) };
+    const note = textOf(path.join(at, "note")) ?? "";
+    const next = (textOf(path.join(at, "next")) ?? "").trim();
+    const due = /^[0-9]+$/.test(next) ? Number(next) : 0;
+    return { letters, every: (textOf(path.join(at, "every")) ?? "").trim(), check: line(check, 300), note: line(note, 400),
+      summary: wakeSummary(note, textOf(path.join(at, "summary"))), ...(due > 0 && Number.isFinite(due) ? { next: due } : {}) };
   }).filter(Boolean) as Watch[];
   return { wakes, watches, paused: fs.existsSync(path.join(folder, "paused")) };
 }
 
 // A wake-up as a client takes it.
-export const listedWake = ({ id, due, note, every }: PendingWake): Wake => ({ id, due, note, every: every ?? undefined });
+export const listedWake = ({ id, due, note, every, summary, cancelKey }: PendingWake): Wake => ({ id, due, note, summary, cancelKey, every: every ?? undefined });
 
 /** A conversation's wake-ups, watches and pause, with its session, as `kuvo/wakes/events` tells them. */
 export interface SessionWakes extends Wakes {
@@ -323,11 +336,7 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
   const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const method = request.method.toUpperCase();
   let folder = wakeFolder(session);
-  const listed = (): Wakes => {
-    if (!folder) return { wakes: [], watches: [], paused: false };
-    const { wakes, watches, paused } = readWakes(folder);
-    return { wakes: wakes.map(listedWake), watches, paused };
-  };
+  const listed = () => listedWakes(folder);
   if (!action && (method === "GET" || method === "HEAD")) return yield* json(200, listed());
   if (method !== "POST") return yield* json(405, {});
   // (What a client sent, each field checked as it's read.)
@@ -470,6 +479,12 @@ export async function* wakeEventsRoute(context: RouteContext): AsyncGenerator<An
   return yield* followed(() => ({ sessions: allWakes() }), wakeFollowers, signal, { folders: [BOTS, SESSION_WAKES] });
 }
 
+function listedWakes(folder: string | null): Wakes {
+  if (!folder) return { wakes: [], watches: [], paused: false };
+  const { wakes, watches, paused } = readWakes(folder);
+  return { wakes: wakes.map(listedWake), watches, paused };
+}
+
 export async function* sessionWakesRoute(context: RouteContext, wakes: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, readEngine, bridge, text } = context;
   let session: string;
@@ -477,6 +492,11 @@ export async function* sessionWakesRoute(context: RouteContext, wakes: RegExpMat
     session = decodeURIComponent(wakes[1]);
   } catch {
     return yield* text(404, "No such session.");
+  }
+  if (wakes[2] === "events") {
+    if (request.method.toUpperCase() !== "GET") return yield* context.json(405, {});
+    yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+    return yield* followed(() => listedWakes(wakeFolder(session)), wakeFollowers, signal, { folders: [BOTS, SESSION_WAKES] });
   }
   return yield* answerWakes(session, wakes[2] as WakeAction | undefined, request, readEngine, bridge, signal);
 }

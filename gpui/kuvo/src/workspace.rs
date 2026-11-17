@@ -553,6 +553,12 @@ impl Workspace {
                 let result = task.await;
                 this.update(cx, |this, cx| this.connected(result, cx)).ok();
             }));
+            workspace.tasks.push(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(30)).await;
+                    if this.update(cx, |this, cx| this.tick_wake_labels(cx)).is_err() { break; }
+                }
+            }));
             let follow = client.follow_sessions(Timing::default());
             let updates = follow.updates().clone();
             workspace._sessions = Some(follow);
@@ -1453,6 +1459,7 @@ impl Workspace {
     /// Counts the sidebar's times from `now` (shots, so they read the same each time).
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
+        self.refresh_conversation_wakes(cx);
         self.rings.update(cx, |rings, _| rings.set_now(now));
         if let Some(run) = self.first_run().cloned() {
             run.update(cx, |run, _| run.set_now(now));
@@ -1537,6 +1544,7 @@ impl Workspace {
         // (A bot's own conversation, as the session lists say: its sessions show over its composer.)
         let bot = self.listing().facts(session).filter(|facts| facts.kind.0 == "bot").and_then(|facts| facts.bot.clone());
         self.wire_bars(&view, bot, cx);
+        self.wire_wakes(&view, session, cx);
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.place_panel(cx);
@@ -1593,6 +1601,7 @@ impl Workspace {
             let (client, live) = (self.client.clone(), self.live);
             let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
             self.wire_bars(&view, Some(bot.to_owned()), cx);
+            self.wire_wakes(&view, session, cx);
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.read_conversation_at_once(&view, session, cx);
@@ -1622,6 +1631,7 @@ impl Workspace {
     /// The box's bots were read again: a conversation shown for a bot whose conversation is
     /// another session now (a coding agent's model carried it on) goes to that one.
     fn bots_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_conversation_wakes(cx);
         self.restore_bot(window, cx);
         let Some(chat) = &self.bot_chat else { return };
         let (bot, session) = (chat.bot.clone(), chat.session.clone());
@@ -1635,6 +1645,34 @@ impl Workspace {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn wire_wakes(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) {
+        let status = self.area_view(Area::Bots).and_then(|area| match area.read(cx).bots() {
+            Reading::Ready(bots) => bots.bots.iter().find(|bot| bot.session == session).map(crate::wakes::Status::from),
+            _ => None,
+        });
+        let computer = self.info.as_ref().map(|info| info.name.clone()).unwrap_or_else(|| self.box_name().into());
+        view.update(cx, |view, cx| view.set_wakes(status, computer, self.now, cx));
+    }
+
+    fn tick_wake_labels(&self, cx: &mut Context<Self>) {
+        if self.area == Area::Bots && let Some(area) = self.area_view(Area::Bots) {
+            area.update(cx, |_, cx| cx.notify());
+        }
+        let chat = self.bot_chat().map(|(_, view)| view).or_else(|| self.conversation());
+        if let Some(chat) = chat {
+            chat.update(cx, |view, cx| view.tick_wakes(cx));
+        }
+    }
+
+    fn refresh_conversation_wakes(&self, cx: &mut Context<Self>) {
+        if let Open::Conversation { view, session } = &self.open {
+            self.wire_wakes(view, session, cx);
+        }
+        if let Some(chat) = &self.bot_chat {
+            self.wire_wakes(&chat.view, &chat.session, cx);
         }
     }
 
@@ -2113,6 +2151,13 @@ impl Workspace {
             }
             self.switching = switching;
             cx.notify();
+        }
+        // Connections can become usable after this workspace received its own list of computers.
+        if let (Some(switching), Some(area)) = (&self.switching, self.area_view(Area::Bots).cloned()) {
+            let peers: Vec<_> = switching.rows.iter()
+                .filter(|row| switching.shown.as_deref().map_or(!row.computer.here, |shown| row.key() != shown))
+                .map(|row| Computer { here: false, ..row.computer.clone() }).collect();
+            area.update(cx, |area, cx| area.follow_remote_bots(&peers, cx));
         }
         // (The box that lists them may have changed with them, `set_lister`: handed on each time.)
         self.sync_offers(cx);

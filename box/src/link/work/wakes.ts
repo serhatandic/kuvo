@@ -357,6 +357,15 @@ async function latestMessages(target: Target, session: string) {
   return messages;
 }
 
+/** Whether the open turn's first input was a wake-up (including a watch). */
+export async function wakeTurnIsOpen(target: Target, session: string): Promise<boolean> {
+  const messages = await latestMessages(target, session);
+  const { from, before } = turnIn(messages);
+  if (from !== 0) return false;
+  const first = messages.slice(0, before < 0 ? undefined : before).filter(message => message.type === "user" || message.type === "synthetic").at(-1);
+  return first?.type === "user" && typeof first.text === "string" && first.text.startsWith(WAKE_MARKER);
+}
+
 async function lastReply(target: Target, session: string): Promise<LastReply> {
   // (A summary asked for is no turn of its work: this is about what it did.)
   const whole = await latestMessages(target, session);

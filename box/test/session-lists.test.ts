@@ -946,10 +946,10 @@ function following(path: string, pick: (line: any) => any) {
   return { until, end: async () => { stop.abort(); await stream.return(undefined) } }
 }
 
-async function post(path: string): Promise<{ status: number; body: any }> {
+async function post(path: string, body: Record<string, unknown> = {}): Promise<{ status: number; body: any }> {
   let status = 0
   let text = ""
-  for await (const piece of handler({ method: "POST", path, headers: {}, body: Buffer.from("{}"), fromApp: true } as any, undefined)) {
+  for await (const piece of handler({ method: "POST", path, headers: {}, body: Buffer.from(JSON.stringify(body)), fromApp: true } as any, undefined)) {
     if ("head" in piece) status = piece.head.status
     if ("body" in piece) text += Buffer.from(piece.body).toString()
   }
@@ -1373,6 +1373,85 @@ test("a bot seen while the box still judges its work's turn is blocked by it onc
   } finally {
     stop()
     for (const id of ["ses_judged", "ses_judgedled"]) { sessions.delete(id); messages.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a bot wakes only during its wake-up turn, including after the box starts mid-turn", async () => {
+  const id = "ses_waking", bot = "bot_waking"
+  const folder = await aBot(bot, id, { "wakes/1-again-1d": "Check the build" })
+  add(id, folder, 700)
+  active.add(id)
+  const wake = { id: "msg_waking", type: "user", text: "[Wake-up] Check the build" }
+  messages.set(id, [wake])
+  const stop = keepList()
+  const hear = hearing(id)
+  const followed = following("kuvo/bots/events", line => line.bots.find((each: any) => each.id === bot))
+  try {
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot(bot)).toMatchObject({ waking: true, working: 1 })
+    await followed.until(bot => bot?.now.waking === true)
+
+    active.delete(id)
+    messages.set(id, [{ id: "msg_end", type: "idle" }, wake])
+    await hear("session.execution.succeeded")
+    workOut()
+    const ended = await followed.until(bot => bot?.now.working === 0)
+    expect(ended.now.waking).toBeUndefined()
+    expect(ended.wakes).toBe(1) // A past-due timer still on disk says nothing about the turn.
+
+    active.add(id)
+    await hear("session.execution.started")
+    await hear("session.inbox.delivered")
+    workOut()
+    expect(await nowOfBot(bot)).not.toHaveProperty("waking")
+    messages.set(id, [wake, { id: "msg_end", type: "idle" }, wake])
+    await hear("session.inbox.delivered")
+    workOut()
+    await followed.until(bot => bot?.now.waking === true)
+    active.delete(id)
+    await hear("session.execution.interrupted")
+    workOut()
+    expect((await followed.until(bot => bot?.now.working === 0)).now.waking).toBeUndefined()
+  } finally {
+    await followed.end()
+    stop()
+    active.delete(id)
+    messages.delete(id)
+    sessions.delete(id)
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a bot's schedule stream supplies stored summaries, watch check times and stable cancellation keys", async () => {
+  const id = "ses_schedule"
+  const folder = await aBot("bot_schedule", id, {
+    "wakes/100-first-1d": "Long instructions, which the agent still reads.",
+    "summaries/first": "Check build status",
+    "wakes/200-later": "Read release notes. The rest is the full note.",
+    "watches/ci/check": "check",
+    "watches/ci/every": "5m",
+    "watches/ci/next": "300",
+    "watches/ci/note": "Full CI instructions.",
+    "watches/ci/summary": "Watch CI",
+  })
+  const stream = following(`kuvo/wakes/${id}/events`, line => line)
+  try {
+    const listed = await stream.until(line => line.wakes.length === 2)
+    expect(listed.wakes).toMatchObject([
+      { due: 100, every: "1d", summary: "Check build status", cancelKey: "first" },
+      { due: 200, summary: "Read release notes.", cancelKey: "later" },
+    ])
+    expect(listed.watches).toMatchObject([{ letters: "ci", next: 300, every: "5m", summary: "Watch CI" }])
+    // A repeat can advance while its confirmation is open.
+    rmSync(join(folder, "wakes/100-first-1d"))
+    writeFileSync(join(folder, "wakes/999-first-1d"), "Long instructions.")
+    expect((await post(`kuvo/wakes/${id}/cancel`, { wake: "first" })).status).toBe(200)
+    expect((await post(`kuvo/wakes/${id}/cancel`, { watch: "ci" })).status).toBe(200)
+    const after = await stream.until(line => line.wakes.length === 1 && line.watches.length === 0)
+    expect(after.wakes[0].cancelKey).toBe("later")
+  } finally {
+    await stream.end()
     rmSync(folder, { recursive: true, force: true })
   }
 })
