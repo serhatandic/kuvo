@@ -424,9 +424,9 @@ export class Limits {
   }
 
   /** Every account across your computers, one row each (`limits-rows.ts`): this box's first. */
-  rows(): LimitRow[] {
+  rows(presentUsage = false): LimitRow[] {
     const own = this.list(false)
-    return this.peers ? this.peers.rows(own) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now())
+    return this.peers ? this.peers.rows(own, presentUsage) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage)
   }
 
   /** What a peer told changed what's listed: the clients are told. */
@@ -1053,7 +1053,7 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
   if (!limits) return json({ message: "Plan limits aren't read on this computer." }, 503)
   // Spending a reset (limits-resets.ts).
   if (rest[0] === "reset") return resetRoutes(limits.resets, method, rest.slice(1), body)
-  const answer = () => json({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } })
+  const answer = () => json({ data: { accounts: limits.shown(), services: limits.services(), rows: limits.rows(true), notificationAvailability: notificationAvailability(), notices: limits.notices(), ownNotices: limits.pushableNotices() } })
   if (!rest.length && method === "GET") return answer()
   if (rest.length === 1 && rest[0] === "refresh" && method === "POST") {
     // Here first, then on the computer each account only elsewhere is on: what's read here reaches

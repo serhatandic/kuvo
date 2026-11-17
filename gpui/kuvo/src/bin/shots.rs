@@ -10,6 +10,7 @@ use kuvo::area::Area;
 use kuvo::panel::Tab;
 use kuvo_box::git::Group;
 use kuvo::first_run::{FirstRun, Step};
+use kuvo::stand_in::areas::UsageSample;
 use kuvo::stand_in::first_run::Scenario;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::BoxState;
@@ -332,6 +333,11 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "agents-rail-restarting", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agents-conversation-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_agents_down) },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-many", width: 1140., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-one", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-empty", width: 920., height: 600., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-failed", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "usage-stale", width: 920., height: 600., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "settings-a-models", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
     Screen { slug: "settings-a-permissions", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
     Screen { slug: "settings-a-permissions-services", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
@@ -717,7 +723,7 @@ fn computer_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Cont
 }
 
 fn usage(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_setting("Usage", window, cx);
+    workspace.show_setting(&kuvo::settings::box_key("", "usage"), window, cx);
 }
 
 /// Settings' view, on `section`.
@@ -1399,6 +1405,13 @@ fn main() -> anyhow::Result<()> {
             };
             cx.update(|cx| kuvo::yours::change(kuvo::yours::Change::TextSize(text_size), cx));
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
+            match screen.slug {
+                "usage-many" => stand_in.set_usage_sample(UsageSample::Many),
+                "usage-one" => stand_in.set_usage_sample(UsageSample::One),
+                "usage-failed" => stand_in.set_usage_sample(UsageSample::Failed),
+                "usage-stale" => stand_in.set_usage_sample(UsageSample::Stale),
+                _ => {}
+            }
             if screen.slug.starts_with("settings-commands") {
                 stand_in.add_settings_section(serde_json::json!({"id":"commands","title":"Commands","group":"Agents & Tools","icon":"terminal","line":"Prompts you use often, run by typing / and their name."}), serde_json::from_str(include_str!("../stand_in/settings/commands.json")).expect("Commands fixture"));
             }

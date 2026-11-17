@@ -522,6 +522,41 @@ fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(des
     Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
+/// Display-ready plan limits for the Usage page.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LimitDisplay {
+    pub detail: String,
+    pub status: Option<LimitStatus>,
+    #[serde(deserialize_with = "readable")]
+    pub meters: Vec<UsageMeter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct LimitStatus {
+    pub words: String,
+    pub warning: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageMeter {
+    pub title: String,
+    pub share: f32,
+    pub value: String,
+    pub level: Level,
+    pub read: Option<String>,
+    pub reset: String,
+    pub old: String,
+    /// Time left before the client must mark this snapshot old, as decided by the box.
+    pub fresh_for_ms: u64,
+}
+
+impl UsageMeter {
+    pub fn old_at(&self, elapsed: std::time::Duration) -> bool {
+        elapsed >= std::time::Duration::from_millis(self.fresh_for_ms)
+    }
+}
+
 /// An account across your computers, as the limits' `rows` list it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Account {
@@ -551,6 +586,8 @@ pub struct Account {
     /// The computers it's signed in on, as the box says (`boxes`).
     #[serde(default, deserialize_with = "readable")]
     pub boxes: Vec<RowBox>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub usage: Option<LimitDisplay>,
 }
 
 /// A computer an account is signed in on, as a row says it: `here`, the computer whose box answered.
@@ -797,6 +834,34 @@ mod tests {
         let row: Account = serde_json::from_str(r#"{"service":"claude","agent":"claude","label":"Work","title":"Claude · hetzner","windows":[{"id":"five_hour","title":"Session","used":0.4,"level":"calm"},{"id":"x","title":"Premium requests","used":0,"expired":true}]}"#).unwrap();
         assert_eq!(row.title, "Claude · hetzner");
         assert_eq!(row.windows.iter().map(|window| (window.title.as_str(), window.expired)).collect::<Vec<_>>(), vec![("Session", false), ("Premium requests", true)]);
+    }
+
+    #[test]
+    fn usage_display_keeps_the_box_words_and_deadline() {
+        use std::time::Duration;
+        let account: Account = serde_json::from_value(serde_json::json!({
+            "service": "claude",
+            "usage": {
+                "detail": "Pro · Studio",
+                "status": { "words": "Check the sign-in.", "warning": true },
+                "meters": [
+                    { "title": "Weekly", "share": 0.7, "value": "70% used", "level": "near", "read": "Build · Read 17 Nov, 12:00 UTC", "reset": "Reset due 19 Nov, 12:00 UTC", "old": "Old reading", "freshForMs": 500 },
+                    { "title": "Unreadable meter" }
+                ]
+            }
+        })).unwrap();
+        let display = account.usage.unwrap();
+        assert_eq!(display.detail, "Pro · Studio");
+        assert_eq!(display.status.unwrap().words, "Check the sign-in.");
+        assert_eq!(display.meters.len(), 1);
+        let meter = &display.meters[0];
+        assert_eq!(meter.value, "70% used");
+        assert_eq!(meter.old, "Old reading");
+        assert_eq!(meter.read.as_deref(), Some("Build · Read 17 Nov, 12:00 UTC"));
+        assert!(!meter.old_at(Duration::from_millis(499)));
+        assert!(meter.old_at(Duration::from_millis(500)));
+        let older: Account = serde_json::from_value(serde_json::json!({ "service": "claude" })).unwrap();
+        assert!(older.usage.is_none());
     }
 
     /// The rings are the box's: its short one outside and its long one inside, each with its level;

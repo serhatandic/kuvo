@@ -20,7 +20,7 @@ mod rows;
 pub mod shortcuts;
 pub mod sign_in;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::{Duration, Instant, SystemTime}};
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState, SharedString, Subscription, Task, Window, px};
 use kuvo_box::BoxClient;
@@ -188,6 +188,7 @@ pub struct SettingsView {
     picker: kuvo_ui::menu::PopoverMenuHandle,
     accounts: Reading<Accounts>,
     limits: Reading<Vec<Account>>,
+    usage_read_started: Option<(Instant, SystemTime)>,
     config: Reading<Config>,
     offered: Reading<Offered>,
     usage: Reading<UsageSettings>,
@@ -320,6 +321,7 @@ impl SettingsView {
             later_open: false,
             accounts: Reading::NotYet,
             limits: Reading::NotYet,
+            usage_read_started: None,
             config: Reading::NotYet,
             offered: Reading::NotYet,
             usage: Reading::NotYet,
@@ -535,6 +537,7 @@ impl SettingsView {
         self.pages.clear();
         self.accounts = Reading::NotYet;
         self.limits = Reading::NotYet;
+        self.usage_read_started = None;
         self.config = Reading::NotYet;
         self.offered = Reading::NotYet;
         self.usage = Reading::NotYet;
@@ -1090,6 +1093,37 @@ impl SettingsView {
         self.tasks.insert(name, task);
     }
 
+    fn usage_elapsed(&self) -> Duration {
+        // Time asleep counts even when a monotonic clock pauses. A backwards clock change must
+        // also leave the snapshot ageing.
+        self.usage_read_started.map_or(Duration::MAX, |(started, wall)| {
+            started.elapsed().max(wall.elapsed().unwrap_or_default())
+        })
+    }
+
+    /// Switch to the snapshot’s old state at the deadline supplied with it.
+    fn mark_old_usage(&mut self, cx: &mut Context<Self>) {
+        const TASK: &str = "usage-display-deadline";
+        let Reading::Ready(accounts) = &self.limits else { return };
+        let elapsed = self.usage_elapsed();
+        let next = accounts.iter().filter_map(|account| account.usage.as_ref())
+            .flat_map(|usage| &usage.meters)
+            .filter(|meter| !meter.old_at(elapsed))
+            .map(|meter| Duration::from_millis(meter.fresh_for_ms))
+            .min();
+        self.tasks.remove(TASK);
+        let Some(next) = next.filter(|_| self.live) else { return };
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(next - elapsed).await;
+            this.update(cx, |this, cx| {
+                this.list.remeasure();
+                cx.notify();
+                this.mark_old_usage(cx);
+            }).ok();
+        });
+        self.tasks.insert(TASK.into(), task);
+    }
+
     fn run<T: Send + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -1209,9 +1243,12 @@ impl SettingsView {
                 this.again_while_restarting("accounts", restarting, cx);
             }, cx),
             (Some(Drawn::Own), "usage") => {
-                self.run("read-limits", |client| client.accounts(), |this, read, cx| {
+                let started = (Instant::now(), SystemTime::now());
+                self.run("read-limits", |client| client.accounts(), move |this, read, cx| {
+                    this.usage_read_started = read.is_ok().then_some(started);
                     this.agents_limits = agents_state(&read);
                     this.limits = reading(read, &this.limits);
+                    this.mark_old_usage(cx);
                     let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
                     this.again_while_restarting("usage", restarting, cx);
                 }, cx);

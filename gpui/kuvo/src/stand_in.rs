@@ -590,6 +590,10 @@ impl StandIn {
         self.state().settings.set_sandbox(sandbox);
     }
 
+    pub fn set_usage_sample(&self, sample: areas::UsageSample) {
+        self.state().areas.usage = sample;
+    }
+
     /// What its box says of an account from now on (`state`, `line`, `actions`), whatever the
     /// account is: for a client drawing what a box says, a newer box's words among them.
     pub fn set_account_said(&self, account: &str, said: Value) {

@@ -4,6 +4,9 @@
 
 import type { AgentKind } from "./accounts"
 import type { AccountLimits, LimitWindow } from "./limits"
+import { levelOf, limitDisplay, windowTitle, type LimitDisplay } from "./usage/limit-display"
+
+export { levelOf, windowTitle } from "./usage/limit-display"
 
 /** One computer's accounts, as this box has them: its own, or what a peer last told. */
 export interface LimitsBox {
@@ -14,6 +17,8 @@ export interface LimitsBox {
   here: boolean
   /** A peer not heard from for a while: what it said is as of then. */
   away: boolean
+  /** When a peer would count as away without another update. */
+  awayAt?: number
   /**
    * Not one of your own computers (`LimitsDirectory.isYours`): a box a peer of yours vouches for,
    * any peer of a machine two people's Macs share (on that machine), a machine that is one, or a box
@@ -79,6 +84,8 @@ export interface LimitRow extends AccountLimits {
   /** The same for the account on every box: `<service>#<identity>`, or `<box key>/<provider>` for one that can't say who it is. */
   id: string
   boxes: LimitRowBox[]
+  /** Display facts for the Usage page, added to HTTP answers. */
+  usage?: LimitDisplay
   /** Every computer it's on is away: its numbers are as of their `read`, not live. */
   away?: true
   /**
@@ -94,7 +101,7 @@ export interface LimitRow extends AccountLimits {
  * one `identity` are one account, from any box; one without an identity is its box's own. `now`, the
  * box's clock: a window whose reset has passed by then has started over.
  */
-export function limitRows(boxes: LimitsBox[], now: number): LimitRow[] {
+export function limitRows(boxes: LimitsBox[], now: number, presentUsage = false): LimitRow[] {
   const groups: { id: string; members: { box: LimitsBox; account: AccountLimits }[] }[] = []
   const found = new Map<string, number>()
   for (const box of boxes) {
@@ -109,8 +116,10 @@ export function limitRows(boxes: LimitsBox[], now: number): LimitRow[] {
     }
   }
   const rows = groups.map(({ id, members }) => {
+    const account = merged(members)
     const row: LimitRow = {
-      ...ringed(merged(members), now),
+      ...ringed(account, now),
+      ...(presentUsage ? { usage: limitDisplay(account, members, now) } : {}),
       title: "",
       id,
       boxes: members.map(({ box, account }) => ({
@@ -151,19 +160,6 @@ export function accountTitle(account: { agent?: string; service: string; label?:
   return label ? `${base} · ${label}` : base
 }
 
-/** A window's name: its maker's for what it counts, its model's, else how long it is ("Session", "Weekly", "Monthly", "3-day", "8-hour"); "Limit" where it says none. */
-export function windowTitle(window: Pick<LimitWindow, "name" | "model" | "minutes">): string {
-  if (window.name) return window.name
-  if (window.model) return window.model
-  const minutes = window.minutes
-  if (minutes === 300) return "Session"
-  if (minutes === 10_080) return "Weekly"
-  if (minutes !== undefined && minutes >= 40_000 && minutes <= 45_000) return "Monthly"
-  if (minutes !== undefined && minutes >= DAY) return `${Math.floor(minutes / DAY)}-day`
-  if (minutes !== undefined && minutes >= 60) return `${Math.floor(minutes / 60)}-hour`
-  return "Limit"
-}
-
 /**
  * Each row's name: its account's, unless two would have one name. Then a row whose sign-in on this
  * box is the engine's alone takes the service's name ("ChatGPT"); a row not on this box adds the
@@ -195,8 +191,6 @@ function named(rows: LimitRow[]) {
   }
   rows.forEach((row, index) => (row.title = names[index]!))
 }
-
-export const levelOf = (used: number): LimitLevel => (used >= 0.9 ? "over" : used >= 0.7 ? "near" : "calm")
 
 const DAY = 24 * 60
 

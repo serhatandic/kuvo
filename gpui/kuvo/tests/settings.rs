@@ -888,20 +888,20 @@ fn the_theme_row_switches_light_and_dark(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn usage_lists_each_accounts_windows_as_the_rings_do(cx: &mut TestAppContext) {
+fn usage_lays_out_each_accounts_windows_side_by_side(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     let view = section(&workspace, cx, "Usage");
     for row in ["usage-0", "usage-1", "usage-2", "usage-3", "usage-4", "usage-5"] {
         assert!(shown(cx, row), "{row}");
     }
-    // Each account's windows, by KuvoClient's names: Claude · Work has its session, week and Sonnet.
-    for window in ["usage-0-window-0", "usage-0-window-1", "usage-0-window-2"] {
-        assert!(shown(cx, window), "{window}");
-    }
+    // Claude · Work has three windows on the same line.
+    let [session, weekly, sonnet] = [0, 1, 2].map(|ix| bounds(cx, &format!("usage-0-window-{ix}")).expect("usage window"));
+    assert!(session.origin.x < weekly.origin.x && weekly.origin.x < sonnet.origin.x);
+    assert_eq!(session.origin.y, sonnet.origin.y);
     assert!(!shown(cx, "usage-0-window-3"));
     // Cursor's plan ended: listed, saying so, with no meters.
     assert!(shown(cx, "usage-1") && !shown(cx, "usage-1-window-0"));
-    let _ = view;
+    assert!(view.read_with(cx, |view, _| view.row_detail("usage-2").unwrap().contains("mini-local · Read")));
 }
 
 #[gpui::test]

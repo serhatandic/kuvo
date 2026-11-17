@@ -5831,6 +5831,15 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     (`kuvo.limits.updated`) the moment a window listed starts over, so no client watches a clock
     for it. `title`, its name (`limits.titles`): `name`, else `model`, else by its length
     ("Session" for 300 minutes, "Weekly" for 10080, "Monthly", "3-day", "8-hour"), else "Limit".
+  - `usage` (HTTP `rows`): display facts for the Usage page. `detail` is the plan and a shared read
+    line, when all windows were read at the same time on the same computer. With no readings it names
+    the computers the account is on. `status?` is `{words, warning}`. Each of `meters` has
+    `title, share, value, level, read?, reset, old, freshForMs`. `read` names the computer that
+    supplied that window and the reading time, where the header doesn't already say it. These facts
+    show the historical reading even after a reset. Draw it as old at once for an away or failing
+    source, or when the time supplied in `freshForMs` has passed. That time ends at the earlier of
+    the next reset, the source going away, or 30 minutes from the reading. Dates use the answering
+    computer's time zone.
   - `balance` `{left, limit?, unit}`: credits left to spend, where the account has them.
   - `balance` with `limit`: what was bought (OpenRouter's total credits), so a client draws what's
     left of it as a meter.

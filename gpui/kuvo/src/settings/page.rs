@@ -8,7 +8,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Focusable as _, Hsla, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, list,
     prelude::FluentBuilder as _, px,
 };
-use kuvo_box::areas::Level;
+use kuvo_box::areas::{Level, UsageMeter};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
     button::{Button, ButtonSize},
@@ -277,6 +277,30 @@ impl SettingsView {
                 .when(last, |d| d.rounded_b(radius::POPOVER).border_b_1())
                 .px(space::S5)
         };
+        if let Control::Usage(meters) = &control {
+            let selector = key.clone();
+            return card(div().id(SharedString::from(key.clone())).debug_selector(move || selector))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(space::S2)
+                        .py(space::S3)
+                        .when(!last, |d| d.border_b_1().border_color(c.border))
+                        .child(
+                            div().flex().items_center().gap(space::S2).children(leading).child(
+                                div().flex_1().min_w_0().flex().flex_wrap().items_baseline().gap_x(space::S2)
+                                    .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
+                                    .when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail))),
+                            ),
+                        )
+                        .children(why.map(|words| {
+                            div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(words)
+                        }))
+                        .when(!meters.is_empty(), |d| d.child(usage_meters(&key, meters, self.usage_elapsed(), cx))),
+                )
+                .into_any_element();
+        }
         if matches!(&control, Control::Field { save: Act::Filter, .. }) {
             let selector = key.clone();
             let control = self.control(&key, control, cx);
@@ -694,6 +718,7 @@ impl SettingsView {
                 .into_any_element()
             }
             Control::Windows(meters) => windows(key, &meters, self.now.unwrap_or_else(time::now_ms), cx),
+            Control::Usage(_) => unreachable!("usage meters are drawn in their account row"),
             Control::Thing { buttons, menu, switch } => {
                 let menu = (!menu.is_empty()).then(|| self.control(key, Control::Menu { shown: None, choices: menu.into_iter().map(|push| (push.label, None, push.act, false)).collect() }, cx));
                 let switch = switch.map(|(on, act)| self.control(key, Control::Switch { on, act }, cx));
@@ -871,6 +896,41 @@ fn windows(key: &str, meters: &[Meter], now: f64, cx: &App) -> AnyElement {
                 )
                 .child(div().h(px(4.)).w_full().rounded(radius::PILL).bg(c.border).child(div().h_full().w(gpui::relative(meter.share)).rounded(radius::PILL).bg(color)))
                 .children(resets.map(|resets| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(resets)))
+        }))
+        .into_any_element()
+}
+
+/// Plan windows wrap below the account heading.
+fn usage_meters(key: &str, meters: &[UsageMeter], elapsed: std::time::Duration, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(space::S3)
+        .gap_y(space::S2)
+        .children(meters.iter().enumerate().map(|(ix, meter)| {
+            let selector = format!("{key}-window-{ix}");
+            let old = meter.old_at(elapsed);
+            let color = if old || matches!(meter.level, Level::Calm | Level::Unknown) { c.text_muted } else { crate::rail::level_color(meter.level, cx) };
+            div()
+                .debug_selector(move || selector)
+                .flex_basis(px(158.))
+                .flex_grow_1()
+                .min_w_0()
+                .max_w(px(205.))
+                .flex()
+                .flex_col()
+                .gap(space::S0_5)
+                .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(meter.title.clone()))
+                .child(
+                    div().flex().flex_wrap().gap_x(space::S1_5).text_ui(TypeSize::Small)
+                        .children(old.then(|| div().text_color(c.warning).child(meter.old.clone())))
+                        .child(div().text_color(color).child(meter.value.clone())),
+                )
+                .child(div().h(px(3.)).w_full().rounded(radius::PILL).bg(c.border)
+                    .child(div().h_full().w(gpui::relative(meter.share)).rounded(radius::PILL).bg(color)))
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(meter.reset.clone()))
+                .children(meter.read.clone().map(|read| div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(read)))
         }))
         .into_any_element()
 }

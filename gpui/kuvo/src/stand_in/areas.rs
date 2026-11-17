@@ -12,6 +12,7 @@ use super::{DAY, HOUR, MINUTE};
 pub struct Areas {
     /// A first run: no bots, chats, other computers or accounts.
     pub empty: bool,
+    pub usage: UsageSample,
     /// Its list of computers can't be read now (503).
     pub computers_down: bool,
     /// Its list of computers has this computer alone (the rest of the sample stays).
@@ -58,6 +59,17 @@ pub struct Areas {
     pub cant_bring_up: Vec<(String, String)>,
     /// An empty box that lists your computers all the same (another computer's, in a test).
     pub lists_yours: bool,
+}
+
+/// Usage responses drawn by the screenshot harness.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum UsageSample {
+    #[default]
+    Default,
+    Many,
+    One,
+    Failed,
+    Stale,
 }
 
 /// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
@@ -110,7 +122,7 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
     }
     let answer = match route {
         "kuvo/computers" => json!({ "computers": listed(areas) }),
-        "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now) } } }),
+        "kuvo/agents/api/kuvo/limits" => json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"], "rows": if areas.empty { Vec::new() } else { accounts(now, areas.usage) } } }),
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
         "kuvo/box/at-work" => json!({ "applies": !areas.no_menu_bar, "working": 0, "sessions": [], "asking": [], "waiting": { "sessions": needing, "bots": bots_asking, "queue": 0 }, "background": 0, "busy": false, "rings": [] }),
         _ => return None,
@@ -510,7 +522,7 @@ fn computers(alone: bool, more: usize) -> Vec<Value> {
     computers
 }
 
-fn accounts(now: f64) -> Vec<Value> {
+fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
     // Each window named as the box names it (`title`).
     let window = |id: &str, title: &str, used: f64, resets: f64, minutes: Option<u32>, model: Option<&str>, name: Option<&str>| {
         let mut window = json!({ "id": id, "title": title, "used": used, "resetsAt": now + resets, "read": now - MINUTE, "source": "usage" });
@@ -560,7 +572,7 @@ fn accounts(now: f64) -> Vec<Value> {
         }
         row
     };
-    vec![
+    let mut rows = vec![
         row("claude", "Claude · Work", Some("claude"), "Work", "Max 20x", vec![window("five_hour", "Session", 0.46, 3.7 * HOUR, Some(300), None, None), window("seven_day", "Weekly", 0.38, 4.0 * DAY, Some(10080), None, None), window("seven_day_sonnet", "Sonnet", 0.12, 4.0 * DAY, Some(10080), Some("Sonnet"), None)]),
         // A plan that ended (Cursor said no active subscription): no windows, no rings, `ended`.
         {
@@ -580,7 +592,76 @@ fn accounts(now: f64) -> Vec<Value> {
         row("copilot", "Copilot", None, "", "Pro+", vec![window("premium", "Premium requests", 0.35, 17.0 * DAY, None, None, Some("Premium requests"))]),
         row("grok", "Grok", Some("grok"), "", "SuperGrok", vec![window("week", "Weekly", 0.12, 3.0 * DAY, Some(10080), None, None)]),
         row("openrouter", "OpenRouter · Team key", None, "Team key", "Credits", vec![window("credits", "Credits", 0.58, 20.0 * DAY, None, None, Some("Credits"))]),
-    ]
+    ];
+    match sample {
+        UsageSample::Default => {}
+        UsageSample::Many => {
+            rows.insert(4, row("antigravity", "Antigravity", Some("antigravity"), "", "Pro", vec![
+                window("gemini-5h", "Gemini · 5-hour", 0.35, 4.0 * HOUR, Some(300), None, Some("Gemini · 5-hour")),
+                window("gemini-weekly", "Gemini · Weekly", 0.72, 6.0 * DAY, Some(10080), None, Some("Gemini · Weekly")),
+                window("third-party-5h", "Claude and GPT · 5-hour", 0.18, 3.0 * HOUR, Some(300), None, Some("Claude and GPT · 5-hour")),
+                window("third-party-weekly", "Claude and GPT · Weekly", 0.65, 6.0 * DAY, Some(10080), None, Some("Claude and GPT · Weekly")),
+            ]));
+            rows.insert(6, row("opencode", "OpenCode Go", None, "", "Go", vec![
+                window("five_hour", "Session", 0.14, 3.0 * HOUR, Some(300), None, None),
+                window("weekly", "Weekly", 0.54, 5.0 * DAY, Some(10080), None, None),
+                window("monthly", "Monthly", 0.91, 12.0 * DAY, Some(43200), None, None),
+            ]));
+        }
+        UsageSample::One => rows.truncate(1),
+        UsageSample::Failed => {
+            rows = vec![row("codex", "Codex", Some("codex"), "", "Pro", Vec::new())];
+            rows[0]["problem"] = json!({ "kind": "failed" });
+        }
+        UsageSample::Stale => {
+            rows = vec![rows.remove(2)];
+            rows[0]["boxes"][0]["away"] = json!(true);
+            rows[0]["windows"][0]["read"] = json!(now - 47.0 * MINUTE);
+        }
+    }
+    for row in &mut rows {
+        row["usage"] = usage_display(row, now);
+    }
+    rows
+}
+
+/// The stand-in supplies display facts the same way the live route does.
+fn usage_display(row: &Value, now: f64) -> Value {
+    let computer = if row["boxes"][0]["here"] == json!(true) { super::NAME } else { row["boxes"][0]["name"].as_str().unwrap_or("Another computer") };
+    let plan = row["plan"].as_str().unwrap_or_default();
+    let windows = row["windows"].as_array().unwrap();
+    let stamp = |at: f64| {
+        let minutes = (at / MINUTE) as i64;
+        let (_, month, day) = crate::time::civil(minutes.div_euclid(1_440));
+        let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(month - 1) as usize];
+        format!("{day} {month}, {:02}:{:02} UTC", minutes.div_euclid(60).rem_euclid(24), minutes.rem_euclid(60))
+    };
+    let detail = if let Some(read) = windows.first().and_then(|window| window["read"].as_f64()) {
+        format!("{plan} · {computer} · Read {}", stamp(read))
+    } else {
+        format!("{plan} · {computer}")
+    };
+    let status = match row["problem"]["kind"].as_str() {
+        Some("ended") => json!({ "words": "Plan ended.", "warning": false }),
+        Some("failed") => json!({ "words": "Couldn’t read limits. Check the computer’s connection. Kuvo will try again.", "warning": true }),
+        _ => Value::Null,
+    };
+    let meters: Vec<Value> = windows.iter().map(|window| {
+        let share = window["used"].as_f64().unwrap_or_default();
+        let title = match window["title"].as_str() {
+            Some("Session") => "5-hour",
+            Some("Sonnet") => "Sonnet · Weekly",
+            Some(title) => title,
+            None => "Limit",
+        };
+        let reset = window["resetsAt"].as_f64().unwrap_or(now);
+        json!({
+            "title": title, "share": share, "value": format!("{:.0}% used", share * 100.0),
+            "level": window["level"], "reset": format!("Reset due {}", stamp(reset)),
+            "old": "Old reading", "freshForMs": if row["boxes"][0]["away"] == json!(true) { 0 } else { 29 * MINUTE as u64 },
+        })
+    }).collect();
+    json!({ "detail": detail, "status": status, "meters": meters })
 }
 
 fn level(used: f64) -> &'static str {
