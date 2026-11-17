@@ -165,6 +165,8 @@ export interface UpdateState {
   /** A release offered from a folder here that failed as it was taken: its version, when, whether
    * it was put in place and taken back, and how many times in a row it failed. */
   offerFailed?: { version: string; at: number; takenBack: boolean; tries?: number; message?: string };
+  /** How the last change of engine went (`updates/engine-swap.ts`). */
+  engine?: import("./engine-swap").EngineChangeLast;
 }
 
 /** A change to `run/update.json`: each field given, null to take it away. */
@@ -355,7 +357,7 @@ function backupsSize(): number {
 // The engine's data as it is, the engine stopped, before another engine reads it: kept whole or not
 // at all in `updates/backups/<date>-<engine>-to-<engine>`, and the one before it goes. What it says:
 // how the data was as it was copied (`dataNow`), to tell later whether an engine wrote to it since.
-function keepData(name: string): string {
+export function keepData(name: string): string {
   const folder = path.join(K, "data", "opencode"), partial = path.join(BACKUPS, `.${name}.partial`);
   fs.mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
   // (The one before goes first: its room is what this one takes, `roomForData`.)
@@ -370,14 +372,14 @@ function keepData(name: string): string {
 
 // The engine's data, each file's size and when it was last written (none: "-"): what changes as
 // any engine writes to it.
-function dataNow(): string {
+export function dataNow(): string {
   return ["opencode.db", "opencode.db-wal"].map(each => {
     try { const stat = fs.statSync(path.join(K, "data", "opencode", each)); return `${stat.size}:${stat.mtimeMs}`; } catch { return "-"; }
   }).join(" ");
 }
 
 // Whether there's room to keep the engine's data beside it, with some to spare.
-function roomForData(): boolean {
+export function roomForData(): boolean {
   let size = 0;
   for (const name of ["opencode.db", "opencode.db-wal"]) try { size += fs.statSync(path.join(K, "data", "opencode", name)).size; } catch {}
   const free = ran("df", ["-Pk", K]).output.split("\n").pop()?.trim().split(/\s+/)[3];
