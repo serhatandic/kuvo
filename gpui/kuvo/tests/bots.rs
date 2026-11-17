@@ -765,21 +765,22 @@ fn wake_list_wraps_a_long_summary_and_bounds_many_entries(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn wake_timestamp_shares_the_name_line_and_leaves_the_subtitle_full_width(cx: &mut TestAppContext) {
+fn wake_badge_sits_on_the_avatar_and_yields_to_activity(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.add_bot("bot_longname", "A very long bot name that must fit beside its wake-up time", json!({
-        "color": "sky", "shape": "round", "face": "calm",
-    }));
-    stand_in.set_bot_wakes("bot_longname", vec![json!({
-        "id": "at-build", "due": NOW / 1000. + 180., "summary": "Check the build", "cancelKey": "build",
-    })], vec![]);
+    for id in ["bot_mira", "bot_inbox", "bot_docs"] {
+        stand_in.set_bot_wakes(id, vec![json!({
+            "id": "at-build", "due": NOW / 1000. + 180., "summary": "Check the build", "cancelKey": "build",
+        })], vec![]);
+    }
+    stand_in.set_bot_now("bot_mira", json!({"working":0,"asking":0,"state":"idle"}));
+    stand_in.set_bot_now("bot_docs", json!({"working":1,"asking":0,"state":"working","waking":true}));
     let (_, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
-    let name = bounds(cx, "bot-bot_longname-name").unwrap();
-    let next = bounds(cx, "bot-bot_longname-next-wake").unwrap();
-    let subtitle = bounds(cx, "bot-bot_longname-detail").unwrap();
-    assert!(name.right() < next.left());
-    assert!(next.top() < name.bottom() && next.bottom() <= subtitle.top() + px(1.));
-    assert_eq!(subtitle.left(), name.left());
-    assert_eq!(subtitle.right(), next.right());
+    let wake = bounds(cx, "bot-avatar-wake").unwrap();
+    let avatar = bounds(cx, "bot-bot_mira-avatar").unwrap();
+    assert_eq!(wake.size, size(px(14.), px(14.)));
+    assert_eq!(wake.right(), avatar.right() - px(3.));
+    assert_eq!(wake.bottom(), avatar.bottom() - px(3.));
+    assert_eq!(wake.size, bounds(cx, "bot-avatar-needs-you").unwrap().size);
+    assert_eq!(wake.size, bounds(cx, "bot-avatar-at-work").unwrap().size);
 }

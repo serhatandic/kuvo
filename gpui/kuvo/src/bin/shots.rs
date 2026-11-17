@@ -110,6 +110,7 @@ fn bot_wake_list(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 const SCREENS: &[Screen] = &[
     Screen { slug: "bot-wake-row-waking", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "bot-wake-row-scheduled", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-badge-hover", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "bot-wake-row-none", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
     Screen { slug: "bot-wake-chip", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
     Screen { slug: "bot-wake-list-many", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
@@ -1651,6 +1652,16 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if screen.slug == "bot-wake-badge-hover" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                // Mira's avatar, the first bot in this fixture.
+                cx.update_window(any, |_, window, cx| mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gpui::point(px(83.), px(118.)), pressed_button: None, modifiers: Modifiers::default(),
+                })))?;
+                cx.run_until_parked();
+                cx.advance_clock(std::time::Duration::from_millis(550));
+                cx.run_until_parked();
+            }
             // A composer's menu opened with a press on its chip, through the window.
             if let Some(at) = match screen.slug {
                 "mode-menu" => Some(gpui::point(px(526.), px(767.))),

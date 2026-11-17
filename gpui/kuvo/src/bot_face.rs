@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui::{AnyElement, App, EntityId, Global, IntoElement, ParentElement, Pixels, Styled, Task, Window, canvas, div};
-use kuvo_box::areas::{BotNow, BotState, Look};
-use kuvo_ui::ActiveTheme;
+use gpui::{prelude::FluentBuilder as _, AnyElement, App, EntityId, Global, InteractiveElement, IntoElement, ParentElement, Pixels, Styled, Task, Window, canvas, div, px};
+use kuvo_box::areas::{Bot, BotNow, BotState, Look};
+use kuvo_ui::{ActiveTheme, Icon, IconName, IconSize, theme::{Colors, radius}};
 use kuvo_ui::bot::{Motion, Shape, State, paint_bot, seed_of};
 
 /// The shortest time between two frames a view asks for: 60 a second, with a little slack so a
@@ -43,6 +43,59 @@ pub fn state_of(now: &BotNow) -> State {
         BotState::Blocked => State::Blocked,
         BotState::Done => State::Done,
         BotState::Asleep => State::Asleep,
+    }
+}
+
+/// The status mark shared by the full Bots sidebar and its compact avatar strip.
+#[derive(Debug, PartialEq)]
+pub(crate) enum SidebarMark {
+    AtWork,
+    NeedsYou,
+    Wake(String),
+}
+
+impl SidebarMark {
+    pub(crate) fn of(bot: &Bot, reached: bool, now: f64) -> Option<Self> {
+        if !reached {
+            return None;
+        }
+        if bot.now.asking > 0 || bot.now.state == BotState::NeedsYou {
+            return Some(Self::NeedsYou);
+        }
+        if bot.now.working > 0 || matches!(bot.now.state, BotState::Working | BotState::Thinking) {
+            return Some(Self::AtWork);
+        }
+        if bot.now.waking || bot.paused {
+            return None;
+        }
+        let due = bot.wakes? * 1000.;
+        crate::time::next_wake(due, now).map(|when| Self::Wake(format!("Wakes {when}")))
+    }
+
+    pub(crate) fn tooltip(&self, name: &str) -> String {
+        let words = match self {
+            Self::AtWork => "At work",
+            Self::NeedsYou => "Needs you",
+            Self::Wake(words) => words,
+        };
+        format!("{name} · {words}")
+    }
+
+    /// Overlay at the corner of the avatar, relative to the face's own bounds.
+    pub(crate) fn badge(&self, colors: &Colors) -> AnyElement {
+        let (fill, selector) = match self {
+            Self::AtWork => (colors.success, "bot-avatar-at-work"),
+            Self::NeedsYou => (colors.accent, "bot-avatar-needs-you"),
+            Self::Wake(_) => (colors.surface, "bot-avatar-wake"),
+        };
+        div().debug_selector(move || selector.into())
+            .absolute().bottom(px(3.)).right(px(3.)).size(px(14.))
+            .flex().items_center().justify_center()
+            .rounded(radius::PILL).border_1().border_color(colors.sidebar).bg(fill)
+            .when(matches!(self, Self::Wake(_)), |badge| {
+                badge.child(Icon::new(IconName::Clock).size(IconSize::XSmall).color(colors.text_muted))
+            })
+            .into_any_element()
     }
 }
 
@@ -302,7 +355,7 @@ fn wake_at(view: EntityId, due: Instant, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::state_of;
+    use super::{Bot, SidebarMark, state_of};
     use kuvo_box::areas::BotNow;
     use kuvo_ui::bot::State;
 
@@ -315,5 +368,28 @@ mod tests {
         assert_eq!(state_of(&now(r#"{"working":0,"asking":0,"blocked":1,"blockedBy":"limit","state":"blocked","since":1}"#)), State::Blocked);
         assert_eq!(state_of(&now(r#"{"working":0,"asking":0,"state":"dreaming","since":1}"#)), State::Idle);
         assert_eq!(state_of(&now(r#"{"working":2,"asking":0}"#)), State::Idle, "no state said: idle");
+    }
+
+    #[test]
+    fn wake_badge_uses_next_time_only_when_the_bot_is_available() {
+        let mut bot: Bot = serde_json::from_value(serde_json::json!({
+            "id": "bot_mira", "session": "ses_mira", "name": "Mira",
+            "look": {"color":"sky","shape":"round","face":"calm"}, "wakes": 180,
+        })).unwrap();
+        let wake = SidebarMark::of(&bot, true, 0.).unwrap();
+        assert_eq!(wake.tooltip(&bot.name), "Mira · Wakes in 3 min");
+        assert_eq!(SidebarMark::of(&bot, false, 0.), None);
+        assert_eq!(SidebarMark::of(&bot, true, 180_000.), None);
+        bot.paused = true;
+        assert_eq!(SidebarMark::of(&bot, true, 0.), None);
+        bot.paused = false;
+        bot.now.waking = true;
+        bot.now.working = 1;
+        assert_eq!(SidebarMark::of(&bot, true, 0.), Some(SidebarMark::AtWork));
+        bot.now.asking = 1;
+        assert_eq!(SidebarMark::of(&bot, true, 0.), Some(SidebarMark::NeedsYou));
+        bot.now.working = 0;
+        bot.now.asking = 0;
+        assert_eq!(SidebarMark::of(&bot, true, 0.), None);
     }
 }
