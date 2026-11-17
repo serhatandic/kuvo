@@ -3978,6 +3978,11 @@ class EngineThread {
     });
     if (active?.data?.[id])
       await this.link.request("POST", `${path}/interrupt`).catch(() => {});
+    if (this.link.beforeTurn) {
+      await Promise.race([this.link.beforeTurn(), new Promise((resolve) => hooks.signal.aborted ? resolve() : hooks.signal.addEventListener("abort", () => resolve(), { once: true }))]);
+      if (hooks.signal.aborted)
+        return { outcome: "interrupted" };
+    }
     const inputID = newID("msg");
     const sentAt = Date.now();
     let step;
@@ -37875,4 +37880,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 8fc988175f2f4414291577d3ff97195ba4c7865f42b90f3e0d89ab9cfc646865
+// Built from Packages/Box/src/agents e8428ed70fe7151f138b6807339fb83dca756f3901fb64dc11075924ba5db9d8

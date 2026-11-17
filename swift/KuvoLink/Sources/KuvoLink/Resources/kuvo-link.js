@@ -10119,7 +10119,7 @@ function swapLine(swap) {
     return null;
   switch (swap.stage) {
     case "waiting":
-      return "An update to Kuvo’s engine is ready. It installs once nothing is running.";
+      return swap.blocked === "terminal" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: close the open terminals to let it." : swap.blocked === "ask" ? "An update to Kuvo’s engine is ready. It installs once nothing is running: answer what’s waiting on you to let it." : "An update to Kuvo’s engine is ready. It installs once nothing is running.";
     case "holding":
       return "Kuvo’s engine is updating once the running sessions finish. New messages wait and go right after.";
     case "swapping":
@@ -16357,6 +16357,21 @@ async function engineBusy(engine) {
     return true;
   }
 }
+async function waitsOnYou(engine) {
+  if (readAsks().length > 0)
+    return "ask";
+  try {
+    for (const folder of await openFolders(engine)) {
+      const [forms, permissions, terminals] = await Promise.all(["api/form", "api/permission/request", "api/pty"].map((route) => engineGet(engine, route, folder)));
+      const list = (answer) => answer && typeof answer === "object" && Array.isArray(answer.data) ? answer.data : Array.isArray(answer) ? answer : [];
+      if (list(terminals).some((each) => !each || typeof each !== "object" || each.status === "running"))
+        return "terminal";
+      if (list(forms).length || list(permissions).length)
+        return "ask";
+    }
+  } catch {}
+  return null;
+}
 function keeper(command) {
   return spawnSync4("sh", [path43.join(K, "bin", "kuvo-start"), command], { cwd: K, env: process.env, stdio: "ignore", timeout: 300000 }).status === 0;
 }
@@ -16370,19 +16385,19 @@ function downgradeSafe(to, from) {
 }
 async function swapEngine({ clock = Date.now, wait = sleep } = {}) {
   const stale = readSwap(RUN);
-  if (stale && !swapUnderWay(RUN)) {
-    fs41.rmSync(swapFile(RUN), { force: true });
-    const engine = runningEngine();
-    if (engine && stale.stage !== "waiting")
-      await releaseWaiting(engine).catch(() => 0);
-  }
+  if (stale && swapUnderWay(RUN))
+    return "none";
+  fs41.rmSync(swapFile(RUN), { force: true });
+  const engine = runningEngine();
+  if (engine)
+    await releaseWaiting(engine).catch(() => 0);
   const due = swapDue(clock());
   if (!due)
     return "none";
   const other = swapUnderWay(RUN);
   if (other && other.pid !== process.pid)
     return "none";
-  const state = { from: due.from, to: due.to, since: readSwap(RUN)?.to === due.to ? readSwap(RUN).since : clock(), stage: "waiting", pid: process.pid };
+  const state = { from: due.from, to: due.to, since: stale?.to === due.to ? stale.since : clock(), stage: "waiting", pid: process.pid };
   const say = (stage, change = {}) => {
     Object.assign(state, { stage }, change);
     if (stage === "waiting")
@@ -16410,7 +16425,10 @@ async function swapEngine({ clock = Date.now, wait = sleep } = {}) {
         const rested = state.letGo === undefined || now - state.letGo >= SWAP_TIMING.patience;
         const timeCame = state.letGo === undefined ? waited >= SWAP_TIMING.longest || waited >= SWAP_TIMING.patience && night : rested && night;
         const nowAsked = fs41.existsSync(SWAP_NOW);
-        if (quietSince !== null && now - quietSince >= SWAP_TIMING.quiet || rested && nowAsked || timeCame) {
+        const blocked = !busy || rested && nowAsked ? null : timeCame ? await waitsOnYou(engine) : state.blocked ?? null;
+        if (blocked !== (state.blocked ?? null))
+          say("waiting", blocked ? { blocked } : { blocked: undefined });
+        if (quietSince !== null && now - quietSince >= SWAP_TIMING.quiet || rested && nowAsked || timeCame && !blocked) {
           say("holding", { holding: now });
           continue;
         }
@@ -17028,6 +17046,9 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       }
       dataKept = keepData(`${new Date(clock()).toISOString().slice(0, 10)}-${previous?.version ?? "unknown"}-to-${manifest.engine}`);
     }
+    if (apart && running)
+      writePrivate(path44.join(RUN, "engine-ran"), `${running}
+`);
     swapped = true;
     const swappedAt = Date.now();
     swapping();
@@ -40262,7 +40283,7 @@ async function catchUpAutopilot(target, file = DECIDED_FILE, signal) {
   }
   return settled;
 }
-async function waitsOnYou(target, conversation, form, file = DECIDED_FILE, signal) {
+async function waitsOnYou2(target, conversation, form, file = DECIDED_FILE, signal) {
   const before = await asksIn(target, conversation.id, signal);
   const asked = before.questions.find((each) => each.id === form);
   if (!asked) {
@@ -44062,7 +44083,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "001de1e8f5cb";
+var BRIDGE_VERSION = "81cc3f392837";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -59745,7 +59766,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     yield { body: Buffer.from(JSON.stringify({ message: MOVING })) };
     return;
   }
-  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell)$/.exec(url.pathname);
+  const toEngine = method === "POST" && /^\/api\/session\/([^/]+)\/(prompt|command|shell|compact|summarize)$/.exec(url.pathname);
   if (toEngine && !toAgents && swapHoldsFor(target)) {
     let body = null;
     try {
@@ -64290,7 +64311,7 @@ async function* autopilotRoute(context) {
     carryWorkQueue(carried, id);
   }
   if (asked)
-    return yield* json(200, { waiting: await waitsOnYou(at.target, at.data, given.form, undefined, signal).catch(() => true) });
+    return yield* json(200, { waiting: await waitsOnYou2(at.target, at.data, given.form, undefined, signal).catch(() => true) });
   if (method === "PUT") {
     const on = given.autopilot;
     if (!await setAutopilot(at.target, at.data, on, signal))
