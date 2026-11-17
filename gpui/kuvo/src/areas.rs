@@ -92,13 +92,20 @@ pub enum Go {
     AddAt(Option<String>),
 }
 
+#[derive(PartialEq, Eq)]
+pub(crate) enum SidebarMode {
+    Full,
+    Avatars,
+    SessionAvatars(Option<String>),
+}
+
 /// One area's sidebar.
 pub struct AreaView {
     /// Computers' main view, in the Computers area.
     computers_page: Option<gpui::Entity<ComputersView>>,
     _computers_page: Vec<gpui::Subscription>,
     area: Area,
-    compact: bool,
+    sidebar_mode: SidebarMode,
     client: BoxClient,
     live: bool,
     bots: Reading<Bots>,
@@ -278,7 +285,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, compact: false, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, sidebar_mode: SidebarMode::Full, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -768,8 +775,9 @@ impl Render for AreaView {
         if self.client.gate().is_held() {
             return div().id("area-frame").debug_selector(|| "held-area-sidebar".into()).size_full();
         }
+        let compact = self.sidebar_mode != SidebarMode::Full;
         let rows = match self.area {
-            Area::Bots if self.compact => self.bot_avatars(cx),
+            Area::Bots if compact => self.bot_avatars(cx),
             Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
@@ -784,13 +792,13 @@ impl Render for AreaView {
             .size_full()
             .child(
                 div()
-                    .id(SharedString::from(if self.compact { "bot-avatars".into() } else { format!("area-{}", self.area.slug()) }))
+                    .id(SharedString::from(if compact { "bot-avatars".into() } else { format!("area-{}", self.area.slug()) }))
                     .size_full()
                     .overflow_y_scroll()
-                    .px(if self.compact { space::S1 } else { space::S2 })
+                    .px(if compact { space::S1 } else { space::S2 })
                     .pt(space::S2)
                     .pb(space::S4)
-                    .when(self.compact, |d| d.flex().flex_col().items_center().gap(space::S1))
+                    .when(compact, |d| d.flex().flex_col().items_center().gap(space::S1))
                     .children(rows),
             )
             .when(dimmed, |d| d.child(div().id("area-sidebar-dim").debug_selector(|| "area-sidebar-dim".into()).absolute().inset_0().bg(crate::bots::dim(cx)).occlude()))
@@ -798,9 +806,9 @@ impl Render for AreaView {
 }
 
 impl AreaView {
-    pub(crate) fn set_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
-        if self.compact != compact {
-            self.compact = compact;
+    pub(crate) fn set_sidebar_mode(&mut self, mode: SidebarMode, cx: &mut Context<Self>) {
+        if self.sidebar_mode != mode {
+            self.sidebar_mode = mode;
             cx.notify();
         }
     }
@@ -825,18 +833,14 @@ impl AreaView {
             let status = if state == State::Offline {
                 None
             } else if bot.now.asking > 0 || state == State::NeedsYou {
-                Some(("Needs you", c.accent, "bot-avatar-needs-you"))
+                Some(("Needs you".into(), c.accent, "bot-avatar-needs-you"))
             } else if bot.now.working > 0 || matches!(state, State::Working | State::Thinking) {
-                Some(("At work", c.success, "bot-avatar-at-work"))
+                Some(("At work".into(), c.success, "bot-avatar-at-work"))
             } else {
                 None
             };
             let face = crate::bot_face::still_avatar(&bot.id, &bot.look, state, COMPACT_FACE);
-            let name = status.map_or_else(|| bot.name.clone(), |(words, _, _)| format!("{} · {words}", bot.name));
-            let mark = status.map(|(_, color, selector)| {
-                div().debug_selector(move || selector.into()).absolute().bottom(px(3.)).right(px(3.)).size(px(8.)).rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
-            });
-            rows.push(self.avatar_row(format!("bot:{}", bot.id), name, face, mark, cx));
+            rows.push(self.avatar_row(format!("bot:{}", bot.id), &bot.id, bot.name.clone(), face, status, cx));
         }
         for there in bots.there() {
             let state = self.elsewhere_state(&there.computer);
@@ -844,17 +848,45 @@ impl AreaView {
                 || crate::bot_face::still_avatar(&there.id, &unknown_bot_look(), state, COMPACT_FACE),
                 |look| crate::bot_face::still_avatar(&there.id, look, state, COMPACT_FACE),
             );
-            rows.push(self.avatar_row(format!("elsewhere:{}", there.id), there.name, face, None, cx));
+            let status = if there.waiting {
+                Some((format!("Waiting for {}", there.computer), c.accent, "bot-avatar-change-waiting"))
+            } else if there.refused {
+                Some((format!("Change declined on {}", there.computer), c.warning, "bot-avatar-change-refused"))
+            } else {
+                None
+            };
+            rows.push(self.avatar_row(format!("elsewhere:{}", there.id), &there.id, there.name, face, status, cx));
         }
         rows
     }
 
-    fn avatar_row(&self, key: String, name: String, face: AnyElement, mark: Option<gpui::Div>, cx: &mut Context<Self>) -> AnyElement {
+    fn avatar_row(
+        &self,
+        key: String,
+        bot: &str,
+        name: String,
+        face: AnyElement,
+        status: Option<(String, Hsla, &'static str)>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let c = &cx.theme().colors;
-        let selected = self.is_selected(&key);
+        let selected = match &self.sidebar_mode {
+            SidebarMode::SessionAvatars(owner) => owner.as_deref() == Some(bot),
+            _ => self.is_selected(&key),
+        };
+        let (name, mark) = match status {
+            Some((words, color, selector)) => (
+                format!("{name} · {words}"),
+                Some(div().debug_selector(move || selector.into())
+                    .absolute().bottom(px(3.)).right(px(3.)).size(px(8.))
+                    .rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)),
+            ),
+            None => (name, None),
+        };
         let fill = if selected { c.selected } else { c.hover };
         let ring = c.focus_ring;
         let selector = format!("bot-avatar-{key}");
+        let selected_selector = format!("{selector}-selected");
         div()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector)
@@ -871,7 +903,7 @@ impl AreaView {
             .tab_index(0)
             .tooltip(move |_, cx| Tooltip::new(name.clone()).build(cx))
             .on_click(self.row_click(key, cx))
-            .child(div().relative().child(face).children(mark))
+            .child(div().relative().when(selected, |d| d.debug_selector(move || selected_selector)).child(face).children(mark))
             .into_any_element()
     }
 

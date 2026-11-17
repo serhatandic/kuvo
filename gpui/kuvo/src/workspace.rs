@@ -318,6 +318,7 @@ pub struct Workspace {
     /// Now, as the sidebar's times count from it (fixed for shots).
     now: Option<f64>,
     focus: FocusHandle,
+    sidebar_toggle_focus: FocusHandle,
     /// The sidebar's search, and what the box found in conversations for it (`finds_for`).
     search: Entity<TextField>,
     archived_filter: bool,
@@ -505,6 +506,7 @@ impl Workspace {
             showing_all: HashSet::new(),
             now: None,
             focus: cx.focus_handle(),
+            sidebar_toggle_focus: cx.focus_handle(),
             search,
             archived_filter: false,
             finds: Vec::new(),
@@ -1859,7 +1861,10 @@ impl Workspace {
     /// bounds, never leaving the conversation narrower than its narrowest.
     pub fn resize_to(&mut self, x: Pixels, wide: Pixels, cx: &mut Context<Self>) {
         let Some((from, width)) = self.resizing else { return };
-        self.panel_width = (width + (from - x)).clamp(panel::NARROWEST, self.widest_panel(wide, cx));
+        let widest = self.widest_panel(wide, cx);
+        if widest >= panel::NARROWEST {
+            self.panel_width = (width + (from - x)).clamp(panel::NARROWEST, widest);
+        }
         cx.notify();
     }
 
@@ -2024,14 +2029,17 @@ impl Workspace {
 
     /// Puts the keyboard in the sidebar's search.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sidebar_shown() && sidebar::compact_bots(self.sidebar_width(window.viewport_size().width, cx)) {
-            self.open_quick_search(window, cx);
+        if !self.sidebar_available() {
+            return;
+        }
+        self.bring_out_sidebar(window);
+        if self.open_quick_search(window, cx).is_some() {
+            self.keep_place(cx);
             return;
         }
         if self.area != Area::Sessions {
             self.show_area(Area::Sessions, window, cx);
         }
-        self.bring_out_sidebar(window);
         self.keep_place(cx);
         self.walked = None;
         window.focus(&self.search.focus_handle(cx), cx);
@@ -2166,6 +2174,10 @@ impl Workspace {
     /// narrow one only once brought out.
     pub fn sidebar_shown(&self) -> bool {
         if self.narrow { self.shown_narrow } else { !self.folded }
+    }
+
+    pub(crate) fn sidebar_toggle_focus(&self) -> &FocusHandle {
+        &self.sidebar_toggle_focus
     }
 
     pub fn is_narrow(&self) -> bool {
@@ -3339,7 +3351,33 @@ impl Workspace {
             || sidebar::preferred_width(crate::yours::sidebar_width(cx)),
             |drag| drag.width,
         );
-        sidebar::visible_width(sidebar::fit_width(preferred, viewport, self.can_show_bot_strip()))
+        sidebar::visible_width(sidebar::fit_width(preferred, self.sidebar_viewport(viewport), self.can_show_bot_strip()))
+    }
+
+    fn sidebar_available(&self) -> bool {
+        self.first_run().is_none() && !self.awaits_box()
+            && (self.area == Area::Settings || self.blocked().is_none())
+    }
+
+    fn visible_sidebar_width(&self, viewport: Pixels, cx: &App) -> Option<Pixels> {
+        (self.sidebar_shown() && self.sidebar_available()).then(|| self.sidebar_width(viewport, cx))
+    }
+
+    fn compact_sidebar_visible(&self, viewport: Pixels, cx: &App) -> bool {
+        self.visible_sidebar_width(viewport, cx).is_some_and(sidebar::compact_bots)
+    }
+
+    fn panel_shown(&self) -> bool {
+        self.area == Area::Sessions && self.panel_open && !self.client.gate().is_held()
+            && self.sidebar_available()
+    }
+
+    fn sidebar_viewport(&self, viewport: Pixels) -> Pixels {
+        if self.panel_shown() {
+            viewport - panel::NARROWEST - CARD_EDGE
+        } else {
+            viewport
+        }
     }
 
     fn can_show_bot_strip(&self) -> bool {
@@ -3388,9 +3426,11 @@ impl Workspace {
     /// The widest the side panel goes in a window `wide`: never leaving the conversation narrower
     /// than its narrowest (the rail, the area's sidebar and the panel's edge apart).
     fn widest_panel(&self, wide: Pixels, cx: &App) -> Pixels {
-        let sidebar = if self.sidebar_shown() { self.sidebar_width(wide, cx) } else { px(0.) };
-        let room = wide - rail::WIDTH - CARD_EDGE - sidebar - panel::CONVERSATION_NARROWEST - px(8.);
-        panel::WIDEST.min(room).max(panel::NARROWEST)
+        let sidebar = self.visible_sidebar_width(wide, cx).unwrap_or(px(0.));
+        let room = wide - rail::WIDTH - CARD_EDGE - sidebar - panel::CONVERSATION_NARROWEST - CARD_EDGE;
+        // Keep the conversation and left sidebar at their minimums. At the smallest
+        // window sizes the right panel can render below its usual minimum.
+        room.clamp(px(0.), panel::WIDEST)
     }
 }
 
@@ -3404,6 +3444,17 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let c = &theme.colors;
+        let viewport = window.viewport_size().width;
+        // A narrow window folds its sidebar away until it is brought out again.
+        let narrow = viewport < NARROW;
+        if self.narrow != narrow {
+            self.shown_narrow = false;
+        }
+        self.narrow = narrow;
+        let compact = self.compact_sidebar_visible(viewport, cx);
+        if !compact {
+            self.dismiss_hidden_quick_search(window, cx);
+        }
         // The first run takes the whole window until it's done; while the box is first being
         // asked whether it's been had, the window waits, empty, rather than show the app and
         // take it away again.
@@ -3425,6 +3476,7 @@ impl Render for Workspace {
             };
             return div()
                 .debug_selector(|| "window-waiting".into())
+                .track_focus(&self.focus)
                 .size_full()
                 .flex()
                 .flex_col()
@@ -3442,13 +3494,6 @@ impl Render for Workspace {
         if std::mem::take(&mut self.focus_landing) {
             window.focus(&self.landing.focus_handle(cx), cx);
         }
-        // A narrow window folds the area's sidebar away; brought out there, it folds again once
-        // the window has been wide and narrows again.
-        let narrow = window.viewport_size().width < NARROW;
-        if self.narrow != narrow {
-            self.shown_narrow = false;
-        }
-        self.narrow = narrow;
 
         // Bots' main view on screen or not, whichever way the window got there.
         let groups_on_screen = self.area == Area::Bots && self.bot_chat().is_none() && !self.client.gate().is_held();
@@ -3485,12 +3530,18 @@ impl Render for Workspace {
             _ if self.restoring.session.is_some() => div().debug_selector(|| "restoring".into()).size_full().into_any_element(),
             _ => landing::render(self, window, cx),
         } };
-        let width = (self.sidebar_shown() && blocked.is_none()).then(|| self.sidebar_width(window.viewport_size().width, cx));
-        let compact = self.can_show_bot_strip() && width.is_some_and(sidebar::compact_bots);
+        let width = self.visible_sidebar_width(viewport, cx);
         let sidebar_area = if compact { Area::Bots } else { self.area };
         let area_view = self.area_view(sidebar_area).cloned();
         if let Some(view) = &area_view {
-            view.update(cx, |view, cx| view.set_compact(compact, cx));
+            let mode = match (compact, sessions) {
+                (false, _) => areas::SidebarMode::Full,
+                (true, false) => areas::SidebarMode::Avatars,
+                (true, true) => areas::SidebarMode::SessionAvatars(
+                    self.opened().and_then(|id| self.listing.facts(id)).and_then(|facts| facts.bot.clone()),
+                ),
+            };
+            view.update(cx, |view, cx| view.set_sidebar_mode(mode, cx));
         }
         let sidebar = width.map(|width| {
             let content = match area_view {
@@ -3510,7 +3561,7 @@ impl Render for Workspace {
                 .child(content)
                 .child(self.sidebar_handle(width, cx))
         });
-        let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
+        let panel = self.panel_shown().then(|| self.panel_card(window, cx));
         div()
             .key_context("Workspace")
             .track_focus(&self.focus)
@@ -3568,9 +3619,10 @@ impl Render for Workspace {
                             this.end_sidebar_resize(cx);
                         } else {
                             let bots = this.can_show_bot_strip();
+                            let viewport = this.sidebar_viewport(window.viewport_size().width);
                             let Some(drag) = &mut this.sidebar_drag else { return };
                             let width = drag.initial + event.position.x - drag.from;
-                            drag.width = sidebar::fit_width(width, window.viewport_size().width, bots);
+                            drag.width = sidebar::fit_width(width, viewport, bots);
                             cx.notify();
                         }
                     }))
@@ -3608,7 +3660,7 @@ impl Render for Workspace {
                         .border_color(c.border)
                         .overflow_hidden()
                         .children(sidebar)
-                        .child(div().relative().flex_1().min_w_0().h_full().child(content))
+                        .child(div().debug_selector(|| "workspace-content".into()).relative().flex_1().min_w_0().h_full().child(content))
                         .children(panel),
                 ),
             )

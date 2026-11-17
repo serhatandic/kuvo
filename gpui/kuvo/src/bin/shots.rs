@@ -421,12 +421,12 @@ fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
 
 fn sidebar_search_results(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
-    workspace.open_quick_search(window, cx).update(cx, |field, cx| field.set_text("in", cx));
+    workspace.open_quick_search(window, cx).expect("compact search").update(cx, |field, cx| field.set_text("in", cx));
 }
 
 fn sidebar_search_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
-    workspace.open_quick_search(window, cx).update(cx, |field, cx| field.set_text("zzzz", cx));
+    workspace.open_quick_search(window, cx).expect("compact search").update(cx, |field, cx| field.set_text("zzzz", cx));
 }
 
 /// Bots' page view.

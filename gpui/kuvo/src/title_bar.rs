@@ -43,6 +43,7 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
             .ghost()
             .size(button_size)
             .icon_size(icon_size)
+            .track_focus(workspace.sidebar_toggle_focus().clone())
             .tooltip_keys("⌘B")
             .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
     );

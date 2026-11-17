@@ -63,9 +63,13 @@ impl Workspace {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<TextField> {
+    ) -> Option<Entity<TextField>> {
+        if !self.compact_sidebar_visible(window.viewport_size().width, cx) {
+            return None;
+        }
         if let Some(search) = &self.quick_search {
-            return search.field.clone();
+            window.focus(&search.field.focus_handle(cx), cx);
+            return Some(search.field.clone());
         }
         let field = cx.new(|cx| TextField::new(cx).bare().placeholder(PROMPT));
         let before = window.focused(cx);
@@ -88,7 +92,27 @@ impl Workspace {
             _input: input,
         });
         cx.notify();
-        field
+        Some(field)
+    }
+
+    pub(super) fn dismiss_hidden_quick_search(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Dropping the popup also cancels its outstanding search and subscription.
+        if self.quick_search.take().is_none() {
+            return;
+        }
+        let focus = if let Some(run) = self.first_run() {
+            run.focus_handle(cx)
+        } else if self.awaits_box() {
+            self.focus.clone()
+        } else {
+            self.sidebar_toggle_focus().clone()
+        };
+        window.focus(&focus, cx);
+        cx.notify();
     }
 
     fn close_quick_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -218,6 +242,10 @@ impl Workspace {
     }
 
     fn open_quick_target(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.compact_sidebar_visible(window.viewport_size().width, cx) {
+            self.dismiss_hidden_quick_search(window, cx);
+            return;
+        }
         self.close_quick_search(window, cx);
         match target {
             Target::Bot(key) => {

@@ -7,7 +7,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement,
+    App, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement,
     Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -100,6 +100,7 @@ pub struct Button {
     selected: bool,
     full_width: bool,
     truncate_at: Option<Pixels>,
+    focus: Option<FocusHandle>,
     /// Its words in the second level and regular weight (a ghost button that says where you are,
     /// like the title bar's computer, rather than what to do).
     quiet: bool,
@@ -128,6 +129,7 @@ impl Button {
             selected: false,
             full_width: false,
             truncate_at: None,
+            focus: None,
             quiet: false,
             shown: None,
             tooltip: None,
@@ -236,6 +238,11 @@ impl Button {
         self
     }
 
+    pub fn track_focus(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
     pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
         self.tooltip = Some(text.into());
         self
@@ -334,6 +341,7 @@ impl RenderOnce for Button {
         let mut button = div()
             .id(self.id)
             .debug_selector(move || selector)
+            .when_some(self.focus.as_ref(), |button, focus| button.track_focus(focus))
             .flex()
             .flex_none()
             .items_center()
