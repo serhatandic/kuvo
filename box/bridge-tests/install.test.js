@@ -582,7 +582,7 @@ test("on Linux nothing is made or set aside under something that still runs in t
     const refused = install(where, "new");
     assert.equal(refused.status, 1);
     assert.equal(refused.said.result, "refused");
-    assert.equal(refused.said.message, "Something is running in this computer's ~/.kuvo-code: Kuvo Code is installed there once that's stopped.");
+    assert.equal(refused.said.message, "Something is running in this computer's ~/.kuvo-code: Kuvo is installed there once that's stopped.");
     assert.equal(read(path.join(where.K, "chats", "c1", "notes.md")), "kept");
     assert.equal(exists(path.join(where.K, "trash")), false);
     assert.equal(exists(path.join(where.K, "bin")), false);

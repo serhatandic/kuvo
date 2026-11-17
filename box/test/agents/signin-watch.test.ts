@@ -20,15 +20,21 @@ test("the bridge follows OAuth completion without polling and key sign-in surviv
   const { handler } = await import("../../src/agents/server")
   let state: any = "pending", reads = 0
   const attempt = { url: "https://example.test", instructions: "", mode: "auto" as const, status: () => ({ status: state }), cancel() { state = "failed" } }
-  const agent = { providerID: "codex-cli", signIn: async () => attempt, signInWithKey: async () => {} }
-  const answer = handler({ password: "pw", roster: { find: () => agent }, limits: { readAgain: async () => { reads++; throw Error("maker unavailable") } } } as any)
+  // (Signing in asks the agent how its account stands before reading its limits: sign-ins.ts.)
+  const agent = { providerID: "codex-cli", account: async () => ({ installed: true, signedIn: true }), signIn: async () => attempt, signInWithKey: async () => {} }
+  // (Each read is waited for as it happens: the agent is asked first, so it's a few turns on.)
+  let readNow = () => {}
+  const read = () => new Promise<void>((resolve) => (readNow = resolve))
+  const answer = handler({ password: "pw", roster: { find: () => agent }, limits: { readAgain: async () => { reads++; readNow(); throw Error("maker unavailable") } } } as any)
   const request = (path: string) => answer(new Request("http://agent/api/integration/codex-cli/connect/" + path, { method: "POST", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" }, body: "{}" }))
   expect((await request("oauth")).status).toBe(200)
+  const oauthRead = read()
   state = "complete"
-  await new Promise(resolve => setTimeout(resolve, 300))
+  await oauthRead
   expect(reads).toBe(1)
+  const keyRead = read()
   expect((await request("key")).status).toBe(200)
-  await Promise.resolve()
+  await keyRead
   expect(reads).toBe(2)
 })
 

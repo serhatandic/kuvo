@@ -98,5 +98,7 @@ fn where_kuvo_isnt_in_the_menu_bar_quit_quits(cx: &mut TestAppContext) {
     let (_, cx) = open(cx, stand_in, folder.path());
     cx.simulate_keystrokes("cmd-q");
     assert!(!shown(cx, "quit-note"));
-    assert!(!folder.path().join("settings.json").exists(), "nothing noted");
+    // (The file may hold where you left off, #777: the note is what isn't in it.)
+    let kept = std::fs::read_to_string(folder.path().join("settings.json")).unwrap_or_default();
+    assert!(!kept.contains("quitNoteSeen"), "nothing noted: {kept}");
 }

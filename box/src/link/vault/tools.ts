@@ -200,7 +200,8 @@ async function runWith(caller: Caller, args: Record<string, unknown>, signal?: A
     allowed.set(item.id, may.how);
   }
   const scratch = path.join(RUN_FOLDER, crypto.randomBytes(8).toString("hex"));
-  // (With your login shell's environment on a Mac, as the engine's commands have it: `askedEnv`.)
+  // (With your login shell's environment on a Mac, as the engine's commands have it: `askedEnv`.
+  // On every system the command itself runs in your login shell, `-lc`, which reads your startup files.)
   const env = await askedEnv();
   const hidden: Hidden[] = [];
   try {
