@@ -7535,7 +7535,7 @@ function said5({ S, prefs, dropped }) {
   if (drafts)
     dropped.push(`${drafts === 1 ? "A message" : `${drafts} messages`} you'd typed but not sent ${drafts === 1 ? "wasn't" : "weren't"} brought along.`);
   if (exists4(path148.join(S, "Browser", "history.json")))
-    dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.");
+    dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history comes along.");
   const edits = new Set([...Object.keys(isObject(prefs.botEditsWaiting) ? prefs.botEditsWaiting : {}), ...Object.keys(isObject(prefs.botEditOutbox) ? prefs.botEditOutbox : {})]).size;
   if (edits)
     dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
@@ -44123,7 +44123,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "14168e1bf95a";
+var BRIDGE_VERSION = "e2714bc07817";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -45375,11 +45375,12 @@ function askRehome(home, ask) {
   return null;
 }
 function settled2(home, what) {
-  const record = readRecord(home);
-  if (!record.owed?.includes(what))
-    return false;
-  noteRecord(home, { owed: record.owed.filter((each) => each !== what) });
-  return true;
+  let was = false;
+  noteRecord(home, (now) => {
+    was = now.owed?.includes(what) === true;
+    return was ? { owed: (now.owed ?? []).filter((each) => each !== what) } : {};
+  });
+  return was;
 }
 function homeOfRoot(root, home = homeFolder()) {
   if (!root || root.includes("/") || root === "." || root === "..")
@@ -56609,9 +56610,12 @@ async function settleOwed(home, options) {
         message ??= "Kuvo is moved and working. It couldn't finish with your Keychain yet, and tries again by itself.";
     }
   }
-  if (unlocked && owes("passwords") && !owes("keychain")) {
-    const prefs = typeof record.from === "string" ? (await Promise.resolve().then(() => (init_upgrades(), exports_upgrades))).appPreferences(record.from) : {};
-    if (prefs["passwords.movedToVault"] === true || savedSignInsListed() === false)
+  if (owes("passwords")) {
+    let prefs = {};
+    try {
+      prefs = typeof record.from === "string" ? (await Promise.resolve().then(() => (init_upgrades(), exports_upgrades))).appPreferences(record.from) : {};
+    } catch {}
+    if (prefs["passwords.movedToVault"] === true || unlocked && !owes("keychain") && savedSignInsListed() === false)
       settled2(home, "passwords");
   }
   if (owes("agent")) {
@@ -56624,9 +56628,10 @@ async function settleOwed(home, options) {
 }
 function savedSignInsListed() {
   const tools = launchTools();
-  if (!tools)
+  const login = path185.join(homeFolder(), "Library", "Keychains", "login.keychain-db");
+  if (!tools || !exists9(login))
     return null;
-  const found = spawnSync18(tools.security, ["find-internet-password", "-c", "KUVO"], { stdio: "ignore", timeout: 30000 });
+  const found = spawnSync18(tools.security, ["find-internet-password", "-c", "KUVO", login], { stdio: "ignore", timeout: 30000 });
   return found.status === 0 ? true : found.status === 44 ? false : null;
 }
 function keysOf2(home, given) {
@@ -56642,6 +56647,10 @@ function keysOf2(home, given) {
 async function settle5(home, options) {
   notePhase(home, "settle");
   const { started, message } = await settleOwed(home, { ...options, start: true });
+  if (readRecord(home).owed?.includes("passwords")) {
+    const line = "Passwords the earlier Kuvo Code saved for websites stay in your Keychain for now: they aren't in Kuvo's vault yet.";
+    noteRecord(home, (now) => (now.dropped ?? []).includes(line) ? {} : { dropped: [...now.dropped ?? [], line] });
+  }
   if (!readRecord(home).owed?.includes("start"))
     fs175.rmSync(path185.join(home, "updates", "install"), { recursive: true, force: true });
   notePhase(home, null);
@@ -56652,16 +56661,15 @@ var movedHere = (home) => {
   return record.state === "done" && record.way === "move" && record.app !== undefined && !moveUnderWay(home);
 };
 async function rehomeSettle(home) {
-  const owesAny = () => (readRecord(home).owed ?? []).some((what) => what !== "passwords");
+  const owesAny = () => (readRecord(home).owed ?? []).length > 0;
   if (process.platform !== "darwin" || !movedHere(home) || !owesAny())
     return { result: "nothing", status: rehomeStatus(home) };
   return locked2(home, () => {}, async () => {
     if (!movedHere(home) || !owesAny())
       return { result: "nothing", status: rehomeStatus(home) };
-    if (!launchTools() || helperRuns())
-      settled2(home, "start");
+    const started = (!launchTools() || helperRuns()) && settled2(home, "start");
     await settleOwed(home, { start: false });
-    if (!readRecord(home).owed?.includes("start"))
+    if (started)
       fs175.rmSync(path185.join(home, "updates", "install"), { recursive: true, force: true });
     return { result: "done", status: rehomeStatus(home) };
   });
@@ -56900,24 +56908,32 @@ async function rehomeSignIns(home) {
   try {
     if (!owed())
       return { result: "nothing", status: rehomeStatus(home) };
-    const outcome = await locked2(home, () => console.error("Another move is under way: this one waits for it."), async () => {
-      if (!owed())
-        return { result: "nothing", status: rehomeStatus(home) };
-      const keys = keysOf2(home);
-      if (!keys) {
-        reason = "no-app";
-        handed = { done: false, why: "kuvo-keys isn't in the app on this Mac", added: 0, short: 0, kept: 0 };
-        return { result: "failed", status: rehomeStatus(home) };
-      }
-      const record = readRecord(home);
-      const prefs = typeof record.from === "string" ? (await Promise.resolve().then(() => (init_upgrades(), exports_upgrades))).appPreferences(record.from) : {};
-      const sites = Array.isArray(prefs["passwords.agentSignIn"]) ? prefs["passwords.agentSignIn"].filter((each) => typeof each === "string") : [];
-      const accounts = isObject(prefs["passwords.agentSignInAccounts"]) ? Object.fromEntries(Object.entries(prefs["passwords.agentSignInAccounts"]).filter((each) => typeof each[1] === "string")) : {};
-      handed = await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...launchTools() ? {} : { wait: 0 } });
-      if (!handed.done)
-        reason = handed.reason ?? "failed";
-      return { result: handed.done ? "done" : "failed", status: rehomeStatus(home) };
-    });
+    let outcome;
+    try {
+      outcome = await locked2(home, () => console.error("Another move is under way: this one waits for it."), async () => {
+        if (!owed())
+          return { result: "nothing", status: rehomeStatus(home) };
+        const keys = keysOf2(home);
+        if (!keys) {
+          reason = "no-app";
+          handed = { done: false, why: "kuvo-keys isn't in the app on this Mac", added: 0, short: 0, kept: 0 };
+          return { result: "failed", status: rehomeStatus(home) };
+        }
+        const record = readRecord(home);
+        const prefs = typeof record.from === "string" ? (await Promise.resolve().then(() => (init_upgrades(), exports_upgrades))).appPreferences(record.from) : {};
+        const sites = Array.isArray(prefs["passwords.agentSignIn"]) ? prefs["passwords.agentSignIn"].filter((each) => typeof each === "string") : [];
+        const accounts = isObject(prefs["passwords.agentSignInAccounts"]) ? Object.fromEntries(Object.entries(prefs["passwords.agentSignInAccounts"]).filter((each) => typeof each[1] === "string")) : {};
+        handed = await handOverPasswords({ home, keys, agentSites: sites, agentAccounts: accounts, ...launchTools() ? {} : { wait: 0 } });
+        if (!handed.done)
+          reason = handed.reason ?? "failed";
+        return { result: handed.done ? "done" : "failed", status: rehomeStatus(home) };
+      });
+    } catch (error) {
+      outcome = { result: "failed", status: rehomeStatus(home) };
+      handed = { done: false, why: error.message, added: 0, short: 0, kept: 0 };
+    }
+    if (!handed && outcome.result === "waits")
+      handed = { done: false, why: "another move held the lock", added: 0, short: 0, kept: 0 };
     if (!handed)
       return outcome;
   } finally {
@@ -57092,7 +57108,7 @@ async function* rehomeRoute({ request, json }) {
     return yield* json(405, {});
   const given = parsed(request.body);
   if (isObject(given) && given.signIns === true)
-    return yield* signIns(fromLocalApp(request), home, json);
+    return yield* signIns(request.served === true && request.fromApp === true, home, json);
   if (!request.fromApp && !request.fromMac)
     return yield* json(403, { message: "Only Kuvo Code on this Mac moves its data." });
   const ask = isObject(given) ? given.now === true ? "now" : given.back === true ? "back" : null : null;
@@ -57128,7 +57144,7 @@ async function* signIns(local, home, json) {
   if (!local)
     return yield* json(403, { message: "Your saved sign-ins come over from Kuvo on the Mac they were saved on." });
   if (!OWN_HOME_MAC || !home || !ownHome(home))
-    return yield* json(409, { message: "There are no saved sign-ins to bring over on this Mac." });
+    return yield* json(409, { message: "There are no saved sign-ins to bring over on this computer." });
   if (signInsRunning(home))
     return yield* json(200, rehomeStatus(home));
   if (!movedHere(home) || !rehomeStatus(home).owed.includes("passwords"))
@@ -72019,7 +72035,11 @@ async function serve() {
   if (KEYS_ON_HOST)
     keepBotsOwnKeysGone(runningEngine2);
   keepKeyFiles();
-  settleOwedAtStart();
+  try {
+    settleOwedAtStart();
+  } catch (error) {
+    console.error(`What the move still owes couldn't be settled now: ${error.message}`);
+  }
   keepAwakeWhileWorking(() => agentsWorking());
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});
   keepBridgeAnswering();
