@@ -28,6 +28,7 @@ import type { MadeBot } from "../../shared/routes/bots";
 import type { JSONAnswer, OtherStatus } from "../server/context";
 import type { BotDescription } from "./here";
 import type { BotLooks, BotTemplate } from "./kit";
+import { agentsLine, bridgeBack } from "../areas/agents-down";
 
 /** A bot to make, as New Bot sends it (`POST kuvo/bots`): its name, and the template, job,
  * personality, project, look and model it's made with, each whatever the client sent until it's
@@ -152,9 +153,9 @@ async function makeOnce(given: GivenBot | null | undefined, readEngine: () => Ta
   const agents = runsWithAgents(model);
   let target: Target | null | undefined;
   try {
-    target = agents ? readBridge() : readEngine();
+    target = agents ? await bridgeBack(readBridge) : readEngine();
   } catch {}
-  if (!target) return no(503, agents ? `The coding agents aren’t running on ${HERE}.` : "The engine isn’t running.");
+  if (!target) return no(503, agents ? agentsLine() : "The engine isn’t running.");
   if (!agents) {
     const refused = await signInRefusal(model, target, AbortSignal.timeout(BOT_STEP));
     if (refused) return no(422, refused);

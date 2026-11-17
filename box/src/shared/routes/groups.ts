@@ -105,7 +105,7 @@ export const CHAT = object({
  * other computers that take a chat's turns. */
 export const JOINABLE = object({ bots: list(MEMBER) });
 /** What a chat's box refused, in its words. */
-const REFUSED = object({ message: string });
+const REFUSED = object({ message: string, "reason?": string, "action?": object({ label: string, route: string }) });
 /** A message of yours taken back: what it said. */
 export const UNDONE = object({ text: string });
 

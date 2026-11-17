@@ -9,7 +9,7 @@ import { ownsSettings, readSettings } from "../areas/config";
 import { call } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
 import { listOf, textOf } from "../files";
-import { BOTS, HERE, IS_MAC, WAKE_COMMAND } from "../home";
+import { BOTS, IS_MAC, WAKE_COMMAND } from "../home";
 import { botPersonalities } from "../personalities/library";
 import { withoutFormerAsks } from "../work/former-asks";
 import { approvalOf, approvalRules } from "../work/approval";
@@ -24,6 +24,7 @@ import type { ChangedBot } from "../../shared/routes/bots";
 import type { JSONAnswer, OtherStatus } from "../server/context";
 import type { BotDescription, BotHere } from "./here";
 import type { BotKit, KitRule } from "./kit";
+import { agentsLine, bridgeBack } from "../areas/agents-down";
 
 /** What a bot's conversation was last told (`told.json`): its conversation, a digest of what it was
  * told, and the folder its own rules were last put right for. */
@@ -144,8 +145,8 @@ export async function settleBot(id: string, readEngine: () => Target, readBridge
     noteBotsChanged();
     if (!kit) return no(409, NO_KIT);
     let target: Target | null | undefined;
-    try { target = here.agents ? readBridge() : readEngine(); } catch {}
-    if (!target) return no(503, here.agents ? `The coding agents aren’t running on ${HERE}.` : "The engine isn’t running.");
+    try { target = here.agents ? await bridgeBack(readBridge) : readEngine(); } catch {}
+    if (!target) return no(503, here.agents ? agentsLine() : "The engine isn’t running.");
     const text = toldNow(kit, here);
     const there = await toldThere(target, here.session);
     // Told already (by its box before, or here): noted as told here, so what was noted where it came

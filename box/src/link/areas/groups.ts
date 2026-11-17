@@ -1,7 +1,7 @@
 // Group chats that live here
 
 import { IS_MAC } from "../home";
-import { agentsDown } from "./agents-down";
+import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { listedAgents, nameMissing, refreshOwnShared } from "../server/naming";
 import type { Target } from "../../shared/records";
 import type { Groups, ListedGroup } from "../../shared/routes/groups";
@@ -70,11 +70,11 @@ export async function* forwardGroups(target: Target, route: string, request: Lin
   } catch {}
 }
 
-/** Why there are no group chats to ask now: the bridge that runs them isn't running. */
-export const groupsAbsent = () => agentsDown() ?? (IS_MAC ? "Group chats on this Mac are starting. Try again in a moment." : "Group chats run with the coding agents' bridge, which isn't running on this machine.");
+/** Why there are no group chats to ask now: the bridge that runs them isn't running (its state). */
+export const groupsAbsent = (): AgentsAway => agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" };
 export const groupsNotAnswering = () => (IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.");
 
-export function* groupJSON(status: number, value: { message: string }): Generator<AnswerPiece> {
+export function* groupJSON(status: number, value: { message: string } | AgentsAway): Generator<AnswerPiece> {
   yield { head: { status, headers: { "content-type": "application/json" } } };
   yield { body: Buffer.from(JSON.stringify(value)) };
 }
@@ -83,8 +83,8 @@ export function* groupJSON(status: number, value: { message: string }): Generato
 // What it answers is the bridge's, passed on as it comes, in the shapes of shared/routes/groups.ts.
 export async function* groupsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, route, readEngine, bridge } = context;
-  const target = bridge();
-  if (!target) return yield* groupJSON(503, { message: groupsAbsent() });
+  const target = await bridgeBack(bridge, signal);
+  if (!target) return yield* groupJSON(503, groupsAbsent());
   // Who a message names with "&" is worked out there, from the list as it is now: worked out
   // again meanwhile, and waited for (two seconds at most) only when a name after "&" isn't
   // there yet, as a message from a phone (`namingHere`).

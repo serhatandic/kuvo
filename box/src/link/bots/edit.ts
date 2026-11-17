@@ -29,6 +29,7 @@ import type { BotDescription } from "./here";
 import type { JSONAnswer, OtherStatus } from "../server/context";
 import type { Job } from "./jobs";
 import type { GivenBot } from "./make";
+import { agentsLine, bridgeBack } from "../areas/agents-down";
 
 // The bot as `changed` has it, with what it may do without asking as it's kept now, unless the
 // change names that itself (`names`): an "Always" answered meanwhile isn't undone.
@@ -194,9 +195,9 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
   }
   let target: Target | null | undefined;
   try {
-    target = here.agents ? readBridge() : readEngine();
+    target = here.agents ? await bridgeBack(readBridge) : readEngine();
   } catch {}
-  if (!target) return no(503, here.agents ? `The coding agents aren’t running on ${HERE}.` : "The engine isn’t running.");
+  if (!target) return no(503, here.agents ? agentsLine() : "The engine isn’t running.");
   const renamed = changed.name !== described.name;
   const was = jobOf(here);
   const newJob = job !== undefined && (job.line !== was.line || job.details !== was.details);

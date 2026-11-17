@@ -471,7 +471,7 @@ connection.
   plan limits from and tells its own to where they aren't its peers too ("Plan limits", "Across your
   computers"; nothing else), and `setup` (the id of the setup it follows, where it follows one: the
   usage panel's settings go between the boxes of one setup), and `computer` (`{version?, engine?, system?,
-  working, atWork?, waiting?, asking?, oldApp?, addresses?, kuvo?, release?}`: Kuvo Code's version there, its engine's, its system as people know
+  working, atWork?, waiting?, asking?, oldApp?, addresses?, kuvo?, release?, agents?}`: Kuvo Code's version there, its engine's, its system as people know
   it, how many of its sessions are at work and which, how many wait on you and which (`asking`, ten
   at most, `{id, title?, asks?}`, `asks` what it asks in its box's words; since #781, for the menu
   bar of your other computers, "In the menu bar"), and, on a Mac's box, that the old app is
@@ -480,7 +480,8 @@ connection.
   networks' IPv4 addresses, never a loopback or link-local one, nor a container's or VM's bridge; eight at most, each a host name or
   IPv4 address, others dropped as the mail is taken: Keeping them up to date, below), and `kuvo`
   and `release`, the Kuvo version it runs and the signed release it holds ("Updates", Your
-  computers follow each other); to each
+  computers follow each other), and `agents` (`{state, why?}`, how its coding agents stand: "The
+  coding agents' state"); to each
   peer, every one of them your own computer (#783; an earlier box said `shared: true` of a machine
   more than one Mac set up, and kept this from it and from peers in another setup: a box now
   ignores that word); told again at its next round, within a
@@ -2949,6 +2950,47 @@ beside it.
   1 waits for you, waited 2 h at limits"), kept as `lastDigest`; and the report, once, as `report`.
   A Mac's box sends them while its phone link is on; the Mac app shows its own from
   `kuvo/work/goals`.
+
+### The coding agents' state
+
+Every route that needs a box's coding agents' bridge (`kuvo/agents/…`, `kuvo/groups…`,
+`kuvo/artifacts…`, `kuvo/sign-in/…?agents=1`, a bot's or a wake-up's on the bridge, carrying a
+conversation on with them) answers with one state while that bridge can't be asked, worked out on
+the box (`link/areas/agents-down.ts`), never by a client:
+
+- **Restarting**: a bridge making way on purpose (a newer build, a new engine: it writes
+  `run/agents-renewing` `{at, pid}` as it goes, and starts the next one itself through its keeper,
+  `kuvo-start bridge`; the next one removes the mark as it records itself), one its keeper started
+  that hasn't said where it listens yet (under a minute), or one that ended a moment ago, which the
+  keeper starts again at its next round (two minutes at most). **A request that comes meanwhile
+  waits for the bridge, half a minute at most, and is answered by it**; only after that wait does it
+  get `503 {message, reason: "agentsRestarting"}`, the message "The coding agents are restarting.
+  This takes a few seconds." A client keeps what it last read (a session's messages, the usage
+  rings, the accounts) and asks again; it never shows this as an error.
+- **Down**: `503 {message, reason: "agentsDown", action?}`, the message one plain sentence of why:
+  - `engine`: "The coding agents start once the engine is running." (the engine's own line says
+    why it isn't);
+  - `notInstalled`: `bin/kuvo-agents.js` isn't there;
+  - `keeper`: nothing runs that starts it again (its keeper, `run/box.pid`, isn't running);
+  - `crashing`: it keeps stopping, and its keeper waits before the next start (`run/agents.retry`,
+    in seconds since 1970, as `engine.retry`): "…Kuvo tries again in about N minutes.";
+  - `stuck`: the bridge its keeper started (`run/agents.pid`) never said where it listens;
+  - `notStarting`: none of these, and no bridge for two minutes;
+  - `app`: a box in a retired Mac app's folder, with what that app said (`run/agents-stopped`).
+  `action` is `{label: "Try Again", route: "kuvo/agents/start"}` for `keeper`, `crashing`, `stuck`
+  and `notStarting`. Codes, paths and the bridge's last words go to the box's log, never to people.
+- **`POST kuvo/agents/start`** (Try Again): the keeper's `kuvo-start bridge-again` ends a bridge it
+  started that never said where it listens (by its noted pid), forgets its wait after failures
+  (`run/agents.now`), starts the keeper if it isn't running, and starts the bridge. Answered once
+  that's done (45 s at most): `200 {}` once it runs, else `503` with the state as above. `405` for
+  another method; `409 {message}` where there's no keeper to ask.
+- A client draws `message` as it is, once (no words of its own before it), with `action` as a
+  button where it has room: Settings › Accounts in place of the coding agents' list, the line above
+  a conversation's composer, and the usage rings (in the rail and the menu bar), which keep their
+  last readings, marked as updating, while restarting, and say the message while down.
+- A box tells its peers the state with its agents mail (`computer.agents`: `{state: "running" |
+  "restarting" | "down", why?}`), so a computer whose agents are down can be told apart from
+  afar.
 
 ### Updates
 

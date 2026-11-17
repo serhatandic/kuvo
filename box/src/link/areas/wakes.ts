@@ -20,6 +20,7 @@ import { followed, watchFolders } from "../follow";
 import { stopIfWaiting } from "../work/answers";
 import { BOTS, OWN_RUNTIME, RUN, SCRIPT, SESSION_WAKES, WAKE_COMMAND } from "../home";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
+import { agentsAway, agentsLine, bridgeBack } from "./agents-down";
 
 // What a wake-up's message starts with, as the Mac words it.
 export const WAKE_MARKER = "[Wake-up] ";
@@ -421,9 +422,9 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     const agents = (textOf(path.join(folder, "via")) ?? "").trim() === "bridge";
     let target: Target | null = null;
     try {
-      target = agents ? bridge() : readEngine();
+      target = agents ? await bridgeBack(bridge, signal) : readEngine();
     } catch {}
-    if (!target) return yield* json(503, { message: agents ? "The coding agents aren’t running on this computer." : "The engine isn’t running." });
+    if (!target) return yield* json(503, agents ? agentsAway() ?? { message: agentsLine() } : { message: "The engine isn’t running." });
     const authorization = `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`;
     const directory = textOf(path.join(folder, "directory"));
     if (!agents && directory) await waitForTools(target.port, authorization, directory, signal);

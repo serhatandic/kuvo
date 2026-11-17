@@ -114,6 +114,10 @@ export interface ToldComputer {
   /** The version of the signed release this box holds and hands to your other computers that are
    * behind (PROTOCOL.md, "Updates", Your computers follow each other). */
   release?: string;
+  /** How its coding agents stand (PROTOCOL.md, "The coding agents' state"): running, restarting by
+   * themselves, or down, and why (`engine`, `notInstalled`, `keeper`, `crashing`, `stuck`,
+   * `notStarting`, `app`), so a computer whose agents are down can be told apart from afar. */
+  agents?: { state: "running" | "restarting" | "down"; why?: string };
 }
 
 /** A session at work on a computer: its id there, and its title (none for one that has none yet). */

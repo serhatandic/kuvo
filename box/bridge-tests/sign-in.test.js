@@ -196,7 +196,9 @@ test("asked of the coding agents while their bridge isn't running: why not", asy
   const down = handlerOn(() => null);
   const methods = await answer("GET", "kuvo/sign-in/methods?integration=claude-code&agents=1", down);
   assert.equal(methods.status, 503);
-  assert.match(methods.json.message, /coding agents aren't running/);
+  // (A box with no bridge's program: said so, in the box's one sentence for it.)
+  assert.equal(methods.json.message, "The coding agents aren't installed here yet. Kuvo's next update brings them.");
+  assert.equal(methods.json.reason, "agentsDown");
   assert.equal((await answer("GET", "kuvo/sign-in/status?integration=claude-code&attempt=att_agent&agents=1", down)).status, 503);
 });
 

@@ -51,6 +51,7 @@ import type { Target } from "../../shared/records";
 import type { KitRule } from "../bots/kit";
 import type { EngineSession } from "../engine/sessions";
 import type { SessionPlace } from "./letter";
+import { agentsLine } from "../areas/agents-down";
 
 /** What a session's start is given: its task, and what's optional: where (a folder, a project by
  * name or folder, a chat), in a worktree, on which model and effort, in which mode, with which
@@ -420,7 +421,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
     const variant = typeof exact.variant === "string" && exact.variant ? exact.variant : null;
     model = { providerID: exact.providerID as string, id: exact.id as string, ...(variant ? { variant } : {}) };
     target = runsWithAgents(model) ? bridge : engine;
-    if (!target) return no(503, runsWithAgents(model) ? `The coding agents aren't running on ${HERE}.` : `The engine on ${HERE} isn't running.`);
+    if (!target) return no(503, runsWithAgents(model) ? agentsLine() : `The engine on ${HERE} isn't running.`);
   } else if ((given.model !== undefined && given.model !== null && given.model !== "") || (given.effort !== undefined && given.effort !== null && given.effort !== "")) {
     // By the one rule every client's picker offers by (work/model-rule.ts), in the session's folder.
     const here = await modelsHere(engine, bridge, folder ?? undefined, HERE, place.signal);

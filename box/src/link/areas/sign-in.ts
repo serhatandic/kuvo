@@ -12,7 +12,7 @@ import { pause } from "../../shared/wait";
 import { call } from "../engine/client";
 import { planHides } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
-import { agentsDown } from "./agents-down";
+import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
 import { engineDown } from "./engine";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { plainName } from "../../shared/text";
@@ -202,15 +202,16 @@ export function failureWords(status: "failed" | "expired", message?: unknown): s
 
 /** Where `query` asks about: the coding agents' bridge (`agents=1`, for an agent's account), else
  * the engine; or why it can't be asked now. */
-function placeOf(query: URLSearchParams, context: RouteContext): { target: Target } | { down: string } {
+async function placeOf(query: URLSearchParams, context: RouteContext): Promise<{ target: Target } | { down: AgentsAway | { message: string } }> {
   if (query.get("agents") === "1") {
-    const bridge = context.bridge();
-    return bridge ? { target: bridge } : { down: agentsDown() ?? "The coding agents aren't running. Try again in a moment." };
+    // (While the bridge restarts, waited for: PROTOCOL.md, "The coding agents' state".)
+    const bridge = await bridgeBack(context.bridge, context.signal);
+    return bridge ? { target: bridge } : { down: agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" } };
   }
   try {
     return { target: context.readEngine() };
   } catch {
-    return { down: engineDown() };
+    return { down: { message: engineDown() } };
   }
 }
 
@@ -221,8 +222,8 @@ const MOST_WAIT = 25;
  * ways in, how it stands and what can be done with it (sign-in-state.ts). */
 async function* accountsRoute(context: RouteContext, query: URLSearchParams): AsyncGenerator<AnswerPiece> {
   const { signal, json } = context;
-  const place = placeOf(query, context);
-  if ("down" in place) return yield* json(503, { message: place.down });
+  const place = await placeOf(query, context);
+  if ("down" in place) return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(15_000);
   try {
     const listed = await call(place.target, "GET", "/api/integration", undefined, signal ? AbortSignal.any([signal, deadline]) : deadline);
@@ -254,8 +255,8 @@ async function* startRoute(context: RouteContext, query: URLSearchParams): Async
   const integration = query.get("integration")?.trim() ?? "";
   const given = parsed(request.body);
   if (!integration || !isObject(given) || typeof given.methodID !== "string" || !given.methodID) return yield* json(400, { message: "Say which account (integration) and which way in (methodID)." });
-  const place = placeOf(query, context);
-  if ("down" in place) return yield* json(503, { message: place.down });
+  const place = await placeOf(query, context);
+  if ("down" in place) return yield* json(503, place.down);
   // (A coding agent's sign-in may download its program first: longer than a read.)
   const deadline = AbortSignal.timeout(120_000);
   try {
@@ -283,8 +284,8 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
   const integration = query.get("integration")?.trim() ?? "";
   const attempt = route === SIGN_IN_STATUS_ROUTE ? query.get("attempt")?.trim() ?? "" : null;
   if (!integration || attempt === "") return yield* json(400, { message: attempt === "" ? "Say which sign-in (integration, attempt)." : "Say which account (integration)." });
-  const place = placeOf(query, context);
-  if ("down" in place) return yield* json(503, { message: place.down });
+  const place = await placeOf(query, context);
+  if ("down" in place) return yield* json(503, place.down);
   // (A status ask has a limit for each read instead: one that waits for a change takes longer.)
   const deadline = AbortSignal.timeout(15_000);
   const asking = signal ? AbortSignal.any([signal, deadline]) : deadline;

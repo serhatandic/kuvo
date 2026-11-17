@@ -9,6 +9,7 @@ import { listTree } from "./folders";
 import { namedNow } from "./named";
 import { sessionHere, Unreached } from "./glance";
 import { groupsAbsent, groupsNotAnswering, listedGroups } from "./groups";
+import { bridgeBack } from "./agents-down";
 import type { Mention } from "../../shared/routes/sessions";
 import type { Named } from "../../shared/routes/box";
 import type { GroupMember } from "../../shared/routes/groups";
@@ -221,8 +222,8 @@ export async function* groupMentionsRoute(context: RouteContext, match: RegExpMa
   const typed = query.get("q") ?? "";
   const asked = Number.parseInt(query.get("limit") ?? "", 10);
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
-  const target = bridge();
-  if (!target) return yield* json(503, { message: groupsAbsent() });
+  const target = await bridgeBack(bridge, signal ?? undefined);
+  if (!target) return yield* json(503, groupsAbsent());
   const groups = await listedGroups(target, signal ?? undefined);
   if (!groups) return yield* json(503, { message: groupsNotAnswering() });
   const chat = groups.find(group => group.id === match[1]);

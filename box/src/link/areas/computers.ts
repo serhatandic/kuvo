@@ -48,6 +48,7 @@ import { macLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { agentsState } from "./agents-down";
 
 export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices)?)?$/;
 
@@ -105,6 +106,12 @@ export function askingOf(list: Kept | null): AskingSession[] {
 /** How many of this box's sessions are at work now (`atWorkHere`). */
 export const workingHere = (): number => atWorkHere().length;
 
+/** How its coding agents stand, as it tells its peers (`ToldComputer.agents`). */
+function agentsFact(): NonNullable<ToldComputer["agents"]> {
+  const state = agentsState();
+  return state.state === "down" ? { state: "down", why: state.why } : { state: state.state };
+}
+
 /** What this box says of itself, here and to its peers (with its agents' mail): Kuvo Code's version
  * and its engine's, its system, how many of its sessions are at work and how many wait on you, and
  * the first few of each. */
@@ -127,6 +134,7 @@ export function ownComputer(): ToldComputer {
     ...(IS_MAC ? {} : { addresses: ownAddresses() }),
     // The Kuvo it runs, and the signed release it hands to your other computers that are behind.
     ...fleetFacts(),
+    agents: agentsFact(),
   };
 }
 

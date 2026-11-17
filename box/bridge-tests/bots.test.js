@@ -555,7 +555,7 @@ test("what's missing or unknown is said, and nothing is made", async () => {
       [{ name: "X", personality: "custom.gone" }, 400, "There’s no personality “custom.gone”."],
       [{ name: "X", project: "/nowhere" }, 400, "That project isn’t in Kuvo Code."],
       [{ name: "X", model: { id: "luna", providerID: "openai" } }, 422, "luna needs a sign-in on this machine: sign in to it in Settings › Accounts, or choose another model."],
-      [{ name: "X", model: { id: "sonnet", providerID: "claude-code" } }, 503, "The coding agents aren’t running on this machine."],
+      [{ name: "X", model: { id: "sonnet", providerID: "claude-code" } }, 503, "The coding agents aren't installed here yet. Kuvo's next update brings them."],
     ]) {
       const answer = await ask(handle, "POST", "kuvo/bots", body);
       assert.equal(answer.status, status, JSON.stringify(body));
@@ -836,7 +836,7 @@ test("a change that can't be is said, and nothing changes", async () => {
       [{ personality: "custom.gone" }, 400, "There’s no personality “custom.gone”."],
       [{ model: { id: "x" } }, 400, "That isn’t a model."],
       [{ model: { id: "luna", providerID: "openai" } }, 422, "luna needs a sign-in on this machine: sign in to it in Settings › Accounts, or choose another model."],
-      [{ model: { id: "sonnet", providerID: "claude-code" } }, 503, "The coding agents aren’t running on this machine."],
+      [{ model: { id: "sonnet", providerID: "claude-code" } }, 503, "The coding agents aren't installed here yet. Kuvo's next update brings them."],
     ]) {
       const answer = await ask(handle, "PATCH", "kuvo/bots/bot_scout00001", { name: "Renamed", ...body });
       assert.equal(answer.status, status, JSON.stringify(body));

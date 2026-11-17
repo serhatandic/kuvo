@@ -18,6 +18,7 @@ import { arrivedRoute, botEventsRoute, botRoute, botSeenRoute, botsRoute, botTem
 import { CARRY_ROUTE, carryRoute } from "../areas/carry";
 import { claudeCodeRoute } from "../areas/claude-code";
 import { engineControlRoute, signInReturnRoute } from "../areas/engine";
+import { AGENTS_START, agentsStartRoute } from "../areas/agents-down";
 import { fileAt } from "../areas/file";
 import { folderTreeRoute, foldersRoute } from "../areas/folders";
 import { FOLDERS_SUGGESTED_ROUTE, foldersSuggestedRoute } from "../areas/folders-suggested";
@@ -197,6 +198,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { when: route => route === "kuvo/asks" || route === "kuvo/asks/events", answer: asksRoute },
   { when: route => route.match(/^kuvo\/asks\/([^/]+)$/), answer: askAnswerRoute },
   { when: route => route.match(/^kuvo\/engine\/(start|restart)$/), answer: engineControlRoute },
+  // Try Again for the coding agents (PROTOCOL.md, "The coding agents' state").
+  { when: route => route === AGENTS_START, answer: agentsStartRoute },
   { when: route => route === "kuvo/sign-in/return", answer: signInReturnRoute },
   { when: route => route === SIGN_IN_METHODS_ROUTE || route === SIGN_IN_STATUS_ROUTE || route === SIGN_IN_ACCOUNTS_ROUTE || route === SIGN_IN_START_ROUTE, answer: signInRoute },
   { when: route => route === "kuvo/claude-code", answer: claudeCodeRoute },

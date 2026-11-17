@@ -526,6 +526,8 @@ const writeRecord = (renewal: RenewalRecord | null, first = false) => {
   }
 }
 writeRecord(null, true)
+// Back after a hand-over (a bridge before this one made way on purpose): no longer "restarting".
+if (onMachine) rmSync(join(machineHome!, "run", "agents-renewing"), { force: true })
 
 // A newer bridge put in its place on a machine (a Mac that connected brought it): it makes way at
 // the first quiet moment, never cutting a turn, and the machine's launch starts the new one, which
@@ -548,7 +550,7 @@ renewal =
         hold: (on) => sessions.hold(on),
         renew: () => {
           console.error("A newer bridge is in place: this one makes way for it.")
-          stop()
+          stop(true)
         },
         told: (state) => writeRecord(state),
         paused: () => updateUnderWay(join(machineHome!, "run")),
@@ -624,9 +626,19 @@ if (renewing) subscribe((event) => {
 if (runFolder) new HangWatch({ name: "engine", run: runFolder, record: join(runFolder, "engine.json"), isIt: isEngine }).start()
 
 let stopping = false
-function stop() {
+/** Ends this bridge. `handOver`: it makes way on purpose (Renewal), and on a box its keeper keeps it,
+ * so it says so (`run/agents-renewing`, for the link to answer "restarting" and let requests wait),
+ * and starts the next one itself, once its own store is written, rather than leaving it to the
+ * keeper's next round (PROTOCOL.md, "The coding agents' state"). */
+function stop(handOver = false) {
   if (stopping) return
   stopping = true
+  const run = onMachine ? join(machineHome!, "run") : undefined
+  if (handOver && run) {
+    try {
+      writeSecret(join(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }))
+    } catch {}
+  }
   // Goals first: the turns cut short as it stops aren't theirs to read as yours.
   goals.stopAll()
   sideQuestions.stopAll()
@@ -641,12 +653,30 @@ function stop() {
   stopAllHeld()
   store.flush()
   server.stop(true)
+  if (handOver && run && kept) startNext(run)
   process.exit(0)
 }
+
+/** The next bridge, started through its keeper's own command (`kuvo-start bridge`), once this one's
+ * number is no longer the one it keeps (`run/agents.pid`): in a session of its own, so this one's
+ * going doesn't end it. Should it not start, the keeper's next round does. */
+function startNext(run: string) {
+  try {
+    // (The keeper's folder is HOME/.kuvo-code: one laid out otherwise is left to its keeper.)
+    if (basename(machineHome!) !== ".kuvo-code") return
+    if (Number(readFileSync(join(run, "agents.pid"), "utf8").trim()) !== process.pid) return
+    rmSync(join(run, "agents.pid"), { force: true })
+    const start = join(machineHome!, "bin", "kuvo-start")
+    const env = { HOME: dirname(machineHome!), PATH: process.env.PATH ?? "/usr/bin:/bin" }
+    spawn("sh", [start, "bridge"], { detached: true, stdio: "ignore", env, cwd: machineHome! }).unref()
+  } catch (error) {
+    console.error("couldn't start the next bridge:", error)
+  }
+}
 if (!onMachine) {
-  process.stdin.on("end", stop)
-  process.stdin.on("close", stop)
+  process.stdin.on("end", () => stop())
+  process.stdin.on("close", () => stop())
   process.stdin.resume()
 }
-process.on("SIGTERM", stop)
-process.on("SIGINT", stop)
+process.on("SIGTERM", () => stop())
+process.on("SIGINT", () => stop())

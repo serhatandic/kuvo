@@ -47,7 +47,7 @@ const BESIDE_WHOLE: readonly (readonly [string, string])[] = [["bots.json", "bot
 const APP_ATTACHMENTS = "Attachments";
 /** Its processes' records in `run`, made anew where it runs next (and the record of the last start
  * in the app's folder, `served.json`): never moved. */
-export const PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|update-(trial|restore))$/;
+export const PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|agents\.retry|agents\.now|agents-renewing|update-(trial|restore))$/;
 /** What says the app's box started (`serve`, `run/served.json`): the app's version and the link's,
  * so a move waits for the upgrades a newer app runs as its box starts. */
 export const SERVED_FILE = "served.json";

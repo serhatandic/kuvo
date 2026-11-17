@@ -32,9 +32,11 @@ import { WORKTREE_ROUTES } from "./worktrees";
 import { WORK_QUEUE_ROUTES } from "./work-queue";
 
 /** What a route that refuses says, as JSON: why, in words to show (`message`), and for a file that
- * can't be used, its problem alone (`problem`). One that says nothing is `{}`. A route that says
+ * can't be used, its problem alone (`problem`); a word a client maps (`reason`, as
+ * `agentsRestarting`), and what fixes it (`action`, a button's label and the route it posts:
+ * PROTOCOL.md, "The coding agents' state"). One that says nothing is `{}`. A route that says
  * more when it refuses has a shape of its own for that status. */
-export const ERROR = object({ "message?": string, "problem?": string });
+export const ERROR = object({ "message?": string, "problem?": string, "reason?": string, "action?": object({ label: string, route: string }) });
 
 /** What the box passes on as it came, from the engine (`api/…`) or the coding agents' bridge
  * (`kuvo/agents/…`): theirs, not the box's, to define. */

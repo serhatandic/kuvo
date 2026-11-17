@@ -264,7 +264,7 @@ test("a phone pairs with Settings › Phone's link, and the Mac's box answers it
   // Who "&" can name, and its group chats (whose bridge isn't running in this test).
   assert.equal((await it.request("GET", "kuvo/named")).status, 200);
   const groups = await it.request("GET", "kuvo/groups");
-  assert.deepEqual([groups.status, JSON.parse(groups.body).message], [503, "Group chats on this Mac are starting. Try again in a moment."]);
+  assert.deepEqual([groups.status, JSON.parse(groups.body).message], [503, "The coding agents are restarting. This takes a few seconds."]);
   // What it hears of a bridge that's down isn't that it's starting: why, on each route that needs it,
   // and what starts it, when nothing's trying.
   const run = path.join(support, "box", "run");

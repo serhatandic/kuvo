@@ -8,6 +8,7 @@
 #   kuvo-start engine-halt  the engine alone stopped, for the swapper to start the new one (not marked stopped)
 #   kuvo-start restart   starts the engine over
 #   kuvo-start bridge    starts the coding agents' bridge, while the engine runs and it doesn't
+#   kuvo-start bridge-again  Try Again: the bridge started now, one that didn't finish starting ended
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
 K="$HOME/.kuvo-code"; R="$K/run"
 mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
@@ -269,11 +270,14 @@ keep)
     # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own
     # tools over the box's since the box was last marked: the box's back, as the Kuvo Code
     # that marked it put them there (bin/.own). Not while a Mac puts its files in place, or
-    # the box updates itself.
+    # the box updates itself. Only over a tool put there after the box's version was (an older
+    # Mac's), never one a release put there with it: a release's files all carry the same time,
+    # the box's version's too, so a copy kept from before (an older bridge, which can't run under
+    # this keeper) never goes back over the release's own.
     if [ -d "$K/bin/.own" ] && [ "$R/attached" -nt "$K/bin/box-version" ] && [ ! -d "$R/.updating" ] && [ -z "$(find "$R/mac-installing" -mmin -60 2>/dev/null)" ]; then
       for f in "$K"/bin/.own/*; do
         n=${f##*/}; t="$K/bin/$n"
-        [ -f "$f" ] && { [ ! -f "$t" ] || [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } || continue
+        [ -f "$f" ] && { [ ! -f "$t" ] || { { [ "$f" -nt "$t" ] || [ "$t" -nt "$f" ]; } && [ "$t" -nt "$K/bin/box-version" ]; }; } || continue
         if cmp -s "$f" "$t"; then touch -r "$f" "$t"; else cp -p "$f" "$K/bin/.$n.new" && mv -f "$K/bin/.$n.new" "$t"; fi
       done 2>/dev/null
     fi
@@ -300,6 +304,8 @@ keep)
     # The coding agents' bridge, while the engine runs, apart from it: started again whenever it
     # ended (a newer build in its place, a crash), never with the engine. One that ran under ten
     # minutes makes it wait longer each time, as the engine's starts do.
+    # Try Again (`bridge-again`, run/agents.now): its count of failures forgotten.
+    if [ -f "$R/agents.now" ]; then rm -f "$R/agents.now"; bfails=0; bnext=0; bstarted=; fi
     if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs; then
       if [ -n "$bstarted" ]; then
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi
@@ -308,6 +314,12 @@ keep)
       if bridge_runs; then bstarted=$now; else bstarted=; bfails=$((bfails + 1)); fi
       case $bfails in 0 | 1) bwait=0 ;; 2) bwait=15 ;; 3) bwait=30 ;; 4) bwait=60 ;; *) bwait=300 ;; esac
       bnext=$((now + bwait))
+    fi
+    # Down and waiting for its next start: when, for the box to say (run/agents.retry, as for the engine).
+    if up && ! bridge_runs && [ "$bnext" -gt "$now" ]; then
+      [ "$(cat "$R/agents.retry" 2>/dev/null)" = "$bnext" ] || { echo "$bnext" >"$R/agents.retry.new" && mv -f "$R/agents.retry.new" "$R/agents.retry"; }
+    else
+      rm -f "$R/agents.retry"
     fi
     # Down and waiting for its next start: when, for the box to tell whoever asks.
     if ! up && [ ! -f "$R/stopped" ] && [ "$next" -gt "$now" ]; then
@@ -442,6 +454,24 @@ bridge)
   # one that didn't start) runs on: the bridge makes way for that one, and its code was checked with both.)
   { cat "$R/launch.env"; printf 'KUVO_BRIDGE=1\nKUVO_VERSION=%s\nKUVO_AGENTS_PORT=%s\nKUVO_AGENTS_PASSWORD=%s\n\n' "$B" "$(number)" "$(word)"; } | sh "$K/bin/kuvo-launch" >/dev/null 2>&1
   bridge_runs
+  ;;
+bridge-again)
+  # Try Again, from whoever asks the box (`kuvo/agents/start`): a bridge this keeper started that
+  # never said where it listens (no run/bridge.json of its own) ended, by the number it noted; the
+  # keeper's wait after failures forgotten (run/agents.now); the keeper started if it isn't running;
+  # and the bridge started now.
+  { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
+  a=$(cat "$R/agents.pid" 2>/dev/null)
+  if is "$a" kuvo-agents && ! grep -q "\"pid\":$a[,}]" "$R/bridge.json" 2>/dev/null; then
+    kill -- "-$a" 2>/dev/null || kill "$a" 2>/dev/null
+    n=0; while kill -0 "$a" 2>/dev/null && [ $n -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+    kill -0 "$a" 2>/dev/null && kill -9 "$a" 2>/dev/null
+    rm -f "$R/agents.pid"
+  fi
+  : >"$R/agents.now"
+  rm -f "$R/agents.retry"
+  sh "$K/bin/kuvo-start" box
+  sh "$K/bin/kuvo-start" bridge
   ;;
 serve)
   # A Mac's own box's server (`box/kind` says `mac`), for its helper, Kuvo Code Box, which

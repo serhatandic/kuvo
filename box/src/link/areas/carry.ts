@@ -28,6 +28,7 @@ import type { EngineMessage } from "../engine/conversations";
 import type { EngineSession } from "../engine/sessions";
 import type { Carried } from "../../shared/routes/sessions";
 import type { AnswerPiece, JSONAnswer, OtherStatus, RouteContext } from "../server/context";
+import { agentsLine } from "./agents-down";
 
 /** What `carryToAgents` answers: the coding agents' session it goes on in, or why not. */
 export type CarryAnswer = JSONAnswer<Carried, { message: string }>;
@@ -109,7 +110,7 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
   let engine: Target | undefined;
   try { engine = readEngine(); } catch {}
   if (!engine) return no(503, "The engine isn’t running.");
-  if (!agents) return no(503, `The coding agents aren’t running on ${HERE}.`);
+  if (!agents) return no(503, agentsLine());
   const route = `api/session/${encodeURIComponent(id)}`;
   let session: EngineSession | undefined;
   // (As the engine answers it: a session it has, whole; one it hasn't is an error.)

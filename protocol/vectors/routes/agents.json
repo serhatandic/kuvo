@@ -135,8 +135,13 @@
     {
       "name": "the coding agents' routes while their bridge isn't running",
       "steps": [
-        { "send": "GET kuvo/agents/api/session", "expect": { "status": 503, "json": { "message": "<string>" } } },
-        { "send": "GET kuvo/info", "expect": { "status": 200, "json": { "agents": false } } }
+        {
+          "send": "GET kuvo/agents/api/session",
+          "why": "Why, in one sentence, and the word a client maps: agentsRestarting while they come back by themselves (a request waits for them first, half a minute at most), else agentsDown (PROTOCOL.md, \"The coding agents' state\").",
+          "expect": { "status": 503, "json": { "message": "<string>", "reason": "<string>" } }
+        },
+        { "send": "GET kuvo/info", "expect": { "status": 200, "json": { "agents": false } } },
+        { "send": "GET kuvo/agents/start", "why": "Try Again posts it.", "expect": { "status": 405 } }
       ]
     },
     {
