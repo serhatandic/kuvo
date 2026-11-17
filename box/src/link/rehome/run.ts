@@ -162,7 +162,8 @@ function bundleSays(bundle: string, key: string): string | null {
     const asked = spawnSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
     const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
     kept = { changed, said: isObject(read) ? read : {} };
-    plists.set(file, kept);
+    // (Kept only once it's read: one plutil cut short, on a busy Mac, is asked again at the next look.)
+    if (asked.status === 0 && !asked.error && !asked.signal) plists.set(file, kept);
   }
   const said = kept.said[key];
   return typeof said === "string" && said.trim() ? said.trim() : null;
