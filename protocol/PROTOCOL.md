@@ -1095,7 +1095,7 @@ browser's tools (`browser_…`), which work in a client's own browser, aren't th
     name, folder, model, approval, and where answers go. A group chat's seat may only list and read.
   - `notify_user` (`{text}`): tells you something on purpose, on your phones and in your clients'
     notifications (`kuvo/notices`), as one sentence of `text` (its first, Markdown taken off, cut at
-    a word to 160 characters), titled as the conversation's news is. It's how an agent working on
+    a word to 100 characters), titled as the conversation's news is. It's how an agent working on
     its own reaches you, as its replies then don't ("Notifications"). Kept in
     `run/notices/told.json` with `by: "agent"`, for the box's process that tells your phones to
     send. Refused (`isError`) from a group chat's seat, with no text, where nothing would tell your
@@ -3589,7 +3589,7 @@ with a mail frame, sealed with the sender's static key for the phone's. Only to 
 device of kind `desktop` (`clients.kind`) is sent none, as Apple has nothing for its address. Its payload, JSON:
 
 ```json
-{"t": "notify", "title": "Fixer", "subtitle": "kuvo-ai", "body": "Wants to run a command: npm test",
+{"t": "notify", "title": "Fixer", "subtitle": "kuvo-ai", "body": "Wants to run npm.",
  "category": "permission", "thread": "ses_…", "data": {"session": "ses_…", "request": "per_…"}}
 ```
 
@@ -3600,7 +3600,7 @@ device of kind `desktop` (`clients.kind`) is sent none, as Apple has nothing for
 | `body` | What the Mac shows: the request, the question, the last words of a reply. |
 | `category` | What it's about, below. |
 | `thread` | What it's grouped under: the session's id, or the group chat's. |
-| `data` | Where it opens: `session` or `group`; `request` for a permission or a form, with `requestSession` when the session asking isn't the one shown (a subagent's), and `answerable: "0"` when its notification mustn't answer it from buttons (it can't show all it covers, or some of its text shows as dots), `alwaysTitle`, its Always button as it says what it saves ("Always Allow Edits", "Always Allow git push", "Always Allow ~/notes"), and `always: "0"` for a permission whose Always would save a wider rule than it shows (`git push *` for `git push origin main`), which a phone that can't name it gives Allow Once and Don't Allow only; `ask` for a browser ask; `quiet: "1"` for one that shows without lighting the screen or a sound (what a goal needs of you, its digest), and `wake: "1"` for what a goal needs of you where you asked to be woken. |
+| `data` | Where it opens: `session` or `group`; `request` for a permission or a form, with `requestSession` when the session asking isn't the one shown (a subagent's), and `answerable: "0"` when its notification mustn't answer it from buttons (its words say less than it covers, as most permissions' do, or some of its text shows as dots), `alwaysTitle`, its Always button as it says what it saves ("Always Allow Edits", "Always Allow git push", "Always Allow ~/notes"), and `always: "0"` for a permission whose Always would save a wider rule than it shows (`git push *` for `git push origin main`), which a phone that can't name it gives Allow Once and Don't Allow only; `ask` for a browser ask; `quiet: "1"` for one that shows without lighting the screen or a sound (what a goal needs of you, its digest), and `wake: "1"` for what a goal needs of you where you asked to be woken. |
 
 | Category | When |
 | --- | --- |
@@ -3642,9 +3642,18 @@ What's news, each box decides alike (`notices/news.ts`), for your phones and its
   `[Message from …]`, as a session an agent started gets its task). Those still leave the
   conversation unread, as a muted chat does.
 
-The body is one sentence: a reply's first (past headings, code and lists; a line that leads into
-a list with its first item), its Markdown taken off, cut at a word to 160 characters; a question's
-own words; a group chat's last word the same way.
+The body is one short sentence in plain words, never a command line, a path, a flag or a code (those
+are on the card in the conversation, and in logs): a reply's first (past headings, code and lists; a
+line that leads into a list with its first item), its Markdown taken off, a path said as its last name
+and a web address as its site, cut at a word to 100 characters with "…"; a question's own words the
+same way; a group chat's last word the same way. What the box words itself is under 60 characters:
+a permission says what it would do and at most a program, a file's name or a site ("Wants to run
+du.", "Wants to edit notes.md.", "Wants to open example.com.", "Wants to work outside the project."),
+so its buttons answer it (`answerable` not `"0"`) only where those words say all it covers (no
+specifics, or each command line a program's name alone); a failure's reason follows "Stopped with an
+error:" only where it's words and not a code. A notice's title and subtitle are cut at a word to 60
+characters, and whatever else a source gives (a goal's report) is cut to its first sentence the same
+way, in the box, so every client and phone gets the same short words.
 
 The payload stays under 2,500 bytes, so the push fits the 4 KB Apple takes: a body that
 doesn't fit is cut, ending in "…". Keys are sorted, as both sides write them.

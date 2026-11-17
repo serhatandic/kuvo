@@ -13,7 +13,10 @@ export const plain = (text: unknown): string => String(text ?? "")
   .replace(/\s+/g, " ").trim();
 
 /** The longest a notice's sentence is, in characters: what a lock screen shows in two lines or so. */
-export const SENTENCE_LONGEST = 160;
+export const SENTENCE_LONGEST = 100;
+
+/** The longest a line the box words itself is ("Wants to run du."): a short one. */
+export const LINE_LONGEST = 60;
 
 // Words whose full stop doesn't end a sentence.
 const ABBREVIATIONS = /(?:^|\s)(?:e\.g|i\.e|vs|cf|approx|incl|Mr|Mrs|Ms|Dr|Fig)\.$/i;
@@ -31,7 +34,7 @@ function firstOf(words: string): string {
 }
 
 // Cut at a word, ending in "…", to `longest` characters (never through one, an emoji's say).
-function cutAtWord(text: string, longest: number): string {
+export function cutAtWord(text: string, longest: number): string {
   const characters = Array.from(text);
   if (characters.length <= longest) return text;
   const room = characters.slice(0, longest - 1).join("");
@@ -39,11 +42,19 @@ function cutAtWord(text: string, longest: number): string {
   return (space > longest / 2 ? room.slice(0, space) : room).replace(/[\s,;:–—-]+$/, "") + "…";
 }
 
+// A word of an agent's that is an address, said as people know it: a web address as its site
+// ("github.com"), a path as its last name ("notes.md"). Codes and paths belong in logs.
+const lastName = (address: string): string => address.replace(/\/+$/, "").split("/").pop() || address;
+export const plainAddresses = (text: string): string => text
+  .replace(/\bhttps?:\/\/(?:www\.)?([^\s/?#)\]>"']+)[^\s)\]>"']*/gi, "$1")
+  // (An absolute path, or a relative one of three names or more whose last has a letter: not a date.)
+  .replace(/(?<![\w.:/~@-])(?:~|\.{1,2})?\/(?:[\w.@+-]+\/)+[\w.@+-]*|(?<![\w.:/~@-])[\w.@+-]+(?:\/[\w.@+-]+){2,}(?<=[A-Za-z][\w.@+-]*)/g, lastName);
+
 /** What `text` (an agent's reply, in Markdown) says first, as one sentence of plain words: its
  * first paragraph's first sentence, past headings, code, tables and rules; a line that leads into a
  * list ("Done:") with the list's first item. Cut at a word to `longest`; "" for nothing to say. */
 export function oneSentence(text: unknown, longest = SENTENCE_LONGEST): string {
-  const lines = String(text ?? "")
+  const lines = plainAddresses(String(text ?? ""))
     .replace(/```[\s\S]*?(?:```|$)/g, "\n\n")
     .split("\n");
   // Paragraphs: lines together until a blank line, a heading, a table or a rule; each list item its own.

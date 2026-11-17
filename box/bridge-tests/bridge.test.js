@@ -1202,15 +1202,15 @@ test("setup keeps the machine's keys and its own phones, takes the Mac's documen
 
 // ---- Notifications ----
 
-test("a notification fits a push, its body cut", () => {
-  const long = "Wörds and more words. ".repeat(400);
+test("a notification fits a push: its body is one short sentence, whatever it was given", () => {
+  const long = "Wörds and more words, and then many more of them to go on and on. ".repeat(400);
   const json = link.noticeJSON({ title: "Fixer", subtitle: "kuvo-ai", body: long, category: "finished", thread: "ses_1", data: { session: "ses_1" } });
   assert.ok(json.length <= link.NOTICE_LIMIT);
   const notice = JSON.parse(json);
   assert.equal(notice.t, "notify");
-  assert.ok(notice.body.endsWith("…"));
-  assert.ok(long.startsWith(notice.body.slice(0, -1)));
-  assert.ok(notice.body.length > 2000);
+  assert.ok(notice.body.endsWith("…") || notice.body.endsWith("."));
+  assert.ok(Array.from(notice.body).length <= 100, notice.body);
+  assert.ok(long.startsWith(notice.body.replace(/…$/, "")));
   // Short ones go as they are, keys sorted as the Mac writes them.
   assert.equal(link.noticeJSON({ title: "Fixer", body: "Done.", category: "report", thread: "ses_1", data: { session: "ses_1" } }).toString(),
     '{"body":"Done.","category":"report","data":{"session":"ses_1"},"t":"notify","thread":"ses_1","title":"Fixer"}');
@@ -1251,8 +1251,8 @@ test("engine events become notifications, as the Mac words them", async () => {
 
   // A subagent's permission shows in the session that started it.
   assert.deepEqual(await link.noticeFor({ type: "permission.asked", data: { id: "per_1", sessionID: "ses_sub", action: "shell", resources: ["npm test"] } }, get), {
-    title: "Fix the tests", subtitle: "kuvo-ai", body: "Wants to run a command: npm test", category: "permission", thread: "ses_main",
-    data: { session: "ses_main", request: "per_1", requestSession: "ses_sub", alwaysTitle: "Always Allow npm test" },
+    title: "Fix the tests", subtitle: "kuvo-ai", body: "Wants to run npm.", category: "permission", thread: "ses_main",
+    data: { session: "ses_main", request: "per_1", requestSession: "ses_sub", answerable: "0", alwaysTitle: "Always Allow npm test" },
   });
   const question = { id: "frm_1", sessionID: "ses_main", title: "Pick", metadata: { kind: "question" }, fields: [{ key: "a", type: "string", description: "Which database?" }] };
   // As the engine sends it: the form under `form`.
@@ -1322,7 +1322,7 @@ test("a summary's news: one that failed says only that, one that went through is
   }
 });
 
-test("a notice shows what it covers up to four, never a secret, and has no answer buttons where it can't show all they'd answer", async () => {
+test("a notice names what it covers in a few words, never a command or a secret, and has no answer buttons where it can't show all they'd answer", async () => {
   const sessions = {
     ses_main: { id: "ses_main", title: "Fix the tests", location: { directory: "/home/me/kuvo-ai" } },
     ses_tree: { id: "ses_tree", title: "Try it", location: { directory: "/home/me/trees/kuvo-ai-try" } },
@@ -1338,18 +1338,22 @@ test("a notice shows what it covers up to four, never a secret, and has no answe
   fs.writeFileSync(path.join(home, "box", "worktrees.json"), JSON.stringify({ worktrees: [{ root: "/home/me/trees/kuvo-ai-try", project: "/home/me/kuvo-ai", branch: "try" }] }));
   try {
     const many = await link.noticeFor({ type: "permission.asked", data: { id: "per_1", sessionID: "ses_main", action: "shell", resources: ["a", "b", "c", "d", "e", "f"] } }, get);
-    assert.equal(many.body, "Wants to run a command: a · b · c · d · and 2 more");
+    assert.equal(many.body, "Wants to run a, b and 4 more.");
     assert.equal(many.subtitle, "Kuvo AI");
     assert.equal(many.data.answerable, "0", "Allow would allow what it doesn't show");
     const four = await link.noticeFor({ type: "permission.asked", data: { id: "per_2", sessionID: "ses_tree", action: "shell", resources: ["a", "b", "c", "*", "d"] } }, get);
-    assert.equal(four.body, "Wants to run a command: a · b · c · d");
+    assert.equal(four.body, "Wants to run a, b and 2 more.");
     assert.equal(four.subtitle, "Kuvo AI", "a worktree's project");
-    assert.equal(four.data.answerable, undefined);
-    // A secret in what it asks: masked, and not answered from the notice.
+    assert.equal(four.data.answerable, "0", "Allow would allow what the line leaves out");
+    // What it names whole is answered from the notice.
+    const bare = await link.noticeFor({ type: "permission.asked", data: { id: "per_4", sessionID: "ses_main", action: "shell", resources: ["ls"] } }, get);
+    assert.equal(bare.body, "Wants to run ls.");
+    assert.equal(bare.data.answerable, undefined);
+    // A secret in what it asks: never in the line, and not answered from the notice.
     const secret = await link.noticeFor({ type: "permission.asked", data: { id: "per_3", sessionID: "ses_main", action: "shell", resources: ["export OPENAI_API_KEY=sk-proj-4fJk29dLqZx81mNbVc7TyQ"] } }, get);
     assert.equal(secret.data.answerable, "0");
     const sent = JSON.parse(link.noticeJSON(secret).toString());
-    assert.ok(!sent.body.includes("4fJk29dLqZx81mNbVc7TyQ") && sent.body.includes("•••"), sent.body);
+    assert.ok(!sent.body.includes("4fJk29dLqZx81mNbVc7TyQ") && !sent.body.includes("sk-proj"), sent.body);
     // A question whose choice hides a secret: not answered from the notice; an untitled chat's.
     const form = { id: "frm_1", sessionID: "ses_chat", metadata: { kind: "question" }, fields: [{ key: "a", type: "string", description: "Which key?", options: [{ value: "1", label: "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8" }, { value: "2", label: "None" }] }] };
     const asked = await link.noticeFor({ type: "form.created", data: { form } }, get);

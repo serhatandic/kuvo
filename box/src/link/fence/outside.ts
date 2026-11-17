@@ -20,6 +20,8 @@ import { cut, oneLine } from "../../shared/text";
 import { IS_MAC } from "../home";
 import { askBook } from "../notices/asking";
 import type { Notice } from "../notices/notice";
+import { commandWords } from "../notices/plain";
+import { LINE_LONGEST, cutAtWord } from "../notices/sentence";
 import { askedEnv, runCommand } from "../run-command";
 import type { Caller } from "../vault/who";
 import { markedFullAccess } from "../work/full";
@@ -154,13 +156,17 @@ async function alwaysForWrite(writes: string[], project: string): Promise<Sandbo
 /** The notification for an ask, as the Mac words it. */
 export function sandboxAskNotice(asked: SandboxAsk): Notice {
   const who = asked.botName ?? asked.sessionName ?? "An agent";
+  const { words, whole } = commandWords([asked.command]);
+  const line = cutAtWord(`Wants to run ${words} outside the sandbox.`, LINE_LONGEST);
   return {
-    title: `${who} wants to run a command outside the sandbox`,
+    title: who,
     subtitle: asked.machine,
-    body: `${oneLine(asked.command, 120)}${asked.why ? `\n${asked.why}` : ""}`,
+    // In a few plain words, never the command (its card shows it): so its buttons answer only where
+    // the words say all it covers.
+    body: line,
     category: "ask",
     thread: asked.session ?? asked.id,
-    data: { ...(asked.session ? { session: asked.session } : {}), sandboxAsk: asked.id },
+    data: { ...(asked.session ? { session: asked.session } : {}), sandboxAsk: asked.id, ...(whole ? {} : { answerable: "0" as const }) },
   };
 }
 

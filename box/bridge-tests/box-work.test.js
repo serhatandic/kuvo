@@ -91,8 +91,8 @@ test("with a Mac connected, a permission asked in a session here still reaches y
     await engine.following;
     engine.send({ type: "permission.asked", data: { id: "per_1", sessionID: "ses_main", action: "shell", resources: ["npm test"] } });
     assert.deepEqual(await next(), {
-      title: "Fix the tests", subtitle: "shop", body: "Wants to run a command: npm test", category: "permission", thread: "ses_main",
-      data: { session: "ses_main", request: "per_1", alwaysTitle: "Always Allow npm test" },
+      title: "Fix the tests", subtitle: "shop", body: "Wants to run npm.", category: "permission", thread: "ses_main",
+      data: { session: "ses_main", request: "per_1", answerable: "0", alwaysTitle: "Always Allow npm test" },
     });
     // What comes after it is told after it: the permission went once.
     engine.send({ type: "session.execution.failed", data: { sessionID: "ses_main" } });

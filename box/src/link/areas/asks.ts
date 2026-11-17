@@ -12,6 +12,7 @@ import { processRuns as runs } from "../../shared/platform";
 import type { EngineRecord } from "../../shared/records";
 import { pause } from "../../shared/wait";
 import { engineGet, readEngineFile } from "../engine/client";
+import { shortWords } from "../notices/plain";
 import type { EngineAnswer } from "../engine/client";
 import type { EngineSession } from "../engine/sessions";
 import { RUN, socketKey } from "../home";
@@ -154,8 +155,9 @@ export function answerAsk(id: string, answer: AskAnswer, socketPath = BROWSER_SO
 export function askNotice(ask: BrowserAsk, asker: string | null | undefined): AskNotice {
   const host = String(ask.host ?? "");
   const title = { signIn: `Sign in to ${host}`, code: `Code for ${host}`, action: `Your turn on ${host}` }[ask.kind];
+  // (The agent's own words for a code or a step, in plain words and cut short.)
   const body = ask.kind === "signIn" ? "The agent needs your sign-in to go on."
-    : ask.kind === "code" ? (ask.prompt || "The agent needs a code to go on.") : String(ask.instruction ?? "");
+    : ask.kind === "code" ? (shortWords(ask.prompt) || "The agent needs a code to go on.") : shortWords(ask.instruction);
   const session = typeof ask.session === "string" ? ask.session : undefined;
   return { title, subtitle: asker || undefined, body, category: "ask", thread: session ?? ask.id, data: { ...(session ? { session } : {}), ask: ask.id } };
 }

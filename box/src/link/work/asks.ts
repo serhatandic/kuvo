@@ -12,6 +12,7 @@ import { isObject } from "../../shared/json";
 import { pause } from "../../shared/wait";
 import { botHere, changeDescription, noteBotsChanged } from "../bots/here";
 import { asked, bridgeTarget, peerPlaces } from "../engine/client";
+import { cutAtWord } from "../notices/sentence";
 import { resetAskWords, spendReset, type ResetGiven } from "./plan-reset";
 import { sendInto } from "../engine/queue";
 import { boxNote } from "../../shared/queues";
@@ -22,7 +23,7 @@ import { placeOfSession } from "../letters/letter";
 import { tellMovedAway } from "../letters/outbox";
 import { frozen } from "../moves/records";
 import { noteWorkChanged, WORK_FOLDER } from "./changes";
-import { folderName, madeWords, makeProject, projectPlace, shownPath } from "./projects";
+import { folderName, madeWords, makeProject, projectPlace } from "./projects";
 import { folderGiven, projectsFolder, setProjectsFolder, suggestedFolder } from "./settings";
 import type { Target } from "../../shared/records";
 import type { WorkAskShape } from "../../shared/routes/work";
@@ -296,10 +297,8 @@ export async function tellLateAnswers(targets: () => Target[], file = WORK_ASKS,
 /** The ask in words for a notification: who asks, and what. */
 export function workAskWords(ask: WorkAskShape): { title: string; body: string } {
   if (ask.action === "resetLimits" && ask.reset) return resetAskWords(ask.name, ask.reset);
-  const where = ask.folder ? ` in ${shownPath(path.dirname(ask.folder))}` : "";
-  return ask.action === "cloneProject"
-    ? { title: `${ask.name} asks to clone a project`, body: `${ask.clone ?? ""} as ${ask.project}${where}` }
-    : { title: `${ask.name} asks to make a project`, body: `${ask.project}${where}` };
+  // (The project's name alone: where it's from and where it goes are on its card.)
+  return { title: `${ask.name} asks to ${ask.action === "cloneProject" ? "clone" : "make"} a project`, body: cutAtWord(ask.project, 60) };
 }
 
 /** Each new ask, to your phones' notifications, once; `answered` hears of one told that's no longer

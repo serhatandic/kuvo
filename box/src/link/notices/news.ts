@@ -13,7 +13,8 @@ import { sessionsWaitingOnServer } from "../work/answers";
 import { isAutopilot } from "../work/autopilot";
 import { isChatsFolder } from "../engine/chats";
 import { masked, showsAll } from "./mask";
-import { oneSentence, plain, reasonLine } from "./sentence";
+import { oneSentence } from "./sentence";
+import { permissionLine, reasonWords, shortWords } from "./plain";
 import { writtenByYou } from "../engine/queue";
 import { isObject, type Fields } from "../../shared/json";
 import type { Target } from "../../shared/records";
@@ -168,9 +169,6 @@ export function alwaysWords(request: { action?: string; resources?: unknown; sav
 }
 const ALWAYS_LONGEST = 24;
 
-// Whether a permission's notice shows all it covers: Allow there would allow what it leaves out.
-const showsAllCovered = (request: { resources?: unknown }): boolean => (Array.isArray(request.resources) ? request.resources : []).filter(each => each !== "*").length <= 4;
-
 // A question's one field and its choices, as the Mac answers it from a notification.
 const singleQuestion = (form: EngineForm): FormField | null => {
   if (form.metadata?.kind !== "question") return null;
@@ -317,9 +315,11 @@ export async function noticeFor(event: EngineEvent, get: EngineAsk): Promise<Not
     case "permission.asked": {
       const where = await shown(data.sessionID!);
       if (isHiddenRun(where)) return null;
-      const body = describePermission(data as PermissionAsked, os.homedir());
+      // In a few plain words, never the command or the paths (the card shows them): so its buttons
+      // answer only where the words say all it covers.
+      const { line: body, whole } = permissionLine(data as PermissionAsked);
       return about(where, "permission", body, { request: data.id, ...(where.id !== data.sessionID ? { requestSession: data.sessionID } : {}), ...(offersAlways(data as PermissionAsked) ? {} : { always: "0" as const }), alwaysTitle: masked(alwaysTitle(data, os.homedir())) },
-        { answerable: showsAllCovered(data) && showsAll(body), untitled: "Kuvo Code" });
+        { answerable: whole && showsAll(body), untitled: "Kuvo Code" });
     }
     case "form.created": {
       // The form comes under `form`, with its session.
@@ -331,10 +331,11 @@ export async function noticeFor(event: EngineEvent, get: EngineAsk): Promise<Not
       // On Autopilot nothing waits for you, unless it's still asked once the box has looked (its goal
       // paused, or the engine didn't take the answer).
       if (isAutopilot(where) && !await stillAsked(form, get, event.location?.directory)) return null;
-      const body = describeForm(form);
+      const full = describeForm(form);
+      const body = shortWords(full);
       const choices = (singleQuestion(form)?.options ?? []).map(option => String(option?.label ?? ""));
       return about(where, "question", body, { request: form.id, ...(where.id !== form.sessionID ? { requestSession: form.sessionID } : {}) },
-        { answerable: showsAll(body) && choices.every(showsAll), untitled: "Kuvo Code" });
+        { answerable: !body.endsWith("…") && showsAll(body) && choices.every(showsAll), untitled: "Kuvo Code" });
     }
     case "session.execution.succeeded":
     case "session.execution.failed": {
@@ -348,7 +349,7 @@ export async function noticeFor(event: EngineEvent, get: EngineAsk): Promise<Not
       const summary = summaryAtEnd(page.data);
       if (summary === "failed") return about(ended, "failed", "Couldn't summarize the conversation.");
       if (event.type === "session.execution.failed") {
-        const reason = reasonLine(data.error?.message);
+        const reason = reasonWords(data.error?.message);
         return about(ended, "failed", reason ? `Stopped with an error: ${reason}` : "Stopped with an error.");
       }
       if (summary === "completed") return null;

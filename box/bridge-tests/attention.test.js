@@ -430,7 +430,7 @@ test("a permission answered in the engine during its hold never reaches your pho
   }
 });
 
-test("an ask to work outside the project names the folder as you know it on your phone, not the engine's pattern", async () => {
+test("an ask to work outside the project says so in plain words, with no folder pattern", async () => {
   const engine = await engineWith({ ses_main: { id: "ses_main", title: "Fix the tests", location: { directory: "/home/me/shop" } } });
   const stop = new AbortController();
   let told;
@@ -439,7 +439,7 @@ test("an ask to work outside the project names the folder as you know it on your
     link.watchEvents(engine.read, each => { told(each); return true; }, stop.signal, () => {});
     await engine.following;
     engine.send({ type: "permission.asked", data: { id: "per_1", sessionID: "ses_main", action: "external_directory", resources: [`${os.homedir()}/other-project/*`, "/opt/data/*"] } });
-    assert.equal((await notice).body, "Wants to work outside the project: ~/other-project · /opt/data");
+    assert.equal((await notice).body, "Wants to work outside the project.");
   } finally {
     stop.abort();
     engine.close();

@@ -6,6 +6,8 @@ import { oneLine } from "../../shared/text";
 import type { VaultAsk } from "../../shared/routes/vault";
 import { askBook, PATIENCE } from "../notices/asking";
 import type { Notice } from "../notices/notice";
+import { shortWords } from "../notices/plain";
+import { cutAtWord } from "../notices/sentence";
 
 export { PATIENCE };
 
@@ -41,11 +43,11 @@ export const answer = book.answer;
 /** The notification for an ask, as the Mac words it. */
 export function vaultAskNotice(asked: VaultAsk): Notice {
   const who = asked.botName ?? asked.sessionName ?? "An agent";
-  const title = asked.kind === "use" ? `${who} wants to use ${asked.itemName ?? "an item"}` : `${who} needs ${asked.need ?? "something from your vault"}`;
+  const title = asked.kind === "use" ? `${who} wants to use ${asked.itemName ?? "an item"}` : `${who} needs ${cutAtWord(oneLine(asked.need ?? "", 80), 40) || "something from your vault"}`;
   return {
     title,
     subtitle: asked.machine,
-    body: asked.why || (asked.kind === "use" ? (asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no.") : "Give it an item from your vault, or say no."),
+    body: shortWords(asked.why) || (asked.kind === "use" ? (asked.always === true && !asked.group ? "Allow it once, always, or say no." : "Allow it once, or say no.") : "Give it an item from your vault, or say no."),
     category: "ask",
     thread: asked.group ?? asked.session ?? asked.id,
     // (A seat's opens its group chat: no one opens the seat.)

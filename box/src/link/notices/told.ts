@@ -13,6 +13,7 @@ import { watchFolders } from "../follow";
 import { IS_MAC, RUN } from "../home";
 import { runningBridge } from "../keeper";
 import type { Notice } from "./notice";
+import { shortNotice } from "./plain";
 
 /** Where what's told is kept. */
 export const TOLD_FOLDER = path.join(RUN, "notices");
@@ -72,7 +73,8 @@ export const toldFollowers = new Set<() => void>();
  * couldn't be written. `unless`, given what's kept, says why it isn't (then nothing's kept), checked
  * while no other process changes it. */
 export function keepTold(notice: Notice, { by, now = Date.now(), at = now, unless }: { by?: "agent"; now?: number; at?: number; unless?: (kept: ToldNotice[]) => string | null } = {}): ToldNotice | { refused: string } | null {
-  const entry: ToldNotice = { id: newID("ntc_"), at, notice, ...(by ? { by } : {}) };
+  // (Whatever the source, short and in plain words, as the phones get it.)
+  const entry: ToldNotice = { id: newID("ntc_"), at, notice: shortNotice(notice), ...(by ? { by } : {}) };
   let refused: string | null = null;
   try {
     locked(TOLD_LOCK, () => {

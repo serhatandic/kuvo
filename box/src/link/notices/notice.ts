@@ -6,6 +6,7 @@ import { cut, prefixBytes } from "../../shared/text";
 import { sealOneWay } from "../crypto/noise";
 import { Frame, frame, relayPush } from "../relay/frames";
 import { masked } from "./mask";
+import { shortNotice } from "./plain";
 
 /** What a notice is about (PROTOCOL.md, "Notifications"), for its buttons: what's asked of you, or news. */
 export type NoticeCategory = "permission" | "question" | "ask" | "finished" | "failed" | "report" | "blocked" | "message" | "usage";
@@ -69,7 +70,9 @@ export const NOTICE_LIMIT = 2500;
 
 
 // A notification's JSON, under NOTICE_LIMIT bytes: what doesn't fit of the body ends in "…".
-export function noticeJSON(notice: Notice): Buffer {
+export function noticeJSON(given: Notice): Buffer {
+  // (Whatever the source, short and in plain words.)
+  const notice = shortNotice(given);
   // What it shows masked, as the Mac's own notifications are: a phone's lock screen never shows
   // a key.
   const value: NoticePayload = { t: "notify", title: cut(masked(String(notice.title ?? "")), 200), category: notice.category, thread: String(notice.thread ?? ""), data: notice.data ?? {} };
