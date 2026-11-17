@@ -9,7 +9,7 @@
 // `run/agents/hold` (0700): `<id>.sock`, `<id>.json` (its record, with the key), and the program,
 // `kuvo-hold-<HOLDER>.js`, which every holder started since it was written runs.
 
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
@@ -391,11 +391,12 @@ export function forgetHolder(folder: string, record: HoldRecord) {
  * holder another bridge started is a client joining Claude Code's session: it initializes again,
  * and Claude Code sends the asks still open in its answer (spike S1).
  */
-export function heldProcess(holding: Held | Promise<Held>) {
+export function heldProcess(holding: Held | Promise<Held>, fallback?: () => ChildProcess) {
   const events = new EventEmitter()
   const stdout = new PassThrough()
   stdout.on("error", () => {})
   let held: Held | undefined
+  let ownChild: ChildProcess | undefined
   const waiting: string[] = []
   let ending = false
   let buffer = ""
@@ -406,13 +407,15 @@ export function heldProcess(holding: Held | Promise<Held>) {
         const line = buffer.slice(0, at)
         buffer = buffer.slice(at + 1)
         if (!line.trim()) continue
-        if (held) held.write(line)
+        if (ownChild) ownChild.stdin?.write(line + "\n")
+        else if (held) held.write(line)
         else waiting.push(line)
       }
       done()
     },
     final(done) {
-      if (held) held.end()
+      if (ownChild) ownChild.stdin?.end()
+      else if (held) held.end()
       else ending = true
       done()
     },
@@ -425,8 +428,10 @@ export function heldProcess(holding: Held | Promise<Held>) {
     signalCode: null as NodeJS.Signals | null,
     kill(signal: NodeJS.Signals = "SIGTERM") {
       process_.killed = true
-      if (held) held.kill(signal)
-      else void Promise.resolve(holding).then((each) => each.kill(signal), () => {})
+      // (Stopped through its holder's own process: it goes, whatever this bridge does next.)
+      if (ownChild) ownChild.kill(signal)
+      else if (held) held.stop()
+      else void Promise.resolve(holding).then((each) => each.stop(), () => {})
       return true
     },
   })
@@ -443,9 +448,30 @@ export function heldProcess(holding: Held | Promise<Held>) {
         process_.exitCode = exit.code
         process_.signalCode = exit.signal && exit.signal !== "fenced" && exit.signal !== "lost" ? (exit.signal as NodeJS.Signals) : null
         events.emit("exit", exit.code, process_.signalCode)
+        // (As a child process says once its output is in: all of it came before its end.)
+        events.emit("close", exit.code, process_.signalCode)
       })
     },
     (error) => {
+      // (No holder: the agent as a process of the bridge's own, given what was written meanwhile.)
+      const own = fallback?.()
+      if (own?.stdin && own.stdout) {
+        for (const line of waiting.splice(0)) own.stdin.write(line + "\n")
+        if (ending) own.stdin.end()
+        ownChild = own
+        own.stdout.on("data", (chunk) => {
+          if (!stdout.writableEnded) stdout.write(chunk)
+        })
+        own.stdout.on("end", () => stdout.end())
+        own.once("exit", (code, signal) => {
+          process_.exitCode = code
+          process_.signalCode = signal
+          events.emit("exit", code, signal)
+        })
+        own.once("close", (code, signal) => events.emit("close", code, signal))
+        own.once("error", (failed) => events.emit("error", failed))
+        return
+      }
       stdout.end()
       events.emit("error", error instanceof Error ? error : new Error(String(error)))
       process_.exitCode = 1

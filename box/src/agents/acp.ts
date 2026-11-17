@@ -19,6 +19,9 @@ import { dropRelayed, relayedServers, relayedTools, relayPort, serversKey } from
 import { pictureData, withPictures } from "./pictures"
 import { elicitationField } from "./forms"
 import type { Turn } from "./turn"
+import type { AgentKind } from "./accounts"
+import { hold, type Held } from "./hold/client"
+import { agentHoldFolder, noteTurn, type HeldTurn } from "./hold/adopt"
 import type { Decision, FormField, Session, TokenUsage } from "./wire"
 
 const outputLimit = 30_000
@@ -26,6 +29,8 @@ const outputLimit = 30_000
 const limitWords = /RESOURCE_EXHAUSTED|usage limit (?:reached|exceeded)|quota exceeded|exceeded your (?:current )?quota|rate limit exceeded|too many requests/i
 
 export interface AcpFlavor {
+  /** Its process runs under a holder on a box, and a bridge started after a crash takes its turn up (hold/adopt.ts): as which agent. None: as it always has. */
+  held?: { kind: AgentKind; provider: string }
   /** The command that starts the agent, for this session's approval mode (and its skills and subagents folders, from `skills` and `subagents`; `whole`: run whole in the box's sandbox). */
   command(options: { approvesAll: boolean; plan: boolean; skills?: string; subagents?: string; whole?: boolean }): Promise<{
     argv: string[]
@@ -263,10 +268,22 @@ export class AcpThread implements Thread {
     const flavor = this.flavor
     const startedAt = Date.now()
     let asksSignIn = false
-    const rpc: RPC = new RPC(whole?.argv ?? launch.argv, {
-      cwd: whole ? this.session.location.directory : (launch.cwd ?? this.session.location.directory),
-      // Its commands know their conversation, as the engine's do (kuvo-wake schedules for it).
-      env: { ...(whole?.env ?? launch.env), OPENCODE_SESSION_ID: this.session.id },
+    const argv = whole?.argv ?? launch.argv
+    const cwd = whole ? this.session.location.directory : (launch.cwd ?? this.session.location.directory)
+    // Its commands know their conversation, as the engine's do (kuvo-wake schedules for it).
+    const env = { ...(whole?.env ?? launch.env), OPENCODE_SESSION_ID: this.session.id }
+    // Under a holder on a box (its flavor says), so a bridge that crashes doesn't take its turn
+    // with it; as a process of the bridge's own if the holder can't start.
+    const holdIn = this.flavor.held ? agentHoldFolder(this.flavor.held.kind) : undefined
+    const held = holdIn
+      ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held!.provider, kind: this.flavor.held!.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+          console.error(`${this.name}'s holder didn't start:`, error?.message ?? error)
+          return undefined
+        })
+      : undefined
+    const rpc: RPC = new RPC(held ?? argv, {
+      cwd,
+      env,
       cleanEnv: launch.cleanEnv,
       jsonrpc: true,
       firstID: 2 ** 30,
@@ -320,6 +337,7 @@ export class AcpThread implements Thread {
     }
     this.rpc = rpc
     this.spawnedWith = startedWith
+    rpc.start()
     if (launch.signInFile) {
       const file = launch.signInFile
       const watch = setInterval(() => {
@@ -475,7 +493,47 @@ export class AcpThread implements Thread {
     return { fresh }
   }
 
+  /**
+   * A turn an earlier bridge left under way in this conversation's agent (it crashed), taken up as
+   * it is: the agent's process is attached (it takes a second `initialize`, but nothing needs
+   * one), what it said since the turn began comes again, an ask still open is asked again, and the
+   * answer to the prompt that earlier bridge sent ends the turn.
+   */
+  private resumeHeld(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
+    const taken = input.held!
+    const flavor = this.flavor
+    // (Its own ids past those any earlier bridge sent it.)
+    const rpc = new RPC(taken.held, { jsonrpc: true, firstID: 2 ** 30 + taken.held.generation * 2 ** 24, filter: (line) => flavor.filter?.(line) ?? true })
+    rpc.onNotification = (method, params) => this.notification(method, params)
+    rpc.onRequest = (method, params) => this.request(method, params)
+    this.close()
+    this.rpc = rpc
+    this.sessionID = taken.thread
+    this.fenced = taken.meta.fenced === true
+    this.spawnedWith = typeof taken.meta.key === "string" ? taken.meta.key : undefined
+    return new Promise<RunResult>((resolve) => {
+      const active: Active = { turn, hooks, resolve, rpc, tools: new Map(), toolsSinceText: false, ended: false, children: new Map(), served: new Map(), started: Date.now(), prompt: 1 }
+      rpc.onExit = () => {
+        if (this.rpc === rpc) this.rpc = undefined
+        if (!active.ended) this.end(active, "failed", rpc.stderr.trim().split("\n").slice(-3).join("\n") || `${this.name} stopped.`)
+      }
+      // The answer to its prompt, which that bridge sent.
+      rpc.onStray = (id, result: any, error) => {
+        if (id !== taken.note.request || active.ended) return
+        active.answered = !error
+        if (error) this.end(active, "failed", error.message ?? `${this.name} stopped with an error.`)
+        else if (result?.stopReason === "rate_limit") this.end(active, "failed", `You've reached your ${this.name} usage limit for now.`, this.limit())
+        else this.end(active, result?.stopReason === "cancelled" ? "interrupted" : "succeeded")
+      }
+      this.active = active
+      turn.startStep()
+      taken.gate.onOpen(() => rpc.start())
+      taken.gate.ready(taken.thread)
+    })
+  }
+
   async run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
+    if (input.held) return this.resumeHeld(input, turn, hooks)
     if (input.adopt) return this.adopt(turn, hooks)
     this.own = undefined
     const rpc = await this.open(input, hooks)
@@ -537,6 +595,13 @@ export class AcpThread implements Thread {
     const meta = this.flavor.promptMeta?.()
     active.promptID = typeof meta?.promptId === "string" ? meta.promptId : undefined
     const sentOn = active.rpc
+    // Under a holder: where this turn's lines begin, and the request its end answers, for a bridge
+    // taking it up after a crash.
+    const held = sentOn.holder
+    if (held && !active.input?.compact) {
+      const noted = (held.meta.turns as Record<string, { from: number }> | undefined)?.[sessionId]
+      noteTurn(held, sessionId, { session: this.session.id, from: number > 1 && noted ? noted.from : held.seen, request: sentOn.nextID })
+    }
     active.rpc.request("session/prompt", { sessionId, prompt, ...(meta ? { _meta: meta } : {}) }).then(
       (result: any) => {
         if (number !== active.prompt) return
@@ -581,6 +646,8 @@ export class AcpThread implements Thread {
     }
     if (outcome === "interrupted" && this.carryOn(active)) return
     active.ended = true
+    const held = active.rpc.holder
+    if (held && this.sessionID) noteTurn(held, this.sessionID, undefined)
     // The instructions went with a message it took (not one turned away before it said anything).
     if (active.instructed && (outcome !== "failed" || active.heard)) {
       this.state.acpInstructions = active.instructed.value

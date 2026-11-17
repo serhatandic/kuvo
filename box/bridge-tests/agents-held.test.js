@@ -1,10 +1,11 @@
-// A machine's coding agents' bridge killed (SIGKILL: a crash) while a Codex turn waits on your
-// approval: Codex, under its holder, lives on; the bridge its launch starts again takes the turn up,
-// shows the approval again, once; you answer it once, and the turn ends as it would have, one turn,
-// with what Codex said before and after the crash. Then the box is stopped (`kuvo-start stop`), and
-// nothing it held runs on. The real bridge (box/dist/kuvo-agents.js, on Bun), its real holders and
-// keeper, and a stand-in `codex app-server` (it speaks Codex's JSON-RPC; Codex itself was checked
-// the same way in spike S2, .claude/notes/update-handover.md).
+// A machine's coding agents' bridge killed (SIGKILL: a crash) while a coding agent's turn waits on
+// your approval: the agent, under its holder, lives on; the bridge its launch starts again takes the
+// turn up, shows the approval again, once; you answer it once, and the turn ends as it would have,
+// one turn, with what the agent said before and after the crash. Then the box is stopped
+// (`kuvo-start stop`), and nothing it held runs on. The real bridge (box/dist/kuvo-agents.js, on
+// Bun), its real holders and keeper, and stand-ins for Codex's app-server and Claude Code (they
+// speak their protocols; the real ones were checked the same way in spikes S1 and S2,
+// .claude/notes/update-handover.md).
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -65,6 +66,98 @@ process.stdin.on("data", chunk => {
 });
 `;
 
+/** Claude Code as far as this asks it: signed in; a message asks to run a command, and once that's
+ * answered, it's done. A second SDK client's `initialize` is answered with the ask still open, as
+ * Claude Code 2.1.325 answered it in spike S1. */
+const CLAUDE = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const folder = process.env.STAND_IN_FOLDER;
+const args = process.argv.slice(2);
+if (args[0] === "auth") { console.log('{"loggedIn":true,"authMethod":"console"}'); process.exit(0); }
+if (args.includes("--version")) { console.log("2.1.325 (Claude Code)"); process.exit(0); }
+if (!args.includes("stream-json")) process.exit(1);
+const named = flag => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : undefined);
+const session = named("--session-id") ?? named("--resume") ?? "s1";
+const log = what => fs.appendFileSync(path.join(folder, "claude.log"), JSON.stringify({ ...what, pid: process.pid }) + "\n");
+const send = message => process.stdout.write(JSON.stringify(message) + "\n");
+const models = [{ value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default (recommended)", description: "Opus 5.5" }];
+const ask = { type: "control_request", request_id: "p1", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "touch held.txt" }, tool_use_id: "toolu_1" } };
+const assistant = (id, content) => send({ type: "assistant", message: { id, role: "assistant", type: "message", model: "claude-opus-5-5", content, stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } }, parent_tool_use_id: null, session_id: session, uuid: "00000000-0000-4000-8000-00000000000" + id.slice(-1) });
+let open = false, buffer = "";
+process.stdin.on("end", () => { log({ ended: true }); process.exit(0); });
+process.stdin.on("data", chunk => {
+  buffer += chunk;
+  for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+    const line = buffer.slice(0, at);
+    buffer = buffer.slice(at + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.type === "control_request") {
+      if (message.request.subtype === "initialize") log({ initialized: true });
+      const response = message.request.subtype === "initialize" ? { commands: [], models, agents: [], output_style: "default", available_output_styles: ["default"], account: {} } : {};
+      send({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response, ...(message.request.subtype === "initialize" ? { pending_permission_requests: open ? [ask] : [] } : {}) } });
+    } else if (message.type === "user") {
+      send({ type: "system", subtype: "init", session_id: session, cwd: process.cwd(), tools: ["Bash"], model: "claude-opus-5-5", permissionMode: "default", uuid: "00000000-0000-4000-8000-000000000000" });
+      assistant("m1", [{ type: "text", text: "Asking first." }, { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "touch held.txt" } }]);
+      open = true;
+      send(ask);
+      log({ asked: "p1", parent: process.ppid });
+    } else if (message.type === "control_response" && message.response?.request_id === "p1" && open) {
+      open = false;
+      log({ answered: message.response.response?.behavior });
+      send({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "" }] }, parent_tool_use_id: null, session_id: session, uuid: "00000000-0000-4000-8000-000000000003" });
+      assistant("m4", [{ type: "text", text: "Ran it." }]);
+      send({ type: "result", subtype: "success", is_error: false, result: "Ran it.", num_turns: 2, duration_ms: 1, duration_api_ms: 1, total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 }, session_id: session, uuid: "00000000-0000-4000-8000-000000000005" });
+    }
+  }
+});
+`;
+
+/** Grok's CLI as far as this asks it: signed in, its models, and `agent stdio` speaking ACP: a
+ * prompt asks to run a command, and once that's answered, it's done (Grok 1.0.77 was checked the
+ * same way in spike S2's ACP run). */
+const GROK = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const folder = process.env.STAND_IN_FOLDER;
+const args = process.argv.slice(2);
+if (args[0] === "models") { console.log("You are logged in.\n  * grok-test (default)"); process.exit(0); }
+if (args.includes("--version")) { console.log("grok 1.0.77"); process.exit(0); }
+if (!args.includes("stdio")) process.exit(1);
+const log = what => fs.appendFileSync(path.join(folder, "grok.log"), JSON.stringify({ ...what, pid: process.pid }) + "\n");
+const send = message => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+const update = (sessionId, update) => send({ method: "session/update", params: { sessionId, update } });
+let buffer = "", prompt;
+process.stdin.on("end", () => { log({ ended: true }); process.exit(0); });
+process.stdin.on("data", chunk => {
+  buffer += chunk;
+  for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+    const line = buffer.slice(0, at);
+    buffer = buffer.slice(at + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") send({ id: message.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } }, authMethods: [{ id: "xai.api_key" }] } });
+    else if (message.method === "session/new") send({ id: message.id, result: { sessionId: "g1", models: { currentModelId: "grok-test", availableModels: [{ modelId: "grok-test", name: "Grok Test" }] } } });
+    else if (message.method === "session/prompt") {
+      prompt = message.id;
+      const sessionId = message.params.sessionId;
+      update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Asking first." } });
+      update(sessionId, { sessionUpdate: "tool_call", toolCallId: "t1", title: "touch held.txt", kind: "execute", status: "pending", rawInput: { command: "touch held.txt" } });
+      send({ id: 0, method: "session/request_permission", params: { sessionId, toolCall: { toolCallId: "t1", title: "touch held.txt", kind: "execute", rawInput: { command: "touch held.txt" } }, options: [{ optionId: "allow-once", name: "Allow", kind: "allow_once" }, { optionId: "reject-once", name: "Reject", kind: "reject_once" }] } });
+      log({ asked: 0, parent: process.ppid });
+    } else if (message.id === 0 && message.method === undefined) {
+      log({ answered: message.result?.outcome?.optionId ?? "none" });
+      update("g1", { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
+      update("g1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Ran it." } });
+      send({ id: prompt, result: { stopReason: "end_turn" } });
+    } else if (message.id !== undefined && message.method !== undefined) send({ id: message.id, result: {} });
+  }
+});
+`;
+
+const boxModules = fileURLToPath(new URL("../node_modules", import.meta.url));
+
 const freePort = () => new Promise((resolve, reject) => {
   const server = net.createServer();
   server.on("error", reject);
@@ -74,13 +167,13 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-async function until(wanted, what, within = 60_000) {
+async function until(wanted, what, within = 60_000, said = async () => "") {
   for (let waited = 0; waited < within; waited += 20) {
     const found = await wanted();
     if (found) return found;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  assert.fail(`Waited too long for ${what}`);
+  assert.fail(`Waited too long for ${what}${await said()}`);
 }
 
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -97,6 +190,13 @@ async function machine() {
   const fake = path.join(home, "fake");
   fs.writeFileSync(path.join(fake, "app-server.js"), CODEX);
   fs.writeFileSync(path.join(fake, "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { echo "codex-cli 0.169.0"; exit 0; }\nexec "${bun}" "${path.join(fake, "app-server.js")}" "${fake}"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(fake, "claude.js"), CLAUDE);
+  fs.writeFileSync(path.join(fake, "claude"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}"\nexec "${bun}" "${path.join(fake, "claude.js")}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(fake, "grok.js"), GROK);
+  fs.writeFileSync(path.join(fake, "grok"), `#!/bin/sh\nexport BUN_BE_BUN=1 STAND_IN_FOLDER="${fake}"\nexec "${bun}" "${path.join(fake, "grok.js")}" "$@"\n`, { mode: 0o755 });
+  // (Claude's SDK, as the box's own tests have it: nothing is downloaded.)
+  fs.mkdirSync(path.join(home, "agents", "runtime", "claude"), { recursive: true });
+  fs.symlinkSync(boxModules, path.join(home, "agents", "runtime", "claude", "node_modules"));
   const holders = path.join(home, "run", "agents", "hold");
   // (Holders run in sessions of their own: any this left are stopped, by their own pid.)
   atEnd(() => {
@@ -151,31 +251,38 @@ async function machine() {
     const info = await api("GET", "api/info");
     return info.status === 200 && info.json.pid === said.pid ? said.pid : null;
   }, besides ? "the bridge started again to answer" : "the bridge to answer");
-  const log = () => { try { return fs.readFileSync(path.join(fake, "log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
+  const log = (name = "log") => { try { return fs.readFileSync(path.join(fake, name), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { return []; } };
   const held = () => (fs.existsSync(holders) ? fs.readdirSync(holders) : []).filter(name => name.endsWith(".json")).map(name => JSON.parse(fs.readFileSync(path.join(holders, name), "utf8")));
   return { root, home, api, up, log, held, holders };
 }
 
 const textOf = messages => messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text);
 
-test("a crash while Codex waits on your approval: Codex lives on, the next bridge asks once, and the turn ends as one; stopping the box stops it", { skip: bun ? false : NO_BUN }, async () => {
+/**
+ * The crash and the stop, for one agent: its session, a message whose turn asks to run a command,
+ * the bridge killed while it asks, the next bridge asking once more, your answer, the turn's end,
+ * and the box stopped.
+ */
+async function crashWhileAsking({ provider, model, log }) {
   const box = await machine();
   const first = await box.up();
-  const made = await box.api("POST", "api/session", { title: "Held", location: { directory: path.join(box.home, "work") }, model: { providerID: "codex-cli", id: "gpt-test" } });
+  const made = await box.api("POST", "api/session", { title: "Held", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
   assert.equal(made.status, 200, JSON.stringify(made.json));
   const session = made.json.data.id;
-  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldcodex00000001", delivery: "steer", text: "run it" })).status, 200);
-  const asked = await until(() => box.log().find(each => each.asked), "Codex to ask");
+  assert.equal((await box.api("POST", `api/session/${session}/prompt`, { id: "msg_heldagent00000001", delivery: "steer", text: "run it" })).status, 200);
+  const asked = await until(() => box.log(log).find(each => "asked" in each), "the agent to ask", 60_000, async () =>
+    `\n${fs.readFileSync(path.join(box.home, "run", "agents.log"), "utf8").slice(-3000)}\n${JSON.stringify((await box.api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? []).slice(-2000)}\n${JSON.stringify(box.log(log))}`);
   await until(async () => (await box.api("GET", `api/session/${session}/permission`)).json?.data?.length === 1, "the approval to show");
-  const [holder] = box.held();
-  assert.equal(holder.child, asked.pid, "Codex runs under a holder");
+  const holder = box.held().find(each => each.child === asked.pid);
+  assert.ok(holder, `the agent runs under a holder: ${JSON.stringify(box.held().map(each => [each.pid, each.child, each.meta]))}`);
   assert.equal(asked.parent, holder.pid);
-  assert.equal(holder.meta.turns[Object.keys(holder.meta.turns)[0]].session, session, "the holder's record says which session's turn is under way");
+  await until(() => Object.values(box.held().find(each => each.pid === holder.pid)?.meta.turns ?? {})[0]?.session === session, "the holder's record to say which session's turn is under way");
   assert.equal(fs.statSync(box.holders).mode & 0o777, 0o700, "only you reach the holders");
 
   process.kill(first, "SIGKILL");
   const second = await box.up(first);
-  assert.ok(alive(asked.pid), "Codex lived on through the crash");
+  assert.notEqual(second, first);
+  assert.ok(alive(asked.pid), "the agent lived on through the crash");
   const asks = await until(async () => {
     const data = (await box.api("GET", `api/session/${session}/permission`)).json?.data;
     return data?.length ? data : null;
@@ -187,16 +294,24 @@ test("a crash while Codex waits on your approval: Codex lives on, the next bridg
     return page.at(-1)?.type === "idle" ? page : null;
   }, "the turn to end");
   assert.deepEqual(messages.filter(each => each.type === "user").map(each => each.text), ["run it"]);
-  assert.deepEqual(textOf(messages), ["Asking first.", "Ran it."], "what Codex said before the crash and after, once each");
+  assert.deepEqual(textOf(messages), ["Asking first.", "Ran it."], "what the agent said before the crash and after, once each");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "one turn, not cut");
-  assert.deepEqual(box.log().filter(each => each.answered).map(each => each.answered), ["accept"], "answered once");
-  assert.equal(box.log().filter(each => each.asked).length, 1, "the command was asked about once: the turn wasn't started again");
-  assert.notEqual(second, first);
+  assert.equal(box.log(log).filter(each => "answered" in each).length, 1, "answered once");
+  assert.equal(box.log(log).filter(each => "asked" in each).length, 1, "asked about once: the turn wasn't started again");
 
-  // Stopping the box (Stop, and uninstall's `off`): the held Codex stops too, its holder with it.
+  // Stopping the box (Stop, and uninstall's `off`): the held agent stops too, its holder with it.
   const stopped = spawnSync("sh", [keeper, "stop"], { env: { PATH: "/usr/bin:/bin", HOME: box.root }, encoding: "utf8", timeout: 60_000 });
   assert.equal(stopped.status, 0, stopped.stderr);
   assert.equal(alive(asked.pid), false, "nothing held runs after a stop");
   assert.equal(alive(holder.pid), false);
   assert.deepEqual(box.held(), []);
-});
+}
+
+test("Codex: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
+  crashWhileAsking({ provider: "codex-cli", model: "gpt-test", log: "log" }));
+
+test("Claude Code: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
+  crashWhileAsking({ provider: "claude-code", model: "default", log: "claude.log" }));
+
+test("Grok (ACP): a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
+  crashWhileAsking({ provider: "grok-cli", model: "grok-test", log: "grok.log" }));

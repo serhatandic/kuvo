@@ -20,11 +20,14 @@ import { attach, heldIn, holdFolder, type Held, type HoldRecord } from "./client
  * over, so a bridge that crashes ends their turns (as before), and one that makes way for a newer
  * build waits for them to end (renewal.ts).
  */
-export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex"])
+export const HELD_KINDS: ReadonlySet<AgentKind> = new Set<AgentKind>(["codex", "claude", "grok"])
+
+/** Whether agents start under holders at all: a test of how an agent's own process is started turns it off. */
+export const holding = { on: true }
 
 /** Where this box's agents of `kind` are held: none for an agent that isn't, or off a box. */
 export function agentHoldFolder(kind: AgentKind): string | undefined {
-  if (!HELD_KINDS.has(kind) || !machineHome) return undefined
+  if (!holding.on || !HELD_KINDS.has(kind) || !machineHome) return undefined
   return holdFolder(machineHome)
 }
 

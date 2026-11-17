@@ -103,6 +103,11 @@ export class RPC {
     return this.held
   }
 
+  /** The id the next request will have. */
+  get nextID() {
+    return this.next
+  }
+
   get isClosed() {
     return this.closed
   }
