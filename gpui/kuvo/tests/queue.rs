@@ -128,9 +128,10 @@ fn the_queue_lists_the_boxs_items_under_its_statuses_with_whats_closed_folded(cx
 
     // What's closed is folded until it's opened; so is what's deleted.
     assert!(!shown(cx, "item-wqi_251") && !shown(cx, "item-wqi_248") && !shown(cx, "item-wqi_262"));
-    let folded_height = bounds(cx, "group-done").unwrap().size.height;
+    let folded = bounds(cx, "group-done").unwrap();
+    assert!(top(cx, "group-canceled") - folded.bottom() <= px(6.));
     click(cx, "group-done");
-    assert_eq!(bounds(cx, "group-done").unwrap().size.height, folded_height);
+    assert!(bounds(cx, "group-done").unwrap().size.height > folded.size.height);
     assert!(shown(cx, "item-wqi_251") && shown(cx, "item-wqi_251-status-done"));
     click(cx, "group-done");
     assert!(!shown(cx, "item-wqi_251"));
@@ -1374,11 +1375,24 @@ fn queue_editor_images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAp
     let picture = format!("picture-draft/0/{}", paths[0].display());
     assert!(shown(cx, &picture));
     assert!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().contains("kuvo-attachment:draft/0/")));
-    click(cx, &picture);
+    let tile = bounds(cx, &picture).unwrap();
+    assert_eq!(tile.size.width, bounds(cx, "item-composer").unwrap().size.width);
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.write_to_clipboard(ClipboardItem::new_string("Replace this".into()));
+    click(cx, "copy-queue-image");
+    assert!(matches!(cx.read_from_clipboard().as_ref().and_then(kuvo_ui::Pasted::from_clipboard), Some(kuvo_ui::Pasted::Picture(_))));
+    click(cx, "expand-queue-image");
     assert!(shown(cx, "picture-viewer"));
     keys(cx, "escape");
     assert!(shown(cx, "queue-sheet"));
     assert!(!shown(cx, "picture-viewer"));
+    let tile = bounds(cx, &picture).unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    click(cx, "remove-queue-image");
+    assert!(composer.read_with(cx, |composer, _| composer.attached().is_empty()));
+    keys(cx, "cmd-v");
     drop_image(cx);
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().len()), 2);
     keys(cx, "cmd-enter");
@@ -1443,7 +1457,8 @@ fn queue_editor_tab_order_and_large_editor(cx: &mut TestAppContext) {
     click(cx, "sheet-size");
     let large = bounds(cx, "queue-sheet").unwrap();
     assert!(large.size.height > compact.size.height + px(200.));
-    assert!(large.size.width > compact.size.width);
+    assert_eq!(large.origin.x, px(40.));
+    assert_eq!(large.size.width, px(1200.));
     click(cx, "sheet-size");
     assert_eq!(bounds(cx, "queue-sheet").unwrap().size.width, compact.size.width);
 }
@@ -1470,7 +1485,7 @@ fn queue_editor_known_numbers_are_offered_and_can_be_inserted_from_the_keyboard(
 fn queue_editor_kept_picture_opens_from_page_and_edit_and_uses_its_saved_name(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let mut png = std::io::Cursor::new(Vec::new());
-    image::RgbaImage::new(300, 180).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    image::RgbaImage::new(600, 95).write_to(&mut png, image::ImageFormat::Png).unwrap();
     stand_in.work_item_fixture("wqi_231", json!({
         "body": "Before [Image 1] after.\n\n![Review 2.png](kuvo-attachment:file/review2)\n\nFinish",
         "files": [
@@ -1489,6 +1504,13 @@ fn queue_editor_kept_picture_opens_from_page_and_edit_and_uses_its_saved_name(cx
     assert!(shown(cx, "picture-viewer"));
     keys(cx, "escape");
     assert!(shown(cx, "queue-sheet"));
+    let tile = bounds(cx, "picture-wqi_231/2/Review 2.png").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    click(cx, "remove-queue-image");
+    keys(cx, "cmd-enter");
+    let edited = bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_231");
+    assert!(!edited.last().unwrap()["body"].as_str().unwrap().contains("kuvo-attachment:file/review2"));
 }
 
 #[gpui::test]
@@ -1537,4 +1559,18 @@ fn queue_editor_attach_button_takes_any_file_with_a_long_description(cx: &mut Te
     click(cx, "sheet-save");
     let sent = bodies(&stand_in, "POST", "kuvo/work-queue/items");
     assert_eq!(sent.last().unwrap()["files"][0]["name"], "Trace bundle.bin");
+}
+
+#[gpui::test]
+fn queue_editor_item_page_renders_a_clickable_reference_chip(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": "See #234. Ranked #1.",
+        "bodyMentions": [{ "start": 4, "end": 8, "number": 234 }],
+    }), None);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    assert!(!shown(cx, "item-chip-1"));
+    click(cx, "item-chip-234");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Item("wqi_234".into()));
 }

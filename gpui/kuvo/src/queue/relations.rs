@@ -1,8 +1,8 @@
-use gpui::{AnyElement, AppContext as _, Context, Entity, Focusable as _, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px};
+use gpui::{AnyElement, App, AppContext as _, Context, Entity, Focusable as _, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px};
 use kuvo_box::work_queue::ItemRelation;
 use kuvo_ui::{ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TypeSize, theme::{radius, space}};
 
-use super::QueueView;
+use super::{QueueView, marks::status_mark};
 
 const KINDS: [(&str, &str); 4] = [("related", "Related"), ("blocks", "Blocks"), ("blocked-by", "Blocked by"), ("duplicate-of", "Duplicate of")];
 
@@ -23,6 +23,21 @@ pub(super) struct Picker {
 
 fn name(number: Option<u64>, title: &str) -> String {
     number.map_or_else(|| title.to_owned(), |number| format!("#{number} {title}"))
+}
+
+pub(super) fn item_chip(
+    id: impl Into<gpui::ElementId>, number: Option<u64>, title: &str, status: &str,
+    open: impl Fn(&mut gpui::Window, &mut App) + 'static, cx: &App,
+) -> AnyElement {
+    let c = &cx.theme().colors;
+    div().id(id).debug_selector(move || number.map_or_else(|| "item-chip".into(), |number| format!("item-chip-{number}"))).flex().items_center().gap(space::S1_5).h(px(23.)).max_w(px(320.)).min_w_0()
+        .px(space::S2).rounded(radius::NAV).bg(c.sunken).border_1().border_color(c.border)
+        .cursor_pointer().hover(|d| d.bg(c.hover))
+        .on_click(move |_, window, cx| open(window, cx))
+        .child(div().flex_none().child(status_mark(status, cx)))
+        .children(number.map(|number| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("#{number}"))))
+        .child(div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(title.to_owned()))
+        .into_any_element()
 }
 
 impl QueueView {
@@ -49,27 +64,35 @@ impl QueueView {
 
     pub(super) fn relation_section(&self, relations: &[ItemRelation], can_link: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let header = div().flex().items_center().justify_between()
-            .child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child("Links"))
-            .when(can_link, |header| header.child(Button::new("link-item", "Link item…").icon(IconName::Link)
-                .size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.show_relation_picker(cx)))));
-        let rows = relations.iter().enumerate().map(|(at, relation)| {
-            let open = relation.id.clone();
-            let remove = relation.id.clone();
-            let manual = !matches!(relation.kind.as_str(), "mentions" | "mentioned-in");
-            div().flex().items_center().gap(space::S2).min_w_0()
-                .child(div().id(("item-relation", at)).debug_selector(move || format!("item-relation-{at}"))
-                    .px(space::S2).py(space::S1).rounded(radius::NAV).hover(|d| d.bg(c.hover))
-                    .flex().items_center().gap(space::S2).min_w_0().flex_1().cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.open_reference(open.clone(), cx)))
-                    .child(div().flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(kind_name(&relation.kind).to_owned()))
-                    .child(div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.accent).child(name(relation.number, &relation.title))))
-                .when(manual && can_link, |row| row.child(Button::icon_only(("unlink-item", at), IconName::Close, "Remove link")
-                    .ghost().size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.set_relation(remove.clone(), None, cx)))))
-        });
-        div().pt(space::S6).pb(space::S2).flex().flex_col().gap(space::S2).child(header)
-            .when(!relations.is_empty(), |d| d.child(div().p(space::S2).rounded(radius::CARD).bg(c.card).children(rows)))
-            .into_any_element()
+        let header = div().flex().items_center().gap(space::S1_5)
+            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Links"))
+            .when(can_link, |header| header.child(Button::icon_only("link-item", IconName::Plus, "Link item")
+                .ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.show_relation_picker(cx)))));
+        let groups = ["mentions", "mentioned-in", "blocks", "blocked-by", "related", "duplicate-of", "duplicated-by"];
+        let groups = groups.into_iter().filter_map(|kind| {
+            let rows: Vec<_> = relations.iter().enumerate().filter(|(_, relation)| relation.kind == kind).map(|(at, relation)| {
+                let open = relation.id.clone();
+                let remove = relation.id.clone();
+                let group = SharedString::from(format!("item-relation-actions-{at}"));
+                let manual = !matches!(kind, "mentions" | "mentioned-in");
+                let status = self.queue().and_then(|queue| queue.items.iter().find(|item| item.id == relation.id)).map(|item| item.status.as_str()).unwrap_or("");
+                let weak = cx.entity().downgrade();
+                let chip = item_chip(("item-relation", at), relation.number, &relation.title, status, move |_, cx| {
+                    weak.update(cx, |this, cx| this.open_reference(open.clone(), cx)).ok();
+                }, cx);
+                div().id(("item-relation-row", at)).debug_selector(move || format!("item-relation-{at}"))
+                    .group(group.clone()).flex().items_center().gap(space::S1).min_w_0().child(chip)
+                    .when(manual && can_link, |row| row.child(div().invisible().group_hover(group, |style| style.visible())
+                        .child(Button::icon_only(("unlink-item", at), IconName::Close, "Remove link")
+                            .ghost().size(ButtonSize::Small)
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_relation(remove.clone(), None, cx))))))
+            }).collect();
+            (!rows.is_empty()).then(|| div().flex().flex_col().gap(space::S0_5)
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(kind_name(kind).to_owned()))
+                .children(rows))
+        }).collect::<Vec<_>>();
+        div().pt(space::S5).pb(space::S2).flex().flex_col().gap(space::S2).child(header)
+            .children(groups).into_any_element()
     }
 
     pub(super) fn relation_sheet(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

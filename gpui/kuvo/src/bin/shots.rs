@@ -656,7 +656,7 @@ fn queue_new_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
     });
     title.update(cx, |field, cx| field.set_text("Tighten the Work Queue layout", cx));
     body.update(cx, |field, cx| field.set_text("The current Work Queue leaves a large gap between groups.", cx));
-    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots/screens-queue-light.png");
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots/sidebar-c-queue-light.png");
     composer.update(cx, |composer, cx| composer.attach_named([image], cx));
     body.update(cx, |field, cx| field.replace_selection("Keep the group names and counts visible.", cx));
 }
@@ -1486,9 +1486,9 @@ fn main() -> anyhow::Result<()> {
             // A queue with many more labels than a menu shows at once.
             if screen.slug == "queue-edit-pictures" {
                 stand_in.work_item_fixture("wqi_231", serde_json::json!({
-                    "body": "The email field should keep its value if the address is taken.\n\n![signup.png](kuvo-attachment:file/signup)\n\nCheck the other fields after submitting.",
+                    "body": "The email field should keep its value if the address is taken.\n\n![signup.png](kuvo-attachment:file/signup)\n\nCheck the other fields after submitting.\n\n![signup-wide.png](kuvo-attachment:file/signup-wide)",
                     "files": [{"name": "signup.png", "type": "image/png", "anchor": "signup", "at": 1},
-                              {"name": "signup-wide.png", "type": "image/png", "at": 2}],
+                              {"name": "signup-wide.png", "type": "image/png", "anchor": "signup-wide", "at": 2}],
                 }), Some(("signup.png", include_bytes!("../../../shots/screens-composer-row-light.png").to_vec())));
                 stand_in.work_item_fixture("wqi_231", serde_json::json!({}), Some(("signup-wide.png", include_bytes!("../../../shots/screens-composer-row-dark.png").to_vec())));
             }
@@ -1751,6 +1751,15 @@ fn main() -> anyhow::Result<()> {
             cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if screen.slug == "queue-new-picture" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                cx.update_window(any, |_, window, cx| {
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                        position: gpui::point(px(800.), px(300.)), pressed_button: None, modifiers: Modifiers::default(),
+                    }));
+                })?;
+                cx.run_until_parked();
+            }
             let image = cx.capture_screenshot(any)?;
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });
             image.save(out.join(&name))?;

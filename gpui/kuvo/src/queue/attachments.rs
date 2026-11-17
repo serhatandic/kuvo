@@ -2,7 +2,7 @@
 
 use std::{collections::{HashMap, HashSet}, ops::Range, path::PathBuf, rc::Rc};
 
-use gpui::{AnyElement, App, Context, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window, div, prelude::FluentBuilder as _};
+use gpui::{AnyElement, App, Context, StatefulInteractiveElement, StyledImage as _, ObjectFit, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window, div, img, px, prelude::FluentBuilder as _};
 use kuvo_box::{pictures::{Picture, Source}, work_queue::Whole};
 use kuvo_ui::{ActiveTheme, Button, ButtonSize, IconName, StyledType, TypeSize, markdown, theme::{radius, space}};
 
@@ -155,51 +155,115 @@ pub(super) struct Cards {
 }
 
 impl Cards {
-    pub fn draw(&self, file: &Attachment, width: f32, height: f32, cx: &App) -> AnyElement {
-        let c = &cx.theme().colors;
+    pub fn image_height(&self, file: &Attachment, width: f32, cap: f32) -> f32 {
+        match self.read.get(&file.key()) {
+            Some(Read::Shown { width: w, height: h, .. }) => (width * *h as f32 / (*w).max(1) as f32).clamp(32., cap),
+            _ => cap.min(144.),
+        }
+    }
+
+    pub fn draw(&self, file: &Attachment, width: f32, cap: f32, remove: Option<(String, bool)>, cx: &App) -> AnyElement {
         let key = file.key();
-        let dismiss = match file.origin { Origin::Draft(at, _) => Some(at), _ => None };
-        let size = file.size;
-        let fallback = matches!(self.read.get(&key), Some(Read::Failed { .. })).then(|| file.clone());
-        let file = file.clone();
-        let content = if file.image {
-            let picture = file.picture();
-            let open = self.queue.clone();
-            let retry = self.queue.clone();
+        let picture = file.picture();
+        let queue = self.queue.clone();
+        if let Some(Read::Shown { image, thumb, .. }) = self.read.get(&key).filter(|_| file.image) {
+            let group = SharedString::from(format!("queue-image-{key}"));
+            let open = queue.clone();
+            let expand = queue.clone();
+            let expanded_picture = picture.clone();
+            let copied = image.clone();
+            let selector = format!("picture-{key}");
+            let removal_file = file.clone();
+            let tools = div().absolute().top(px(8.)).right(px(8.)).flex().items_center().p(px(2.))
+                .rounded(radius::PILL).bg(gpui::black().opacity(0.76))
+                .invisible().group_hover(group.clone(), |style| style.visible())
+                .child(image_action("copy-queue-image", IconName::Copy, "Copy image", move |_, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::from((*copied).clone()));
+                }))
+                .child(image_action("expand-queue-image", IconName::ExpandEditor, "Open image", move |window, cx| {
+                    expand.update(cx, |page, cx| page.open_picture(expanded_picture.clone(), window, cx)).ok();
+                }))
+                .when_some(remove, |tools, (url, editor)| tools.child(image_action("remove-queue-image", IconName::Trash, "Remove from description", move |_, cx| {
+                    queue.update(cx, |page, cx| page.remove_picture_anchor(&removal_file, &url, editor, cx)).ok();
+                })));
+            return div().id(SharedString::from(selector.clone())).debug_selector(move || selector)
+                .group(group).relative().w_full().h(px(self.image_height(file, width, cap))).rounded(px(8.))
+                .overflow_hidden().cursor_pointer().bg(cx.theme().colors.sunken)
+                .on_click(move |_, window, cx| {
+                    open.update(cx, |page, cx| page.open_picture(picture.clone(), window, cx)).ok();
+                })
+                .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Contain))
+                .child(tools).into_any_element();
+        }
+        if file.image {
+            let mut picture = picture;
+            picture.caption = None;
             let load = file.clone();
+            let retry = self.queue.clone();
             let looks = Looks {
                 read: &self.read, shown: &[],
-                open: Rc::new(move |_, window, cx| { open.update(cx, |queue, cx| queue.open_picture(file.picture(), window, cx)).ok(); }),
-                again: Rc::new(move |_, _, cx| { retry.update(cx, |queue, cx| queue.load_attachment(&load, true, cx)).ok(); }),
+                open: Rc::new(|_, _, _| {}),
+                again: Rc::new(move |_, _, cx| { retry.update(cx, |page, cx| page.load_attachment(&load, true, cx)).ok(); }),
             };
-            pictures::picture(&picture, width.max(40.), height, &looks, cx)
-        } else {
-            let queue = self.queue.clone();
-            let name = file.name.clone();
-            div().flex().items_center().gap(space::S2).max_w_full().min_w_0()
-                .child(Button::new(SharedString::from(format!("save-{key}")), name).icon(IconName::Paperclip)
-                    .size(ButtonSize::Small).on_click(move |_, _, cx| {
-                        queue.update(cx, |queue, cx| queue.save_attachment(file.clone(), cx)).ok();
-                    }))
-                .children(size.map(|size| div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(super::size_words(size))))
-                .into_any_element()
-        };
-        let queue = self.queue.clone();
-        div().debug_selector(move || format!("queue-attachment-{key}")).flex().items_start().gap(space::S2).min_w_0()
-            .child(div().min_w_0().child(content).children(fallback.map(|file| {
-                let queue = self.queue.clone();
-                Button::new("save-image-file", "Save image").ghost().size(ButtonSize::Small)
-                    .on_click(move |_, _, cx| { queue.update(cx, |queue, cx| queue.save_attachment(file.clone(), cx)).ok(); })
-            })))
-            .when_some(dismiss, |row, at| row.child(Button::icon_only(("remove-attachment", at), IconName::Close, "Remove attachment")
+            let failed = matches!(self.read.get(&key), Some(Read::Failed { .. }));
+            let file = file.clone();
+            return div().child(pictures::picture(&picture, width, cap, &looks, cx))
+                .when(failed, |d| d.child(Button::new("save-image-file", "Save image").ghost().size(ButtonSize::Small)
+                    .on_click(move |_, _, cx| { queue.update(cx, |page, cx| page.save_attachment(file.clone(), cx)).ok(); })))
+                .into_any_element();
+        }
+        let name = file.name.clone();
+        let file = file.clone();
+        let size = file.size;
+        let pending = if let Origin::Draft(key, _) = file.origin { Some(key) } else { None };
+        let remove_queue = queue.clone();
+        div().id(SharedString::from(format!("file-chip-{key}"))).flex().items_center().gap(space::S1)
+            .when_some(size, |d, size| d.tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(super::size_words(size)).build(cx)))
+            .child(Button::new(SharedString::from(format!("save-{key}")), name).icon(IconName::Paperclip)
+                .pill().size(ButtonSize::Small).on_click(move |_, _, cx| {
+                    queue.update(cx, |page, cx| page.save_attachment(file.clone(), cx)).ok();
+                }))
+            .when_some(pending, |row, at| row.child(Button::icon_only(("remove-attachment", at), IconName::Close, "Remove attachment")
                 .ghost().size(ButtonSize::Small).on_click(move |_, _, cx| {
-                    queue.update(cx, |queue, cx| queue.body_composer.update(cx, |composer, cx| composer.detach(at, cx))).ok();
+                    remove_queue.update(cx, |queue, cx| queue.body_composer.update(cx, |composer, cx| composer.detach(at, cx))).ok();
                 })))
             .into_any_element()
     }
 }
 
+fn image_action(id: &'static str, icon: IconName, label: &'static str, action: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
+    div().id(id).debug_selector(move || id.to_owned()).size(px(26.)).flex().items_center().justify_center().rounded(radius::PILL)
+        .cursor_pointer().hover(|d| d.bg(gpui::white().opacity(0.16)))
+        .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(label).build(cx))
+        .on_click(move |_, window, cx| { cx.stop_propagation(); action(window, cx); })
+        .child(kuvo_ui::Icon::new(icon).color(gpui::white().opacity(0.9)))
+}
+
 impl QueueView {
+    fn remove_picture_anchor(&mut self, file: &Attachment, url: &str, editor: bool, cx: &mut Context<Self>) {
+        if editor {
+            if self.saving { return; }
+            if let Origin::Draft(key, _) = file.origin {
+                self.body_composer.update(cx, |composer, cx| composer.detach(key, cx));
+                return;
+            }
+        }
+        let mut body = if editor { self.body.read(cx).text().to_owned() }
+            else if let Some(whole) = self.whole().filter(|whole| whole.item.can.edit && !whole.told) { whole.body.clone() }
+            else { return };
+        let files = self.whole().map(kept).unwrap_or_default();
+        let Some((range, _)) = anchors(&body, &files).into_iter().find(|(_, anchor)| anchor == url) else { return };
+        if editor {
+            self.body.update(cx, |field, cx| {
+                field.select_range(range, cx);
+                field.replace_selection("", cx);
+            });
+        } else if let Origin::Kept(item, _) = &file.origin {
+            body.replace_range(range, "");
+            self.act(super::Act::Set { item: item.clone(), change: Box::new(kuvo_box::work_queue::ItemChange { body: Some(body), ..Default::default() }) }, cx);
+        }
+    }
+
     pub(super) fn attachment_cards(&self, cx: &Context<Self>) -> Cards {
         Cards { read: self.picture_reads.clone(), queue: cx.entity().downgrade() }
     }

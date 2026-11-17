@@ -64,31 +64,42 @@ impl QueueView {
         let mut referenced = HashSet::new();
         for file in &files { self.load_attachment(file, false, cx); }
         let renderer = self.attachment_cards(cx);
-        let image_height = if self.enlarged { 270. } else { 176. };
+        let cap = if self.enlarged { 520. } else { 410. };
+        let can_remove = !self.saving;
         let blocks = anchors.into_iter().map(|(range, url)| {
             let file = attachments::resolve(&url, &files).cloned();
             if let Some(file) = &file { referenced.insert(file.key()); }
             let renderer = renderer.clone();
+            let measure = renderer.clone();
+            let measured_file = file.clone();
             InlineBlock {
                 range,
-                height: px(if file.as_ref().is_some_and(|file| file.image) { image_height + 28. } else { 39. }),
-                draw: Rc::new(move |width, cx| {
-                    file.as_ref().map_or_else(|| attachments::unavailable(cx), |file| renderer.draw(file, f32::from(width) - 36., image_height, cx))
+                height: Rc::new(move |width| match &measured_file {
+                    Some(file) if file.image => px(measure.image_height(file, f32::from(width), cap) + 8.),
+                    Some(_) => px(0.),
+                    None => px(34.),
+                }),
+                draw: Rc::new(move |width, cx| match &file {
+                    Some(file) if file.image => renderer.draw(file, f32::from(width), cap, can_remove.then(|| (url.clone(), true)), cx),
+                    Some(_) => div().into_any_element(),
+                    None => attachments::unavailable(cx),
                 }),
             }
         }).collect();
-        let using_files = files.iter().any(|file| matches!(file.origin, attachments::Origin::Kept(..)) && !referenced.contains(&file.key()));
+        let extras: Vec<_> = files.iter().filter(|file| {
+            if file.image { matches!(file.origin, attachments::Origin::Kept(..)) && !referenced.contains(&file.key()) }
+            else { matches!(file.origin, attachments::Origin::Kept(..)) || referenced.contains(&file.key()) }
+        }).collect();
         let links = self.field_links(&text, cx);
         let height = f32::from(self.viewport.height);
-        let reserve = if new { 192. } else { 154. };
-        let reserve = reserve + if suggestions { 170. } else { 0. } + if using_files { 96. } else { 0. }
+        let reserve = if self.enlarged { 294. } else { 247. };
+        let reserve = reserve + if suggestions { 170. } else { 0. } + if !extras.is_empty() { 70. } else { 0. }
             + if self.sheet_error.is_some() { 48. } else { 0. };
-        let limit = if self.enlarged { (height - reserve).max(72.) } else { (height - reserve - 36.).clamp(72., 390.) };
+        let limit = if self.enlarged { (height - reserve).max(72.) } else { (height - reserve - 32.).clamp(76., 455.) };
         self.body.update(cx, |field, _| {
-            field.set_editor_height(px(limit), self.enlarged);
+            field.set_editor_height(px(if !self.enlarged && text.is_empty() { limit.min(76.) } else { limit }), self.enlarged);
             field.set_decorations(text, blocks, links);
         });
-        files.iter().filter(|file| matches!(file.origin, attachments::Origin::Kept(..)) && !referenced.contains(&file.key()))
-            .map(|file| renderer.draw(file, 160., 56., cx)).collect()
+        extras.into_iter().map(|file| renderer.draw(file, 220., 100., None, cx)).collect()
     }
 }

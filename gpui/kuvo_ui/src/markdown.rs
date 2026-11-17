@@ -317,10 +317,13 @@ pub struct Markdown {
     selectable: Option<Selectable>,
     pictures: Option<Pictures>,
     on_link: Option<LinkClick>,
+    item_chip: Option<ItemChip>,
 }
 
 /// What draws a markdown's pictures, given each one's address and alt text.
 pub type Pictures = std::rc::Rc<dyn Fn(&str, &str, &App) -> AnyElement>;
+
+pub type ItemChip = std::rc::Rc<dyn Fn(u64, &App) -> Option<AnyElement>>;
 
 pub type LinkClick = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
@@ -364,12 +367,17 @@ impl Selectable {
 
 impl Markdown {
     pub fn new(id: impl Into<ElementId>, source: &str) -> Self {
-        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None, on_link: None }
+        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None, on_link: None, item_chip: None }
     }
 
     pub fn item_links(mut self, source: &str, open: LinkClick) -> Self {
         self.blocks = parse_with(source, |url| url.strip_prefix("kuvo-item:").is_some_and(|number| number.parse::<u64>().is_ok()));
         self.on_link = Some(open);
+        self
+    }
+
+    pub fn item_chips(mut self, draw: ItemChip) -> Self {
+        self.item_chip = Some(draw);
         self
     }
 
@@ -390,7 +398,7 @@ impl RenderOnce for Markdown {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors.clone();
         let mut path = Vec::new();
-        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), on_link: self.on_link.as_ref(), cx };
+        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), on_link: self.on_link.as_ref(), item_chip: self.item_chip.as_ref(), cx };
         blocks(&draw, &mut path, &self.blocks, TextLevel::Normal)
             .text_ui(TypeSize::Body)
             .text_color(colors.text)
@@ -404,6 +412,7 @@ struct Draw<'a> {
     sel: Option<&'a Selectable>,
     pictures: Option<&'a Pictures>,
     on_link: Option<&'a LinkClick>,
+    item_chip: Option<&'a ItemChip>,
     cx: &'a App,
 }
 
@@ -688,6 +697,53 @@ pub fn code_chips(inline: &Inline, c: &Colors) -> Vec<(Range<usize>, Hsla)> {
 }
 
 fn text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: FontWeight) -> AnyElement {
+    if let Some(chip) = d.item_chip {
+        let references: Vec<_> = inline.links.iter().filter_map(|(range, url)| {
+            let number = url.strip_prefix("kuvo-item:")?.parse().ok()?;
+            Some((range, chip(number, d.cx)?))
+        }).collect();
+        if !references.is_empty() {
+            let mut children = Vec::new();
+            let mut start = 0;
+            for (range, chip) in references {
+                append_inline_text(d, path, inline, start..range.start, color, weight, &mut children);
+                let mut scoped = path.to_vec();
+                scoped.push(children.len() as u32);
+                children.push(div().id(element_id(d.id, &scoped)).min_w_0().max_w_full().child(chip).into_any_element());
+                start = range.end;
+            }
+            append_inline_text(d, path, inline, start..inline.text.len(), color, weight, &mut children);
+            return div().flex().flex_wrap().items_center().gap_y(px(3.)).min_w_0().children(children).into_any_element();
+        }
+    }
+    inline_text(d, path, inline, color, weight)
+}
+
+fn append_inline_text(
+    d: &Draw, path: &[u32], inline: &Inline, range: Range<usize>, color: Hsla, weight: FontWeight, out: &mut Vec<AnyElement>,
+) {
+    let mut start = range.start;
+    let pieces = inline.text[range.clone()].split_inclusive(char::is_whitespace);
+    for piece in pieces {
+        let end = start + piece.len();
+        let clip = |span: &Range<usize>| {
+            let left = span.start.max(start);
+            let right = span.end.min(end);
+            (left < right).then(|| left - start..right - start)
+        };
+        let fragment = Inline {
+            text: piece.to_owned(),
+            spans: inline.spans.iter().filter_map(|(span, style)| Some((clip(span)?, *style))).collect(),
+            links: inline.links.iter().filter_map(|(span, url)| Some((clip(span)?, url.clone()))).collect(),
+        };
+        let mut scoped = path.to_vec();
+        scoped.push(out.len() as u32);
+        out.push(inline_text(d, &scoped, &fragment, color, weight));
+        start = end;
+    }
+}
+
+fn inline_text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: FontWeight) -> AnyElement {
     let runs = inline_runs(inline, d.c, color, weight);
     let open = d.on_link.cloned();
     SelectableText::new(element_id(d.id, path), inline.text.clone())

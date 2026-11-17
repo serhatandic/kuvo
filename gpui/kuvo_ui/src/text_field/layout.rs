@@ -328,11 +328,12 @@ fn shape_editor(
         }
         if let Some(block) = block {
             let (blank, _, _, _) = shape(" ", None, color, None, kind, window);
-            rows.push((lines.len(), block.range.clone(), block.height));
+            let height = (block.height)(width.unwrap_or_default());
+            rows.push((lines.len(), block.range.clone(), height));
             lines.extend(blank);
             starts.push(block.range.start);
             tops.push(top);
-            top += block.height;
+            top += height;
             at = block.range.end;
         }
     }
@@ -384,7 +385,7 @@ impl Element for TextElement {
             return (window.request_layout(style, [], cx), ());
         };
         let text = field.content.clone();
-        let block_sizes = field.blocks().iter().map(|block| (block.range.clone(), block.height)).collect::<Vec<_>>();
+        let block_sizes = field.blocks().iter().map(|block| (block.range.clone(), block.height.clone())).collect::<Vec<_>>();
         let height_limit = field.editor_height;
         let layout_id = window.request_measured_layout(style, move |known, available, window, _cx| {
             let width = known.width.or(match available.width {
@@ -398,7 +399,7 @@ impl Element for TextElement {
                 if !piece.is_empty() {
                     height += shape(piece.trim_matches('\n'), None, gpui::black(), width, kind, window).3;
                 }
-                height += *block_height;
+                height += block_height(width.unwrap_or_default());
                 at = range.end;
             }
             let last = &text[at..];

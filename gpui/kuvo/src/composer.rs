@@ -296,7 +296,7 @@ impl Composer {
         // (A group chat's messages carry no files.)
         let takes_files = !matches!(target, Target::Group { .. });
         let field = cx.new(|cx| {
-            let field = TextField::new(cx).multi_line(if item_editor { 3 } else { 1 }, if item_editor { 12 } else { 10 }).bare().submits_on_enter(!item_editor).placeholder(if item_editor { "Add a description. Markdown works.".into() } else { placeholder.clone() });
+            let field = TextField::new(cx).multi_line(if item_editor { 3 } else { 1 }, if item_editor { 12 } else { 10 }).bare().submits_on_enter(!item_editor).placeholder(if item_editor { "Add description…".into() } else { placeholder.clone() });
             if takes_files && !item_editor { field.takes_files() } else { field }
         });
         let pasting = cx.subscribe(&field, |this: &mut Composer, _, pasted: &Pasted, cx| this.paste(pasted.clone(), cx));

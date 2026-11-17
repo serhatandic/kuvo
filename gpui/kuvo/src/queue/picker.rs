@@ -323,7 +323,7 @@ impl QueueView {
             // The keyboard goes back to where it was: the title or the description of the item
             // being written, or the page.
             self.wants_focus = Some(match self.sheet {
-                Some(Sheet::New) => self.text_focus.clone().unwrap_or_else(|| self.title.focus_handle(cx)),
+                Some(Sheet::New | Sheet::Edit(_)) => self.text_focus.clone().unwrap_or_else(|| self.title.focus_handle(cx)),
                 _ => self.focus.clone(),
             });
             cx.notify();

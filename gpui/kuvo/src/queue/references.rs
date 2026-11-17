@@ -140,8 +140,15 @@ impl QueueView {
                 (range, format!("[{label}](kuvo-item:{})", mention.number))
             }).collect();
         edits.extend(super::attachments::anchors(text, files).into_iter()
-            .filter(|(_, url)| super::attachments::is_legacy(url))
-            .map(|(range, url)| (range, super::attachments::legacy_markdown(&url))));
+            .filter_map(|(range, url)| {
+                if super::attachments::resolve(&url, files).is_some_and(|file| !file.image) {
+                    Some((range, String::new()))
+                } else if super::attachments::is_legacy(&url) {
+                    Some((range, super::attachments::legacy_markdown(&url)))
+                } else {
+                    None
+                }
+            }));
         edits.sort_by_key(|(range, _)| range.start);
         let mut source = text.to_owned();
         for (range, value) in edits.into_iter().rev() {

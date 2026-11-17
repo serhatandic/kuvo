@@ -213,7 +213,7 @@ struct Snapshot {
 #[derive(Clone)]
 pub struct InlineBlock {
     pub range: Range<usize>,
-    pub height: Pixels,
+    pub height: std::rc::Rc<dyn Fn(Pixels) -> Pixels>,
     pub draw: std::rc::Rc<dyn Fn(Pixels, &App) -> AnyElement>,
 }
 
