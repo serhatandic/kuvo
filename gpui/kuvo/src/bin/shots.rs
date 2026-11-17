@@ -1599,6 +1599,12 @@ fn main() -> anyhow::Result<()> {
                 let subagents: Vec<_> = ["Check the signup forms", "Run the browser tests", "Review the report"].iter().enumerate()
                     .map(|(index, title)| json!({ "session": format!("ses_sub{index}"), "title": title, "since": NOW })).collect();
                 stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": subagents }), &[]);
+                for (index, (provider, model)) in [("codex-cli", "gpt-6"), ("codex-cli", "gpt-6"), ("claude-code", "opus")].iter().enumerate() {
+                    stand_in.set_model_state(&format!("ses_sub{index}"), json!({
+                        "model": { "providerID": provider, "id": model }, "runs": true
+                    }));
+                }
+
                 stand_in.add_output("ses_signup", json!({
                     "id": "art_000000000000000000000001", "path": "/tmp/signup-review.md", "name": "signup-review.md",
                     "kind": "document", "type": "text/markdown", "latest": { "n": 1 }

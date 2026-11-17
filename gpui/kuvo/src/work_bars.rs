@@ -1,5 +1,5 @@
 //! Conversation activity in the header. The activity feeds stay live while the popover is closed.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -9,6 +9,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, StyledImage, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
+use kuvo_box::areas::Look;
 use kuvo_box::artifacts::{Artifact, Outputs};
 use kuvo_box::background::{Background, Command, Output};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
@@ -16,6 +17,7 @@ use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, Follow, Timing};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    icon::{Mark, provider_mark, provider_mark_color},
     menu::{PopoverMenu, PopoverMenuHandle},
     small::status_dot,
     theme::{radius, space},
@@ -27,6 +29,7 @@ const OUTPUT_AGAIN: Duration = Duration::from_millis(1500);
 
 /// Opens a session's conversation (the workspace's, handed in).
 pub type Opener = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+pub(crate) type BotLook = Rc<dyn Fn(&str, Option<&str>, &App) -> Option<(String, Look)>>;
 
 /// What a command's Output shows: the command, and what was read of it last.
 struct Shown {
@@ -53,6 +56,7 @@ pub struct WorkBars {
     background_reads: u64,
     work_reads: u64,
     opener: Option<Opener>,
+    bot_look: Option<BotLook>,
     _background_follow: Option<Follow<Followed<Background>>>,
     _work_follow: Option<Follow<Followed<WorkChanged>>>,
     /// When the bot's work was last said to change, as last seen.
@@ -81,6 +85,7 @@ impl WorkBars {
             background_reads: 0,
             work_reads: 0,
             opener: None,
+            bot_look: None,
             _background_follow: None,
             _work_follow: None,
             work_seen: None,
@@ -115,6 +120,10 @@ impl WorkBars {
     /// How a row opens its conversation.
     pub fn set_opener(&mut self, opener: Opener) {
         self.opener = Some(opener);
+    }
+
+    pub(crate) fn set_bot_look(&mut self, lookup: BotLook) {
+        self.bot_look = Some(lookup);
     }
 
     pub(crate) fn set_wakes(&mut self, wakes: Option<wakes::Status>, computer: String, now: Option<f64>, cx: &mut Context<Self>) {
@@ -246,6 +255,7 @@ impl WorkBars {
             id: session.session.clone(),
             title: session.title.clone().unwrap_or_else(|| "Session".into()),
             asking: session.state == WorkState::Asking,
+            provider: session.model.as_ref().and_then(|model| model.provider_id.clone()),
         }).collect();
         for subagent in &self.background.subagents {
             if subagent.session != self.session && !sessions.iter().any(|session| session.id == subagent.session) {
@@ -253,6 +263,7 @@ impl WorkBars {
                     id: subagent.session.clone(),
                     title: subagent.title.clone().unwrap_or_else(|| "Subagent".into()),
                     asking: subagent.asking,
+                    provider: None,
                 });
             }
         }
@@ -318,6 +329,7 @@ struct SessionRow {
     id: String,
     title: String,
     asking: bool,
+    provider: Option<String>,
 }
 
 impl Focusable for WorkBars {
@@ -372,7 +384,8 @@ impl WorkBars {
         let bars = cx.entity();
         let source = self.wake_source();
         let show_wakes = force_wakes || self.wake_label().is_some();
-        let card = cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, force_wakes, cx));
+        let sessions = self.sessions();
+        let card = cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, force_wakes, &sessions, cx));
         self.handle.open(card, window, cx);
         cx.notify();
     }
@@ -391,6 +404,9 @@ struct ActivityCard {
     output: Option<Shown>,
     reading_output: Option<Task<()>>,
     expanded: bool,
+    provider_requests: Vec<String>,
+    providers: HashMap<String, String>,
+    reading_providers: Option<Task<()>>,
     outputs: Option<Outputs>,
     outputs_failed: bool,
     preview: Option<(String, Preview)>,
@@ -414,10 +430,10 @@ impl ActivityCard {
     fn new(activity: &Entity<WorkBars>, force_wakes: bool, cx: &mut Context<Self>) -> Self {
         let bars = activity.read(cx);
         let show_wakes = force_wakes || bars.wake_label().is_some();
-        Self::with_source(activity, bars.wake_source(), show_wakes, force_wakes, cx)
+        Self::with_source(activity, bars.wake_source(), show_wakes, force_wakes, &bars.sessions(), cx)
     }
 
-    fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, cx: &mut Context<Self>) -> Self {
+    fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, sessions: &[SessionRow], cx: &mut Context<Self>) -> Self {
         let schedule = show_wakes.then(|| cx.new(|cx| WakeSchedule::embedded(source.clone(), cx)));
         let wakes::Source { client, session, live, .. } = source;
         let mut card = Self {
@@ -426,6 +442,9 @@ impl ActivityCard {
             output: None,
             reading_output: None,
             expanded: false,
+            provider_requests: Vec::new(),
+            providers: HashMap::new(),
+            reading_providers: None,
             outputs: None,
             outputs_failed: false,
             preview: None,
@@ -435,6 +454,7 @@ impl ActivityCard {
             force_wakes,
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
                 let bars = activity.read(cx);
+                let (client, live, sessions) = (bars.client.clone(), bars.live, bars.sessions());
                 let command_gone = this.output.as_ref().is_some_and(|output| !bars.background.commands.iter().any(|command| command.id == output.command.id));
                 let wake_source = (this.wake_schedule.is_none() && bars.wake_label().is_some()).then(|| bars.wake_source());
                 if command_gone {
@@ -443,10 +463,12 @@ impl ActivityCard {
                 if let Some(source) = wake_source {
                     this.wake_schedule = Some(cx.new(|cx| WakeSchedule::embedded(source, cx)));
                 }
+                this.read_providers(client, live, &sessions, cx);
                 cx.notify();
             }),
             _outputs: None,
         };
+        card.read_providers(client.clone(), live, sessions, cx);
         if live {
             let follow = client.follow_session_outputs(&session, Timing::default());
             let updates = follow.updates().clone();
@@ -463,6 +485,40 @@ impl ActivityCard {
             card.take_outputs(match outputs { Ok(page) => Followed::Now(page), Err(error) => Followed::Failed(error) }, cx);
         }
         card
+    }
+
+    fn read_providers(&mut self, client: BoxClient, live: bool, sessions: &[SessionRow], cx: &mut Context<Self>) {
+        let mut ids: Vec<_> = sessions.iter().filter(|row| row.provider.is_none()).map(|row| row.id.clone()).collect();
+        ids.sort();
+        if self.provider_requests == ids {
+            return;
+        }
+        self.provider_requests = ids.clone();
+        self.reading_providers = None;
+        self.providers.retain(|id, _| ids.binary_search(id).is_ok());
+        if ids.is_empty() {
+            return;
+        }
+        let read = move || {
+            let ids: Vec<_> = ids.iter().map(String::as_str).collect();
+            client.session_models(&ids).ok().map(|states| {
+                states.into_iter().filter_map(|(id, state)| Some((id, state.model?.provider_id))).collect()
+            })
+        };
+        if !live {
+            self.providers = read().unwrap_or_default();
+            return;
+        }
+        let task = cx.background_executor().spawn(async move { read() });
+        self.reading_providers = Some(cx.spawn(async move |this, cx| {
+            let providers = task.await;
+            this.update(cx, |this, cx| {
+                if let Some(providers) = providers {
+                    this.providers = providers;
+                    cx.notify();
+                }
+            }).ok();
+        }));
     }
 
     fn take_outputs(&mut self, update: Followed<Outputs>, cx: &mut Context<Self>) {
@@ -627,6 +683,27 @@ impl ActivityCard {
             .into_any_element()
     }
 
+    fn avatar(&self, bars: &WorkBars, session: &SessionRow, location: &str, cx: &App) -> AnyElement {
+        let c = &cx.theme().colors;
+        let provider = session.provider.as_ref().or_else(|| self.providers.get(&session.id));
+        let bot = bars.bot_look.as_ref().and_then(|lookup| lookup(&session.id, bars.bot.as_deref(), cx));
+        let size = px(20.);
+        let inner = size - px(4.);
+        let (label, face) = if let Some((id, look)) = bot {
+            (format!("bot-{id}"), crate::bot_face::still_avatar(&id, &look, kuvo_ui::bot::State::Idle, inner))
+        } else if let Some((provider, (service, path))) = provider.and_then(|provider| Some((provider, provider_mark(provider)?))) {
+            let color = provider_mark_color(provider).or_else(|| kuvo_ui::icon::mark_color(service));
+            (service.to_owned(), Mark::new(path).size(px(11.)).color(color.unwrap_or(c.text)).into_any_element())
+        } else {
+            ("unknown".into(), Icon::new(IconName::User).size(IconSize::Nav).color(c.icon).into_any_element())
+        };
+        let selector = format!("activity-{location}-avatar-{}-{label}", session.id);
+        div().debug_selector(move || selector)
+            .flex().flex_none().items_center().justify_center().size(size)
+            .rounded(radius::PILL).border_2().border_color(c.elevated).bg(c.sunken)
+            .child(face).into_any_element()
+    }
+
     fn sessions(&self, bars: &WorkBars, sessions: Vec<SessionRow>, cx: &Context<Self>) -> Option<AnyElement> {
         if sessions.is_empty() { return None; }
         let c = cx.theme().colors.clone();
@@ -638,7 +715,17 @@ impl ActivityCard {
             (n, m) => format!("{n} working · {m} waiting"),
         };
         let fold = row("activity-toggle-sessions", cx)
-            .children(sessions.iter().take(5).map(|session| mark(IconName::Bot, if session.asking { c.warning } else { c.accent })))
+            .child(
+                div().flex().flex_none().items_center()
+                    .children(sessions.iter().take(3).enumerate().map(|(index, session)| {
+                        div().flex_none().when(index > 0, |d| d.ml(px(-6.)))
+                            .child(self.avatar(bars, session, "stack", cx))
+                    }))
+                    .children((sessions.len() > 3).then(|| {
+                        div().debug_selector(|| "activity-avatar-overflow".into()).ml(space::S1)
+                            .text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("+{}", sessions.len() - 3))
+                    })),
+            )
             .child(div().flex_1().min_w_0().truncate().child(label))
             .child(mark(if self.expanded { IconName::ChevronUp } else { IconName::ChevronDown }, c.text_faint))
             .on_click(cx.listener(|this, _, _, cx| {
@@ -646,12 +733,13 @@ impl ActivityCard {
                 cx.notify();
             }));
         let rows = self.expanded.then(|| sessions.into_iter().map(|session| {
+            let avatar = self.avatar(bars, &session, "row", cx);
             let id = session.id;
             let stop = id.clone();
             let status = if session.asking { "Waiting for you" } else { "Working" };
             div().flex().items_center().gap(space::S1)
                 .child(row(format!("activity-session-{id}"), cx).flex_1().min_w_0()
-                    .child(mark(IconName::Bot, if session.asking { c.warning } else { c.accent }))
+                    .child(avatar)
                     .child(div().flex_1().min_w_0().truncate().child(session.title))
                     .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(status))
                     .on_click(cx.listener(move |this, _, window, cx| {

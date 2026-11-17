@@ -246,6 +246,32 @@ fn a_subagent_waiting_on_you_is_discoverable_without_a_running_dot(cx: &mut Test
 }
 
 #[gpui::test]
+fn activity_stacks_three_provider_faces_and_shows_each_face_when_expanded(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let sessions = [("ses_sub", "codex-cli", "codex"), ("ses_sub2", "claude-code", "claude"),
+        ("ses_sub3", "codex-cli", "codex"), ("ses_sub4", "claude-code", "claude")];
+    for (id, provider, _) in sessions {
+        stand_in.set_model_state(id, json!({ "model": { "providerID": provider, "id": "example" }, "runs": true }));
+    }
+    stand_in.set_background("ses_signup", json!({
+        "subagents": sessions.iter().map(|(id, _, _)| json!({ "session": id, "since": NOW })).collect::<Vec<_>>(),
+    }), &[]);
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+    let first = bounds(cx, "activity-stack-avatar-ses_sub-codex").unwrap();
+    let second = bounds(cx, "activity-stack-avatar-ses_sub2-claude").unwrap();
+    assert_eq!(first.size, size(px(20.), px(20.)));
+    assert_eq!(first.right() - second.left(), px(6.));
+    assert!(shown(cx, "activity-stack-avatar-ses_sub3-codex"));
+    assert!(!shown(cx, "activity-stack-avatar-ses_sub4-claude"));
+    assert!(shown(cx, "activity-avatar-overflow"));
+    click(cx, "activity-toggle-sessions");
+    for (id, _, service) in sessions {
+        assert!(shown(cx, &format!("activity-row-avatar-{id}-{service}")));
+    }
+}
+
+#[gpui::test]
 fn a_bots_conversation_shows_its_sessions_and_wake_schedule(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_bot_wakes("bot_mira", vec![json!({
@@ -257,9 +283,10 @@ fn a_bots_conversation_shows_its_sessions_and_wake_schedule(cx: &mut TestAppCont
     assert!(shown(cx, "conversation-activity-running"));
     click(cx, "conversation-activity-button");
     assert!(shown(cx, "activity-sessions") && shown(cx, "activity-wakes") && shown(cx, "wake-build"));
+    assert!(shown(cx, "activity-stack-avatar-ses_signup-bot-bot_mira"));
     assert!(!shown(cx, "activity-session-ses_cms"));
     click(cx, "activity-toggle-sessions");
-    assert!(shown(cx, "activity-session-ses_signup"));
+    assert!(shown(cx, "activity-row-avatar-ses_signup-bot-bot_mira"));
     click(cx, "activity-session-ses_cms");
     assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_cms".into())));
 }

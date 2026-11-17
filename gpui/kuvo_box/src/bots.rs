@@ -351,7 +351,7 @@ impl WorkSession {
 #[serde(rename_all = "camelCase")]
 pub struct WorkModel {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, alias = "providerID")]
     pub provider_id: Option<String>,
     #[serde(default)]
     pub variant: Option<String>,

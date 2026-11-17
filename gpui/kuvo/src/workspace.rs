@@ -1577,12 +1577,22 @@ impl Workspace {
     /// A conversation's Activity: the bot it is, and how a row
     /// opens its conversation (here, in Sessions).
     fn wire_bars(&self, view: &Entity<ConversationView>, bot: Option<String>, cx: &mut Context<Self>) {
+        let source = cx.entity().downgrade();
+        let bot_look: crate::work_bars::BotLook = std::rc::Rc::new(move |session, owner, cx| {
+            source.read_with(cx, |workspace, cx| {
+                let bot = workspace.listing().facts(session).and_then(|facts| facts.bot.as_deref()).or(owner);
+                let Reading::Ready(bots) = workspace.area_view(Area::Bots)?.read(cx).bots() else { return None };
+                let bot = bots.bots.iter().find(|each| Some(each.id.as_str()) == bot || each.session == session)?;
+                Some((bot.id.clone(), bot.look.clone()))
+            }).ok().flatten()
+        });
         let workspace = cx.entity().downgrade();
         let opener: crate::work_bars::Opener = std::rc::Rc::new(move |session: &str, window: &mut Window, cx: &mut App| {
             workspace.update(cx, |workspace, cx| workspace.open_session_now(session, window, cx)).ok();
         });
         view.read(cx).bars().clone().update(cx, |bars, cx| {
             bars.set_opener(opener);
+            bars.set_bot_look(bot_look);
             bars.set_bot(bot, cx);
         });
     }
