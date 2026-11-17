@@ -5,7 +5,8 @@
     "bin/.kuvo-boot",
     "bin/bot-words.json",
     "bin/kuvo-launch",
-    "bin/kuvo-start"
+    "bin/kuvo-start",
+    "bin/kuvo-wake"
   ],
   "files": {
     "bin/integrations-mac.json": {
@@ -23,10 +24,6 @@
     "bin/kuvo-setsid": {
       "sha256": "fb82b00f7aba25e650944ea3192381414e9e8196f80817ef8351f21e1a264f3a",
       "mode": "700"
-    },
-    "bin/kuvo-wake": {
-      "sha256": "ca5abf6535bbe8ea26d83cd2b1175ee712667ec6b61a02a38966e85feffcbf27",
-      "mode": "755"
     },
     "bin/mcp-catalog.json": {
       "sha256": "30b00314ddf56cdcc108eb0dbeab4c0e966b9d97af5a0b31ead83ff1e53fd4f7",
