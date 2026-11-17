@@ -653,9 +653,30 @@ impl StandIn {
         self.state().settings.forget_sign_ins();
     }
 
-    /// Whether the coding agents' bridge runs (it answers `503` while not).
+    /// Whether the coding agents' bridge runs: while not, they're down, as a box says when nothing
+    /// started them for two minutes, with Try Again (PROTOCOL.md, "The coding agents' state").
     pub fn agents_running(&self, running: bool) {
-        self.state().settings.agents_down = !running;
+        self.state().settings.agents_away = (!running).then(|| json!({ "message": "The coding agents haven't started.", "reason": "agentsDown", "action": { "label": "Try Again", "route": "kuvo/agents/start" } }));
+    }
+
+    /// The coding agents' bridge restarting (a newer build taking over), as a box says it after
+    /// waiting half a minute for it.
+    pub fn agents_restarting(&self) {
+        self.state().settings.agents_away = Some(json!({ "message": "The coding agents are restarting. This takes a few seconds.", "reason": "agentsRestarting" }));
+    }
+
+    /// The coding agents' bridge down, in the box's `words`, with Try Again where `try_again`.
+    pub fn agents_down(&self, words: &str, try_again: bool) {
+        let mut away = json!({ "message": words, "reason": "agentsDown" });
+        if try_again {
+            away["action"] = json!({ "label": "Try Again", "route": "kuvo/agents/start" });
+        }
+        self.state().settings.agents_away = Some(away);
+    }
+
+    /// Whether Try Again (`kuvo/agents/start`) gets the coding agents running.
+    pub fn agents_start_works(&self, works: bool) {
+        self.state().settings.agents_start = works;
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -1630,6 +1651,10 @@ impl StandIn {
         let mut state = self.state();
         state.seen.push(Seen { method: method.into(), path: path.into(), body: request.body.clone() });
         let segments: Vec<&str> = route.split('/').collect();
+        // The coding agents' bridge not running: what needs it answers with their state.
+        if let Some((status, value)) = state.settings.agents_away_answer(method, route, &|name| query(path, name).map(decoded)) {
+            return answer(status, value);
+        }
         {
             let (body, made) = (request.body.clone().unwrap_or(Value::Null), state.made.unwrap_or_else(now_ms));
             // Whether a first run has anything to ask, as a box decides it (`kuvo/setup/ready`).

@@ -228,9 +228,11 @@ pub struct Accounts {
     pub agents: Vec<AccountEntry>,
     /// The engine's plans and providers, in its order: those the box says Accounts lists.
     pub engine: Vec<AccountEntry>,
-    /// Why the coding agents' bridge, or the engine, couldn't list its accounts just now (`503`).
-    pub agents_down: Option<String>,
-    pub engine_down: Option<String>,
+    /// Why the coding agents' bridge, or the engine, couldn't list its accounts just now (`503`),
+    /// as the box said it: its one sentence, whether the agents are restarting or down, and Try
+    /// Again where it offers it (PROTOCOL.md, "The coding agents' state").
+    pub agents_down: Option<Refusal>,
+    pub engine_down: Option<Refusal>,
 }
 
 /// A sign-in under way, as the engine or the bridge started it.
@@ -360,7 +362,7 @@ impl BoxClient {
         // Either side not running (503) leaves its accounts out, saying why; the other's stay.
         let side = |side: Side| match self.side_accounts(side) {
             Ok(accounts) => Ok((accounts, None)),
-            Err(Error::Refused(refusal)) if refusal.status == 503 => Ok((Vec::new(), Some(refusal.message))),
+            Err(Error::Refused(refusal)) if refusal.status == 503 => Ok((Vec::new(), Some(refusal))),
             Err(error) => Err(error),
         };
         let (engine, engine_down) = side(Side::Engine)?;

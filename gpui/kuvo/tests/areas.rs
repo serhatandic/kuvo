@@ -463,6 +463,51 @@ fn an_open_card_follows_the_pointer_down_the_rings(cx: &mut TestAppContext) {
     assert!((card.top() - second.top()).abs() < px(1.), "beside the second ring, top-aligned: {card:?} {second:?}");
 }
 
+/// The coding agents restarting keep the rings' last readings, marked as updating, their card saying
+/// why in the box's words; down, one ring says the box's sentence where they were, with its Try
+/// Again, which brings them back.
+#[gpui::test]
+fn the_rings_keep_their_readings_while_the_agents_restart_and_say_why_while_down(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let rings = workspace.read_with(cx, |workspace, _| workspace.rings().clone());
+    let read_again = |cx: &mut VisualTestContext| {
+        rings.update(cx, |rings, cx| rings.read_at_once(cx));
+        cx.run_until_parked();
+    };
+    let before = rings.read_with(cx, |rings, _| rings.accounts().map(<[_]>::to_vec)).expect("read");
+    stand_in.agents_restarting();
+    read_again(cx);
+    assert_eq!(rings.read_with(cx, |rings, _| rings.accounts().map(<[_]>::to_vec)), Some(before.clone()), "the last readings stay");
+    assert!(rings.read_with(cx, |rings, _| rings.updating()));
+    assert!(bounds(cx, "ring-0").is_some() && bounds(cx, "rings-agents-down").is_none());
+    let ring = bounds(cx, "ring-0").unwrap().center();
+    cx.simulate_mouse_move(ring, None, Modifiers::default());
+    cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
+    cx.run_until_parked();
+    assert!(bounds(cx, "ring-card-updating").is_some(), "its card says why");
+    cx.simulate_mouse_move(gpui::point(px(900.), px(300.)), None, Modifiers::default());
+    cx.executor().advance_clock(kuvo::rail::CARD_GRACE);
+    cx.run_until_parked();
+
+    // Down: the box's sentence where the rings were, with Try Again.
+    stand_in.agents_running(false);
+    read_again(cx);
+    assert!(bounds(cx, "ring-0").is_none());
+    let down = bounds(cx, "rings-agents-down").expect("where the rings were");
+    assert_eq!(rings.read_with(cx, |rings, _| rings.agents().map(|state| state.message.clone())).as_deref(), Some("The coding agents haven't started."));
+    cx.simulate_mouse_move(down.center(), None, Modifiers::default());
+    cx.executor().advance_clock(kuvo::rail::CARD_DELAY);
+    cx.run_until_parked();
+    assert!(bounds(cx, "rings-agents-words").is_some());
+    click(cx, "rings-try-again");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/start").len(), 1);
+    // Running again: read again, the rings back.
+    assert!(rings.read_with(cx, |rings, _| rings.agents().is_none()));
+    assert_eq!(rings.read_with(cx, |rings, _| rings.accounts().map(<[_]>::to_vec)), Some(before));
+    assert!(bounds(cx, "ring-0").is_some() && bounds(cx, "rings-agents-down").is_none());
+}
+
 #[gpui::test]
 fn with_no_account_an_empty_ring_goes_to_sign_in(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::empty(Replies::Never));

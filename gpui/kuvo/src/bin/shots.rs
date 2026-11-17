@@ -302,6 +302,16 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-a-updates-narrow", width: 760., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(updates) },
     Screen { slug: "settings-a-clock", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(clock) },
     Screen { slug: "settings-a-accounts", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    // The coding agents not running (PROTOCOL.md, "The coding agents' state"): Accounts, Usage,
+    // the rail's rings (their card open) and the line over a conversation's composer.
+    Screen { slug: "agents-accounts-down", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "agents-accounts-down-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "agents-accounts-restarting", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(accounts) },
+    Screen { slug: "agents-usage-down", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "agents-usage-restarting", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
+    Screen { slug: "agents-rail-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    Screen { slug: "agents-rail-restarting", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "agents-conversation-down", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_agents_down) },
     Screen { slug: "settings-a-usage", width: 1280., height: 1400., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
     Screen { slug: "settings-a-models", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
     Screen { slug: "settings-a-permissions", width: 1280., height: 1640., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(permissions) },
@@ -852,6 +862,12 @@ fn clock(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
 }
 fn accounts(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Accounts", window, cx);
+}
+/// The coding agents down, as the box says over a conversation it couldn't read again.
+fn conversation_agents_down(w: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    let down = br#"{"message":"The coding agents keep stopping. Kuvo tries again in about 5 minutes.","reason":"agentsDown","action":{"label":"Try Again","route":"kuvo/agents/start"}}"#;
+    let view = w.conversation().expect("the conversation").clone();
+    view.update(cx, |view, cx| view.take(kuvo_box::ConversationUpdate::Failed(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(503, down))), cx));
 }
 fn models(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     settings(w, "Models", window, cx);
@@ -1486,6 +1502,12 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
             }
+            match screen.slug {
+                "agents-accounts-down" | "agents-accounts-down-narrow" | "agents-usage-down" | "agents-rail-down" => stand_in.agents_down("The coding agents keep stopping. Kuvo tries again in about 5 minutes.", true),
+                "agents-accounts-restarting" => stand_in.agents_restarting(),
+                _ => {}
+            }
+            let agents = stand_in.clone();
             let client = BoxClient::new(stand_in);
             let window = cx.open_window(size(px(screen.width), px(screen.height)), |window, cx| cx.new(|cx| Workspace::new(client, false, window, cx)))?;
             let any = window.into();
@@ -1523,6 +1545,25 @@ fn main() -> anyhow::Result<()> {
                 });
             })?;
             cx.run_until_parked();
+            // Restarting after the rings and limits were read: they're kept, marked as updating.
+            if matches!(screen.slug, "agents-rail-restarting" | "agents-usage-restarting") {
+                agents.agents_restarting();
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.rings().clone().update(cx, |rings, cx| {
+                            rings.read_at_once(cx);
+                            rings.show_card(0, cx);
+                        });
+                        // (Another section, then Usage again: it's read again as it opens.)
+                        if screen.slug == "agents-usage-restarting" {
+                            settings(workspace, "Accounts", window, cx);
+                            settings(workspace, "Usage", window, cx);
+                        }
+                    });
+                })?;
+                cx.run_until_parked();
+            }
             if screen.slug == "composer-shell" || screen.slug == "composer-compact" {
                 let text = if screen.slug == "composer-shell" { "! ls" } else { "/compact" };
                 let session = screen.session.expect("a session");

@@ -479,8 +479,62 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
     stand_in.agents_running(false);
     section(&workspace, cx, "Usage");
     section(&workspace, cx, "Accounts");
-    assert!(shown(cx, "note-agents-down"));
+    assert!(shown(cx, "agents-down"));
     assert!(shown(cx, "account-github-copilot"));
+}
+
+/// The coding agents not running on a computer (PROTOCOL.md, "The coding agents' state"): Accounts
+/// and Usage say the box's one sentence, once, with no words of the app's in front of it; Try
+/// Again posts the box's route and reads the page again. Restarting is a quiet line, not a warning.
+#[gpui::test]
+fn the_coding_agents_down_say_the_boxs_sentence_once_with_try_again(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let words = "The coding agents keep stopping. Kuvo tries again in about 5 minutes.";
+    stand_in.agents_down(words, true);
+    stand_in.agents_start_works(false);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Accounts");
+    let page = view.read_with(cx, |view, _| view.page_words());
+    assert_eq!(page.matches(words).count(), 1, "said once: {page}");
+    assert!(!page.contains("aren’t running on") && !page.contains("isn’t running on"), "no words of the app's own: {page}");
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("agents-down")).as_deref(), Some(words));
+    // The engine's accounts are still there.
+    assert!(shown(cx, "account-github-copilot") && !shown(cx, "account-claude-code"));
+
+    // Try Again goes to the box's route; still down, its sentence as the box says it now.
+    let later = "The coding agents didn't finish starting.";
+    stand_in.agents_down(later, true);
+    click(cx, "agents-down-try-again");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/start").len(), 1);
+    assert_eq!(view.read_with(cx, |view, _| view.row_detail("agents-down")).as_deref(), Some(later));
+    assert_eq!(view.read_with(cx, |view, _| view.problem().map(str::to_owned)), None, "its state is the page's, not a problem over it");
+
+    // Usage says the same in the limits' place, with its Try Again, and no notices' error.
+    let usage = section(&workspace, cx, "Usage");
+    let page = usage.read_with(cx, |view, _| view.page_words());
+    assert_eq!(page.matches(later).count(), 1, "said once: {page}");
+    assert!(!page.contains("couldn’t be read"), "{page}");
+    assert!(shown(cx, "agents-down-try-again"));
+
+    // This time it starts them: the page is read again, the coding agents' accounts listed.
+    stand_in.agents_start_works(true);
+    let view = section(&workspace, cx, "Accounts");
+    click(cx, "agents-down-try-again");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/start").len(), 2);
+    assert!(!shown(cx, "agents-down") && shown(cx, "account-claude-code"));
+
+    // Down with nothing to try: the sentence alone, no button.
+    stand_in.agents_down("The coding agents aren't installed here yet. Kuvo's next update brings them.", false);
+    section(&workspace, cx, "Usage");
+    section(&workspace, cx, "Accounts");
+    assert!(shown(cx, "agents-down") && !shown(cx, "agents-down-try-again"));
+
+    // Restarting: a quiet line in the box's words, not a warning, with no Try Again.
+    stand_in.agents_restarting();
+    section(&workspace, cx, "Usage");
+    section(&workspace, cx, "Accounts");
+    assert!(shown(cx, "note-agents-restarting") && !shown(cx, "agents-down"));
+    assert_eq!(view.read_with(cx, |view, _| view.page_words()).matches("The coding agents are restarting. This takes a few seconds.").count(), 1);
 }
 
 #[gpui::test]

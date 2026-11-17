@@ -253,6 +253,13 @@ impl BoxClient {
         self.value(&Request::get(path))
     }
 
+    /// Does what the box offered beside a refusal (its `action`, posted to the route it named):
+    /// Try Again for its coding agents (`kuvo/agents/start`), answered once they run, in 45 s at
+    /// most. Still not, its refusal, with the state they're in.
+    pub fn take_action(&self, action: &crate::error::Offered) -> Result<()> {
+        self.done(&Request::post(action.route.clone(), serde_json::json!({})))
+    }
+
     // MARK: Sessions
 
     /// The session list now (`since`: only what changed after where a client was).
@@ -280,7 +287,7 @@ impl BoxClient {
 
     /// A conversation that isn't on this box (any more).
     pub(crate) fn not_here(&self) -> Refusal {
-        Refusal { status: 404, message: format!("This conversation isn’t on {} any more.", self.describe()), reason: None, older_box: false }
+        Refusal { status: 404, message: format!("This conversation isn’t on {} any more.", self.describe()), reason: None, older_box: false, action: None }
     }
 
     /// The conversation's newest `limit` messages, oldest first.

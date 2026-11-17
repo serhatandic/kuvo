@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- In the desktop app, when a computer's coding agents aren't running, Settings › Accounts, Settings › Usage, the usage rings in the rail and the line over a conversation say why once, in one plain sentence (no more "aren't running on hetzner: The coding agents aren't running…"), with **Try Again** where it can help. While they restart, nothing turns into an error: the rings keep their last readings, shown fainter, and their card says they're restarting.
+
 - In the desktop app's title bar, the sidebar button, the computer picker and back and forward now sit together over the sidebar, with a thin divider where the sidebar ends, and the page title starts after it. The extra + beside them is gone: New Session is still ⌘N and File › New Session, and each area keeps its own +.
 
 - In the desktop app, hover over any message, yours or the agent's, to see when it was written (the day too, in a tooltip, when it isn't today) and buttons to copy it as Markdown or add it to the chat.

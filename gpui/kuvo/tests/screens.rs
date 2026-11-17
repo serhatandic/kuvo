@@ -353,6 +353,46 @@ fn a_conversation_that_isnt_there_says_so(cx: &mut TestAppContext) {
 }
 
 
+/// A conversation of the coding agents' while they're down says the box's sentence as it is, with
+/// its Try Again; while they restart, nothing (what's shown stays, and it's read again).
+#[gpui::test]
+fn the_coding_agents_down_are_said_over_the_composer_and_restarting_isnt(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let problem = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).problem().cloned());
+    // One the engine doesn't have, asked of the coding agents while they restart: no error.
+    stand_in.agents_restarting();
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_agent", window, cx));
+    cx.run_until_parked();
+    assert_eq!(problem(&workspace, cx), None);
+    assert!(bounds(cx, "conversation-problem-action").is_none());
+
+    // Down: the box's sentence, as it is, with Try Again, which posts the box's route.
+    stand_in.agents_running(false);
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_agent", window, cx));
+    cx.run_until_parked();
+    let Some(kuvo::conversation::Problem::Failed(words, Some(action))) = problem(&workspace, cx) else { panic!("{:?}", problem(&workspace, cx)) };
+    assert_eq!((words.as_str(), action.label.as_str()), ("The coding agents haven't started.", "Try Again"));
+    let again = bounds(cx, "conversation-problem-action").expect("Try Again");
+    cx.simulate_click(again.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.seen_at("POST", "kuvo/agents/start").len(), 1);
+    assert_eq!(problem(&workspace, cx), None, "running: the line goes, and it's read again");
+
+    // Over a conversation already shown: the line above the composer, then gone as they restart.
+    open_session(&workspace, "ses_limits", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let down = br#"{"message":"The coding agents didn't finish starting.","reason":"agentsDown","action":{"label":"Try Again","route":"kuvo/agents/start"}}"#;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Failed(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(503, down))), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "conversation-problem").is_some() && bounds(cx, "conversation-problem-action").is_some());
+    let restarting = br#"{"message":"The coding agents are restarting. This takes a few seconds.","reason":"agentsRestarting"}"#;
+    view.update(cx, |view, cx| view.take(ConversationUpdate::Failed(kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(503, restarting))), cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "conversation-problem").is_none());
+    assert!(!view.read_with(cx, |view, _| view.entries().is_empty()), "what was shown stays");
+}
+
 #[gpui::test]
 fn a_shell_command_runs_on_the_box_and_clears_the_composer(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

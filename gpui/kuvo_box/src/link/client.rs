@@ -90,7 +90,7 @@ pub mod words {
 
 /// The box turned this device away: it isn't paired there (any more).
 pub fn unpaired() -> Error {
-    Error::Refused(Refusal { status: 403, message: words::REFUSED.into(), reason: Some(words::UNPAIRED.into()), older_box: false })
+    Error::Refused(Refusal { status: 403, message: words::REFUSED.into(), reason: Some(words::UNPAIRED.into()), older_box: false, action: None })
 }
 
 /// Whether `error` is a box turning this device away.

@@ -13,6 +13,7 @@ use kuvo_box::asks::Asks;
 use kuvo_box::queue::{Item, Queue};
 use kuvo_box::follow::{ConversationUpdate, Follow, Followed, Timing};
 use kuvo_box::BoxClient;
+use kuvo_box::error::Offered;
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     anchor::{Placement, Popover},
@@ -34,8 +35,9 @@ use crate::work_bars::WorkBars;
 /// What's wrong, said over the conversation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Problem {
-    /// Reading it failed; it's tried again.
-    Failed(String),
+    /// Reading it failed; it's tried again. Its words, and what the box offers to do about it
+    /// (Try Again, for its coding agents down: PROTOCOL.md, "The coding agents' state").
+    Failed(String, Option<Offered>),
     /// It isn't on the box (any more).
     Gone(String),
 }
@@ -54,6 +56,8 @@ pub struct ConversationView {
     revisions: Vec<u64>,
     list: ChatListState,
     problem: Option<Problem>,
+    /// The box's Try Again under way (its coding agents started again).
+    taking_action: bool,
     earlier_failed: Option<String>,
     /// The way back already asked for, so it's asked once.
     asked_earlier: Rc<RefCell<Option<String>>>,
@@ -135,6 +139,7 @@ impl ConversationView {
             revisions: Vec::new(),
             list: ChatListState::new(0, cx),
             problem: None,
+            taking_action: false,
             earlier_failed: None,
             asked_earlier: Rc::default(),
             open: HashSet::new(),
@@ -190,6 +195,8 @@ impl ConversationView {
                     let taken = match update {
                         Followed::Now(queue) => this.update(cx, |this, cx| this.take_queue(queue, cx)),
                         // What it said last stays, saying it couldn't be read now.
+                        // (Not for the coding agents' state: the line over the composer says it.)
+                        Followed::Failed(error) if about_agents(&error) => Ok(()),
                         Followed::Failed(error) => this.update(cx, |this, cx| {
                             this.queue_failed = Some(format!("The queue couldn’t be read: {error}"));
                             cx.notify();
@@ -204,6 +211,7 @@ impl ConversationView {
                 while let Ok(update) = updates.recv().await {
                     let taken = match update {
                         Followed::Now(asks) => this.update(cx, |this, cx| this.take_asks(asks, cx)),
+                        Followed::Failed(error) if about_agents(&error) => Ok(()),
                         Followed::Failed(error) => this.update(cx, |this, cx| {
                             this.asks_failed = Some(format!("What it asks you couldn’t be read: {error}"));
                             cx.notify();
@@ -410,6 +418,55 @@ impl ConversationView {
 
     pub fn problem(&self) -> Option<&Problem> {
         self.problem.as_ref()
+    }
+
+    /// Does what the box offered beside why it couldn't be read (Try Again: its coding agents
+    /// started again). Once they run, the line goes and it's read again on its own; still not,
+    /// the box's words as it says them now.
+    pub fn take_action(&mut self, action: Offered, cx: &mut Context<Self>) {
+        if self.taking_action {
+            return;
+        }
+        self.taking_action = true;
+        cx.notify();
+        let client = self.client.clone();
+        let done = move |this: &mut ConversationView, done: kuvo_box::Result<()>, cx: &mut Context<ConversationView>| {
+            this.taking_action = false;
+            match done {
+                Ok(()) => {
+                    if matches!(this.problem, Some(Problem::Failed(..))) {
+                        this.problem = None;
+                    }
+                }
+                Err(error) => this.take(ConversationUpdate::Failed(error), cx),
+            }
+            cx.notify();
+        };
+        if !self.live {
+            let answer = client.take_action(&action);
+            done(self, answer, cx);
+            return;
+        }
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let answer = cx.background_executor().spawn(async move { client.take_action(&action) }).await;
+            this.update(cx, |this, cx| done(this, answer, cx)).ok();
+        }));
+    }
+
+    /// Its line's button, where the box offers one: busy while it goes.
+    fn action_button(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let Some(Problem::Failed(_, Some(action))) = &self.problem else { return None };
+        let (action, label) = (action.clone(), action.label.clone());
+        let view = cx.entity().downgrade();
+        Some(
+            div()
+                .debug_selector(|| "conversation-problem-action".into())
+                .flex_none()
+                .child(Button::new("conversation-problem-action", label).size(ButtonSize::Small).disabled(self.taking_action).on_click(move |_, _, cx| {
+                    view.update(cx, |this, cx| this.take_action(action.clone(), cx)).ok();
+                }))
+                .into_any_element(),
+        )
     }
 
     /// What waits its turn, as the box says it. One of yours on its way that it holds for after the
@@ -632,7 +689,18 @@ impl ConversationView {
                     }
                 });
             }
-            ConversationUpdate::Failed(error) => self.problem = Some(Problem::Failed(error.to_string())),
+            ConversationUpdate::Failed(error) => match error.refusal() {
+                // Its coding agents restarting: not an error. What's shown stays (and a line about
+                // them goes), as it's read again.
+                Some(refusal) if refusal.agents_restarting() => {
+                    if matches!(self.problem, Some(Problem::Failed(..))) {
+                        self.problem = None;
+                    }
+                }
+                // Else the box's words as they are, with what it offers to do about it.
+                Some(refusal) => self.problem = Some(Problem::Failed(refusal.message.clone(), refusal.action.clone())),
+                None => self.problem = Some(Problem::Failed(error.to_string(), None)),
+            },
             ConversationUpdate::Gone(refusal) => {
                 self.problem = Some(Problem::Gone(refusal.message));
                 self.composer.update(cx, |composer, cx| composer.set_running(false, cx));
@@ -1261,7 +1329,12 @@ impl Render for ConversationView {
         let view = cx.entity();
         let body: AnyElement = if !self.read {
             match &self.problem {
-                Some(Problem::Gone(why)) | Some(Problem::Failed(why)) => centred(SharedString::from(why.clone()), false, cx),
+                Some(Problem::Gone(why)) => centred(SharedString::from(why.clone()), false, cx),
+                // (With what the box offers to do about it, under its words.)
+                Some(Problem::Failed(why, _)) => {
+                    let button = self.action_button(cx);
+                    div().size_full().flex().flex_col().items_center().justify_center().gap(space::S3).px(space::S6).text_ui(TypeSize::Small).text_color(c.text_muted).child(div().max_w(px(COLUMN)).text_center().child(why.clone())).children(button).into_any_element()
+                }
                 None => centred("Loading the conversation…".into(), true, cx),
             }
         } else if self.entries.is_empty() {
@@ -1331,7 +1404,7 @@ impl Render for ConversationView {
         };
         // A problem while it's shown: said above the composer; it's tried again meanwhile.
         let banner = match (&self.problem, self.read) {
-            (Some(Problem::Failed(why)), true) => Some((why.clone(), c.warning)),
+            (Some(Problem::Failed(why, _)), true) => Some((why.clone(), c.warning)),
             (Some(Problem::Gone(why)), true) => Some((why.clone(), c.danger)),
             _ => None,
         };
@@ -1352,7 +1425,19 @@ impl Render for ConversationView {
                     .px(space::S6)
                     .pb(space::S5)
                     .children(banner.map(|(why, color)| {
-                        div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(color).child(why)
+                        let button = self.action_button(cx);
+                        div()
+                            .debug_selector(|| "conversation-problem".into())
+                            .w_full()
+                            .max_w(px(COLUMN))
+                            .pb(space::S2)
+                            .flex()
+                            .items_center()
+                            .gap(space::S2)
+                            .text_ui(TypeSize::Caption)
+                            .text_color(color)
+                            .child(div().flex_1().min_w_0().child(why))
+                            .children(button)
                     }))
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
                         div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
@@ -1371,6 +1456,11 @@ impl Render for ConversationView {
             .children(self.selection_card(cx))
             .children(viewer)
     }
+}
+
+/// Whether a read was refused for the box's coding agents' state (said once, over the composer).
+fn about_agents(error: &kuvo_box::Error) -> bool {
+    error.refusal().is_some_and(kuvo_box::Refusal::about_agents)
 }
 
 /// Centred words in the conversation's place (loading, nothing yet, gone).

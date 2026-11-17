@@ -8,6 +8,7 @@ use kuvo_box::areas::{Account, Level};
 use kuvo_box::models::Offered as OfferedModels;
 use kuvo_box::settings::{Config, UsageSettings};
 use kuvo_box::settings_pages::{BadgeTone, Confirm as Asks, FlowState, Form, Row as Described};
+use kuvo_box::{Refusal, error::Offered};
 use kuvo_ui::IconName;
 use serde_json::Value;
 
@@ -140,6 +141,8 @@ pub enum Act {
     Form { at: At, action: String, form: Box<Form> },
     /// A flow's pasted address, sent with the action that takes it (`code`'s).
     Code { at: At, action: String },
+    /// What the box offered beside the coding agents' state (Try Again), then the page read again.
+    TakeAction(Offered),
 }
 
 /// What Settings › Updates asks of the app's updater.
@@ -379,6 +382,9 @@ pub fn note(key: &str, words: impl Into<String>, busy: bool) -> Block {
 pub struct Facts<'a> {
     pub accounts: &'a Reading<Accounts>,
     pub limits: &'a Reading<Vec<Account>>,
+    /// The coding agents' state, where the limits' last read was refused for it (the readings
+    /// before it are kept).
+    pub limits_agents: Option<&'a Refusal>,
     pub config: &'a Reading<Config>,
     pub offered: &'a Reading<OfferedModels>,
     pub usage: &'a Reading<UsageSettings>,
@@ -624,13 +630,14 @@ fn accounts(facts: &Facts) -> Vec<Block> {
     }
     let Reading::Ready(accounts) = facts.accounts else { return Vec::new() };
     let mut blocks = Vec::new();
-    if let Some(why) = &accounts.agents_down {
-        blocks.push(note("note-agents-down", format!("The coding agents aren’t running on {}: {why}", facts.this_box), false));
+    if let Some(state) = &accounts.agents_down {
+        blocks.push(agents_state("Coding Agents", state, facts));
     } else if !accounts.agents.is_empty() {
         blocks.push(Block::Group("Coding Agents".into(), String::new(), accounts.agents.iter().map(|entry| account_row(entry, facts)).collect()));
     }
+    // (The box's sentence says whose engine, and why: alone.)
     if let Some(why) = &accounts.engine_down {
-        blocks.push(note("note-engine-down", format!("The engine isn’t running on {}: {why}", facts.this_box), false));
+        blocks.push(note("note-engine-down", why.message.clone(), false));
     }
     // By the box's state: those signed in (or once signed in, now ended), then the rest to add,
     // each in the engine's order.
@@ -642,6 +649,21 @@ fn accounts(facts: &Facts) -> Vec<Block> {
         blocks.push(Block::Group("Add a Provider".into(), String::new(), others.into_iter().map(|entry| account_row(entry, facts)).collect()));
     }
     blocks
+}
+
+/// The key of the coding agents' state on a page (its row, and the busy Try Again).
+pub const AGENTS_DOWN: &str = "agents-down";
+
+/// The coding agents' state, as the box says it (PROTOCOL.md, "The coding agents' state"), in
+/// place of what needs them: restarting, its sentence as a quiet line (what was read stays, and
+/// it's read again); down, its sentence alone in a card under `label`, with the box's Try Again
+/// where it offers one. Never words of this app's in front of it.
+fn agents_state(label: &str, state: &Refusal, facts: &Facts) -> Block {
+    if state.agents_restarting() {
+        return note("note-agents-restarting", state.message.clone(), false);
+    }
+    let control = facts.busy(AGENTS_DOWN).unwrap_or_else(|| state.action.clone().map_or(Control::None, |action| Control::Buttons(vec![Push::new(action.label.clone(), Act::TakeAction(action))])));
+    Block::Group(label.into(), String::new(), vec![Row::new(AGENTS_DOWN, "", state.message.clone(), control).warning(true)])
 }
 
 // MARK: Usage
@@ -664,9 +686,21 @@ fn meters(account: &Account) -> Vec<Meter> {
 
 fn usage(facts: &Facts) -> Vec<Block> {
     let mut blocks = Vec::new();
-    match facts.limits {
-        Reading::Ready(limits) if limits.is_empty() => blocks.push(note("note-usage-none", "No account’s limits to show yet. Sign in under Accounts, and each plan’s limits show here.", false)),
-        Reading::Ready(limits) => {
+    // The coding agents not running: down, their sentence in the limits' place; restarting, over
+    // the limits last read (or alone, before any were).
+    let agents = facts.limits_agents;
+    if let Some(state) = agents {
+        blocks.push(agents_state("Limits", state, facts));
+    }
+    let limits = match (agents, facts.limits) {
+        (Some(state), Reading::Ready(_)) if state.agents_restarting() => Some(facts.limits),
+        (Some(_), _) => None,
+        (None, limits) => Some(limits),
+    };
+    match limits {
+        None => {}
+        Some(Reading::Ready(limits)) if limits.is_empty() => blocks.push(note("note-usage-none", "No account’s limits to show yet. Sign in under Accounts, and each plan’s limits show here.", false)),
+        Some(Reading::Ready(limits)) => {
             let rows = limits
                 .iter()
                 .enumerate()
@@ -679,7 +713,7 @@ fn usage(facts: &Facts) -> Vec<Block> {
                 .collect();
             blocks.push(Block::Group("Limits".into(), String::new(), rows));
         }
-        reading => blocks.extend(unread(reading, "note-usage", "your accounts’ limits")),
+        Some(reading) => blocks.extend(unread(reading, "note-usage", "your accounts’ limits")),
     }
     // The notices this computer's box sends about them.
     match facts.usage {
@@ -699,6 +733,8 @@ fn usage(facts: &Facts) -> Vec<Block> {
                 blocks.push(note(&format!("note-unavailable-{ix}"), unavailable.message.clone(), false));
             }
         }
+        // (Not read for the coding agents' state, said once above.)
+        Reading::Failed(_) if agents.is_some() => {}
         reading => blocks.extend(unread(reading, "note-usage-settings", "the usage notices")),
     }
     blocks

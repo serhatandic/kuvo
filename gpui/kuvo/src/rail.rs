@@ -12,12 +12,13 @@ use gpui::{
     AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
     StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, canvas, div, point, prelude::FluentBuilder as _, px, svg,
 };
-use kuvo_box::BoxClient;
 use kuvo_box::areas::{Account, Level};
+use kuvo_box::error::Offered;
+use kuvo_box::{BoxClient, Refusal};
 use kuvo_ui::{
-    ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     menu::{Tooltip, card_frame},
-    small::count_badge,
+    small::{count_badge, spinner},
     theme::{radius, space},
 };
 
@@ -43,6 +44,8 @@ const RAIL_REST: f32 = 44. + 4. * 46. + 2. * 46. + 40.;
 /// this only picks up what it read), and sooner after a read that failed (a box still starting).
 const REREAD: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_secs(10);
+/// How the rings show while the coding agents restart: the last readings, quieter.
+const UPDATING_OPACITY: f32 = 0.5;
 /// How long the pointer rests on a ring before its card opens (one already open moves at once).
 pub const CARD_DELAY: Duration = Duration::from_millis(300);
 /// How long the card stays once the pointer is on neither ring nor card: across the gap between
@@ -123,7 +126,15 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
 /// The accounts' rings, in the box's order (its limits' `rows`), as their own view.
 pub struct Rings {
     client: BoxClient,
+    /// Read on its own clock (the app); else only as asked (shots and tests).
+    live: bool,
     accounts: Option<Vec<Account>>,
+    /// The coding agents' state, where the last read was refused for it (PROTOCOL.md, "The coding
+    /// agents' state"): restarting, the readings before stay, marked as updating; down, its
+    /// sentence in their place, with the box's Try Again.
+    agents: Option<Refusal>,
+    /// The box's Try Again under way.
+    trying: Option<Task<()>>,
     /// Now, as a window's "resets in" counts from it (fixed for shots).
     now: Option<f64>,
     _reading: Option<Task<()>>,
@@ -139,7 +150,7 @@ pub struct Rings {
 
 impl Rings {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> Rings {
-        let mut rings = Rings { client, accounts: None, now: None, _reading: None, again: None, card: None, on_ring: None, on_card: false, opening: None, closing: None };
+        let mut rings = Rings { client, live, accounts: None, agents: None, trying: None, now: None, _reading: None, again: None, card: None, on_ring: None, on_card: false, opening: None, closing: None };
         if live {
             rings._reading = Some(cx.spawn(async move |this, cx| {
                 loop {
@@ -158,6 +169,9 @@ impl Rings {
 
     /// Reads the accounts again now, off this thread (the box has just been reached).
     pub fn read_again(&mut self, cx: &mut Context<Self>) {
+        if !self.live {
+            return self.read_at_once(cx);
+        }
         let client = self.client.clone();
         self.again = Some(cx.spawn(async move |this, cx| {
             let accounts = cx.background_executor().spawn(async move { client.accounts() }).await;
@@ -175,17 +189,63 @@ impl Rings {
         self.now = Some(now);
     }
 
-    /// What the box said. One that can't be read (its agents' bridge not running)
-    /// keeps what was there, and shows nothing until it's read once.
+    /// What the box said. One that can't be read keeps what was there; where that's for the
+    /// coding agents' state, it's kept with it, to say.
     fn take(&mut self, accounts: kuvo_box::Result<Vec<Account>>, cx: &mut Context<Self>) {
-        if let Ok(accounts) = accounts {
-            self.accounts = Some(accounts);
-            cx.notify();
+        match accounts {
+            Ok(accounts) => {
+                self.accounts = Some(accounts);
+                self.agents = None;
+            }
+            Err(error) => {
+                if let Some(refusal) = error.refusal().filter(|refusal| refusal.about_agents()) {
+                    self.agents = Some(refusal.clone());
+                }
+            }
         }
+        cx.notify();
     }
 
     pub fn accounts(&self) -> Option<&[Account]> {
         self.accounts.as_deref()
+    }
+
+    /// The coding agents' state the rings show, where the box said one.
+    pub fn agents(&self) -> Option<&Refusal> {
+        self.agents.as_ref()
+    }
+
+    /// Whether the rings are marked as updating: the last readings, while the agents restart.
+    pub fn updating(&self) -> bool {
+        self.accounts.is_some() && self.agents.as_ref().is_some_and(Refusal::agents_restarting)
+    }
+
+    /// The box's Try Again for its coding agents: answered once they run (then read again), or with
+    /// how they stand now.
+    pub fn take_action(&mut self, action: Offered, cx: &mut Context<Self>) {
+        if self.trying.is_some() {
+            return;
+        }
+        let client = self.client.clone();
+        let after = |this: &mut Rings, done: kuvo_box::Result<()>, cx: &mut Context<Rings>| {
+            this.trying = None;
+            match done {
+                Err(error) if error.refusal().is_some_and(Refusal::about_agents) => this.agents = error.refusal().cloned(),
+                // (Running, or it can't be asked: read again, which says which.)
+                _ => this.read_again(cx),
+            }
+            cx.notify();
+        };
+        if !self.live {
+            let done = client.take_action(&action);
+            after(self, done, cx);
+            return;
+        }
+        self.trying = Some(cx.spawn(async move |this, cx| {
+            let done = cx.background_executor().spawn(async move { client.take_action(&action) }).await;
+            this.update(cx, |this, cx| after(this, done, cx)).ok();
+        }));
+        cx.notify();
     }
 
     fn now(&self) -> f64 {
@@ -272,6 +332,17 @@ impl Rings {
 impl Render for Rings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
+        // The coding agents down (or restarting before anything was read): one ring saying so, in
+        // the box's words, where the rings would be.
+        let restarting = self.agents.as_ref().is_some_and(Refusal::agents_restarting);
+        if let Some(state) = self.agents.clone().filter(|_| !restarting || self.accounts.is_none()) {
+            if self.card.is_some_and(|ix| ix > 0) || self.on_ring.is_some_and(|ix| ix > 0) {
+                self.card = None;
+                self.on_ring = None;
+            }
+            let ring = state_ring(&state, self.card == Some(0), self.trying.is_some(), cx);
+            return div().flex().flex_col().items_center().gap(space::S2).pb(space::S2).child(ring).into_any_element();
+        }
         if self.accounts.is_none() {
             return div().into_any_element();
         }
@@ -291,7 +362,9 @@ impl Render for Rings {
             self.closing = None;
         }
         let card = self.card;
-        let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, card == Some(ix), cx)).collect();
+        // (Restarting: each card says so, in the box's words, under what was last read.)
+        let updating = self.agents.as_ref().filter(|_| restarting).map(|state| state.message.clone());
+        let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, card == Some(ix), updating.clone(), cx)).collect();
         // Past the rail's room: "+N", opening Settings › Usage.
         if accounts.len() > most {
             let more = accounts.len() - most;
@@ -342,8 +415,74 @@ impl Render for Rings {
                     .into_any_element(),
             );
         }
-        div().flex().flex_col().items_center().gap(space::S2).pb(space::S2).children(rings).into_any_element()
+        div()
+            .debug_selector(move || if restarting { "rings-updating".into() } else { "rings".into() })
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(space::S2)
+            .pb(space::S2)
+            .children(rings)
+            .into_any_element()
     }
+}
+
+/// The coding agents' state where the rings would be: a ring with a warning while they're down, a
+/// spinner while they restart. Resting on it opens its card, with the box's sentence and its Try
+/// Again; clicking it opens Usage, which says the same.
+fn state_ring(state: &Refusal, open: bool, trying: bool, cx: &mut Context<Rings>) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let hover = c.hover;
+    let down = !state.agents_restarting();
+    let inside: AnyElement = if down { Icon::new(IconName::Warning).color(c.warning).into_any_element() } else { spinner("rings-restarting-spinner", IconSize::Nav, c.text_muted).into_any_element() };
+    let selector = if down { "rings-agents-down" } else { "rings-agents-restarting" };
+    div()
+        .id(selector)
+        .debug_selector(move || selector.into())
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(RING + px(6.))
+        .rounded(radius::PILL)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(div().flex().flex_none().items_center().justify_center().size(RING).rounded(radius::PILL).border_1().border_color(c.border).child(inside))
+        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| this.ring_hovered(0, *hovered, cx)))
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.close_card(cx);
+            window.dispatch_action(Box::new(ShowUsage), cx);
+        }))
+        .when(open, |ring| ring.child(state_card_beside(state, trying, cx)))
+        .into_any_element()
+}
+
+/// The state ring's card: the box's sentence, and its Try Again where it offers one (busy while
+/// it goes).
+fn state_card_beside(state: &Refusal, trying: bool, cx: &mut Context<Rings>) -> impl IntoElement {
+    let c = cx.theme().colors.clone();
+    let again = state.action.clone().map(|action| {
+        let label = action.label.clone();
+        div().debug_selector(|| "rings-try-again".into()).child(
+            Button::new("rings-try-again", label).size(ButtonSize::Small).disabled(trying).on_click(cx.listener(move |this, _, _, cx| this.take_action(action.clone(), cx))),
+        )
+    });
+    let card = div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(space::S3)
+        .child(div().debug_selector(|| "rings-agents-words".into()).text_ui(TypeSize::Small).text_color(c.text).child(state.message.clone()))
+        .children(again);
+    let content = div()
+        .id("rings-agents-card")
+        .debug_selector(|| "ring-card".into())
+        .occlude()
+        .pl(space::S2)
+        .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.card_hovered(*hovered, cx)))
+        .child(card_frame(card, cx));
+    Popover::new("rings-agents-card-motion", Placement::beside().flush(), content)
 }
 
 /// The colour of a level, as the box says it: never a threshold of this app's.
@@ -358,7 +497,7 @@ pub fn level_color(level: Level, cx: &App) -> Hsla {
     }
 }
 
-fn ring_button(ix: usize, account: &Account, now: f64, open: bool, cx: &mut Context<Rings>) -> AnyElement {
+fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Option<String>, cx: &mut Context<Rings>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let hover = c.hover;
     // The box's rings (`rows[].rings`): its short window outside and its long one inside, one
@@ -406,6 +545,8 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, cx: &mut Cont
                 .items_center()
                 .justify_center()
                 .size(RING)
+                // (The last readings while the coding agents restart: quieter, its card says why.)
+                .when(updating.is_some(), |d| d.opacity(UPDATING_OPACITY))
                 .children(arcs_drawn)
                 .child(mark),
         )
@@ -414,7 +555,7 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, cx: &mut Cont
             this.close_card(cx);
             window.dispatch_action(Box::new(ShowUsage), cx);
         }))
-        .when(open, |ring| ring.child(card_beside(account, now, cx)))
+        .when(open, |ring| ring.child(card_beside(account, now, updating, cx)))
         .into_any_element()
 }
 
@@ -422,8 +563,8 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, cx: &mut Cont
 /// everything else and taking the pointer's clicks itself, so what's under it isn't reached and the
 /// rings below stay in view. It starts where the ring ends (its gap is padding it takes the pointer
 /// on), so the pointer moves onto it without closing it.
-fn card_beside(account: &Account, now: f64, cx: &mut Context<Rings>) -> impl IntoElement {
-    let card = account_card(account, now, cx);
+fn card_beside(account: &Account, now: f64, updating: Option<String>, cx: &mut Context<Rings>) -> impl IntoElement {
+    let card = account_card(account, now, updating, cx);
     let key = account_key(account);
     let content = div()
         .id(SharedString::from(format!("ring-card-{key}")))
@@ -483,8 +624,9 @@ fn arcs(size: Pixels, stroke: Pixels, share: f32, color: Hsla, track: Hsla) -> i
 }
 
 /// What resting on a ring shows: the account, its plan, and what's left of each window with when
-/// it resets.
-fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
+/// it resets; while it's being updated (the coding agents restarting), the box's words for that
+/// at its foot.
+fn account_card(account: &Account, now: f64, updating: Option<String>, cx: &App) -> AnyElement {
     let c = cx.theme().colors.clone();
     let title = account.title.clone();
     let windows = account.windows.iter().map(|window| {
@@ -528,5 +670,6 @@ fn account_card(account: &Account, now: f64, cx: &App) -> AnyElement {
                 .children(account.plan.clone().map(|plan| div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{plan} plan")))),
         )
         .children(windows)
+        .children(updating.map(|words| div().debug_selector(|| "ring-card-updating".into()).flex().items_start().gap(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child(div().pt(px(1.)).child(spinner("ring-card-updating-spinner", IconSize::Nav, c.text_faint))).child(div().flex_1().min_w_0().child(words))))
         .into_any_element()
 }

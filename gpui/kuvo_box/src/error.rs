@@ -29,6 +29,16 @@ pub struct Refusal {
     pub reason: Option<String>,
     /// The box hasn't the route at all (`404` with nothing said): one from before it.
     pub older_box: bool,
+    /// What the box offers to do about it (`{"action"}`), as a button: Try Again for the coding
+    /// agents (PROTOCOL.md, "The coding agents' state").
+    pub action: Option<Offered>,
+}
+
+/// Something a box offers to do about what it refused: the button's words, and the route it posts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Offered {
+    pub label: String,
+    pub route: String,
 }
 
 impl Refusal {
@@ -42,6 +52,7 @@ impl Refusal {
         let object = said.as_ref().and_then(|value| value.as_object());
         let message = object.and_then(|o| o.get("message")).and_then(|m| m.as_str()).map(str::to_owned);
         let reason = object.and_then(|o| o.get("reason")).and_then(|r| r.as_str()).map(str::to_owned);
+        let action = object.and_then(|o| o.get("action")).and_then(|a| serde_json::from_value::<Offered>(a.clone()).ok()).filter(|a| !a.label.is_empty() && !a.route.is_empty());
         let older_box = status == 404 && message.is_none();
         let plain = if said.is_none() && (400..500).contains(&status) {
             std::str::from_utf8(body)
@@ -56,7 +67,24 @@ impl Refusal {
             .or_else(|| older_box.then(|| Self::OLDER_BOX.to_owned()))
             .or(plain)
             .unwrap_or_else(|| format!("It said no ({status})."));
-        Refusal { status, message, reason, older_box }
+        Refusal { status, message, reason, older_box, action }
+    }
+
+    /// The coding agents' bridge restarting, as the box says (`agentsRestarting`): not an error,
+    /// what was shown is kept and it's asked again.
+    pub fn agents_restarting(&self) -> bool {
+        self.reason.as_deref() == Some("agentsRestarting")
+    }
+
+    /// The coding agents' bridge down, as the box says (`agentsDown`): its one sentence of why, and
+    /// Try Again where it offers it.
+    pub fn agents_down(&self) -> bool {
+        self.reason.as_deref() == Some("agentsDown")
+    }
+
+    /// Either of the coding agents' states.
+    pub fn about_agents(&self) -> bool {
+        self.agents_restarting() || self.agents_down()
     }
 }
 
@@ -103,5 +131,16 @@ mod tests {
         // Never a page, nor what went wrong on the way.
         assert_eq!(Refusal::from_answer(400, b"<html>oops</html>").message, "It said no (400).");
         assert_eq!(Refusal::from_answer(502, b"upstream broke").message, "It said no (502).");
+    }
+
+    #[test]
+    fn the_coding_agents_state_reads_with_its_try_again() {
+        let down = Refusal::from_answer(503, br#"{"message":"The coding agents didn't finish starting.","reason":"agentsDown","action":{"label":"Try Again","route":"kuvo/agents/start"}}"#);
+        assert!(down.agents_down() && !down.agents_restarting());
+        assert_eq!(down.action, Some(Offered { label: "Try Again".into(), route: "kuvo/agents/start".into() }));
+        let restarting = Refusal::from_answer(503, br#"{"message":"The coding agents are restarting. This takes a few seconds.","reason":"agentsRestarting"}"#);
+        assert!(restarting.agents_restarting() && restarting.action.is_none());
+        // (An action it can't read is none, not a button that goes nowhere.)
+        assert_eq!(Refusal::from_answer(503, br#"{"message":"x","reason":"agentsDown","action":{"label":"Try Again"}}"#).action, None);
     }
 }

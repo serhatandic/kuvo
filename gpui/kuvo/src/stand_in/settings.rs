@@ -40,8 +40,11 @@ pub struct Settings {
     said: BTreeMap<String, Value>,
     attempts: BTreeMap<String, Attempt>,
     next: u32,
-    /// The bridge isn't running (`503`).
-    pub agents_down: bool,
+    /// The coding agents' bridge isn't running: what every route needing it answers (`503`, the
+    /// state as a box words it: PROTOCOL.md, "The coding agents' state"); none while it runs.
+    pub agents_away: Option<Value>,
+    /// Whether Try Again (`kuvo/agents/start`) gets the bridge running.
+    pub agents_start: bool,
     /// Sign-ins finish by themselves after a few asks (the app's `--stand-in`).
     pub finishes: bool,
     config: Value,
@@ -266,7 +269,8 @@ impl Default for Settings {
             said: BTreeMap::new(),
             attempts: BTreeMap::new(),
             next: 1,
-            agents_down: false,
+            agents_away: None,
+            agents_start: true,
             finishes: false,
             config: json!({ "$schema": "https://opencode.ai/config.json", "model": "anthropic/claude-sonnet-5-5", "agents": { "title": { "model": "google/gemini-3-pro" } } }),
             approval: json!({ "fullAccess": false, "default": "auto", "auto": { "engine": {}, "agents": {} }, "otherComputers": false }),
@@ -393,6 +397,23 @@ impl Settings {
         self.ended.retain(|ended| ended != account);
     }
 
+    /// Its answer to a route that needs the coding agents' bridge, while that isn't running (`503`
+    /// with their state), and to Try Again (`POST kuvo/agents/start`): `200 {}` once it runs (where
+    /// the test lets it), else their state as it is.
+    pub fn agents_away_answer(&mut self, method: &str, route: &str, query: &dyn Fn(&str) -> Option<String>) -> Option<(u16, Value)> {
+        if route == "kuvo/agents/start" {
+            if method != "POST" {
+                return Some((405, json!({ "message": "Use POST." })));
+            }
+            if self.agents_start {
+                self.agents_away = None;
+            }
+            return Some(self.agents_away.clone().map_or((200, json!({})), |away| (503, away)));
+        }
+        let needs_bridge = route.starts_with("kuvo/agents/") || route.starts_with("kuvo/groups") || route.starts_with("kuvo/artifacts") || (route.starts_with("kuvo/sign-in/") && query("agents").as_deref() == Some("1"));
+        self.agents_away.clone().filter(|_| needs_bridge).map(|away| (503, away))
+    }
+
     fn ways_of(&self, agents: bool, account: &str) -> Option<Value> {
         let key = if agents { format!("agents:{account}") } else { account.to_owned() };
         self.ways.get(&key).cloned()
@@ -409,8 +430,8 @@ impl Settings {
         }
         let agents_side = route.starts_with("kuvo/agents/api/");
         let api: Vec<&str> = if agents_side { segments[3..].to_vec() } else if route.starts_with("api/") { segments[1..].to_vec() } else { Vec::new() };
-        if agents_side && self.agents_down && api.first() == Some(&"integration") {
-            return Some((503, json!({ "message": "The coding agents aren’t running." })));
+        if agents_side && let Some(away) = &self.agents_away {
+            return Some((503, away.clone()));
         }
         if agents_side && api.as_slice() == ["kuvo", "accounts"] && method == "POST" {
             let provider = body["provider"].as_str().unwrap_or_default();
@@ -439,8 +460,8 @@ impl Settings {
         let answer = match (method, segments.as_slice()) {
             ("GET", ["kuvo", "sign-in", "accounts"]) => {
                 let agents = query("agents").is_some();
-                if agents && self.agents_down {
-                    return Some((503, json!({ "message": "The coding agents aren’t running." })));
+                if agents && let Some(away) = &self.agents_away {
+                    return Some((503, away.clone()));
                 }
                 let list = if agents { &self.agents } else { &self.engine };
                 let accounts: Vec<Value> = list
@@ -486,8 +507,8 @@ impl Settings {
             }
             ("POST", ["kuvo", "sign-in", "start"]) => {
                 let (agents, account) = (query("agents").is_some(), query("integration").unwrap_or_default());
-                if agents && self.agents_down {
-                    return Some((503, json!({ "message": "The coding agents aren’t running." })));
+                if agents && let Some(away) = &self.agents_away {
+                    return Some((503, away.clone()));
                 }
                 if account.is_empty() || body["methodID"].as_str().is_none_or(str::is_empty) {
                     return Some((400, json!({ "message": "Say which account (integration) and which way in (methodID)." })));

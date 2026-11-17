@@ -39,9 +39,14 @@ use crate::updates::Updates;
 pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone, UpdateAct};
 use form::{FormEvent, FormSheet};
 
+/// The coding agents' state, where a read was refused for it.
+fn agents_state<T>(read: &kuvo_box::Result<T>) -> Option<kuvo_box::Refusal> {
+    read.as_ref().err().and_then(kuvo_box::Error::refusal).filter(|refusal| refusal.about_agents()).cloned()
+}
+
 /// What's said when you didn't confirm it was you: nothing was sent.
 pub(crate) fn not_confirmed() -> kuvo_box::Error {
-    kuvo_box::Error::Refused(kuvo_box::Refusal { status: 403, message: "It wasn’t confirmed, so nothing was done.".into(), reason: None, older_box: false })
+    kuvo_box::Error::Refused(kuvo_box::Refusal { status: 403, message: "It wasn’t confirmed, so nothing was done.".into(), reason: None, older_box: false, action: None })
 }
 use sign_in::SignIn;
 
@@ -183,6 +188,10 @@ pub struct SettingsView {
     config: Reading<Config>,
     offered: Reading<Offered>,
     usage: Reading<UsageSettings>,
+    /// The coding agents' state, where the last read of the limits, or of the usage notices, was
+    /// refused for it (PROTOCOL.md, "The coding agents' state"): what was read before is kept.
+    agents_limits: Option<kuvo_box::Refusal>,
+    agents_usage: Option<kuvo_box::Refusal>,
     /// Rows with a change on its way, and what they say meanwhile.
     busy: Vec<(String, String)>,
     /// Secrets whose field is shown to replace the one set.
@@ -311,6 +320,8 @@ impl SettingsView {
             config: Reading::NotYet,
             offered: Reading::NotYet,
             usage: Reading::NotYet,
+            agents_limits: None,
+            agents_usage: None,
             busy: Vec::new(),
             replacing: Vec::new(),
             fields: HashMap::new(),
@@ -524,6 +535,8 @@ impl SettingsView {
         self.config = Reading::NotYet;
         self.offered = Reading::NotYet;
         self.usage = Reading::NotYet;
+        self.agents_limits = None;
+        self.agents_usage = None;
         self.busy.clear();
         self.replacing.clear();
         self.fields.clear();
@@ -642,6 +655,7 @@ impl SettingsView {
         rows::Facts {
             accounts: &self.accounts,
             limits: &self.limits,
+            limits_agents: self.agents_limits.as_ref().or(self.agents_usage.as_ref()),
             config: &self.config,
             offered: &self.offered,
             usage: &self.usage,
@@ -1173,8 +1187,14 @@ impl SettingsView {
             (Some(Drawn::Described), _) => self.read_page(section, cx),
             (Some(Drawn::Own), "accounts") => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx),
             (Some(Drawn::Own), "usage") => {
-                self.run("read-limits", |client| client.accounts(), |this, read, _| this.limits = reading(read, &this.limits), cx);
-                self.run("read-usage", |client| client.usage_settings(), |this, read, _| this.usage = reading(read, &this.usage), cx);
+                self.run("read-limits", |client| client.accounts(), |this, read, _| {
+                    this.agents_limits = agents_state(&read);
+                    this.limits = reading(read, &this.limits);
+                }, cx);
+                self.run("read-usage", |client| client.usage_settings(), |this, read, _| {
+                    this.agents_usage = agents_state(&read);
+                    this.usage = reading(read, &this.usage);
+                }, cx);
             }
             (Some(Drawn::Own), "models") => {
                 self.run("read-config", |client| client.config(), |this, read, _| this.config = reading(read, &this.config), cx);
@@ -1526,6 +1546,28 @@ impl SettingsView {
                 self.updates = Some((updates.clone(), updates.read(cx).facts().clone()));
             }
             Act::Yours(change) => crate::yours::change(change, cx),
+            // The box's Try Again for its coding agents: busy until it answers (once they run,
+            // or with how they stand now), then the page read again from the box.
+            Act::TakeAction(action) => {
+                let key = rows::AGENTS_DOWN.to_owned();
+                self.set_busy(&key, "Starting…");
+                let section = self.section().to_owned();
+                self.run(
+                    key.clone(),
+                    move |client| client.take_action(&action),
+                    move |this, done, cx| {
+                        this.done(&key);
+                        // (Its state again is what the page reads next; anything else is said.)
+                        if let Err(error) = &done
+                            && !error.refusal().is_some_and(kuvo_box::Refusal::about_agents)
+                        {
+                            this.problem = Some(said(error));
+                        }
+                        this.read_section(&section, cx);
+                    },
+                    cx,
+                );
+            }
         }
         self.rebuild(cx);
     }

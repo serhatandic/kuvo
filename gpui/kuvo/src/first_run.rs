@@ -116,6 +116,8 @@ pub struct FirstRun {
     browsed_from: Option<String>,
     /// Which read of the accounts is the latest asked for: an older one's answer is dropped.
     accounts_asked: u64,
+    /// The box's Try Again for its coding agents, while it goes.
+    starting_agents: bool,
     /// The accounts just signed in to, until the box has said how they stand now.
     checking: HashSet<String>,
     /// A sign-in under way in place: its account's key, and the sign-in.
@@ -184,6 +186,7 @@ impl FirstRun {
             browsing: None,
             browsed_from: None,
             accounts_asked: 0,
+            starting_agents: false,
             checking: HashSet::new(),
             sign_in: None,
             sign_in_watch: Vec::new(),
@@ -1028,15 +1031,50 @@ impl FirstRun {
         )
     }
 
-    /// Why a side of the box couldn't list its accounts just now, in its words.
+    /// Why a side of the box couldn't list its accounts just now, in its words alone: the coding
+    /// agents restarting, quietly, as they're read again; down, a warning, with the box's Try
+    /// Again where it offers one (PROTOCOL.md, "The coding agents' state").
     fn down(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
         let Reading::Ready(accounts) = &self.accounts else { return Vec::new() };
         [&accounts.agents_down, &accounts.engine_down]
             .into_iter()
             .flatten()
-            .map(|why| div().debug_selector(|| "first-run-down".into()).flex().items_center().gap(space::S2).text_ui(TypeSize::Small).text_color(c.warning).child(Icon::new(IconName::Warning).color(c.warning)).child(why.clone()).into_any_element())
+            .map(|why| {
+                if why.agents_restarting() {
+                    return waiting("first-run-restarting", &why.message, cx);
+                }
+                let again = why.action.clone().map(|action| {
+                    Button::new("first-run-down-again", action.label.clone()).size(ButtonSize::Small).disabled(self.starting_agents).on_click(cx.listener(move |this, _, _, cx| this.take_action(action.clone(), cx)))
+                });
+                div()
+                    .debug_selector(|| "first-run-down".into())
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .text_ui(TypeSize::Small)
+                    .text_color(c.warning)
+                    .child(Icon::new(IconName::Warning).color(c.warning))
+                    .child(div().flex_1().min_w_0().child(why.message.clone()))
+                    .children(again)
+                    .into_any_element()
+            })
             .collect()
+    }
+
+    /// The box's Try Again for its coding agents, then the accounts read again (how they stand now,
+    /// whatever it answered).
+    fn take_action(&mut self, action: kuvo_box::error::Offered, cx: &mut Context<Self>) {
+        self.starting_agents = true;
+        cx.notify();
+        self.run(
+            move |client| client.take_action(&action),
+            |this, _, cx| {
+                this.starting_agents = false;
+                this.read_accounts(cx);
+            },
+            cx,
+        );
     }
 
     fn agents(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
