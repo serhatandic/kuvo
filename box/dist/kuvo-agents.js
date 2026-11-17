@@ -9664,8 +9664,9 @@ class AcpThread {
     return this.fenced;
   }
   get outside() {
-    return Boolean(this.rpc && !this.rpc.isClosed && !this.fenced);
+    return this.startingOutside > 0 || Boolean(this.rpc && !this.rpc.isClosed && !this.fenced);
   }
+  startingOutside = 0;
   startedOver = false;
   onOwnTurn;
   own;
@@ -9676,6 +9677,7 @@ class AcpThread {
     this.name = name;
   }
   async open(input, hooks) {
+    const closes = this.closes;
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks);
     const subagents = await this.flavor.subagents?.(this.session.location.directory);
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...subagents ? { subagents } : {}, ...this.flavor.whole && fenceRules() ? { whole: true } : {} };
@@ -9691,7 +9693,6 @@ class AcpThread {
     if (this.rpc && !this.rpc.isClosed && this.tasks.size)
       this.cut.push(...this.taskWork());
     this.close();
-    const closes = this.closes;
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) });
     const launch = await this.flavor.command(mode);
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents]);
@@ -9704,16 +9705,24 @@ class AcpThread {
     const cwd = whole ? this.session.location.directory : launch.cwd ?? this.session.location.directory;
     const env = { ...whole?.env ?? launch.env, OPENCODE_SESSION_ID: this.session.id };
     const holdIn = this.flavor.held ? agentHoldFolder(this.flavor.held.kind) : undefined;
-    const held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held.provider, kind: this.flavor.held.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
-      console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
-      return;
-    }) : undefined;
-    if (this.closes !== closes) {
-      held?.stop();
-      await held?.exited;
-      launch.onExit?.();
-      ended?.();
-      throw new Error(`${this.name} stopped.`);
+    if (holdIn && !whole)
+      this.startingOutside++;
+    let held;
+    try {
+      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: launch.cleanEnv ? env : { ...process.env, ...env }, meta: { provider: this.flavor.held.provider, kind: this.flavor.held.kind, fenced: Boolean(whole), key: startedWith, turns: {} } }).catch((error) => {
+        console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
+        return;
+      }) : undefined;
+      if (this.closes !== closes + 1) {
+        held?.stop();
+        await held?.exited;
+        launch.onExit?.();
+        ended?.();
+        throw new Error(`${this.name} stopped.`);
+      }
+    } finally {
+      if (holdIn && !whole)
+        this.startingOutside--;
     }
     const rpc = new RPC(held ?? argv, {
       cwd,
@@ -17341,7 +17350,7 @@ ${input.text}` } : input, this.copies());
         return held.exited.then(() => said.finish());
       }, () => said.finish());
       if (whole)
-        process_.once("exit", () => void holding.then(whole.ended, () => {}));
+        process_.once("exit", () => void holding.then(whole.ended, () => process_.killed && whole.ended()));
       return process_;
     };
   }
@@ -18844,8 +18853,9 @@ class CodexAgent {
     return slot;
   }
   outside() {
-    return [...this.unfencedServers].some((server) => !server.isClosed);
+    return this.startingOutside > 0 || [...this.unfencedServers].some((server) => !server.isClosed);
   }
+  startingOutside = 0;
   isFenced(rpc) {
     return this.fencedServers.has(rpc);
   }
@@ -18971,15 +18981,23 @@ class CodexAgent {
     const cwd = fence ? directory : this.context.temporary;
     const stops = slot.stops;
     const holdIn = agentHoldFolder("codex");
-    const held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
-      console.error("Codex's holder didn't start:", error?.message ?? error);
-      return;
-    }) : undefined;
-    if (slot.stops !== stops || this.slots.get(key) !== slot) {
-      held?.stop();
-      await held?.exited;
-      fence?.ended();
-      throw new Error("Codex stopped.");
+    if (holdIn && !fence)
+      this.startingOutside++;
+    let held;
+    try {
+      held = holdIn ? await hold3(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+        console.error("Codex's holder didn't start:", error?.message ?? error);
+        return;
+      }) : undefined;
+      if (slot.stops !== stops || this.slots.get(key) !== slot) {
+        held?.stop();
+        await held?.exited;
+        fence?.ended();
+        throw new Error("Codex stopped.");
+      }
+    } finally {
+      if (holdIn && !fence)
+        this.startingOutside--;
     }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env });
     slot.fence = fenceNow;
@@ -18995,7 +19013,7 @@ class CodexAgent {
       if (slot.opening === rpc)
         slot.opening = undefined;
     }
-    if (this.slots.get(key) !== slot) {
+    if (slot.stops !== stops || this.slots.get(key) !== slot) {
       rpc.kill();
       throw new Error("Codex stopped.");
     }
@@ -39409,4 +39427,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 784ce55b6593d055584df7796e1a1361823f50a8ac089c5b01a75eb489feb3ec
+// Built from Packages/Box/src/agents 31808772980cd1036590e5cab06986de38a5aae779047293ba1f63fd75c06926
