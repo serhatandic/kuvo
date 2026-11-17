@@ -9678,6 +9678,7 @@ class AcpThread {
   }
   async open(input, hooks) {
     const closes = this.closes;
+    const opening = ++this.opens;
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks);
     const subagents = await this.flavor.subagents?.(this.session.location.directory);
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...subagents ? { subagents } : {}, ...this.flavor.whole && fenceRules() ? { whole: true } : {} };
@@ -9692,7 +9693,7 @@ class AcpThread {
       return this.rpc;
     if (this.rpc && !this.rpc.isClosed && this.tasks.size)
       this.cut.push(...this.taskWork());
-    this.close();
+    this.drop();
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) });
     const launch = await this.flavor.command(mode);
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents]);
@@ -9713,7 +9714,7 @@ class AcpThread {
         console.error(`${this.name}'s holder didn't start:`, error?.message ?? error);
         return;
       }) : undefined;
-      if (this.closes !== closes + 1) {
+      if (this.closes !== closes || this.opens !== opening) {
         held?.stop();
         await held?.exited;
         launch.onExit?.();
@@ -9853,7 +9854,7 @@ class AcpThread {
       }
     } catch (error) {
       if (this.rpc === rpc)
-        this.close();
+        this.drop();
       throw error;
     }
     return rpc;
@@ -10609,7 +10610,7 @@ ${text}`;
   async stopBackgroundTasks() {
     if (!this.tasks.size || this.active)
       return;
-    this.close();
+    this.drop();
   }
   taskWork() {
     return [...this.tasks.values()].map((task) => {
@@ -10626,8 +10627,12 @@ ${text}`;
       emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory);
   }
   closes = 0;
+  opens = 0;
   close() {
     this.closes++;
+    this.drop();
+  }
+  drop() {
     this.rpc?.kill();
     this.rpc = undefined;
     this.leftRunning();
@@ -17342,7 +17347,11 @@ ${input.text}` } : input, this.copies());
         if (this.holding === holding)
           this.held = held;
       }, (error) => console.error("Claude Code's holder didn't start:", error?.message ?? error));
-      const process_ = heldProcess(holding, () => whole ? whole.spawn(options) : spawn6(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] }));
+      let ownRan = false;
+      const process_ = heldProcess(holding, () => {
+        ownRan = true;
+        return whole ? whole.spawn(options) : spawn6(options.command, options.args, { cwd: how.cwd, env: how.env, signal: options.signal, stdio: ["pipe", "pipe", "pipe"] });
+      });
       const said = new Said;
       this.said = said;
       this.saidAll = holding.then((held) => {
@@ -17350,7 +17359,7 @@ ${input.text}` } : input, this.copies());
         return held.exited.then(() => said.finish());
       }, () => said.finish());
       if (whole)
-        process_.once("exit", () => void holding.then(whole.ended, () => process_.killed && whole.ended()));
+        process_.once("exit", () => void holding.then(whole.ended, () => !ownRan && whole.ended()));
       return process_;
     };
   }
@@ -39427,4 +39436,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 31808772980cd1036590e5cab06986de38a5aae779047293ba1f63fd75c06926
+// Built from Packages/Box/src/agents 0e5a30a6720cb8796418c791dd0c7886598978186464f6506cb82e1f903c4ffa
