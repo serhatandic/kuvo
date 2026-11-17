@@ -3571,7 +3571,10 @@ class EngineLink {
       for (const resolve of this.waiting.splice(0))
         resolve();
   }
+  beforeTurn;
   async request(method, path, body, timeout = 30000, directory) {
+    if (this.beforeTurn && method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command|shell|compact|summarize)$/.test(path))
+      await this.beforeTurn();
     if (!this.url)
       throw new Error("The engine isn't running.");
     const response = await fetch(this.url + path, {
@@ -37568,22 +37571,17 @@ var botsFolder = groupFolders?.bots ?? (onMachine ? join42(machineHome, "bots") 
 var agentsFile = onMachine ? join42(machineHome, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined;
 var runFolder = onMachine ? join42(machineHome, "run") : process.env.KUVO_RUN || undefined;
 notesBeside(runFolder);
+if (runFolder)
+  link4.beforeTurn = () => untilSwapLets(runFolder);
 for (const name of ["KUVO_GROUPS", "KUVO_TRASH", "KUVO_GROUPS_MEMORY_KEY", "KUVO_AGENTS_FILE", "KUVO_ARTIFACTS", "KUVO_RUN", ...onMachine ? [] : ["KUVO_BOTS"]])
   delete process.env[name];
 if (groupFolders) {
   try {
     const store = new GroupStore(groupFolders.root, groupFolders.bots, agentsFile);
     boxZoneIs(store.settings()?.boxTimeZone);
-    const engineForSeats = runFolder ? {
-      request: async (method, path, body, timeout, directory) => {
-        if (method === "POST" && /^\/?api\/session\/[^/]+\/(prompt|command)$/.test(path))
-          await untilSwapLets(runFolder);
-        return link4.request(method, path, body, timeout, directory);
-      }
-    } : link4;
     const runner = new GroupRunner({
       store,
-      engine: engineForSeats,
+      engine: link4,
       bridge: () => self,
       trash: groupFolders.trash,
       listen: (session, listener) => link4.listen(session, listener),
@@ -37877,4 +37875,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 0a6012bacaba90f2944a9bbd348d66c851b608fe982fbdd73da9eb9c9a3bd6f0
+// Built from Packages/Box/src/agents 8fc988175f2f4414291577d3ff97195ba4c7865f42b90f3e0d89ab9cfc646865

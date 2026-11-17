@@ -14972,6 +14972,7 @@
         }
        }
       },
+      "line?": "string",
       "items?": {
        "oneOf": [
         {
@@ -16181,6 +16182,7 @@
         }
        }
       },
+      "line?": "string",
       "removed?": {
        "object": {
         "id": "string",
