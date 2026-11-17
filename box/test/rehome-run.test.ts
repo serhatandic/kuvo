@@ -400,7 +400,9 @@ test.if(mac)("saved sign-ins are never read by the move, nor by opening or updat
   expect(moved.status, moved.errors).toBe(0)
   expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
   // (Nothing's said of them here: Kuvo asks you about them when you can answer.)
-  expect(moved.said.message ?? "").not.toContain("sign-ins")
+  const said = moved.said
+  if (said === null) throw new Error(`the move said nothing it could read: ${moved.errors}`)
+  expect(said.message ?? "").not.toContain("sign-ins")
   // Opening Kuvo again, an update or not: this Mac's own, nothing to run, and the move, asked
   // again all the same (an older app), runs nothing and asks nothing.
   expect(judgeInstall(m.K, m.S)).toMatchObject({ verdict: "ours", verb: null })
