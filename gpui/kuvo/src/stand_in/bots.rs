@@ -427,7 +427,7 @@ fn personalities() -> Vec<Value> {
     ]
     .into_iter()
     .map(|(id, name, description)| json!({ "id": id, "name": name, "description": description, "custom": false }))
-    .chain([json!({ "id": "custom.pirate", "name": "Ship’s Cook", "description": "One of your own.", "custom": true })])
+    .chain([json!({ "id": "custom.pirate", "name": "Ship’s Cook", "description": "Brings a little galley humor to everyday work. Gives the short answer first, then explains the trade-offs in plain language. When a task has several steps, calls out what is ready, what needs a decision, and what can wait. Keeps the jokes out of urgent updates and ends each handoff with the next thing to do.", "custom": true })])
     .collect()
 }
 

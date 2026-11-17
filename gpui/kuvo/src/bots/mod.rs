@@ -68,6 +68,7 @@ pub enum Act {
     Rename,
     EditJob,
     EditLook,
+    ChoosePersonality,
     SetPersonality(Option<String>),
     SetModel(ModelRef),
     /// The effort its model runs at; none: the model's own.
@@ -86,11 +87,18 @@ pub enum Act {
 /// A sheet over the page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sheet {
-    Name,
-    Job,
+    Personality,
     /// The look being picked, and whether it's the new bot's.
     Look { look: Look, new: bool },
     Delete,
+}
+
+/// The editor open for the selected bot.
+#[derive(Clone, Debug, PartialEq)]
+enum Editor {
+    Name,
+    Job,
+    Sheet(Sheet),
 }
 
 /// A row's control, at its right.
@@ -98,10 +106,8 @@ pub enum Sheet {
 pub enum Control {
     Text(String),
     Busy(String),
-    Button(String, Act),
     /// A bot's face beside a button.
     Face(Option<Look>, String, Act),
-    Danger(String, Act),
     /// What's chosen, and the choices: each one's name, a line under it, what it does, whether it's on.
     Menu { shown: String, choices: Vec<(String, String, Act, bool)> },
     /// A model, from the model picker: what's shown, the model now, and whether it's New Bot's
@@ -147,9 +153,12 @@ enum Item {
     /// A bot's head: its face, name and job, what it's doing now, and Chat.
     Head { bot: Box<Bot>, doing: Option<crate::areas::Doing> },
     /// A bot that lives elsewhere: what's known of it here.
-    ElsewhereHead { key: String, name: String, look: Option<Look>, line: String },
+    ElsewhereHead { key: String, name: String, look: Option<Look>, line: String, editable: bool },
     Notice { key: String, tone: Tone, title: String, words: String },
     Group(String),
+    Personality { name: String, description: String, available: bool, saving: bool },
+    Job { line: String, details: String },
+    Delete,
     Row { row: Box<Row>, first: bool, last: bool },
     Session { session: WorkSession, project: String, ago: String, first: bool, last: bool },
     More { count: usize, last: bool },
@@ -192,11 +201,11 @@ pub struct BotsView {
     busy: Vec<(String, String)>,
     /// What the box last refused of a row's change, over the page until closed.
     problem: Option<String>,
-    sheet: Option<Sheet>,
-    /// The sheet's change is on its way; and why the box turned the last one down.
+    editor: Option<Editor>,
+    /// The editor’s change is on its way; and why the box turned the last one down.
     saving: bool,
-    sheet_error: Option<String>,
-    /// The sheets' fields, made once: a name, a job's line and its details; and New Bot's name.
+    edit_error: Option<String>,
+    /// The inline fields, made once, and New Bot’s name.
     name: Entity<TextField>,
     line: Entity<TextField>,
     details: Entity<TextField>,
@@ -225,16 +234,21 @@ impl Focusable for BotsView {
 
 impl BotsView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> BotsView {
-        let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
+        let name = cx.new(|cx| TextField::new(cx).title().placeholder("Name"));
         let line = cx.new(|cx| TextField::new(cx).placeholder("What it does, in a few words"));
-        let details = cx.new(|cx| TextField::new(cx).multi_line(4, 10).placeholder("All of it: what to do, when, and what to tell you"));
+        let details = cx.new(|cx| {
+            TextField::new(cx)
+                .multi_line(4, 10)
+                .submits_on_enter(false)
+                .placeholder("What to do, when to do it, and what to report")
+        });
         let new_name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let subscriptions = vec![
-            cx.subscribe(&name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.sheet_key(event, cx)),
-            cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.sheet_key(event, cx)),
+            cx.subscribe(&name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
+            cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
             cx.subscribe(&details, |this: &mut BotsView, _, event: &TextFieldEvent, cx| {
                 if matches!(event, TextFieldEvent::Cancel) {
-                    this.close_sheet(cx);
+                    this.close_editor(cx);
                 }
             }),
             cx.subscribe(&new_name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| match event {
@@ -254,9 +268,9 @@ impl BotsView {
             offered: Reading::NotYet,
             busy: Vec::new(),
             problem: None,
-            sheet: None,
+            editor: None,
             saving: false,
-            sheet_error: None,
+            edit_error: None,
             name,
             line,
             details,
@@ -285,7 +299,10 @@ impl BotsView {
 
     /// The sheet open, if one is.
     pub fn sheet(&self) -> Option<&Sheet> {
-        self.sheet.as_ref()
+        match self.editor.as_ref()? {
+            Editor::Sheet(sheet) => Some(sheet),
+            _ => None,
+        }
     }
 
     /// The field a name is typed in (Rename's), a job's line and its details, and New Bot's name.
@@ -320,10 +337,11 @@ impl BotsView {
     pub fn set_said(&mut self, said: Reading<BotsSaid>, cx: &mut Context<Self>) {
         if self.said != said {
             self.said = said;
-            // A sheet for a bot the list no longer has (deleted or moved, from anywhere) closes.
-            if matches!(self.shown, Shown::Bot(_) | Shown::Elsewhere(_)) && self.subject().is_none() && self.sheet.is_some() && !self.saving {
-                self.sheet = None;
-                self.sheet_error = None;
+            // A bot that disappeared from the list can no longer be edited.
+            if matches!(self.shown, Shown::Bot(_) | Shown::Elsewhere(_)) && self.subject().is_none() && self.editor.is_some() && !self.saving {
+                self.editor = None;
+                self.edit_error = None;
+                self.wants_focus = Some(self.focus.clone());
             }
             self.rebuild(cx);
         }
@@ -338,10 +356,14 @@ impl BotsView {
             _ => Shown::Nothing,
         };
         if self.shown != shown {
+            if let Some(editor) = &self.editor {
+                self.disable_editor_fields(editor, false, cx);
+                self.wants_focus = None;
+            }
             self.shown = shown;
             self.problem = None;
-            self.sheet = None;
-            self.sheet_error = None;
+            self.editor = None;
+            self.edit_error = None;
             // (A change still on its way answers for its own bot, not for what's shown now.)
             self.saving = false;
             self.all_sessions = false;
@@ -497,9 +519,9 @@ impl BotsView {
         self.busy.iter().find(|(busy, _)| *busy == key).map(|(_, words)| words.as_str())
     }
 
-    /// A model's name, as the box's list of models offered names it (its id where it lists none).
-    fn model_name(&self, model: &ModelRef) -> String {
-        self.offered().and_then(|offered| offered.models.iter().find(|each| each.is(model))).map(|each| each.name.clone()).unwrap_or_else(|| model.id.clone())
+    /// A model’s name, as the list of models offered names it.
+    fn model_name(&self, model: &ModelRef) -> Option<String> {
+        self.offered()?.models.iter().find(|each| each.is(model)).map(|each| each.name.clone())
     }
 
     /// A project's name, as New Bot's list names it (else its folder's).
@@ -541,7 +563,7 @@ impl BotsView {
     fn nothing_items(&self) -> Vec<Item> {
         match &self.said {
             Reading::NotYet => vec![Item::Note { key: "bots-loading".into(), words: "Loading bots…".into(), busy: true }, Item::End],
-            Reading::Failed(why) => vec![Item::Note { key: "bots-failed".into(), words: format!("Bots couldn’t be read: {why}"), busy: false }, Item::End],
+            Reading::Failed(_) => vec![Item::Note { key: "bots-failed".into(), words: "Couldn’t load bots. Reopen Bots to try again.".into(), busy: false }, Item::End],
             Reading::Ready(said) => vec![Item::Empty { none: said.bots.is_empty() }, Item::End],
         }
     }
@@ -550,7 +572,7 @@ impl BotsView {
         let Some(bot) = self.bot() else {
             return match &self.said {
                 Reading::NotYet => vec![Item::Note { key: "bots-loading".into(), words: "Loading bots…".into(), busy: true }, Item::End],
-                Reading::Failed(why) => vec![Item::Note { key: "bots-failed".into(), words: format!("Bots couldn’t be read: {why}"), busy: false }, Item::End],
+                Reading::Failed(_) => vec![Item::Note { key: "bots-failed".into(), words: "Couldn’t load bots. Reopen Bots to try again.".into(), busy: false }, Item::End],
                 // Gone from the box's list since it was picked (deleted or moved, from anywhere).
                 Reading::Ready(_) => vec![Item::Note { key: "bot-gone".into(), words: format!("This bot isn’t on {} any more.", self.this_box), busy: false }, Item::End],
             };
@@ -558,10 +580,27 @@ impl BotsView {
         let mut items = vec![Item::Head { bot: Box::new(bot.clone()), doing: doing_parts(&bot.now, self.now()) }];
         items.extend(self.notices(id));
 
+        items.push(Item::Group("Personality".into()));
+        items.push(self.personality(bot));
+        items.push(Item::Group("Job".into()));
+        items.push(Item::Job { line: bot.job.clone(), details: bot.job_details.clone() });
+        items.push(Item::Group("Model settings".into()));
+        let rows = self.setting_rows(bot);
+        let count = rows.len();
+        items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
+
+        items.push(Item::Group("Location".into()));
+        let machine = bot.machine.clone().filter(|name| !name.trim().is_empty()).unwrap_or_else(|| self.this_box.clone());
+        let folder = bot.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into());
+        for (key, title, value, first) in [("bot-lives", "Lives on", machine, true), ("bot-works", "Works in", folder, false)] {
+            let row = Row { key: key.into(), title: title.into(), detail: String::new(), control: Control::Text(value) };
+            items.push(Item::Row { row: Box::new(row), first, last: !first });
+        }
+
         items.push(Item::Group("Recent sessions".into()));
         match &self.work {
             Reading::NotYet => items.push(Item::Note { key: "work-loading".into(), words: "Loading its sessions…".into(), busy: true }),
-            Reading::Failed(why) => items.push(Item::Note { key: "work-failed".into(), words: format!("Its sessions couldn’t be read: {why}"), busy: false }),
+            Reading::Failed(_) => items.push(Item::Note { key: "work-failed".into(), words: "Couldn’t load sessions. Reopen this page to try again.".into(), busy: false }),
             Reading::Ready(work) if work.sessions.is_empty() => items.push(Item::Note { key: "work-none".into(), words: "It hasn’t started a session yet.".into(), busy: false }),
             Reading::Ready(work) => {
                 let count = work.sessions.len();
@@ -582,13 +621,8 @@ impl BotsView {
             }
         }
 
-        items.push(Item::Group("Settings".into()));
-        let rows = self.setting_rows(bot);
-        let count = rows.len();
-        items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
-
-        items.push(Item::Group(String::new()));
-        items.push(Item::Row { row: Box::new(delete_row()), first: true, last: true });
+        items.push(Item::Group("Delete bot".into()));
+        items.push(Item::Delete);
         items.push(Item::End);
         items
     }
@@ -619,46 +653,46 @@ impl BotsView {
         items
     }
 
+    fn personality(&self, bot: &Bot) -> Item {
+        let (name, description) = match (&self.templates, &bot.personality) {
+            (_, None) => (OWN_WAY.into(), OWN_WAY_DESCRIPTION.into()),
+            (Reading::NotYet, Some(_)) => ("Loading personality…".into(), String::new()),
+            (Reading::Failed(_), Some(_)) => ("Personality unavailable".into(), String::new()),
+            (Reading::Ready(templates), Some(id)) => templates.personalities.iter()
+                .find(|each| &each.id == id)
+                .map(|each| (each.name.clone(), each.description.clone()))
+                .unwrap_or_else(|| ("Personality unavailable".into(), "Choose another personality.".into())),
+        };
+        let description = match self.templates {
+            Reading::Failed(_) => "Couldn’t load personalities. Reopen this page to try again.".into(),
+            _ => description,
+        };
+        Item::Personality { name, description, available: self.templates().is_some(), saving: self.is_busy("bot-personality") }
+    }
+
     fn setting_rows(&self, bot: &Bot) -> Vec<Row> {
         let busy_or = |key: &str, control: Control| match self.busy(&bot.id, key) {
             Some(words) => Control::Busy(words.to_owned()),
             None => control,
         };
-        let mut rows = vec![
-            Row { key: "bot-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::Button("Rename…".into(), Act::Rename) },
-            Row { key: "bot-look".into(), title: "Look".into(), detail: "Its colour and shape, wherever it shows.".into(), control: Control::Face(Some(bot.look.clone()), "Change…".into(), Act::EditLook) },
-            Row {
-                key: "bot-job".into(),
-                title: "Job".into(),
-                detail: if bot.job.is_empty() { "None yet. Tell it in its chat, or write one here.".into() } else { bot.job.clone() },
-                control: Control::Button("Edit…".into(), Act::EditJob),
-            },
-        ];
-        // Its personality, among those the box offers (`kuvo/bots/templates`).
-        let personality = match &self.templates {
-            Reading::NotYet => (String::new(), Control::Busy("Loading…".into())),
-            Reading::Failed(why) => (format!("The personalities couldn’t be read: {why}"), Control::Text(String::new())),
-            Reading::Ready(templates) => {
-                let has = bot.personality.as_ref().and_then(|id| templates.personalities.iter().find(|each| &each.id == id));
-                // One the box doesn't list (any more) shows by its id: nothing is made up for it.
-                let shown = has.map(|each| each.name.clone()).or_else(|| bot.personality.clone()).unwrap_or_else(|| OWN_WAY.to_owned());
-                let mut choices = vec![(OWN_WAY.to_owned(), String::new(), Act::SetPersonality(None), bot.personality.is_none())];
-                choices.extend(templates.personalities.iter().map(|each| (each.name.clone(), each.description.clone(), Act::SetPersonality(Some(each.id.clone())), bot.personality.as_ref() == Some(&each.id))));
-                (has.map(|each| each.description.clone()).unwrap_or_default(), Control::Menu { shown, choices })
-            }
+        let locked = self.editor.is_some() || self.change_pending(&bot.id);
+        let model_label = if let Some(model) = &bot.model {
+            self.model_name(model).unwrap_or_else(|| "Model unavailable".into())
+        } else {
+            "None".into()
         };
-        rows.push(Row { key: "bot-personality".into(), title: "Personality".into(), detail: if personality.0.is_empty() { "How it talks.".into() } else { personality.0 }, control: busy_or("bot-personality", personality.1) });
         // Its model, among those the box offers.
         let model = match (&self.offered, &bot.model) {
             (Reading::NotYet, _) => Control::Busy("Loading…".into()),
-            (Reading::Ready(_), model) => Control::Model { shown: model.as_ref().map(|model| self.model_name(model)).unwrap_or_else(|| "None".into()), current: model.clone(), new: None },
-            (Reading::Failed(_), model) => Control::Text(model.as_ref().map(|model| self.model_name(model)).unwrap_or_default()),
+            (Reading::Ready(_), _) if locked => Control::Text(model_label),
+            (Reading::Ready(_), model) => Control::Model { shown: model_label, current: model.clone(), new: None },
+            (Reading::Failed(_), _) => Control::Text(String::new()),
         };
         let model_line = match &self.offered {
-            Reading::Failed(why) => format!("The models couldn’t be read: {why}"),
-            _ => "What it thinks with.".into(),
+            Reading::Failed(_) => "Couldn’t load models. Reopen this page to try again.".into(),
+            _ => String::new(),
         };
-        rows.push(Row { key: "bot-model".into(), title: "Model".into(), detail: model_line, control: busy_or("bot-model", model) });
+        let mut rows = vec![Row { key: "bot-model".into(), title: "Model".into(), detail: model_line, control: busy_or("bot-model", model) }];
         // The effort its model runs at, among those the box lists for that model (none of its
         // own: no row).
         let efforts = bot.model.as_ref().and_then(|model| self.offered()?.models.iter().find(|each| each.is(model))).map(|each| each.efforts.clone()).unwrap_or_default();
@@ -667,11 +701,9 @@ impl BotsView {
             let mut choices = vec![(OWN_EFFORT.to_owned(), String::new(), Act::SetEffort(None), has.is_none())];
             choices.extend(efforts.iter().map(|effort| (effort_title(effort), String::new(), Act::SetEffort(Some(effort.clone())), has.as_ref() == Some(effort))));
             let shown = has.as_deref().map(effort_title).unwrap_or_else(|| OWN_EFFORT.to_owned());
-            rows.push(Row { key: "bot-effort".into(), title: "Effort".into(), detail: "How hard it thinks before it answers.".into(), control: busy_or("bot-effort", Control::Menu { shown, choices }) });
+            let control = if locked { Control::Text(shown) } else { Control::Menu { shown, choices } };
+            rows.push(Row { key: "bot-effort".into(), title: "Effort".into(), detail: "How hard it thinks before it answers.".into(), control: busy_or("bot-effort", control) });
         }
-        // Where it lives and works: the box's facts, read only.
-        rows.push(Row { key: "bot-lives".into(), title: "Lives on".into(), detail: String::new(), control: Control::Text(bot.machine.clone().unwrap_or_else(|| self.this_box.clone())) });
-        rows.push(Row { key: "bot-works".into(), title: "Works in".into(), detail: String::new(), control: Control::Text(bot.project.as_deref().map(|project| self.project_name(project)).unwrap_or_else(|| "A folder of its own".into())) });
         rows
     }
 
@@ -679,7 +711,7 @@ impl BotsView {
         let Some(there) = self.there(id) else {
             return match &self.said {
                 Reading::NotYet => vec![Item::Note { key: "bots-loading".into(), words: "Loading bots…".into(), busy: true }, Item::End],
-                Reading::Failed(why) => vec![Item::Note { key: "bots-failed".into(), words: format!("Bots couldn’t be read: {why}"), busy: false }, Item::End],
+                Reading::Failed(_) => vec![Item::Note { key: "bots-failed".into(), words: "Couldn’t load bots. Reopen Bots to try again.".into(), busy: false }, Item::End],
                 // No computer lists it now, and nothing waits for it: deleted, or it went through.
                 Reading::Ready(_) => vec![Item::Note { key: "elsewhere-done".into(), words: "None of your computers lists this bot now.".into(), busy: false }, Item::End],
             };
@@ -689,22 +721,13 @@ impl BotsView {
             key: id.to_owned(),
             name: there.name.clone(),
             look: there.look.clone(),
+            editable: there.listed,
             line: if there.job.is_empty() { format!("Lives on {computer}") } else { format!("{} · Lives on {computer}", there.job) },
         }];
         items.extend(self.notices(id));
         if there.listed {
-            // What the box takes for a bot on another computer without that computer's own lists:
-            // its name and look. (It holds each for that computer, and says so above.)
-            items.push(Item::Group("Settings".into()));
-            let rows = vec![
-                Row { key: "bot-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::Button("Rename…".into(), Act::Rename) },
-                Row { key: "bot-look".into(), title: "Look".into(), detail: "Its colour and shape, wherever it shows.".into(), control: Control::Face(there.look.clone(), "Change…".into(), Act::EditLook) },
-                Row { key: "bot-lives".into(), title: "Lives on".into(), detail: String::new(), control: Control::Text(computer.clone()) },
-            ];
-            let count = rows.len();
-            items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));
-            items.push(Item::Group(String::new()));
-            items.push(Item::Row { row: Box::new(delete_row()), first: true, last: true });
+            items.push(Item::Group("Delete bot".into()));
+            items.push(Item::Delete);
             // What this box can't say of it: said plainly, with where it's said.
             items.push(Item::Note { key: "elsewhere-note".into(), words: format!("{} shows what {computer} last told it. Its job, personality, model and sessions are on {computer}.", capitalized(&self.this_box)), busy: false });
         } else {
@@ -766,9 +789,9 @@ impl BotsView {
         let mut choices = vec![(OWN_WAY.to_owned(), String::new(), Act::FormPersonality(None), personality.is_none())];
         choices.extend(templates.personalities.iter().map(|each| (each.name.clone(), each.description.clone(), Act::FormPersonality(Some(each.id.clone())), personality.as_ref() == Some(&each.id))));
         // The model it starts on is the box's (`startingModel`) unless another's picked.
-        let starting = templates.starting().map(|model| self.model_name(model));
+        let starting = templates.starting().map(|model| self.model_name(model).unwrap_or_else(|| model.id.clone()));
         let model_shown = match (&self.form.model, &starting) {
-            (Some(model), _) => self.model_name(model),
+            (Some(model), _) => self.model_name(model).unwrap_or_else(|| model.id.clone()),
             (None, Some(starting)) => starting.clone(),
             (None, None) => "Picked for you".into(),
         };
@@ -886,6 +909,19 @@ impl BotsView {
         if self.client.gate().is_held() && matches!(act, Act::New | Act::Create) {
             return;
         }
+        if matches!(act, Act::Rename | Act::EditJob | Act::EditLook | Act::ChoosePersonality | Act::Delete)
+            && !self.can_open_editor()
+        {
+            return;
+        }
+        // Replies carry the whole bot. Let one settings change finish before sending another.
+        if matches!(act, Act::SetPersonality(_) | Act::SetModel(_) | Act::SetEffort(_)) {
+            let can_pick = self.editor.is_none()
+                || matches!((&act, self.sheet()), (Act::SetPersonality(_), Some(Sheet::Personality)));
+            if !can_pick || self.bot().is_some_and(|bot| self.change_pending(&bot.id)) {
+                return;
+            }
+        }
         match act {
             Act::Chat => {
                 if let Some(bot) = self.bot() {
@@ -902,33 +938,39 @@ impl BotsView {
                     field.set_text(name, cx);
                     field.select_range(0..end, cx);
                 });
-                self.open_sheet(Sheet::Name, Some(self.name.focus_handle(cx)));
+                self.open_editor(Editor::Name, Some(self.name.focus_handle(cx)));
             }
             Act::EditJob => {
                 let Some((line, details)) = self.bot().map(|bot| (bot.job.clone(), bot.job_details.clone())) else { return };
                 self.line.update(cx, |field, cx| field.set_text(line, cx));
                 self.details.update(cx, |field, cx| field.set_text(details, cx));
-                self.open_sheet(Sheet::Job, Some(self.line.focus_handle(cx)));
+                self.open_editor(Editor::Job, Some(self.line.focus_handle(cx)));
             }
             Act::EditLook => {
                 // From the look it has; a bot elsewhere whose computer said none, the box's first.
                 let Some(look) = self.subject().and_then(|(_, _, look)| look.or_else(|| self.first_look())) else { return };
-                self.open_sheet(Sheet::Look { look, new: false }, None);
+                self.open_editor(Editor::Sheet(Sheet::Look { look, new: false }), None);
+            }
+            Act::ChoosePersonality => {
+                if self.templates().is_some() && !self.is_busy("bot-personality") {
+                    self.open_editor(Editor::Sheet(Sheet::Personality), None);
+                }
             }
             Act::FormLook => {
                 // From the look shown; with none, the first of each the box offers.
                 let look = self.form_look().or_else(|| self.first_look());
                 let Some(look) = look else { return };
-                self.open_sheet(Sheet::Look { look, new: true }, None);
+                self.open_editor(Editor::Sheet(Sheet::Look { look, new: true }), None);
             }
-            // (One at a time for a row: a pick while one's on its way waits for the box's answer.)
-            Act::SetPersonality(_) if self.is_busy("bot-personality") => {}
-            Act::SetModel(_) if self.is_busy("bot-model") => {}
-            Act::SetEffort(_) if self.is_busy("bot-effort") => {}
             Act::SetEffort(effort) => self.change("bot-effort", BotChange { effort: Some(effort), ..BotChange::default() }, cx),
-            Act::SetPersonality(personality) => self.change("bot-personality", BotChange { personality: Some(personality), ..BotChange::default() }, cx),
+            Act::SetPersonality(personality) => {
+                if matches!(self.sheet(), Some(Sheet::Personality)) {
+                    self.close_editor(cx);
+                }
+                self.change("bot-personality", BotChange { personality: Some(personality), ..BotChange::default() }, cx);
+            }
             Act::SetModel(model) => self.change("bot-model", BotChange { model: Some(model), ..BotChange::default() }, cx),
-            Act::Delete => self.open_sheet(Sheet::Delete, None),
+            Act::Delete => self.open_editor(Editor::Sheet(Sheet::Delete), None),
             Act::New => cx.emit(BotsEvent::Select(Some("new".into()))),
             Act::PickTemplate(template) => {
                 // A template's name goes in while the name is still a template's (or empty).
@@ -954,37 +996,48 @@ impl BotsView {
         self.rebuild(cx);
     }
 
-    fn open_sheet(&mut self, sheet: Sheet, focus: Option<FocusHandle>) {
-        self.sheet = Some(sheet);
-        self.sheet_error = None;
+    fn can_open_editor(&self) -> bool {
+        self.editor.is_none() && self.subject().is_some_and(|(id, ..)| !self.change_pending(&id))
+    }
+
+    fn change_pending(&self, id: &str) -> bool {
+        self.busy.iter().any(|(key, _)| key.split_once('/').is_some_and(|(bot, _)| bot == id))
+    }
+
+    fn open_editor(&mut self, editor: Editor, focus: Option<FocusHandle>) {
+        self.editor = Some(editor);
+        self.edit_error = None;
         self.saving = false;
         self.problem = None;
         self.wants_focus = Some(focus.unwrap_or_else(|| self.sheet_focus.clone()));
     }
 
-    pub fn close_sheet(&mut self, cx: &mut Context<Self>) {
+    pub fn close_editor(&mut self, cx: &mut Context<Self>) {
         // (One whose change is on its way stays until the box answers.)
         if self.saving {
             return;
         }
-        self.sheet = None;
-        self.sheet_error = None;
+        self.editor = None;
+        self.edit_error = None;
         self.wants_focus = Some(self.focus.clone());
-        cx.notify();
+        self.rebuild(cx);
     }
 
-    /// Return or Escape in one of a sheet's fields.
-    fn sheet_key(&mut self, event: &TextFieldEvent, cx: &mut Context<Self>) {
+    /// Return or Escape in an inline field.
+    fn editor_key(&mut self, event: &TextFieldEvent, cx: &mut Context<Self>) {
         match event {
-            TextFieldEvent::Submit(_) => self.save_sheet(cx),
-            TextFieldEvent::Cancel => self.close_sheet(cx),
+            TextFieldEvent::Submit(_) => self.save_editor(cx),
+            TextFieldEvent::Cancel => self.close_editor(cx),
             TextFieldEvent::Changed => {}
         }
     }
 
     /// Picks a colour or a shape in the look's sheet.
     pub fn pick_look(&mut self, color: Option<&str>, shape: Option<&str>, cx: &mut Context<Self>) {
-        if let Some(Sheet::Look { look, .. }) = &mut self.sheet {
+        if self.saving {
+            return;
+        }
+        if let Some(Editor::Sheet(Sheet::Look { look, .. })) = &mut self.editor {
             if let Some(color) = color {
                 look.color = color.to_owned();
             }
@@ -995,51 +1048,62 @@ impl BotsView {
         }
     }
 
-    /// The sheet's Save (or Delete): sent to the box, the sheet staying until it answers.
-    pub fn save_sheet(&mut self, cx: &mut Context<Self>) {
+    /// Send Save or Delete and keep the editor open until the request completes.
+    pub fn save_editor(&mut self, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
-        let Some(sheet) = self.sheet.clone() else { return };
-        let change = match sheet {
+        let Some(editor) = self.editor.clone() else { return };
+        let change = match &editor {
             // The new bot's look: kept for when it's made.
-            Sheet::Look { look, new: true } => {
-                self.form.look = Some(look);
-                self.close_sheet(cx);
-                self.rebuild(cx);
+            Editor::Sheet(Sheet::Look { look, new: true }) => {
+                self.form.look = Some(look.clone());
+                self.close_editor(cx);
                 return;
             }
-            Sheet::Name => Some(BotChange { name: Some(self.name.read(cx).text().trim().to_owned()), ..BotChange::default() }),
-            Sheet::Job => Some(BotChange { job: Some((self.line.read(cx).text().trim().to_owned(), self.details.read(cx).text().trim().to_owned())), ..BotChange::default() }),
-            Sheet::Look { look, new: false } => Some(BotChange { look: Some(look), ..BotChange::default() }),
-            Sheet::Delete => None,
+            Editor::Name => Some(BotChange { name: Some(self.name.read(cx).text().trim().to_owned()), ..BotChange::default() }),
+            Editor::Job => Some(BotChange { job: Some((self.line.read(cx).text().trim().to_owned(), self.details.read(cx).text().trim().to_owned())), ..BotChange::default() }),
+            Editor::Sheet(Sheet::Look { look, new: false }) => Some(BotChange { look: Some(look.clone()), ..BotChange::default() }),
+            Editor::Sheet(Sheet::Delete) => None,
+            Editor::Sheet(Sheet::Personality) => return,
         };
         let Some((bot, _, _)) = self.subject() else { return };
         self.saving = true;
-        self.sheet_error = None;
-        // What was sent, and for which bot: its answer is that bot's, whatever shows by then.
-        let (id, deleting, sent, page) = (bot.clone(), change.is_none(), self.sheet.clone(), self.shown.clone());
+        self.edit_error = None;
+        self.disable_editor_fields(&editor, true, cx);
+        let key = format!("{bot}/editor");
+        self.set_busy(&key, "Saving…");
+        let (id, deleting, page) = (bot.clone(), change.is_none(), self.shown.clone());
         self.run(
-            format!("sheet-{bot}"),
+            key.clone(),
             move |client| match &change {
                 Some(change) => client.change_bot(&id, change),
                 None => client.delete_bot(&id),
             },
             move |this, outcome, cx| {
-                // The sheet it was sent from, still open on its bot: it closes, or says why not.
-                let its_sheet = this.shown == page && this.sheet == sent;
-                if its_sheet {
+                this.done(&key);
+                let its_editor = this.shown == page && this.editor.as_ref() == Some(&editor);
+                if its_editor {
                     this.saving = false;
+                    this.disable_editor_fields(&editor, false, cx);
                 }
                 match outcome {
                     Ok(outcome) => {
-                        if its_sheet {
-                            this.sheet = None;
+                        if its_editor {
+                            this.editor = None;
                             this.wants_focus = Some(this.focus.clone());
                         }
                         this.took(&bot, outcome, deleting, cx);
                     }
-                    Err(error) if its_sheet => this.sheet_error = Some(said(&error)),
+                    Err(error) if its_editor => {
+                        let retry = match editor {
+                            Editor::Name => "Check the name and try again.",
+                            Editor::Job => "Check the job summary and instructions, then try again.",
+                            Editor::Sheet(Sheet::Look { .. }) => "Choose an avatar and try again.",
+                            _ => "Try again.",
+                        };
+                        this.edit_error = Some(edit_problem(&error, if deleting { "Couldn’t delete the bot." } else { "Couldn’t save the change." }, retry));
+                    }
                     // You've gone elsewhere meanwhile: nothing changed, and nothing is said over
                     // another bot's page.
                     Err(_) => {}
@@ -1048,6 +1112,17 @@ impl BotsView {
             cx,
         );
         self.rebuild(cx);
+    }
+
+    fn disable_editor_fields(&self, editor: &Editor, disabled: bool, cx: &mut Context<Self>) {
+        let fields = match editor {
+            Editor::Name => &[&self.name][..],
+            Editor::Job => &[&self.line, &self.details][..],
+            Editor::Sheet(_) => return,
+        };
+        for field in fields {
+            field.update(cx, |field, cx| field.set_disabled(disabled, cx));
+        }
     }
 
     /// A row's own change (a menu's pick): busy while it goes, then the box's answer, or its
@@ -1065,7 +1140,9 @@ impl BotsView {
                 this.done(&key);
                 match outcome {
                     Ok(outcome) => this.took(&bot, outcome, false, cx),
-                    Err(error) if this.shown == Shown::Bot(bot) => this.problem = Some(said(&error)),
+                    Err(error) if this.shown == Shown::Bot(bot) => {
+                        this.problem = Some(edit_problem(&error, "Couldn’t save the change.", "Choose an option and try again."));
+                    }
                     Err(_) => {}
                 }
             },
@@ -1107,13 +1184,26 @@ impl BotsView {
 
 /// How a personality left to the model is named.
 const OWN_WAY: &str = "The model’s own way";
+const OWN_WAY_DESCRIPTION: &str = "Uses the model’s default style.";
 
 /// How an effort left to the model is named.
 const OWN_EFFORT: &str = "The model’s own";
 
-/// Delete Bot's row. What goes with the bot is the box's to say: its confirm shows it.
-fn delete_row() -> Row {
-    Row { key: "bot-delete".into(), title: "Delete Bot".into(), detail: "You’ll see what goes with it before anything is deleted.".into(), control: Control::Danger("Delete…".into(), Act::Delete) }
+fn edit_problem(error: &kuvo_box::Error, problem: &str, retry: &str) -> String {
+    match error {
+        kuvo_box::Error::Refused(refusal) if refusal.message == "A bot needs a name." => {
+            format!("{} Enter a name and try again.", refusal.message)
+        }
+        kuvo_box::Error::Refused(refusal) if refusal.message == "It’s moving to another computer. Try again once it’s there." => {
+            refusal.message.clone()
+        }
+        kuvo_box::Error::Refused(refusal) if refusal.older_box => format!("{problem} Update Kuvo and try again."),
+        kuvo_box::Error::NeedsUpdating { .. } => format!("{problem} Update Kuvo and try again."),
+        kuvo_box::Error::NotRunning(_) | kuvo_box::Error::Unreachable(_) => {
+            format!("{problem} Check that the computer is online, then try again.")
+        }
+        _ => format!("{problem} {retry}"),
+    }
 }
 
 /// "name", "name and look", "name, look and job".

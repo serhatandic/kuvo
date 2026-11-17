@@ -182,6 +182,13 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "area-first-run", width: 1280., height: 820., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // Bots (`kuvo/src/bots`): a bot's page, its conversation, New Bot, each sheet, a bot waiting
     // for another computer, a narrow window and the first run.
+    Screen { slug: "bot-edit-top", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-scrolled", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-name", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_rename) },
+    Screen { slug: "bot-edit-avatar-hover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-long-personality", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-edit-personality-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_personality) },
+    Screen { slug: "bot-edit-all-options", width: 1280., height: 1320., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-page", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bot-quiet", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_quiet) },
     Screen { slug: "bot-chat", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
@@ -415,7 +422,7 @@ fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
 }
 
 /// Bots' page view.
-fn bots_page(workspace: &Workspace, cx: &Context<Workspace>) -> gpui::Entity<BotsView> {
+fn bots_page(workspace: &Workspace, cx: &gpui::App) -> gpui::Entity<BotsView> {
     workspace.area_view(Area::Bots).and_then(|view| view.read(cx).page().cloned()).expect("Bots")
 }
 /// The group chats' view.
@@ -520,6 +527,10 @@ fn bot_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
 fn bot_job(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
     bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::EditJob, cx));
+}
+fn bot_personality(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    bots_page(workspace, cx).update(cx, |page, cx| page.act(BotAct::ChoosePersonality, cx));
 }
 fn bot_look(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
@@ -1501,6 +1512,12 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "settings-a-permissions-services" {
                 stand_in.set_sandbox(serde_json::json!({ "on": true, "needsYou": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox" }));
             }
+            if matches!(screen.slug, "bot-edit-long-personality" | "bot-edit-personality-picker") {
+                BoxClient::new(stand_in.clone()).change_bot("bot_mira", &kuvo_box::bots::BotChange {
+                    personality: Some(Some("custom.pirate".into())),
+                    ..Default::default()
+                })?;
+            }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");
             }
@@ -1619,6 +1636,21 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if matches!(screen.slug, "bot-edit-scrolled" | "bot-edit-avatar-hover") {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let page = bots_page(workspace.read(cx), cx);
+                    if screen.slug == "bot-edit-scrolled" {
+                        page.read(cx).scroll_to_end();
+                    } else {
+                        use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                        let position = page.read(cx).avatar_center().expect("the avatar is visible");
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }));
+                    }
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+            }
             // A composer's menu opened with a press on its chip, through the window.
             if let Some(at) = match screen.slug {
                 "mode-menu" => Some(gpui::point(px(526.), px(767.))),

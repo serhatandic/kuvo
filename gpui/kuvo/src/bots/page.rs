@@ -1,7 +1,4 @@
-//! Drawing the Bots area's main view: a bot's head (face, name, job, what it's doing, Chat), what
-//! waits for another computer, its recent sessions, its settings as Settings draws rows (a name and
-//! a grey line on the left, the control on the right), New Bot, and the sheets over them (a name,
-//! a job, a look, Delete asked first).
+//! Draw the bot profile, its settings and sessions, New Bot, and the pickers and confirmation sheets.
 
 use kuvo_ui::motion::{MotionExt as _, Direction};
 use gpui::{
@@ -13,19 +10,20 @@ use kuvo_box::bots::{WorkSession, WorkState};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     button::{Button, ButtonSize},
-    menu::{Menu, MenuEntry, PopoverMenu},
+    menu::{Menu, MenuEntry, PopoverMenu, Tooltip},
     small::{count_badge, spinner, status_dot},
     theme::{radius, space},
 };
 
 use std::{rc::Rc, sync::Arc};
 
-use super::{Act, BotsView, Control, Item, Row, Sheet, Shown, Tone};
+use super::{Act, BotsView, Control, Editor, Item, OWN_WAY, OWN_WAY_DESCRIPTION, Row, Sheet, Shown, Tone};
 use crate::model_picker::{Catalog, ModelPicker};
 use crate::areas::bot_face;
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 720.;
+const AVATAR_SIZE: f32 = 64.;
 
 impl BotsView {
     fn item(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -34,7 +32,7 @@ impl BotsView {
         let body: AnyElement = match item {
             Item::Title(title) => div().pt(space::S8).pb(space::S2).text_ui(TypeSize::Title).medium().text_color(c.text).child(title).into_any_element(),
             Item::Head { bot, doing } => self.head(&bot, doing, cx),
-            Item::ElsewhereHead { key, name, look, line } => div()
+            Item::ElsewhereHead { key, name, look, line, editable } => div()
                 .debug_selector({
                     let key = key.clone();
                     move || format!("elsewhere-head-{key}")
@@ -44,7 +42,7 @@ impl BotsView {
                 .flex()
                 .items_center()
                 .gap(space::S4)
-                .child(face_or_blank(&key, look.as_ref(), px(64.), cx))
+                .child(self.avatar(&key, look.as_ref(), editable, cx))
                 .child(
                     div()
                         .flex_1()
@@ -52,7 +50,7 @@ impl BotsView {
                         .flex()
                         .flex_col()
                         .gap(space::S1)
-                        .child(div().truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(name))
+                        .child(self.profile_name(name, editable, cx))
                         .child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(line)),
                 )
                 .into_any_element(),
@@ -89,6 +87,14 @@ impl BotsView {
                     .into_any_element()
             }
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
+            Item::Personality { name, description, available, saving } => self.personality_card(name, description, available, saving, cx),
+            Item::Job { line, details } => self.job_card(line, details, cx),
+            Item::Delete => card(cx)
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Review what will be deleted before you confirm."))
+                .child(div().child(Button::new("bot-delete-button", "Delete Bot…").destructive()
+                    .disabled(!self.can_open_editor())
+                    .on_click(cx.listener(|this, _, _, cx| this.act(Act::Delete, cx)))))
+                .into_any_element(),
             Item::Row { row, first, last } => self.row(*row, first, last, cx),
             Item::Session { session, project, ago, first, last } => self.session(session, project, ago, first, last, cx),
             Item::More { count, last } => div()
@@ -165,19 +171,164 @@ impl BotsView {
             .flex()
             .items_center()
             .gap(space::S4)
-            .child(bot_face(&bot.id, &bot.look, px(64.)))
+            .child(self.avatar(&bot.id, Some(&bot.look), true, cx))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().debug_selector(|| "bot-head-name".into()).truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(bot.name.clone()))
+                    .child(self.profile_name(bot.name.clone(), true, cx))
                     .when(!bot.job.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(bot.job.clone())))
                     .children(now),
             )
             .child(div().flex_none().child(Button::new("bot-chat", "Chat").primary().icon(IconName::Message).on_click(cx.listener(|this, _, _, cx| this.act(Act::Chat, cx)))))
             .into_any_element()
+    }
+
+    fn avatar(&self, id: &str, look: Option<&Look>, editable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let avatar = face_or_blank(id, look, px(AVATAR_SIZE), cx);
+        let ready = self.templates().is_some();
+        let can_edit = editable && ready && (look.is_some() || self.first_look().is_some()) && self.can_open_editor();
+        let c = cx.theme().colors.clone();
+        div()
+            .id("bot-avatar")
+            .relative()
+            .flex_none()
+            .size(px(AVATAR_SIZE))
+            .rounded(radius::PILL)
+            .child(avatar)
+            .when(editable && !ready, |d| {
+                let words = match self.templates {
+                    crate::areas::Reading::Failed(_) => "Couldn’t load avatars. Reopen this page to try again.",
+                    _ => "Loading avatars…",
+                };
+                d.tooltip(move |_, cx| Tooltip::new(words).build(cx))
+            })
+            .when(can_edit, |d| d
+                .debug_selector(|| "bot-avatar-edit".into())
+                .group("avatar")
+                .tab_index(0)
+                .cursor_pointer()
+                .focus_visible(|s| s.border_1().border_color(c.accent))
+                .tooltip(|_, cx| Tooltip::new("Change avatar").build(cx))
+                .on_click(cx.listener(|this, _, _, cx| this.act(Act::EditLook, cx)))
+                .child(div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(radius::PILL)
+                    .bg(gpui::hsla(0., 0., 0., 0.56))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .opacity(0.)
+                    .group_hover("avatar", |s| s.opacity(1.))
+                    .child(Icon::new(IconName::Pencil).color(gpui::white()))))
+            .into_any_element()
+    }
+
+    #[cfg(feature = "shots")]
+    pub fn avatar_center(&self) -> Option<gpui::Point<gpui::Pixels>> {
+        let head = self.list.bounds_for_item(0)?;
+        Some(gpui::point(
+            head.left() + space::S8.max((head.size.width - px(PAGE_WIDTH)) / 2.) + px(AVATAR_SIZE / 2.),
+            head.top() + space::S8 + (head.size.height - space::S8 - space::S2) / 2.,
+        ))
+    }
+
+    #[cfg(feature = "shots")]
+    pub fn scroll_to_end(&self) {
+        self.list.scroll_to_end();
+    }
+
+    fn profile_name(&self, name: String, editable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        if matches!(self.editor, Some(Editor::Name)) {
+            return div().id("bot-name-editor").w_full().max_w(px(420.)).flex().flex_col().gap(space::S2)
+                .child(div().debug_selector(|| "bot-name-field".into()).child(self.name.clone()))
+                .children(self.editor_error(cx))
+                .child(self.editor_actions("bot-name", cx))
+                .into_any_element();
+        }
+        let name = div().debug_selector(|| "bot-head-name".into()).min_w_0().truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(name);
+        if !editable || !self.can_open_editor() {
+            return name.into_any_element();
+        }
+        div()
+            .id("bot-name-edit")
+            .debug_selector(|| "bot-name-edit".into())
+            .group("bot-name")
+            .flex()
+            .self_start()
+            .max_w_full()
+            .items_center()
+            .gap(space::S2)
+            .rounded(radius::NAV)
+            .tab_index(0)
+            .cursor_pointer()
+            .focus_visible(|s| s.bg(c.hover))
+            .tooltip(|_, cx| Tooltip::new("Rename bot").build(cx))
+            .on_click(cx.listener(|this, _, _, cx| this.act(Act::Rename, cx)))
+            .child(name)
+            .child(div().flex_none().opacity(0.).group_hover("bot-name", |s| s.opacity(1.))
+                .child(Icon::new(IconName::Pencil).size(IconSize::Nav).color(c.icon)))
+            .into_any_element()
+    }
+
+    fn personality_card(&self, name: String, description: String, available: bool, saving: bool, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        card(cx)
+            .debug_selector(|| "bot-personality".into())
+            .child(div().debug_selector(|| "bot-personality-name".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(name))
+            .when(!description.is_empty(), |d| d.child(div().debug_selector(|| "bot-personality-detail".into()).text_ui(TypeSize::Body).text_color(c.text_muted).child(description)))
+            .when(available, |d| d.child(div().pt(space::S1).child(
+                Button::new("bot-personality-menu", "Change Personality…")
+                    .disabled(!self.can_open_editor())
+                    .loading(saving)
+                    .on_click(cx.listener(|this, _, _, cx| this.act(Act::ChoosePersonality, cx))),
+            )))
+            .into_any_element()
+    }
+
+    fn job_card(&self, line: String, details: String, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let card = card(cx).debug_selector(|| "bot-job".into());
+        if matches!(self.editor, Some(Editor::Job)) {
+            let label = |words| div().text_ui(TypeSize::Small).medium().text_color(c.text).child(words);
+            return card
+                .child(label("Summary"))
+                .child(div().debug_selector(|| "bot-job-line".into()).child(self.line.clone()))
+                .child(div().pt(space::S1).child(label("Instructions")))
+                .child(div().debug_selector(|| "bot-job-details".into()).child(self.details.clone()))
+                .children(self.editor_error(cx))
+                .child(self.editor_actions("bot-job", cx))
+                .into_any_element();
+        }
+        card.child(div().text_ui(TypeSize::Body).medium().text_color(c.text)
+                .child(if line.is_empty() { "No job yet".into() } else { line }))
+            .when(!details.is_empty(), |d| d.child(div().line_clamp(4).text_ellipsis().text_ui(TypeSize::Body).text_color(c.text_muted).child(details)))
+            .child(div().pt(space::S1).child(Button::new("bot-job-edit", "Edit Job")
+                .disabled(!self.can_open_editor())
+                .on_click(cx.listener(|this, _, _, cx| this.act(Act::EditJob, cx)))))
+            .into_any_element()
+    }
+
+    fn editor_error(&self, cx: &App) -> Option<impl IntoElement> {
+        let color = cx.theme().colors.danger;
+        self.edit_error.clone().map(|error| div().debug_selector(|| "bot-edit-error".into()).text_ui(TypeSize::Small).text_color(color).child(error))
+    }
+
+    fn editor_actions(&self, key: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+        div().id(SharedString::from(format!("{key}-actions"))).flex().gap(space::S2)
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.close_editor(cx);
+                }
+            }))
+            .child(Button::new(SharedString::from(format!("{key}-save")), "Save").primary().loading(self.saving)
+                .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))))
+            .child(Button::new(SharedString::from(format!("{key}-cancel")), "Cancel").disabled(self.saving)
+                .on_click(cx.listener(|this, _, _, cx| this.close_editor(cx))))
     }
 
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -219,10 +370,6 @@ impl BotsView {
 
     fn control(&mut self, key: &str, control: Control, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let button = |key: &str, label: String, act: Act, danger: bool, cx: &mut Context<Self>| {
-            let button = Button::new(SharedString::from(format!("{key}-button")), label).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx)));
-            if danger { button.destructive() } else { button }
-        };
         match control {
             Control::Text(words) => {
                 let selector = format!("{key}-value");
@@ -237,11 +384,9 @@ impl BotsView {
                     kuvo_ui::small::LoadingLabel::new(SharedString::from(format!("{key}-busy")), words).compact().into_any_element()
                 }
             },
-            Control::Button(label, act) => button(key, label, act, false, cx).into_any_element(),
-            Control::Danger(label, act) => button(key, label, act, true, cx).into_any_element(),
             Control::Face(look, label, act) => {
                 let id = self.face_key();
-                div().flex().items_center().gap(space::S3).children(look.map(|look| bot_face(&id, &look, px(28.)))).child(button(key, label, act, false, cx)).into_any_element()
+                div().flex().items_center().gap(space::S3).children(look.map(|look| bot_face(&id, &look, px(28.)))).child(Button::new(SharedString::from(format!("{key}-button")), label).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx)))).into_any_element()
             }
             Control::NameField => div().debug_selector(|| "new-name-field".into()).w(px(260.)).child(self.new_name.clone()).into_any_element(),
             Control::Model { shown, current, new } => {
@@ -444,25 +589,9 @@ impl BotsView {
     fn sheet_content(&mut self, sheet: Sheet, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let (subject_id, name) = self.subject().map(|(id, name, _)| (id, name)).unwrap_or_default();
-        let label = |words: &'static str| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
-        let (title, width, body, save, danger): (String, f32, AnyElement, &'static str, bool) = match &sheet {
-            Sheet::Name => (format!("Rename {name}"), 400., div().debug_selector(|| "sheet-name-field".into()).child(self.name.clone()).into_any_element(), "Save", false),
-            Sheet::Job => (
-                format!("{name}’s job"),
-                520.,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::S2)
-                    .child(label("In a few words"))
-                    .child(div().debug_selector(|| "sheet-job-line".into()).child(self.line.clone()))
-                    .child(div().pt(space::S2).child(label("All of it")))
-                    .child(div().debug_selector(|| "sheet-job-details".into()).child(self.details.clone()))
-                    .into_any_element(),
-                "Save",
-                false,
-            ),
-            Sheet::Look { look, new } => (if *new { "The new bot’s look".to_owned() } else { format!("{name}’s look") }, 440., self.look_picker(look, cx), if *new { "Use This Look" } else { "Save" }, false),
+        let (title, width, body, save, danger) = match &sheet {
+            Sheet::Personality => ("Choose personality".into(), 560., self.personality_picker(cx), None, false),
+            Sheet::Look { look, new } => (if *new { "The new bot’s look".to_owned() } else { format!("{name}’s avatar") }, 440., self.look_picker(look, cx), Some(if *new { "Use This Look" } else { "Save" }), false),
             Sheet::Delete => (
                 format!("Delete {name}?"),
                 440.,
@@ -483,29 +612,31 @@ impl BotsView {
                             .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(color).child(line.words))
                     }))
                     .into_any_element(),
-                "Delete Bot",
+                Some("Delete Bot"),
                 true,
             ),
         };
         let saving = self.saving;
         // (A delete the box said nothing of isn't offered: its confirm would show nothing.)
         let unsaid = matches!(sheet, Sheet::Delete) && self.deletes().is_empty();
-        let go = Button::new("sheet-save", save).loading(saving).disabled(unsaid).on_click(cx.listener(move |this, _, _, cx| {
-            if !unsaid {
-                this.save_sheet(cx);
-            }
-        }));
+        let go = save.map(|label| {
+            let button = Button::new("sheet-save", label).loading(saving).disabled(unsaid)
+                .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx)));
+            if danger { button.destructive() } else { button.primary() }
+        });
         let enter_saves = matches!(sheet, Sheet::Look { .. });
         div()
             .id(SharedString::from(format!("bot-sheet-{:?}-{subject_id}", std::mem::discriminant(&sheet))))
             .debug_selector(|| "bot-sheet".into())
             .track_focus(&self.sheet_focus)
-            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| match event.keystroke.key.as_str() {
-                "escape" => this.close_sheet(cx),
-                "enter" if enter_saves => this.save_sheet(cx),
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
+                "escape" => this.close_editor(cx),
+                "enter" if enter_saves && this.sheet_focus.is_focused(window) => this.save_editor(cx),
                 _ => {}
             }))
-            .w(px(width))
+            .w_full()
+            .max_w(px(width))
+            .max_h_full()
             .flex()
             .flex_col()
             .gap(space::S3)
@@ -517,18 +648,61 @@ impl BotsView {
             .shadow(cx.theme().elevated_shadow())
             .child(div().debug_selector(|| "sheet-title".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
             .child(body)
-            // Why the box turned it down, in its words.
-            .children(self.sheet_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
+            .children(self.edit_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
             .child(
                 div()
                     .flex()
                     .justify_end()
                     .gap(space::S2)
                     .pt(space::S2)
-                    .child(Button::new("sheet-cancel", "Cancel").disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx))))
-                    .child(if danger { go.destructive() } else { go.primary() }),
+                    .child(Button::new("sheet-cancel", "Cancel").disabled(saving).on_click(cx.listener(|this, _, _, cx| this.close_editor(cx))))
+                    .children(go),
             )
             .animate_in(Direction::FromTop, true)
+            .into_any_element()
+    }
+
+    fn personality_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let current = self.bot().and_then(|bot| bot.personality.as_deref());
+        let mut choices = vec![(None, OWN_WAY.to_owned(), OWN_WAY_DESCRIPTION.to_owned())];
+        if let Some(templates) = self.templates() {
+            choices.extend(templates.personalities.iter().map(|each| (Some(each.id.clone()), each.name.clone(), each.description.clone())));
+        }
+        div()
+            .id("bot-personality-picker")
+            .debug_selector(|| "bot-personality-picker".into())
+            .min_h_0()
+            .overflow_y_scroll()
+            .children(choices.into_iter().map(|(id, title, description)| {
+                let selected = id.as_deref() == current;
+                let key = format!("personality-{}", id.as_deref().unwrap_or("default"));
+                let detail_key = format!("{key}-description");
+                div()
+                    .id(SharedString::from(key.clone()))
+                    .debug_selector(move || key)
+                    .tab_index(0)
+                    .cursor_pointer()
+                    .rounded(radius::NAV)
+                    .px(space::S3)
+                    .py(space::S2)
+                    .hover(|s| s.bg(c.hover))
+                    .focus_visible(|s| s.bg(c.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if selected {
+                            this.close_editor(cx);
+                        } else {
+                            this.act(Act::SetPersonality(id.clone()), cx);
+                        }
+                    }))
+                    .child(div().flex().gap(space::S2).items_start()
+                        .child(div().flex_none().size(px(18.)).pt(px(2.))
+                            .when(selected, |d| d.child(Icon::new(IconName::Check).size(IconSize::Nav).color(c.accent))))
+                        .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5)
+                            .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
+                            .when(!description.is_empty(), |d| d.child(div().debug_selector(move || detail_key)
+                                .text_ui(TypeSize::Small).text_color(c.text_muted).child(description)))))
+            }))
             .into_any_element()
     }
 
@@ -537,7 +711,7 @@ impl BotsView {
         let c = cx.theme().colors.clone();
         let Some(looks) = self.templates().map(|templates| templates.looks.clone()) else {
             let words = match &self.templates {
-                crate::areas::Reading::Failed(why) => format!("The looks couldn’t be read: {why}"),
+                crate::areas::Reading::Failed(_) => "Couldn’t load avatars. Reopen this page to try again.".to_owned(),
                 _ => "Loading the looks…".to_owned(),
             };
             return div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element();
@@ -559,6 +733,8 @@ impl BotsView {
                 .rounded(radius::PILL)
                 .border_2()
                 .border_color(if on { c.text } else { gpui::transparent_black() })
+                .tab_index(0)
+                .focus_visible(|s| s.border_color(c.accent))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.pick_look(Some(&picked), None, cx)))
                 .child(div().size(px(22.)).rounded(radius::PILL).bg(kuvo_ui::bot::swatch(color, dark)))
@@ -581,6 +757,8 @@ impl BotsView {
                     .border_1()
                     .border_color(if on { c.accent } else { c.border })
                     .bg(c.card)
+                    .tab_index(0)
+                    .focus_visible(|s| s.border_color(c.accent))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| this.pick_look(None, Some(&picked), cx)))
                     .child(bot_face(&format!("look:{shape}"), &Look { color: look.color.clone(), shape: shape.clone(), face: look.face.clone() }, px(32.)))
@@ -597,6 +775,19 @@ impl BotsView {
             .child(div().flex().flex_wrap().gap(space::S2).children(shapes))
             .into_any_element()
     }
+}
+
+fn card(cx: &App) -> gpui::Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(space::S2)
+        .px(space::S5)
+        .py(space::S4)
+        .rounded(radius::POPOVER)
+        .bg(cx.theme().colors.card)
+        .shadow(cx.theme().card_shadow())
 }
 
 /// A look's face, the creature `id`'s; with none (the box's to pick), a quiet blank of the same size.
@@ -646,7 +837,7 @@ impl Render for BotsView {
                     }))),
             )
         });
-        let sheet = self.sheet.clone().map(|sheet| {
+        let sheet = self.sheet().cloned().map(|sheet| {
             let content = self.sheet_content(sheet, cx);
             div().id("bots-sheet").absolute().inset_0().flex().items_center().justify_center().p(space::S6).bg(dim(cx)).occlude().child(content)
         });
