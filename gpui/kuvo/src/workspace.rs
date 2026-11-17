@@ -1091,7 +1091,8 @@ impl Workspace {
                 own: false,
             });
         }
-        // Another Mac: its own app updates it.
+        // Another Mac whose Kuvo is from before computers followed each other (one that follows
+        // says so: its row's `update`, above): only the gate's words, nothing to press here.
         if row.computer.is_mac() {
             return Some(HeldUpdate { key: Some(key), title, detail, updating: false, attention: false, action: None, does: None, own: false });
         }

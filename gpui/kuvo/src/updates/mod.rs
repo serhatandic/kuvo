@@ -86,6 +86,9 @@ pub trait Updater {
     fn facts(&self) -> Facts;
     /// Looks for an update now, showing what it finds (or that there's none) in its own window.
     fn check(&self);
+    /// Looks for an update now in the background, as its daily check does: what it finds is
+    /// downloaded and installed as you set it (by itself as the app quits, or its own window).
+    fn check_quietly(&self);
     fn set_checks(&self, on: bool);
     fn set_downloads(&self, on: bool);
     fn set_betas(&self, on: bool);
@@ -101,6 +104,7 @@ impl Updater for Without {
         Facts::without(version(), self.why.clone())
     }
     fn check(&self) {}
+    fn check_quietly(&self) {}
     fn set_checks(&self, _: bool) {}
     fn set_downloads(&self, _: bool) {}
     fn set_betas(&self, _: bool) {}
@@ -165,6 +169,15 @@ impl Updates {
         self.refresh(cx);
     }
 
+    /// Looks in the background (Kuvo on this Mac runs a newer version than this app): not while a
+    /// check or an update is under way, or its window is open.
+    pub fn check_quietly(&mut self, cx: &mut Context<Self>) {
+        if self.facts.updates() && self.facts.can_check && !self.facts.busy {
+            self.updater.check_quietly();
+        }
+        self.refresh(cx);
+    }
+
     pub fn set_checks(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.facts.updates() {
             self.updater.set_checks(on);
@@ -184,6 +197,18 @@ impl Updates {
             self.updater.set_betas(on);
         }
         self.refresh(cx);
+    }
+}
+
+/// Whether the app looks for its update now, as Kuvo on this Mac says it runs version `said`, newer
+/// than this app (`appCheck`): once for each version it says, `checked` noting the last.
+pub fn app_check_due(said: Option<&str>, checked: &mut Option<String>) -> bool {
+    match said {
+        Some(version) if checked.as_deref() != Some(version) => {
+            *checked = Some(version.to_owned());
+            true
+        }
+        _ => false,
     }
 }
 
@@ -238,6 +263,9 @@ pub mod stand_in {
             facts.busy = true;
             facts.can_check = false;
         }
+        fn check_quietly(&self) {
+            self.asked.borrow_mut().push("check quietly".into());
+        }
         fn set_checks(&self, on: bool) {
             self.said("checks", on);
             self.facts.borrow_mut().checks = on;
@@ -275,5 +303,15 @@ mod tests {
         assert!(!wants_betas(Some(false), "0.8.0-beta.2"));
         assert_eq!(channels(true), &["beta"]);
         assert!(channels(false).is_empty(), "releases are in no channel");
+    }
+
+    #[test]
+    fn the_app_looks_for_its_update_once_for_each_newer_kuvo_on_this_mac() {
+        let mut checked = None;
+        assert!(!app_check_due(None, &mut checked), "Kuvo here isn't ahead: nothing to look for");
+        assert!(app_check_due(Some("1.0.5"), &mut checked), "Kuvo here runs 1.0.5, newer than this app");
+        assert!(!app_check_due(Some("1.0.5"), &mut checked), "looked once for 1.0.5 already");
+        assert!(!app_check_due(None, &mut checked));
+        assert!(app_check_due(Some("1.0.6"), &mut checked), "a newer one again");
     }
 }

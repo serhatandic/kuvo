@@ -225,6 +225,10 @@ pub struct Computer {
     /// SSH says: how that stands, in its words. None: it's up to date, or no box here updates it.
     #[serde(default, deserialize_with = "readable_one")]
     pub update: Option<ComputerUpdate>,
+    /// This Mac's own row: the newer Kuvo version this Mac runs than the desktop app that last
+    /// opened with it, which checks for its own update then (once for each version).
+    #[serde(default, rename = "appCheck")]
+    pub app_check: Option<String>,
 }
 
 /// How bringing a computer's Kuvo up to date stands, as the box that does it says (every word the
@@ -726,11 +730,12 @@ impl BoxClient {
         self.get("kuvo/box/at-work")
     }
 
-    /// Tells Kuvo on this Mac where this app is installed (`kuvo/box/app`'s `desktop`), so the menu
-    /// bar's Open Kuvo opens this very app, never an older copy with the same bundle ID. A box
+    /// Tells Kuvo on this Mac where this app is installed and its version (`kuvo/box/app`'s `desktop`
+    /// and `version`), so the menu bar's Open Kuvo opens this very app, never an older copy with the
+    /// same bundle ID, and Kuvo says when it runs a newer version than this app (`appCheck`). A box
     /// that doesn't take it (an older one, one in the app's folder) refuses; that's all.
-    pub fn register_desktop(&self, bundle: &str) -> Result<()> {
-        let response = self.send(&Request::post("kuvo/box/app", serde_json::json!({ "desktop": bundle })))?;
+    pub fn register_desktop(&self, bundle: &str, version: &str) -> Result<()> {
+        let response = self.send(&Request::post("kuvo/box/app", serde_json::json!({ "desktop": bundle, "version": version })))?;
         if response.is_success() {
             Ok(())
         } else {

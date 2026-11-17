@@ -228,6 +228,12 @@ impl Updater for Sparkle {
         }
     }
 
+    fn check_quietly(&self) {
+        unsafe {
+            let _: () = msg_send![&self.updater, checkForUpdatesInBackground];
+        }
+    }
+
     fn set_checks(&self, on: bool) {
         unsafe {
             let _: () = msg_send![&self.updater, setAutomaticallyChecksForUpdates: on];

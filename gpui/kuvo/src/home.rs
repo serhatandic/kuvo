@@ -51,6 +51,8 @@ pub struct Home {
     /// `applies`), so quitting leaves it at work there: the first Quit's note says so. Not known
     /// (its box not reached yet): no note.
     in_menu_bar: Option<bool>,
+    /// The newer Kuvo version on this Mac the app last looked for its own update for (`appCheck`).
+    app_checked: Option<String>,
     _menu_bar: Option<Task<()>>,
     /// The first Quit's note, while it's shown (`quit_note`), and what had focus before it.
     quit_note: Option<FocusHandle>,
@@ -124,7 +126,7 @@ impl Home {
                 let _ = home.update(cx, |home, cx| home.notifier.update(cx, |notifier, cx| notifier.clicked(&response.tag, cx)));
             });
         }
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None, opening: None, _opening: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, app_checked: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None, opening: None, _opening: None };
         home.make(&shown, first, window, cx);
         // The computer shown last time, where it isn't this one: once the list says it's reached.
         home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown);
@@ -188,14 +190,13 @@ impl Home {
                 let client = nearest.clone();
                 if let Ok(said) = cx.background_executor().spawn(async move { client.at_work() }).await {
                     this.update(cx, |this, _| this.in_menu_bar = Some(said.applies)).ok();
-                    // Kuvo on this Mac is in the menu bar: it's told where this app is, so its Open
-                    // Kuvo opens this very app (an older copy with the same ID never). What it
-                    // answers is no matter: an older box doesn't take it.
-                    if said.applies
-                        && let Some(bundle) = std::env::current_exe().ok().and_then(|executable| own_bundle(&executable))
-                    {
+                    // Kuvo on this Mac is told where this app is and its version, so its menu bar's
+                    // Open Kuvo opens this very app (an older copy with the same ID never), and it
+                    // says when it runs a newer Kuvo than this app (`appCheck`). What it answers is
+                    // no matter: an older box doesn't take it.
+                    if let Some(bundle) = std::env::current_exe().ok().and_then(|executable| own_bundle(&executable)) {
                         let client = nearest.clone();
-                        cx.background_executor().spawn(async move { client.register_desktop(&bundle.to_string_lossy()) }).await.ok();
+                        cx.background_executor().spawn(async move { client.register_desktop(&bundle.to_string_lossy(), crate::updates::version()) }).await.ok();
                     }
                     return;
                 }
@@ -618,6 +619,16 @@ impl Home {
 
     /// Your computers, or how one stands, changed: every workspace's switcher draws them.
     pub fn rows_changed(&mut self, cx: &mut Context<Self>) {
+        // Kuvo on this Mac runs a newer version than this app: the app looks for its own update
+        // now, in the background (Sparkle installs it as you set it), once for each version.
+        if self.live {
+            let said = self.boxes.rows().into_iter().find(|row| row.computer.here).and_then(|row| row.computer.app_check.clone());
+            if crate::updates::app_check_due(said.as_deref(), &mut self.app_checked)
+                && let Some(updates) = crate::updates::Updates::get(cx)
+            {
+                updates.update(cx, |updates, cx| updates.check_quietly(cx));
+            }
+        }
         // A computer this app no longer reaches (dropped from your list, filed apart), or reaches
         // with another client now (paired anew, found elsewhere): its workspace held the old one,
         // and goes. The window falls back to the first it still has.
