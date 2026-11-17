@@ -17,14 +17,16 @@ let server: ReturnType<typeof Bun.serve>
 
 beforeEach(() => {
   answers = {}
-  reads = []
+  // (This test's own: a server of an earlier one, still answering a request late, never adds to it.)
+  const mine: typeof reads = (reads = [])
+  const asked = answers
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch: (request) => {
       const url = new URL(request.url)
-      reads.push({ path: url.pathname, headers: request.headers })
-      return answers[url.pathname]?.() ?? new Response("{}", { status: 404 })
+      mine.push({ path: url.pathname, headers: request.headers })
+      return asked[url.pathname]?.() ?? new Response("{}", { status: 404 })
     },
   })
   for (const key of Object.keys(engineEndpoints) as (keyof typeof engineEndpoints)[]) engineEndpoints[key] = `http://127.0.0.1:${server.port}/${key}`
@@ -253,7 +255,8 @@ test("a box starting before its engine answers keeps the engine's sign-ins' hold
     let at = NOW
     const first = new EngineAccounts(async () => ({ data: signedIn }))
     await new Limits(() => first.accounts(), file, () => at, () => first.refresh(), () => first.answered).tick()
-    expect(reads).toHaveLength(1)
+    // (Each read by its path, so a run that ever asks more says what it asked.)
+    expect(reads.map((read) => read.path)).toEqual(["/openrouterKey"])
     // The box starts again; its engine isn't up yet, then it is.
     at += 5 * 60_000
     let up = false
@@ -266,7 +269,7 @@ test("a box starting before its engine answers keeps the engine's sign-ins' hold
     up = true
     at += 60_000
     await restarted.tick()
-    expect(reads).toHaveLength(1)
+    expect(reads.map((read) => read.path)).toEqual(["/openrouterKey"])
     expect(((await (await limitsRoutes(restarted, "GET", [])).json()) as any).data.accounts[0].problem.kind).toBe("rate-limited")
   } finally {
     rmSync(folder, { recursive: true, force: true })
