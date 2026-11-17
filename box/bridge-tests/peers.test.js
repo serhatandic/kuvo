@@ -563,7 +563,7 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   fresh({ peersFrom: { [mac.pub]: { at: 1, peers: [mac.peer, second.peer] } } });
   const { target } = await engine(t);
   // A peer says what it is; another hasn't been heard from yet.
-  link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500) } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
+  link.receiveMail(mailFrom(second, { at: Date.now(), agents: { at: Date.now(), list: [], computer: { version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", working: 2, more: "x".repeat(500), agents: { state: "down", why: "outdated", more: "x" } } } }), undefined, (sender, payload) => link.peerMail(sender, payload, null));
   // What it tells its peers of itself, with its agents: each of them, all your own computers.
   const sent = [];
   // (Asked for, as a box just connected: told whatever it told before.)
@@ -584,12 +584,17 @@ test("a box lists your computers: itself, and each peer as it's heard from, with
   // (Where a client of your own reaches each: its box's address, and this box's relay.)
   const reachTitles = { connecting: "Connecting…", held: "Needs an update", away: "Can’t be reached", notPaired: "Hasn’t taken this app yet", unreached: "Can’t be reached from this app" };
   const reached = address => ({ address, relay: link.readLink().relay, reachTitles });
-  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [] });
+  assert.deepEqual({ ...own, system: "said", features: "said" }, { key: here.pub, name: "devbox", kind: "machine", here: true, shared: false, reach: "connected", via: "here", ...reached(k(link.addressOf(Buffer.from(link.readLink().secret, "base64url")))), system: "said", features: "said", title: "Connected", workingTitle: "0 sessions at work", working: 0, atWork: [], limits: [], limitServices: [], actions: [],
+    // (How its coding agents stand: this test's box has no bridge's program.)
+    agents: { state: "down", why: "notInstalled" } });
   // (Its peers by name: what's at work on one that never said isn't claimed.)
   assert.deepEqual(others, [
     { key: mac.pub, name: "mac", kind: "mac", shared: false, reach: "connecting", title: "Connecting", detail: "devbox hasn’t heard from it yet.", notice: { title: "Connecting to mac…", detail: "devbox hasn’t heard from it yet." }, settingsNotice: { title: "Connecting to mac…", detail: "Its settings show here once devbox hears from it." }, via: "relay", ...reached(mac.address), limits: [], limitServices: [], actions: [] },
-    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", ...reached(second.address), version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", title: "Connected", workingTitle: "2 sessions at work", working: 2, limits: [], limitServices: [], actions: [] },
+    { key: second.pub, name: "second", kind: "machine", id: "second", shared: false, reach: "connected", via: "relay", ...reached(second.address), version: "1.0.0", engine: "1.19.2", system: "Ubuntu 24.04.1 LTS", agents: { state: "down", why: "outdated" }, title: "Connected", workingTitle: "2 sessions at work", working: 2, limits: [], limitServices: [], actions: [] },
   ]);
+  // (How its coding agents stand, as it told: kept as one of the box's facts, never a word of its own.)
+  assert.deepEqual(link.keptComputer({ agents: { state: "down", why: "rm -rf" } }).agents, { state: "down" });
+  assert.equal(link.keptComputer({ agents: { state: "gone" } }).agents, undefined);
 
   // One the relay says isn't there: away, and nothing there counts as at work now.
   fs.writeFileSync(path.join(run, "peer-reach.json"), JSON.stringify({ [second.pub]: Date.now() }));

@@ -115,8 +115,8 @@ export interface ToldComputer {
    * behind (PROTOCOL.md, "Updates", Your computers follow each other). */
   release?: string;
   /** How its coding agents stand (PROTOCOL.md, "The coding agents' state"): running, restarting by
-   * themselves, or down, and why (`engine`, `notInstalled`, `keeper`, `crashing`, `stuck`,
-   * `notStarting`, `app`), so a computer whose agents are down can be told apart from afar. */
+   * themselves, or down, and why (`engine`, `notInstalled`, `outdated`, `keeper`, `crashing`,
+   * `stuck`, `notStarting`, `app`), so a computer whose agents are down can be told apart from afar. */
   agents?: { state: "running" | "restarting" | "down"; why?: string };
 }
 

@@ -51,7 +51,7 @@ import type { Target } from "../../shared/records";
 import type { KitRule } from "../bots/kit";
 import type { EngineSession } from "../engine/sessions";
 import type { SessionPlace } from "./letter";
-import { agentsLine } from "../areas/agents-down";
+import { agentsLine, bridgeBack } from "../areas/agents-down";
 
 /** What a session's start is given: its task, and what's optional: where (a folder, a project by
  * name or folder, a chat), in a worktree, on which model and effort, in which mode, with which
@@ -407,7 +407,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   // Where it runs: the engine, the coding agents' bridge for one of theirs, or the conversation's.
   let engine: Target | null = null;
   try { engine = place.readEngine(); } catch {}
-  const bridge = place.bridge?.() ?? null;
+  let bridge = place.bridge?.() ?? null;
   let target: Target | null = by?.place?.target ?? engine;
   let model = parent?.model ? { ...parent.model } : null;
   let picked: string[] = [];
@@ -420,6 +420,8 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   if (exact) {
     const variant = typeof exact.variant === "string" && exact.variant ? exact.variant : null;
     model = { providerID: exact.providerID as string, id: exact.id as string, ...(variant ? { variant } : {}) };
+    // (One of the coding agents' while their bridge restarts: waited for, as a client's request is.)
+    if (runsWithAgents(model) && !bridge && place.bridge) bridge = await bridgeBack(place.bridge, place.signal);
     target = runsWithAgents(model) ? bridge : engine;
     if (!target) return no(503, runsWithAgents(model) ? agentsLine() : `The engine on ${HERE} isn't running.`);
   } else if ((given.model !== undefined && given.model !== null && given.model !== "") || (given.effort !== undefined && given.effort !== null && given.effort !== "")) {

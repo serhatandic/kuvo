@@ -228,7 +228,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const told = readPeerAgents();
   const tries = readTries();
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, engine, system: runs } = ownComputer();
+  const { version, engine, system: runs, agents } = ownComputer();
   const atWork = atWorkHere();
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
@@ -242,6 +242,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     ...(version ? { version } : {}),
     ...(engine ? { engine } : {}),
     ...(runs ? { system: runs } : {}),
+    ...(agents ? { agents } : {}),
     features: ownFeatures(),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_HERE),
@@ -282,7 +283,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       via: "relay",
       // (Where a client of yours reaches it itself.)
       ...reachOf(link, peer.address),
-      ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}) } : {}),
+      ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
       // by one that never said it (an older box).

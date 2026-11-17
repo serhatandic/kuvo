@@ -367,6 +367,9 @@ export const LISTED_COMPUTER = object({
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
   shared: bool, reach: words("connected", "connecting", "away", "unknown"),
   "version?": string, "engine?": string, "system?": string, "features?": list(string),
+  // How its coding agents stand, as it says (PROTOCOL.md, "The coding agents' state"): a fact, not
+  // words to show.
+  "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
   via: words("here", "relay", "peer"), "through?": string, "address?": string, "relay?": string,
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION), "vouching?": object({ blocked: literal(true), words: string }),
@@ -484,5 +487,8 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "GET kuvo/accounts/found", answers: { 200: FOUND } },
   { route: "POST kuvo/accounts/found/use", answers: { 200: NOTHING } },
   { route: "POST kuvo/engine/:control", answers: { 202: NOTHING } },
+  // Try Again for the coding agents (PROTOCOL.md, "The coding agents' state"): the box's own route,
+  // among those it passes on to the bridge (`kuvo/agents/…`).
+  { route: "POST kuvo/agents/start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
   { route: "POST kuvo/shell/:id/stop", answers: { 200: object({ stopped: words("signal", "removed") }) } },
 ];

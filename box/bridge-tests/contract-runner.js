@@ -450,11 +450,12 @@ const routeOf = (pattern, method, route) => {
 // box's own, not only what a scenario names.
 function offShape(method, requestPath, answer) {
   const route = requestPath.split("?")[0];
-  if (shapes.passedOn.some(prefix => route.startsWith(prefix))) return null;
   const isJSON = answer.type.startsWith("application/json");
   const verb = method.toUpperCase();
   // A HEAD is held to its GET's shape, or has no body.
   const known = shapes.routes.find(each => routeOf(each.route, verb, route)) ?? (verb === "HEAD" ? shapes.routes.find(each => routeOf(each.route, "GET", route)) : undefined);
+  // (What's passed on is theirs, but for a route of the box's own among it: kuvo/agents/start.)
+  if (!known && shapes.passedOn.some(prefix => route.startsWith(prefix))) return null;
   // A refusal says why in the one way all do, or in its route's own where it has one. A HEAD's
   // answer has no body.
   if (answer.status >= 400) return isJSON ? unshaped(known?.answers[answer.status] ?? shapes.error, answer.json, "the refusal") : null;

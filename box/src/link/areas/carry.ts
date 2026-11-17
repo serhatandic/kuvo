@@ -28,7 +28,7 @@ import type { EngineMessage } from "../engine/conversations";
 import type { EngineSession } from "../engine/sessions";
 import type { Carried } from "../../shared/routes/sessions";
 import type { AnswerPiece, JSONAnswer, OtherStatus, RouteContext } from "../server/context";
-import { agentsLine } from "./agents-down";
+import { agentsLine, bridgeBack } from "./agents-down";
 
 /** What `carryToAgents` answers: the coding agents' session it goes on in, or why not. */
 export type CarryAnswer = JSONAnswer<Carried, { message: string }>;
@@ -292,10 +292,10 @@ export async function carryToAgents(id: string, model: unknown, readEngine: () =
 // A conversation here carried on with the coding agents here, as picking one of their models
 // in it does.
 export async function* carryRoute(context: RouteContext, toAgents: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, json } = context;
+  const { request, readEngine, bridge, json, signal } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   let id: string;
   try { id = decodeURIComponent(toAgents[1]); } catch { return yield* json(404, { message: "That conversation isn’t there any more." }); }
-  const { status, value } = await carryToAgents(id, (parsed(request.body) as Body<"model">)?.model, readEngine, bridge());
+  const { status, value } = await carryToAgents(id, (parsed(request.body) as Body<"model">)?.model, readEngine, await bridgeBack(bridge, signal));
   return yield* json(status, value);
 }

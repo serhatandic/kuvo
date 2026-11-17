@@ -76,8 +76,13 @@ const mtime = (file: string): number | null => {
 };
 
 /** Since when (ms) this process has found the bridge away with nothing that explains it: past
- * `agentsTiming.keeper`, the keeper isn't starting it after all. Forgotten once it runs. */
+ * `agentsTiming.keeper`, the keeper isn't starting it after all. Forgotten whenever a bridge is
+ * found (here, or by a request that reached one, `bridgeBack`), so each outage counts afresh. */
 let unexplainedSince: number | null = null;
+function seenRunning() {
+  unexplainedSince = null;
+  lastNoted = undefined;
+}
 
 const ENGINE_FIRST = "The coding agents start once the engine is running.";
 export const AGENTS_RESTARTING = "The coding agents are restarting. This takes a few seconds.";
@@ -90,7 +95,7 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
   const runs = place.runs ?? processRuns;
   const bridge = place.bridge ?? (() => bridgeAt(run, runs));
   if (bridge()) {
-    unexplainedSince = null;
+    seenRunning();
     return { state: "running" };
   }
   // COMPAT(retired-app agents-stopped): a box in a retired Mac app's folder, whose app wrote why it gave up. Goes once no Mac runs the retired app.
@@ -125,7 +130,14 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
     try {
       said = fs.readFileSync(path.join(run, "agents.log"), "utf8").slice(-2000);
     } catch {}
-    if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) return { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start. Kuvo's next update replaces them.", tryAgain: false };
+    if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
+      // Repaired from the release this box runs, unless it has no sound one (updates/repair.ts).
+      const repair = readJSON(path.join(run, "repair.json"));
+      const cant = repair?.result === "damaged" || (repair?.result === "none" && repair.why !== "busy");
+      return cant
+        ? { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start, and there's no sound copy here to repair them from. Kuvo's next update brings them.", tryAgain: false }
+        : { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start. Kuvo puts back the right ones by itself.", tryAgain: true };
+    }
   }
   if (!runs(readNumber(path.join(run, "box.pid")), "kuvo-start")) {
     return { state: "down", why: "keeper", line: "The coding agents stopped, and nothing is starting them again.", tryAgain: true };
@@ -169,7 +181,7 @@ export const agentsLine = (place: Partial<AgentsPlace> = {}): string => agentsAw
 
 // Each reason, with the bridge's last words, once to the log as it comes about: codes and paths go
 // there, never to people.
-let lastNoted: string | undefined;
+let lastNoted: string | undefined = undefined;
 function noteDown(state: Extract<AgentsState, { state: "down" }>) {
   if (lastNoted === state.why) return;
   lastNoted = state.why;
@@ -186,10 +198,15 @@ export async function bridgeBack(bridge: () => Target | null, signal?: AbortSign
   const from = Date.now();
   while (true) {
     const found = bridge();
-    if (found) return found;
+    if (found) {
+      seenRunning();
+      return found;
+    }
     // (A retired Mac app's own box: its app starts the bridge, whenever that is.)
     if (signal?.aborted || Date.now() - from >= within || (IS_MAC && !OWN_HOME_MAC && place.run === undefined)) return null;
-    if (agentsState({ ...place, bridge }).state !== "restarting") return null;
+    // (One that came up between the two looks: looked for again.)
+    const state = agentsState({ ...place, bridge }).state;
+    if (state === "down") return null;
     await pause(200, signal);
   }
 }
@@ -204,6 +221,7 @@ export function forgetAgentsState() {
  * the bridge now (one that never finished starting ended first, the keeper started if it isn't
  * running, its wait after failures forgotten). Answered once that's done, 45 s at most: 200 once
  * it runs, else 503 with how they stand now. */
+let starting: Promise<void> | null = null;
 export async function* agentsStartRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
@@ -211,11 +229,11 @@ export async function* agentsStartRoute(context: RouteContext): AsyncGenerator<A
   if (IS_MAC && !OWN_HOME_MAC) return yield* json(409, { message: "Restart them in Kuvo Code on the Mac." });
   const start = path.join(K, "bin", "kuvo-start");
   if (!fs.existsSync(start)) return yield* json(409, { message: "Kuvo isn't set up to start them here." });
-  const environment = { ...process.env };
-  delete environment.BUN_BE_BUN;
-  delete environment.BUN_RUNTIME_TRANSPILER_CACHE_PATH;
+  // (With what the keeper starts it with, HOME and PATH alone: never this process's own.)
+  const environment = { HOME: path.basename(K) === ".kuvo-code" ? path.dirname(K) : process.env.HOME ?? "", PATH: process.env.PATH ?? "/usr/bin:/bin" };
   const workspace = path.join(K, "workspace");
-  await new Promise<void>(resolve => {
+  // (One at a time: a second Try Again, from a phone say, waits for the first.)
+  starting ??= new Promise<void>(resolve => {
     try {
       const child = spawn("sh", [start, "bridge-again"], { cwd: fs.existsSync(workspace) ? workspace : K, env: environment, detached: true, stdio: "ignore" });
       const timer = setTimeout(resolve, 45_000);
@@ -226,7 +244,8 @@ export async function* agentsStartRoute(context: RouteContext): AsyncGenerator<A
     } catch {
       resolve();
     }
-  });
+  }).finally(() => (starting = null));
+  await starting;
   forgetAgentsState();
   const away = agentsAway();
   return yield* json(away ? 503 : 200, away ?? {});

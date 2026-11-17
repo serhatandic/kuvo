@@ -39,7 +39,8 @@ import { WORK_QUEUE_ROUTES } from "./work-queue";
 export const ERROR = object({ "message?": string, "problem?": string, "reason?": string, "action?": object({ label: string, route: string }) });
 
 /** What the box passes on as it came, from the engine (`api/…`) or the coding agents' bridge
- * (`kuvo/agents/…`): theirs, not the box's, to define. */
+ * (`kuvo/agents/…`): theirs, not the box's, to define, but for a route of the box's own among them
+ * that has a shape here (`POST kuvo/agents/start`). */
 export const PASSED_ON = ["api/", "kuvo/agents/"];
 
 export const ROUTES: RouteShape[] = [

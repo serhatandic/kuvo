@@ -128,7 +128,17 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
     ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
     ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
     ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}),
-    ...(toldVersion(given.kuvo) ? { kuvo: toldVersion(given.kuvo) } : {}), ...(toldVersion(given.release) ? { release: toldVersion(given.release) } : {}) };
+    ...(toldVersion(given.kuvo) ? { kuvo: toldVersion(given.kuvo) } : {}), ...(toldVersion(given.release) ? { release: toldVersion(given.release) } : {}),
+    ...(keptAgents(given.agents) ? { agents: keptAgents(given.agents) } : {}) };
+}
+
+/** How a peer said its coding agents stand (`computer.agents`), checked: one of the three states,
+ * and a reason of the box's own words for it. */
+const AGENTS_WHY = ["engine", "notInstalled", "outdated", "keeper", "crashing", "stuck", "notStarting", "app"];
+function keptAgents(given: unknown): ToldComputer["agents"] {
+  if (!isObject(given) || !["running", "restarting", "down"].includes(given.state as string)) return undefined;
+  const state = given.state as "running" | "restarting" | "down";
+  return { state, ...(state === "down" && AGENTS_WHY.includes(given.why as string) ? { why: given.why as string } : {}) };
 }
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));

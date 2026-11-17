@@ -111,8 +111,20 @@ test("a request doesn't wait for a bridge that's down", async () => {
   expect(Date.now() - from).toBeLessThan(200)
 })
 
-test("a bridge's program from an older Kuvo, which can't start under its keeper, is said to be, with no Try Again", () => {
+test("a bridge's program from an older Kuvo, which can't start under its keeper, is said to be: put back by itself, or by the next update where there's nothing sound to repair it from", () => {
   fs.writeFileSync(path.join(run, "agents.log"), "KUVO_AGENTS_HOME, KUVO_HOME, KUVO_AGENTS_PORT, KUVO_AGENTS_PASSWORD, KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed.\n")
   fs.writeFileSync(path.join(run, "agents.retry"), String(Math.round((NOW + 5 * 60_000) / 1000)))
-  expect(agentsAway(place())).toEqual({ message: "The coding agents here are from an older Kuvo and can't start. Kuvo's next update replaces them.", reason: "agentsDown" })
+  expect(agentsAway(place())).toEqual({ message: "The coding agents here are from an older Kuvo and can't start. Kuvo puts back the right ones by itself.", reason: "agentsDown", action: { label: "Try Again", route: "kuvo/agents/start" } })
+  fs.writeFileSync(path.join(run, "repair.json"), JSON.stringify({ at: NOW, result: "damaged", version: "0.10.0" }))
+  expect(agentsAway(place())).toEqual({ message: "The coding agents here are from an older Kuvo and can't start, and there's no sound copy here to repair them from. Kuvo's next update brings them.", reason: "agentsDown" })
+})
+
+test("a second outage long after the first is restarting again, not down: a request that reached a bridge counts as one seen", async () => {
+  // The first: the keeper's starting it again.
+  expect(agentsState(place()).state).toBe("restarting")
+  // Back, found by a request.
+  const back = { port: 5002, password: "s" }
+  expect(await bridgeBack(() => back, undefined, 30_000, place())).toEqual(back)
+  // Gone again days later: restarting, as the first time.
+  expect(agentsState(place(NOW + 3 * 24 * 3600_000)).state).toBe("restarting")
 })
