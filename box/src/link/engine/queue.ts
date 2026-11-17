@@ -63,7 +63,7 @@ export function swapHoldsFor(target: Target): boolean {
 }
 
 /** Every session's queue the box keeps (one that's neither paused nor holds anything isn't kept). */
-export const readQueues = (): Record<string, QueueState> => files.readQueues(FILES);
+export const readQueues = (strict = false): Record<string, QueueState> => files.readQueues(FILES, strict);
 
 export const queueOf = (session: string): QueueState => readQueues()[session] ?? { paused: false, held: [] };
 
@@ -72,13 +72,20 @@ export const queueFollowers = new Set<() => void>();
 const tellFollowers = () => { for (const tell of queueFollowers) tell(); };
 
 /** `session`'s queue as `change` makes it, read again just before, under its lock. */
-export const changeQueue = (session: string, change: (state: QueueState) => QueueState, durable = false): QueueState => files.changeQueue(FILES, session, change, tellFollowers, durable);
+export const changeQueue = (session: string, change: (state: QueueState) => QueueState, reseal = false): QueueState => files.changeQueue(FILES, session, change, tellFollowers, reseal);
 
 const address = (session: string) => encodeURIComponent(session);
 
 async function inboxOf(target: Target, session: string, patience?: number): Promise<InboxEntry[]> {
   const answer = await asked(target, "GET", `api/session/${address(session)}/inbox`, undefined, patience) as { data?: unknown } | null;
   return Array.isArray(answer?.data) ? answer.data.filter((item): item is InboxEntry => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue")) : [];
+}
+
+export async function moveInbox(target: Target, session: string): Promise<InboxEntry[]> {
+  const inbox = await call(target, "GET", `/api/session/${address(session)}/inbox`, undefined, AbortSignal.timeout(10_000));
+  if (!Array.isArray(inbox) || !inbox.every((item): item is InboxEntry => isObject(item) &&
+    typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue"))) throw new Error("The inbox could not be read for a move");
+  return inbox;
 }
 
 // (As the engine and the agents' bridge answer it: the sessions at work, as a list or by id.)
@@ -201,10 +208,11 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
   return { shown, message, held, ...(before ? { before } : {}) };
 }
 
-function waitingPayload(id: string): (Outgoing & { id: string }) | null {
+function waitingPayload(id: string, strict = false): (Outgoing & { id: string }) | null {
   let whole: unknown = null;
   try { whole = JSON.parse(fs.readFileSync(waitingFile(id), "utf8")); } catch {}
-  return isObject(whole) && typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue")
+  return isObject(whole) && (!strict || (whole.id === id && (whole.files === undefined || Array.isArray(whole.files)))) &&
+    typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue")
     ? { id, text: whole.text, delivery: whole.delivery, ...(Array.isArray(whole.files) ? { files: whole.files } : {}), ...(isObject(whole.metadata) ? { metadata: whole.metadata } : {}) }
     : null;
 }
@@ -294,75 +302,87 @@ const BASE64_DATA = /^data:[^,]*;base64,/;
 
 /** One the engine held that a move can't carry (not a message, or one without words): the move
  * waits rather than leave it behind. */
-export class CantCarry extends Error {}
+export class CantCarry extends Error {
+  constructor(message: string, readonly unreadable = false) { super(message); }
+}
 
 /** The queues of `sessions` that are paused or have something waiting on the box, for a move
  * (`unpackQueues` sets them up on the box it goes to): what waits on the box, and for one that's
  * paused, what its engine (`target`) held, in the order they'd go (`orderOf`), with their files.
  * One not paused has nothing in the engine by then (a move waits for its inbox to empty). */
 export async function packQueues(target: Target, sessions: readonly string[]): Promise<Record<string, CarriedQueue>> {
-  const all = readQueues();
+  const all = readQueues(true);
   const packed: Record<string, CarriedQueue> = {};
   for (const session of sessions) {
     const state = all[session];
+    const inbox = await moveInbox(target, session);
+    if (!state?.paused && inbox.length) throw new CantCarry(session);
     if (!state || (!state.paused && !state.waiting?.length)) continue;
-    const inbox = state.paused ? await inboxOf(target, session) : [];
+    const indexed = state.waiting ?? [];
+    if (new Set(indexed.map(item => item.id)).size !== indexed.length) throw new CantCarry(session);
     const renamed: Record<string, string> = {};
-    const waiting = orderOf(inbox, state).flatMap(id => {
+    const waiting = [...new Set(orderOf(inbox, state))].map(id => {
       const shown = state.waiting?.find(each => each.id === id);
       if (shown) {
-        let message: unknown = null;
-        try { message = JSON.parse(fs.readFileSync(waitingFile(id), "utf8")); } catch {}
-        if (!isObject(message) || !Array.isArray(message.files)) return [{ shown, message }];
+        const message = waitingPayload(id, true);
+        if (!message) throw new CantCarry(id, true);
+        if (!message.files) return { shown, message };
         // Shown with the files that go with it.
         const carried = carriedFiles(message.files);
         const { files: _names, ...rest } = shown;
-        return [{ shown: { ...rest, ...(carried.length ? { files: fileNamesOf(carried) } : {}) }, message: { ...message, files: carried } }];
+        return { shown: { ...rest, ...(carried.length ? { files: fileNamesOf(carried) } : {}) }, message: { ...message, files: carried } };
       }
       // One the engine held: waiting on the box there, as one kept here would.
       const held = inbox.find(item => item.id === id);
       const text = typeof held?.text === "string" ? held.text : typeof held?.payload?.text === "string" ? held.payload.text : null;
-      if (!held) return [];
-      if (held.type !== "user" || text === null) throw new CantCarry(id);
+      if (!held || held.type !== "user" || text === null) throw new CantCarry(id);
       // (An ID the box can't name a file by: one of its own, the same each time it's packed.)
       const ownID = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : (renamed[id] = `msg_${crypto.createHash("sha256").update(id).digest("hex").slice(0, 32)}`);
       const carried = carriedFiles(held.payload?.files);
       const { from, words } = shownOfHeld(text);
-      return [{
+      return {
         shown: { id: ownID, ...(from ? { from } : {}), text: words ?? text, ...(carried.length ? { files: fileNamesOf(carried) } : {}), at: Date.now() },
         message: { id: ownID, text, delivery: "queue", ...(carried.length ? { files: carried } : {}), ...(isObject(held.payload?.metadata) ? { metadata: held.payload.metadata } : {}) },
-      }];
+      };
     });
     const ids = new Set(waiting.map(each => each.shown.id));
+    if (ids.size !== waiting.length) throw new CantCarry(session);
     packed[session] = { paused: state.paused, held: state.held.map(id => renamed[id] ?? id).filter(id => ids.has(id)), waiting };
   }
   return packed;
 }
 
 /** The queues a move brought (`packQueues`'s), for `sessions` only, kept here paused while its copy
- * is held, in place of any it had: what waits, whole, in its order (one whose contents didn't come,
- * left out; a file only with what's in it). The sessions whose queue went on where it came from, to
+ * is held, in place of any it had: every indexed message, whole and in order. The sessions whose queue went on where it came from, to
  * go on here once it's switched to. */
 export function unpackQueues(carried: unknown, sessions: readonly string[]): string[] {
-  if (!isObject(carried)) return [];
+  if (carried === undefined) return [];
+  if (!isObject(carried)) throw new CantCarry("queues");
   const goOn: string[] = [];
-  for (const session of sessions) {
-    const queue = carried[session];
-    if (!isObject(queue)) continue;
-    forgetQueue(session);
-    const waiting: Waiting[] = [];
-    for (const each of Array.isArray(queue.waiting) ? queue.waiting : []) {
+  const known = new Set(sessions);
+  const seen = new Set<string>();
+  const prepared = Object.entries(carried).map(([session, queue]) => {
+    if (!known.has(session) || !isObject(queue) || typeof queue.paused !== "boolean" || !Array.isArray(queue.waiting) || !Array.isArray(queue.held)) throw new CantCarry(session);
+    const waiting = queue.waiting.map(each => {
       const [shown] = files.keptWaiting([isObject(each) ? each.shown : null]);
       const message = isObject(each) && isObject(each.message) ? each.message : null;
-      if (!shown || !message || typeof message.text !== "string" || waiting.some(other => other.id === shown.id)) continue;
-      const brought = (Array.isArray(message.files) ? message.files : []).flatMap(file => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri)
-        ? [{ uri: file.uri, ...(typeof file.name === "string" ? { name: file.name } : {}) }] : []);
-      writeDurablePrivate(waitingFile(shown.id), JSON.stringify({ id: shown.id, text: message.text, delivery: message.delivery === "steer" ? "steer" : "queue", ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) }), RUN);
-      waiting.push(shown);
-    }
-    const held = (Array.isArray(queue.held) ? queue.held : []).filter((id): id is string => typeof id === "string" && waiting.some(each => each.id === id));
-    changeQueue(session, () => ({ paused: true, held, ...(waiting.length ? { waiting } : {}) }), true);
-    if (queue.paused !== true) goOn.push(session);
+      if (!shown || !message || message.id !== shown.id || typeof message.text !== "string" ||
+        (message.delivery !== "steer" && message.delivery !== "queue") || seen.has(shown.id)) throw new CantCarry(session);
+      seen.add(shown.id);
+      const brought = message.files ?? [];
+      if (!Array.isArray(brought) || !brought.every(file => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri))) throw new CantCarry(session);
+      return { shown, message: { id: shown.id, text: message.text, delivery: message.delivery,
+        ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) } };
+    });
+    const ids = new Set(waiting.map(each => each.shown.id));
+    if (!queue.held.every((id): id is string => typeof id === "string" && ids.has(id))) throw new CantCarry(session);
+    return { session, waiting, held: queue.held, paused: queue.paused };
+  });
+  for (const { session, waiting, held, paused } of prepared) {
+    forgetQueue(session);
+    for (const { shown, message } of waiting) writeDurablePrivate(waitingFile(shown.id), JSON.stringify(message), RUN);
+    changeQueue(session, () => ({ paused: true, held, waiting: waiting.map(each => each.shown) }), true);
+    if (!paused) goOn.push(session);
   }
   return goOn;
 }

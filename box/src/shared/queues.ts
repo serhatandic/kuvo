@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "./json";
-import { locked, writeDurablePrivate, writePrivate } from "./files";
+import { locked, writeDurablePrivate } from "./files";
 
 /** Where a box keeps its queues: its run folder's. */
 export interface QueueFiles {
@@ -158,18 +158,24 @@ export const showsQueue = (state: QueueState) => state.paused || state.held.leng
 const RESUMED_FOR = 60_000;
 
 /** Every session's queue the box keeps (one that's neither paused nor holds anything isn't kept). */
-export function readQueues(files: QueueFiles): Record<string, QueueState> {
+export function readQueues(files: QueueFiles, strict = false): Record<string, QueueState> {
   let all: unknown = {};
-  try { all = JSON.parse(fs.readFileSync(files.file, "utf8")); } catch {}
+  try { all = JSON.parse(fs.readFileSync(files.file, "utf8")); } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (strict && (!isObject(all) || Object.values(all).some(state => !isObject(state) ||
+    (state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length))))) {
+    throw new Error("The queue index could not be read");
+  }
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
 
 /** `session`'s queue as `change` makes it, read again just before, under its lock; `changed`, told
  * once it's written. */
-export function changeQueue(files: QueueFiles, session: string, change: (state: QueueState) => QueueState, changed?: () => void, durable = false): QueueState {
+export function changeQueue(files: QueueFiles, session: string, change: (state: QueueState) => QueueState, changed?: () => void, reseal: boolean | (() => boolean) = false): QueueState {
   let made = false;
   const after = locked(files.lock, () => {
-    const all = readQueues(files);
+    const all = readQueues(files, true);
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
@@ -177,7 +183,7 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
     if (state.cameHeld) state.cameHeld = state.cameHeld.filter(id => state.held.includes(id));
     if (!state.cameHeld?.length) delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made && !durable) return state;
+    if (!made && !(typeof reseal === "function" ? reseal() : reseal)) return state;
     all[session] = state;
     // Kept while it's paused, holds something, was resumed a moment ago, or waits for a message
     // a Stop named (until it's held, or its time is up).
@@ -189,10 +195,9 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
       }
       if (!showsQueue(each) && !each.resumed && !each.arriving) delete all[id];
     }
-    if (durable) writeDurablePrivate(files.file, JSON.stringify(all));
-    else try { writePrivate(files.file, JSON.stringify(all)); } catch {}
+    writeDurablePrivate(files.file, JSON.stringify(all));
     return state;
-  });
+  }, { required: true });
   if (made) changed?.();
   return after;
 }
@@ -218,13 +223,13 @@ export function keepWaiting(files: QueueFiles, session: string, message: Outgoin
   let kept = false;
   changeQueue(files, session, state => {
     if (!state.paused && !holds) return state;
-    writePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }));
+    writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
     const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
     const waiting: Waiting = { id: message.id, ...(from ? { from } : {}), text: words ?? message.text, ...(names.length ? { files: names } : {}), ...(keyword ? { keyword } : {}), at: Date.now() };
     return place({ ...state, waiting: (state.waiting ?? []).filter(each => each.id !== message.id) }, waiting);
-  }, changed);
+  }, changed, () => kept);
   return kept;
 }

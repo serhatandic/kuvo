@@ -47,7 +47,7 @@ function yourZone(home = boxHome) {
 
 // box/src/agents/main.ts
 import { mkdirSync as mkdirSync29, readdirSync as readdirSync23, readFileSync as readFileSync41, realpathSync as realpathSync10, rmSync as rmSync19 } from "fs";
-import { basename as basename13, dirname as dirname24, join as join43 } from "path";
+import { basename as basename13, dirname as dirname25, join as join43 } from "path";
 
 // box/src/agents/accounts.ts
 import { randomBytes } from "crypto";
@@ -1448,10 +1448,6 @@ import path3 from "path";
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // box/src/shared/files.ts
-function writePrivate(file, text) {
-  fs4.mkdirSync(path3.dirname(file), { recursive: true, mode: 448 });
-  placeWhole(file, text);
-}
 function syncPath(file) {
   const handle = fs4.openSync(file, "r");
   try {
@@ -1539,8 +1535,10 @@ async function holdAwaiting(lock, stale, wait) {
   }
   return false;
 }
-function locked(lock, work, { stale = 1e4, wait = 3000 } = {}) {
+function locked(lock, work, { stale = 1e4, wait = 3000, required = false } = {}) {
   const held = hold(lock, stale, wait);
+  if (required && !held)
+    throw new Error("Could not lock the file for writing");
   try {
     return work();
   } finally {
@@ -32331,17 +32329,23 @@ var keptState = (value) => {
 };
 var showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length);
 var RESUMED_FOR = 60000;
-function readQueues(files) {
+function readQueues(files, strict = false) {
   let all = {};
   try {
     all = JSON.parse(fs6.readFileSync(files.file, "utf8"));
-  } catch {}
+  } catch (error) {
+    if (strict && error.code !== "ENOENT")
+      throw error;
+  }
+  if (strict && (!isObject(all) || Object.values(all).some((state) => !isObject(state) || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
+    throw new Error("The queue index could not be read");
+  }
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
-function changeQueue(files, session, change, changed, durable = false) {
+function changeQueue(files, session, change, changed, reseal = false) {
   let made = false;
   const after = locked(files.lock, () => {
-    const all = readQueues(files);
+    const all = readQueues(files, true);
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
@@ -32350,7 +32354,7 @@ function changeQueue(files, session, change, changed, durable = false) {
     if (!state.cameHeld?.length)
       delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made && !durable)
+    if (!made && !(typeof reseal === "function" ? reseal() : reseal))
       return state;
     all[session] = state;
     for (const [id, each] of Object.entries(all)) {
@@ -32366,14 +32370,9 @@ function changeQueue(files, session, change, changed, durable = false) {
       if (!showsQueue(each) && !each.resumed && !each.arriving)
         delete all[id];
     }
-    if (durable)
-      writeDurablePrivate(files.file, JSON.stringify(all));
-    else
-      try {
-        writePrivate(files.file, JSON.stringify(all));
-      } catch {}
+    writeDurablePrivate(files.file, JSON.stringify(all));
     return state;
-  });
+  }, { required: true });
   if (made)
     changed?.();
   return after;
@@ -32392,14 +32391,14 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
   changeQueue(files, session, (state) => {
     if (!state.paused && !holds)
       return state;
-    writePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }));
+    writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path5.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
     const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
     const waiting = { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
     return place({ ...state, waiting: (state.waiting ?? []).filter((each) => each.id !== message.id) }, waiting);
-  }, changed);
+  }, changed, () => kept);
   return kept;
 }
 
@@ -34207,7 +34206,9 @@ class GroupRunner {
     const kept = this.chats.get(id);
     if (!kept)
       return false;
-    if (kept.status !== "active") {
+    if (kept.status === "active") {
+      this.context.store.saveGroup(kept);
+    } else {
       kept.status = "active";
       try {
         this.changed(id);
@@ -34230,6 +34231,7 @@ class GroupRunner {
       return;
     this.stop(id);
     kept.status = "held";
+    this.context.store.saveMessages(kept);
     this.changed(id);
     return { group: kept.group, messages: kept.messages };
   }
@@ -35426,7 +35428,7 @@ var weekdayOf2 = (time, zone) => {
 
 // box/src/agents/groups/store.ts
 import { existsSync as existsSync19, mkdirSync as mkdirSync25, readdirSync as readdirSync21, readFileSync as readFileSync35, renameSync as renameSync21, rmSync as rmSync17, writeFileSync as writeFileSync26 } from "fs";
-import { join as join41 } from "path";
+import { dirname as dirname21, join as join41 } from "path";
 
 // box/src/shared/move-hold.ts
 function moveHold(value) {
@@ -35533,12 +35535,10 @@ class GroupStore {
     return { group: record.group, status: record.status === "held" ? "held" : "active", talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
   }
   saveGroup(kept) {
-    mkdirSync25(this.folder(kept.group.id), { recursive: true, mode: 448 });
-    write(join41(this.folder(kept.group.id), "group.json"), { kuvo: version2, status: kept.status, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group });
+    writeDurablePrivate(join41(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname21(this.root));
   }
   saveMessages(kept) {
-    mkdirSync25(this.folder(kept.group.id), { recursive: true, mode: 448 });
-    write(join41(this.folder(kept.group.id), "messages.json"), kept.messages);
+    writeDurablePrivate(join41(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname21(this.root));
   }
   setAwake(id, awake) {
     const file = join41(this.folder(id), "awake");
@@ -35548,11 +35548,15 @@ class GroupStore {
       rmSync17(file, { force: true });
   }
   trash(id, trash) {
-    if (!existsSync19(this.folder(id)))
+    if (!existsSync19(this.folder(id))) {
+      syncDurableFile(this.root, dirname21(this.root));
       return;
+    }
     const into = join41(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`);
     mkdirSync25(into, { recursive: true, mode: 448 });
     renameSync21(this.folder(id), join41(into, id));
+    syncDurableFile(into, dirname21(trash));
+    syncDurableFile(this.root, dirname21(this.root));
     emit("kuvo.group.trashed", { id, path: into });
   }
   settings() {
@@ -36179,7 +36183,7 @@ var SEAT_MAIL_KINDS = ["turn", "state", "result", "steer", "stop", "drop", "work
 // box/src/agents/usage/usage-peers.ts
 import { createHash as createHash19 } from "crypto";
 import { mkdirSync as mkdirSync26, readFileSync as readFileSync37, renameSync as renameSync22, writeFileSync as writeFileSync27 } from "fs";
-import { dirname as dirname21 } from "path";
+import { dirname as dirname22 } from "path";
 var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage";
 var MINUTE4 = 60000;
 var DAY5 = 24 * 60 * MINUTE4;
@@ -36443,7 +36447,7 @@ class UsagePeers {
     if (!this.file)
       return;
     try {
-      mkdirSync26(dirname21(this.file), { recursive: true });
+      mkdirSync26(dirname22(this.file), { recursive: true });
       const peers = Object.fromEntries([...this.peers].map(([key, kept]) => [key, { ...kept, accounts: kept.accounts.map(({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) })) }]));
       writeFileSync27(this.file + ".new", JSON.stringify({ peers }), { mode: 384 });
       renameSync22(this.file + ".new", this.file);
@@ -38038,7 +38042,7 @@ ${all}`;
 
 // box/src/agents/renewal.ts
 import { statSync as statSync17 } from "fs";
-import { dirname as dirname22 } from "path";
+import { dirname as dirname23 } from "path";
 
 // box/src/shared/bundle.ts
 import fs7 from "fs";
@@ -38112,7 +38116,7 @@ class Renewal {
     this.looking = setInterval(() => this.look(), renewalTiming.look);
     this.looking.unref?.();
     try {
-      this.watching = watchFolder(dirname22(this.options.script), () => this.look());
+      this.watching = watchFolder(dirname23(this.options.script), () => this.look());
     } catch {}
     this.look();
   }
@@ -38670,7 +38674,7 @@ var isEngine = (command) => /\bserve\b/.test(command) && !command.includes("kuvo
 
 // box/src/agents/limits-peers.ts
 import { mkdirSync as mkdirSync28, readFileSync as readFileSync40, renameSync as renameSync25, writeFileSync as writeFileSync30 } from "fs";
-import { dirname as dirname23 } from "path";
+import { dirname as dirname24 } from "path";
 var MINUTE6 = 60000;
 var TELL_AGAIN3 = 10 * MINUTE6;
 var PEER_AWAY2 = 25 * MINUTE6;
@@ -38966,7 +38970,7 @@ class LimitsPeers {
     if (!this.file)
       return;
     try {
-      mkdirSync28(dirname23(this.file), { recursive: true });
+      mkdirSync28(dirname24(this.file), { recursive: true });
       writeFileSync30(this.file + ".new", JSON.stringify({ peers: Object.fromEntries(this.peers) }), { mode: 384 });
       renameSync25(this.file + ".new", this.file);
     } catch {}
@@ -39080,7 +39084,7 @@ var password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCO
 var kept3 = process.env.KUVO_AGENTS_KEPT === "1";
 var ownRuntime = (() => {
   try {
-    return !!machineHome && realpathSync10(dirname24(dirname24(process.execPath))) === realpathSync10(join43(machineHome, "engine"));
+    return !!machineHome && realpathSync10(dirname25(dirname25(process.execPath))) === realpathSync10(join43(machineHome, "engine"));
   } catch {
     return false;
   }
@@ -39418,7 +39422,7 @@ renewal = onMachine && build ? new Renewal({
     if (kept3)
       return true;
     const engine = keeperEngine(machineHome);
-    return !engine || engine === basename13(dirname24(process.execPath));
+    return !engine || engine === basename13(dirname25(process.execPath));
   },
   lets: () => {
     if (kept3)
@@ -39457,7 +39461,7 @@ renewal = onMachine && build ? new Renewal({
     if (!kept3 || !ownRuntime)
       return;
     const engine = keeperEngine(machineHome);
-    return engine && engine !== basename13(dirname24(process.execPath)) ? engine : undefined;
+    return engine && engine !== basename13(dirname25(process.execPath)) ? engine : undefined;
   },
   holdAfter: renewHoldAfter,
   settle: renewSettle
@@ -39508,7 +39512,7 @@ function startNext(run) {
       return;
     rmSync19(join43(run, "agents.pid"), { force: true });
     const start = join43(machineHome, "bin", "kuvo-start");
-    const env = { HOME: dirname24(machineHome), PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    const env = { HOME: dirname25(machineHome), PATH: process.env.PATH ?? "/usr/bin:/bin" };
     spawn7("sh", [start, "bridge"], { detached: true, stdio: "ignore", env, cwd: machineHome }).unref();
   } catch (error) {
     console.error("couldn't start the next bridge:", error);
@@ -39521,4 +39525,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 41b97daa6ef8c5cf506fc5a31b3dd6b5ffa0093f3d7da33d477789c84f0ea8b0
+// Built from Packages/Box/src/agents d40e8c138178319d3e9f4c5d94eba6ee9532513b796e665aa944196192e2e111

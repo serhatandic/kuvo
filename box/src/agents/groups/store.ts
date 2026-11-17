@@ -5,7 +5,8 @@
 // are now: a bot changed from elsewhere (its job, from the phone) is as it is.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { syncDurableFile, writeDurablePrivate } from "../../shared/files"
 import { moveHold } from "../../shared/move-hold"
 import { emit } from "../events"
 import type { ModelRef } from "../wire"
@@ -241,13 +242,11 @@ export class GroupStore {
   }
 
   saveGroup(kept: Kept) {
-    mkdirSync(this.folder(kept.group.id), { recursive: true, mode: 0o700 })
-    write(join(this.folder(kept.group.id), "group.json"), { kuvo: version, status: kept.status, ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group })
+    writeDurablePrivate(join(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, ...(kept.talking ? { talking: true } : {}), ...(kept.paused ? { paused: true } : {}), ...(kept.turning ? { turning: kept.turning } : {}), group: kept.group }, null, 2), dirname(this.root))
   }
 
   saveMessages(kept: Kept) {
-    mkdirSync(this.folder(kept.group.id), { recursive: true, mode: 0o700 })
-    write(join(this.folder(kept.group.id), "messages.json"), kept.messages)
+    writeDurablePrivate(join(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname(this.root))
   }
 
   /** Whether the chat keeps the engine up: a meeting coming, a discussion or work under way. */
@@ -262,10 +261,15 @@ export class GroupStore {
    * with where it went): on the Mac the app puts it in the Finder's Trash, where you look for it.
    */
   trash(id: string, trash: string) {
-    if (!existsSync(this.folder(id))) return
+    if (!existsSync(this.folder(id))) {
+      syncDurableFile(this.root, dirname(this.root))
+      return
+    }
     const into = join(trash, `${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}-group-${id}`)
     mkdirSync(into, { recursive: true, mode: 0o700 })
     renameSync(this.folder(id), join(into, id))
+    syncDurableFile(into, dirname(trash))
+    syncDurableFile(this.root, dirname(this.root))
     emit("kuvo.group.trashed", { id, path: into })
   }
 

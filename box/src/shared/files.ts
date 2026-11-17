@@ -43,6 +43,19 @@ export function syncDurableFile(file: string, through = path.dirname(file)): voi
   }
 }
 
+/** Seal an imported tree from the leaves up, without following any links in it. */
+export function syncDurableTree(folder: string, through = path.dirname(folder)): void {
+  function syncEntry(entry: string): void {
+    const stat = fs.lstatSync(entry);
+    if (stat.isSymbolicLink()) return;
+    if (stat.isDirectory()) for (const child of fs.readdirSync(entry)) syncEntry(path.join(entry, child));
+    else if (!stat.isFile()) throw new Error("An imported entry is not a file or folder");
+    syncPath(entry);
+  }
+  syncEntry(folder);
+  syncDurableFile(path.dirname(folder), through);
+}
+
 /** A private atomic write whose contents and rename survive a power cut before the caller proceeds. */
 export function writeDurablePrivate(file: string, text: string | Uint8Array, through = path.dirname(file)): void {
   const folder = path.dirname(file);
@@ -127,9 +140,10 @@ async function holdAwaiting(lock: string, stale: number, wait: number): Promise<
 }
 
 // `work` done holding `lock`: one process at a time. A lock left by one that was cut off goes
-// after `stale` ms (ten seconds); one not had in `wait` ms (three) goes ahead all the same.
-export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000 } = {}): T {
+// after `stale` ms (ten seconds). After `wait` ms (three), a required lock fails the operation.
+export function locked<T>(lock: string, work: () => T, { stale = 10_000, wait = 3_000, required = false } = {}): T {
   const held = hold(lock, stale, wait);
+  if (required && !held) throw new Error("Could not lock the file for writing");
   try {
     return work();
   } finally {

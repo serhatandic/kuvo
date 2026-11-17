@@ -82,7 +82,10 @@ const server = http.createServer((request, response) => {
     const match = url.pathname.match(/^\/api\/session\/([^/]+)(\/inbox|\/interrupt|\/prompt|\/message)?$/);
     const session = match && engine.sessions.get(match[1]);
     if (!session) return send(404, null);
-    if (match[2] === "/inbox") return send(200, []);
+    if (match[2] === "/inbox") {
+      session.inboxReads = (session.inboxReads ?? 0) + 1;
+      return session.inboxDown ? send(503, null) : send(200, session.inbox ?? []);
+    }
     if (match[2] === "/message") return send(200, session.replies ?? []);
     if (match[2]) return send(200, true);
     if (request.method === "DELETE") {
@@ -186,6 +189,65 @@ test("a copy that couldn't be set up as it arrived leaves the original here as i
   await asItWas("ses_race1");
 });
 
+test("a move with a real queued message refuses a missing payload both before sending and at the final comparison", async () => {
+  for (const removeBeforeOffer of [true, false]) {
+    const suffix = removeBeforeOffer ? "Early" : "Late";
+    const session = `ses_QueueFault${suffix}`;
+    const message = `msg_QueueFault${suffix}`;
+    const payload = path.join(home, "run", "waiting", `${message}.json`);
+    chat(session);
+    const stopped = await ask("POST", `kuvo/sessions/${session}/stop`);
+    assert.equal(stopped.status, 200);
+    assert.equal(stopped.json.paused, true);
+    assert.equal((await ask("POST", `kuvo/sessions/${session}/queue/add`, { id: message, text: "Keep this message.", kept: true })).json.waits, true);
+    const bytes = fs.readFileSync(payload);
+    if (removeBeforeOffer) fs.rmSync(payload);
+    const before = told.length;
+    script = move => {
+      if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
+      if (move.op === "part" && move.i === move.of - 1) {
+        fs.writeFileSync(payload, "not readable as a queued message");
+        say({ op: "arrived", id: move.id });
+      }
+      if (move.op === "switch") say({ op: "switched", id: move.id });
+      if (move.op === "drop") say({ op: "dropped", id: move.id, neverSwitched: true });
+    };
+    try {
+      const answer = await ask("POST", "kuvo/moves", { kind: "chat", id: session, to: peerKey });
+      assert.equal(answer.status, 409, JSON.stringify(answer.json));
+      assert.match(answer.json.message, /message waiting.*couldn’t be read/);
+      assert.equal(told.slice(before).some(move => move.op === "offer"), !removeBeforeOffer);
+      assert.ok(!told.slice(before).some(move => move.op === "switch"));
+      assert.ok(engine.sessions.has(session));
+      assert.deepEqual((await ask("GET", `kuvo/sessions/${session}/queue`)).json.waiting.map(each => each.id), [message]);
+    } finally {
+      fs.writeFileSync(payload, bytes);
+    }
+  }
+});
+
+test("an idle child's unpaused inbox blocks the first offer and a failed read keeps the source intact", async () => {
+  const root = "ses_RootInboxFault", child = "ses_ChildInboxFault";
+  chat(root);
+  const queued = { id: "msg_ChildInboxFault", type: "user", delivery: "queue", payload: { text: "I still need to run." } };
+  const childSession = { id: child, title: "Child", parentID: root, directory: chats, messages: [], inbox: [queued] };
+  engine.sessions.set(child, childSession);
+  const before = told.length;
+  script = move => {
+    if (move.op === "offer") say({ op: "refused", id: move.id, message: "An offer reached the peer too early." });
+    if (move.op === "drop") say({ op: "dropped", id: move.id, neverSwitched: true });
+  };
+  const moved = ask("POST", "kuvo/moves", { kind: "chat", id: root, to: peerKey });
+  await until(() => childSession.inboxReads > 0 || told.slice(before).some(move => move.op === "offer"));
+  assert.ok(!told.slice(before).some(move => move.op === "offer"));
+  childSession.inboxDown = true;
+  const answer = await moved;
+  assert.equal(answer.status, 409, JSON.stringify(answer.json));
+  assert.ok(!told.slice(before).some(move => move.op === "offer" || move.op === "switch"));
+  assert.deepEqual(engine.sessions.get(child).inbox, [queued]);
+  await asItWas(root);
+});
+
 test("a switch the other computer can't honour (it let its copy go) leaves the original here", async () => {
   chat("ses_race2");
   script = move => {
@@ -228,7 +290,7 @@ test("parts that come twice set a copy up once; a part after the switch changes 
   await say({ op: "switch", safeSwitch: true, id });
   assert.ok(told.some(move => move.id === id && move.op === "switched"));
   // What it came with, noted: only what's after it is its running here.
-  assert.equal(JSON.parse(fs.readFileSync(path.join(movesFolder, "ended.json"), "utf8"))[id]?.last, "msg_in1last");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(movesFolder, "decisions", `${id}.json`), "utf8")).last, "msg_in1last");
   assert.deepEqual(underWay((await ask("GET", "kuvo/moves")).json), { moves: [], away: [] });
   // A late repeat of the part: nothing set up again, nothing held.
   await say(part);
@@ -977,8 +1039,16 @@ test("wall-clock jumps do not delay a journaled switch or run the part retry tim
   await say({ op: "got", id, i: 0 });
   await say({ op: "arrived", id });
   assert.equal(switches().length, 1);
-  link.keepMoving(wall - 3600_000, ticks + 26_000);
-  assert.equal(switches().length, 2, "a future persisted timestamp does not stall a switch");
+  const stillWall = recordOf("ses_clock1").sentAt + 1;
+  const switchedAt = performance.now();
+  link.keepMoving(stillWall, switchedAt + 10_000);
+  assert.equal(switches().length, 1);
+  link.keepMoving(stillWall, switchedAt + 61_000);
+  assert.equal(switches().length, 2, "the wall can stay just above sentAt while elapsed time triggers a retry");
+  link.keepMoving(stillWall, switchedAt + 62_000);
+  assert.equal(switches().length, 2, "retrying restarts the elapsed deadline even when sentAt does not change");
+  link.keepMoving(wall - 3600_000, switchedAt + 63_000);
+  assert.equal(switches().length, 3, "a future persisted timestamp does not stall a switch");
   await say({ op: "switched", id });
   assert.equal((await moved).status, 200);
 }));

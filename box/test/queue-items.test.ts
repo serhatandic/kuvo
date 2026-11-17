@@ -1,6 +1,9 @@
 import "./safety"
 import { afterAll, beforeEach, expect, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
 import { ask, follow } from "./route-answer"
+import { interceptSync } from "./disk-fault"
 
 // The queue as one list every client draws (PROTOCOL.md, "The queue", `queue.items`): what the
 // engine holds and what waits on the box, in the order they go, each as it was written; and Edit
@@ -8,7 +11,7 @@ import { ask, follow } from "./route-answer"
 // keeping each session's inbox and messages as the engine does.
 
 const { engineHandler } = await import("../src/link/server/router")
-const { forgetQueue, queueWatcher } = await import("../src/link/engine/queue")
+const { forgetQueue, queueWatcher, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
 
 let inboxes: Record<string, any[]>, delivered: Record<string, string[]>, keeps: Set<string>, got: { method: string; path: string }[]
 beforeEach(() => {
@@ -79,6 +82,30 @@ async function stopAndAdd(): Promise<string> {
   expect(added.json.waits).toBe(true)
   return id
 }
+
+test("a paused enqueue gets success only after its payload and index sync", async () => {
+  const id = "msg_SaveFault"
+  const payload = path.join(WAITING_DIR, `${id}.json`)
+  const add = () => ask(handler, "POST", "kuvo/sessions/ses_q/queue/add", { id, text: "Keep this message.", kept: true })
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/hold")).status).toBe(200)
+
+  let restore = interceptSync(file => file.startsWith(`${payload}.`))
+  try { expect((await add()).status).toBe(500) } finally { restore() }
+  expect(fs.existsSync(payload)).toBe(false)
+
+  const synced: string[] = []
+  restore = interceptSync(file => file === path.dirname(QUEUES_FILE) && synced.some(each => each.startsWith(`${QUEUES_FILE}.`)), synced)
+  try { expect((await add()).status).toBe(500) } finally { restore() }
+  expect(synced.findIndex(file => file.startsWith(`${payload}.`))).toBeLessThan(synced.findIndex(file => file.startsWith(`${QUEUES_FILE}.`)))
+
+  synced.length = 0
+  restore = interceptSync(() => false, synced)
+  try { expect((await add()).json).toMatchObject({ waits: true }) } finally { restore() }
+  expect(synced.at(-1)).toBe(path.dirname(QUEUES_FILE))
+  const saved = JSON.parse(fs.readFileSync(QUEUES_FILE, "utf8"))
+  expect(saved.ses_q.waiting.map((each: { id: string }) => each.id)).toEqual([id])
+  expect(JSON.parse(fs.readFileSync(payload, "utf8"))).toMatchObject({ id, text: "Keep this message." })
+})
 
 test("the queue lists every message waiting, in the order they go, as each was written", async () => {
   const box = await stopAndAdd()

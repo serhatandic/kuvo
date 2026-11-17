@@ -4,13 +4,14 @@ import fs from "node:fs"
 import path from "node:path"
 import { once } from "node:events"
 import { ask } from "./route-answer"
+import { interceptSync } from "./disk-fault"
 import type { MoveRecord } from "../src/link/moves/records"
 
 const { BOTS, RUN, ENGINE_FILE, BRIDGE_FILE } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
 const { serveBox } = await import("../src/link/server/serve")
 const { forgetMovesInMemory, hold, keepMoving, resumeMoves, sendMovesWith, takeMoveMail } = await import("../src/link/moves/move")
-const { MOVES, forgetMove, noteEnded, readMove, saveMove } = await import("../src/link/moves/records")
+const { MOVES, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
 const { pack } = await import("../src/link/moves/bundle")
 const { queueOf, unpackQueues, WAITING_DIR } = await import("../src/link/engine/queue")
 
@@ -21,7 +22,14 @@ const group = "grp_Safety172"
 const peer = { key: "lab", kind: "mac" as const }
 const folder = path.join(BOTS, "bot_Safety172")
 const outcome = path.join(MOVES, `${id}.outcome.json`)
+const decisionFile = path.join(MOVES, "decisions", `${id}.json`)
+const decisionHint = path.join(MOVES, "decision-hints", `${id}.json`)
 const held = path.join(folder, "paused")
+const arrivingBot = "bot_SafetyTransfer"
+const arrivingSession = "ses_SafetyTransfer"
+const arrivingFolder = path.join(BOTS, arrivingBot)
+const arrivingHold = path.join(arrivingFolder, "paused")
+const nested = path.join(arrivingFolder, "wakes", "checks", "note.txt")
 const mail: Record<string, unknown>[] = []
 const bundle = { generation: 1, hash: "a".repeat(43) }
 const item = "msg_Safety172"
@@ -30,6 +38,7 @@ let committedBeforeActivation = false
 let groupName: string | undefined
 let prompts = 0, accepted = false
 let beforeAcceptance: (() => void) | undefined
+let importedBot = false
 const syncs: string[] = []
 let syncedAtActivation: string[] = []
 
@@ -37,6 +46,15 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const endpoint = new URL(request.url).pathname
+    if (endpoint === "/api/experimental/session/import") {
+      const input = await request.json() as { info: { id: string } }
+      if (input.info.id === arrivingSession) importedBot = true
+      return Response.json({ data: input.info })
+    }
+    if (endpoint === `/api/session/${arrivingSession}`) {
+      if (request.method === "DELETE") importedBot = false
+      return importedBot ? Response.json({ data: { id: arrivingSession } }) : Response.json({}, { status: 404 })
+    }
     if (endpoint.endsWith("/export")) {
       return exportFails
         ? Response.json({ message: "EIO reading /private/engine/index.sqlite" }, { status: 500 })
@@ -102,6 +120,8 @@ beforeEach(() => {
   forgetMove(id)
   fs.rmSync(outcome, { force: true })
   fs.rmSync(path.join(MOVES, "ended.json"), { force: true })
+  for (const file of [decisionFile, decisionHint]) fs.rmSync(file, { force: true })
+  fs.rmSync(arrivingFolder, { recursive: true, force: true })
   fs.mkdirSync(folder, { recursive: true })
   fs.writeFileSync(held, "moving")
   fs.mkdirSync(RUN, { recursive: true })
@@ -111,6 +131,7 @@ beforeEach(() => {
   committedBeforeActivation = false
   groupActive = false
   groupName = undefined
+  importedBot = false
   beforeAcceptance = undefined
   accepted = false
   prompts = 0
@@ -124,8 +145,8 @@ afterAll(() => {
   sendMovesWith(null)
   server.stop(true)
   forgetMove(id)
-  for (const file of [outcome, path.join(MOVES, "ended.json"), ENGINE_FILE, BRIDGE_FILE]) fs.rmSync(file, { force: true })
-  fs.rmSync(folder, { recursive: true, force: true })
+  for (const file of [outcome, path.join(MOVES, "ended.json"), decisionFile, decisionHint, ENGINE_FILE, BRIDGE_FILE]) fs.rmSync(file, { force: true })
+  for (const each of [folder, arrivingFolder]) fs.rmSync(each, { recursive: true, force: true })
 })
 
 test("confirmed switch succeeds even across eleven failed source exports; the original stays held", async () => {
@@ -350,7 +371,7 @@ test.each([false, true])("a killed queue handoff recovers with the engine's acce
   saveMove(record({ role: "to", stage: "copying", step: undefined, folder: undefined, from: peer.key, to: "studio",
     complete: true, activation: { at: Date.now() }, queuesGoOn: [session], ...bundle }))
   const payload = path.join(WAITING_DIR, `${item}.json`)
-  unpackQueues({ [session]: { paused: false, waiting: [{ shown: { id: item, text: "Do the work", at: Date.now() },
+  unpackQueues({ [session]: { paused: false, held: [], waiting: [{ shown: { id: item, text: "Do the work", at: Date.now() },
     message: { id: item, text: "Do the work", delivery: "queue" } }] } }, [session])
   let attempted!: () => void
   const atEngine = new Promise<void>(resolve => { attempted = resolve })
@@ -379,27 +400,9 @@ test.each([false, true])("a killed queue handoff recovers with the engine's acce
   expect(mail.at(-1)).toMatchObject({ op: "switched", ...bundle })
 })
 
-function interceptSync(fail: (file: string) => boolean) {
-  const open = fs.openSync
-  const fsync = fs.fsyncSync
-  const paths = new Map<number, string>()
-  const openSpy = spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
-    const descriptor = open(file, flags, mode)
-    paths.set(descriptor, String(file))
-    return descriptor
-  })
-  const syncSpy = spyOn(fs, "fsyncSync").mockImplementation(descriptor => {
-    const file = paths.get(descriptor) ?? ""
-    if (fail(file)) throw new Error("Injected sync failure")
-    fsync(descriptor)
-    syncs.push(file)
-  })
-  return () => { syncSpy.mockRestore(); openSpy.mockRestore() }
-}
-
 test("record and directory syncs gate switch mail, activation, and replayed acknowledgements", async () => {
   saveMove(record({ kind: "group", thing: group, stage: "copying", step: "arrive", folder: undefined, ...bundle }))
-  let stop = interceptSync(file => file === MOVES)
+  let stop = interceptSync(file => file === MOVES, syncs)
   try { await peerMail("arrived", bundle) } finally { stop() }
   expect(readMove(id)?.stage).toBe("switching")
   expect(syncs.some(file => file.includes(`${id}.json.`))).toBe(true)
@@ -407,7 +410,7 @@ test("record and directory syncs gate switch mail, activation, and replayed ackn
 
   saveMove(record({ kind: "group", thing: group, role: "to", stage: "copying", step: undefined, folder: undefined,
     sessions: [], complete: true, ...bundle }))
-  stop = interceptSync(file => file === MOVES)
+  stop = interceptSync(file => file === MOVES, syncs)
   try { await expect(peerMail("switch", { safeSwitch: true, ...bundle })).rejects.toThrow("Injected sync failure") } finally { stop() }
   expect(readMove(id)?.activation).toBeDefined()
   expect(groupActive).toBe(false)
@@ -417,10 +420,10 @@ test("record and directory syncs gate switch mail, activation, and replayed ackn
   const rename = fs.renameSync
   const observe = spyOn(fs, "renameSync").mockImplementation((from, to) => {
     rename(from, to)
-    if (to === path.join(MOVES, "ended.json")) decisionRenamed = true
+    if (to === decisionFile) decisionRenamed = true
   })
   syncs.length = 0
-  stop = interceptSync(file => file === MOVES && decisionRenamed)
+  stop = interceptSync(file => file === path.dirname(decisionFile) && decisionRenamed, syncs)
   try {
     await resumeMoves()
     expect(groupActive).toBe(true)
@@ -434,4 +437,92 @@ test("record and directory syncs gate switch mail, activation, and replayed ackn
   await resumeMoves()
   expect(mail.at(-1)).toMatchObject({ op: "switched", ...bundle })
   expect(activity).toBe(1)
+})
+
+async function incomingBot(queues?: Record<string, unknown>) {
+  const seed = "mov_IncomingSafety"
+  fs.mkdirSync(path.dirname(nested), { recursive: true })
+  fs.writeFileSync(nested, "This check must come with the bot.")
+  fs.writeFileSync(path.join(arrivingFolder, "bot.json"), JSON.stringify({ kuvo: 1, id: arrivingBot, name: "Mira" }))
+  fs.writeFileSync(path.join(arrivingFolder, "session"), arrivingSession)
+  const packed = await pack(seed, { kind: "bot", thing: arrivingBot, name: "Mira", folder: arrivingBot, wasPaused: false,
+    exports: [{ info: { id: arrivingSession }, messages: [] }], queues })
+  const bytes = fs.readFileSync(packed.file)
+  forgetMove(seed)
+  fs.rmSync(arrivingFolder, { recursive: true })
+  const identity = { generation: 1, hash: packed.hash }
+  await peerMail("offer", { kind: "bot", thing: arrivingBot, name: "Mira", safeSwitch: true, size: bytes.length, ...identity })
+  expect(mail.at(-1)).toMatchObject({ op: "ready", ...identity })
+  const part = () => peerMail("part", { i: 0, of: 1, d: bytes.toString("base64url"), ...identity })
+  const activate = () => peerMail("switch", { safeSwitch: true, ...identity })
+  return { ...identity, part, activate }
+}
+
+test("moving a bot cannot report arrival until its nested wake-up files have synced", async () => {
+  const incoming = await incomingBot()
+  let sawNested = false
+  const restore = interceptSync(file => {
+    if (file !== nested) return false
+    sawNested = true
+    return true
+  })
+  try { await incoming.part() } finally { restore() }
+  expect(sawNested).toBe(true)
+  expect(mail.some(item => item.op === "arrived")).toBe(false)
+  await incoming.activate()
+  expect(mail.at(-1)).toMatchObject({ op: "dropped", neverSwitched: true, hash: incoming.hash })
+  expect(importedBot).toBe(false)
+})
+
+test("replayed activation seals the already-unlinked pause before acknowledging a real import", async () => {
+  const incoming = await incomingBot()
+  await incoming.part()
+  expect(mail.at(-1)).toMatchObject({ op: "arrived", hash: incoming.hash })
+  expect(fs.readFileSync(nested, "utf8")).toBe("This check must come with the bot.")
+  let attempts = 0
+  const restore = interceptSync(file => {
+    if (file !== arrivingFolder || fs.existsSync(arrivingHold)) return false
+    attempts++
+    return true
+  })
+  try {
+    await incoming.activate()
+    expect(fs.existsSync(arrivingHold)).toBe(false)
+    expect(attempts).toBe(1)
+    forgetMovesInMemory()
+    await resumeMoves()
+    expect(attempts).toBe(2)
+    expect(mail.some(item => item.op === "switched")).toBe(false)
+  } finally { restore() }
+  await resumeMoves()
+  expect(mail.at(-1)).toMatchObject({ op: "switched", generation: 1, hash: incoming.hash })
+})
+
+test("an incoming bundle missing an indexed queue payload is refused before arrival", async () => {
+  const queuedId = "msg_NeverArrived"
+  const incoming = await incomingBot({ [arrivingSession]: { paused: true, held: [queuedId],
+    waiting: [{ shown: { id: queuedId, text: "Keep this", at: Date.now() }, message: null }] } })
+  await incoming.part()
+  expect(mail.at(-1)).toMatchObject({ op: "failed", message: expect.stringContaining("messages waiting to be sent") })
+  expect(mail.some(item => item.op === "arrived")).toBe(false)
+  await incoming.activate()
+  expect(mail.at(-1)).toMatchObject({ op: "dropped", neverSwitched: true })
+})
+
+test("compacting a real move's routing hint keeps its indexed decision for an offline source", async () => {
+  const incoming = await incomingBot()
+  await incoming.part()
+  await incoming.activate()
+  expect(switchedHere().has(arrivingSession)).toBe(true)
+  const receipt = fs.readFileSync(decisionFile, "utf8")
+  expect(JSON.parse(receipt)).toMatchObject({ as: "switched", generation: 1, hash: incoming.hash })
+  expect(fs.existsSync(path.join(MOVES, "ended.json"))).toBe(false)
+  const yearsLater = Date.now() + 2 * 365 * 86400_000
+  keepMoving(yearsLater, performance.now() + 7200_000)
+  expect(fs.existsSync(decisionHint)).toBe(false)
+  expect(fs.readFileSync(decisionFile, "utf8")).toBe(receipt)
+  forgetMovesInMemory()
+  mail.length = 0
+  await incoming.activate()
+  expect(mail.at(-1)).toMatchObject({ op: "switched", generation: 1, hash: incoming.hash })
 })

@@ -375,7 +375,10 @@ export class GroupRunner {
   activate(id: string): boolean {
     const kept = this.chats.get(id)
     if (!kept) return false
-    if (kept.status !== "active") {
+    if (kept.status === "active") {
+      // A bridge restart can read a rename whose directory sync failed in the previous process.
+      this.context.store.saveGroup(kept)
+    } else {
       kept.status = "active"
       try {
         this.changed(id)
@@ -402,6 +405,7 @@ export class GroupRunner {
     if (!kept) return undefined
     this.stop(id)
     kept.status = "held"
+    this.context.store.saveMessages(kept)
     this.changed(id)
     return { group: kept.group, messages: kept.messages }
   }

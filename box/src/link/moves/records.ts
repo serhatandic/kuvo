@@ -229,83 +229,111 @@ export function forgetMovedAway(sessions: readonly string[], now = Date.now()): 
 
 export type { Move, MoveKind, MoveStage };
 
-// Ownership decisions have no expiry: an offline source may ask again at any time. Session
-// lists on these entries are only for the short-lived routing hints below.
-const ENDED_FILE = path.join(MOVES, "ended.json");
+// A durable receipt per move. Offline sources may ask about these decisions at any time.
+// Session routing hints expire independently and are the only records we compact.
+const LEGACY_DECISIONS = path.join(MOVES, "ended.json");
+const DECISIONS = path.join(MOVES, "decisions");
+const HINTS = path.join(MOVES, "decision-hints");
+const DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
 export type BundleIdentity = { generation?: number; hash?: string };
-type Decision = BundleIdentity & { as: "switched" | "dropped"; at: number; sessions?: string[]; last?: string; peer?: string };
-const keptFor = (one: { as?: unknown; at?: unknown } | undefined): boolean =>
-  typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped");
+type Decision = BundleIdentity & { as: "switched" | "dropped"; at: number; last?: string; peer?: string };
+type Hint = Pick<Decision, "as" | "at"> & { sessions?: string[] };
+const isDecision = (one: unknown): one is Decision => isObject(one) && typeof one.at === "number" &&
+  (one.as === "switched" || one.as === "dropped");
 
-function decision(id: string): Decision | null {
-  try {
-    const one = (JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, Decision>)?.[id];
-    return keptFor(one) ? one! : null;
-  } catch {
-    return null;
+function jsonIfPresent(file: string): unknown {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
+}
+
+const fileForDecision = (id: string) => path.join(DECISIONS, `${id}.json`);
+
+function decision(id: string): { value: Decision; file: string } | null {
+  if (!DECISION_ID.test(id)) return null;
+  const file = fileForDecision(id);
+  const one = jsonIfPresent(file);
+  if (one !== undefined) {
+    if (!isDecision(one)) throw new Error("A move’s ownership receipt could not be read");
+    return { value: one, file };
+  }
+  const legacy = jsonIfPresent(LEGACY_DECISIONS);
+  if (legacy !== undefined && !isObject(legacy)) throw new Error("Legacy move decisions could not be read");
+  const old = legacy?.[id];
+  if (old === undefined) return null;
+  if (!isDecision(old)) throw new Error("A legacy move decision could not be read");
+  return { value: old, file: LEGACY_DECISIONS };
 }
 
 export function endedFor(id: string, peer: string): Decision | null {
-  const one = decision(id);
+  const one = decision(id)?.value;
   return one && (one.peer === undefined || one.peer === peer) ? one : null;
 }
 
-export const endedAs = (id: string): Decision["as"] | null => decision(id)?.as ?? null;
+export const endedAs = (id: string): Decision["as"] | null => decision(id)?.value.as ?? null;
+export const endedAt = (id: string): number | null => decision(id)?.value.at ?? null;
+export const endedLast = (id: string): string | undefined => decision(id)?.value.last;
 
-/** When a move that came here was switched to, or let go of. */
-export const endedAt = (id: string): number | null => decision(id)?.at ?? null;
-
-/** The newest message of a copy switched to here, as it came. */
-export const endedLast = (id: string): string | undefined => decision(id)?.last;
-
-/** `sessions`: those of the copy (switched to here, or let go of to live on where it came from). `last`:
- * the newest message of one switched to, as it came (what's after it ran here, whatever the clocks say). */
+/** Record a switch or drop before its acknowledgement can go out. */
 export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sessions: readonly string[] = [], last?: string, peer?: string, bundle?: BundleIdentity): void {
-  let kept: Record<string, Decision> = {};
-  try {
-    kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) ?? {};
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const before = kept[id];
-  if (keptFor(before)) {
-    if (before!.as !== as || before!.generation !== bundle?.generation || before!.hash !== bundle?.hash) {
+  if (!DECISION_ID.test(id)) throw new Error("That isn’t a move ID");
+  const before = decision(id);
+  if (before) {
+    if (before.value.as !== as || before.value.generation !== bundle?.generation || before.value.hash !== bundle?.hash) {
       throw new Error("A move’s ownership decision cannot change");
     }
-    syncDurableFile(ENDED_FILE, RUN);
+    syncDurableFile(before.file, RUN);
     return;
   }
-  for (const one of Object.values(kept)) {
-    if (now - one.at >= MOVED_FOR) delete one.sessions;
-  }
-  kept[id] = { as, at: now, ...bundle, ...(sessions.length ? { sessions: [...sessions] } : {}), ...(last ? { last } : {}), ...(peer ? { peer } : {}) };
-  writeDurablePrivate(ENDED_FILE, JSON.stringify(kept), RUN);
+  if (sessions.length) writeDurablePrivate(path.join(HINTS, `${id}.json`), JSON.stringify({ as, at: now, sessions }), RUN);
+  writeDurablePrivate(fileForDecision(id), JSON.stringify({ as, at: now, ...bundle, ...(last ? { last } : {}), ...(peer ? { peer } : {}) }), RUN);
 }
 
-/** A previous rename may be visible after its directory sync failed. Seal it before replying. */
-export const sealDecisions = () => syncDurableFile(ENDED_FILE, RUN);
+/** A rename can be visible after its directory sync failed. Seal the receipt before replying. */
+export function sealDecision(id: string): void {
+  const receipt = decision(id);
+  if (!receipt) throw new Error("A move’s ownership receipt went missing");
+  syncDurableFile(receipt.file, RUN);
+}
 
-/** The conversations of copies here let go of lately (their moves taken back): deleted here, they
- * live on on the computer they came from. */
-export function droppedHere(now = Date.now()): string[] {
+function hintFiles(): string[] {
+  try { return fs.readdirSync(HINTS).filter(name => name.endsWith(".json") && DECISION_ID.test(name.slice(0, -5))); }
+  catch { return []; }
+}
+
+export function compactDecisionHints(now = Date.now()): void {
+  for (const name of hintFiles()) {
+    const file = path.join(HINTS, name);
+    try {
+      const hint = jsonIfPresent(file);
+      if (isDecision(hint) && now - hint.at >= MOVED_FOR) fs.rmSync(file, { force: true });
+    } catch {} // Ownership receipts are independent of these routing hints.
+  }
+}
+
+function sessionsFrom(hint: unknown, as: Decision["as"], now: number): string[] {
+  if (!isDecision(hint) || hint.as !== as || now - hint.at >= MOVED_FOR) return [];
+  const { sessions } = hint as Hint;
+  return Array.isArray(sessions) ? sessions.filter(each => typeof each === "string") : [];
+}
+
+function sessionsDecided(as: Decision["as"], now: number): string[] {
+  const sessions: string[] = [];
+  for (const name of hintFiles()) {
+    try {
+      const hinted = sessionsFrom(jsonIfPresent(path.join(HINTS, name)), as, now);
+      // An interrupted write can leave a hint for an ownership decision not yet recorded.
+      if (hinted.length && decision(name.slice(0, -5))?.value.as === as) sessions.push(...hinted);
+    } catch {}
+  }
   try {
-    const kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, { as?: unknown; at?: unknown; sessions?: unknown }>;
-    return Object.values(kept ?? {}).filter(one => keptFor(one) && one.as === "dropped" && now - (one.at as number) < MOVED_FOR && Array.isArray(one.sessions))
-      .flatMap(one => (one.sessions as unknown[]).filter((each): each is string => typeof each === "string"));
-  } catch {
-    return [];
-  }
+    const legacy = jsonIfPresent(LEGACY_DECISIONS);
+    if (isObject(legacy)) for (const hint of Object.values(legacy)) sessions.push(...sessionsFrom(hint, as, now));
+  } catch {}
+  return sessions;
 }
 
-/** The conversations of copies switched to here in the last two days (`MOVED_FOR`): another computer's
- * agents may write to them as to one listed, even once they're older than the latest the list keeps. */
-export function switchedHere(now = Date.now()): Set<string> {
-  try {
-    const kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, { as?: unknown; at?: unknown; sessions?: unknown }>;
-    return new Set(Object.values(kept ?? {}).filter(one => one.as === "switched" && typeof one.at === "number" && now - one.at < MOVED_FOR && Array.isArray(one.sessions))
-      .flatMap(one => (one.sessions as unknown[]).filter((each): each is string => typeof each === "string")));
-  } catch {
-    return new Set();
-  }
-}
+/** Where copy sessions were dropped or switched in the last two days, for peer routing. */
+export const droppedHere = (now = Date.now()): string[] => sessionsDecided("dropped", now);
+export const switchedHere = (now = Date.now()): Set<string> => new Set(sessionsDecided("switched", now));

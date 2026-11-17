@@ -1061,19 +1061,22 @@ the switch must name the same generation and hash. Older offers and their replie
 or commit the current bundle. Both computers must agree before the source sends any parts.
 
 1. The source records the previous pause before writing a hold owned by this move. A failed move
-   can release only its own hold. The destination sets up a held copy and reports the verified
-   bundle. The source writes and syncs its switch record and directory before requesting a switch
-   for that bundle. It keeps the original held while awaiting the destination's decision.
+   can release only its own hold. Group holds and their transcripts are synced before a copy can
+   be sent. The source checks the inboxes of every conversation it carries and refuses an
+   unreadable queue. The destination accounts for every queued message and syncs the imported
+   group or bot folder before reporting arrival. The source syncs its switch record before it
+   requests a switch for that bundle and keeps its original held while waiting for the decision.
 2. The destination writes and syncs its decision to own that bundle before activating the group,
    queues or wake-ups. It resumes activation after a restart. A queue send keeps its pending
    entry and payload until the engine confirms the same message ID in its inbox or conversation.
-   The coding agents' bridge seals accepted prompts to disk before answering `prompt-receipt`.
-   Committed copies are protected against
-   `drop`, age limits and peer removal, including while activation is unfinished.
+   Enqueuing on a paused queue must sync both before reporting success. The coding agents' bridge
+   also syncs accepted prompts before answering `prompt-receipt`. Activation retries sync the
+   restored pause state before moving on, including when an earlier unlink is already visible.
+   Committed copies are protected against `drop`, age limits and peer removal during activation.
 3. Once activation completes, the destination syncs its final decision before sending `switched`
-   for that generation and hash. It keeps the decision
-   indefinitely, so it can answer again even if the source was offline for years. A late or
-   repeated offer cannot replace that copy. An older unbound switch can ask for a prior decision
+   for that generation and hash. It keeps one receipt per move ID indefinitely, so it can answer
+   again even if the source was offline for years. Short-lived session routing hints are compacted
+   separately. A late or repeated offer cannot replace that copy. An older unbound switch can ask for a prior decision
    with `decision?`, which cannot start a copy that was never committed.
 4. The source retires its original permanently on `switched`. Backup and cleanup are retried
    separately. If they are blocked, the receipt reports success with cleanup pending. Source
@@ -1084,7 +1087,8 @@ is recorded before releasing the hold, and any held copy at the destination is d
 destination that durably records that it never switched answers `dropped {neverSwitched: true}`
 for the matching bundle.
 That proof is the only way a source that has requested a switch can resume the original. Unknown
-moves give no ownership decision. An unanswered switch is sent again, and removing the computer
+moves give no ownership decision. An unanswered switch is sent again on an elapsed-time deadline,
+even if the wall clock stops or changes. Removing the computer
 does not release the hold. Legacy records which might contain an already activated copy are
 preserved until ownership can be reconciled. A pre-switch drop that cannot finish keeps the copy
 held while cleanup is retried. One thing moves once at a time, whoever asks.

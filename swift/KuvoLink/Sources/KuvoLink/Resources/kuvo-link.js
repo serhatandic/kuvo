@@ -83,6 +83,21 @@ function syncDurableFile(file, through = path.dirname(file)) {
       throw new Error("The sync must stop at a parent of the file");
   }
 }
+function syncDurableTree(folder, through = path.dirname(folder)) {
+  function syncEntry(entry) {
+    const stat = fs.lstatSync(entry);
+    if (stat.isSymbolicLink())
+      return;
+    if (stat.isDirectory())
+      for (const child of fs.readdirSync(entry))
+        syncEntry(path.join(entry, child));
+    else if (!stat.isFile())
+      throw new Error("An imported entry is not a file or folder");
+    syncPath(entry);
+  }
+  syncEntry(folder);
+  syncDurableFile(path.dirname(folder), through);
+}
 function writeDurablePrivate(file, text, through = path.dirname(file)) {
   const folder = path.dirname(file);
   fs.mkdirSync(folder, { recursive: true, mode: 448 });
@@ -153,8 +168,10 @@ async function holdAwaiting(lock, stale, wait) {
   }
   return false;
 }
-function locked(lock, work, { stale = 1e4, wait = 3000 } = {}) {
+function locked(lock, work, { stale = 1e4, wait = 3000, required = false } = {}) {
   const held = hold(lock, stale, wait);
+  if (required && !held)
+    throw new Error("Could not lock the file for writing");
   try {
     return work();
   } finally {
@@ -1321,58 +1338,101 @@ function forgetMovedAway(sessions, now = Date.now()) {
   writePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session))));
   movesChanged();
 }
-function decision(id) {
+function jsonIfPresent(file) {
   try {
-    const one = JSON.parse(fs15.readFileSync(ENDED_FILE, "utf8"))?.[id];
-    return keptFor(one) ? one : null;
-  } catch {
-    return null;
+    return JSON.parse(fs15.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return;
+    throw error;
   }
 }
+function decision(id) {
+  if (!DECISION_ID.test(id))
+    return null;
+  const file = fileForDecision(id);
+  const one = jsonIfPresent(file);
+  if (one !== undefined) {
+    if (!isDecision(one))
+      throw new Error("A move’s ownership receipt could not be read");
+    return { value: one, file };
+  }
+  const legacy = jsonIfPresent(LEGACY_DECISIONS);
+  if (legacy !== undefined && !isObject(legacy))
+    throw new Error("Legacy move decisions could not be read");
+  const old = legacy?.[id];
+  if (old === undefined)
+    return null;
+  if (!isDecision(old))
+    throw new Error("A legacy move decision could not be read");
+  return { value: old, file: LEGACY_DECISIONS };
+}
 function endedFor(id, peer) {
-  const one = decision(id);
+  const one = decision(id)?.value;
   return one && (one.peer === undefined || one.peer === peer) ? one : null;
 }
 function noteEnded(id, as, now = Date.now(), sessions = [], last, peer, bundle) {
-  let kept = {};
-  try {
-    kept = JSON.parse(fs15.readFileSync(ENDED_FILE, "utf8")) ?? {};
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw error;
-  }
-  const before = kept[id];
-  if (keptFor(before)) {
-    if (before.as !== as || before.generation !== bundle?.generation || before.hash !== bundle?.hash) {
+  if (!DECISION_ID.test(id))
+    throw new Error("That isn’t a move ID");
+  const before = decision(id);
+  if (before) {
+    if (before.value.as !== as || before.value.generation !== bundle?.generation || before.value.hash !== bundle?.hash) {
       throw new Error("A move’s ownership decision cannot change");
     }
-    syncDurableFile(ENDED_FILE, RUN);
+    syncDurableFile(before.file, RUN);
     return;
   }
-  for (const one of Object.values(kept)) {
-    if (now - one.at >= MOVED_FOR)
-      delete one.sessions;
-  }
-  kept[id] = { as, at: now, ...bundle, ...sessions.length ? { sessions: [...sessions] } : {}, ...last ? { last } : {}, ...peer ? { peer } : {} };
-  writeDurablePrivate(ENDED_FILE, JSON.stringify(kept), RUN);
+  if (sessions.length)
+    writeDurablePrivate(path14.join(HINTS, `${id}.json`), JSON.stringify({ as, at: now, sessions }), RUN);
+  writeDurablePrivate(fileForDecision(id), JSON.stringify({ as, at: now, ...bundle, ...last ? { last } : {}, ...peer ? { peer } : {} }), RUN);
 }
-function droppedHere(now = Date.now()) {
+function sealDecision(id) {
+  const receipt = decision(id);
+  if (!receipt)
+    throw new Error("A move’s ownership receipt went missing");
+  syncDurableFile(receipt.file, RUN);
+}
+function hintFiles() {
   try {
-    const kept = JSON.parse(fs15.readFileSync(ENDED_FILE, "utf8"));
-    return Object.values(kept ?? {}).filter((one) => keptFor(one) && one.as === "dropped" && now - one.at < MOVED_FOR && Array.isArray(one.sessions)).flatMap((one) => one.sessions.filter((each) => typeof each === "string"));
+    return fs15.readdirSync(HINTS).filter((name) => name.endsWith(".json") && DECISION_ID.test(name.slice(0, -5)));
   } catch {
     return [];
   }
 }
-function switchedHere(now = Date.now()) {
-  try {
-    const kept = JSON.parse(fs15.readFileSync(ENDED_FILE, "utf8"));
-    return new Set(Object.values(kept ?? {}).filter((one) => one.as === "switched" && typeof one.at === "number" && now - one.at < MOVED_FOR && Array.isArray(one.sessions)).flatMap((one) => one.sessions.filter((each) => typeof each === "string")));
-  } catch {
-    return new Set;
+function compactDecisionHints(now = Date.now()) {
+  for (const name of hintFiles()) {
+    const file = path14.join(HINTS, name);
+    try {
+      const hint = jsonIfPresent(file);
+      if (isDecision(hint) && now - hint.at >= MOVED_FOR)
+        fs15.rmSync(file, { force: true });
+    } catch {}
   }
 }
-var MOVES, MOVED_FILE, MOVED_FOR, fileOf = (id) => path14.join(MOVES, `${id}.json`), bundleOf = (id) => path14.join(MOVES, id), fits = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, ENDED_FILE, keptFor = (one) => typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped"), endedAs = (id) => decision(id)?.as ?? null, endedAt = (id) => decision(id)?.at ?? null, endedLast = (id) => decision(id)?.last, sealDecisions = () => syncDurableFile(ENDED_FILE, RUN);
+function sessionsFrom(hint, as, now) {
+  if (!isDecision(hint) || hint.as !== as || now - hint.at >= MOVED_FOR)
+    return [];
+  const { sessions } = hint;
+  return Array.isArray(sessions) ? sessions.filter((each) => typeof each === "string") : [];
+}
+function sessionsDecided(as, now) {
+  const sessions = [];
+  for (const name of hintFiles()) {
+    try {
+      const hinted = sessionsFrom(jsonIfPresent(path14.join(HINTS, name)), as, now);
+      if (hinted.length && decision(name.slice(0, -5))?.value.as === as)
+        sessions.push(...hinted);
+    } catch {}
+  }
+  try {
+    const legacy = jsonIfPresent(LEGACY_DECISIONS);
+    if (isObject(legacy))
+      for (const hint of Object.values(legacy))
+        sessions.push(...sessionsFrom(hint, as, now));
+  } catch {}
+  return sessions;
+}
+var MOVES, MOVED_FILE, MOVED_FOR, fileOf = (id) => path14.join(MOVES, `${id}.json`), bundleOf = (id) => path14.join(MOVES, id), fits = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path14.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
 var init_records = __esm(() => {
   init_files2();
   init_home();
@@ -1381,7 +1441,10 @@ var init_records = __esm(() => {
   MOVED_FOR = 2 * 24 * 3600000;
   moveFollowers = new Set;
   waitingFor = new Set;
-  ENDED_FILE = path14.join(MOVES, "ended.json");
+  LEGACY_DECISIONS = path14.join(MOVES, "ended.json");
+  DECISIONS = path14.join(MOVES, "decisions");
+  HINTS = path14.join(MOVES, "decision-hints");
+  DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
 });
 
 // box/src/link/relay/dropped.ts
@@ -10694,17 +10757,23 @@ var keptState = (value) => {
 };
 var showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length);
 var RESUMED_FOR = 60000;
-function readQueues(files) {
+function readQueues(files, strict = false) {
   let all = {};
   try {
     all = JSON.parse(fs23.readFileSync(files.file, "utf8"));
-  } catch {}
+  } catch (error) {
+    if (strict && error.code !== "ENOENT")
+      throw error;
+  }
+  if (strict && (!isObject(all) || Object.values(all).some((state) => !isObject(state) || state.waiting !== undefined && (!Array.isArray(state.waiting) || keptWaiting(state.waiting).length !== state.waiting.length)))) {
+    throw new Error("The queue index could not be read");
+  }
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
-function changeQueue(files, session, change, changed, durable = false) {
+function changeQueue(files, session, change, changed, reseal = false) {
   let made = false;
   const after = locked(files.lock, () => {
-    const all = readQueues(files);
+    const all = readQueues(files, true);
     const before = all[session] ?? { paused: false, held: [] };
     const state = keptState(change(before));
     state.held = [...new Set(state.held)];
@@ -10713,7 +10782,7 @@ function changeQueue(files, session, change, changed, durable = false) {
     if (!state.cameHeld?.length)
       delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made && !durable)
+    if (!made && !(typeof reseal === "function" ? reseal() : reseal))
       return state;
     all[session] = state;
     for (const [id, each] of Object.entries(all)) {
@@ -10729,14 +10798,9 @@ function changeQueue(files, session, change, changed, durable = false) {
       if (!showsQueue(each) && !each.resumed && !each.arriving)
         delete all[id];
     }
-    if (durable)
-      writeDurablePrivate(files.file, JSON.stringify(all));
-    else
-      try {
-        writePrivate(files.file, JSON.stringify(all));
-      } catch {}
+    writeDurablePrivate(files.file, JSON.stringify(all));
     return state;
-  });
+  }, { required: true });
   if (made)
     changed?.();
   return after;
@@ -10755,14 +10819,14 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
   changeQueue(files, session, (state) => {
     if (!state.paused && !holds)
       return state;
-    writePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }));
+    writeDurablePrivate(waitingFile(files, message.id), JSON.stringify(keptText === undefined ? message : { ...message, text: keptText }), path21.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
     const keyword = typeof parts?.keyword === "string" ? parts.keyword : undefined;
     const waiting = { id: message.id, ...from ? { from } : {}, text: words ?? message.text, ...names.length ? { files: names } : {}, ...keyword ? { keyword } : {}, at: Date.now() };
     return place({ ...state, waiting: (state.waiting ?? []).filter((each) => each.id !== message.id) }, waiting);
-  }, changed);
+  }, changed, () => kept);
   return kept;
 }
 
@@ -10784,18 +10848,24 @@ function swapHoldsFor(target) {
     return true;
   }
 }
-var readQueues2 = () => readQueues(FILES);
+var readQueues2 = (strict = false) => readQueues(FILES, strict);
 var queueOf = (session) => readQueues2()[session] ?? { paused: false, held: [] };
 var queueFollowers = new Set;
 var tellFollowers = () => {
   for (const tell of queueFollowers)
     tell();
 };
-var changeQueue2 = (session, change, durable = false) => changeQueue(FILES, session, change, tellFollowers, durable);
+var changeQueue2 = (session, change, reseal = false) => changeQueue(FILES, session, change, tellFollowers, reseal);
 var address = (session) => encodeURIComponent(session);
 async function inboxOf(target, session, patience) {
   const answer = await asked(target, "GET", `api/session/${address(session)}/inbox`, undefined, patience);
   return Array.isArray(answer?.data) ? answer.data.filter((item) => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue")) : [];
+}
+async function moveInbox(target, session) {
+  const inbox = await call(target, "GET", `/api/session/${address(session)}/inbox`, undefined, AbortSignal.timeout(1e4));
+  if (!Array.isArray(inbox) || !inbox.every((item) => isObject(item) && typeof item.id === "string" && (item.delivery === "steer" || item.delivery === "queue")))
+    throw new Error("The inbox could not be read for a move");
+  return inbox;
 }
 async function isRunning(target, session) {
   const active = (await asked(target, "GET", "api/session/active"))?.data ?? {};
@@ -10880,12 +10950,12 @@ function takeWaiting(session, item, resume = false, inbox = []) {
   fs24.rmSync(waitingFile2(shown.id), { force: true });
   return { shown, message, held, ...before ? { before } : {} };
 }
-function waitingPayload(id) {
+function waitingPayload(id, strict = false) {
   let whole = null;
   try {
     whole = JSON.parse(fs24.readFileSync(waitingFile2(id), "utf8"));
   } catch {}
-  return isObject(whole) && typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue") ? { id, text: whole.text, delivery: whole.delivery, ...Array.isArray(whole.files) ? { files: whole.files } : {}, ...isObject(whole.metadata) ? { metadata: whole.metadata } : {} } : null;
+  return isObject(whole) && (!strict || whole.id === id && (whole.files === undefined || Array.isArray(whole.files))) && typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue") ? { id, text: whole.text, delivery: whole.delivery, ...Array.isArray(whole.files) ? { files: whole.files } : {}, ...isObject(whole.metadata) ? { metadata: whole.metadata } : {} } : null;
 }
 function carryQueue(from, to, renamed) {
   const again = locked(FILES.lock, () => {
@@ -10971,70 +11041,96 @@ var fileNamesOf = (carried) => carried.map((file) => file.name ?? "file");
 var BASE64_DATA = /^data:[^,]*;base64,/;
 
 class CantCarry extends Error {
+  unreadable;
+  constructor(message, unreadable = false) {
+    super(message);
+    this.unreadable = unreadable;
+  }
 }
 async function packQueues(target, sessions) {
-  const all = readQueues2();
+  const all = readQueues2(true);
   const packed = {};
   for (const session of sessions) {
     const state = all[session];
+    const inbox = await moveInbox(target, session);
+    if (!state?.paused && inbox.length)
+      throw new CantCarry(session);
     if (!state || !state.paused && !state.waiting?.length)
       continue;
-    const inbox = state.paused ? await inboxOf(target, session) : [];
+    const indexed = state.waiting ?? [];
+    if (new Set(indexed.map((item) => item.id)).size !== indexed.length)
+      throw new CantCarry(session);
     const renamed = {};
-    const waiting = orderOf(inbox, state).flatMap((id) => {
+    const waiting = [...new Set(orderOf(inbox, state))].map((id) => {
       const shown = state.waiting?.find((each) => each.id === id);
       if (shown) {
-        let message = null;
-        try {
-          message = JSON.parse(fs24.readFileSync(waitingFile2(id), "utf8"));
-        } catch {}
-        if (!isObject(message) || !Array.isArray(message.files))
-          return [{ shown, message }];
+        const message = waitingPayload(id, true);
+        if (!message)
+          throw new CantCarry(id, true);
+        if (!message.files)
+          return { shown, message };
         const carried = carriedFiles(message.files);
         const { files: _names, ...rest } = shown;
-        return [{ shown: { ...rest, ...carried.length ? { files: fileNamesOf(carried) } : {} }, message: { ...message, files: carried } }];
+        return { shown: { ...rest, ...carried.length ? { files: fileNamesOf(carried) } : {} }, message: { ...message, files: carried } };
       }
       const held = inbox.find((item) => item.id === id);
       const text = typeof held?.text === "string" ? held.text : typeof held?.payload?.text === "string" ? held.payload.text : null;
-      if (!held)
-        return [];
-      if (held.type !== "user" || text === null)
+      if (!held || held.type !== "user" || text === null)
         throw new CantCarry(id);
       const ownID = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : renamed[id] = `msg_${crypto11.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
       const carried = carriedFiles(held.payload?.files);
       const { from, words } = shownOfHeld(text);
-      return [{
+      return {
         shown: { id: ownID, ...from ? { from } : {}, text: words ?? text, ...carried.length ? { files: fileNamesOf(carried) } : {}, at: Date.now() },
         message: { id: ownID, text, delivery: "queue", ...carried.length ? { files: carried } : {}, ...isObject(held.payload?.metadata) ? { metadata: held.payload.metadata } : {} }
-      }];
+      };
     });
     const ids = new Set(waiting.map((each) => each.shown.id));
+    if (ids.size !== waiting.length)
+      throw new CantCarry(session);
     packed[session] = { paused: state.paused, held: state.held.map((id) => renamed[id] ?? id).filter((id) => ids.has(id)), waiting };
   }
   return packed;
 }
 function unpackQueues(carried, sessions) {
-  if (!isObject(carried))
+  if (carried === undefined)
     return [];
+  if (!isObject(carried))
+    throw new CantCarry("queues");
   const goOn = [];
-  for (const session of sessions) {
-    const queue = carried[session];
-    if (!isObject(queue))
-      continue;
-    forgetQueue(session);
-    const waiting = [];
-    for (const each of Array.isArray(queue.waiting) ? queue.waiting : []) {
+  const known = new Set(sessions);
+  const seen = new Set;
+  const prepared = Object.entries(carried).map(([session, queue]) => {
+    if (!known.has(session) || !isObject(queue) || typeof queue.paused !== "boolean" || !Array.isArray(queue.waiting) || !Array.isArray(queue.held))
+      throw new CantCarry(session);
+    const waiting = queue.waiting.map((each) => {
       const [shown] = keptWaiting([isObject(each) ? each.shown : null]);
       const message = isObject(each) && isObject(each.message) ? each.message : null;
-      if (!shown || !message || typeof message.text !== "string" || waiting.some((other) => other.id === shown.id))
-        continue;
-      const brought = (Array.isArray(message.files) ? message.files : []).flatMap((file) => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri) ? [{ uri: file.uri, ...typeof file.name === "string" ? { name: file.name } : {} }] : []);
-      writeDurablePrivate(waitingFile2(shown.id), JSON.stringify({ id: shown.id, text: message.text, delivery: message.delivery === "steer" ? "steer" : "queue", ...brought.length ? { files: brought } : {}, ...isObject(message.metadata) ? { metadata: message.metadata } : {} }), RUN);
-      waiting.push(shown);
-    }
-    const held = (Array.isArray(queue.held) ? queue.held : []).filter((id) => typeof id === "string" && waiting.some((each) => each.id === id));
-    changeQueue2(session, () => ({ paused: true, held, ...waiting.length ? { waiting } : {} }), true);
-    if (queue.paused !== true)
+      if (!shown || !message || message.id !== shown.id || typeof message.text !== "string" || message.delivery !== "steer" && message.delivery !== "queue" || seen.has(shown.id))
+        throw new CantCarry(session);
+      seen.add(shown.id);
+      const brought = message.files ?? [];
+      if (!Array.isArray(brought) || !brought.every((file) => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri)))
+        throw new CantCarry(session);
+      return { shown, message: {
+        id: shown.id,
+        text: message.text,
+        delivery: message.delivery,
+        ...brought.length ? { files: brought } : {},
+        ...isObject(message.metadata) ? { metadata: message.metadata } : {}
+      } };
+    });
+    const ids = new Set(waiting.map((each) => each.shown.id));
+    if (!queue.held.every((id) => typeof id === "string" && ids.has(id)))
+      throw new CantCarry(session);
+    return { session, waiting, held: queue.held, paused: queue.paused };
+  });
+  for (const { session, waiting, held, paused } of prepared) {
+    forgetQueue(session);
+    for (const { shown, message } of waiting)
+      writeDurablePrivate(waitingFile2(shown.id), JSON.stringify(message), RUN);
+    changeQueue2(session, () => ({ paused: true, held, waiting: waiting.map((each) => each.shown) }), true);
+    if (!paused)
       goOn.push(session);
   }
   return goOn;
@@ -36439,7 +36535,7 @@ import path121 from "node:path";
 init_files2();
 init_home();
 import path120 from "node:path";
-var keptFor2 = 24 * 60 * 60000;
+var keptFor = 24 * 60 * 60000;
 
 class UsageDeliveryJournal {
   file;
@@ -36466,7 +36562,7 @@ class UsageDeliveryJournal {
       locked(this.file + ".lock", () => {
         const ids = { ...this.read(), ...this.dirty };
         const now = this.now();
-        const current = Object.entries(ids).map(([key, at]) => [key, Math.min(at, now)]).filter(([, at]) => now - at < keptFor2);
+        const current = Object.entries(ids).map(([key, at]) => [key, Math.min(at, now)]).filter(([, at]) => now - at < keptFor);
         writePrivate(this.file, JSON.stringify(Object.fromEntries(current)));
         this.dirty = {};
       });
@@ -37451,6 +37547,24 @@ var PART_BYTES = 30000;
 var IN_FLIGHT = 16;
 var PART_AGAIN = 20000;
 var STEP_AGAIN = 60000;
+var retryClocks = new Map;
+var retryStep = (record) => `${record.stage}/${record.step}/${record.generation}/${Boolean(record.activation)}/${Boolean(record.dropping)}`;
+var retryStamp = (record) => record.againAt ?? record.sentAt ?? 0;
+function markedRetry(record, ticks = performance.now()) {
+  retryClocks.set(record.id, { step: retryStep(record), stamp: retryStamp(record), since: ticks });
+}
+function retryDue(record, now, ticks, delay = STEP_AGAIN) {
+  const stamp = retryStamp(record);
+  if (stamp > now)
+    return true;
+  const step = retryStep(record);
+  let clock = retryClocks.get(record.id);
+  if (!clock || clock.step !== step || clock.stamp !== stamp) {
+    clock = { step, stamp, since: ticks - (now - stamp) };
+    retryClocks.set(record.id, clock);
+  }
+  return ticks - clock.since >= delay;
+}
 var NO_ANSWER = 30000;
 var QUIET_AT_MOST = 10 * 60000;
 var DROP_AT_MOST = 24 * 3600000;
@@ -37518,6 +37632,7 @@ function readOutcome(id) {
   }
 }
 var OUTCOME_KEPT = 90 * 24 * 3600000;
+var lastDecisionSweep = -Infinity;
 function ended2(id, outcome) {
   writeDurablePrivate(outcomeFile(id), JSON.stringify(outcome), path126.dirname(MOVES));
   for (const resolve of waiting.get(id) ?? [])
@@ -37874,7 +37989,17 @@ function hold3(record) {
 function unhold(record, folder = record.folder) {
   if (!folder)
     return;
-  const owner = moveHold(pausedText(folder));
+  const paused = pausedText(folder);
+  const owner = moveHold(paused);
+  if (!owner) {
+    if (record.placed || fs122.existsSync(folder)) {
+      if (paused === null)
+        syncDurableFile(folder, folder);
+      else
+        syncDurableFile(PAUSED2(folder));
+    }
+    return;
+  }
   if (owner !== record.id && !(owner === "moving" && !record.pauseRecorded && !readMoves(true).some((other) => other.id !== record.id && other.thing === record.thing && !other.failed)))
     return;
   if (record.wasPaused)
@@ -37898,9 +38023,21 @@ async function activeIn(target, sessions, signal) {
 async function settle4(target, sessions, name) {
   let busy = false;
   for (let tries = 0;tries < SETTLE_FOR; tries++) {
-    busy = await activeIn(target, sessions);
-    const inbox = sessions[0] && !queueOf(sessions[0]).paused ? await call(target, "GET", `/api/session/${encodeURIComponent(sessions[0])}/inbox`, undefined, engineWait()).catch(() => []) : [];
-    if (!busy && !(Array.isArray(inbox) && inbox.length))
+    const active = await call(target, "GET", "/api/session/active", undefined, engineWait());
+    if (Array.isArray(active))
+      busy = sessions.some((session) => active.includes(session));
+    else if (isObject(active))
+      busy = sessions.some((session) => (session in active));
+    else
+      throw new Error("Active conversations could not be read for a move");
+    const queues = readQueues2(true);
+    let waiting = false;
+    for (const session of sessions) {
+      const inbox = await moveInbox(target, session);
+      if (!queues[session]?.paused && inbox.length)
+        waiting = true;
+    }
+    if (!busy && !waiting)
       return;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
@@ -37922,7 +38059,9 @@ function refuseMove(id, error) {
 }
 var fingerprint = (conversation, queues) => `${conversation}.${crypto42.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).digest("base64url")}`;
 var queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
-  throw error instanceof CantCarry ? new Refused(say.waiting(name)) : error;
+  if (error instanceof CantCarry)
+    throw new Refused(error.unreadable ? `A message waiting for ${name} couldn’t be read. The move stopped. Check the queue before trying again.` : say.waiting(name));
+  throw error;
 });
 var outgoing = new Map;
 async function carryOn(id) {
@@ -37974,6 +38113,7 @@ async function carryOn(id) {
         throw new Refused(`${record.name}’s goal couldn’t be checked on ${HERE}. Try again in a moment.`);
     }
     const target = record.lane ? readBridgeFile() : readEngineFile();
+    const known = new Set(record.sessions);
     await settle4(target, record.sessions, record.name);
     const running = runningOf(record.sessions);
     if (running)
@@ -38002,6 +38142,17 @@ async function carryOn(id) {
       contents.exports = exports;
       record.sessions = idsOf(exports);
       digest = conversationHash(exports);
+    }
+    if (record.sessions.some((session) => !known.has(session))) {
+      if (takenBack())
+        return;
+      changeMove(id, (each) => {
+        each.sessions = record.sessions;
+      });
+      await settle4(target, record.sessions, record.name);
+      const background = runningOf(record.sessions);
+      if (background)
+        throw new Refused(say.background(record.name, background));
     }
     const worked = record.kind === "bot" ? record.folder : CHATS;
     contents.was = { place: plainName(readLink()?.name ?? "") || (IS_MAC ? "a Mac" : "a machine"), ...worked ? { folder: worked } : {} };
@@ -38103,7 +38254,8 @@ async function checkHere(sender, given, id) {
 }
 var bundleIdentity = ({ generation, hash }) => ({ ...generation === undefined ? {} : { generation }, ...hash === undefined ? {} : { hash } });
 var sameBundle = (record, given) => record.generation === given.generation && (record.generation === undefined ? given.hash === undefined || record.hash === given.hash : record.hash === given.hash);
-function offer(record) {
+function offer(record, ticks = performance.now()) {
+  markedRetry(record, ticks);
   tell2(record.peer, { op: "offer", safeSwitch: true, id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}, from: record.from, ...record.members ? { members: record.members } : {}, ...record.lane ? { lane: true } : {} });
 }
 function sendParts(record, ticks = performance.now()) {
@@ -38180,8 +38332,10 @@ async function arrived(record, placed) {
   const sending = outgoing.get(record.id);
   if (sending)
     sending.since = performance.now();
-  if (now)
+  if (now) {
+    markedRetry(now);
     tell2(now.peer, { op: "switch", safeSwitch: true, id: now.id, ...bundleIdentity(now) });
+  }
 }
 function confirmedOutcome(record, pending) {
   const note = [record.note, pending ? say.cleanupPending : undefined].filter(Boolean).join(" ");
@@ -38196,6 +38350,7 @@ async function finish2(id) {
   });
   if (!record)
     return;
+  markedRetry(record);
   if (record.kind === "bot")
     noteBotsChanged();
   outgoing.delete(id);
@@ -38255,6 +38410,7 @@ async function failSource(record, message, status, dropThere) {
     each.failedStatus = status;
     each.step = dropThere ? "drop" : "done";
     each.sentAt = each.dropSince = Date.now();
+    each.againAt = undefined;
   });
   if (failed)
     await settleFailure(failed);
@@ -38276,6 +38432,7 @@ async function settleFailure(record) {
   if (waitingFor.delete(id))
     movesChanged();
   if (dropThere) {
+    markedRetry(record);
     tell2(record.peer, { op: "drop", id, ...bundleIdentity(record) });
     try {
       fs122.rmSync(bundleOf(id), { recursive: true, force: true });
@@ -38306,6 +38463,7 @@ function forgetMovesInMemory() {
   loggedStuck.clear();
   missing.clear();
   orphans.clear();
+  retryClocks.clear();
   lookingSince = performance.now();
 }
 async function takeOffer2(sender, given) {
@@ -38568,7 +38726,14 @@ async function bringIn(record, signal) {
     await importAll(engine, contents.exports, directory, signal);
     infos = contents.exports.flatMap((exported) => isObject(exported) && isObject(exported.info) ? [exported.info] : []);
   }
-  const goOn = unpackQueues(contents.queues, sessions);
+  let goOn;
+  try {
+    goOn = unpackQueues(contents.queues, sessions);
+  } catch (error) {
+    if (error instanceof CantCarry)
+      throw new NotTaken("Some messages waiting to be sent didn’t come through. Try again.");
+    throw error;
+  }
   if (goOn.length)
     changeMove(record.id, (each) => {
       each.queuesGoOn = goOn;
@@ -38581,6 +38746,8 @@ async function bringIn(record, signal) {
   }
   if (record.kind === "bot" && place)
     dropOwnServers(place);
+  if (folder)
+    syncDurableTree(place, path126.dirname(path126.dirname(place)));
   fs122.rmSync(path126.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
   return sessions;
 }
@@ -38717,11 +38884,13 @@ async function completeActivation(id) {
   if (decision) {
     if (decision.as !== "switched" || !sameBundle(record, bundleIdentity(decision)))
       throw new Error("Move ownership conflicts with its activation record");
-    sealDecisions();
+    sealDecision(id);
   } else {
-    changeMove(id, (each) => {
+    const pending = changeMove(id, (each) => {
       each.sentAt = Date.now();
     });
+    if (pending)
+      markedRetry(pending);
     await switchHere(record);
     noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record));
   }
@@ -38735,7 +38904,7 @@ function answerDecision(sender, id, request) {
   const decision = endedFor(id, sender.key);
   if (!decision || !sameBundle(decision, request))
     return;
-  sealDecisions();
+  sealDecision(id);
   const bundle = bundleIdentity(decision);
   if (decision.as === "switched")
     tell2(sender.key, { op: "switched", id, ...bundle });
@@ -38943,11 +39112,13 @@ async function moveMail(sender, given, id) {
         state.window = Math.min(IN_FLIGHT, (state.window ?? IN_FLIGHT) + 1);
       const of = Math.ceil((mine.size ?? 0) / PART_BYTES);
       if (state.got.size === of) {
-        changeMove(id, (each) => {
+        const pending = changeMove(id, (each) => {
           each.sent = each.size;
           each.step = "arrive";
           each.sentAt = Date.now();
         });
+        if (pending)
+          markedRetry(pending);
         state.since = performance.now();
       } else {
         if (state.got.size % 32 === 0)
@@ -39012,7 +39183,10 @@ var orphans = new Map;
 var ORPHAN_AFTER = 2 * CARRY_WAIT;
 function keepMoving(now = Date.now(), ticks = performance.now()) {
   const records = readMoves();
-  const retryDue = (sent, delay) => sent > now || now - sent > delay;
+  if (ticks - lastDecisionSweep >= 3600000) {
+    lastDecisionSweep = ticks;
+    compactDecisionHints(now);
+  }
   noteWaiting(records, now, ticks);
   keepLeft(now);
   tellMoving(hostOf3(), now);
@@ -39036,6 +39210,9 @@ function keepMoving(now = Date.now(), ticks = performance.now()) {
     folders = fs122.readdirSync(MOVES, { withFileTypes: true }).filter((each) => each.isDirectory() && each.name.startsWith("mov_")).map((each) => each.name);
   } catch {}
   const known = new Set(records.map((record) => record.id));
+  for (const id of retryClocks.keys())
+    if (!known.has(id))
+      retryClocks.delete(id);
   for (const name of [...orphans.keys()])
     if (!folders.includes(name) || known.has(name))
       orphans.delete(name);
@@ -39052,7 +39229,7 @@ function keepMoving(now = Date.now(), ticks = performance.now()) {
     }
   }
   for (const record of records) {
-    const due = retryDue(record.againAt ?? record.sentAt ?? 0, STEP_AGAIN);
+    const due = retryDue(record, now, ticks);
     const sent = outgoing.get(record.id);
     if (record.role === "to" && record.activation) {
       if (due && !queues.has(record.id))
@@ -39080,10 +39257,12 @@ function keepMoving(now = Date.now(), ticks = performance.now()) {
     if (record.role === "to") {
       if (record.dropping) {
         const late = now - (record.dropSince ?? record.started) > HELD_AT_MOST;
-        if (retryDue(record.sentAt ?? 0, late ? DROP_AGAIN_LATE : STEP_AGAIN)) {
-          changeMove(record.id, (each) => {
+        if (retryDue(record, now, ticks, late ? DROP_AGAIN_LATE : STEP_AGAIN)) {
+          const pending = changeMove(record.id, (each) => {
             each.sentAt = now;
           });
+          if (pending)
+            markedRetry(pending, ticks);
           inTurn2(record.id, () => drop(record.id)).catch((error) => {
             if (!late || loggedStuck.has(record.id))
               return;
@@ -39120,6 +39299,7 @@ function keepMoving(now = Date.now(), ticks = performance.now()) {
           each.step = "switch";
         });
         if (pending) {
+          markedRetry(pending, ticks);
           if (pending.generation === undefined)
             tell2(record.peer, { op: "decision?", id: record.id });
           else
@@ -39143,17 +39323,20 @@ function keepMoving(now = Date.now(), ticks = performance.now()) {
         if (record.tries === 0 && sentAgo > NO_ANSWER && !sent?.got.size) {
           inTurn2(record.id, () => takeBack2(record.id, say.notConnected(nameOf5(record.peer)), 503)).catch(() => {});
         } else if (due) {
-          changeMove(record.id, (each) => {
+          const pending = changeMove(record.id, (each) => {
             each.againAt = now;
           });
-          offer(record);
+          if (pending)
+            offer(pending, ticks);
         }
         break;
       case "arrive":
         if (due) {
-          changeMove(record.id, (each) => {
+          const pending = changeMove(record.id, (each) => {
             each.againAt = now;
           });
+          if (pending)
+            markedRetry(pending, ticks);
           tell2(record.peer, { op: "arrive", id: record.id, ...bundleIdentity(record) });
         }
         break;
@@ -39165,9 +39348,11 @@ function keepMoving(now = Date.now(), ticks = performance.now()) {
         break;
       case "drop":
         if (due) {
-          changeMove(record.id, (each) => {
+          const pending = changeMove(record.id, (each) => {
             each.sentAt = now;
           });
+          if (pending)
+            markedRetry(pending, ticks);
           tell2(record.peer, { op: "drop", id: record.id, ...bundleIdentity(record) });
         }
         break;
@@ -45459,7 +45644,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2efa42e3e5f1";
+var BRIDGE_VERSION = "3bcf650d3772";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -63464,8 +63649,13 @@ async function* added({ json }, target, session, given, written, words) {
   const from = typeof given.from === "string" && given.from.trim() ? given.from.trim().slice(0, 80) : undefined;
   const message = { id, text: written.text, ...written.files?.length ? { files: written.files } : {}, delivery, ...written.metadata ? { metadata: written.metadata } : {} };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
-  if (await keepWaitingBefore(target, session, message, { from, words }, before))
-    return yield* json(200, { ...shownQueue(queueOf(session)), waits: true });
+  try {
+    if (await keepWaitingBefore(target, session, message, { from, words }, before))
+      return yield* json(200, { ...shownQueue(queueOf(session)), waits: true });
+  } catch (error) {
+    console.error("kuvo-link: could not save a waiting message", error);
+    return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
+  }
   await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
   return yield* json(200, { ...shownQueue(queueOf(session)), waits: false });
 }

@@ -23,8 +23,8 @@ import { botHere, MOVING, noteBotsChanged } from "../bots/here";
 import { signInRefusal } from "../bots/make";
 import { settleBot } from "../bots/tell";
 import { bridgeTarget, call, readBridgeFile, readEngineFile } from "../engine/client";
-import { CantCarry, forgetQueue, packQueues, queueOf, resumeQueue, unpackQueues } from "../engine/queue";
-import { syncDurableFile, writeDurablePrivate, writePrivate } from "../files";
+import { CantCarry, forgetQueue, moveInbox, packQueues, readQueues, resumeQueue, unpackQueues } from "../engine/queue";
+import { syncDurableFile, syncDurableTree, writeDurablePrivate, writePrivate } from "../files";
 import { HERE, IS_MAC, K } from "../home";
 import { refreshOwn } from "../peers/agents";
 import { peerIsAway, readReach } from "../peers/reach";
@@ -48,7 +48,7 @@ import { forgetQuiet, tellMoving } from "./elsewhere";
 import { dropOwnServers } from "../bots/own-keys";
 import { ASK_LEFT, KEEP_LEFT, forgetLeft, noteLeft, noteRan, readLeft, removeTrashed } from "./left";
 import type { LeftEntry } from "./left";
-import { MOVES, bundleOf, changeMove, endedAs, endedAt, endedFor, endedLast, forgetMove, forgetMovedAway, moveOf, movesChanged, noteEnded, noteMovedAway, readMove, readMoves, saveMove, sealDecisions, shownMove, waitingFor } from "./records";
+import { MOVES, bundleOf, changeMove, compactDecisionHints, endedAs, endedAt, endedFor, endedLast, forgetMove, forgetMovedAway, moveOf, movesChanged, noteEnded, noteMovedAway, readMove, readMoves, saveMove, sealDecision, shownMove, waitingFor } from "./records";
 import type { BundleIdentity, MoveRecord } from "./records";
 
 /** Raw bytes in each part (40,000 characters as base64url, as documents' parts are). */
@@ -59,6 +59,27 @@ const PART_AGAIN = 20_000;
 /** A step unanswered is sent again each minute; a first offer unanswered this long: the other
  * computer isn't there. */
 const STEP_AGAIN = 60_000;
+// A persisted time estimates elapsed time on restart. Once observed, a step uses elapsed time
+// on this process's clock, including when the wall clock stops advancing.
+const retryClocks = new Map<string, { step: string; stamp: number; since: number }>();
+const retryStep = (record: MoveRecord) => `${record.stage}/${record.step}/${record.generation}/${Boolean(record.activation)}/${Boolean(record.dropping)}`;
+const retryStamp = (record: MoveRecord) => record.againAt ?? record.sentAt ?? 0;
+
+function markedRetry(record: MoveRecord, ticks = performance.now()): void {
+  retryClocks.set(record.id, { step: retryStep(record), stamp: retryStamp(record), since: ticks });
+}
+
+function retryDue(record: MoveRecord, now: number, ticks: number, delay = STEP_AGAIN): boolean {
+  const stamp = retryStamp(record);
+  if (stamp > now) return true;
+  const step = retryStep(record);
+  let clock = retryClocks.get(record.id);
+  if (!clock || clock.step !== step || clock.stamp !== stamp) {
+    clock = { step, stamp, since: ticks - (now - stamp) };
+    retryClocks.set(record.id, clock);
+  }
+  return ticks - clock.since >= delay;
+}
 const NO_ANSWER = 30_000;
 /** Before the switch, the other computer quiet this long about a move: it's taken back. */
 const QUIET_AT_MOST = 10 * 60_000;
@@ -150,6 +171,7 @@ export function readOutcome(id: string): MoveOutcome | null {
 }
 
 const OUTCOME_KEPT = 90 * 24 * 3600_000;
+let lastDecisionSweep = -Infinity;
 function ended(id: string, outcome: MoveOutcome): void {
   writeDurablePrivate(outcomeFile(id), JSON.stringify(outcome), path.dirname(MOVES));
   for (const resolve of waiting.get(id) ?? []) resolve(outcome);
@@ -517,7 +539,16 @@ export function hold(record: MoveRecord): void {
 /** Its wake-ups as they were before it moved: going again, or paused as you paused them. */
 function unhold(record: MoveRecord, folder = record.folder): void {
   if (!folder) return;
-  const owner = moveHold(pausedText(folder));
+  const paused = pausedText(folder);
+  const owner = moveHold(paused);
+  if (!owner) {
+    // A prior attempt may have restored the pause and failed while sealing the directory entry.
+    if (record.placed || fs.existsSync(folder)) {
+      if (paused === null) syncDurableFile(folder, folder);
+      else syncDurableFile(PAUSED(folder));
+    }
+    return;
+  }
   // A legacy marker has no owner. An older failure may never release it across a newer move.
   if (owner !== record.id && !(owner === "moving" && !record.pauseRecorded && !readMoves(true).some(other =>
     other.id !== record.id && other.thing === record.thing && !other.failed
@@ -544,9 +575,17 @@ async function settle(target: Target, sessions: readonly string[], name: string)
   // (Still in a turn at the end, it's working; else only messages wait to go to it.)
   let busy = false;
   for (let tries = 0; tries < SETTLE_FOR; tries++) {
-    busy = await activeIn(target, sessions);
-    const inbox = sessions[0] && !queueOf(sessions[0]).paused ? await call(target, "GET", `/api/session/${encodeURIComponent(sessions[0])}/inbox`, undefined, engineWait()).catch(() => []) : [];
-    if (!busy && !(Array.isArray(inbox) && inbox.length)) return;
+    const active = await call(target, "GET", "/api/session/active", undefined, engineWait());
+    if (Array.isArray(active)) busy = sessions.some(session => active.includes(session));
+    else if (isObject(active)) busy = sessions.some(session => session in active);
+    else throw new Error("Active conversations could not be read for a move");
+    const queues = readQueues(true);
+    let waiting = false;
+    for (const session of sessions) {
+      const inbox = await moveInbox(target, session);
+      if (!queues[session]?.paused && inbox.length) waiting = true;
+    }
+    if (!busy && !waiting) return;
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
   throw new Refused(busy ? say.working(name) : say.waiting(name));
@@ -574,7 +613,10 @@ const fingerprint = (conversation: string, queues: Record<string, unknown>): str
 /** What waits for its conversations, as a move carries it (`packQueues`); one the engine held that
  * can't go with it, and it doesn't go yet. */
 const queuesOf = (engine: Target, sessions: readonly string[], name: string) => packQueues(engine, sessions).catch(error => {
-  throw error instanceof CantCarry ? new Refused(say.waiting(name)) : error;
+  if (error instanceof CantCarry) throw new Refused(error.unreadable
+    ? `A message waiting for ${name} couldn’t be read. The move stopped. Check the queue before trying again.`
+    : say.waiting(name));
+  throw error;
 });
 
 // What the box it leaves has of each move in memory: the parts the other box has, and those on
@@ -626,6 +668,7 @@ async function carryOn(id: string): Promise<void> {
       if (goal === undefined) throw new Refused(`${record.name}’s goal couldn’t be checked on ${HERE}. Try again in a moment.`);
     }
     const target = record.lane ? readBridgeFile() : readEngineFile();
+    const known = new Set(record.sessions);
     await settle(target, record.sessions, record.name);
     const running = runningOf(record.sessions);
     if (running) throw new Refused(say.background(record.name, running));
@@ -651,6 +694,14 @@ async function carryOn(id: string): Promise<void> {
       contents.exports = exports;
       record.sessions = idsOf(exports);
       digest = conversationHash(exports);
+    }
+    if (record.sessions.some(session => !known.has(session))) {
+      if (takenBack()) return;
+      // Freeze the discovered conversations before waiting for their inboxes to settle.
+      changeMove(id, each => { each.sessions = record.sessions; });
+      await settle(target, record.sessions, record.name);
+      const background = runningOf(record.sessions);
+      if (background) throw new Refused(say.background(record.name, background));
     }
     // (What its conversation says of where it worked: a bot's folder; a chat's, this box's chats.)
     const worked = record.kind === "bot" ? record.folder : CHATS;
@@ -757,7 +808,8 @@ const bundleIdentity = ({ generation, hash }: BundleIdentity): BundleIdentity =>
 const sameBundle = (record: BundleIdentity, given: Record<string, unknown>): boolean => record.generation === given.generation &&
   (record.generation === undefined ? (given.hash === undefined || record.hash === given.hash) : record.hash === given.hash);
 
-function offer(record: MoveRecord): void {
+function offer(record: MoveRecord, ticks = performance.now()): void {
+  markedRetry(record, ticks);
   tell(record.peer, { op: "offer", safeSwitch: true, id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
 }
 
@@ -821,7 +873,10 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
   const now = changeMove(record.id, each => { each.stage = "switching"; each.step = "switch"; each.sentAt = each.switchSince = Date.now(); each.againAt = undefined; });
   const sending = outgoing.get(record.id);
   if (sending) sending.since = performance.now();
-  if (now) tell(now.peer, { op: "switch", safeSwitch: true, id: now.id, ...bundleIdentity(now) });
+  if (now) {
+    markedRetry(now);
+    tell(now.peer, { op: "switch", safeSwitch: true, id: now.id, ...bundleIdentity(now) });
+  }
 }
 
 /** Confirmed ownership, independent of whether the original could be archived yet. */
@@ -834,6 +889,7 @@ export function confirmedOutcome(record: MoveRecord, pending: boolean): MoveOutc
 async function finish(id: string): Promise<void> {
   const record = changeMove(id, each => { each.stage = "finishing"; each.step = "done"; each.sentAt = Date.now(); each.againAt = undefined; });
   if (!record) return;
+  markedRetry(record);
   if (record.kind === "bot") noteBotsChanged();
   outgoing.delete(id);
   try {
@@ -890,6 +946,7 @@ async function failSource(record: MoveRecord, message: string, status: number, d
     each.failedStatus = status;
     each.step = dropThere ? "drop" : "done";
     each.sentAt = each.dropSince = Date.now();
+    each.againAt = undefined;
   });
   if (failed) await settleFailure(failed);
 }
@@ -905,6 +962,7 @@ async function settleFailure(record: MoveRecord): Promise<void> {
   heard.delete(id);
   if (waitingFor.delete(id)) movesChanged();
   if (dropThere) {
+    markedRetry(record);
     tell(record.peer, { op: "drop", id, ...bundleIdentity(record) });
     try { fs.rmSync(bundleOf(id), { recursive: true, force: true }); } catch {}
   } else forgetMove(id);
@@ -935,6 +993,7 @@ export function forgetMovesInMemory(): void {
   loggedStuck.clear();
   missing.clear();
   orphans.clear();
+  retryClocks.clear();
   lookingSince = performance.now();
 }
 
@@ -1153,7 +1212,11 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     infos = contents.exports.flatMap(exported => isObject(exported) && isObject(exported.info) ? [exported.info as Partial<EngineSession> & { id: string }] : []);
   }
   // What waited for them, kept here paused until the switch.
-  const goOn = unpackQueues(contents.queues, sessions);
+  let goOn: string[];
+  try { goOn = unpackQueues(contents.queues, sessions); } catch (error) {
+    if (error instanceof CantCarry) throw new NotTaken("Some messages waiting to be sent didn’t come through. Try again.");
+    throw error;
+  }
   if (goOn.length) changeMove(record.id, each => { each.queuesGoOn = goOn; });
   // The calls it made on Autopilot; on it (its flag came with it), its agent is told so here.
   keepDecided(contents.decided, sessions);
@@ -1166,6 +1229,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   // it was. Those servers go (it uses this box's integrations, and is told of one that isn't
   // connected here: bots/own-keys.ts); the keys it came with are never kept.
   if (record.kind === "bot" && place) dropOwnServers(place);
+  if (folder) syncDurableTree(place, path.dirname(path.dirname(place)));
   fs.rmSync(path.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
   return sessions;
 }
@@ -1317,10 +1381,11 @@ async function completeActivation(id: string): Promise<void> {
   const decision = endedFor(id, record.peer);
   if (decision) {
     if (decision.as !== "switched" || !sameBundle(record, bundleIdentity(decision))) throw new Error("Move ownership conflicts with its activation record");
-    sealDecisions();
+    sealDecision(id);
   } else {
     // Also seals a switch decision that was visible after an interrupted directory sync.
-    changeMove(id, each => { each.sentAt = Date.now(); });
+    const pending = changeMove(id, each => { each.sentAt = Date.now(); });
+    if (pending) markedRetry(pending);
     await switchHere(record);
     noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record));
   }
@@ -1333,7 +1398,7 @@ async function completeActivation(id: string): Promise<void> {
 function answerDecision(sender: MailSender, id: string, request: Record<string, unknown>): void {
   const decision = endedFor(id, sender.key);
   if (!decision || !sameBundle(decision, request)) return;
-  sealDecisions();
+  sealDecision(id);
   const bundle = bundleIdentity(decision);
   if (decision.as === "switched") tell(sender.key, { op: "switched", id, ...bundle });
   else tell(sender.key, { op: "dropped", id, ...bundle, ...(decision.peer ? { neverSwitched: true } : {}) });
@@ -1526,7 +1591,8 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (fresh) state.window = Math.min(IN_FLIGHT, (state.window ?? IN_FLIGHT) + 1);
       const of = Math.ceil((mine.size ?? 0) / PART_BYTES);
       if (state.got.size === of) {
-        changeMove(id, each => { each.sent = each.size; each.step = "arrive"; each.sentAt = Date.now(); });
+        const pending = changeMove(id, each => { each.sent = each.size; each.step = "arrive"; each.sentAt = Date.now(); });
+        if (pending) markedRetry(pending);
         state.since = performance.now();
       } else {
         if (state.got.size % 32 === 0) changeMove(id, each => { each.sent = Math.min(each.size ?? 0, state.got.size * PART_BYTES); });
@@ -1599,7 +1665,10 @@ const ORPHAN_AFTER = 2 * CARRY_WAIT;
 
 export function keepMoving(now = Date.now(), ticks = performance.now()): void {
   const records = readMoves();
-  const retryDue = (sent: number, delay: number) => sent > now || now - sent > delay;
+  if (ticks - lastDecisionSweep >= 3600_000) {
+    lastDecisionSweep = ticks;
+    compactDecisionHints(now);
+  }
   noteWaiting(records, now, ticks);
   keepLeft(now);
   tellMoving(hostOf(), now);
@@ -1617,6 +1686,7 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
   let folders: string[] = [];
   try { folders = fs.readdirSync(MOVES, { withFileTypes: true }).filter(each => each.isDirectory() && each.name.startsWith("mov_")).map(each => each.name); } catch {}
   const known = new Set(records.map(record => record.id));
+  for (const id of retryClocks.keys()) if (!known.has(id)) retryClocks.delete(id);
   for (const name of [...orphans.keys()]) if (!folders.includes(name) || known.has(name)) orphans.delete(name);
   for (const name of folders) {
     if (known.has(name)) continue;
@@ -1628,7 +1698,7 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
     }
   }
   for (const record of records) {
-    const due = retryDue(record.againAt ?? record.sentAt ?? 0, STEP_AGAIN);
+    const due = retryDue(record, now, ticks);
     const sent = outgoing.get(record.id);
     if (record.role === "to" && record.activation) {
       if (due && !queues.has(record.id)) inTurn(record.id, () => completeActivation(record.id)).catch(logActivation);
@@ -1657,8 +1727,9 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
       // It's never forgotten while any of it's here, so what's left never goes on as a second copy.
       if (record.dropping) {
         const late = now - (record.dropSince ?? record.started) > HELD_AT_MOST;
-        if (retryDue(record.sentAt ?? 0, late ? DROP_AGAIN_LATE : STEP_AGAIN)) {
-          changeMove(record.id, each => { each.sentAt = now; });
+        if (retryDue(record, now, ticks, late ? DROP_AGAIN_LATE : STEP_AGAIN)) {
+          const pending = changeMove(record.id, each => { each.sentAt = now; });
+          if (pending) markedRetry(pending, ticks);
           inTurn(record.id, () => drop(record.id)).catch(error => {
             if (!late || loggedStuck.has(record.id)) return;
             loggedStuck.add(record.id);
@@ -1697,6 +1768,7 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
       if (due) {
         const pending = changeMove(record.id, each => { each.sentAt = now; each.againAt = undefined; each.step = "switch"; });
         if (pending) {
+          markedRetry(pending, ticks);
           if (pending.generation === undefined) tell(record.peer, { op: "decision?", id: record.id });
           else tell(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(pending) });
         }
@@ -1720,14 +1792,15 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
         if (record.tries === 0 && sentAgo > NO_ANSWER && !sent?.got.size) {
           inTurn(record.id, () => takeBack(record.id, say.notConnected(nameOf(record.peer)), 503)).catch(() => {});
         } else if (due) {
-          changeMove(record.id, each => { each.againAt = now; });
-          offer(record);
+          const pending = changeMove(record.id, each => { each.againAt = now; });
+          if (pending) offer(pending, ticks);
         }
         break;
       // Its copy all there, and no word of it set up (that word lost, say): asked again.
       case "arrive":
         if (due) {
-          changeMove(record.id, each => { each.againAt = now; });
+          const pending = changeMove(record.id, each => { each.againAt = now; });
+          if (pending) markedRetry(pending, ticks);
           tell(record.peer, { op: "arrive", id: record.id, ...bundleIdentity(record) });
         }
         break;
@@ -1737,7 +1810,8 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
         break;
       case "drop":
         if (due) {
-          changeMove(record.id, each => { each.sentAt = now; });
+          const pending = changeMove(record.id, each => { each.sentAt = now; });
+          if (pending) markedRetry(pending, ticks);
           tell(record.peer, { op: "drop", id: record.id, ...bundleIdentity(record) });
         }
         break;

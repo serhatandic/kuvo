@@ -242,7 +242,12 @@ async function* added({ json }: Pick<RouteContext, "json">, target: Target, sess
   const from = typeof given.from === "string" && given.from.trim() ? given.from.trim().slice(0, 80) : undefined;
   const message = { id, text: written.text, ...(written.files?.length ? { files: written.files } : {}), delivery, ...(written.metadata ? { metadata: written.metadata } : {}) } as { id: string; text: string; files?: unknown[]; delivery: "steer" | "queue"; metadata?: Record<string, unknown> };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
-  if (await keepWaitingBefore(target, session, message, { from, words }, before)) return yield* json(200, { ...shownQueue(queueOf(session)), waits: true });
+  try {
+    if (await keepWaitingBefore(target, session, message, { from, words }, before)) return yield* json(200, { ...shownQueue(queueOf(session)), waits: true });
+  } catch (error) {
+    console.error("kuvo-link: could not save a waiting message", error);
+    return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
+  }
   // (A busy engine takes the message late, and has it then: waited for, not given up on at the
   // usual half minute and said to have failed, #443.)
   await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
