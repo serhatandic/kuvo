@@ -621,3 +621,31 @@ fn title_bar_button_and_command_b_toggle_the_same_sidebar_as_the_rail(cx: &mut T
     click(cx, "toggle-sidebar");
     assert!(bounds(cx, "area-sidebar").is_some());
 }
+
+/// The sidebar toggle, the computer picker, back and forward are one group over the sidebar side;
+/// a thin divider ends it where the sidebar column ends, and the title starts after it. There is no
+/// + in the bar (New Session is ⌘N and File › New Session), and with the sidebar hidden the group
+/// and the divider stay together, then the title.
+#[gpui::test]
+fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: &mut TestAppContext) {
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "rail-queue");
+    assert!(bounds(cx, "new-session").is_none(), "the title bar has no + of its own");
+    let order = |cx: &mut gpui::VisualTestContext| {
+        ["toggle-sidebar", "computer-switcher", "back", "forward", "title-bar-divider", "window-title"].map(|name| bounds(cx, name).unwrap_or_else(|| panic!("{name} is drawn")))
+    };
+    let shown = order(cx);
+    for pair in shown.windows(2) {
+        assert!(pair[0].right() <= pair[1].left(), "left to right: {pair:?}");
+    }
+    let divider = shown[4];
+    assert!(divider.size.width <= gpui::px(2.) && divider.size.height < gpui::px(kuvo::title_bar::HEIGHT) / 2., "thin and short: {divider:?}");
+    let sidebar = bounds(cx, "area-sidebar").unwrap();
+    assert!((divider.right() - sidebar.right()).abs() <= gpui::px(2.), "the divider sits where the sidebar column ends: {divider:?} / {sidebar:?}");
+    click(cx, "toggle-sidebar");
+    let hidden = order(cx);
+    for pair in hidden.windows(2) {
+        assert!(pair[0].right() <= pair[1].left(), "left to right, sidebar hidden: {pair:?}");
+    }
+    assert!(hidden[4].left() - hidden[3].right() <= gpui::px(16.), "the divider stays with the group");
+}
