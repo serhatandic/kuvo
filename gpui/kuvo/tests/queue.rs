@@ -1515,6 +1515,17 @@ fn queue_editor_kept_picture_opens_from_page_and_edit_and_uses_its_saved_name(cx
 }
 
 #[gpui::test]
+fn queue_editor_empty_links_shows_add_link_in_place_of_heading(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_234", json!({ "canLinkItems": true }), None);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_234");
+    assert!(!shown(cx, "links-heading"));
+    click(cx, "link-item");
+    assert!(shown(cx, "link-choice-wqi_231"));
+}
+
+#[gpui::test]
 fn queue_editor_link_item_sends_the_chosen_kind_and_target(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.work_item_fixture("wqi_231", json!({
@@ -1523,6 +1534,7 @@ fn queue_editor_link_item_sends_the_chosen_kind_and_target(cx: &mut TestAppConte
     }), None);
     let (_workspace, _page, cx) = queue(cx, &stand_in);
     click(cx, "item-wqi_231");
+    assert!(shown(cx, "links-heading"));
     let row = bounds(cx, "item-relation-0").unwrap();
     assert_eq!(row.size.height, px(28.));
     cx.simulate_mouse_move(row.center(), None, Modifiers::default());
@@ -1578,10 +1590,12 @@ fn queue_editor_item_page_renders_a_clickable_reference_chip(cx: &mut TestAppCon
     stand_in.work_item_fixture("wqi_231", json!({
         "body": "See #234. Ranked #1.",
         "bodyMentions": [{ "start": 4, "end": 8, "number": 234 }],
+        "itemRelations": [{ "id": "wqi_234", "kind": "mentions", "title": "Dark mode for the settings page", "number": 234 }],
     }), None);
     let (_workspace, page, cx) = queue(cx, &stand_in);
     click(cx, "item-wqi_231");
     assert!(!shown(cx, "item-chip-1"));
+    assert!(shown(cx, "item-relation-0"));
     let tile = bounds(cx, "item-chip-234").unwrap();
     cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
     cx.run_until_parked();

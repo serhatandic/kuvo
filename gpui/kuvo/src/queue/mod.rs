@@ -21,7 +21,7 @@ mod page;
 mod picker;
 pub(crate) mod preview;
 #[cfg(feature = "shots")]
-pub use preview::ShotHoverPoint;
+pub use preview::{ShotHoverPoint, ShotHoverTarget};
 pub(crate) mod chat_references;
 
 use std::collections::HashMap;

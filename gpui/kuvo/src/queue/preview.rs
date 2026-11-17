@@ -39,14 +39,10 @@ impl Reference {
         let number = self.item.number;
         let mark = div().flex_none().child(status_mark(&self.item.status, cx));
         #[cfg(feature = "shots")]
-        let mark = mark.on_children_prepainted(move |children, _, cx| {
-            if let Some(shot) = cx.try_global::<ShotHoverPoint>()
-                && Some(shot.number) == number
-                && let Some(bounds) = children.first()
-            {
-                shot.point.set(Some(bounds.center()));
-            }
-        });
+        let mark = match number {
+            Some(number) => ShotHoverPoint::capture(ShotHoverTarget::Reference(number), mark),
+            None => mark,
+        };
         div().id(id).debug_selector(move || number.map_or_else(|| "item-chip".into(), |number| format!("item-chip-{number}")))
             .flex().items_center().gap(space::S1_5).h(TypeSize::Body.line_height()).max_w(px(340.)).min_w_0()
             .px(space::S1_5).rounded(radius::NAV).bg(c.sunken).border_1().border_color(c.border)
@@ -61,9 +57,30 @@ impl Reference {
 }
 
 #[cfg(feature = "shots")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ShotHoverTarget {
+    Reference(u64),
+    ItemStatus,
+}
+
+#[cfg(feature = "shots")]
 pub struct ShotHoverPoint {
-    pub number: u64,
+    pub target: ShotHoverTarget,
     pub point: std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>,
+}
+
+#[cfg(feature = "shots")]
+impl ShotHoverPoint {
+    pub(super) fn capture(target: ShotHoverTarget, element: gpui::Div) -> gpui::Div {
+        element.on_children_prepainted(move |children, _, cx| {
+            if let Some(shot) = cx.try_global::<Self>()
+                && shot.target == target
+                && let Some(bounds) = children.first()
+            {
+                shot.point.set(Some(bounds.center()));
+            }
+        })
+    }
 }
 
 #[cfg(feature = "shots")]

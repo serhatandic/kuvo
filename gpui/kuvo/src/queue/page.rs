@@ -608,10 +608,14 @@ impl QueueView {
                     .gap(space::S2)
                     .h(px(30.))
                     .children(label(&item, cx))
-                    .children(state.map(|(mark, words)| div().id("item-state").debug_selector(|| "item-state".into())
-                        .flex().items_center().gap(space::S1_5).child(mark)
-                        .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words))
-                        .when_some(progress, |d, progress| d.tooltip(move |_, cx| Tooltip::new(progress.clone()).build(cx)))))
+                    .children(state.map(|(mark, words)| {
+                        let words = div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
+                        #[cfg(feature = "shots")]
+                        let words = super::ShotHoverPoint::capture(super::ShotHoverTarget::ItemStatus, words);
+                        div().id("item-state").debug_selector(|| "item-state".into())
+                            .flex().items_center().gap(space::S1_5).child(mark).child(words)
+                            .when_some(progress, |d, progress| d.tooltip(move |_, cx| Tooltip::new(progress.clone()).build(cx)))
+                    }))
                     .child(div().flex_1())
                     .when_some(finish, |d, (id, name)| {
                         let finish = status(&id);

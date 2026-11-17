@@ -50,10 +50,18 @@ impl QueueView {
     pub(super) fn relation_section(&self, relations: &[ItemRelation], can_link: bool, count: usize, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let header = div().flex().items_center().gap(space::S1_5)
-            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Links"))
-            .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(count.to_string()))
-            .when(can_link, |header| header.child(Button::icon_only("link-item", IconName::Plus, "Link item")
-                .ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.show_relation_picker(cx)))));
+            .when(count > 0, |header| header
+                .child(div().debug_selector(|| "links-heading".into()).text_ui(TypeSize::Small).medium().text_color(c.text).child("Links"))
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(count.to_string())))
+            .when(can_link, |header| {
+                let button = if count == 0 {
+                    Button::new("link-item", "Add link").icon(IconName::Plus)
+                } else {
+                    Button::icon_only("link-item", IconName::Plus, "Add link")
+                };
+                header.child(button.ghost().size(ButtonSize::Small)
+                    .on_click(cx.listener(|this, _, _, cx| this.show_relation_picker(cx))))
+            });
         let queue = self.queue().cloned().map(std::rc::Rc::new);
         let kinds = ["mentions", "mentioned-in", "blocks", "blocked-by", "related", "duplicate-of", "duplicated-by"];
         let groups = kinds.into_iter().filter_map(|kind| {

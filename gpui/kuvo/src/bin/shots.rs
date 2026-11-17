@@ -230,6 +230,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "queue-new-enlarged", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_enlarged) },
     Screen { slug: "queue-edit-pictures", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_edit) },
     Screen { slug: "queue-item-hover-card", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-status-tooltip", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
     Screen { slug: "queue-item-references", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
     Screen { slug: "queue-item-links", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
     Screen { slug: "queue-collapsed-lanes", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_collapsed_lanes) },
@@ -1495,22 +1496,40 @@ fn main() -> anyhow::Result<()> {
             }
             if matches!(screen.slug, "queue-item-references" | "queue-item-links" | "queue-item-hover-card") {
                 let body = "Coordinate the error copy with #234 before merging. The page ranked #1.";
-                let start = body.find("#234").unwrap();
+                let mention = |body: &str, number: u64| {
+                    let tag = format!("#{number}");
+                    let start = body.find(&tag).unwrap();
+                    serde_json::json!({"start": start, "end": start + tag.len(), "number": number})
+                };
+                let current_title = "Keep what was typed when the sign-up email is taken";
+                let target_title = "Dark mode for the settings page";
                 stand_in.work_item_fixture("wqi_234", serde_json::json!({
+                    "title": target_title,
                     "body": "Use the new theme tokens throughout Settings. Check the sidebar and permission panels in both appearances.",
                     "status": "in-progress", "priority": "high", "labels": ["lbl_design"],
                     "assignee": {"kind": "bot", "id": "bot_mira", "name": "Mira"},
+                    "itemRelations": [{"kind": "mentioned-in", "id": "wqi_231", "number": 231, "title": current_title}],
+                    "canLinkItems": true,
                 }), None);
-                let links = if screen.slug == "queue-item-links" {
-                    serde_json::json!([
-                        {"kind": "mentions", "id": "wqi_234", "number": 234, "title": "Dark mode for the settings page"},
-                        {"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": "Write the launch post, with the three screenshots and the short video from the design review"},
-                        {"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Nightly builds for the Linux packages"},
-                        {"kind": "related", "id": "wqi_237", "number": 237, "title": "Get the Lighthouse score above 90"},
-                    ])
-                } else { serde_json::json!([]) };
+                let mut links = vec![serde_json::json!({
+                    "kind": "mentions", "id": "wqi_234", "number": 234, "title": target_title,
+                })];
+                if screen.slug == "queue-item-links" {
+                    let post = "Write the launch post, with the three screenshots and the short video from the design review";
+                    let post_body = "Include the sign-up fix from #231 in the launch post.";
+                    stand_in.work_item_fixture("wqi_235", serde_json::json!({
+                        "title": post, "body": post_body, "bodyMentions": [mention(post_body, 231)],
+                        "itemRelations": [{"kind": "mentions", "id": "wqi_231", "number": 231, "title": current_title}],
+                        "canLinkItems": true,
+                    }), None);
+                    links.extend([
+                        serde_json::json!({"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": post}),
+                        serde_json::json!({"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Nightly builds for the Linux packages"}),
+                        serde_json::json!({"kind": "related", "id": "wqi_237", "number": 237, "title": "Get the Lighthouse score above 90"}),
+                    ]);
+                }
                 stand_in.work_item_fixture("wqi_231", serde_json::json!({
-                    "body": body, "bodyMentions": [{"start": start, "end": start + 4, "number": 234}],
+                    "title": current_title, "body": body, "bodyMentions": [mention(body, 234)],
                     "itemRelations": links, "canLinkItems": true, "files": [], "links": [], "notes": [],
                 }), None);
             }
@@ -1766,20 +1785,25 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 cx.run_until_parked();
             }
-            if screen.slug == "queue-item-hover-card" {
+            use kuvo::queue::{ShotHoverPoint, ShotHoverTarget};
+            let hover = match screen.slug {
+                "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
+                "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
+                _ => None,
+            };
+            if let Some((target, delay_ms)) = hover {
                 use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
-                use kuvo::queue::ShotHoverPoint;
-                cx.update(|cx| cx.set_global(ShotHoverPoint { number: 234, point: Default::default() }));
+                cx.update(|cx| cx.set_global(ShotHoverPoint { target, point: Default::default() }));
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
                 cx.update_window(any, |_, window, cx| {
-                    let point = cx.global::<ShotHoverPoint>().point.get().expect("the description's item chip");
+                    let point = cx.global::<ShotHoverPoint>().point.get().expect("the Work Queue hover target");
                     mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
                         position: point, pressed_button: None, modifiers: Modifiers::default(),
                     }));
                 })?;
                 cx.run_until_parked();
-                cx.advance_clock(std::time::Duration::from_millis(320));
+                cx.advance_clock(std::time::Duration::from_millis(delay_ms));
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
                 cx.update(|cx| { cx.remove_global::<ShotHoverPoint>(); });
