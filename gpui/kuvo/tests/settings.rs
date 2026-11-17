@@ -486,6 +486,36 @@ fn accounts_lists_the_agents_and_providers_as_the_box_says_them(cx: &mut TestApp
 /// The coding agents not running on a computer (PROTOCOL.md, "The coding agents' state"): Accounts
 /// and Usage say the box's one sentence, once, with no words of the app's in front of it; Try
 /// Again posts the box's route and reads the page again. Restarting is a quiet line, not a warning.
+/// While the box says the coding agents restart, Accounts reads again a moment on by itself, and
+/// lists them once they're back: the restarting line never stays after they are.
+#[gpui::test]
+fn accounts_read_again_while_the_agents_restart_and_list_them_once_back(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.agents_restarting();
+    let client = BoxClient::new(stand_in.clone());
+    // Live: read on threads of their own, as the app reads, with its timers.
+    let window = cx.add_window(move |window, cx| Workspace::new(client, true, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.executor().allow_parking();
+    cx.simulate_resize(size(px(1280.), px(1800.)));
+    cx.run_until_parked();
+    side(&workspace, cx, Side::Computer);
+    cx.run_until_parked();
+    click(cx, "setting-accounts");
+    cx.run_until_parked();
+    assert!(shown(cx, "note-agents-restarting") && !shown(cx, "account-claude-code"));
+    // Back: read again a moment on, by itself.
+    stand_in.agents_running(true);
+    cx.executor().advance_clock(std::time::Duration::from_secs(5));
+    cx.run_until_parked();
+    assert!(shown(cx, "account-claude-code") && !shown(cx, "note-agents-restarting"));
+}
+
 #[gpui::test]
 fn the_coding_agents_down_say_the_boxs_sentence_once_with_try_again(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);

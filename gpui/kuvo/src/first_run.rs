@@ -302,7 +302,7 @@ impl FirstRun {
         let asked = self.accounts_asked;
         self.run(
             |client| client.sign_in_accounts(),
-            move |this, read, _| {
+            move |this, read, cx| {
                 // (Unless they've been asked for again since: the later answer is the one shown.)
                 if asked != this.accounts_asked {
                     return;
@@ -316,6 +316,15 @@ impl FirstRun {
                 }
                 this.checking.clear();
                 this.accounts = keeping(read, &this.accounts);
+                // (While the box says its coding agents restart: read again a moment on, as what it
+                // says changes by itself.)
+                let restarting = matches!(&this.accounts, Reading::Ready(accounts) if accounts.agents_down.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting));
+                if restarting && this.live {
+                    this.tasks.push(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+                        this.update(cx, |this, cx| this.read_accounts(cx)).ok();
+                    }));
+                }
             },
             cx,
         );

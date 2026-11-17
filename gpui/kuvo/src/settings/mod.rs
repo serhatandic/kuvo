@@ -39,6 +39,9 @@ use crate::updates::Updates;
 pub use rows::{Act, At, Block, Control, Leading, Meter, Notice, Push, Row, Tone, UpdateAct};
 use form::{FormEvent, FormSheet};
 
+/// How soon a section the box says is waiting on its coding agents' restart is read again.
+const AGENTS_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The coding agents' state, where a read was refused for it.
 fn agents_state<T>(read: &kuvo_box::Result<T>) -> Option<kuvo_box::Refusal> {
     read.as_ref().err().and_then(kuvo_box::Error::refusal).filter(|refusal| refusal.about_agents()).cloned()
@@ -1072,6 +1075,21 @@ impl SettingsView {
     /// Runs `work` against the box of the computer shown, in the app off this thread, in tests
     /// and shots at once, and hands what it came to to `then`. A newer one under the same name
     /// replaces an older; one for a computer no longer shown is dropped unanswered.
+    /// While the box says its coding agents are restarting, `section` is read again a moment on: what
+    /// it says changes by itself (back, or down with why), and the page follows it.
+    fn again_while_restarting(&mut self, section: &'static str, restarting: bool, cx: &mut Context<Self>) {
+        let name = format!("again-{section}");
+        if !restarting || !self.live {
+            self.tasks.remove(&name);
+            return;
+        }
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AGENTS_AGAIN).await;
+            this.update(cx, |this, cx| this.read_section(section, cx)).ok();
+        });
+        self.tasks.insert(name, task);
+    }
+
     fn run<T: Send + 'static>(
         &mut self,
         name: impl Into<String>,
@@ -1185,11 +1203,17 @@ impl SettingsView {
         let drawn = self.entries(Side::Computer).into_iter().find(|entry| entry.id == section).map(|entry| entry.drawn);
         match (drawn, section) {
             (Some(Drawn::Described), _) => self.read_page(section, cx),
-            (Some(Drawn::Own), "accounts") => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, _| this.accounts = reading(read, &this.accounts), cx),
+            (Some(Drawn::Own), "accounts") => self.run("read-accounts", |client| client.sign_in_accounts(), |this, read, cx| {
+                this.accounts = reading(read, &this.accounts);
+                let restarting = matches!(&this.accounts, Reading::Ready(accounts) if accounts.agents_down.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting));
+                this.again_while_restarting("accounts", restarting, cx);
+            }, cx),
             (Some(Drawn::Own), "usage") => {
-                self.run("read-limits", |client| client.accounts(), |this, read, _| {
+                self.run("read-limits", |client| client.accounts(), |this, read, cx| {
                     this.agents_limits = agents_state(&read);
                     this.limits = reading(read, &this.limits);
+                    let restarting = this.agents_limits.as_ref().is_some_and(kuvo_box::Refusal::agents_restarting);
+                    this.again_while_restarting("usage", restarting, cx);
                 }, cx);
                 self.run("read-usage", |client| client.usage_settings(), |this, read, _| {
                     this.agents_usage = agents_state(&read);
