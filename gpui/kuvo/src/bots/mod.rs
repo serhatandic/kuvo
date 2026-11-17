@@ -207,6 +207,8 @@ pub struct BotsView {
     name: Entity<TextField>,
     line: Entity<TextField>,
     details: Entity<TextField>,
+    personality_name: Entity<TextField>,
+    personality_description: Entity<TextField>,
     new_name: Entity<TextField>,
     form: Form,
     /// What takes the keyboard as it's next drawn.
@@ -232,18 +234,30 @@ impl Focusable for BotsView {
 
 impl BotsView {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> BotsView {
-        let name = cx.new(|cx| TextField::new(cx).title().placeholder("Name"));
-        let line = cx.new(|cx| TextField::new(cx).placeholder("What it does, in a few words"));
+        let name = cx.new(|cx| TextField::new(cx).title().bare().fit_width().placeholder("Name"));
+        let line = cx.new(|cx| TextField::new(cx).bare().placeholder("What it does, in a few words"));
         let details = cx.new(|cx| {
             TextField::new(cx)
-                .multi_line(4, 10)
+                .bare()
+                .multi_line(2, 10)
+                .submits_on_enter(false)
                 .placeholder("What to do, when to do it, and what to report")
         });
+        let personality_name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
+        let personality_description = cx.new(|cx| TextField::new(cx).multi_line(4, 10).placeholder("Description"));
         let new_name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let subscriptions = vec![
             cx.subscribe(&name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
-            cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
+            cx.subscribe(&line, |this: &mut BotsView, _, event: &TextFieldEvent, cx| match event {
+                TextFieldEvent::Submit(_) if !this.saving => {
+                    this.wants_focus = Some(this.details.focus_handle(cx));
+                    cx.notify();
+                }
+                _ => this.editor_key(event, cx),
+            }),
             cx.subscribe(&details, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
+            cx.subscribe(&personality_name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
+            cx.subscribe(&personality_description, |this: &mut BotsView, _, event: &TextFieldEvent, cx| this.editor_key(event, cx)),
             cx.subscribe(&new_name, |this: &mut BotsView, _, event: &TextFieldEvent, cx| match event {
                 TextFieldEvent::Submit(_) => this.act(Act::Create, cx),
                 TextFieldEvent::Cancel => this.act(Act::CancelNew, cx),
@@ -267,6 +281,8 @@ impl BotsView {
             name,
             line,
             details,
+            personality_name,
+            personality_description,
             new_name,
             form: Form::default(),
             wants_focus: None,
@@ -942,12 +958,7 @@ impl BotsView {
             Act::ShowAll => self.all_sessions = true,
             Act::Rename => {
                 let Some((_, name, _)) = self.subject() else { return };
-                self.name.update(cx, |field, cx| {
-                    field.set_error(None, cx);
-                    let end = name.len();
-                    field.set_text(name, cx);
-                    field.select_range(0..end, cx);
-                });
+                self.name.update(cx, |field, cx| field.set_text(name, cx));
                 self.open_editor(Editor::Name, Some(self.name.focus_handle(cx)));
             }
             Act::EditJob => {
@@ -963,9 +974,9 @@ impl BotsView {
             }
             Act::EditPersonality => {
                 let Some(personality) = self.editable_personality().cloned() else { return };
-                self.name.update(cx, |field, cx| field.set_text(personality.name.clone(), cx));
-                self.details.update(cx, |field, cx| field.set_text(personality.description.clone(), cx));
-                self.open_editor(Editor::Sheet(Sheet::Personality(personality)), Some(self.name.focus_handle(cx)));
+                self.personality_name.update(cx, |field, cx| field.set_text(personality.name.clone(), cx));
+                self.personality_description.update(cx, |field, cx| field.set_text(personality.description.clone(), cx));
+                self.open_editor(Editor::Sheet(Sheet::Personality(personality)), Some(self.personality_name.focus_handle(cx)));
             }
             Act::FormLook => {
                 // From the look shown; with none, the first of each the box offers.
@@ -1026,13 +1037,17 @@ impl BotsView {
     }
 
     pub fn close_editor(&mut self, cx: &mut Context<Self>) {
-        // (One whose change is on its way stays until the box answers.)
+        self.finish_editor(true, cx);
+    }
+
+    fn finish_editor(&mut self, restore_focus: bool, cx: &mut Context<Self>) {
+        // An editor whose change is on its way stays until the response.
         if self.saving {
             return;
         }
         self.editor = None;
         self.edit_error = None;
-        self.wants_focus = Some(self.focus.clone());
+        self.wants_focus = restore_focus.then(|| self.focus.clone());
         self.rebuild(cx);
     }
 
@@ -1063,6 +1078,10 @@ impl BotsView {
 
     /// Send Save or Delete and keep the editor open until the request completes.
     pub fn save_editor(&mut self, cx: &mut Context<Self>) {
+        self.submit_editor(true, cx);
+    }
+
+    fn submit_editor(&mut self, restore_focus: bool, cx: &mut Context<Self>) {
         if self.saving {
             return;
         }
@@ -1078,8 +1097,29 @@ impl BotsView {
                 self.close_editor(cx);
                 return;
             }
-            Editor::Name => Some(BotChange { name: Some(self.name.read(cx).text().trim().to_owned()), ..BotChange::default() }),
-            Editor::Job => Some(BotChange { job: Some((self.line.read(cx).text().trim().to_owned(), self.details.read(cx).text().trim().to_owned())), ..BotChange::default() }),
+            Editor::Name => {
+                let name = self.name.read(cx).text().trim().to_owned();
+                if name.is_empty() {
+                    self.finish_editor(restore_focus, cx);
+                    self.edit_error = Some("A bot needs a name.".into());
+                    cx.notify();
+                    return;
+                }
+                if self.subject().is_some_and(|(_, current, _)| current == name) {
+                    self.finish_editor(restore_focus, cx);
+                    return;
+                }
+                Some(BotChange { name: Some(name), ..BotChange::default() })
+            }
+            Editor::Job => {
+                let line = self.line.read(cx).text().trim().to_owned();
+                let details = self.details.read(cx).text().trim().to_owned();
+                if self.bot().is_some_and(|bot| bot.job.trim() == line && bot.job_details.trim() == details) {
+                    self.finish_editor(restore_focus, cx);
+                    return;
+                }
+                Some(BotChange { job: Some((line, details)), ..BotChange::default() })
+            }
             Editor::Sheet(Sheet::Look { look, new: false }) => Some(BotChange { look: Some(look.clone()), ..BotChange::default() }),
             Editor::Sheet(Sheet::Delete) => None,
             Editor::Sheet(Sheet::Personality(_)) => unreachable!("saved separately"),
@@ -1108,7 +1148,7 @@ impl BotsView {
                     Ok(outcome) => {
                         if its_editor {
                             this.editor = None;
-                            this.wants_focus = Some(this.focus.clone());
+                            this.wants_focus = restore_focus.then(|| this.focus.clone());
                         }
                         this.took(&bot, outcome, deleting, cx);
                     }
@@ -1133,8 +1173,8 @@ impl BotsView {
 
     fn save_personality(&mut self, personality: Personality, cx: &mut Context<Self>) {
         let Some(bot) = self.bot().map(|bot| bot.id.clone()) else { return };
-        let name = self.name.read(cx).text().trim().to_owned();
-        let description = self.details.read(cx).text().trim().to_owned();
+        let name = self.personality_name.read(cx).text().trim().to_owned();
+        let description = self.personality_description.read(cx).text().trim().to_owned();
         let editor = Editor::Sheet(Sheet::Personality(personality.clone()));
         let page = self.shown.clone();
         let key = format!("{bot}/editor");
@@ -1180,7 +1220,7 @@ impl BotsView {
         let fields = match editor {
             Editor::Name => &[&self.name][..],
             Editor::Job => &[&self.line, &self.details][..],
-            Editor::Sheet(Sheet::Personality(_)) => &[&self.name, &self.details][..],
+            Editor::Sheet(Sheet::Personality(_)) => &[&self.personality_name, &self.personality_description][..],
             Editor::Sheet(_) => return,
         };
         for field in fields {

@@ -218,34 +218,53 @@ impl BotsView {
     fn profile_name(&self, name: String, editable: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         if matches!(self.editor, Some(Editor::Name)) {
-            return div().id("bot-name-editor").w_full().max_w(px(420.)).flex().flex_col().gap(space::S1).px(space::S1)
-                .child(div().debug_selector(|| "bot-name-field".into()).child(self.name.clone()))
+            return div().id("bot-name-editor").self_start().min_w_0().max_w_full().flex().flex_col()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if matches!(this.editor, Some(Editor::Name)) {
+                        this.submit_editor(false, cx);
+                    }
+                }))
+                .child(div().px(space::S1).rounded(radius::NAV).bg(c.selected)
+                    .child(div().debug_selector(|| "bot-name-field".into()).child(self.name.clone())))
                 .children(self.editor_error(cx))
-                .child(self.editor_actions("bot-name", cx))
                 .into_any_element();
         }
         let name = div().debug_selector(|| "bot-head-name".into()).min_w_0().truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(name);
         if !editable || !self.can_open_editor() {
             return div().px(space::S1).child(name).into_any_element();
         }
-        self.inline_trigger("bot-name-edit", name, "Rename bot", Act::Rename, cx).into_any_element()
+        div().flex().items_center().gap(space::S2)
+            .child(self.inline_trigger("bot-name-edit", name, "Rename bot", Act::Rename, cx))
+            .children(self.editor_error(cx))
+            .into_any_element()
     }
 
     fn profile_job(&self, job: &str, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         if matches!(self.editor, Some(Editor::Job)) {
-            let label = |words| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words);
-            return div().flex().flex_col().gap(space::S1).px(space::S1).pt(space::S2)
-                .child(label("Summary"))
+            return div().id("bot-job-editor").flex().flex_col().gap(space::S1).px(space::S1)
+                .rounded(radius::NAV).bg(c.selected)
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if matches!(this.editor, Some(Editor::Job)) {
+                        this.submit_editor(false, cx);
+                    }
+                }))
+                .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(this.editor, Some(Editor::Job))
+                        && event.keystroke.key == "enter" && event.keystroke.modifiers.platform
+                    {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.save_editor(cx);
+                    }
+                }))
                 .child(div().debug_selector(|| "bot-job-line".into()).child(self.line.clone()))
-                .child(label("Instructions"))
+                .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Instructions"))
                 .child(div().debug_selector(|| "bot-job-details".into()).child(self.details.clone()))
-                .child(label("Shift-Return for a new line"))
                 .children(self.editor_error(cx))
-                .child(self.editor_actions("bot-job", cx))
                 .into_any_element();
         }
-        let text = div().min_w_0().text_ui(TypeSize::Body).text_color(c.text_muted)
+        let text = div().debug_selector(|| "bot-head-job".into()).min_w_0().text_ui(TypeSize::Body).text_color(c.text_muted)
             .child(if job.is_empty() { "Add a job".to_owned() } else { job.to_owned() });
         if !self.can_open_editor() {
             return div().px(space::S1).child(text).into_any_element();
@@ -276,19 +295,6 @@ impl BotsView {
     fn editor_error(&self, cx: &App) -> Option<impl IntoElement> {
         let color = cx.theme().colors.danger;
         self.edit_error.clone().map(|error| div().debug_selector(|| "bot-edit-error".into()).text_ui(TypeSize::Small).text_color(color).child(error))
-    }
-
-    fn editor_actions(&self, key: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
-        div().id(SharedString::from(format!("{key}-actions"))).flex().gap(space::S2)
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.close_editor(cx);
-                }
-            }))
-            .child(Button::new(SharedString::from(format!("{key}-save")), "Save").primary().loading(self.saving)
-                .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))))
-            .child(Button::new(SharedString::from(format!("{key}-cancel")), "Cancel").disabled(self.saving)
-                .on_click(cx.listener(|this, _, _, cx| this.close_editor(cx))))
     }
 
     fn row(&mut self, row: Row, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -569,9 +575,9 @@ impl BotsView {
                 480.,
                 div().flex().flex_col().gap(space::S2)
                     .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Name"))
-                    .child(div().debug_selector(|| "personality-edit-name".into()).child(self.name.clone()))
+                    .child(div().debug_selector(|| "personality-edit-name".into()).child(self.personality_name.clone()))
                     .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("Description"))
-                    .child(div().debug_selector(|| "personality-edit-description".into()).child(self.details.clone()))
+                    .child(div().debug_selector(|| "personality-edit-description".into()).child(self.personality_description.clone()))
                     .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child("This changes the personality for every bot that uses it."))
                     .into_any_element(),
                 Some("Save"),
