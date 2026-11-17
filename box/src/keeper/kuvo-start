@@ -23,13 +23,19 @@ up() { is "$(engine)" "$K/engine/"; }
 # The engine's version to start: this one's, or while that isn't there (Kuvo Code updated
 # while an engine of another version was at work), the newest one there is.
 V=@ENGINE@
-[ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
-# A new engine that didn't start (run/engine-back: "<it> <the one before> <when>", the swapper's):
-# the one before, for a day, while it's there (PROTOCOL.md, "A new engine").
-if [ -f "$R/engine-back" ] && read -r bv bf bt <"$R/engine-back" 2>/dev/null; then
-  case $bt in '' | *[!0-9]*) bt=0 ;; esac
-  [ "$bv" = "$V" ] && [ -n "$bf" ] && [ -x "$K/engine/$bf/opencode" ] && [ $(($(date +%s) - bt)) -lt 86400 ] && V=$bf
-fi
+P=$V
+# (Worked out again at each round of the keeper.) A new engine that didn't start (run/engine-back:
+# "<it> <the one before> <when>", the swapper's): the one before, for a day, while it's there
+# (PROTOCOL.md, "A new engine").
+pick() {
+  V=$P
+  [ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  if [ -f "$R/engine-back" ] && read -r bv bf bt <"$R/engine-back" 2>/dev/null; then
+    case $bt in '' | *[!0-9]*) bt=0 ;; esac
+    if [ "$bv" = "$V" ] && [ -n "$bf" ] && [ -x "$K/engine/$bf/opencode" ] && [ $(($(date +%s) - bt)) -lt 86400 ]; then V=$bf; fi
+  fi
+}
+pick
 # The swapper changing the engine has it stopped on purpose for a moment: no engine started meanwhile.
 swapping() { is "$(cat "$R/.engine-swapping/pid" 2>/dev/null)" kuvo-link; }
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
@@ -211,6 +217,7 @@ keep)
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     hold
+    pick
     # COMPAT(0.7 keeper): checked each round. Goes 3 months after 0.8.0.
     # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
     # mark left as it is, so that Mac doesn't put its own there again).
