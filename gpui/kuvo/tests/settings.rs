@@ -644,6 +644,7 @@ fn a_key_turned_down_stays_with_why_and_a_good_one_connects(cx: &mut TestAppCont
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
     click(cx, "account-openai-add-key");
+    assert_eq!(view.read_with(cx, |view, cx| view.sign_in().map(|sheet| sheet.read(cx).title())), Some("Add Key · OpenAI".into()), "the box's title, with the account's own name");
     assert!(matches!(step(&view, cx), Some(Step::Key(_))), "its only way is a key");
     cx.simulate_input("not-a-real-key");
     cx.simulate_keystrokes("enter");
@@ -665,6 +666,7 @@ fn credentials_on_the_computer_take_their_forms_answer(cx: &mut TestAppContext) 
     let (workspace, cx) = open(cx, stand_in.clone());
     let view = section(&workspace, cx, "Accounts");
     click(cx, "account-amazon-bedrock-connect");
+    assert_eq!(view.read_with(cx, |view, cx| view.sign_in().map(|sheet| sheet.read(cx).title())), Some("Connect · Amazon Bedrock".into()), "the box's title, with the account's own name");
     assert_eq!(step(&view, cx), Some(Step::Choose), "two ways: chosen");
     assert!(shown(cx, "sign-in-way-0") && shown(cx, "sign-in-way-1"));
     click(cx, "sign-in-way-0");

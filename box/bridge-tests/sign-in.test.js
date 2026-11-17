@@ -112,6 +112,12 @@ test("every account's ways in, for Accounts' Sign In buttons and the way in each
     { id: "amazon-bedrock", hint: "Connect", ways: 2 },
     { id: "github-copilot", hint: "Sign in with GitHub", ways: 1 },
   ]);
+  // Amazon Bedrock is connected with keys or the computer's credentials, never signed in to: its
+  // button says Connect, and its sheet is titled by the box with its own name (#734). A key-only
+  // account says Add Key, never Sign In.
+  const actions = Object.fromEntries(engine.json.accounts.map(account => [account.id, account.actions]));
+  assert.deepEqual(actions["amazon-bedrock"], [{ id: "signIn", label: "Connect", sheetTitle: "Connect · Amazon Bedrock" }]);
+  assert.deepEqual(actions["openai"], [{ id: "signIn", label: "Add Key", sheetTitle: "Add Key · OpenAI" }]);
   const agents = await answer("GET", "kuvo/sign-in/accounts?agents=1");
   assert.deepEqual(agents.json.accounts.map(({ id, hint }) => ({ id, hint })), [{ id: "claude-code", hint: "Claude Pro or Max" }]);
   assert.equal((await answer("GET", "kuvo/sign-in/accounts?agents=1", handlerOn(() => null))).status, 503);
