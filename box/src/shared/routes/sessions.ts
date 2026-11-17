@@ -65,10 +65,11 @@ export const WAITING = object({ id: string, "from?": string, text: string, "file
 
 /** A session's queue: whether it waits for Resume, what Stop held, in the order it goes, and what
  * waits on the box (left out when nothing does). */
-export const QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING) });
+// (`line`: while what waits on the box waits for the engine to change, PROTOCOL.md "A new engine".)
+export const QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
 
 /** `queue/add`'s answer: the queue, and whether the message waits on the box (else it went on). */
-const ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), waits: bool });
+const ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
 
 /** What `DELETE …/queue/<item>` took away, whole, for Undo to add back (`queue/add` with `kept`),
  * where it was: ahead of `before`, what came after it (none: it was last). */
@@ -87,7 +88,7 @@ export const QUEUE_ITEM = object({
 
 /** A session's queue with every message waiting, in the order clients show them (`items`: null
  * while the place it runs can't be read). */
-export const QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), items: nullable(list(QUEUE_ITEM)) });
+export const QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM)) });
 /** A session's queue as `GET …/queue` answers it: `items` only when asked (`?items=1`). */
 export const QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "items?": nullable(list(QUEUE_ITEM)) });
 
