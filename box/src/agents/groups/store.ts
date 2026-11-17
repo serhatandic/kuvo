@@ -6,6 +6,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { moveHold } from "../../shared/move-hold"
 import { emit } from "../events"
 import type { ModelRef } from "../wire"
 import type { SeatResult } from "./seat"
@@ -175,7 +176,7 @@ export interface MachineBot extends SeatBot {
   look?: unknown
   /** When it was made. */
   created?: string
-  /** A move holds it (`paused` in its folder says "moving", as the Mac's Moves writes it): it sits its turns out until it's there. */
+  /** A move holds it: it sits its turns out until it's there. */
   moving?: boolean
 }
 
@@ -322,7 +323,7 @@ export class GroupStore {
       agents: text(join(folder, "via"))?.trim() === "bridge",
       ...(described.look !== undefined ? { look: described.look } : {}),
       ...(typeof described.created === "string" ? { created: described.created } : {}),
-      ...(text(join(folder, "paused"))?.trim() === "moving" ? { moving: true } : {}),
+      ...(moveHold(text(join(folder, "paused"))) ? { moving: true } : {}),
     }
   }
 

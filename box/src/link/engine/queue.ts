@@ -14,9 +14,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isObject } from "../../shared/json";
-import { locked, writePrivate } from "../files";
+import { locked, writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
-import { asked, readBridgeFile } from "./client";
+import { asked, call, readBridgeFile } from "./client";
 import { swapHolds, swapLine, swapUnderWay } from "../../shared/engine-swap";
 import { carryUnderWay } from "./carrying";
 import { summaryAtEnd } from "../../shared/summaries";
@@ -72,7 +72,7 @@ export const queueFollowers = new Set<() => void>();
 const tellFollowers = () => { for (const tell of queueFollowers) tell(); };
 
 /** `session`'s queue as `change` makes it, read again just before, under its lock. */
-export const changeQueue = (session: string, change: (state: QueueState) => QueueState): QueueState => files.changeQueue(FILES, session, change, tellFollowers);
+export const changeQueue = (session: string, change: (state: QueueState) => QueueState, durable = false): QueueState => files.changeQueue(FILES, session, change, tellFollowers, durable);
 
 const address = (session: string) => encodeURIComponent(session);
 
@@ -196,13 +196,17 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
     return { ...state, ...(resume ? { paused: false, resumed: Date.now() } : {}), held: state.held.filter(id => id !== shown!.id), waiting: state.waiting!.filter(each => each !== shown) };
   });
   if (!shown) return null;
-  let whole: unknown = null;
-  try { whole = JSON.parse(fs.readFileSync(waitingFile(shown.id), "utf8")); } catch {}
+  const message = waitingPayload(shown.id);
   fs.rmSync(waitingFile(shown.id), { force: true });
-  const message = isObject(whole) && typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue")
-    ? { id: shown.id, text: whole.text, delivery: whole.delivery, ...(Array.isArray(whole.files) ? { files: whole.files } : {}), ...(isObject(whole.metadata) ? { metadata: whole.metadata } : {}) } as Outgoing & { id: string }
-    : null;
   return { shown, message, held, ...(before ? { before } : {}) };
+}
+
+function waitingPayload(id: string): (Outgoing & { id: string }) | null {
+  let whole: unknown = null;
+  try { whole = JSON.parse(fs.readFileSync(waitingFile(id), "utf8")); } catch {}
+  return isObject(whole) && typeof whole.text === "string" && (whole.delivery === "steer" || whole.delivery === "queue")
+    ? { id, text: whole.text, delivery: whole.delivery, ...(Array.isArray(whole.files) ? { files: whole.files } : {}), ...(isObject(whole.metadata) ? { metadata: whole.metadata } : {}) }
+    : null;
 }
 
 /** `from`'s queue as `to`'s, its conversation going on in another session (carried on with the
@@ -353,11 +357,11 @@ export function unpackQueues(carried: unknown, sessions: readonly string[]): str
       if (!shown || !message || typeof message.text !== "string" || waiting.some(other => other.id === shown.id)) continue;
       const brought = (Array.isArray(message.files) ? message.files : []).flatMap(file => isObject(file) && typeof file.uri === "string" && BASE64_DATA.test(file.uri)
         ? [{ uri: file.uri, ...(typeof file.name === "string" ? { name: file.name } : {}) }] : []);
-      writePrivate(waitingFile(shown.id), JSON.stringify({ id: shown.id, text: message.text, delivery: message.delivery === "steer" ? "steer" : "queue", ...(brought.length ? { files: brought } : {}) }));
+      writeDurablePrivate(waitingFile(shown.id), JSON.stringify({ id: shown.id, text: message.text, delivery: message.delivery === "steer" ? "steer" : "queue", ...(brought.length ? { files: brought } : {}), ...(isObject(message.metadata) ? { metadata: message.metadata } : {}) }), RUN);
       waiting.push(shown);
     }
     const held = (Array.isArray(queue.held) ? queue.held : []).filter((id): id is string => typeof id === "string" && waiting.some(each => each.id === id));
-    changeQueue(session, () => ({ paused: true, held, ...(waiting.length ? { waiting } : {}) }));
+    changeQueue(session, () => ({ paused: true, held, ...(waiting.length ? { waiting } : {}) }), true);
     if (queue.paused !== true) goOn.push(session);
   }
   return goOn;
@@ -486,25 +490,51 @@ export async function drain(target: Target, session: string): Promise<void> {
   if (!first) return;
   const next = inbox.find(item => item.id === first);
   if (!next) return sendWaiting(target, session, first);
+  if (queueOf(session).waiting?.some(item => item.id === next.id) && await acceptedWaiting(target, session, next.id)) confirmWaiting(session, next.id);
   if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
   else await interrupt(target, session, true);
   changeQueue(session, state => ({ ...state, held: state.held.filter(id => id !== next.id) }));
 }
 
-// `item` waiting on the box for `session`, to go now (nothing runs): back where it was if the
-// engine doesn't take it, unless the conversation is gone. One whose contents were lost goes no
-// further, and the next goes instead.
-async function sendWaiting(target: Target, session: string, item: string): Promise<void> {
-  const taken = takeWaiting(session, item);
-  if (!taken) return;
-  if (!taken.message) return drain(target, session);
-  try {
-    await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...taken.message, delivery: "steer" });
-  } catch (error) {
-    if (/ 404\.$/.test(String((error as Error | null)?.message))) return;
-    putBack(session, { ...taken, message: taken.message });
+// A send can lose its HTTP reply after the engine accepted it. Look in the inbox first (an item
+// can move from there to the conversation between these reads), then look up its exact message ID.
+async function acceptedWaiting(target: Target, session: string, item: string): Promise<boolean> {
+  let bridge = false;
+  try { bridge = readBridgeFile().port === target.port; } catch {}
+  if (!bridge && (await inboxOf(target, session)).some(entry => entry.id === item)) return true;
+  const route = bridge ? "prompt-receipt" : "message";
+  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`).catch(error => {
+    if ((error as { status?: number })?.status === 404) return null;
     throw error;
-  }
+  });
+  return isObject(stored) && (stored.id === item || (isObject(stored.info) && stored.info.id === item));
+}
+
+function confirmWaiting(session: string, item: string): void {
+  changeQueue(session, state => ({ ...state, held: state.held.filter(id => id !== item), waiting: state.waiting?.filter(each => each.id !== item) }), true);
+  fs.rmSync(waitingFile(item), { force: true });
+}
+
+const waitingSends = new Map<string, Promise<void>>();
+
+// Keep the index and payload until acceptance. A process killed before that point can retry with
+// the exact same ID, including when the engine took the prompt but the reply was lost.
+function sendWaiting(target: Target, session: string, item: string): Promise<void> {
+  const pending = waitingSends.get(session);
+  if (pending) return pending;
+  const send = (async () => {
+    if (!await acceptedWaiting(target, session, item)) {
+      const state = queueOf(session);
+      if (state.paused || !state.waiting?.some(each => each.id === item)) return;
+      const message = waitingPayload(item);
+      if (!message) throw new Error("A waiting message could not be read");
+      await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, delivery: "steer" });
+      if (!await acceptedWaiting(target, session, item)) throw new Error("A waiting message was not confirmed");
+    }
+    confirmWaiting(session, item);
+  })().finally(() => waitingSends.delete(session));
+  waitingSends.set(session, send);
+  return send;
 }
 
 // A message taken to go that didn't: where `place` puts it, as it was shown; else (it was the first
@@ -558,7 +588,7 @@ export async function stopSession(target: Target, session: string, holds = true,
 
 /** Resume: the queue goes on, its next message now. */
 export async function resumeQueue(target: Target, session: string): Promise<QueueState> {
-  changeQueue(session, current => ({ ...current, paused: false, resumed: Date.now() }));
+  changeQueue(session, current => ({ ...current, paused: false, resumed: Date.now() }), true);
   await drain(target, session);
   return queueOf(session);
 }

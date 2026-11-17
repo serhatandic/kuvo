@@ -29,6 +29,28 @@ export function writePrivate(file: string, text: string | Uint8Array) {
   placeWhole(file, text);
 }
 
+function syncPath(file: string): void {
+  const handle = fs.openSync(file, "r");
+  try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+}
+
+/** Seal a file and its directory entry. `through` also seals the entries of newly made parents. */
+export function syncDurableFile(file: string, through = path.dirname(file)): void {
+  for (let entry = file; ; entry = path.dirname(entry)) {
+    syncPath(entry);
+    if (entry === through) return;
+    if (path.dirname(entry) === entry) throw new Error("The sync must stop at a parent of the file");
+  }
+}
+
+/** A private atomic write whose contents and rename survive a power cut before the caller proceeds. */
+export function writeDurablePrivate(file: string, text: string | Uint8Array, through = path.dirname(file)): void {
+  const folder = path.dirname(file);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  placeWhole(file, text, 0o600, true);
+  syncDurableFile(folder, through);
+}
+
 /**
  * A key, token or sign-in in `file`: as `writePrivate`, and in a folder only you can open however
  * it was made (one others could read is closed to them first).
@@ -55,12 +77,13 @@ export function privateFolder(folder: string): string {
 // Through a new file only you can read (one of that name already there, or a link, isn't written
 // through), renamed into place: never seen half-written, and nothing left beside it if it fails.
 // (`mode` 0o700 for a script that runs as it lands.)
-export function placeWhole(file: string, text: string | Uint8Array, mode = 0o600) {
+export function placeWhole(file: string, text: string | Uint8Array, mode = 0o600, durable = false) {
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   try {
     fs.writeFileSync(temporary, text, { mode, flag: "wx" });
     // (Only a mode your umask took bits from, as a script's.)
     if ((fs.statSync(temporary).mode & 0o777) !== mode) fs.chmodSync(temporary, mode);
+    if (durable) syncPath(temporary);
     fs.renameSync(temporary, file);
   } catch (error) {
     try { fs.rmSync(temporary, { force: true }); } catch {}

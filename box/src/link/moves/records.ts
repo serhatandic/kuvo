@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import type { Move, MoveKind, MoveStage } from "../../shared/routes/moves";
-import { writePrivate } from "../files";
+import { syncDurableFile, writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
 
 export const MOVES = path.join(RUN, "moves");
@@ -22,8 +22,12 @@ export interface MoveRecord extends Move {
   /** The other box's key. */
   peer: string;
   wasPaused: boolean;
+  /** The original pause was persisted before this source wrote its move marker. */
+  pauseRecorded?: boolean;
   folder?: string;
   hash?: string;
+  /** Increases each time the source packs a replacement under this move ID. */
+  generation?: number;
   /** Where it is between the boxes: the source waits for `ready`, `arrived`, `switched`, `dropped`. */
   step?: "check" | "offer" | "parts" | "arrive" | "switch" | "drop" | "done";
   tries: number;
@@ -132,7 +136,7 @@ export function movesChanged(): void {
 }
 
 export function saveMove(record: MoveRecord): void {
-  writePrivate(fileOf(record.id), JSON.stringify(record));
+  writeDurablePrivate(fileOf(record.id), JSON.stringify(record), RUN);
   movesChanged();
 }
 
@@ -228,7 +232,8 @@ export type { Move, MoveKind, MoveStage };
 // Ownership decisions have no expiry: an offline source may ask again at any time. Session
 // lists on these entries are only for the short-lived routing hints below.
 const ENDED_FILE = path.join(MOVES, "ended.json");
-type Decision = { as: "switched" | "dropped"; at: number; sessions?: string[]; last?: string; peer?: string };
+export type BundleIdentity = { generation?: number; hash?: string };
+type Decision = BundleIdentity & { as: "switched" | "dropped"; at: number; sessions?: string[]; last?: string; peer?: string };
 const keptFor = (one: { as?: unknown; at?: unknown } | undefined): boolean =>
   typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped");
 
@@ -256,7 +261,7 @@ export const endedLast = (id: string): string | undefined => decision(id)?.last;
 
 /** `sessions`: those of the copy (switched to here, or let go of to live on where it came from). `last`:
  * the newest message of one switched to, as it came (what's after it ran here, whatever the clocks say). */
-export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sessions: readonly string[] = [], last?: string, peer?: string): void {
+export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sessions: readonly string[] = [], last?: string, peer?: string, bundle?: BundleIdentity): void {
   let kept: Record<string, Decision> = {};
   try {
     kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) ?? {};
@@ -265,15 +270,21 @@ export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sess
   }
   const before = kept[id];
   if (keptFor(before)) {
-    if (before!.as !== as) throw new Error("A move’s ownership decision cannot change");
+    if (before!.as !== as || before!.generation !== bundle?.generation || before!.hash !== bundle?.hash) {
+      throw new Error("A move’s ownership decision cannot change");
+    }
+    syncDurableFile(ENDED_FILE, RUN);
     return;
   }
   for (const one of Object.values(kept)) {
     if (now - one.at >= MOVED_FOR) delete one.sessions;
   }
-  kept[id] = { as, at: now, ...(sessions.length ? { sessions: [...sessions] } : {}), ...(last ? { last } : {}), ...(peer ? { peer } : {}) };
-  writePrivate(ENDED_FILE, JSON.stringify(kept));
+  kept[id] = { as, at: now, ...bundle, ...(sessions.length ? { sessions: [...sessions] } : {}), ...(last ? { last } : {}), ...(peer ? { peer } : {}) };
+  writeDurablePrivate(ENDED_FILE, JSON.stringify(kept), RUN);
 }
+
+/** A previous rename may be visible after its directory sync failed. Seal it before replying. */
+export const sealDecisions = () => syncDurableFile(ENDED_FILE, RUN);
 
 /** The conversations of copies here let go of lately (their moves taken back): deleted here, they
  * live on on the computer they came from. */

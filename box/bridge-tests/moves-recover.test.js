@@ -7,6 +7,7 @@
 //
 // Run with `node --test box/bridge-tests/moves-recover.test.js`.
 import "./test-safety.js";
+import { moveTime, scriptedMoves } from "./move-script.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -145,13 +146,14 @@ const lab = { key: peerKey, address: link.addressOf(crypto.randomBytes(32)).toSt
 link.writeLink({ macPeers: [lab] });
 link.macLink.overlay = { key: link.newKey().toString("base64url"), secret: crypto.randomBytes(32).toString("base64url"), relay: "wss://relay.test", name: "Studio Mac" };
 const told = [];
+const { sent, say } = scriptedMoves(link, lab);
 let script = () => {};
 link.sendMovesWith((_peer, move) => {
+  sent(move);
   told.push(move);
   setImmediate(() => script(move));
   return true;
 });
-const say = move => link.takeMoveMail(lab, move);
 let stop = new AbortController();
 link.watchMoves(() => ({ send() {} }), stop.signal);
 // This box starts again: what it kept in memory gone, its moves carried on from their records.
@@ -337,7 +339,7 @@ test("a group chat taken back as its group chats here aren't answering goes on a
     groups.down = false;
   }
   // A minute later, they answer again.
-  link.keepMoving(Date.now() + 61_000);
+  moveTime(link, Date.now() + 61_000);
   await until(() => groups.chats.get("grp_back1").status === "active");
 });
 
@@ -370,7 +372,7 @@ test("a copy let go of while this box's engine is down: the other computer hears
     assert.ok(engine.sessions.has("ses_down1"));
     // Not shown as moving here (lab goes on with it), and not this box's: nothing reaches it.
     assert.deepEqual((await ask("GET", "kuvo/moves")).json, { moves: [], away: ["ses_down1"] });
-    assert.equal(fs.readFileSync(path.join(wakes, "ses_down1", "paused"), "utf8"), "moving", "its wake-ups held");
+    assert.equal(fs.readFileSync(path.join(wakes, "ses_down1", "paused"), "utf8"), `moving:${id}`, "its wake-ups held");
     // Switched to now (lab's word crossed): never.
     await say({ op: "switch", safeSwitch: true, id });
     assert.equal(told.findLast(move => move.id === id)?.op, "dropped");
@@ -378,7 +380,7 @@ test("a copy let go of while this box's engine is down: the other computer hears
   } finally {
     engine.down = false;
   }
-  link.keepMoving(Date.now() + 61_000);
+  moveTime(link, Date.now() + 61_000);
   await until(() => !engine.sessions.has("ses_down1") && !recordOf("ses_down1"));
   assert.ok(!fs.existsSync(path.join(wakes, "ses_down1")), "nor its folder");
   // Lab asks again: gone.
@@ -401,7 +403,7 @@ test("a group chat let go of while group chats here aren't answering: the other 
   } finally {
     groups.down = false;
   }
-  link.keepMoving(Date.now() + 61_000);
+  moveTime(link, Date.now() + 61_000);
   await until(() => !groups.chats.has("grp_in1") && !recordOf("grp_in1"));
   await say({ op: "drop", id });
   assert.equal(told.findLast(move => move.id === id).op, "dropped");
@@ -427,7 +429,7 @@ test("word that its copy arrived, lost on the way: it's asked again, and the mov
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_lost1", to: peerKey });
   await until(() => recordOf("ses_lost1")?.step === "arrive");
   // A minute later.
-  link.keepMoving(Date.now() + 61_000);
+  moveTime(link, Date.now() + 61_000);
   await until(() => told.slice(before).some(move => move.op === "arrive"));
   const moved = await asked;
   assert.equal(moved.status, 200, JSON.stringify(moved.json));
@@ -439,7 +441,7 @@ test("asked again whether a copy arrived, this box says as it is: arrived, or fa
   const id = "mov_askin1";
   const hash = await comesHere(id, { kind: "chat", thing: "ses_askin1", name: "“Notes”", wasPaused: false, exports: [{ info: { id: "ses_askin1", title: "Notes" }, messages: [] }] });
   await say({ op: "arrive", id, hash });
-  assert.deepEqual(told.findLast(move => move.id === id), { op: "arrived", id, hash });
+  assert.deepEqual(told.findLast(move => move.id === id), { op: "arrived", id, generation: 1, hash });
   await say({ op: "arrive", id: "mov_askin2", hash: "x" });
   assert.equal(told.findLast(move => move.id === "mov_askin2")?.op, "failed");
   await say({ op: "drop", id });
@@ -481,9 +483,9 @@ test("offered again (it got more as it moved) and never answered: it's taken bac
   await until(() => offers === 2);
   // Lab went away: the offer goes again each minute, unanswered.
   const now = Date.now();
-  for (const minutes of [1, 2, 3]) link.keepMoving(now + minutes * 60_000 + 1_000);
+  for (const minutes of [1, 2, 3]) moveTime(link, now + minutes * 60_000 + 1_000);
   await until(() => offers >= 3);
-  link.keepMoving(now + 11 * 60_000);
+  moveTime(link, now + 11 * 60_000);
   await until(() => !recordOf("ses_again1") || recordOf("ses_again1").failed);
   const moved = await asked;
   assert.equal(moved.status, 503, JSON.stringify(moved.json));
@@ -500,9 +502,9 @@ test("getting it ready to move stuck (this box's engine not answering): it's tak
   try {
     const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_hang1", to: peerKey });
     await until(() => engine.exporting);
-    assert.equal(fs.readFileSync(path.join(wakes, "ses_hang1", "paused"), "utf8"), "moving", "held while it's got ready");
+    assert.equal(fs.readFileSync(path.join(wakes, "ses_hang1", "paused"), "utf8"), `moving:${recordOf("ses_hang1").id}`, "held while it's got ready");
     // Half an hour and more later.
-    link.keepMoving(Date.now() + 31 * 60_000);
+    moveTime(link, Date.now() + 31 * 60_000);
     const moved = await asked;
     assert.equal(moved.status, 409, JSON.stringify(moved.json));
     assert.match(moved.json.message, /took too long/);
@@ -527,7 +529,7 @@ test("a move noted by a process that isn't the watcher (box route) is carried ou
   };
   const before = told.length;
   writeRecord(record("mov_route1", "ses_route1", Date.now()));
-  link.keepMoving();
+  moveTime(link);
   await until(() => told.slice(before).some(move => move.op === "offer" && move.id === "mov_route1"));
   await until(() => recordOf("ses_route1")?.stage === "copying");
   say({ op: "refused", id: "mov_route1", hash: recordOf("ses_route1").hash, message: "Not now." });
@@ -537,9 +539,9 @@ test("a move noted by a process that isn't the watcher (box route) is carried ou
   // Never answered, and no hold time yet: half an hour after it began, it's taken back, not left for good.
   script = () => {};
   writeRecord(record("mov_route2", "ses_route2", Date.now()));
-  link.keepMoving(Date.now() + 29 * 60_000);
+  moveTime(link, Date.now() + 29 * 60_000);
   assert.ok(recordOf("ses_route2"), "not yet");
-  link.keepMoving(Date.now() + 31 * 60_000);
+  moveTime(link, Date.now() + 31 * 60_000);
   await until(() => recordOf("ses_route2") === null);
   assert.ok(engine.sessions.has("ses_route2"));
 });
@@ -691,7 +693,7 @@ test("a copy this box can't let go of is offered again: refused, saying why, rat
   } finally {
     engine.down = false;
   }
-  link.keepMoving(Date.now() + 61_000);
+  moveTime(link, Date.now() + 61_000);
   await until(() => !engine.sessions.has("ses_old1") && !recordOf("ses_old1"));
 });
 
@@ -707,11 +709,11 @@ test("a copy that still can't be let go of after a week says so in the log, once
   engine.down = true;
   try {
     const refused = engine.refused;
-    link.keepMoving(started + 8 * 24 * 3600_000);
+    moveTime(link, started + 8 * 24 * 3600_000);
     await until(() => logged.length > 0);
     assert.ok(engine.refused > refused, "it tried");
     assert.match(logged[0], /^kuvo-link: a copy of “Notes” that came here couldn’t be let go of in a week/);
-    link.keepMoving(started + 8 * 24 * 3600_000 + 2 * 3600_000);
+    moveTime(link, started + 8 * 24 * 3600_000 + 2 * 3600_000);
     await until(() => engine.refused > refused + 1);
     assert.equal(logged.length, 1, "said once");
     assert.deepEqual((await ask("GET", "kuvo/moves")).json.away, ["ses_stuck1"], "held: nothing reaches it");
@@ -719,7 +721,7 @@ test("a copy that still can't be let go of after a week says so in the log, once
     engine.down = false;
     console.error = error;
   }
-  link.keepMoving(started + 8 * 24 * 3600_000 + 4 * 3600_000);
+  moveTime(link, started + 8 * 24 * 3600_000 + 4 * 3600_000);
   await until(() => !engine.sessions.has("ses_stuck1") && !recordOf("ses_stuck1"));
 });
 
@@ -809,10 +811,10 @@ test("a copy held here a long while, only now being let go of, isn't said in the
     // Lab takes it back now, as this box's engine refuses to let it go; a day on, it still does.
     await say({ op: "drop", id });
     const refused = engine.refused;
-    link.keepMoving(Date.now() + 24 * 3600_000);
+    moveTime(link, Date.now() + 24 * 3600_000);
     await until(() => engine.refused > refused);
     engine.down = false;
-    link.keepMoving(Date.now() + 24 * 3600_000 + 2 * 3600_000);
+    moveTime(link, Date.now() + 24 * 3600_000 + 2 * 3600_000);
     await until(() => !engine.sessions.has("ses_long1") && !recordOf("ses_long1"));
     assert.deepEqual(logged, []);
   } finally {

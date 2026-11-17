@@ -62,7 +62,7 @@ function body(request) {
 // An engine with its conversations (`{id, title, directory, messages}`), as its API exports, imports
 // and deletes them.
 async function engineWith(sessions) {
-  const engine = { sessions: new Map(sessions.map(each => [each.id, each])), prompts: [], entries: [], cursors: new Map(), active: new Set() };
+  const engine = { sessions: new Map(sessions.map(each => [each.id, each])), prompts: [], accepted: new Map(), entries: [], cursors: new Map(), active: new Set() };
   const server = http.createServer(async (request, response) => {
     const given = await body(request);
     const url = new URL(request.url, "http://x");
@@ -99,7 +99,7 @@ async function engineWith(sessions) {
       const session = engine.sessions.get(exported[1]);
       return session ? send(200, { info: { id: session.id, title: session.title, ...(session.parent ? { parentID: session.parent } : {}), ...(session.metadata ? { metadata: session.metadata } : {}) }, messages: session.messages }) : send(404, null);
     }
-    const match = url.pathname.match(/^\/api\/session\/([^/]+)(\/inbox(?:\/([^/]+))?|\/prompt|\/instructions\/entries|\/interrupt|\/message)?$/);
+    const match = url.pathname.match(/^\/api\/session\/([^/]+)(\/inbox(?:\/([^/]+))?|\/prompt|\/instructions\/entries|\/interrupt|\/message(?:\/([^/]+))?)?$/);
     const session = match && engine.sessions.get(match[1]);
     if (!session) return send(404, null);
     // What it holds to go (`inbox`: messages sent while it worked), as the engine keeps them.
@@ -116,8 +116,11 @@ async function engineWith(sessions) {
       engine.active.delete(session.id);
       return send(200, true);
     }
+    if (match[4]) return engine.accepted.get(session.id)?.has(match[4]) ? send(200, { id: match[4] }) : send(404, null);
     if (match[2] === "/message") return send(200, []);
     if (match[2] === "/prompt") {
+      if (!engine.accepted.has(session.id)) engine.accepted.set(session.id, new Set());
+      engine.accepted.get(session.id).add(given.id);
       engine.prompts.push({ session: session.id, text: given.text, delivery: given.delivery, ...(given.files ? { files: given.files } : {}) });
       return send(200, {});
     }
@@ -304,10 +307,14 @@ const trashed = home => {
 
 test("where something can go: each of your other computers", { timeout: 60_000 }, async t => {
   signal = t.signal;
-  // Setup can try mail before both peers are on the relay. A message from lab marks it as back.
-  link.peerMail({ ...lab, kind: "machine" }, { at: Date.now() }, null);
-  const places = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
-  assert.equal(places.status, 200);
+  const whenConnected = () => eventually(async () => {
+    // Setup can try mail before both peers are on the relay. A message from lab marks it as back.
+    link.peerMail({ ...lab, kind: "machine" }, { at: Date.now() }, null);
+    const places = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
+    assert.equal(places.status, 200);
+    return places.json.places[0]?.ok ? places : null;
+  });
+  const places = await whenConnected();
   const [{ confirm, ...place }] = places.json.places;
   assert.deepEqual(place, { key: lab.key, name: "lab", kind: "machine", ok: true });
   assert.equal(confirm.title, "Move “Trip plans” to lab?");
@@ -316,7 +323,7 @@ test("where something can go: each of your other computers", { timeout: 60_000 }
   assert.doesNotMatch(confirm.message, /A turn is running/);
   macEngine.active.add("ses_chat1");
   t.after(() => macEngine.active.delete("ses_chat1"));
-  const busy = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
+  const busy = await whenConnected();
   assert.match(busy.json.places[0].confirm.message, /A turn is running/);
 
   const reach = path.join(macHome, "run", "peer-reach.json");

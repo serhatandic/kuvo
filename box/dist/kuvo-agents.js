@@ -1452,6 +1452,29 @@ function writePrivate(file, text) {
   fs4.mkdirSync(path3.dirname(file), { recursive: true, mode: 448 });
   placeWhole(file, text);
 }
+function syncPath(file) {
+  const handle = fs4.openSync(file, "r");
+  try {
+    fs4.fsyncSync(handle);
+  } finally {
+    fs4.closeSync(handle);
+  }
+}
+function syncDurableFile(file, through = path3.dirname(file)) {
+  for (let entry = file;; entry = path3.dirname(entry)) {
+    syncPath(entry);
+    if (entry === through)
+      return;
+    if (path3.dirname(entry) === entry)
+      throw new Error("The sync must stop at a parent of the file");
+  }
+}
+function writeDurablePrivate(file, text, through = path3.dirname(file)) {
+  const folder = path3.dirname(file);
+  fs4.mkdirSync(folder, { recursive: true, mode: 448 });
+  placeWhole(file, text, 384, true);
+  syncDurableFile(folder, through);
+}
 function writeSecret(file, text, mode = 384) {
   privateFolder(path3.dirname(file));
   placeWhole(file, text, mode);
@@ -1469,12 +1492,14 @@ function privateFolder(folder) {
     fs4.chmodSync(real, 448);
   return folder;
 }
-function placeWhole(file, text, mode = 384) {
+function placeWhole(file, text, mode = 384, durable = false) {
   const temporary = `${file}.${process.pid}.${crypto2.randomBytes(4).toString("hex")}.tmp`;
   try {
     fs4.writeFileSync(temporary, text, { mode, flag: "wx" });
     if ((fs4.statSync(temporary).mode & 511) !== mode)
       fs4.chmodSync(temporary, mode);
+    if (durable)
+      syncPath(temporary);
     fs4.renameSync(temporary, file);
   } catch (error) {
     try {
@@ -29080,6 +29105,13 @@ class Sessions {
       return this.promptSubagent(id, record, input);
     this.enqueue(id, record, live, input);
   }
+  confirmPrompt(id, message) {
+    const record = this.record(id);
+    if (!this.queue(record).some((input) => input.id === message) && !record.messages.some((entry) => entry.id === message))
+      return false;
+    this.store.sealPrompt(id, record);
+    return true;
+  }
   enqueue(id, record, live, input) {
     const queue = this.queue(record);
     if (queue.some((waiting) => waiting.id === input.id) || record.messages.some((message) => message.id === input.id))
@@ -32306,7 +32338,7 @@ function readQueues(files) {
   } catch {}
   return isObject(all) ? Object.fromEntries(Object.entries(all).map(([session, state]) => [session, keptState(state)])) : {};
 }
-function changeQueue(files, session, change, changed) {
+function changeQueue(files, session, change, changed, durable = false) {
   let made = false;
   const after = locked(files.lock, () => {
     const all = readQueues(files);
@@ -32318,7 +32350,7 @@ function changeQueue(files, session, change, changed) {
     if (!state.cameHeld?.length)
       delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made)
+    if (!made && !durable)
       return state;
     all[session] = state;
     for (const [id, each] of Object.entries(all)) {
@@ -32334,9 +32366,12 @@ function changeQueue(files, session, change, changed) {
       if (!showsQueue(each) && !each.resumed && !each.arriving)
         delete all[id];
     }
-    try {
-      writePrivate(files.file, JSON.stringify(all));
-    } catch {}
+    if (durable)
+      writeDurablePrivate(files.file, JSON.stringify(all));
+    else
+      try {
+        writePrivate(files.file, JSON.stringify(all));
+      } catch {}
     return state;
   });
   if (made)
@@ -35392,6 +35427,16 @@ var weekdayOf2 = (time, zone) => {
 // box/src/agents/groups/store.ts
 import { existsSync as existsSync19, mkdirSync as mkdirSync25, readdirSync as readdirSync21, readFileSync as readFileSync35, renameSync as renameSync21, rmSync as rmSync17, writeFileSync as writeFileSync26 } from "fs";
 import { join as join41 } from "path";
+
+// box/src/shared/move-hold.ts
+function moveHold(value) {
+  const marker = value?.trim();
+  if (marker === "moving")
+    return marker;
+  return /^moving:mov_[A-Za-z0-9]{1,40}$/.test(marker ?? "") ? marker.slice("moving:".length) : null;
+}
+
+// box/src/agents/groups/store.ts
 var version2 = 1;
 function isTurning(value) {
   return value && typeof value.bot === "string" && typeof value.seat === "string" && typeof value.agents === "boolean" && typeof value.prompt === "string" && typeof value.sent === "number" && (value.wrapUp === undefined || typeof value.wrapUp === "boolean");
@@ -35559,7 +35604,7 @@ class GroupStore {
       agents: text5(join41(folder, "via"))?.trim() === "bridge",
       ...described.look !== undefined ? { look: described.look } : {},
       ...typeof described.created === "string" ? { created: described.created } : {},
-      ...text5(join41(folder, "paused"))?.trim() === "moving" ? { moving: true } : {}
+      ...moveHold(text5(join41(folder, "paused"))) ? { moving: true } : {}
     };
   }
   peerMemory(bot) {
@@ -37728,6 +37773,10 @@ function handler(context) {
             sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined });
             return json15({});
           }
+          case "prompt-receipt":
+            if (method === "GET" && c)
+              return sessions.confirmPrompt(id, c) ? json15({ data: { id: c } }) : error2(404, "No such message.");
+            break;
           case "fork":
             return json15({ data: sessions.fork(id, String((await body()).before ?? "")) });
           case "revert":
@@ -38350,7 +38399,6 @@ import { spawn as spawn7 } from "child_process";
 // box/src/agents/store.ts
 import { mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync39, renameSync as renameSync24, rmSync as rmSync18, statSync as statSync18, writeFileSync as writeFileSync29 } from "fs";
 import { join as join42 } from "path";
-
 class Store {
   root;
   records = new Map;
@@ -38420,22 +38468,29 @@ class Store {
     for (const id of [...this.pending.keys()])
       this.save(id, true);
   }
+  sealPrompt(id, record) {
+    this.writeRecord(id, record, true);
+  }
+  writeRecord(id, record, durable = false) {
+    const folder = join42(this.root, id);
+    mkdirSync27(folder, { recursive: true });
+    for (const [name, value] of [["session.json", record.session], ["messages.json", record.messages], ["agent.json", record.agent]]) {
+      const file = join42(folder, name);
+      const text = JSON.stringify(value);
+      if (durable)
+        writeDurablePrivate(file, text, this.root);
+      else {
+        writeFileSync29(file + ".new", text);
+        renameSync24(file + ".new", file);
+      }
+    }
+  }
   write(id) {
     const record = this.records.get(id);
     if (!record)
       return;
     try {
-      const folder = join42(this.root, id);
-      mkdirSync27(folder, { recursive: true });
-      for (const [name, value] of [
-        ["session.json", record.session],
-        ["messages.json", record.messages],
-        ["agent.json", record.agent]
-      ]) {
-        const file = join42(folder, name);
-        writeFileSync29(file + ".new", JSON.stringify(value));
-        renameSync24(file + ".new", file);
-      }
+      this.writeRecord(id, record);
     } catch (error) {
       console.error(`session ${id} not written:`, error);
       if (!this.pending.has(id))
@@ -39466,4 +39521,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents 8e50617dc193537af82b6dc0662fe3fe2cffcd66bd0d4d8ae3be3f4c6d556644
+// Built from Packages/Box/src/agents 41b97daa6ef8c5cf506fc5a31b3dd6b5ffa0093f3d7da33d477789c84f0ea8b0

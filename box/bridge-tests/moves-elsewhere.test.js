@@ -9,6 +9,7 @@
 //
 // Run with `node --test box/bridge-tests/moves-elsewhere.test.js`.
 import "./test-safety.js";
+import { moveTime } from "./move-script.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -165,8 +166,8 @@ test("a computer gone quiet mid-move: a client following this box hears its move
   assert.deepEqual(remoteFacts((await events.next()).elsewhere), [{ box: lab.key, moves: [one] }]);
   // A look within the few minutes changes nothing; the one after them tells it's gone (a client
   // reading lab meanwhile reads it until then, and no longer).
-  link.keepMoving(Date.now() + 60_000);
-  link.keepMoving(Date.now() + 4 * 60_000);
+  moveTime(link, Date.now() + 60_000);
+  moveTime(link, Date.now() + 4 * 60_000);
   assert.deepEqual(underWay(await events.next()), { moves: [], away: [] });
   assert.deepEqual(underWay(await ask("kuvo/moves")), { moves: [], away: [] });
   events.stop();
@@ -181,27 +182,27 @@ const shown = (stage, extra = {}) => ({ id: "mov_here1", kind: "chat", thing: "s
 test("this box tells each of your computers what it moves at its next look: as it changes, each minute while it moves, and once that it's over", async () => {
   const start = Date.now() + 10_000;
   told.length = 0;
-  link.keepMoving(start);
+  moveTime(link, start);
   assert.deepEqual(told, [], "nothing moving here: nothing said");
   coming("copying");
-  link.keepMoving(start + 1_000);
+  moveTime(link, start + 1_000);
   assert.deepEqual(told.map(each => each.peer).sort(), [lab.key, pi.key].sort(), "every computer told");
   assert.deepEqual(told.map(each => each.moving), [{ moves: [shown("copying")] }, { moves: [shown("copying")] }]);
   told.length = 0;
-  link.keepMoving(start + 2_000);
+  moveTime(link, start + 2_000);
   assert.deepEqual(told, [], "nothing changed: nothing said");
   // How much of its copy came isn't news; going a stage on is.
   coming("copying", { sent: 50, size: 100 });
-  link.keepMoving(start + 3_000);
+  moveTime(link, start + 3_000);
   assert.deepEqual(told, []);
   coming("switching", { sent: 50, size: 100 });
-  link.keepMoving(start + 4_000);
+  moveTime(link, start + 4_000);
   assert.deepEqual(told.map(each => each.moving.moves[0].stage), ["switching", "switching"]);
   told.length = 0;
   // A minute on, still moving: said again (a computer that started again since, or missed it, learns).
-  link.keepMoving(start + 30_000);
+  moveTime(link, start + 30_000);
   assert.deepEqual(told, []);
-  link.keepMoving(start + 65_000);
+  moveTime(link, start + 65_000);
   assert.deepEqual(told.map(each => each.moving), [{ moves: [shown("switching", { sent: 50, size: 100 })] }, { moves: [shown("switching", { sent: 50, size: 100 })] }]);
   // What it says is what another box takes: said to this box as pi's word (as a move between pi
   // and lab, so it isn't this box's own), it's listed as pi's.
@@ -212,11 +213,11 @@ test("this box tells each of your computers what it moves at its next look: as i
   // It's over: said once, then nothing more.
   told.length = 0;
   fs.rmSync(path.join(movesFolder, "mov_here1.json"));
-  link.keepMoving(start + 66_000);
+  moveTime(link, start + 66_000);
   assert.deepEqual(told.map(each => each.moving), [{ moves: [] }, { moves: [] }]);
   told.length = 0;
-  link.keepMoving(start + 67_000);
-  link.keepMoving(start + 300_000);
+  moveTime(link, start + 67_000);
+  moveTime(link, start + 300_000);
   assert.deepEqual(told, []);
 });
 
@@ -228,23 +229,23 @@ test("what its relay connection didn't take is said again at the next look, and 
   up = false;
   coming("copying");
   const waiting = { moves: [shown("copying", { waiting: true })] };
-  link.keepMoving(start);
-  link.keepMoving(start + 3_000);
+  moveTime(link, start);
+  moveTime(link, start + 3_000);
   assert.deepEqual(told, []);
   up = true;
-  link.keepMoving(start + 6_000);
+  moveTime(link, start + 6_000);
   assert.deepEqual(told.map(each => each.moving), [waiting, waiting]);
   told.length = 0;
   // Pi connects (it asks for agents): it's told at the next look, not a minute on.
   link.peerMail(pi, { ask: "agents", at: ++clock }, null);
-  link.keepMoving(start + 9_000);
+  moveTime(link, start + 9_000);
   assert.deepEqual(told.map(each => each.moving), [waiting, waiting]);
   told.length = 0;
   // Its last word lost too (the connection closing): said once it's back.
   fs.rmSync(path.join(movesFolder, "mov_here1.json"));
   up = false;
-  link.keepMoving(start + 12_000);
+  moveTime(link, start + 12_000);
   up = true;
-  link.keepMoving(start + 15_000);
+  moveTime(link, start + 15_000);
   assert.deepEqual(told.map(each => each.moving), [{ moves: [] }, { moves: [] }]);
 });

@@ -805,7 +805,7 @@ connection.
     given `fresh`; asked without it, the home answers `{phase: "anew"}` and forgets the turn, the host
     asks again at once with `fresh` (if it had it), and a home asked without it again says `anew`
     once more, then takes it as it is.
-  - A home whose bot a move holds (its folder's `paused` says `moving`) answers a turn at once
+  - A home whose bot a move holds (its folder's `paused` names the move) answers a turn at once
     with `{ok: false, why, moving: true}`, and fails a part given to it the same way: the chat says
     the bot is moving and sat this out.
   - **`state`** (home → host): `{id, state}`, `state` one of `{phase: "taken"}` (at once),
@@ -949,7 +949,7 @@ A client asks the box it lives on once, and watches; the move goes on with no cl
   theirs, so a client takes each `id` once.
 - While it moves, nothing reaches it: a prompt to one of its conversations through the link answers
   `409 {message}`, as does a change to its queue (`…/queue/…`; reading it still works, and a Stop
-  works while the box it leaves waits for its turn to end), a letter `retry`, its wake-ups and watches are held (`paused` says `moving`), and
+  works while the box it leaves waits for its turn to end), a letter `retry`, its wake-ups and watches are held (`paused` records the move ID), and
   changing or deleting the bot answers `409`, and what its sessions or an ask's late answer would
   tell it waits until it's there. A client shows it as moving.
 
@@ -1012,7 +1012,7 @@ until it's answered:
 4. Once all are there and its SHA-256 matches, the box it goes to puts it in place, held, in the
    move's turn (a step about it that comes meanwhile waits), saying `working` now and each minute
    until it's done: the folder where it keeps them (only files, folders and relative links within it: a
-   link out of it or anything else in it or for it, or a `move.json` that isn't a file of its own, and it's refused), `paused` saying `moving`,
+   link out of it or anything else in it or for it, or a `move.json` that isn't a file of its own, and it's refused), `paused` naming the move,
    a chat's `directory` its chats folder; each conversation imported under its own ID (noted first;
    they must be one conversation and its subagents', rooted at the chat or at the conversation a
    bot's folder names, none of them on this box already); their `queues` kept paused in place of
@@ -1055,25 +1055,34 @@ The sessions it started aren't part of it: they stay on the computer they're on,
 touches them, nor a memory folder one of them still uses.
 
 Each move's steps are taken one at a time on each computer. New transfers agree on the durable
-switch protocol in the `offer` and `ready` messages (`safeSwitch: true`). Both computers must speak
-it before the source sends the bundle.
+switch protocol in `offer` and `ready` (`safeSwitch: true`). They carry the bundle's `generation`
+and SHA-256 `hash` (base64url). Each replacement increments the generation. Parts, replies and
+the switch must name the same generation and hash. Older offers and their replies cannot replace
+or commit the current bundle. Both computers must agree before the source sends any parts.
 
-1. The source holds its original while the destination sets up a held copy. Before requesting a
-   switch, the source records that ownership is now uncertain. It sends `switch {safeSwitch: true}`
-   and keeps the original held while awaiting the destination's decision.
-2. The destination records its decision to own the copy before activating the group, queues or
-   wake-ups. It resumes activation after a restart. Committed copies are protected against
+1. The source records the previous pause before writing a hold owned by this move. A failed move
+   can release only its own hold. The destination sets up a held copy and reports the verified
+   bundle. The source writes and syncs its switch record and directory before requesting a switch
+   for that bundle. It keeps the original held while awaiting the destination's decision.
+2. The destination writes and syncs its decision to own that bundle before activating the group,
+   queues or wake-ups. It resumes activation after a restart. A queue send keeps its pending
+   entry and payload until the engine confirms the same message ID in its inbox or conversation.
+   The coding agents' bridge seals accepted prompts to disk before answering `prompt-receipt`.
+   Committed copies are protected against
    `drop`, age limits and peer removal, including while activation is unfinished.
-3. Once activation completes, the destination records and sends `switched`. It keeps the decision
+3. Once activation completes, the destination syncs its final decision before sending `switched`
+   for that generation and hash. It keeps the decision
    indefinitely, so it can answer again even if the source was offline for years. A late or
-   repeated offer cannot replace that copy.
+   repeated offer cannot replace that copy. An older unbound switch can ask for a prior decision
+   with `decision?`, which cannot start a copy that was never committed.
 4. The source retires its original permanently on `switched`. Backup and cleanup are retried
    separately. If they are blocked, the receipt reports success with cleanup pending. Source
    sessions are only deleted after the backup is recorded.
 
 Before the source requests the switch, a failed transfer can go back to the original. Its failure
 is recorded before releasing the hold, and any held copy at the destination is dropped. A
-destination that durably records that it never switched answers `dropped {neverSwitched: true}`.
+destination that durably records that it never switched answers `dropped {neverSwitched: true}`
+for the matching bundle.
 That proof is the only way a source that has requested a switch can resume the original. Unknown
 moves give no ownership decision. An unanswered switch is sent again, and removing the computer
 does not release the hold. Legacy records which might contain an already activated copy are

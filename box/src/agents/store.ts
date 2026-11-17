@@ -4,6 +4,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { writeDurablePrivate } from "../shared/files"
 import type { Message, Session } from "./wire"
 
 export interface Record_ {
@@ -100,21 +101,30 @@ export class Store {
     for (const id of [...this.pending.keys()]) this.save(id, true)
   }
 
+  /** The queue handoff keeps its backup until the bridge has sealed the accepted input. */
+  sealPrompt(id: string, record: Record_) {
+    this.writeRecord(id, record, true)
+  }
+
+  private writeRecord(id: string, record: Record_, durable = false) {
+    const folder = join(this.root, id)
+    mkdirSync(folder, { recursive: true })
+    for (const [name, value] of [["session.json", record.session], ["messages.json", record.messages], ["agent.json", record.agent]] as const) {
+      const file = join(folder, name)
+      const text = JSON.stringify(value)
+      if (durable) writeDurablePrivate(file, text, this.root)
+      else {
+        writeFileSync(file + ".new", text)
+        renameSync(file + ".new", file)
+      }
+    }
+  }
+
   private write(id: string) {
     const record = this.records.get(id)
     if (!record) return
     try {
-      const folder = join(this.root, id)
-      mkdirSync(folder, { recursive: true })
-      for (const [name, value] of [
-        ["session.json", record.session],
-        ["messages.json", record.messages],
-        ["agent.json", record.agent],
-      ] as const) {
-        const file = join(folder, name)
-        writeFileSync(file + ".new", JSON.stringify(value))
-        renameSync(file + ".new", file)
-      }
+      this.writeRecord(id, record)
     } catch (error) {
       // Not written now (a full disk, say): the session goes on as it is, and it's tried again in a
       // while, or as everything waiting is written.

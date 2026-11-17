@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "./json";
-import { locked, writePrivate } from "./files";
+import { locked, writeDurablePrivate, writePrivate } from "./files";
 
 /** Where a box keeps its queues: its run folder's. */
 export interface QueueFiles {
@@ -166,7 +166,7 @@ export function readQueues(files: QueueFiles): Record<string, QueueState> {
 
 /** `session`'s queue as `change` makes it, read again just before, under its lock; `changed`, told
  * once it's written. */
-export function changeQueue(files: QueueFiles, session: string, change: (state: QueueState) => QueueState, changed?: () => void): QueueState {
+export function changeQueue(files: QueueFiles, session: string, change: (state: QueueState) => QueueState, changed?: () => void, durable = false): QueueState {
   let made = false;
   const after = locked(files.lock, () => {
     const all = readQueues(files);
@@ -177,7 +177,7 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
     if (state.cameHeld) state.cameHeld = state.cameHeld.filter(id => state.held.includes(id));
     if (!state.cameHeld?.length) delete state.cameHeld;
     made = JSON.stringify(state) !== JSON.stringify(before);
-    if (!made) return state;
+    if (!made && !durable) return state;
     all[session] = state;
     // Kept while it's paused, holds something, was resumed a moment ago, or waits for a message
     // a Stop named (until it's held, or its time is up).
@@ -189,7 +189,8 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
       }
       if (!showsQueue(each) && !each.resumed && !each.arriving) delete all[id];
     }
-    try { writePrivate(files.file, JSON.stringify(all)); } catch {}
+    if (durable) writeDurablePrivate(files.file, JSON.stringify(all));
+    else try { writePrivate(files.file, JSON.stringify(all)); } catch {}
     return state;
   });
   if (made) changed?.();

@@ -2,7 +2,8 @@
 // Auto down its list, and what a session keeps. Each test has a folder of its own, removed after.
 
 import "../safety"
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
+import fs from "node:fs"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
@@ -265,6 +266,22 @@ describe("what's waiting", () => {
     sessions.setDelivery(id, held, "steer")
     await settled(id, 4)
     expect(a.runs.map((run) => run.text)).toEqual(["now", "working", "held", "behind"])
+  })
+
+  test("a prompt receipt requires the accepted message ID and a successful disk sync", async () => {
+    const id = create()
+    a.script = works
+    send(id, "working")
+    await until(() => a.runs.length === 1)
+    const pending = send(id, "keep this queued", "queue")
+    expect(sessions.confirmPrompt(id, "msg_Unknown")).toBe(false)
+    const disk = spyOn(fs, "fsyncSync").mockImplementation(() => { throw new Error("Injected sync failure") })
+    try {
+      expect(() => sessions.confirmPrompt(id, pending)).toThrow("Injected sync failure")
+    } finally { disk.mockRestore() }
+    expect(sessions.confirmPrompt(id, pending)).toBe(true)
+    const reopened = new Store(join(root, "sessions"))
+    expect(reopened.get(id)?.agent.inbox).toContainEqual(expect.objectContaining({ id: pending, text: "keep this queued" }))
   })
 
   test("after an error, nothing more starts on its own", async () => {
