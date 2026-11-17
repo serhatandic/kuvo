@@ -1417,7 +1417,7 @@ fn main() -> anyhow::Result<()> {
                 change(Change::TextSize(text_size), cx);
                 let width = match screen.slug {
                     "sidebar-wide" => 420.,
-                    "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => 136.,
+                    "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => kuvo::sidebar::COMPACT_WIDTH,
                     _ => kuvo::sidebar::WIDTH,
                 };
                 change(Change::SidebarWidth(width), cx);
@@ -1429,6 +1429,9 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "sidebar-narrow-bots" {
                 stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 60_000. }));
+            }
+            if screen.slug == "sidebar-search-results" {
+                stand_in.set_facts("ses_signup", |facts| facts["bot"] = serde_json::json!("bot_mira"));
             }
             if screen.slug.starts_with("settings-commands") {
                 stand_in.add_settings_section(serde_json::json!({"id":"commands","title":"Commands","group":"Agents & Tools","icon":"terminal","line":"Prompts you use often, run by typing / and their name."}), serde_json::from_str(include_str!("../stand_in/settings/commands.json")).expect("Commands fixture"));

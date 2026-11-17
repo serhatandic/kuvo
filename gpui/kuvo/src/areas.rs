@@ -597,6 +597,20 @@ impl AreaView {
         &self.bots
     }
 
+    pub(crate) fn still_bot_avatar(&self, id: &str, size: Pixels) -> AnyElement {
+        if let Some(bots) = ready(&self.bots) {
+            if let Some(bot) = bots.bots.iter().find(|bot| bot.id == id) {
+                return crate::bot_face::still_avatar(id, &bot.look, self.bot_state(bot), size);
+            }
+            if let Some(bot) = bots.elsewhere.iter().find(|bot| bot.id == id) {
+                let state = self.elsewhere_state(&bot.computer);
+                let look = bot.look.clone().unwrap_or_else(unknown_bot_look);
+                return crate::bot_face::still_avatar(id, &look, state, size);
+            }
+        }
+        crate::bot_face::still_avatar(id, &unknown_bot_look(), State::Offline, size)
+    }
+
     pub fn selected(&self) -> Option<&str> {
         self.selected.as_deref()
     }
@@ -776,7 +790,7 @@ impl Render for AreaView {
                     .px(if self.compact { space::S1 } else { space::S2 })
                     .pt(space::S2)
                     .pb(space::S4)
-                    .when(self.compact, |d| d.flex().flex_col().items_center().gap(space::S0_5))
+                    .when(self.compact, |d| d.flex().flex_col().items_center().gap(space::S1))
                     .children(rows),
             )
             .when(dimmed, |d| d.child(div().id("area-sidebar-dim").debug_selector(|| "area-sidebar-dim".into()).absolute().inset_0().bg(crate::bots::dim(cx)).occlude()))
@@ -820,14 +834,14 @@ impl AreaView {
             let face = crate::bot_face::still_avatar(&bot.id, &bot.look, state, COMPACT_FACE);
             let name = status.map_or_else(|| bot.name.clone(), |(words, _, _)| format!("{} · {words}", bot.name));
             let mark = status.map(|(_, color, selector)| {
-                div().debug_selector(move || selector.into()).absolute().bottom(px(17.)).right(px(15.)).size(px(10.)).rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
+                div().debug_selector(move || selector.into()).absolute().bottom(px(3.)).right(px(3.)).size(px(8.)).rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
             });
             rows.push(self.avatar_row(format!("bot:{}", bot.id), name, face, mark, cx));
         }
         for there in bots.there() {
             let state = self.elsewhere_state(&there.computer);
             let face = there.look.as_ref().map_or_else(
-                || div().flex().items_center().justify_center().size(px(82.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).size(IconSize::Large).color(c.icon)).into_any_element(),
+                || crate::bot_face::still_avatar(&there.id, &unknown_bot_look(), state, COMPACT_FACE),
                 |look| crate::bot_face::still_avatar(&there.id, look, state, COMPACT_FACE),
             );
             rows.push(self.avatar_row(format!("elsewhere:{}", there.id), there.name, face, None, cx));
@@ -848,8 +862,7 @@ impl AreaView {
             .flex_none()
             .items_center()
             .justify_center()
-            .w(COMPACT_FACE)
-            .h(px(100.))
+            .size(px(48.))
             .rounded(radius::CARD)
             .when(selected, |d| d.bg(fill))
             .hover(move |d| d.bg(fill))
@@ -1238,7 +1251,11 @@ pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
 /// A bot's face in the Bots sidebar, in points: its rows are this plus even padding above and
 /// below. Other places keep their own sizes (the header's 22, a mention's 16).
 const BOT_FACE: f32 = 40.;
-const COMPACT_FACE: Pixels = px(116.);
+const COMPACT_FACE: Pixels = px(44.);
+
+fn unknown_bot_look() -> Look {
+    Look { color: "graphite".into(), shape: "round".into(), face: "calm".into() }
+}
 
 /// A two-line row's words: its name over the line under it, set as the type ramp says
 /// (`TextRole::RowTitle` over `RowDetail`).

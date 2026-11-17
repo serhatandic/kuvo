@@ -709,8 +709,14 @@ fn resizable_sidebar_width(cx: &mut VisualTestContext) -> Pixels {
     let sidebar = bounds(cx, "area-sidebar").unwrap();
     let divider = bounds(cx, "title-bar-divider").unwrap();
     assert_eq!(divider.right(), sidebar.right(), "the border and divider share the same edge");
-    for name in ["toggle-sidebar", "computer-switcher", "back", "forward"] {
-        assert!(bounds(cx, name).unwrap().right() <= divider.left(), "{name} fits");
+    assert!(bounds(cx, "toggle-sidebar").unwrap().right() <= divider.left());
+    for name in ["computer-switcher", "back", "forward"] {
+        let button = bounds(cx, name).unwrap();
+        if sidebar.size.width == px(64.) {
+            assert!(button.left() >= divider.right(), "{name} sits beside the title in compact mode");
+        } else {
+            assert!(button.right() <= divider.left(), "{name} fits");
+        }
     }
     sidebar.size.width
 }
@@ -742,59 +748,64 @@ fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppCon
     assert_eq!(resizable_sidebar_width(cx), px(216.));
     assert!(bounds(cx, "bot-bot_mira").is_some());
     drag_sidebar(cx, -1.);
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
     assert!(bounds(cx, "bot-bot_mira").is_none());
     assert!(bounds(cx, "bot-avatar-at-work").is_some());
     assert!(bounds(cx, "bot-avatar-needs-you").is_some());
     assert!(bounds(cx, "group-grp_launch").is_none());
     let mira = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
     let inbox = bounds(cx, "bot-avatar-bot:bot_inbox").unwrap();
-    assert!(mira.size.width >= px(110.));
-    assert!(inbox.top() - mira.bottom() <= px(2.));
-    drag_sidebar(cx, -130.);
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(mira.size.width, px(48.));
+    assert_eq!(inbox.top() - mira.bottom(), px(4.));
+    drag_sidebar(cx, -45.);
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
     click(cx, "bot-avatar-bot:bot_mira");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Mira"));
     cx.simulate_keystrokes("cmd-b");
     cx.run_until_parked();
     assert!(bounds(cx, "area-sidebar").is_none());
     click(cx, "rail-bots");
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
-    drag_sidebar(cx, 80.);
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
+    drag_sidebar(cx, 152.);
     assert_eq!(resizable_sidebar_width(cx), px(216.));
     assert!(bounds(cx, "bot-bot_mira").is_some());
 }
 
 #[gpui::test]
 fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut TestAppContext) {
-    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_facts("ses_signup", |facts| facts["bot"] = serde_json::json!("bot_mira"));
+    let (workspace, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
     drag_sidebar(cx, -200.);
     click(cx, "bot-avatar-search");
     assert!(bounds(cx, "sidebar-quick-search").is_some());
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
 
     cx.simulate_input("in");
     assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox").is_some());
     assert!(bounds(cx, "sidebar-search-result-ses_signup").is_some());
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox-avatar").is_some());
+    assert!(bounds(cx, "sidebar-search-result-ses_signup-avatar").is_some());
     cx.simulate_keystrokes("escape");
     assert!(bounds(cx, "sidebar-quick-search").is_none());
     assert_eq!(area(&workspace, cx), Area::Bots);
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
 
     click(cx, "bot-avatar-search");
     cx.simulate_keystrokes("up down down enter");
     assert_eq!(title(&workspace, cx).as_deref(), Some("Inbox Helper"));
     assert!(bounds(cx, "sidebar-quick-search").is_none());
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
 
     click(cx, "bot-avatar-search");
     cx.simulate_input("redis");
+    assert!(bounds(cx, "sidebar-search-result-ses_limits-avatar").is_none());
     click(cx, "sidebar-search-result-ses_limits");
     assert_eq!(area(&workspace, cx), Area::Sessions);
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_limits"));
     assert!(bounds(cx, "sidebar-quick-search").is_none());
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
     assert!(bounds(cx, "bot-avatar-search").is_some());
 
     click(cx, "bot-avatar-search");
@@ -840,7 +851,7 @@ fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppC
     let (workspace, cx) = open(cx, stand_in.clone());
     click(cx, "rail-bots");
     drag_sidebar(cx, -200.);
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert_eq!(resizable_sidebar_width(cx), px(64.));
     click(cx, "bot-avatar-bot:solo");
     assert_eq!(title(&workspace, cx).as_deref(), Some("One Bot with a Very Long Name"));
 

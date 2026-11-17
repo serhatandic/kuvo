@@ -40,6 +40,7 @@ enum Target {
 struct Match {
     label: String,
     snippet: Option<String>,
+    bot: Option<String>,
     target: Target,
 }
 
@@ -133,16 +134,17 @@ impl Workspace {
             let local = bots
                 .bots
                 .iter()
-                .map(|bot| (format!("bot:{}", bot.id), bot.name.clone()));
+                .map(|bot| ("bot", bot.id.clone(), bot.name.clone()));
             let others = bots
                 .there()
                 .into_iter()
-                .map(|bot| (format!("elsewhere:{}", bot.id), bot.name));
-            results.extend(local.chain(others).filter_map(|(key, name)| {
+                .map(|bot| ("elsewhere", bot.id, bot.name));
+            results.extend(local.chain(others).filter_map(|(kind, id, name)| {
                 name.to_lowercase().contains(&needle).then_some(Match {
                     label: name,
                     snippet: None,
-                    target: Target::Bot(key),
+                    target: Target::Bot(format!("{kind}:{id}")),
+                    bot: Some(id),
                 })
             }));
         }
@@ -159,14 +161,15 @@ impl Workspace {
                         .map(|found| (found.session.clone(), Some(found.snippet.clone()))),
                 )
                 .map(|(id, snippet)| {
-                    let label = listing
-                        .facts(&id)
+                    let facts = listing.facts(&id);
+                    let label = facts
                         .and_then(|facts| facts.title.clone())
                         .filter(|title| !title.trim().is_empty())
                         .unwrap_or_else(|| "New Session".into());
                     Match {
                         label,
                         snippet,
+                        bot: facts.and_then(|facts| facts.bot.clone()),
                         target: Target::Session(id),
                     }
                 }),
@@ -222,14 +225,26 @@ impl Workspace {
         let results = self.quick_matches(search, cx);
         let empty = results.is_empty();
         let selected = search.selected.min(results.len().saturating_sub(1));
+        let bots = self.area_view(Area::Bots);
         let rows = results.into_iter().enumerate().map(|(index, result)| {
             let (kind, key, icon) = match &result.target {
                 Target::Bot(key) => ("Bot", key, IconName::Bot),
                 Target::Session(id) => ("Session", id, IconName::Message),
             };
             let selector = format!("sidebar-search-result-{key}");
-            let row = NavRow::new(selector.clone(), result.label)
-                .icon(icon)
+            let leading = result.bot.as_deref().zip(bots);
+            let row = NavRow::new(selector.clone(), result.label);
+            let row = if let Some((bot, view)) = leading {
+                let avatar = format!("{selector}-avatar");
+                row.leading(
+                    div()
+                        .debug_selector(move || avatar)
+                        .child(view.read(cx).still_bot_avatar(bot, px(22.))),
+                )
+            } else {
+                row.icon(icon)
+            };
+            let row = row
                 .trailing(
                     div()
                         .text_role(TextRole::Meta)

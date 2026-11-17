@@ -35,24 +35,18 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
     let gap = space::S0_5;
     let divider_gap = space::S1;
     let divider_width = px(1.);
-    let picker_room = edge.map_or(px(184.), |edge| {
+    let picker_room = edge.filter(|_| !compact).map_or(px(184.), |edge| {
         edge - px(LIGHTS) - button_size.height() * 3. - gap * 3. - divider_gap - divider_width
     });
-    let group = div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(gap)
-        .child(buttons(
-            Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
-                .ghost()
-                .size(button_size)
-                .icon_size(icon_size)
-                // (No "on" wash: the sidebar beside it says it's shown, as Finder's and
-                // Codex's sidebar buttons do; a filled tile was the bar's heaviest thing.)
-                .tooltip_keys("⌘B")
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
-        ))
+    let toggle = buttons(
+        Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
+            .ghost()
+            .size(button_size)
+            .icon_size(icon_size)
+            .tooltip_keys("⌘B")
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
+    );
+    let navigation = div().flex().flex_none().items_center().gap(gap)
         .child(buttons(computer_switcher(workspace, compact, picker_room, cx)))
         .child(buttons(
             Button::icon_only("back", IconName::ArrowLeft, "Back")
@@ -72,6 +66,15 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .disabled(!workspace.can_go_forward())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(Forward), cx)),
         ));
+    // With the strip at its minimum, the traffic lights leave room for the toggle alone.
+    let (left_navigation, right_navigation) = if compact {
+        (None, Some(navigation))
+    } else {
+        (Some(navigation), None)
+    };
+    let group = div().flex().flex_none().items_center().gap(gap)
+        .child(toggle)
+        .children(left_navigation);
     let divider = div().id("title-bar-divider").debug_selector(|| "title-bar-divider".into()).flex_none().w(divider_width).h(px(16.)).bg(c.border);
     let panel_button = (workspace.area() == Area::Sessions).then(|| {
         Button::icon_only("toggle-panel", IconName::PanelRight, if workspace.is_panel_open() { "Hide Panel" } else { "Show Panel" })
@@ -116,6 +119,7 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .gap(space::S2)
                 .pl(space::S3)
                 .pr(space::S3)
+                .children(right_navigation)
                 // The title is the bar's strongest words; where it is, quieter beside it.
                 .children(title.map(|title| div().debug_selector(|| "window-title".into()).min_w_0().truncate().text_role(TextRole::WindowTitle).text_color(c.text).child(title)))
                 .children(beside.map(|beside| div().flex_none().text_role(TextRole::WindowContext).text_color(c.text_faint).child(beside)))

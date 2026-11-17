@@ -31,16 +31,16 @@ actions!(sidebar, [WalkNext, WalkPrevious, WalkOpen, WalkLeave, FocusSearch]);
 
 /// Default width of an area's sidebar.
 pub const WIDTH: f32 = 272.;
-const MIN_WIDTH: f32 = 136.;
+pub const COMPACT_WIDTH: f32 = 64.;
 const MAX_WIDTH: f32 = 440.;
 const BOTS_COMPACT_BELOW: f32 = 216.;
 
 pub(crate) fn preferred_width(saved: Option<f32>) -> Pixels {
-    px(saved.filter(|width| width.is_finite()).unwrap_or(WIDTH).clamp(MIN_WIDTH, MAX_WIDTH))
+    px(saved.filter(|width| width.is_finite()).unwrap_or(WIDTH).clamp(COMPACT_WIDTH, MAX_WIDTH))
 }
 
 pub(crate) fn fit_width(preferred: Pixels, viewport: Pixels, bots: bool) -> Pixels {
-    let min = px(if bots { MIN_WIDTH } else { BOTS_COMPACT_BELOW });
+    let min = px(if bots { COMPACT_WIDTH } else { BOTS_COMPACT_BELOW });
     let room = viewport - crate::rail::WIDTH - px(1.) - crate::panel::CONVERSATION_NARROWEST;
     preferred.clamp(min, room.clamp(min, px(MAX_WIDTH)))
 }
@@ -50,7 +50,7 @@ pub(crate) fn compact_bots(width: Pixels) -> bool {
 }
 
 pub(crate) fn visible_width(width: Pixels) -> Pixels {
-    if compact_bots(width) { px(MIN_WIDTH) } else { width }
+    if compact_bots(width) { px(COMPACT_WIDTH) } else { width }
 }
 
 /// How many of a project's sessions show before "Show more".
