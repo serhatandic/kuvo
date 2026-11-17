@@ -1634,3 +1634,48 @@ fn chat_references_open_the_same_item_preview_and_page(cx: &mut TestAppContext) 
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Queue);
     assert!(shown(cx, "item-page"));
 }
+
+#[gpui::test]
+fn a_note_reference_opens_its_bound_item_even_if_its_number_is_reused(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": "",
+        "notes": [{
+            "at": NOW, "by": { "user": true }, "text": "🖼 See #42.",
+            "mentions": [{ "start": 7, "end": 10, "number": 42, "item": "wqi_234" }],
+        }],
+    }), None);
+    stand_in.work_item_fixture("wqi_235", json!({ "number": 42 }), None);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    assert!(!shown(cx, "item-chip-42"));
+    let chip = bounds(cx, "item-chip-234").unwrap();
+    cx.simulate_mouse_move(chip.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    click(cx, "item-chip-234");
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Item("wqi_234".into()));
+}
+
+#[gpui::test]
+fn removing_a_page_picture_sends_its_marker_without_replacing_the_description(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let anchor = "0123456789abcdef01234567";
+    let url = format!("kuvo-attachment:file/{anchor}");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(600, 95).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": format!("Before\n\n![Review.png]({url})\n\nAfter"),
+        "files": [{ "name": "Review.png", "type": "image/png", "anchor": anchor, "at": 2 }],
+    }), Some(("Review.png", png.into_inner())));
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    let tile = bounds(cx, "picture-wqi_231/2/Review.png").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    click(cx, "remove-queue-image");
+    let patches = bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_231");
+    assert_eq!(patches.last(), Some(&json!({ "removeInlineImages": [{ "url": url, "name": "Review.png" }] })));
+}

@@ -323,7 +323,7 @@ pub struct Markdown {
 /// What draws a markdown's pictures, given each one's address and alt text.
 pub type Pictures = std::rc::Rc<dyn Fn(&str, &str, &App) -> AnyElement>;
 
-pub type ItemChip = std::rc::Rc<dyn Fn(u64, &App) -> Option<AnyElement>>;
+pub type ItemChip = std::rc::Rc<dyn Fn(&str, &App) -> Option<AnyElement>>;
 
 pub type LinkClick = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
@@ -371,7 +371,7 @@ impl Markdown {
     }
 
     pub fn item_links(mut self, source: &str, open: LinkClick) -> Self {
-        self.blocks = parse_with(source, |url| url.strip_prefix("kuvo-item:").is_some_and(|number| number.parse::<u64>().is_ok()));
+        self.blocks = parse_with(source, |url| url.strip_prefix("kuvo-item:").is_some_and(|key| key.parse::<u64>().is_ok() || key.strip_prefix("wqi_").is_some_and(|id| !id.is_empty() && id.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_'))));
         self.on_link = Some(open);
         self
     }
@@ -699,8 +699,8 @@ pub fn code_chips(inline: &Inline, c: &Colors) -> Vec<(Range<usize>, Hsla)> {
 fn text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: FontWeight) -> AnyElement {
     if let Some(chip) = d.item_chip {
         let references: Vec<_> = inline.links.iter().filter_map(|(range, url)| {
-            let number = url.strip_prefix("kuvo-item:")?.parse().ok()?;
-            Some((range, chip(number, d.cx)?))
+            let key = url.strip_prefix("kuvo-item:")?;
+            Some((range, chip(key, d.cx)?))
         }).collect();
         if !references.is_empty() {
             let mut children = Vec::new();
@@ -756,7 +756,7 @@ fn inline_text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: Fon
                 open(url, window, cx);
             }
         })
-        .link_title(|url| url.strip_prefix("kuvo-item:").map_or_else(|| url.to_string(), |number| format!("Open #{number}")))
+        .link_title(|url| url.strip_prefix("kuvo-item:").map_or_else(|| url.to_string(), |key| if key.starts_with("wqi_") { "Open item".to_owned() } else { format!("Open #{key}") }))
         .selectable(d.unit(path))
         .into_any_element()
 }

@@ -1,5 +1,38 @@
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
+import { createRequire } from "node:module";
+var __create = Object.create;
+var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+function __accessProp(key) {
+  return this[key];
+}
+var __toESMCache_node;
+var __toESMCache_esm;
+var __toESM = (mod, isNodeMode, target) => {
+  var canCache = mod != null && typeof mod === "object";
+  if (canCache) {
+    var cache = isNodeMode ? __toESMCache_node ??= new WeakMap : __toESMCache_esm ??= new WeakMap;
+    var cached = cache.get(mod);
+    if (cached)
+      return cached;
+  }
+  target = mod != null ? __create(__getProtoOf(mod)) : {};
+  const to = isNodeMode || !mod || !mod.__esModule || !__hasOwnProp.call(mod, "default") ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
+  if (mod && typeof mod === "object" || typeof mod === "function") {
+    for (let key of __getOwnPropNames(mod))
+      if (!__hasOwnProp.call(to, key))
+        __defProp(to, key, {
+          get: __accessProp.bind(mod, key),
+          enumerable: true
+        });
+  }
+  if (canCache)
+    cache.set(mod, to);
+  return to;
+};
+var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 var __returnValue = (v) => v;
 function __exportSetter(name, newValue) {
   this[name] = __returnValue.bind(null, newValue);
@@ -24,6 +57,7 @@ var __esm = (fn, res, err) => () => {
     throw err[0];
   return res;
 };
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // box/src/shared/json.ts
 function sortedJSON(value) {
@@ -3012,18 +3046,8296 @@ var init_phones = __esm(() => {
   PAIRING = /^[A-Za-z0-9_-]{0,32}$/;
 });
 
+// box/node_modules/dequal/dist/index.mjs
+var init_dist = () => {};
+
+// box/node_modules/devlop/lib/development.js
+function ok(value, message) {
+  assert(Boolean(value), false, true, "ok", "Expected value to be truthy", message);
+}
+function assert(bool, actual, expected, operator, defaultMessage, userMessage) {
+  if (!bool) {
+    throw userMessage instanceof Error ? userMessage : new AssertionError(userMessage || defaultMessage, actual, expected, operator, !userMessage);
+  }
+}
+var codesWarned, AssertionError;
+var init_development = __esm(() => {
+  init_dist();
+  codesWarned = new Set;
+  AssertionError = class AssertionError extends Error {
+    name = "Assertion";
+    code = "ERR_ASSERTION";
+    constructor(message, actual, expected, operator, generated) {
+      super(message);
+      if (Error.captureStackTrace) {
+        Error.captureStackTrace(this, this.constructor);
+      }
+      this.actual = actual;
+      this.expected = expected;
+      this.generated = generated;
+      this.operator = operator;
+    }
+  };
+});
+
+// box/node_modules/mdast-util-to-string/lib/index.js
+function toString(value, options) {
+  const settings = options || emptyOptions;
+  const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
+  const includeHtml = typeof settings.includeHtml === "boolean" ? settings.includeHtml : true;
+  return one(value, includeImageAlt, includeHtml);
+}
+function one(value, includeImageAlt, includeHtml) {
+  if (node(value)) {
+    if ("value" in value) {
+      return value.type === "html" && !includeHtml ? "" : value.value;
+    }
+    if (includeImageAlt && "alt" in value && value.alt) {
+      return value.alt;
+    }
+    if ("children" in value) {
+      return all(value.children, includeImageAlt, includeHtml);
+    }
+  }
+  if (Array.isArray(value)) {
+    return all(value, includeImageAlt, includeHtml);
+  }
+  return "";
+}
+function all(values, includeImageAlt, includeHtml) {
+  const result = [];
+  let index = -1;
+  while (++index < values.length) {
+    result[index] = one(values[index], includeImageAlt, includeHtml);
+  }
+  return result.join("");
+}
+function node(value) {
+  return Boolean(value && typeof value === "object");
+}
+var emptyOptions;
+var init_lib = __esm(() => {
+  emptyOptions = {};
+});
+
+// box/node_modules/mdast-util-to-string/index.js
+var init_mdast_util_to_string = __esm(() => {
+  init_lib();
+});
+
+// box/node_modules/character-entities/index.js
+var characterEntities;
+var init_character_entities = __esm(() => {
+  characterEntities = {
+    AElig: "Æ",
+    AMP: "&",
+    Aacute: "Á",
+    Abreve: "Ă",
+    Acirc: "Â",
+    Acy: "А",
+    Afr: "\uD835\uDD04",
+    Agrave: "À",
+    Alpha: "Α",
+    Amacr: "Ā",
+    And: "⩓",
+    Aogon: "Ą",
+    Aopf: "\uD835\uDD38",
+    ApplyFunction: "⁡",
+    Aring: "Å",
+    Ascr: "\uD835\uDC9C",
+    Assign: "≔",
+    Atilde: "Ã",
+    Auml: "Ä",
+    Backslash: "∖",
+    Barv: "⫧",
+    Barwed: "⌆",
+    Bcy: "Б",
+    Because: "∵",
+    Bernoullis: "ℬ",
+    Beta: "Β",
+    Bfr: "\uD835\uDD05",
+    Bopf: "\uD835\uDD39",
+    Breve: "˘",
+    Bscr: "ℬ",
+    Bumpeq: "≎",
+    CHcy: "Ч",
+    COPY: "©",
+    Cacute: "Ć",
+    Cap: "⋒",
+    CapitalDifferentialD: "ⅅ",
+    Cayleys: "ℭ",
+    Ccaron: "Č",
+    Ccedil: "Ç",
+    Ccirc: "Ĉ",
+    Cconint: "∰",
+    Cdot: "Ċ",
+    Cedilla: "¸",
+    CenterDot: "·",
+    Cfr: "ℭ",
+    Chi: "Χ",
+    CircleDot: "⊙",
+    CircleMinus: "⊖",
+    CirclePlus: "⊕",
+    CircleTimes: "⊗",
+    ClockwiseContourIntegral: "∲",
+    CloseCurlyDoubleQuote: "”",
+    CloseCurlyQuote: "’",
+    Colon: "∷",
+    Colone: "⩴",
+    Congruent: "≡",
+    Conint: "∯",
+    ContourIntegral: "∮",
+    Copf: "ℂ",
+    Coproduct: "∐",
+    CounterClockwiseContourIntegral: "∳",
+    Cross: "⨯",
+    Cscr: "\uD835\uDC9E",
+    Cup: "⋓",
+    CupCap: "≍",
+    DD: "ⅅ",
+    DDotrahd: "⤑",
+    DJcy: "Ђ",
+    DScy: "Ѕ",
+    DZcy: "Џ",
+    Dagger: "‡",
+    Darr: "↡",
+    Dashv: "⫤",
+    Dcaron: "Ď",
+    Dcy: "Д",
+    Del: "∇",
+    Delta: "Δ",
+    Dfr: "\uD835\uDD07",
+    DiacriticalAcute: "´",
+    DiacriticalDot: "˙",
+    DiacriticalDoubleAcute: "˝",
+    DiacriticalGrave: "`",
+    DiacriticalTilde: "˜",
+    Diamond: "⋄",
+    DifferentialD: "ⅆ",
+    Dopf: "\uD835\uDD3B",
+    Dot: "¨",
+    DotDot: "⃜",
+    DotEqual: "≐",
+    DoubleContourIntegral: "∯",
+    DoubleDot: "¨",
+    DoubleDownArrow: "⇓",
+    DoubleLeftArrow: "⇐",
+    DoubleLeftRightArrow: "⇔",
+    DoubleLeftTee: "⫤",
+    DoubleLongLeftArrow: "⟸",
+    DoubleLongLeftRightArrow: "⟺",
+    DoubleLongRightArrow: "⟹",
+    DoubleRightArrow: "⇒",
+    DoubleRightTee: "⊨",
+    DoubleUpArrow: "⇑",
+    DoubleUpDownArrow: "⇕",
+    DoubleVerticalBar: "∥",
+    DownArrow: "↓",
+    DownArrowBar: "⤓",
+    DownArrowUpArrow: "⇵",
+    DownBreve: "̑",
+    DownLeftRightVector: "⥐",
+    DownLeftTeeVector: "⥞",
+    DownLeftVector: "↽",
+    DownLeftVectorBar: "⥖",
+    DownRightTeeVector: "⥟",
+    DownRightVector: "⇁",
+    DownRightVectorBar: "⥗",
+    DownTee: "⊤",
+    DownTeeArrow: "↧",
+    Downarrow: "⇓",
+    Dscr: "\uD835\uDC9F",
+    Dstrok: "Đ",
+    ENG: "Ŋ",
+    ETH: "Ð",
+    Eacute: "É",
+    Ecaron: "Ě",
+    Ecirc: "Ê",
+    Ecy: "Э",
+    Edot: "Ė",
+    Efr: "\uD835\uDD08",
+    Egrave: "È",
+    Element: "∈",
+    Emacr: "Ē",
+    EmptySmallSquare: "◻",
+    EmptyVerySmallSquare: "▫",
+    Eogon: "Ę",
+    Eopf: "\uD835\uDD3C",
+    Epsilon: "Ε",
+    Equal: "⩵",
+    EqualTilde: "≂",
+    Equilibrium: "⇌",
+    Escr: "ℰ",
+    Esim: "⩳",
+    Eta: "Η",
+    Euml: "Ë",
+    Exists: "∃",
+    ExponentialE: "ⅇ",
+    Fcy: "Ф",
+    Ffr: "\uD835\uDD09",
+    FilledSmallSquare: "◼",
+    FilledVerySmallSquare: "▪",
+    Fopf: "\uD835\uDD3D",
+    ForAll: "∀",
+    Fouriertrf: "ℱ",
+    Fscr: "ℱ",
+    GJcy: "Ѓ",
+    GT: ">",
+    Gamma: "Γ",
+    Gammad: "Ϝ",
+    Gbreve: "Ğ",
+    Gcedil: "Ģ",
+    Gcirc: "Ĝ",
+    Gcy: "Г",
+    Gdot: "Ġ",
+    Gfr: "\uD835\uDD0A",
+    Gg: "⋙",
+    Gopf: "\uD835\uDD3E",
+    GreaterEqual: "≥",
+    GreaterEqualLess: "⋛",
+    GreaterFullEqual: "≧",
+    GreaterGreater: "⪢",
+    GreaterLess: "≷",
+    GreaterSlantEqual: "⩾",
+    GreaterTilde: "≳",
+    Gscr: "\uD835\uDCA2",
+    Gt: "≫",
+    HARDcy: "Ъ",
+    Hacek: "ˇ",
+    Hat: "^",
+    Hcirc: "Ĥ",
+    Hfr: "ℌ",
+    HilbertSpace: "ℋ",
+    Hopf: "ℍ",
+    HorizontalLine: "─",
+    Hscr: "ℋ",
+    Hstrok: "Ħ",
+    HumpDownHump: "≎",
+    HumpEqual: "≏",
+    IEcy: "Е",
+    IJlig: "Ĳ",
+    IOcy: "Ё",
+    Iacute: "Í",
+    Icirc: "Î",
+    Icy: "И",
+    Idot: "İ",
+    Ifr: "ℑ",
+    Igrave: "Ì",
+    Im: "ℑ",
+    Imacr: "Ī",
+    ImaginaryI: "ⅈ",
+    Implies: "⇒",
+    Int: "∬",
+    Integral: "∫",
+    Intersection: "⋂",
+    InvisibleComma: "⁣",
+    InvisibleTimes: "⁢",
+    Iogon: "Į",
+    Iopf: "\uD835\uDD40",
+    Iota: "Ι",
+    Iscr: "ℐ",
+    Itilde: "Ĩ",
+    Iukcy: "І",
+    Iuml: "Ï",
+    Jcirc: "Ĵ",
+    Jcy: "Й",
+    Jfr: "\uD835\uDD0D",
+    Jopf: "\uD835\uDD41",
+    Jscr: "\uD835\uDCA5",
+    Jsercy: "Ј",
+    Jukcy: "Є",
+    KHcy: "Х",
+    KJcy: "Ќ",
+    Kappa: "Κ",
+    Kcedil: "Ķ",
+    Kcy: "К",
+    Kfr: "\uD835\uDD0E",
+    Kopf: "\uD835\uDD42",
+    Kscr: "\uD835\uDCA6",
+    LJcy: "Љ",
+    LT: "<",
+    Lacute: "Ĺ",
+    Lambda: "Λ",
+    Lang: "⟪",
+    Laplacetrf: "ℒ",
+    Larr: "↞",
+    Lcaron: "Ľ",
+    Lcedil: "Ļ",
+    Lcy: "Л",
+    LeftAngleBracket: "⟨",
+    LeftArrow: "←",
+    LeftArrowBar: "⇤",
+    LeftArrowRightArrow: "⇆",
+    LeftCeiling: "⌈",
+    LeftDoubleBracket: "⟦",
+    LeftDownTeeVector: "⥡",
+    LeftDownVector: "⇃",
+    LeftDownVectorBar: "⥙",
+    LeftFloor: "⌊",
+    LeftRightArrow: "↔",
+    LeftRightVector: "⥎",
+    LeftTee: "⊣",
+    LeftTeeArrow: "↤",
+    LeftTeeVector: "⥚",
+    LeftTriangle: "⊲",
+    LeftTriangleBar: "⧏",
+    LeftTriangleEqual: "⊴",
+    LeftUpDownVector: "⥑",
+    LeftUpTeeVector: "⥠",
+    LeftUpVector: "↿",
+    LeftUpVectorBar: "⥘",
+    LeftVector: "↼",
+    LeftVectorBar: "⥒",
+    Leftarrow: "⇐",
+    Leftrightarrow: "⇔",
+    LessEqualGreater: "⋚",
+    LessFullEqual: "≦",
+    LessGreater: "≶",
+    LessLess: "⪡",
+    LessSlantEqual: "⩽",
+    LessTilde: "≲",
+    Lfr: "\uD835\uDD0F",
+    Ll: "⋘",
+    Lleftarrow: "⇚",
+    Lmidot: "Ŀ",
+    LongLeftArrow: "⟵",
+    LongLeftRightArrow: "⟷",
+    LongRightArrow: "⟶",
+    Longleftarrow: "⟸",
+    Longleftrightarrow: "⟺",
+    Longrightarrow: "⟹",
+    Lopf: "\uD835\uDD43",
+    LowerLeftArrow: "↙",
+    LowerRightArrow: "↘",
+    Lscr: "ℒ",
+    Lsh: "↰",
+    Lstrok: "Ł",
+    Lt: "≪",
+    Map: "⤅",
+    Mcy: "М",
+    MediumSpace: " ",
+    Mellintrf: "ℳ",
+    Mfr: "\uD835\uDD10",
+    MinusPlus: "∓",
+    Mopf: "\uD835\uDD44",
+    Mscr: "ℳ",
+    Mu: "Μ",
+    NJcy: "Њ",
+    Nacute: "Ń",
+    Ncaron: "Ň",
+    Ncedil: "Ņ",
+    Ncy: "Н",
+    NegativeMediumSpace: "​",
+    NegativeThickSpace: "​",
+    NegativeThinSpace: "​",
+    NegativeVeryThinSpace: "​",
+    NestedGreaterGreater: "≫",
+    NestedLessLess: "≪",
+    NewLine: `
+`,
+    Nfr: "\uD835\uDD11",
+    NoBreak: "⁠",
+    NonBreakingSpace: " ",
+    Nopf: "ℕ",
+    Not: "⫬",
+    NotCongruent: "≢",
+    NotCupCap: "≭",
+    NotDoubleVerticalBar: "∦",
+    NotElement: "∉",
+    NotEqual: "≠",
+    NotEqualTilde: "≂̸",
+    NotExists: "∄",
+    NotGreater: "≯",
+    NotGreaterEqual: "≱",
+    NotGreaterFullEqual: "≧̸",
+    NotGreaterGreater: "≫̸",
+    NotGreaterLess: "≹",
+    NotGreaterSlantEqual: "⩾̸",
+    NotGreaterTilde: "≵",
+    NotHumpDownHump: "≎̸",
+    NotHumpEqual: "≏̸",
+    NotLeftTriangle: "⋪",
+    NotLeftTriangleBar: "⧏̸",
+    NotLeftTriangleEqual: "⋬",
+    NotLess: "≮",
+    NotLessEqual: "≰",
+    NotLessGreater: "≸",
+    NotLessLess: "≪̸",
+    NotLessSlantEqual: "⩽̸",
+    NotLessTilde: "≴",
+    NotNestedGreaterGreater: "⪢̸",
+    NotNestedLessLess: "⪡̸",
+    NotPrecedes: "⊀",
+    NotPrecedesEqual: "⪯̸",
+    NotPrecedesSlantEqual: "⋠",
+    NotReverseElement: "∌",
+    NotRightTriangle: "⋫",
+    NotRightTriangleBar: "⧐̸",
+    NotRightTriangleEqual: "⋭",
+    NotSquareSubset: "⊏̸",
+    NotSquareSubsetEqual: "⋢",
+    NotSquareSuperset: "⊐̸",
+    NotSquareSupersetEqual: "⋣",
+    NotSubset: "⊂⃒",
+    NotSubsetEqual: "⊈",
+    NotSucceeds: "⊁",
+    NotSucceedsEqual: "⪰̸",
+    NotSucceedsSlantEqual: "⋡",
+    NotSucceedsTilde: "≿̸",
+    NotSuperset: "⊃⃒",
+    NotSupersetEqual: "⊉",
+    NotTilde: "≁",
+    NotTildeEqual: "≄",
+    NotTildeFullEqual: "≇",
+    NotTildeTilde: "≉",
+    NotVerticalBar: "∤",
+    Nscr: "\uD835\uDCA9",
+    Ntilde: "Ñ",
+    Nu: "Ν",
+    OElig: "Œ",
+    Oacute: "Ó",
+    Ocirc: "Ô",
+    Ocy: "О",
+    Odblac: "Ő",
+    Ofr: "\uD835\uDD12",
+    Ograve: "Ò",
+    Omacr: "Ō",
+    Omega: "Ω",
+    Omicron: "Ο",
+    Oopf: "\uD835\uDD46",
+    OpenCurlyDoubleQuote: "“",
+    OpenCurlyQuote: "‘",
+    Or: "⩔",
+    Oscr: "\uD835\uDCAA",
+    Oslash: "Ø",
+    Otilde: "Õ",
+    Otimes: "⨷",
+    Ouml: "Ö",
+    OverBar: "‾",
+    OverBrace: "⏞",
+    OverBracket: "⎴",
+    OverParenthesis: "⏜",
+    PartialD: "∂",
+    Pcy: "П",
+    Pfr: "\uD835\uDD13",
+    Phi: "Φ",
+    Pi: "Π",
+    PlusMinus: "±",
+    Poincareplane: "ℌ",
+    Popf: "ℙ",
+    Pr: "⪻",
+    Precedes: "≺",
+    PrecedesEqual: "⪯",
+    PrecedesSlantEqual: "≼",
+    PrecedesTilde: "≾",
+    Prime: "″",
+    Product: "∏",
+    Proportion: "∷",
+    Proportional: "∝",
+    Pscr: "\uD835\uDCAB",
+    Psi: "Ψ",
+    QUOT: '"',
+    Qfr: "\uD835\uDD14",
+    Qopf: "ℚ",
+    Qscr: "\uD835\uDCAC",
+    RBarr: "⤐",
+    REG: "®",
+    Racute: "Ŕ",
+    Rang: "⟫",
+    Rarr: "↠",
+    Rarrtl: "⤖",
+    Rcaron: "Ř",
+    Rcedil: "Ŗ",
+    Rcy: "Р",
+    Re: "ℜ",
+    ReverseElement: "∋",
+    ReverseEquilibrium: "⇋",
+    ReverseUpEquilibrium: "⥯",
+    Rfr: "ℜ",
+    Rho: "Ρ",
+    RightAngleBracket: "⟩",
+    RightArrow: "→",
+    RightArrowBar: "⇥",
+    RightArrowLeftArrow: "⇄",
+    RightCeiling: "⌉",
+    RightDoubleBracket: "⟧",
+    RightDownTeeVector: "⥝",
+    RightDownVector: "⇂",
+    RightDownVectorBar: "⥕",
+    RightFloor: "⌋",
+    RightTee: "⊢",
+    RightTeeArrow: "↦",
+    RightTeeVector: "⥛",
+    RightTriangle: "⊳",
+    RightTriangleBar: "⧐",
+    RightTriangleEqual: "⊵",
+    RightUpDownVector: "⥏",
+    RightUpTeeVector: "⥜",
+    RightUpVector: "↾",
+    RightUpVectorBar: "⥔",
+    RightVector: "⇀",
+    RightVectorBar: "⥓",
+    Rightarrow: "⇒",
+    Ropf: "ℝ",
+    RoundImplies: "⥰",
+    Rrightarrow: "⇛",
+    Rscr: "ℛ",
+    Rsh: "↱",
+    RuleDelayed: "⧴",
+    SHCHcy: "Щ",
+    SHcy: "Ш",
+    SOFTcy: "Ь",
+    Sacute: "Ś",
+    Sc: "⪼",
+    Scaron: "Š",
+    Scedil: "Ş",
+    Scirc: "Ŝ",
+    Scy: "С",
+    Sfr: "\uD835\uDD16",
+    ShortDownArrow: "↓",
+    ShortLeftArrow: "←",
+    ShortRightArrow: "→",
+    ShortUpArrow: "↑",
+    Sigma: "Σ",
+    SmallCircle: "∘",
+    Sopf: "\uD835\uDD4A",
+    Sqrt: "√",
+    Square: "□",
+    SquareIntersection: "⊓",
+    SquareSubset: "⊏",
+    SquareSubsetEqual: "⊑",
+    SquareSuperset: "⊐",
+    SquareSupersetEqual: "⊒",
+    SquareUnion: "⊔",
+    Sscr: "\uD835\uDCAE",
+    Star: "⋆",
+    Sub: "⋐",
+    Subset: "⋐",
+    SubsetEqual: "⊆",
+    Succeeds: "≻",
+    SucceedsEqual: "⪰",
+    SucceedsSlantEqual: "≽",
+    SucceedsTilde: "≿",
+    SuchThat: "∋",
+    Sum: "∑",
+    Sup: "⋑",
+    Superset: "⊃",
+    SupersetEqual: "⊇",
+    Supset: "⋑",
+    THORN: "Þ",
+    TRADE: "™",
+    TSHcy: "Ћ",
+    TScy: "Ц",
+    Tab: "\t",
+    Tau: "Τ",
+    Tcaron: "Ť",
+    Tcedil: "Ţ",
+    Tcy: "Т",
+    Tfr: "\uD835\uDD17",
+    Therefore: "∴",
+    Theta: "Θ",
+    ThickSpace: "  ",
+    ThinSpace: " ",
+    Tilde: "∼",
+    TildeEqual: "≃",
+    TildeFullEqual: "≅",
+    TildeTilde: "≈",
+    Topf: "\uD835\uDD4B",
+    TripleDot: "⃛",
+    Tscr: "\uD835\uDCAF",
+    Tstrok: "Ŧ",
+    Uacute: "Ú",
+    Uarr: "↟",
+    Uarrocir: "⥉",
+    Ubrcy: "Ў",
+    Ubreve: "Ŭ",
+    Ucirc: "Û",
+    Ucy: "У",
+    Udblac: "Ű",
+    Ufr: "\uD835\uDD18",
+    Ugrave: "Ù",
+    Umacr: "Ū",
+    UnderBar: "_",
+    UnderBrace: "⏟",
+    UnderBracket: "⎵",
+    UnderParenthesis: "⏝",
+    Union: "⋃",
+    UnionPlus: "⊎",
+    Uogon: "Ų",
+    Uopf: "\uD835\uDD4C",
+    UpArrow: "↑",
+    UpArrowBar: "⤒",
+    UpArrowDownArrow: "⇅",
+    UpDownArrow: "↕",
+    UpEquilibrium: "⥮",
+    UpTee: "⊥",
+    UpTeeArrow: "↥",
+    Uparrow: "⇑",
+    Updownarrow: "⇕",
+    UpperLeftArrow: "↖",
+    UpperRightArrow: "↗",
+    Upsi: "ϒ",
+    Upsilon: "Υ",
+    Uring: "Ů",
+    Uscr: "\uD835\uDCB0",
+    Utilde: "Ũ",
+    Uuml: "Ü",
+    VDash: "⊫",
+    Vbar: "⫫",
+    Vcy: "В",
+    Vdash: "⊩",
+    Vdashl: "⫦",
+    Vee: "⋁",
+    Verbar: "‖",
+    Vert: "‖",
+    VerticalBar: "∣",
+    VerticalLine: "|",
+    VerticalSeparator: "❘",
+    VerticalTilde: "≀",
+    VeryThinSpace: " ",
+    Vfr: "\uD835\uDD19",
+    Vopf: "\uD835\uDD4D",
+    Vscr: "\uD835\uDCB1",
+    Vvdash: "⊪",
+    Wcirc: "Ŵ",
+    Wedge: "⋀",
+    Wfr: "\uD835\uDD1A",
+    Wopf: "\uD835\uDD4E",
+    Wscr: "\uD835\uDCB2",
+    Xfr: "\uD835\uDD1B",
+    Xi: "Ξ",
+    Xopf: "\uD835\uDD4F",
+    Xscr: "\uD835\uDCB3",
+    YAcy: "Я",
+    YIcy: "Ї",
+    YUcy: "Ю",
+    Yacute: "Ý",
+    Ycirc: "Ŷ",
+    Ycy: "Ы",
+    Yfr: "\uD835\uDD1C",
+    Yopf: "\uD835\uDD50",
+    Yscr: "\uD835\uDCB4",
+    Yuml: "Ÿ",
+    ZHcy: "Ж",
+    Zacute: "Ź",
+    Zcaron: "Ž",
+    Zcy: "З",
+    Zdot: "Ż",
+    ZeroWidthSpace: "​",
+    Zeta: "Ζ",
+    Zfr: "ℨ",
+    Zopf: "ℤ",
+    Zscr: "\uD835\uDCB5",
+    aacute: "á",
+    abreve: "ă",
+    ac: "∾",
+    acE: "∾̳",
+    acd: "∿",
+    acirc: "â",
+    acute: "´",
+    acy: "а",
+    aelig: "æ",
+    af: "⁡",
+    afr: "\uD835\uDD1E",
+    agrave: "à",
+    alefsym: "ℵ",
+    aleph: "ℵ",
+    alpha: "α",
+    amacr: "ā",
+    amalg: "⨿",
+    amp: "&",
+    and: "∧",
+    andand: "⩕",
+    andd: "⩜",
+    andslope: "⩘",
+    andv: "⩚",
+    ang: "∠",
+    ange: "⦤",
+    angle: "∠",
+    angmsd: "∡",
+    angmsdaa: "⦨",
+    angmsdab: "⦩",
+    angmsdac: "⦪",
+    angmsdad: "⦫",
+    angmsdae: "⦬",
+    angmsdaf: "⦭",
+    angmsdag: "⦮",
+    angmsdah: "⦯",
+    angrt: "∟",
+    angrtvb: "⊾",
+    angrtvbd: "⦝",
+    angsph: "∢",
+    angst: "Å",
+    angzarr: "⍼",
+    aogon: "ą",
+    aopf: "\uD835\uDD52",
+    ap: "≈",
+    apE: "⩰",
+    apacir: "⩯",
+    ape: "≊",
+    apid: "≋",
+    apos: "'",
+    approx: "≈",
+    approxeq: "≊",
+    aring: "å",
+    ascr: "\uD835\uDCB6",
+    ast: "*",
+    asymp: "≈",
+    asympeq: "≍",
+    atilde: "ã",
+    auml: "ä",
+    awconint: "∳",
+    awint: "⨑",
+    bNot: "⫭",
+    backcong: "≌",
+    backepsilon: "϶",
+    backprime: "‵",
+    backsim: "∽",
+    backsimeq: "⋍",
+    barvee: "⊽",
+    barwed: "⌅",
+    barwedge: "⌅",
+    bbrk: "⎵",
+    bbrktbrk: "⎶",
+    bcong: "≌",
+    bcy: "б",
+    bdquo: "„",
+    becaus: "∵",
+    because: "∵",
+    bemptyv: "⦰",
+    bepsi: "϶",
+    bernou: "ℬ",
+    beta: "β",
+    beth: "ℶ",
+    between: "≬",
+    bfr: "\uD835\uDD1F",
+    bigcap: "⋂",
+    bigcirc: "◯",
+    bigcup: "⋃",
+    bigodot: "⨀",
+    bigoplus: "⨁",
+    bigotimes: "⨂",
+    bigsqcup: "⨆",
+    bigstar: "★",
+    bigtriangledown: "▽",
+    bigtriangleup: "△",
+    biguplus: "⨄",
+    bigvee: "⋁",
+    bigwedge: "⋀",
+    bkarow: "⤍",
+    blacklozenge: "⧫",
+    blacksquare: "▪",
+    blacktriangle: "▴",
+    blacktriangledown: "▾",
+    blacktriangleleft: "◂",
+    blacktriangleright: "▸",
+    blank: "␣",
+    blk12: "▒",
+    blk14: "░",
+    blk34: "▓",
+    block: "█",
+    bne: "=⃥",
+    bnequiv: "≡⃥",
+    bnot: "⌐",
+    bopf: "\uD835\uDD53",
+    bot: "⊥",
+    bottom: "⊥",
+    bowtie: "⋈",
+    boxDL: "╗",
+    boxDR: "╔",
+    boxDl: "╖",
+    boxDr: "╓",
+    boxH: "═",
+    boxHD: "╦",
+    boxHU: "╩",
+    boxHd: "╤",
+    boxHu: "╧",
+    boxUL: "╝",
+    boxUR: "╚",
+    boxUl: "╜",
+    boxUr: "╙",
+    boxV: "║",
+    boxVH: "╬",
+    boxVL: "╣",
+    boxVR: "╠",
+    boxVh: "╫",
+    boxVl: "╢",
+    boxVr: "╟",
+    boxbox: "⧉",
+    boxdL: "╕",
+    boxdR: "╒",
+    boxdl: "┐",
+    boxdr: "┌",
+    boxh: "─",
+    boxhD: "╥",
+    boxhU: "╨",
+    boxhd: "┬",
+    boxhu: "┴",
+    boxminus: "⊟",
+    boxplus: "⊞",
+    boxtimes: "⊠",
+    boxuL: "╛",
+    boxuR: "╘",
+    boxul: "┘",
+    boxur: "└",
+    boxv: "│",
+    boxvH: "╪",
+    boxvL: "╡",
+    boxvR: "╞",
+    boxvh: "┼",
+    boxvl: "┤",
+    boxvr: "├",
+    bprime: "‵",
+    breve: "˘",
+    brvbar: "¦",
+    bscr: "\uD835\uDCB7",
+    bsemi: "⁏",
+    bsim: "∽",
+    bsime: "⋍",
+    bsol: "\\",
+    bsolb: "⧅",
+    bsolhsub: "⟈",
+    bull: "•",
+    bullet: "•",
+    bump: "≎",
+    bumpE: "⪮",
+    bumpe: "≏",
+    bumpeq: "≏",
+    cacute: "ć",
+    cap: "∩",
+    capand: "⩄",
+    capbrcup: "⩉",
+    capcap: "⩋",
+    capcup: "⩇",
+    capdot: "⩀",
+    caps: "∩︀",
+    caret: "⁁",
+    caron: "ˇ",
+    ccaps: "⩍",
+    ccaron: "č",
+    ccedil: "ç",
+    ccirc: "ĉ",
+    ccups: "⩌",
+    ccupssm: "⩐",
+    cdot: "ċ",
+    cedil: "¸",
+    cemptyv: "⦲",
+    cent: "¢",
+    centerdot: "·",
+    cfr: "\uD835\uDD20",
+    chcy: "ч",
+    check: "✓",
+    checkmark: "✓",
+    chi: "χ",
+    cir: "○",
+    cirE: "⧃",
+    circ: "ˆ",
+    circeq: "≗",
+    circlearrowleft: "↺",
+    circlearrowright: "↻",
+    circledR: "®",
+    circledS: "Ⓢ",
+    circledast: "⊛",
+    circledcirc: "⊚",
+    circleddash: "⊝",
+    cire: "≗",
+    cirfnint: "⨐",
+    cirmid: "⫯",
+    cirscir: "⧂",
+    clubs: "♣",
+    clubsuit: "♣",
+    colon: ":",
+    colone: "≔",
+    coloneq: "≔",
+    comma: ",",
+    commat: "@",
+    comp: "∁",
+    compfn: "∘",
+    complement: "∁",
+    complexes: "ℂ",
+    cong: "≅",
+    congdot: "⩭",
+    conint: "∮",
+    copf: "\uD835\uDD54",
+    coprod: "∐",
+    copy: "©",
+    copysr: "℗",
+    crarr: "↵",
+    cross: "✗",
+    cscr: "\uD835\uDCB8",
+    csub: "⫏",
+    csube: "⫑",
+    csup: "⫐",
+    csupe: "⫒",
+    ctdot: "⋯",
+    cudarrl: "⤸",
+    cudarrr: "⤵",
+    cuepr: "⋞",
+    cuesc: "⋟",
+    cularr: "↶",
+    cularrp: "⤽",
+    cup: "∪",
+    cupbrcap: "⩈",
+    cupcap: "⩆",
+    cupcup: "⩊",
+    cupdot: "⊍",
+    cupor: "⩅",
+    cups: "∪︀",
+    curarr: "↷",
+    curarrm: "⤼",
+    curlyeqprec: "⋞",
+    curlyeqsucc: "⋟",
+    curlyvee: "⋎",
+    curlywedge: "⋏",
+    curren: "¤",
+    curvearrowleft: "↶",
+    curvearrowright: "↷",
+    cuvee: "⋎",
+    cuwed: "⋏",
+    cwconint: "∲",
+    cwint: "∱",
+    cylcty: "⌭",
+    dArr: "⇓",
+    dHar: "⥥",
+    dagger: "†",
+    daleth: "ℸ",
+    darr: "↓",
+    dash: "‐",
+    dashv: "⊣",
+    dbkarow: "⤏",
+    dblac: "˝",
+    dcaron: "ď",
+    dcy: "д",
+    dd: "ⅆ",
+    ddagger: "‡",
+    ddarr: "⇊",
+    ddotseq: "⩷",
+    deg: "°",
+    delta: "δ",
+    demptyv: "⦱",
+    dfisht: "⥿",
+    dfr: "\uD835\uDD21",
+    dharl: "⇃",
+    dharr: "⇂",
+    diam: "⋄",
+    diamond: "⋄",
+    diamondsuit: "♦",
+    diams: "♦",
+    die: "¨",
+    digamma: "ϝ",
+    disin: "⋲",
+    div: "÷",
+    divide: "÷",
+    divideontimes: "⋇",
+    divonx: "⋇",
+    djcy: "ђ",
+    dlcorn: "⌞",
+    dlcrop: "⌍",
+    dollar: "$",
+    dopf: "\uD835\uDD55",
+    dot: "˙",
+    doteq: "≐",
+    doteqdot: "≑",
+    dotminus: "∸",
+    dotplus: "∔",
+    dotsquare: "⊡",
+    doublebarwedge: "⌆",
+    downarrow: "↓",
+    downdownarrows: "⇊",
+    downharpoonleft: "⇃",
+    downharpoonright: "⇂",
+    drbkarow: "⤐",
+    drcorn: "⌟",
+    drcrop: "⌌",
+    dscr: "\uD835\uDCB9",
+    dscy: "ѕ",
+    dsol: "⧶",
+    dstrok: "đ",
+    dtdot: "⋱",
+    dtri: "▿",
+    dtrif: "▾",
+    duarr: "⇵",
+    duhar: "⥯",
+    dwangle: "⦦",
+    dzcy: "џ",
+    dzigrarr: "⟿",
+    eDDot: "⩷",
+    eDot: "≑",
+    eacute: "é",
+    easter: "⩮",
+    ecaron: "ě",
+    ecir: "≖",
+    ecirc: "ê",
+    ecolon: "≕",
+    ecy: "э",
+    edot: "ė",
+    ee: "ⅇ",
+    efDot: "≒",
+    efr: "\uD835\uDD22",
+    eg: "⪚",
+    egrave: "è",
+    egs: "⪖",
+    egsdot: "⪘",
+    el: "⪙",
+    elinters: "⏧",
+    ell: "ℓ",
+    els: "⪕",
+    elsdot: "⪗",
+    emacr: "ē",
+    empty: "∅",
+    emptyset: "∅",
+    emptyv: "∅",
+    emsp13: " ",
+    emsp14: " ",
+    emsp: " ",
+    eng: "ŋ",
+    ensp: " ",
+    eogon: "ę",
+    eopf: "\uD835\uDD56",
+    epar: "⋕",
+    eparsl: "⧣",
+    eplus: "⩱",
+    epsi: "ε",
+    epsilon: "ε",
+    epsiv: "ϵ",
+    eqcirc: "≖",
+    eqcolon: "≕",
+    eqsim: "≂",
+    eqslantgtr: "⪖",
+    eqslantless: "⪕",
+    equals: "=",
+    equest: "≟",
+    equiv: "≡",
+    equivDD: "⩸",
+    eqvparsl: "⧥",
+    erDot: "≓",
+    erarr: "⥱",
+    escr: "ℯ",
+    esdot: "≐",
+    esim: "≂",
+    eta: "η",
+    eth: "ð",
+    euml: "ë",
+    euro: "€",
+    excl: "!",
+    exist: "∃",
+    expectation: "ℰ",
+    exponentiale: "ⅇ",
+    fallingdotseq: "≒",
+    fcy: "ф",
+    female: "♀",
+    ffilig: "ﬃ",
+    fflig: "ﬀ",
+    ffllig: "ﬄ",
+    ffr: "\uD835\uDD23",
+    filig: "ﬁ",
+    fjlig: "fj",
+    flat: "♭",
+    fllig: "ﬂ",
+    fltns: "▱",
+    fnof: "ƒ",
+    fopf: "\uD835\uDD57",
+    forall: "∀",
+    fork: "⋔",
+    forkv: "⫙",
+    fpartint: "⨍",
+    frac12: "½",
+    frac13: "⅓",
+    frac14: "¼",
+    frac15: "⅕",
+    frac16: "⅙",
+    frac18: "⅛",
+    frac23: "⅔",
+    frac25: "⅖",
+    frac34: "¾",
+    frac35: "⅗",
+    frac38: "⅜",
+    frac45: "⅘",
+    frac56: "⅚",
+    frac58: "⅝",
+    frac78: "⅞",
+    frasl: "⁄",
+    frown: "⌢",
+    fscr: "\uD835\uDCBB",
+    gE: "≧",
+    gEl: "⪌",
+    gacute: "ǵ",
+    gamma: "γ",
+    gammad: "ϝ",
+    gap: "⪆",
+    gbreve: "ğ",
+    gcirc: "ĝ",
+    gcy: "г",
+    gdot: "ġ",
+    ge: "≥",
+    gel: "⋛",
+    geq: "≥",
+    geqq: "≧",
+    geqslant: "⩾",
+    ges: "⩾",
+    gescc: "⪩",
+    gesdot: "⪀",
+    gesdoto: "⪂",
+    gesdotol: "⪄",
+    gesl: "⋛︀",
+    gesles: "⪔",
+    gfr: "\uD835\uDD24",
+    gg: "≫",
+    ggg: "⋙",
+    gimel: "ℷ",
+    gjcy: "ѓ",
+    gl: "≷",
+    glE: "⪒",
+    gla: "⪥",
+    glj: "⪤",
+    gnE: "≩",
+    gnap: "⪊",
+    gnapprox: "⪊",
+    gne: "⪈",
+    gneq: "⪈",
+    gneqq: "≩",
+    gnsim: "⋧",
+    gopf: "\uD835\uDD58",
+    grave: "`",
+    gscr: "ℊ",
+    gsim: "≳",
+    gsime: "⪎",
+    gsiml: "⪐",
+    gt: ">",
+    gtcc: "⪧",
+    gtcir: "⩺",
+    gtdot: "⋗",
+    gtlPar: "⦕",
+    gtquest: "⩼",
+    gtrapprox: "⪆",
+    gtrarr: "⥸",
+    gtrdot: "⋗",
+    gtreqless: "⋛",
+    gtreqqless: "⪌",
+    gtrless: "≷",
+    gtrsim: "≳",
+    gvertneqq: "≩︀",
+    gvnE: "≩︀",
+    hArr: "⇔",
+    hairsp: " ",
+    half: "½",
+    hamilt: "ℋ",
+    hardcy: "ъ",
+    harr: "↔",
+    harrcir: "⥈",
+    harrw: "↭",
+    hbar: "ℏ",
+    hcirc: "ĥ",
+    hearts: "♥",
+    heartsuit: "♥",
+    hellip: "…",
+    hercon: "⊹",
+    hfr: "\uD835\uDD25",
+    hksearow: "⤥",
+    hkswarow: "⤦",
+    hoarr: "⇿",
+    homtht: "∻",
+    hookleftarrow: "↩",
+    hookrightarrow: "↪",
+    hopf: "\uD835\uDD59",
+    horbar: "―",
+    hscr: "\uD835\uDCBD",
+    hslash: "ℏ",
+    hstrok: "ħ",
+    hybull: "⁃",
+    hyphen: "‐",
+    iacute: "í",
+    ic: "⁣",
+    icirc: "î",
+    icy: "и",
+    iecy: "е",
+    iexcl: "¡",
+    iff: "⇔",
+    ifr: "\uD835\uDD26",
+    igrave: "ì",
+    ii: "ⅈ",
+    iiiint: "⨌",
+    iiint: "∭",
+    iinfin: "⧜",
+    iiota: "℩",
+    ijlig: "ĳ",
+    imacr: "ī",
+    image: "ℑ",
+    imagline: "ℐ",
+    imagpart: "ℑ",
+    imath: "ı",
+    imof: "⊷",
+    imped: "Ƶ",
+    in: "∈",
+    incare: "℅",
+    infin: "∞",
+    infintie: "⧝",
+    inodot: "ı",
+    int: "∫",
+    intcal: "⊺",
+    integers: "ℤ",
+    intercal: "⊺",
+    intlarhk: "⨗",
+    intprod: "⨼",
+    iocy: "ё",
+    iogon: "į",
+    iopf: "\uD835\uDD5A",
+    iota: "ι",
+    iprod: "⨼",
+    iquest: "¿",
+    iscr: "\uD835\uDCBE",
+    isin: "∈",
+    isinE: "⋹",
+    isindot: "⋵",
+    isins: "⋴",
+    isinsv: "⋳",
+    isinv: "∈",
+    it: "⁢",
+    itilde: "ĩ",
+    iukcy: "і",
+    iuml: "ï",
+    jcirc: "ĵ",
+    jcy: "й",
+    jfr: "\uD835\uDD27",
+    jmath: "ȷ",
+    jopf: "\uD835\uDD5B",
+    jscr: "\uD835\uDCBF",
+    jsercy: "ј",
+    jukcy: "є",
+    kappa: "κ",
+    kappav: "ϰ",
+    kcedil: "ķ",
+    kcy: "к",
+    kfr: "\uD835\uDD28",
+    kgreen: "ĸ",
+    khcy: "х",
+    kjcy: "ќ",
+    kopf: "\uD835\uDD5C",
+    kscr: "\uD835\uDCC0",
+    lAarr: "⇚",
+    lArr: "⇐",
+    lAtail: "⤛",
+    lBarr: "⤎",
+    lE: "≦",
+    lEg: "⪋",
+    lHar: "⥢",
+    lacute: "ĺ",
+    laemptyv: "⦴",
+    lagran: "ℒ",
+    lambda: "λ",
+    lang: "⟨",
+    langd: "⦑",
+    langle: "⟨",
+    lap: "⪅",
+    laquo: "«",
+    larr: "←",
+    larrb: "⇤",
+    larrbfs: "⤟",
+    larrfs: "⤝",
+    larrhk: "↩",
+    larrlp: "↫",
+    larrpl: "⤹",
+    larrsim: "⥳",
+    larrtl: "↢",
+    lat: "⪫",
+    latail: "⤙",
+    late: "⪭",
+    lates: "⪭︀",
+    lbarr: "⤌",
+    lbbrk: "❲",
+    lbrace: "{",
+    lbrack: "[",
+    lbrke: "⦋",
+    lbrksld: "⦏",
+    lbrkslu: "⦍",
+    lcaron: "ľ",
+    lcedil: "ļ",
+    lceil: "⌈",
+    lcub: "{",
+    lcy: "л",
+    ldca: "⤶",
+    ldquo: "“",
+    ldquor: "„",
+    ldrdhar: "⥧",
+    ldrushar: "⥋",
+    ldsh: "↲",
+    le: "≤",
+    leftarrow: "←",
+    leftarrowtail: "↢",
+    leftharpoondown: "↽",
+    leftharpoonup: "↼",
+    leftleftarrows: "⇇",
+    leftrightarrow: "↔",
+    leftrightarrows: "⇆",
+    leftrightharpoons: "⇋",
+    leftrightsquigarrow: "↭",
+    leftthreetimes: "⋋",
+    leg: "⋚",
+    leq: "≤",
+    leqq: "≦",
+    leqslant: "⩽",
+    les: "⩽",
+    lescc: "⪨",
+    lesdot: "⩿",
+    lesdoto: "⪁",
+    lesdotor: "⪃",
+    lesg: "⋚︀",
+    lesges: "⪓",
+    lessapprox: "⪅",
+    lessdot: "⋖",
+    lesseqgtr: "⋚",
+    lesseqqgtr: "⪋",
+    lessgtr: "≶",
+    lesssim: "≲",
+    lfisht: "⥼",
+    lfloor: "⌊",
+    lfr: "\uD835\uDD29",
+    lg: "≶",
+    lgE: "⪑",
+    lhard: "↽",
+    lharu: "↼",
+    lharul: "⥪",
+    lhblk: "▄",
+    ljcy: "љ",
+    ll: "≪",
+    llarr: "⇇",
+    llcorner: "⌞",
+    llhard: "⥫",
+    lltri: "◺",
+    lmidot: "ŀ",
+    lmoust: "⎰",
+    lmoustache: "⎰",
+    lnE: "≨",
+    lnap: "⪉",
+    lnapprox: "⪉",
+    lne: "⪇",
+    lneq: "⪇",
+    lneqq: "≨",
+    lnsim: "⋦",
+    loang: "⟬",
+    loarr: "⇽",
+    lobrk: "⟦",
+    longleftarrow: "⟵",
+    longleftrightarrow: "⟷",
+    longmapsto: "⟼",
+    longrightarrow: "⟶",
+    looparrowleft: "↫",
+    looparrowright: "↬",
+    lopar: "⦅",
+    lopf: "\uD835\uDD5D",
+    loplus: "⨭",
+    lotimes: "⨴",
+    lowast: "∗",
+    lowbar: "_",
+    loz: "◊",
+    lozenge: "◊",
+    lozf: "⧫",
+    lpar: "(",
+    lparlt: "⦓",
+    lrarr: "⇆",
+    lrcorner: "⌟",
+    lrhar: "⇋",
+    lrhard: "⥭",
+    lrm: "‎",
+    lrtri: "⊿",
+    lsaquo: "‹",
+    lscr: "\uD835\uDCC1",
+    lsh: "↰",
+    lsim: "≲",
+    lsime: "⪍",
+    lsimg: "⪏",
+    lsqb: "[",
+    lsquo: "‘",
+    lsquor: "‚",
+    lstrok: "ł",
+    lt: "<",
+    ltcc: "⪦",
+    ltcir: "⩹",
+    ltdot: "⋖",
+    lthree: "⋋",
+    ltimes: "⋉",
+    ltlarr: "⥶",
+    ltquest: "⩻",
+    ltrPar: "⦖",
+    ltri: "◃",
+    ltrie: "⊴",
+    ltrif: "◂",
+    lurdshar: "⥊",
+    luruhar: "⥦",
+    lvertneqq: "≨︀",
+    lvnE: "≨︀",
+    mDDot: "∺",
+    macr: "¯",
+    male: "♂",
+    malt: "✠",
+    maltese: "✠",
+    map: "↦",
+    mapsto: "↦",
+    mapstodown: "↧",
+    mapstoleft: "↤",
+    mapstoup: "↥",
+    marker: "▮",
+    mcomma: "⨩",
+    mcy: "м",
+    mdash: "—",
+    measuredangle: "∡",
+    mfr: "\uD835\uDD2A",
+    mho: "℧",
+    micro: "µ",
+    mid: "∣",
+    midast: "*",
+    midcir: "⫰",
+    middot: "·",
+    minus: "−",
+    minusb: "⊟",
+    minusd: "∸",
+    minusdu: "⨪",
+    mlcp: "⫛",
+    mldr: "…",
+    mnplus: "∓",
+    models: "⊧",
+    mopf: "\uD835\uDD5E",
+    mp: "∓",
+    mscr: "\uD835\uDCC2",
+    mstpos: "∾",
+    mu: "μ",
+    multimap: "⊸",
+    mumap: "⊸",
+    nGg: "⋙̸",
+    nGt: "≫⃒",
+    nGtv: "≫̸",
+    nLeftarrow: "⇍",
+    nLeftrightarrow: "⇎",
+    nLl: "⋘̸",
+    nLt: "≪⃒",
+    nLtv: "≪̸",
+    nRightarrow: "⇏",
+    nVDash: "⊯",
+    nVdash: "⊮",
+    nabla: "∇",
+    nacute: "ń",
+    nang: "∠⃒",
+    nap: "≉",
+    napE: "⩰̸",
+    napid: "≋̸",
+    napos: "ŉ",
+    napprox: "≉",
+    natur: "♮",
+    natural: "♮",
+    naturals: "ℕ",
+    nbsp: " ",
+    nbump: "≎̸",
+    nbumpe: "≏̸",
+    ncap: "⩃",
+    ncaron: "ň",
+    ncedil: "ņ",
+    ncong: "≇",
+    ncongdot: "⩭̸",
+    ncup: "⩂",
+    ncy: "н",
+    ndash: "–",
+    ne: "≠",
+    neArr: "⇗",
+    nearhk: "⤤",
+    nearr: "↗",
+    nearrow: "↗",
+    nedot: "≐̸",
+    nequiv: "≢",
+    nesear: "⤨",
+    nesim: "≂̸",
+    nexist: "∄",
+    nexists: "∄",
+    nfr: "\uD835\uDD2B",
+    ngE: "≧̸",
+    nge: "≱",
+    ngeq: "≱",
+    ngeqq: "≧̸",
+    ngeqslant: "⩾̸",
+    nges: "⩾̸",
+    ngsim: "≵",
+    ngt: "≯",
+    ngtr: "≯",
+    nhArr: "⇎",
+    nharr: "↮",
+    nhpar: "⫲",
+    ni: "∋",
+    nis: "⋼",
+    nisd: "⋺",
+    niv: "∋",
+    njcy: "њ",
+    nlArr: "⇍",
+    nlE: "≦̸",
+    nlarr: "↚",
+    nldr: "‥",
+    nle: "≰",
+    nleftarrow: "↚",
+    nleftrightarrow: "↮",
+    nleq: "≰",
+    nleqq: "≦̸",
+    nleqslant: "⩽̸",
+    nles: "⩽̸",
+    nless: "≮",
+    nlsim: "≴",
+    nlt: "≮",
+    nltri: "⋪",
+    nltrie: "⋬",
+    nmid: "∤",
+    nopf: "\uD835\uDD5F",
+    not: "¬",
+    notin: "∉",
+    notinE: "⋹̸",
+    notindot: "⋵̸",
+    notinva: "∉",
+    notinvb: "⋷",
+    notinvc: "⋶",
+    notni: "∌",
+    notniva: "∌",
+    notnivb: "⋾",
+    notnivc: "⋽",
+    npar: "∦",
+    nparallel: "∦",
+    nparsl: "⫽⃥",
+    npart: "∂̸",
+    npolint: "⨔",
+    npr: "⊀",
+    nprcue: "⋠",
+    npre: "⪯̸",
+    nprec: "⊀",
+    npreceq: "⪯̸",
+    nrArr: "⇏",
+    nrarr: "↛",
+    nrarrc: "⤳̸",
+    nrarrw: "↝̸",
+    nrightarrow: "↛",
+    nrtri: "⋫",
+    nrtrie: "⋭",
+    nsc: "⊁",
+    nsccue: "⋡",
+    nsce: "⪰̸",
+    nscr: "\uD835\uDCC3",
+    nshortmid: "∤",
+    nshortparallel: "∦",
+    nsim: "≁",
+    nsime: "≄",
+    nsimeq: "≄",
+    nsmid: "∤",
+    nspar: "∦",
+    nsqsube: "⋢",
+    nsqsupe: "⋣",
+    nsub: "⊄",
+    nsubE: "⫅̸",
+    nsube: "⊈",
+    nsubset: "⊂⃒",
+    nsubseteq: "⊈",
+    nsubseteqq: "⫅̸",
+    nsucc: "⊁",
+    nsucceq: "⪰̸",
+    nsup: "⊅",
+    nsupE: "⫆̸",
+    nsupe: "⊉",
+    nsupset: "⊃⃒",
+    nsupseteq: "⊉",
+    nsupseteqq: "⫆̸",
+    ntgl: "≹",
+    ntilde: "ñ",
+    ntlg: "≸",
+    ntriangleleft: "⋪",
+    ntrianglelefteq: "⋬",
+    ntriangleright: "⋫",
+    ntrianglerighteq: "⋭",
+    nu: "ν",
+    num: "#",
+    numero: "№",
+    numsp: " ",
+    nvDash: "⊭",
+    nvHarr: "⤄",
+    nvap: "≍⃒",
+    nvdash: "⊬",
+    nvge: "≥⃒",
+    nvgt: ">⃒",
+    nvinfin: "⧞",
+    nvlArr: "⤂",
+    nvle: "≤⃒",
+    nvlt: "<⃒",
+    nvltrie: "⊴⃒",
+    nvrArr: "⤃",
+    nvrtrie: "⊵⃒",
+    nvsim: "∼⃒",
+    nwArr: "⇖",
+    nwarhk: "⤣",
+    nwarr: "↖",
+    nwarrow: "↖",
+    nwnear: "⤧",
+    oS: "Ⓢ",
+    oacute: "ó",
+    oast: "⊛",
+    ocir: "⊚",
+    ocirc: "ô",
+    ocy: "о",
+    odash: "⊝",
+    odblac: "ő",
+    odiv: "⨸",
+    odot: "⊙",
+    odsold: "⦼",
+    oelig: "œ",
+    ofcir: "⦿",
+    ofr: "\uD835\uDD2C",
+    ogon: "˛",
+    ograve: "ò",
+    ogt: "⧁",
+    ohbar: "⦵",
+    ohm: "Ω",
+    oint: "∮",
+    olarr: "↺",
+    olcir: "⦾",
+    olcross: "⦻",
+    oline: "‾",
+    olt: "⧀",
+    omacr: "ō",
+    omega: "ω",
+    omicron: "ο",
+    omid: "⦶",
+    ominus: "⊖",
+    oopf: "\uD835\uDD60",
+    opar: "⦷",
+    operp: "⦹",
+    oplus: "⊕",
+    or: "∨",
+    orarr: "↻",
+    ord: "⩝",
+    order: "ℴ",
+    orderof: "ℴ",
+    ordf: "ª",
+    ordm: "º",
+    origof: "⊶",
+    oror: "⩖",
+    orslope: "⩗",
+    orv: "⩛",
+    oscr: "ℴ",
+    oslash: "ø",
+    osol: "⊘",
+    otilde: "õ",
+    otimes: "⊗",
+    otimesas: "⨶",
+    ouml: "ö",
+    ovbar: "⌽",
+    par: "∥",
+    para: "¶",
+    parallel: "∥",
+    parsim: "⫳",
+    parsl: "⫽",
+    part: "∂",
+    pcy: "п",
+    percnt: "%",
+    period: ".",
+    permil: "‰",
+    perp: "⊥",
+    pertenk: "‱",
+    pfr: "\uD835\uDD2D",
+    phi: "φ",
+    phiv: "ϕ",
+    phmmat: "ℳ",
+    phone: "☎",
+    pi: "π",
+    pitchfork: "⋔",
+    piv: "ϖ",
+    planck: "ℏ",
+    planckh: "ℎ",
+    plankv: "ℏ",
+    plus: "+",
+    plusacir: "⨣",
+    plusb: "⊞",
+    pluscir: "⨢",
+    plusdo: "∔",
+    plusdu: "⨥",
+    pluse: "⩲",
+    plusmn: "±",
+    plussim: "⨦",
+    plustwo: "⨧",
+    pm: "±",
+    pointint: "⨕",
+    popf: "\uD835\uDD61",
+    pound: "£",
+    pr: "≺",
+    prE: "⪳",
+    prap: "⪷",
+    prcue: "≼",
+    pre: "⪯",
+    prec: "≺",
+    precapprox: "⪷",
+    preccurlyeq: "≼",
+    preceq: "⪯",
+    precnapprox: "⪹",
+    precneqq: "⪵",
+    precnsim: "⋨",
+    precsim: "≾",
+    prime: "′",
+    primes: "ℙ",
+    prnE: "⪵",
+    prnap: "⪹",
+    prnsim: "⋨",
+    prod: "∏",
+    profalar: "⌮",
+    profline: "⌒",
+    profsurf: "⌓",
+    prop: "∝",
+    propto: "∝",
+    prsim: "≾",
+    prurel: "⊰",
+    pscr: "\uD835\uDCC5",
+    psi: "ψ",
+    puncsp: " ",
+    qfr: "\uD835\uDD2E",
+    qint: "⨌",
+    qopf: "\uD835\uDD62",
+    qprime: "⁗",
+    qscr: "\uD835\uDCC6",
+    quaternions: "ℍ",
+    quatint: "⨖",
+    quest: "?",
+    questeq: "≟",
+    quot: '"',
+    rAarr: "⇛",
+    rArr: "⇒",
+    rAtail: "⤜",
+    rBarr: "⤏",
+    rHar: "⥤",
+    race: "∽̱",
+    racute: "ŕ",
+    radic: "√",
+    raemptyv: "⦳",
+    rang: "⟩",
+    rangd: "⦒",
+    range: "⦥",
+    rangle: "⟩",
+    raquo: "»",
+    rarr: "→",
+    rarrap: "⥵",
+    rarrb: "⇥",
+    rarrbfs: "⤠",
+    rarrc: "⤳",
+    rarrfs: "⤞",
+    rarrhk: "↪",
+    rarrlp: "↬",
+    rarrpl: "⥅",
+    rarrsim: "⥴",
+    rarrtl: "↣",
+    rarrw: "↝",
+    ratail: "⤚",
+    ratio: "∶",
+    rationals: "ℚ",
+    rbarr: "⤍",
+    rbbrk: "❳",
+    rbrace: "}",
+    rbrack: "]",
+    rbrke: "⦌",
+    rbrksld: "⦎",
+    rbrkslu: "⦐",
+    rcaron: "ř",
+    rcedil: "ŗ",
+    rceil: "⌉",
+    rcub: "}",
+    rcy: "р",
+    rdca: "⤷",
+    rdldhar: "⥩",
+    rdquo: "”",
+    rdquor: "”",
+    rdsh: "↳",
+    real: "ℜ",
+    realine: "ℛ",
+    realpart: "ℜ",
+    reals: "ℝ",
+    rect: "▭",
+    reg: "®",
+    rfisht: "⥽",
+    rfloor: "⌋",
+    rfr: "\uD835\uDD2F",
+    rhard: "⇁",
+    rharu: "⇀",
+    rharul: "⥬",
+    rho: "ρ",
+    rhov: "ϱ",
+    rightarrow: "→",
+    rightarrowtail: "↣",
+    rightharpoondown: "⇁",
+    rightharpoonup: "⇀",
+    rightleftarrows: "⇄",
+    rightleftharpoons: "⇌",
+    rightrightarrows: "⇉",
+    rightsquigarrow: "↝",
+    rightthreetimes: "⋌",
+    ring: "˚",
+    risingdotseq: "≓",
+    rlarr: "⇄",
+    rlhar: "⇌",
+    rlm: "‏",
+    rmoust: "⎱",
+    rmoustache: "⎱",
+    rnmid: "⫮",
+    roang: "⟭",
+    roarr: "⇾",
+    robrk: "⟧",
+    ropar: "⦆",
+    ropf: "\uD835\uDD63",
+    roplus: "⨮",
+    rotimes: "⨵",
+    rpar: ")",
+    rpargt: "⦔",
+    rppolint: "⨒",
+    rrarr: "⇉",
+    rsaquo: "›",
+    rscr: "\uD835\uDCC7",
+    rsh: "↱",
+    rsqb: "]",
+    rsquo: "’",
+    rsquor: "’",
+    rthree: "⋌",
+    rtimes: "⋊",
+    rtri: "▹",
+    rtrie: "⊵",
+    rtrif: "▸",
+    rtriltri: "⧎",
+    ruluhar: "⥨",
+    rx: "℞",
+    sacute: "ś",
+    sbquo: "‚",
+    sc: "≻",
+    scE: "⪴",
+    scap: "⪸",
+    scaron: "š",
+    sccue: "≽",
+    sce: "⪰",
+    scedil: "ş",
+    scirc: "ŝ",
+    scnE: "⪶",
+    scnap: "⪺",
+    scnsim: "⋩",
+    scpolint: "⨓",
+    scsim: "≿",
+    scy: "с",
+    sdot: "⋅",
+    sdotb: "⊡",
+    sdote: "⩦",
+    seArr: "⇘",
+    searhk: "⤥",
+    searr: "↘",
+    searrow: "↘",
+    sect: "§",
+    semi: ";",
+    seswar: "⤩",
+    setminus: "∖",
+    setmn: "∖",
+    sext: "✶",
+    sfr: "\uD835\uDD30",
+    sfrown: "⌢",
+    sharp: "♯",
+    shchcy: "щ",
+    shcy: "ш",
+    shortmid: "∣",
+    shortparallel: "∥",
+    shy: "­",
+    sigma: "σ",
+    sigmaf: "ς",
+    sigmav: "ς",
+    sim: "∼",
+    simdot: "⩪",
+    sime: "≃",
+    simeq: "≃",
+    simg: "⪞",
+    simgE: "⪠",
+    siml: "⪝",
+    simlE: "⪟",
+    simne: "≆",
+    simplus: "⨤",
+    simrarr: "⥲",
+    slarr: "←",
+    smallsetminus: "∖",
+    smashp: "⨳",
+    smeparsl: "⧤",
+    smid: "∣",
+    smile: "⌣",
+    smt: "⪪",
+    smte: "⪬",
+    smtes: "⪬︀",
+    softcy: "ь",
+    sol: "/",
+    solb: "⧄",
+    solbar: "⌿",
+    sopf: "\uD835\uDD64",
+    spades: "♠",
+    spadesuit: "♠",
+    spar: "∥",
+    sqcap: "⊓",
+    sqcaps: "⊓︀",
+    sqcup: "⊔",
+    sqcups: "⊔︀",
+    sqsub: "⊏",
+    sqsube: "⊑",
+    sqsubset: "⊏",
+    sqsubseteq: "⊑",
+    sqsup: "⊐",
+    sqsupe: "⊒",
+    sqsupset: "⊐",
+    sqsupseteq: "⊒",
+    squ: "□",
+    square: "□",
+    squarf: "▪",
+    squf: "▪",
+    srarr: "→",
+    sscr: "\uD835\uDCC8",
+    ssetmn: "∖",
+    ssmile: "⌣",
+    sstarf: "⋆",
+    star: "☆",
+    starf: "★",
+    straightepsilon: "ϵ",
+    straightphi: "ϕ",
+    strns: "¯",
+    sub: "⊂",
+    subE: "⫅",
+    subdot: "⪽",
+    sube: "⊆",
+    subedot: "⫃",
+    submult: "⫁",
+    subnE: "⫋",
+    subne: "⊊",
+    subplus: "⪿",
+    subrarr: "⥹",
+    subset: "⊂",
+    subseteq: "⊆",
+    subseteqq: "⫅",
+    subsetneq: "⊊",
+    subsetneqq: "⫋",
+    subsim: "⫇",
+    subsub: "⫕",
+    subsup: "⫓",
+    succ: "≻",
+    succapprox: "⪸",
+    succcurlyeq: "≽",
+    succeq: "⪰",
+    succnapprox: "⪺",
+    succneqq: "⪶",
+    succnsim: "⋩",
+    succsim: "≿",
+    sum: "∑",
+    sung: "♪",
+    sup1: "¹",
+    sup2: "²",
+    sup3: "³",
+    sup: "⊃",
+    supE: "⫆",
+    supdot: "⪾",
+    supdsub: "⫘",
+    supe: "⊇",
+    supedot: "⫄",
+    suphsol: "⟉",
+    suphsub: "⫗",
+    suplarr: "⥻",
+    supmult: "⫂",
+    supnE: "⫌",
+    supne: "⊋",
+    supplus: "⫀",
+    supset: "⊃",
+    supseteq: "⊇",
+    supseteqq: "⫆",
+    supsetneq: "⊋",
+    supsetneqq: "⫌",
+    supsim: "⫈",
+    supsub: "⫔",
+    supsup: "⫖",
+    swArr: "⇙",
+    swarhk: "⤦",
+    swarr: "↙",
+    swarrow: "↙",
+    swnwar: "⤪",
+    szlig: "ß",
+    target: "⌖",
+    tau: "τ",
+    tbrk: "⎴",
+    tcaron: "ť",
+    tcedil: "ţ",
+    tcy: "т",
+    tdot: "⃛",
+    telrec: "⌕",
+    tfr: "\uD835\uDD31",
+    there4: "∴",
+    therefore: "∴",
+    theta: "θ",
+    thetasym: "ϑ",
+    thetav: "ϑ",
+    thickapprox: "≈",
+    thicksim: "∼",
+    thinsp: " ",
+    thkap: "≈",
+    thksim: "∼",
+    thorn: "þ",
+    tilde: "˜",
+    times: "×",
+    timesb: "⊠",
+    timesbar: "⨱",
+    timesd: "⨰",
+    tint: "∭",
+    toea: "⤨",
+    top: "⊤",
+    topbot: "⌶",
+    topcir: "⫱",
+    topf: "\uD835\uDD65",
+    topfork: "⫚",
+    tosa: "⤩",
+    tprime: "‴",
+    trade: "™",
+    triangle: "▵",
+    triangledown: "▿",
+    triangleleft: "◃",
+    trianglelefteq: "⊴",
+    triangleq: "≜",
+    triangleright: "▹",
+    trianglerighteq: "⊵",
+    tridot: "◬",
+    trie: "≜",
+    triminus: "⨺",
+    triplus: "⨹",
+    trisb: "⧍",
+    tritime: "⨻",
+    trpezium: "⏢",
+    tscr: "\uD835\uDCC9",
+    tscy: "ц",
+    tshcy: "ћ",
+    tstrok: "ŧ",
+    twixt: "≬",
+    twoheadleftarrow: "↞",
+    twoheadrightarrow: "↠",
+    uArr: "⇑",
+    uHar: "⥣",
+    uacute: "ú",
+    uarr: "↑",
+    ubrcy: "ў",
+    ubreve: "ŭ",
+    ucirc: "û",
+    ucy: "у",
+    udarr: "⇅",
+    udblac: "ű",
+    udhar: "⥮",
+    ufisht: "⥾",
+    ufr: "\uD835\uDD32",
+    ugrave: "ù",
+    uharl: "↿",
+    uharr: "↾",
+    uhblk: "▀",
+    ulcorn: "⌜",
+    ulcorner: "⌜",
+    ulcrop: "⌏",
+    ultri: "◸",
+    umacr: "ū",
+    uml: "¨",
+    uogon: "ų",
+    uopf: "\uD835\uDD66",
+    uparrow: "↑",
+    updownarrow: "↕",
+    upharpoonleft: "↿",
+    upharpoonright: "↾",
+    uplus: "⊎",
+    upsi: "υ",
+    upsih: "ϒ",
+    upsilon: "υ",
+    upuparrows: "⇈",
+    urcorn: "⌝",
+    urcorner: "⌝",
+    urcrop: "⌎",
+    uring: "ů",
+    urtri: "◹",
+    uscr: "\uD835\uDCCA",
+    utdot: "⋰",
+    utilde: "ũ",
+    utri: "▵",
+    utrif: "▴",
+    uuarr: "⇈",
+    uuml: "ü",
+    uwangle: "⦧",
+    vArr: "⇕",
+    vBar: "⫨",
+    vBarv: "⫩",
+    vDash: "⊨",
+    vangrt: "⦜",
+    varepsilon: "ϵ",
+    varkappa: "ϰ",
+    varnothing: "∅",
+    varphi: "ϕ",
+    varpi: "ϖ",
+    varpropto: "∝",
+    varr: "↕",
+    varrho: "ϱ",
+    varsigma: "ς",
+    varsubsetneq: "⊊︀",
+    varsubsetneqq: "⫋︀",
+    varsupsetneq: "⊋︀",
+    varsupsetneqq: "⫌︀",
+    vartheta: "ϑ",
+    vartriangleleft: "⊲",
+    vartriangleright: "⊳",
+    vcy: "в",
+    vdash: "⊢",
+    vee: "∨",
+    veebar: "⊻",
+    veeeq: "≚",
+    vellip: "⋮",
+    verbar: "|",
+    vert: "|",
+    vfr: "\uD835\uDD33",
+    vltri: "⊲",
+    vnsub: "⊂⃒",
+    vnsup: "⊃⃒",
+    vopf: "\uD835\uDD67",
+    vprop: "∝",
+    vrtri: "⊳",
+    vscr: "\uD835\uDCCB",
+    vsubnE: "⫋︀",
+    vsubne: "⊊︀",
+    vsupnE: "⫌︀",
+    vsupne: "⊋︀",
+    vzigzag: "⦚",
+    wcirc: "ŵ",
+    wedbar: "⩟",
+    wedge: "∧",
+    wedgeq: "≙",
+    weierp: "℘",
+    wfr: "\uD835\uDD34",
+    wopf: "\uD835\uDD68",
+    wp: "℘",
+    wr: "≀",
+    wreath: "≀",
+    wscr: "\uD835\uDCCC",
+    xcap: "⋂",
+    xcirc: "◯",
+    xcup: "⋃",
+    xdtri: "▽",
+    xfr: "\uD835\uDD35",
+    xhArr: "⟺",
+    xharr: "⟷",
+    xi: "ξ",
+    xlArr: "⟸",
+    xlarr: "⟵",
+    xmap: "⟼",
+    xnis: "⋻",
+    xodot: "⨀",
+    xopf: "\uD835\uDD69",
+    xoplus: "⨁",
+    xotime: "⨂",
+    xrArr: "⟹",
+    xrarr: "⟶",
+    xscr: "\uD835\uDCCD",
+    xsqcup: "⨆",
+    xuplus: "⨄",
+    xutri: "△",
+    xvee: "⋁",
+    xwedge: "⋀",
+    yacute: "ý",
+    yacy: "я",
+    ycirc: "ŷ",
+    ycy: "ы",
+    yen: "¥",
+    yfr: "\uD835\uDD36",
+    yicy: "ї",
+    yopf: "\uD835\uDD6A",
+    yscr: "\uD835\uDCCE",
+    yucy: "ю",
+    yuml: "ÿ",
+    zacute: "ź",
+    zcaron: "ž",
+    zcy: "з",
+    zdot: "ż",
+    zeetrf: "ℨ",
+    zeta: "ζ",
+    zfr: "\uD835\uDD37",
+    zhcy: "ж",
+    zigrarr: "⇝",
+    zopf: "\uD835\uDD6B",
+    zscr: "\uD835\uDCCF",
+    zwj: "‍",
+    zwnj: "‌"
+  };
+});
+
+// box/node_modules/decode-named-character-reference/index.js
+function decodeNamedCharacterReference(value) {
+  return own.call(characterEntities, value) ? characterEntities[value] : false;
+}
+var own;
+var init_decode_named_character_reference = __esm(() => {
+  init_character_entities();
+  own = {}.hasOwnProperty;
+});
+
+// box/node_modules/micromark-util-symbol/lib/codes.js
+var codes;
+var init_codes = __esm(() => {
+  codes = {
+    carriageReturn: -5,
+    lineFeed: -4,
+    carriageReturnLineFeed: -3,
+    horizontalTab: -2,
+    virtualSpace: -1,
+    eof: null,
+    nul: 0,
+    soh: 1,
+    stx: 2,
+    etx: 3,
+    eot: 4,
+    enq: 5,
+    ack: 6,
+    bel: 7,
+    bs: 8,
+    ht: 9,
+    lf: 10,
+    vt: 11,
+    ff: 12,
+    cr: 13,
+    so: 14,
+    si: 15,
+    dle: 16,
+    dc1: 17,
+    dc2: 18,
+    dc3: 19,
+    dc4: 20,
+    nak: 21,
+    syn: 22,
+    etb: 23,
+    can: 24,
+    em: 25,
+    sub: 26,
+    esc: 27,
+    fs: 28,
+    gs: 29,
+    rs: 30,
+    us: 31,
+    space: 32,
+    exclamationMark: 33,
+    quotationMark: 34,
+    numberSign: 35,
+    dollarSign: 36,
+    percentSign: 37,
+    ampersand: 38,
+    apostrophe: 39,
+    leftParenthesis: 40,
+    rightParenthesis: 41,
+    asterisk: 42,
+    plusSign: 43,
+    comma: 44,
+    dash: 45,
+    dot: 46,
+    slash: 47,
+    digit0: 48,
+    digit1: 49,
+    digit2: 50,
+    digit3: 51,
+    digit4: 52,
+    digit5: 53,
+    digit6: 54,
+    digit7: 55,
+    digit8: 56,
+    digit9: 57,
+    colon: 58,
+    semicolon: 59,
+    lessThan: 60,
+    equalsTo: 61,
+    greaterThan: 62,
+    questionMark: 63,
+    atSign: 64,
+    uppercaseA: 65,
+    uppercaseB: 66,
+    uppercaseC: 67,
+    uppercaseD: 68,
+    uppercaseE: 69,
+    uppercaseF: 70,
+    uppercaseG: 71,
+    uppercaseH: 72,
+    uppercaseI: 73,
+    uppercaseJ: 74,
+    uppercaseK: 75,
+    uppercaseL: 76,
+    uppercaseM: 77,
+    uppercaseN: 78,
+    uppercaseO: 79,
+    uppercaseP: 80,
+    uppercaseQ: 81,
+    uppercaseR: 82,
+    uppercaseS: 83,
+    uppercaseT: 84,
+    uppercaseU: 85,
+    uppercaseV: 86,
+    uppercaseW: 87,
+    uppercaseX: 88,
+    uppercaseY: 89,
+    uppercaseZ: 90,
+    leftSquareBracket: 91,
+    backslash: 92,
+    rightSquareBracket: 93,
+    caret: 94,
+    underscore: 95,
+    graveAccent: 96,
+    lowercaseA: 97,
+    lowercaseB: 98,
+    lowercaseC: 99,
+    lowercaseD: 100,
+    lowercaseE: 101,
+    lowercaseF: 102,
+    lowercaseG: 103,
+    lowercaseH: 104,
+    lowercaseI: 105,
+    lowercaseJ: 106,
+    lowercaseK: 107,
+    lowercaseL: 108,
+    lowercaseM: 109,
+    lowercaseN: 110,
+    lowercaseO: 111,
+    lowercaseP: 112,
+    lowercaseQ: 113,
+    lowercaseR: 114,
+    lowercaseS: 115,
+    lowercaseT: 116,
+    lowercaseU: 117,
+    lowercaseV: 118,
+    lowercaseW: 119,
+    lowercaseX: 120,
+    lowercaseY: 121,
+    lowercaseZ: 122,
+    leftCurlyBrace: 123,
+    verticalBar: 124,
+    rightCurlyBrace: 125,
+    tilde: 126,
+    del: 127,
+    byteOrderMarker: 65279,
+    replacementCharacter: 65533
+  };
+});
+
+// box/node_modules/micromark-util-symbol/lib/constants.js
+var constants;
+var init_constants = __esm(() => {
+  constants = {
+    attentionSideAfter: 2,
+    attentionSideBefore: 1,
+    atxHeadingOpeningFenceSizeMax: 6,
+    autolinkDomainSizeMax: 63,
+    autolinkSchemeSizeMax: 32,
+    cdataOpeningString: "CDATA[",
+    characterGroupPunctuation: 2,
+    characterGroupWhitespace: 1,
+    characterReferenceDecimalSizeMax: 7,
+    characterReferenceHexadecimalSizeMax: 6,
+    characterReferenceNamedSizeMax: 31,
+    codeFencedSequenceSizeMin: 3,
+    contentTypeContent: "content",
+    contentTypeDocument: "document",
+    contentTypeFlow: "flow",
+    contentTypeString: "string",
+    contentTypeText: "text",
+    hardBreakPrefixSizeMin: 2,
+    htmlBasic: 6,
+    htmlCdata: 5,
+    htmlComment: 2,
+    htmlComplete: 7,
+    htmlDeclaration: 4,
+    htmlInstruction: 3,
+    htmlRawSizeMax: 8,
+    htmlRaw: 1,
+    linkResourceDestinationBalanceMax: 32,
+    linkReferenceSizeMax: 999,
+    listItemValueSizeMax: 10,
+    numericBaseDecimal: 10,
+    numericBaseHexadecimal: 16,
+    tabSize: 4,
+    thematicBreakMarkerCountMin: 3,
+    v8MaxSafeChunkSize: 1e4
+  };
+});
+
+// box/node_modules/micromark-util-symbol/lib/types.js
+var types;
+var init_types = __esm(() => {
+  types = {
+    data: "data",
+    whitespace: "whitespace",
+    lineEnding: "lineEnding",
+    lineEndingBlank: "lineEndingBlank",
+    linePrefix: "linePrefix",
+    lineSuffix: "lineSuffix",
+    atxHeading: "atxHeading",
+    atxHeadingSequence: "atxHeadingSequence",
+    atxHeadingText: "atxHeadingText",
+    autolink: "autolink",
+    autolinkEmail: "autolinkEmail",
+    autolinkMarker: "autolinkMarker",
+    autolinkProtocol: "autolinkProtocol",
+    characterEscape: "characterEscape",
+    characterEscapeValue: "characterEscapeValue",
+    characterReference: "characterReference",
+    characterReferenceMarker: "characterReferenceMarker",
+    characterReferenceMarkerNumeric: "characterReferenceMarkerNumeric",
+    characterReferenceMarkerHexadecimal: "characterReferenceMarkerHexadecimal",
+    characterReferenceValue: "characterReferenceValue",
+    codeFenced: "codeFenced",
+    codeFencedFence: "codeFencedFence",
+    codeFencedFenceSequence: "codeFencedFenceSequence",
+    codeFencedFenceInfo: "codeFencedFenceInfo",
+    codeFencedFenceMeta: "codeFencedFenceMeta",
+    codeFlowValue: "codeFlowValue",
+    codeIndented: "codeIndented",
+    codeText: "codeText",
+    codeTextData: "codeTextData",
+    codeTextPadding: "codeTextPadding",
+    codeTextSequence: "codeTextSequence",
+    content: "content",
+    definition: "definition",
+    definitionDestination: "definitionDestination",
+    definitionDestinationLiteral: "definitionDestinationLiteral",
+    definitionDestinationLiteralMarker: "definitionDestinationLiteralMarker",
+    definitionDestinationRaw: "definitionDestinationRaw",
+    definitionDestinationString: "definitionDestinationString",
+    definitionLabel: "definitionLabel",
+    definitionLabelMarker: "definitionLabelMarker",
+    definitionLabelString: "definitionLabelString",
+    definitionMarker: "definitionMarker",
+    definitionTitle: "definitionTitle",
+    definitionTitleMarker: "definitionTitleMarker",
+    definitionTitleString: "definitionTitleString",
+    emphasis: "emphasis",
+    emphasisSequence: "emphasisSequence",
+    emphasisText: "emphasisText",
+    escapeMarker: "escapeMarker",
+    hardBreakEscape: "hardBreakEscape",
+    hardBreakTrailing: "hardBreakTrailing",
+    htmlFlow: "htmlFlow",
+    htmlFlowData: "htmlFlowData",
+    htmlText: "htmlText",
+    htmlTextData: "htmlTextData",
+    image: "image",
+    label: "label",
+    labelText: "labelText",
+    labelLink: "labelLink",
+    labelImage: "labelImage",
+    labelMarker: "labelMarker",
+    labelImageMarker: "labelImageMarker",
+    labelEnd: "labelEnd",
+    link: "link",
+    paragraph: "paragraph",
+    reference: "reference",
+    referenceMarker: "referenceMarker",
+    referenceString: "referenceString",
+    resource: "resource",
+    resourceDestination: "resourceDestination",
+    resourceDestinationLiteral: "resourceDestinationLiteral",
+    resourceDestinationLiteralMarker: "resourceDestinationLiteralMarker",
+    resourceDestinationRaw: "resourceDestinationRaw",
+    resourceDestinationString: "resourceDestinationString",
+    resourceMarker: "resourceMarker",
+    resourceTitle: "resourceTitle",
+    resourceTitleMarker: "resourceTitleMarker",
+    resourceTitleString: "resourceTitleString",
+    setextHeading: "setextHeading",
+    setextHeadingText: "setextHeadingText",
+    setextHeadingLine: "setextHeadingLine",
+    setextHeadingLineSequence: "setextHeadingLineSequence",
+    strong: "strong",
+    strongSequence: "strongSequence",
+    strongText: "strongText",
+    thematicBreak: "thematicBreak",
+    thematicBreakSequence: "thematicBreakSequence",
+    blockQuote: "blockQuote",
+    blockQuotePrefix: "blockQuotePrefix",
+    blockQuoteMarker: "blockQuoteMarker",
+    blockQuotePrefixWhitespace: "blockQuotePrefixWhitespace",
+    listOrdered: "listOrdered",
+    listUnordered: "listUnordered",
+    listItemIndent: "listItemIndent",
+    listItemMarker: "listItemMarker",
+    listItemPrefix: "listItemPrefix",
+    listItemPrefixWhitespace: "listItemPrefixWhitespace",
+    listItemValue: "listItemValue",
+    chunkDocument: "chunkDocument",
+    chunkContent: "chunkContent",
+    chunkFlow: "chunkFlow",
+    chunkText: "chunkText",
+    chunkString: "chunkString"
+  };
+});
+
+// box/node_modules/micromark-util-symbol/lib/values.js
+var values;
+var init_values = __esm(() => {
+  values = {
+    ht: "\t",
+    lf: `
+`,
+    cr: "\r",
+    space: " ",
+    exclamationMark: "!",
+    quotationMark: '"',
+    numberSign: "#",
+    dollarSign: "$",
+    percentSign: "%",
+    ampersand: "&",
+    apostrophe: "'",
+    leftParenthesis: "(",
+    rightParenthesis: ")",
+    asterisk: "*",
+    plusSign: "+",
+    comma: ",",
+    dash: "-",
+    dot: ".",
+    slash: "/",
+    digit0: "0",
+    digit1: "1",
+    digit2: "2",
+    digit3: "3",
+    digit4: "4",
+    digit5: "5",
+    digit6: "6",
+    digit7: "7",
+    digit8: "8",
+    digit9: "9",
+    colon: ":",
+    semicolon: ";",
+    lessThan: "<",
+    equalsTo: "=",
+    greaterThan: ">",
+    questionMark: "?",
+    atSign: "@",
+    uppercaseA: "A",
+    uppercaseB: "B",
+    uppercaseC: "C",
+    uppercaseD: "D",
+    uppercaseE: "E",
+    uppercaseF: "F",
+    uppercaseG: "G",
+    uppercaseH: "H",
+    uppercaseI: "I",
+    uppercaseJ: "J",
+    uppercaseK: "K",
+    uppercaseL: "L",
+    uppercaseM: "M",
+    uppercaseN: "N",
+    uppercaseO: "O",
+    uppercaseP: "P",
+    uppercaseQ: "Q",
+    uppercaseR: "R",
+    uppercaseS: "S",
+    uppercaseT: "T",
+    uppercaseU: "U",
+    uppercaseV: "V",
+    uppercaseW: "W",
+    uppercaseX: "X",
+    uppercaseY: "Y",
+    uppercaseZ: "Z",
+    leftSquareBracket: "[",
+    backslash: "\\",
+    rightSquareBracket: "]",
+    caret: "^",
+    underscore: "_",
+    graveAccent: "`",
+    lowercaseA: "a",
+    lowercaseB: "b",
+    lowercaseC: "c",
+    lowercaseD: "d",
+    lowercaseE: "e",
+    lowercaseF: "f",
+    lowercaseG: "g",
+    lowercaseH: "h",
+    lowercaseI: "i",
+    lowercaseJ: "j",
+    lowercaseK: "k",
+    lowercaseL: "l",
+    lowercaseM: "m",
+    lowercaseN: "n",
+    lowercaseO: "o",
+    lowercaseP: "p",
+    lowercaseQ: "q",
+    lowercaseR: "r",
+    lowercaseS: "s",
+    lowercaseT: "t",
+    lowercaseU: "u",
+    lowercaseV: "v",
+    lowercaseW: "w",
+    lowercaseX: "x",
+    lowercaseY: "y",
+    lowercaseZ: "z",
+    leftCurlyBrace: "{",
+    verticalBar: "|",
+    rightCurlyBrace: "}",
+    tilde: "~",
+    replacementCharacter: "�"
+  };
+});
+
+// box/node_modules/micromark-util-symbol/lib/default.js
+var init_default = __esm(() => {
+  init_codes();
+  init_constants();
+  init_types();
+  init_values();
+});
+
+// box/node_modules/micromark-util-chunked/dev/index.js
+function splice(list, start, remove, items) {
+  const end = list.length;
+  let chunkStart = 0;
+  let parameters;
+  if (start < 0) {
+    start = -start > end ? 0 : end + start;
+  } else {
+    start = start > end ? end : start;
+  }
+  remove = remove > 0 ? remove : 0;
+  if (items.length < constants.v8MaxSafeChunkSize) {
+    parameters = Array.from(items);
+    parameters.unshift(start, remove);
+    list.splice(...parameters);
+  } else {
+    if (remove)
+      list.splice(start, remove);
+    while (chunkStart < items.length) {
+      parameters = items.slice(chunkStart, chunkStart + constants.v8MaxSafeChunkSize);
+      parameters.unshift(start, 0);
+      list.splice(...parameters);
+      chunkStart += constants.v8MaxSafeChunkSize;
+      start += constants.v8MaxSafeChunkSize;
+    }
+  }
+}
+function push(list, items) {
+  if (list.length > 0) {
+    splice(list, list.length, 0, items);
+    return list;
+  }
+  return items;
+}
+var init_dev = __esm(() => {
+  init_default();
+});
+
+// box/node_modules/micromark-util-combine-extensions/index.js
+function combineExtensions(extensions) {
+  const all = {};
+  let index = -1;
+  while (++index < extensions.length) {
+    syntaxExtension(all, extensions[index]);
+  }
+  return all;
+}
+function syntaxExtension(all, extension) {
+  let hook;
+  for (hook in extension) {
+    const maybe = hasOwnProperty.call(all, hook) ? all[hook] : undefined;
+    const left = maybe || (all[hook] = {});
+    const right = extension[hook];
+    let code;
+    if (right) {
+      for (code in right) {
+        if (!hasOwnProperty.call(left, code))
+          left[code] = [];
+        const value = right[code];
+        constructs(left[code], Array.isArray(value) ? value : value ? [value] : []);
+      }
+    }
+  }
+}
+function constructs(existing, list) {
+  let index = -1;
+  const before = [];
+  while (++index < list.length) {
+    (list[index].add === "after" ? existing : before).push(list[index]);
+  }
+  splice(existing, 0, 0, before);
+}
+var hasOwnProperty;
+var init_micromark_util_combine_extensions = __esm(() => {
+  init_dev();
+  hasOwnProperty = {}.hasOwnProperty;
+});
+
+// box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
+function decodeNumericCharacterReference(value, base) {
+  const code = Number.parseInt(value, base);
+  if (code < codes.ht || code === codes.vt || code > codes.cr && code < codes.space || code > codes.tilde && code < 160 || code > 55295 && code < 57344 || code > 64975 && code < 65008 || (code & 65535) === 65535 || (code & 65535) === 65534 || code > 1114111) {
+    return values.replacementCharacter;
+  }
+  return String.fromCodePoint(code);
+}
+var init_dev2 = __esm(() => {
+  init_default();
+});
+
+// box/node_modules/micromark-util-normalize-identifier/dev/index.js
+function normalizeIdentifier(value) {
+  return value.replace(/[\t\n\r ]+/g, values.space).replace(/^ | $/g, "").toLowerCase().toUpperCase();
+}
+var init_dev3 = __esm(() => {
+  init_default();
+});
+
+// box/node_modules/micromark-util-character/dev/index.js
+function asciiControl(code) {
+  return code !== null && (code < codes.space || code === codes.del);
+}
+function markdownLineEnding(code) {
+  return code !== null && code < codes.horizontalTab;
+}
+function markdownLineEndingOrSpace(code) {
+  return code !== null && (code < codes.nul || code === codes.space);
+}
+function markdownSpace(code) {
+  return code === codes.horizontalTab || code === codes.virtualSpace || code === codes.space;
+}
+function regexCheck(regex) {
+  return check;
+  function check(code) {
+    return code !== null && code > -1 && regex.test(String.fromCharCode(code));
+  }
+}
+var asciiAlpha, asciiAlphanumeric, asciiAtext, asciiDigit, asciiHexDigit, asciiPunctuation, unicodePunctuation, unicodeWhitespace;
+var init_dev4 = __esm(() => {
+  init_default();
+  asciiAlpha = regexCheck(/[A-Za-z]/);
+  asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
+  asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
+  asciiDigit = regexCheck(/\d/);
+  asciiHexDigit = regexCheck(/[\dA-Fa-f]/);
+  asciiPunctuation = regexCheck(/[!-/:-@[-`{-~]/);
+  unicodePunctuation = regexCheck(/\p{P}|\p{S}/u);
+  unicodeWhitespace = regexCheck(/\s/);
+});
+
+// box/node_modules/micromark-factory-space/dev/index.js
+function factorySpace(effects, ok, type, max) {
+  const limit = max ? max - 1 : Infinity;
+  let size = 0;
+  return start;
+  function start(code) {
+    if (markdownSpace(code)) {
+      effects.enter(type);
+      return prefix(code);
+    }
+    return ok(code);
+  }
+  function prefix(code) {
+    if (markdownSpace(code) && size++ < limit) {
+      effects.consume(code);
+      return prefix;
+    }
+    effects.exit(type);
+    return ok(code);
+  }
+}
+function factorySpaceMinMax(effects, ok, nok, type, min, max) {
+  let size = 0;
+  return start;
+  function start(code) {
+    if (max > 0 && markdownSpace(code)) {
+      effects.enter(type);
+      return prefix(code);
+    }
+    return after(code);
+  }
+  function prefix(code) {
+    if (markdownSpace(code) && size < max) {
+      effects.consume(code);
+      size++;
+      return prefix;
+    }
+    effects.exit(type);
+    return after(code);
+  }
+  function after(code) {
+    return size >= min ? ok(code) : nok(code);
+  }
+}
+var init_dev5 = __esm(() => {
+  init_dev4();
+});
+
+// box/node_modules/micromark/dev/lib/initialize/content.js
+function initializeContent(effects) {
+  const contentStart = effects.attempt(this.parser.constructs.contentInitial, afterContentStartConstruct, paragraphInitial);
+  let previous;
+  return contentStart;
+  function afterContentStartConstruct(code) {
+    ok(code === codes.eof || markdownLineEnding(code), "expected eol or eof");
+    if (code === codes.eof) {
+      effects.consume(code);
+      return;
+    }
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return factorySpace(effects, contentStart, types.linePrefix);
+  }
+  function paragraphInitial(code) {
+    ok(code !== codes.eof && !markdownLineEnding(code), "expected anything other than a line ending or EOF");
+    effects.enter(types.paragraph);
+    return lineStart(code);
+  }
+  function lineStart(code) {
+    const token = effects.enter(types.chunkText, {
+      contentType: constants.contentTypeText,
+      previous
+    });
+    if (previous) {
+      previous.next = token;
+    }
+    previous = token;
+    return data(code);
+  }
+  function data(code) {
+    if (code === codes.eof) {
+      effects.exit(types.chunkText);
+      effects.exit(types.paragraph);
+      effects.consume(code);
+      return;
+    }
+    if (markdownLineEnding(code)) {
+      effects.consume(code);
+      effects.exit(types.chunkText);
+      return lineStart;
+    }
+    effects.consume(code);
+    return data;
+  }
+}
+var content;
+var init_content = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  content = { tokenize: initializeContent };
+});
+
+// box/node_modules/micromark-util-edit-map/dev/index.js
+class EditMap {
+  constructor() {
+    this.index = new Map;
+    this.map = [];
+  }
+  add(index, remove, add) {
+    addImplementation(this, index, remove, add, false);
+  }
+  addBefore(index, remove, add) {
+    addImplementation(this, index, remove, add, true);
+  }
+  consume(events) {
+    this.map.sort(function(a, b) {
+      return a[0] - b[0];
+    });
+    if (this.map.length === 0) {
+      return;
+    }
+    let index = this.map.length;
+    const vecs = [];
+    while (index > 0) {
+      index -= 1;
+      vecs.push(events.slice(this.map[index][0] + this.map[index][1]), this.map[index][2]);
+      events.length = this.map[index][0];
+    }
+    vecs.push(events.slice());
+    events.length = 0;
+    let slice = vecs.pop();
+    while (slice) {
+      for (const element of slice) {
+        events.push(element);
+      }
+      slice = vecs.pop();
+    }
+    this.map.length = 0;
+    this.index.clear();
+  }
+}
+function addImplementation(editMap, at, remove, add, before) {
+  if (remove === 0 && add.length === 0) {
+    return;
+  }
+  const existing = editMap.index.get(at);
+  if (existing) {
+    existing[1] += remove;
+    if (before) {
+      add.push(...existing[2]);
+      existing[2] = add;
+    } else {
+      existing[2].push(...add);
+    }
+    return;
+  }
+  const change = [at, remove, add];
+  editMap.map.push(change);
+  editMap.index.set(at, change);
+}
+
+// box/node_modules/micromark/dev/lib/initialize/document.js
+function initializeDocument(effects) {
+  const self = this;
+  const stack = [];
+  let continued = 0;
+  let childFlow;
+  let childToken;
+  let lineStartOffset;
+  return start;
+  function start(code) {
+    if (continued < stack.length) {
+      const item = stack[continued];
+      self.containerState = item[1];
+      ok(item[0].continuation, "expected `continuation` to be defined on container construct");
+      return effects.attempt(item[0].continuation, documentContinue, checkNewContainers)(code);
+    }
+    return checkNewContainers(code);
+  }
+  function documentContinue(code) {
+    ok(self.containerState, "expected `containerState` to be defined after continuation");
+    continued++;
+    if (self.containerState._closeFlow) {
+      self.containerState._closeFlow = undefined;
+      if (childFlow) {
+        closeFlow();
+      }
+      const indexBeforeExits = self.events.length;
+      let indexBeforeFlow = indexBeforeExits;
+      let point;
+      while (indexBeforeFlow--) {
+        if (self.events[indexBeforeFlow][0] === "exit" && self.events[indexBeforeFlow][1].type === types.chunkFlow) {
+          point = self.events[indexBeforeFlow][1].end;
+          break;
+        }
+      }
+      ok(point, "could not find previous flow chunk");
+      exitContainers(continued);
+      let index = indexBeforeExits;
+      while (index < self.events.length) {
+        self.events[index][1].end = { ...point };
+        index++;
+      }
+      const editMap = new EditMap;
+      editMap.add(indexBeforeFlow + 1, 0, self.events.slice(indexBeforeExits));
+      editMap.add(indexBeforeExits, index - indexBeforeExits, []);
+      editMap.consume(self.events);
+      return checkNewContainers(code);
+    }
+    return start(code);
+  }
+  function checkNewContainers(code) {
+    if (continued === stack.length) {
+      if (!childFlow) {
+        return documentContinued(code);
+      }
+      if (childFlow.currentConstruct && childFlow.currentConstruct.concrete) {
+        return flowStart(code);
+      }
+      self.interrupt = Boolean(childFlow.currentConstruct && !childFlow._gfmTableDynamicInterruptHack);
+    }
+    self.containerState = {};
+    return effects.check(containerConstruct, thereIsANewContainer, thereIsNoNewContainer)(code);
+  }
+  function thereIsANewContainer(code) {
+    if (childFlow) {
+      closeFlow();
+    }
+    exitContainers(continued);
+    return documentContinued(code);
+  }
+  function thereIsNoNewContainer(code) {
+    self.parser.lazy[self.now().line] = continued !== stack.length;
+    lineStartOffset = self.now().offset;
+    return flowStart(code);
+  }
+  function documentContinued(code) {
+    self.containerState = {};
+    return effects.attempt(containerConstruct, containerContinue, flowStart)(code);
+  }
+  function containerContinue(code) {
+    ok(self.currentConstruct, "expected `currentConstruct` to be defined on tokenizer");
+    ok(self.containerState, "expected `containerState` to be defined on tokenizer");
+    continued++;
+    stack.push([self.currentConstruct, self.containerState]);
+    return documentContinued(code);
+  }
+  function flowStart(code) {
+    if (code === codes.eof) {
+      if (childFlow) {
+        closeFlow();
+      }
+      exitContainers(0);
+      effects.consume(code);
+      return;
+    }
+    childFlow = childFlow || self.parser.flow(self.now());
+    effects.enter(types.chunkFlow, {
+      _tokenizer: childFlow,
+      contentType: constants.contentTypeFlow,
+      previous: childToken
+    });
+    return flowContinue(code);
+  }
+  function flowContinue(code) {
+    if (code === codes.eof) {
+      writeToChild(effects.exit(types.chunkFlow), true);
+      exitContainers(0);
+      effects.consume(code);
+      return;
+    }
+    if (markdownLineEnding(code)) {
+      effects.consume(code);
+      writeToChild(effects.exit(types.chunkFlow));
+      continued = 0;
+      self.interrupt = undefined;
+      return start;
+    }
+    effects.consume(code);
+    return flowContinue;
+  }
+  function writeToChild(token, endOfFile) {
+    ok(childFlow, "expected `childFlow` to be defined when continuing");
+    const stream = self.sliceStream(token);
+    if (endOfFile) {
+      stream.push(null);
+    }
+    token.previous = childToken;
+    if (childToken) {
+      childToken.next = token;
+    }
+    childToken = token;
+    childFlow.defineSkip(token.start);
+    childFlow.write(stream);
+    if (self.parser.lazy[token.start.line]) {
+      let index = childFlow.events.length;
+      while (index--) {
+        if (childFlow.events[index][1].start.offset < lineStartOffset && (!childFlow.events[index][1].end || childFlow.events[index][1].end.offset > lineStartOffset)) {
+          return;
+        }
+      }
+      const indexBeforeExits = self.events.length;
+      let indexBeforeFlow = indexBeforeExits;
+      let seen;
+      let point;
+      while (indexBeforeFlow--) {
+        if (self.events[indexBeforeFlow][0] === "exit" && self.events[indexBeforeFlow][1].type === types.chunkFlow) {
+          if (seen) {
+            point = self.events[indexBeforeFlow][1].end;
+            break;
+          }
+          seen = true;
+        }
+      }
+      ok(point, "could not find previous flow chunk");
+      exitContainers(continued);
+      index = indexBeforeExits;
+      while (index < self.events.length) {
+        self.events[index][1].end = { ...point };
+        index++;
+      }
+      const editMap = new EditMap;
+      editMap.add(indexBeforeFlow + 1, 0, self.events.slice(indexBeforeExits));
+      editMap.add(indexBeforeExits, index - indexBeforeExits, []);
+      editMap.consume(self.events);
+    }
+  }
+  function exitContainers(size) {
+    let index = stack.length;
+    while (index-- > size) {
+      const entry = stack[index];
+      self.containerState = entry[1];
+      ok(entry[0].exit, "expected `exit` to be defined on container construct");
+      entry[0].exit.call(self, effects);
+    }
+    stack.length = size;
+  }
+  function closeFlow() {
+    ok(self.containerState, "expected `containerState` to be defined when closing flow");
+    ok(childFlow, "expected `childFlow` to be defined when closing it");
+    childFlow.write([codes.eof]);
+    childToken = undefined;
+    childFlow = undefined;
+    self.containerState._closeFlow = undefined;
+  }
+}
+function tokenizeContainer(effects, ok2, nok) {
+  ok(this.parser.constructs.disable.null, "expected `disable.null` to be populated");
+  return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok2, nok), types.linePrefix, this.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize);
+}
+var document2, containerConstruct;
+var init_document = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  document2 = { tokenize: initializeDocument };
+  containerConstruct = { tokenize: tokenizeContainer };
+});
+
+// box/node_modules/micromark-util-classify-character/dev/index.js
+function classifyCharacter(code) {
+  if (code === codes.eof || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
+    return constants.characterGroupWhitespace;
+  }
+  if (unicodePunctuation(code)) {
+    return constants.characterGroupPunctuation;
+  }
+}
+var init_dev6 = __esm(() => {
+  init_dev4();
+  init_default();
+});
+
+// box/node_modules/micromark-util-resolve-all/index.js
+function resolveAll(constructs, events, context) {
+  const called = [];
+  let index = -1;
+  while (++index < constructs.length) {
+    const resolve = constructs[index].resolveAll;
+    if (resolve && !called.includes(resolve)) {
+      events = resolve(events, context);
+      called.push(resolve);
+    }
+  }
+  return events;
+}
+
+// box/node_modules/micromark-core-commonmark/dev/lib/attention.js
+function resolveAllAttention(events, context) {
+  let index = -1;
+  let nextEvents;
+  while (++index < events.length) {
+    if (events[index][0] === "enter" && events[index][1].type === "attentionSequence" && events[index][1]._close) {
+      let open = index;
+      while (open--) {
+        if (events[open][0] === "exit" && events[open][1].type === "attentionSequence" && events[open][1]._open && context.sliceSerialize(events[open][1]).charCodeAt(0) === context.sliceSerialize(events[index][1]).charCodeAt(0)) {
+          if ((events[open][1]._close || events[index][1]._open) && (events[index][1].end.offset - events[index][1].start.offset) % 3 && !((events[open][1].end.offset - events[open][1].start.offset + events[index][1].end.offset - events[index][1].start.offset) % 3)) {
+            continue;
+          }
+          const use = events[open][1].end.offset - events[open][1].start.offset > 1 && events[index][1].end.offset - events[index][1].start.offset > 1 ? 2 : 1;
+          const start = { ...events[open][1].end };
+          const end = { ...events[index][1].start };
+          movePoint(start, -use);
+          movePoint(end, use);
+          const openingSequence = {
+            type: use > 1 ? types.strongSequence : types.emphasisSequence,
+            start,
+            end: { ...events[open][1].end }
+          };
+          const closingSequence = {
+            type: use > 1 ? types.strongSequence : types.emphasisSequence,
+            start: { ...events[index][1].start },
+            end
+          };
+          const text = {
+            type: use > 1 ? types.strongText : types.emphasisText,
+            start: { ...events[open][1].end },
+            end: { ...events[index][1].start }
+          };
+          const group = {
+            type: use > 1 ? types.strong : types.emphasis,
+            start: { ...openingSequence.start },
+            end: { ...closingSequence.end }
+          };
+          events[open][1].end = { ...openingSequence.start };
+          events[index][1].start = { ...closingSequence.end };
+          nextEvents = [];
+          if (events[open][1].end.offset - events[open][1].start.offset) {
+            nextEvents = push(nextEvents, [
+              ["enter", events[open][1], context],
+              ["exit", events[open][1], context]
+            ]);
+          }
+          nextEvents = push(nextEvents, [
+            ["enter", group, context],
+            ["enter", openingSequence, context],
+            ["exit", openingSequence, context],
+            ["enter", text, context]
+          ]);
+          ok(context.parser.constructs.insideSpan.null, "expected `insideSpan` to be populated");
+          nextEvents = push(nextEvents, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + 1, index), context));
+          nextEvents = push(nextEvents, [
+            ["exit", text, context],
+            ["enter", closingSequence, context],
+            ["exit", closingSequence, context],
+            ["exit", group, context]
+          ]);
+          let offset = 0;
+          if (events[index][1].end.offset - events[index][1].start.offset) {
+            offset = 2;
+            nextEvents = push(nextEvents, [
+              ["enter", events[index][1], context],
+              ["exit", events[index][1], context]
+            ]);
+          }
+          splice(events, open - 1, index - open + 3, nextEvents);
+          index = open + nextEvents.length - offset - 2;
+          break;
+        }
+      }
+    }
+  }
+  index = -1;
+  while (++index < events.length) {
+    if (events[index][1].type === "attentionSequence") {
+      events[index][1].type = "data";
+    }
+  }
+  return events;
+}
+function tokenizeAttention(effects, ok2) {
+  const attentionMarkers = this.parser.constructs.attentionMarkers.null;
+  const previous = this.previous;
+  const before = classifyCharacter(previous);
+  let marker;
+  return start;
+  function start(code) {
+    ok(code === codes.asterisk || code === codes.underscore, "expected asterisk or underscore");
+    marker = code;
+    effects.enter("attentionSequence");
+    return inside(code);
+  }
+  function inside(code) {
+    if (code === marker) {
+      effects.consume(code);
+      return inside;
+    }
+    const token = effects.exit("attentionSequence");
+    const after = classifyCharacter(code);
+    ok(attentionMarkers, "expected `attentionMarkers` to be populated");
+    const open = !after || after === constants.characterGroupPunctuation && before || attentionMarkers.includes(code) && code !== codes.asterisk && code !== codes.underscore;
+    const close = !before || before === constants.characterGroupPunctuation && after || attentionMarkers.includes(previous) && previous !== codes.asterisk && previous !== codes.underscore;
+    token._open = Boolean(marker === codes.asterisk ? open : open && (before || !close));
+    token._close = Boolean(marker === codes.asterisk ? close : close && (after || !open));
+    return ok2(code);
+  }
+}
+function movePoint(point, offset) {
+  point.column += offset;
+  point.offset += offset;
+  point._bufferIndex += offset;
+}
+var attention;
+var init_attention = __esm(() => {
+  init_development();
+  init_dev();
+  init_dev6();
+  init_default();
+  attention = {
+    name: "attention",
+    resolveAll: resolveAllAttention,
+    tokenize: tokenizeAttention
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
+function tokenizeAutolink(effects, ok2, nok) {
+  let size = 0;
+  return start;
+  function start(code) {
+    ok(code === codes.lessThan, "expected `<`");
+    effects.enter(types.autolink);
+    effects.enter(types.autolinkMarker);
+    effects.consume(code);
+    effects.exit(types.autolinkMarker);
+    effects.enter(types.autolinkProtocol);
+    return open;
+  }
+  function open(code) {
+    if (asciiAlpha(code)) {
+      effects.consume(code);
+      return schemeOrEmailAtext;
+    }
+    if (code === codes.atSign) {
+      return nok(code);
+    }
+    return emailAtext(code);
+  }
+  function schemeOrEmailAtext(code) {
+    if (code === codes.plusSign || code === codes.dash || code === codes.dot || asciiAlphanumeric(code)) {
+      size = 1;
+      return schemeInsideOrEmailAtext(code);
+    }
+    return emailAtext(code);
+  }
+  function schemeInsideOrEmailAtext(code) {
+    if (code === codes.colon) {
+      effects.consume(code);
+      size = 0;
+      return urlInside;
+    }
+    if ((code === codes.plusSign || code === codes.dash || code === codes.dot || asciiAlphanumeric(code)) && size++ < constants.autolinkSchemeSizeMax) {
+      effects.consume(code);
+      return schemeInsideOrEmailAtext;
+    }
+    size = 0;
+    return emailAtext(code);
+  }
+  function urlInside(code) {
+    if (code === codes.greaterThan) {
+      effects.exit(types.autolinkProtocol);
+      effects.enter(types.autolinkMarker);
+      effects.consume(code);
+      effects.exit(types.autolinkMarker);
+      effects.exit(types.autolink);
+      return ok2;
+    }
+    if (code === codes.eof || code === codes.space || code === codes.lessThan || asciiControl(code)) {
+      return nok(code);
+    }
+    effects.consume(code);
+    return urlInside;
+  }
+  function emailAtext(code) {
+    if (code === codes.atSign) {
+      effects.consume(code);
+      return emailAtSignOrDot;
+    }
+    if (asciiAtext(code)) {
+      effects.consume(code);
+      return emailAtext;
+    }
+    return nok(code);
+  }
+  function emailAtSignOrDot(code) {
+    return asciiAlphanumeric(code) ? emailLabel(code) : nok(code);
+  }
+  function emailLabel(code) {
+    if (code === codes.dot) {
+      effects.consume(code);
+      size = 0;
+      return emailAtSignOrDot;
+    }
+    if (code === codes.greaterThan) {
+      effects.exit(types.autolinkProtocol).type = types.autolinkEmail;
+      effects.enter(types.autolinkMarker);
+      effects.consume(code);
+      effects.exit(types.autolinkMarker);
+      effects.exit(types.autolink);
+      return ok2;
+    }
+    return emailValue(code);
+  }
+  function emailValue(code) {
+    if ((code === codes.dash || asciiAlphanumeric(code)) && size++ < constants.autolinkDomainSizeMax) {
+      const next = code === codes.dash ? emailValue : emailLabel;
+      effects.consume(code);
+      return next;
+    }
+    return nok(code);
+  }
+}
+var autolink;
+var init_autolink = __esm(() => {
+  init_development();
+  init_dev4();
+  init_default();
+  autolink = { name: "autolink", tokenize: tokenizeAutolink };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
+function tokenizeBlankLine(effects, ok, nok) {
+  return start;
+  function start(code) {
+    return markdownSpace(code) ? factorySpace(effects, after, types.linePrefix)(code) : after(code);
+  }
+  function after(code) {
+    return code === codes.eof || markdownLineEnding(code) ? ok(code) : nok(code);
+  }
+}
+var blankLine;
+var init_blank_line = __esm(() => {
+  init_dev5();
+  init_dev4();
+  init_default();
+  blankLine = { partial: true, tokenize: tokenizeBlankLine };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
+function tokenizeBlockQuoteStart(effects, ok2, nok) {
+  const self = this;
+  return start;
+  function start(code) {
+    if (code === codes.greaterThan) {
+      const state = self.containerState;
+      ok(state, "expected `containerState` to be defined in container");
+      if (!state.open) {
+        effects.enter(types.blockQuote, { _container: true });
+        state.open = true;
+      }
+      effects.enter(types.blockQuotePrefix);
+      effects.enter(types.blockQuoteMarker);
+      effects.consume(code);
+      effects.exit(types.blockQuoteMarker);
+      return after;
+    }
+    return nok(code);
+  }
+  function after(code) {
+    if (markdownSpace(code)) {
+      effects.enter(types.blockQuotePrefixWhitespace);
+      effects.consume(code);
+      effects.exit(types.blockQuotePrefixWhitespace);
+      effects.exit(types.blockQuotePrefix);
+      return ok2;
+    }
+    effects.exit(types.blockQuotePrefix);
+    return ok2(code);
+  }
+}
+function tokenizeBlockQuoteContinuation(effects, ok2, nok) {
+  const self = this;
+  return contStart;
+  function contStart(code) {
+    if (markdownSpace(code)) {
+      ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
+      return factorySpace(effects, contBefore, types.linePrefix, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize)(code);
+    }
+    return contBefore(code);
+  }
+  function contBefore(code) {
+    return effects.attempt(blockQuote, ok2, nok)(code);
+  }
+}
+function exit(effects) {
+  effects.exit(types.blockQuote);
+}
+var blockQuote;
+var init_block_quote = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  blockQuote = {
+    continuation: { tokenize: tokenizeBlockQuoteContinuation },
+    exit,
+    name: "blockQuote",
+    tokenize: tokenizeBlockQuoteStart
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
+function tokenizeCharacterEscape(effects, ok2, nok) {
+  return start;
+  function start(code) {
+    ok(code === codes.backslash, "expected `\\`");
+    effects.enter(types.characterEscape);
+    effects.enter(types.escapeMarker);
+    effects.consume(code);
+    effects.exit(types.escapeMarker);
+    return inside;
+  }
+  function inside(code) {
+    if (asciiPunctuation(code)) {
+      effects.enter(types.characterEscapeValue);
+      effects.consume(code);
+      effects.exit(types.characterEscapeValue);
+      effects.exit(types.characterEscape);
+      return ok2;
+    }
+    return nok(code);
+  }
+}
+var characterEscape;
+var init_character_escape = __esm(() => {
+  init_development();
+  init_dev4();
+  init_default();
+  characterEscape = {
+    name: "characterEscape",
+    tokenize: tokenizeCharacterEscape
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
+function tokenizeCharacterReference(effects, ok2, nok) {
+  const self = this;
+  let size = 0;
+  let max;
+  let test;
+  return start;
+  function start(code) {
+    ok(code === codes.ampersand, "expected `&`");
+    effects.enter(types.characterReference);
+    effects.enter(types.characterReferenceMarker);
+    effects.consume(code);
+    effects.exit(types.characterReferenceMarker);
+    return open;
+  }
+  function open(code) {
+    if (code === codes.numberSign) {
+      effects.enter(types.characterReferenceMarkerNumeric);
+      effects.consume(code);
+      effects.exit(types.characterReferenceMarkerNumeric);
+      return numeric;
+    }
+    effects.enter(types.characterReferenceValue);
+    max = constants.characterReferenceNamedSizeMax;
+    test = asciiAlphanumeric;
+    return value(code);
+  }
+  function numeric(code) {
+    if (code === codes.uppercaseX || code === codes.lowercaseX) {
+      effects.enter(types.characterReferenceMarkerHexadecimal);
+      effects.consume(code);
+      effects.exit(types.characterReferenceMarkerHexadecimal);
+      effects.enter(types.characterReferenceValue);
+      max = constants.characterReferenceHexadecimalSizeMax;
+      test = asciiHexDigit;
+      return value;
+    }
+    effects.enter(types.characterReferenceValue);
+    max = constants.characterReferenceDecimalSizeMax;
+    test = asciiDigit;
+    return value(code);
+  }
+  function value(code) {
+    if (code === codes.semicolon && size) {
+      const token = effects.exit(types.characterReferenceValue);
+      if (test === asciiAlphanumeric && !decodeNamedCharacterReference(self.sliceSerialize(token))) {
+        return nok(code);
+      }
+      effects.enter(types.characterReferenceMarker);
+      effects.consume(code);
+      effects.exit(types.characterReferenceMarker);
+      effects.exit(types.characterReference);
+      return ok2;
+    }
+    if (test(code) && size++ < max) {
+      effects.consume(code);
+      return value;
+    }
+    return nok(code);
+  }
+}
+var characterReference;
+var init_character_reference = __esm(() => {
+  init_development();
+  init_decode_named_character_reference();
+  init_dev4();
+  init_default();
+  characterReference = {
+    name: "characterReference",
+    tokenize: tokenizeCharacterReference
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
+function tokenizeNonLazyContinuation(effects, ok2, nok) {
+  const self = this;
+  return start;
+  function start(code) {
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    ok(markdownLineEnding(code), "expected eol");
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return after;
+  }
+  function after(code) {
+    return self.parser.lazy[self.now().line] ? nok(code) : ok2(code);
+  }
+}
+var nonLazyContinuation;
+var init_partial_non_lazy_continuation = __esm(() => {
+  init_development();
+  init_dev4();
+  init_default();
+  nonLazyContinuation = {
+    partial: true,
+    tokenize: tokenizeNonLazyContinuation
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
+function tokenizeCodeFenced(effects, ok2, nok) {
+  const self = this;
+  const closeStart = { partial: true, tokenize: tokenizeCloseStart };
+  let initialPrefix = 0;
+  let sizeOpen = 0;
+  let marker;
+  return start;
+  function start(code) {
+    return beforeSequenceOpen(code);
+  }
+  function beforeSequenceOpen(code) {
+    ok(code === codes.graveAccent || code === codes.tilde, "expected `` ` `` or `~`");
+    const tail = self.events[self.events.length - 1];
+    initialPrefix = tail && tail[1].type === types.linePrefix ? tail[2].sliceSerialize(tail[1], true).length : 0;
+    marker = code;
+    effects.enter(types.codeFenced);
+    effects.enter(types.codeFencedFence);
+    effects.enter(types.codeFencedFenceSequence);
+    return sequenceOpen(code);
+  }
+  function sequenceOpen(code) {
+    if (code === marker) {
+      sizeOpen++;
+      effects.consume(code);
+      return sequenceOpen;
+    }
+    if (sizeOpen < constants.codeFencedSequenceSizeMin) {
+      return nok(code);
+    }
+    effects.exit(types.codeFencedFenceSequence);
+    return markdownSpace(code) ? factorySpace(effects, infoBefore, types.whitespace)(code) : infoBefore(code);
+  }
+  function infoBefore(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.codeFencedFence);
+      return self.interrupt ? ok2(code) : effects.check(nonLazyContinuation, atNonLazyBreak, after)(code);
+    }
+    effects.enter(types.codeFencedFenceInfo);
+    effects.enter(types.chunkString, { contentType: constants.contentTypeString });
+    return info(code);
+  }
+  function info(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.chunkString);
+      effects.exit(types.codeFencedFenceInfo);
+      return infoBefore(code);
+    }
+    if (markdownSpace(code)) {
+      effects.exit(types.chunkString);
+      effects.exit(types.codeFencedFenceInfo);
+      return factorySpace(effects, metaBefore, types.whitespace)(code);
+    }
+    if (code === codes.graveAccent && code === marker) {
+      return nok(code);
+    }
+    effects.consume(code);
+    return info;
+  }
+  function metaBefore(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      return infoBefore(code);
+    }
+    effects.enter(types.codeFencedFenceMeta);
+    effects.enter(types.chunkString, { contentType: constants.contentTypeString });
+    return meta(code);
+  }
+  function meta(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.chunkString);
+      effects.exit(types.codeFencedFenceMeta);
+      return infoBefore(code);
+    }
+    if (code === codes.graveAccent && code === marker) {
+      return nok(code);
+    }
+    effects.consume(code);
+    return meta;
+  }
+  function atNonLazyBreak(code) {
+    ok(markdownLineEnding(code), "expected eol");
+    return effects.attempt(closeStart, after, contentBefore)(code);
+  }
+  function contentBefore(code) {
+    ok(markdownLineEnding(code), "expected eol");
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return contentStart;
+  }
+  function contentStart(code) {
+    return initialPrefix > 0 && markdownSpace(code) ? factorySpace(effects, beforeContentChunk, types.linePrefix, initialPrefix + 1)(code) : beforeContentChunk(code);
+  }
+  function beforeContentChunk(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      return effects.check(nonLazyContinuation, atNonLazyBreak, after)(code);
+    }
+    effects.enter(types.codeFlowValue);
+    return contentChunk(code);
+  }
+  function contentChunk(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.codeFlowValue);
+      return beforeContentChunk(code);
+    }
+    effects.consume(code);
+    return contentChunk;
+  }
+  function after(code) {
+    effects.exit(types.codeFenced);
+    return ok2(code);
+  }
+  function tokenizeCloseStart(effects, ok2, nok) {
+    let size = 0;
+    return startBefore;
+    function startBefore(code) {
+      ok(markdownLineEnding(code), "expected eol");
+      effects.enter(types.lineEnding);
+      effects.consume(code);
+      effects.exit(types.lineEnding);
+      return start;
+    }
+    function start(code) {
+      ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
+      effects.enter(types.codeFencedFence);
+      return markdownSpace(code) ? factorySpace(effects, beforeSequenceClose, types.linePrefix, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize)(code) : beforeSequenceClose(code);
+    }
+    function beforeSequenceClose(code) {
+      if (code === marker) {
+        effects.enter(types.codeFencedFenceSequence);
+        return sequenceClose(code);
+      }
+      return nok(code);
+    }
+    function sequenceClose(code) {
+      if (code === marker) {
+        size++;
+        effects.consume(code);
+        return sequenceClose;
+      }
+      if (size >= sizeOpen) {
+        effects.exit(types.codeFencedFenceSequence);
+        return markdownSpace(code) ? factorySpace(effects, sequenceCloseAfter, types.whitespace)(code) : sequenceCloseAfter(code);
+      }
+      return nok(code);
+    }
+    function sequenceCloseAfter(code) {
+      if (code === codes.eof || markdownLineEnding(code)) {
+        effects.exit(types.codeFencedFence);
+        return ok2(code);
+      }
+      return nok(code);
+    }
+  }
+}
+var codeFenced;
+var init_code_fenced = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  init_partial_non_lazy_continuation();
+  codeFenced = {
+    concrete: true,
+    name: "codeFenced",
+    tokenize: tokenizeCodeFenced
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
+function tokenizeCodeIndented(effects, ok2, nok) {
+  return start;
+  function start(code) {
+    ok(markdownSpace(code));
+    effects.enter(types.codeIndented);
+    return factorySpaceMinMax(effects, atBreak, nok, types.linePrefix, constants.tabSize, constants.tabSize)(code);
+  }
+  function atBreak(code) {
+    if (code === codes.eof) {
+      return after(code);
+    }
+    if (markdownLineEnding(code)) {
+      return effects.attempt(furtherStart, atBreak, after)(code);
+    }
+    effects.enter(types.codeFlowValue);
+    return inside(code);
+  }
+  function inside(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.codeFlowValue);
+      return atBreak(code);
+    }
+    effects.consume(code);
+    return inside;
+  }
+  function after(code) {
+    effects.exit(types.codeIndented);
+    return ok2(code);
+  }
+}
+function tokenizeFurtherStart(effects, ok, nok) {
+  const self = this;
+  return furtherStart;
+  function furtherStart(code) {
+    if (self.parser.lazy[self.now().line]) {
+      return nok(code);
+    }
+    if (markdownLineEnding(code)) {
+      effects.enter(types.lineEnding);
+      effects.consume(code);
+      effects.exit(types.lineEnding);
+      return furtherStart;
+    }
+    return factorySpaceMinMax(effects, ok, onNotEnoughPrefix, types.linePrefix, constants.tabSize, constants.tabSize)(code);
+  }
+  function onNotEnoughPrefix(code) {
+    return markdownLineEnding(code) ? furtherStart(code) : nok(code);
+  }
+}
+var codeIndented, furtherStart;
+var init_code_indented = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  codeIndented = {
+    name: "codeIndented",
+    tokenize: tokenizeCodeIndented
+  };
+  furtherStart = { partial: true, tokenize: tokenizeFurtherStart };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
+function resolveCodeText(events) {
+  let tailExitIndex = events.length - 4;
+  let headEnterIndex = 3;
+  let index;
+  let enter;
+  if ((events[headEnterIndex][1].type === types.lineEnding || events[headEnterIndex][1].type === "space") && (events[tailExitIndex][1].type === types.lineEnding || events[tailExitIndex][1].type === "space")) {
+    index = headEnterIndex;
+    while (++index < tailExitIndex) {
+      if (events[index][1].type === types.codeTextData) {
+        events[headEnterIndex][1].type = types.codeTextPadding;
+        events[tailExitIndex][1].type = types.codeTextPadding;
+        headEnterIndex += 2;
+        tailExitIndex -= 2;
+        break;
+      }
+    }
+  }
+  index = headEnterIndex - 1;
+  tailExitIndex++;
+  while (++index <= tailExitIndex) {
+    if (enter === undefined) {
+      if (index !== tailExitIndex && events[index][1].type !== types.lineEnding) {
+        enter = index;
+      }
+    } else if (index === tailExitIndex || events[index][1].type === types.lineEnding) {
+      events[enter][1].type = types.codeTextData;
+      if (index !== enter + 2) {
+        events[enter][1].end = events[index - 1][1].end;
+        events.splice(enter + 2, index - enter - 2);
+        tailExitIndex -= index - enter - 2;
+        index = enter + 2;
+      }
+      enter = undefined;
+    }
+  }
+  return events;
+}
+function previous(code) {
+  return code !== codes.graveAccent || this.events[this.events.length - 1][1].type === types.characterEscape;
+}
+function tokenizeCodeText(effects, ok2, nok) {
+  const self = this;
+  let sizeOpen = 0;
+  let size;
+  let token;
+  return start;
+  function start(code) {
+    ok(code === codes.graveAccent, "expected `` ` ``");
+    ok(previous.call(self, self.previous), "expected correct previous");
+    effects.enter(types.codeText);
+    effects.enter(types.codeTextSequence);
+    return sequenceOpen(code);
+  }
+  function sequenceOpen(code) {
+    if (code === codes.graveAccent) {
+      effects.consume(code);
+      sizeOpen++;
+      return sequenceOpen;
+    }
+    effects.exit(types.codeTextSequence);
+    return between(code);
+  }
+  function between(code) {
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    if (code === codes.space) {
+      effects.enter("space");
+      effects.consume(code);
+      effects.exit("space");
+      return between;
+    }
+    if (code === codes.graveAccent) {
+      token = effects.enter(types.codeTextSequence);
+      size = 0;
+      return sequenceClose(code);
+    }
+    if (markdownLineEnding(code)) {
+      effects.enter(types.lineEnding);
+      effects.consume(code);
+      effects.exit(types.lineEnding);
+      return between;
+    }
+    effects.enter(types.codeTextData);
+    return data(code);
+  }
+  function data(code) {
+    if (code === codes.eof || code === codes.space || code === codes.graveAccent || markdownLineEnding(code)) {
+      effects.exit(types.codeTextData);
+      return between(code);
+    }
+    effects.consume(code);
+    return data;
+  }
+  function sequenceClose(code) {
+    if (code === codes.graveAccent) {
+      effects.consume(code);
+      size++;
+      return sequenceClose;
+    }
+    if (size === sizeOpen) {
+      effects.exit(types.codeTextSequence);
+      effects.exit(types.codeText);
+      return ok2(code);
+    }
+    token.type = types.codeTextData;
+    return data(code);
+  }
+}
+var codeText;
+var init_code_text = __esm(() => {
+  init_development();
+  init_dev4();
+  init_default();
+  codeText = {
+    name: "codeText",
+    previous,
+    resolve: resolveCodeText,
+    tokenize: tokenizeCodeText
+  };
+});
+
+// box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
+class SpliceBuffer {
+  constructor(initial) {
+    this.left = initial ? [...initial] : [];
+    this.right = [];
+  }
+  get(index) {
+    if (index < 0 || index >= this.left.length + this.right.length) {
+      throw new RangeError("Cannot access index `" + index + "` in a splice buffer of size `" + (this.left.length + this.right.length) + "`");
+    }
+    if (index < this.left.length)
+      return this.left[index];
+    return this.right[this.right.length - index + this.left.length - 1];
+  }
+  get length() {
+    return this.left.length + this.right.length;
+  }
+  shift() {
+    this.setCursor(0);
+    return this.right.pop();
+  }
+  slice(start, end) {
+    const stop = end === null || end === undefined ? Number.POSITIVE_INFINITY : end;
+    if (stop < this.left.length) {
+      return this.left.slice(start, stop);
+    }
+    if (start > this.left.length) {
+      return this.right.slice(this.right.length - stop + this.left.length, this.right.length - start + this.left.length).reverse();
+    }
+    return this.left.slice(start).concat(this.right.slice(this.right.length - stop + this.left.length).reverse());
+  }
+  splice(start, deleteCount, items) {
+    const count = deleteCount || 0;
+    this.setCursor(Math.trunc(start));
+    const removed = this.right.splice(this.right.length - count, Number.POSITIVE_INFINITY);
+    if (items)
+      chunkedPush(this.left, items);
+    return removed.reverse();
+  }
+  pop() {
+    this.setCursor(Number.POSITIVE_INFINITY);
+    return this.left.pop();
+  }
+  push(item) {
+    this.setCursor(Number.POSITIVE_INFINITY);
+    this.left.push(item);
+  }
+  pushMany(items) {
+    this.setCursor(Number.POSITIVE_INFINITY);
+    chunkedPush(this.left, items);
+  }
+  unshift(item) {
+    this.setCursor(0);
+    this.right.push(item);
+  }
+  unshiftMany(items) {
+    this.setCursor(0);
+    chunkedPush(this.right, items.reverse());
+  }
+  setCursor(n) {
+    if (n === this.left.length || n > this.left.length && this.right.length === 0 || n < 0 && this.left.length === 0)
+      return;
+    if (n < this.left.length) {
+      const removed = this.left.splice(n, Number.POSITIVE_INFINITY);
+      chunkedPush(this.right, removed.reverse());
+    } else {
+      const removed = this.right.splice(this.left.length + this.right.length - n, Number.POSITIVE_INFINITY);
+      chunkedPush(this.left, removed.reverse());
+    }
+  }
+}
+function chunkedPush(list, right) {
+  let chunkStart = 0;
+  if (right.length < constants.v8MaxSafeChunkSize) {
+    list.push(...right);
+  } else {
+    while (chunkStart < right.length) {
+      list.push(...right.slice(chunkStart, chunkStart + constants.v8MaxSafeChunkSize));
+      chunkStart += constants.v8MaxSafeChunkSize;
+    }
+  }
+}
+var init_splice_buffer = __esm(() => {
+  init_default();
+});
+
+// box/node_modules/micromark-util-subtokenize/dev/index.js
+function subtokenize(eventsArray) {
+  const jumps = {};
+  let index = -1;
+  let event;
+  let lineIndex;
+  let otherIndex;
+  let otherEvent;
+  let parameters;
+  let subevents;
+  let more;
+  const events = new SpliceBuffer(eventsArray);
+  while (++index < events.length) {
+    while (index in jumps) {
+      index = jumps[index];
+    }
+    event = events.get(index);
+    if (index && event[1].type === types.chunkFlow && events.get(index - 1)[1].type === types.listItemPrefix) {
+      ok(event[1]._tokenizer, "expected `_tokenizer` on subtokens");
+      subevents = event[1]._tokenizer.events;
+      otherIndex = 0;
+      if (otherIndex < subevents.length && subevents[otherIndex][1].type === types.lineEndingBlank) {
+        otherIndex += 2;
+      }
+      if (otherIndex < subevents.length && subevents[otherIndex][1].type === types.content) {
+        while (++otherIndex < subevents.length) {
+          if (subevents[otherIndex][1].type === types.content) {
+            break;
+          }
+          if (subevents[otherIndex][1].type === types.chunkText) {
+            subevents[otherIndex][1]._isInFirstContentOfListItem = true;
+            otherIndex++;
+          }
+        }
+      }
+    }
+    if (event[0] === "enter") {
+      if (event[1].contentType) {
+        Object.assign(jumps, subcontent(events, index));
+        index = jumps[index];
+        more = true;
+      }
+    } else if (event[1]._container) {
+      otherIndex = index;
+      lineIndex = undefined;
+      while (otherIndex--) {
+        otherEvent = events.get(otherIndex);
+        if (otherEvent[1].type === types.lineEnding || otherEvent[1].type === types.lineEndingBlank) {
+          if (otherEvent[0] === "enter") {
+            if (lineIndex) {
+              events.get(lineIndex)[1].type = types.lineEndingBlank;
+            }
+            otherEvent[1].type = types.lineEnding;
+            lineIndex = otherIndex;
+          }
+        } else if (otherEvent[1].type === types.linePrefix || otherEvent[1].type === types.listItemIndent) {} else {
+          break;
+        }
+      }
+      if (lineIndex) {
+        event[1].end = { ...events.get(lineIndex)[1].start };
+        parameters = events.slice(lineIndex, index);
+        parameters.unshift(event);
+        events.splice(lineIndex, index - lineIndex + 1, parameters);
+      }
+    }
+  }
+  splice(eventsArray, 0, Number.POSITIVE_INFINITY, events.slice(0));
+  return !more;
+}
+function subcontent(events, eventIndex) {
+  const token = events.get(eventIndex)[1];
+  const context = events.get(eventIndex)[2];
+  let startPosition = eventIndex - 1;
+  const startPositions = [];
+  ok(token.contentType, "expected `contentType` on subtokens");
+  let tokenizer = token._tokenizer;
+  if (!tokenizer) {
+    tokenizer = context.parser[token.contentType](token.start);
+    if (token._contentTypeTextTrailing) {
+      tokenizer._contentTypeTextTrailing = true;
+    }
+  }
+  const childEvents = tokenizer.events;
+  const jumps = [];
+  const gaps = {};
+  let stream;
+  let previous;
+  let index = -1;
+  let current = token;
+  let adjust = 0;
+  let start = 0;
+  const breaks = [start];
+  while (current) {
+    while (events.get(++startPosition)[1] !== current) {}
+    ok(!previous || current.previous === previous, "expected previous to match");
+    ok(!previous || previous.next === current, "expected next to match");
+    startPositions.push(startPosition);
+    if (!current._tokenizer) {
+      stream = context.sliceStream(current);
+      if (!current.next) {
+        stream.push(codes.eof);
+      }
+      if (previous) {
+        tokenizer.defineSkip(current.start);
+      }
+      if (current._isInFirstContentOfListItem) {
+        tokenizer._gfmTasklistFirstContentOfListItem = true;
+      }
+      tokenizer.write(stream);
+      if (current._isInFirstContentOfListItem) {
+        tokenizer._gfmTasklistFirstContentOfListItem = undefined;
+      }
+    }
+    previous = current;
+    current = current.next;
+  }
+  current = token;
+  while (++index < childEvents.length) {
+    if (childEvents[index][0] === "exit" && childEvents[index - 1][0] === "enter" && childEvents[index][1].type === childEvents[index - 1][1].type && childEvents[index][1].start.line !== childEvents[index][1].end.line) {
+      ok(current, "expected a current token");
+      start = index + 1;
+      breaks.push(start);
+      current._tokenizer = undefined;
+      current.previous = undefined;
+      current = current.next;
+    }
+  }
+  tokenizer.events = [];
+  if (current) {
+    current._tokenizer = undefined;
+    current.previous = undefined;
+    ok(!current.next, "expected no next token");
+  } else {
+    breaks.pop();
+  }
+  index = breaks.length;
+  while (index--) {
+    const slice = childEvents.slice(breaks[index], breaks[index + 1]);
+    const start = startPositions.pop();
+    ok(start !== undefined, "expected a start position when splicing");
+    jumps.push([start, start + slice.length - 1]);
+    events.splice(start, 2, slice);
+  }
+  jumps.reverse();
+  index = -1;
+  while (++index < jumps.length) {
+    gaps[adjust + jumps[index][0]] = adjust + jumps[index][1];
+    adjust += jumps[index][1] - jumps[index][0] - 1;
+  }
+  return gaps;
+}
+var init_dev7 = __esm(() => {
+  init_development();
+  init_dev();
+  init_default();
+  init_splice_buffer();
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/content.js
+function resolveContent(events) {
+  subtokenize(events);
+  return events;
+}
+function tokenizeContent(effects, ok2) {
+  let previous;
+  return chunkStart;
+  function chunkStart(code) {
+    ok(code !== codes.eof && !markdownLineEnding(code), "expected no eof or eol");
+    effects.enter(types.content);
+    previous = effects.enter(types.chunkContent, {
+      contentType: constants.contentTypeContent
+    });
+    return chunkInside(code);
+  }
+  function chunkInside(code) {
+    if (code === codes.eof) {
+      return contentEnd(code);
+    }
+    if (markdownLineEnding(code)) {
+      return effects.check(continuationConstruct, contentContinue, contentEnd)(code);
+    }
+    effects.consume(code);
+    return chunkInside;
+  }
+  function contentEnd(code) {
+    effects.exit(types.chunkContent);
+    effects.exit(types.content);
+    return ok2(code);
+  }
+  function contentContinue(code) {
+    ok(markdownLineEnding(code), "expected eol");
+    effects.consume(code);
+    effects.exit(types.chunkContent);
+    ok(previous, "expected previous token");
+    previous.next = effects.enter(types.chunkContent, {
+      contentType: constants.contentTypeContent,
+      previous
+    });
+    previous = previous.next;
+    return chunkInside;
+  }
+}
+function tokenizeContinuation(effects, ok2, nok) {
+  const self = this;
+  return startLookahead;
+  function startLookahead(code) {
+    ok(markdownLineEnding(code), "expected a line ending");
+    effects.exit(types.chunkContent);
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return factorySpace(effects, prefixed, types.linePrefix);
+  }
+  function prefixed(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      return nok(code);
+    }
+    ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
+    const tail = self.events[self.events.length - 1];
+    if (!self.parser.constructs.disable.null.includes("codeIndented") && tail && tail[1].type === types.linePrefix && tail[2].sliceSerialize(tail[1], true).length >= constants.tabSize) {
+      return ok2(code);
+    }
+    return effects.interrupt(self.parser.constructs.flow, nok, ok2)(code);
+  }
+}
+var content2, continuationConstruct;
+var init_content2 = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_dev7();
+  init_default();
+  content2 = { resolve: resolveContent, tokenize: tokenizeContent };
+  continuationConstruct = { partial: true, tokenize: tokenizeContinuation };
+});
+
+// box/node_modules/micromark-factory-destination/dev/index.js
+function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
+  const limit = max || Number.POSITIVE_INFINITY;
+  let balance = 0;
+  return start;
+  function start(code) {
+    if (code === codes.lessThan) {
+      effects.enter(type);
+      effects.enter(literalType);
+      effects.enter(literalMarkerType);
+      effects.consume(code);
+      effects.exit(literalMarkerType);
+      return enclosedBefore;
+    }
+    if (code === codes.eof || code === codes.space || code === codes.rightParenthesis || asciiControl(code)) {
+      return nok(code);
+    }
+    effects.enter(type);
+    effects.enter(rawType);
+    effects.enter(stringType);
+    effects.enter(types.chunkString, { contentType: constants.contentTypeString });
+    return raw(code);
+  }
+  function enclosedBefore(code) {
+    if (code === codes.greaterThan) {
+      effects.enter(literalMarkerType);
+      effects.consume(code);
+      effects.exit(literalMarkerType);
+      effects.exit(literalType);
+      effects.exit(type);
+      return ok;
+    }
+    effects.enter(stringType);
+    effects.enter(types.chunkString, { contentType: constants.contentTypeString });
+    return enclosed(code);
+  }
+  function enclosed(code) {
+    if (code === codes.greaterThan) {
+      effects.exit(types.chunkString);
+      effects.exit(stringType);
+      return enclosedBefore(code);
+    }
+    if (code === codes.eof || code === codes.lessThan || markdownLineEnding(code)) {
+      return nok(code);
+    }
+    effects.consume(code);
+    return code === codes.backslash ? enclosedEscape : enclosed;
+  }
+  function enclosedEscape(code) {
+    if (code === codes.lessThan || code === codes.greaterThan || code === codes.backslash) {
+      effects.consume(code);
+      return enclosed;
+    }
+    return enclosed(code);
+  }
+  function raw(code) {
+    if (!balance && (code === codes.eof || code === codes.rightParenthesis || markdownLineEndingOrSpace(code))) {
+      effects.exit(types.chunkString);
+      effects.exit(stringType);
+      effects.exit(rawType);
+      effects.exit(type);
+      return ok(code);
+    }
+    if (balance < limit && code === codes.leftParenthesis) {
+      effects.consume(code);
+      balance++;
+      return raw;
+    }
+    if (code === codes.rightParenthesis) {
+      effects.consume(code);
+      balance--;
+      return raw;
+    }
+    if (code === codes.eof || code === codes.space || code === codes.leftParenthesis || asciiControl(code)) {
+      return nok(code);
+    }
+    effects.consume(code);
+    return code === codes.backslash ? rawEscape : raw;
+  }
+  function rawEscape(code) {
+    if (code === codes.leftParenthesis || code === codes.rightParenthesis || code === codes.backslash) {
+      effects.consume(code);
+      return raw;
+    }
+    return raw(code);
+  }
+}
+var init_dev8 = __esm(() => {
+  init_dev4();
+  init_default();
+});
+
+// box/node_modules/micromark-factory-label/dev/index.js
+function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
+  const self = this;
+  let size = 0;
+  let seen;
+  return start;
+  function start(code) {
+    ok(code === codes.leftSquareBracket, "expected `[`");
+    effects.enter(type);
+    effects.enter(markerType);
+    effects.consume(code);
+    effects.exit(markerType);
+    effects.enter(stringType);
+    return atBreak;
+  }
+  function atBreak(code) {
+    if (size > constants.linkReferenceSizeMax || code === codes.eof || code === codes.leftSquareBracket || code === codes.rightSquareBracket && !seen || code === codes.caret && !size && "_hiddenFootnoteSupport" in self.parser.constructs) {
+      return nok(code);
+    }
+    if (code === codes.rightSquareBracket) {
+      effects.exit(stringType);
+      effects.enter(markerType);
+      effects.consume(code);
+      effects.exit(markerType);
+      effects.exit(type);
+      return ok2;
+    }
+    if (markdownLineEnding(code)) {
+      effects.enter(types.lineEnding);
+      effects.consume(code);
+      effects.exit(types.lineEnding);
+      return atBreak;
+    }
+    effects.enter(types.chunkString, { contentType: constants.contentTypeString });
+    return labelInside(code);
+  }
+  function labelInside(code) {
+    if (code === codes.eof || code === codes.leftSquareBracket || code === codes.rightSquareBracket || markdownLineEnding(code) || size++ > constants.linkReferenceSizeMax) {
+      effects.exit(types.chunkString);
+      return atBreak(code);
+    }
+    effects.consume(code);
+    if (!seen)
+      seen = !markdownSpace(code);
+    return code === codes.backslash ? labelEscape : labelInside;
+  }
+  function labelEscape(code) {
+    if (code === codes.leftSquareBracket || code === codes.backslash || code === codes.rightSquareBracket) {
+      effects.consume(code);
+      size++;
+      return labelInside;
+    }
+    return labelInside(code);
+  }
+}
+var init_dev9 = __esm(() => {
+  init_development();
+  init_dev4();
+  init_default();
+});
+
+// box/node_modules/micromark-factory-title/dev/index.js
+function factoryTitle(effects, ok, nok, type, markerType, stringType) {
+  let marker;
+  return start;
+  function start(code) {
+    if (code === codes.quotationMark || code === codes.apostrophe || code === codes.leftParenthesis) {
+      effects.enter(type);
+      effects.enter(markerType);
+      effects.consume(code);
+      effects.exit(markerType);
+      marker = code === codes.leftParenthesis ? codes.rightParenthesis : code;
+      return begin;
+    }
+    return nok(code);
+  }
+  function begin(code) {
+    if (code === marker) {
+      effects.enter(markerType);
+      effects.consume(code);
+      effects.exit(markerType);
+      effects.exit(type);
+      return ok;
+    }
+    effects.enter(stringType);
+    return atBreak(code);
+  }
+  function atBreak(code) {
+    if (code === marker) {
+      effects.exit(stringType);
+      return begin(marker);
+    }
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    if (markdownLineEnding(code)) {
+      effects.enter(types.lineEnding);
+      effects.consume(code);
+      effects.exit(types.lineEnding);
+      return factorySpace(effects, atBreak, types.linePrefix);
+    }
+    effects.enter(types.chunkString, { contentType: constants.contentTypeString });
+    return inside(code);
+  }
+  function inside(code) {
+    if (code === marker || code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.chunkString);
+      return atBreak(code);
+    }
+    effects.consume(code);
+    return code === codes.backslash ? escape : inside;
+  }
+  function escape(code) {
+    if (code === marker || code === codes.backslash) {
+      effects.consume(code);
+      return inside;
+    }
+    return inside(code);
+  }
+}
+var init_dev10 = __esm(() => {
+  init_dev5();
+  init_dev4();
+  init_default();
+});
+
+// box/node_modules/micromark-factory-whitespace/dev/index.js
+function factoryWhitespace(effects, ok) {
+  let seen;
+  return start;
+  function start(code) {
+    if (markdownLineEnding(code)) {
+      effects.enter(types.lineEnding);
+      effects.consume(code);
+      effects.exit(types.lineEnding);
+      seen = true;
+      return start;
+    }
+    if (markdownSpace(code)) {
+      return factorySpace(effects, start, seen ? types.linePrefix : types.lineSuffix)(code);
+    }
+    return ok(code);
+  }
+}
+var init_dev11 = __esm(() => {
+  init_dev5();
+  init_dev4();
+  init_default();
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/definition.js
+function tokenizeDefinition(effects, ok2, nok) {
+  const self = this;
+  let identifier;
+  return start;
+  function start(code) {
+    effects.enter(types.definition);
+    return before(code);
+  }
+  function before(code) {
+    ok(code === codes.leftSquareBracket, "expected `[`");
+    return factoryLabel.call(self, effects, labelAfter, nok, types.definitionLabel, types.definitionLabelMarker, types.definitionLabelString)(code);
+  }
+  function labelAfter(code) {
+    identifier = normalizeIdentifier(self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1));
+    if (code === codes.colon) {
+      effects.enter(types.definitionMarker);
+      effects.consume(code);
+      effects.exit(types.definitionMarker);
+      return markerAfter;
+    }
+    return nok(code);
+  }
+  function markerAfter(code) {
+    return markdownLineEndingOrSpace(code) ? factoryWhitespace(effects, destinationBefore)(code) : destinationBefore(code);
+  }
+  function destinationBefore(code) {
+    return factoryDestination(effects, destinationAfter, nok, types.definitionDestination, types.definitionDestinationLiteral, types.definitionDestinationLiteralMarker, types.definitionDestinationRaw, types.definitionDestinationString)(code);
+  }
+  function destinationAfter(code) {
+    return effects.attempt(titleBefore, after, after)(code);
+  }
+  function after(code) {
+    return markdownSpace(code) ? factorySpace(effects, afterWhitespace, types.whitespace)(code) : afterWhitespace(code);
+  }
+  function afterWhitespace(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.definition);
+      self.parser.defined.push(identifier);
+      return ok2(code);
+    }
+    return nok(code);
+  }
+}
+function tokenizeTitleBefore(effects, ok, nok) {
+  return titleBefore;
+  function titleBefore(code) {
+    return markdownLineEndingOrSpace(code) ? factoryWhitespace(effects, beforeMarker)(code) : nok(code);
+  }
+  function beforeMarker(code) {
+    return factoryTitle(effects, titleAfter, nok, types.definitionTitle, types.definitionTitleMarker, types.definitionTitleString)(code);
+  }
+  function titleAfter(code) {
+    return markdownSpace(code) ? factorySpace(effects, titleAfterOptionalWhitespace, types.whitespace)(code) : titleAfterOptionalWhitespace(code);
+  }
+  function titleAfterOptionalWhitespace(code) {
+    return code === codes.eof || markdownLineEnding(code) ? ok(code) : nok(code);
+  }
+}
+var definition, titleBefore;
+var init_definition = __esm(() => {
+  init_development();
+  init_dev8();
+  init_dev9();
+  init_dev5();
+  init_dev10();
+  init_dev11();
+  init_dev4();
+  init_dev3();
+  init_default();
+  definition = { name: "definition", tokenize: tokenizeDefinition };
+  titleBefore = { partial: true, tokenize: tokenizeTitleBefore };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
+function tokenizeHardBreakEscape(effects, ok2, nok) {
+  return start;
+  function start(code) {
+    ok(code === codes.backslash, "expected `\\`");
+    effects.enter(types.hardBreakEscape);
+    effects.consume(code);
+    return after;
+  }
+  function after(code) {
+    if (markdownLineEnding(code)) {
+      effects.exit(types.hardBreakEscape);
+      return ok2(code);
+    }
+    return nok(code);
+  }
+}
+var hardBreakEscape;
+var init_hard_break_escape = __esm(() => {
+  init_development();
+  init_dev4();
+  init_default();
+  hardBreakEscape = {
+    name: "hardBreakEscape",
+    tokenize: tokenizeHardBreakEscape
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
+function resolveHeadingAtx(events, context) {
+  let contentEnd = events.length - 2;
+  let contentStart = 3;
+  if (events[contentStart][1].type === types.whitespace) {
+    contentStart += 2;
+  }
+  if (contentEnd - 2 > contentStart && events[contentEnd][1].type === types.whitespace) {
+    contentEnd -= 2;
+  }
+  if (events[contentEnd][1].type === types.atxHeadingSequence && (contentStart === contentEnd - 1 || contentEnd - 4 > contentStart && events[contentEnd - 2][1].type === types.whitespace)) {
+    contentEnd -= contentStart + 1 === contentEnd ? 2 : 4;
+  }
+  if (contentEnd > contentStart) {
+    const content = {
+      type: types.atxHeadingText,
+      start: events[contentStart][1].start,
+      end: events[contentEnd][1].end
+    };
+    const text = {
+      type: types.chunkText,
+      start: events[contentStart][1].start,
+      end: events[contentEnd][1].end,
+      contentType: constants.contentTypeText
+    };
+    splice(events, contentStart, contentEnd - contentStart + 1, [
+      ["enter", content, context],
+      ["enter", text, context],
+      ["exit", text, context],
+      ["exit", content, context]
+    ]);
+  }
+  return events;
+}
+function tokenizeHeadingAtx(effects, ok2, nok) {
+  let size = 0;
+  return start;
+  function start(code) {
+    effects.enter(types.atxHeading);
+    return before(code);
+  }
+  function before(code) {
+    ok(code === codes.numberSign, "expected `#`");
+    effects.enter(types.atxHeadingSequence);
+    return sequenceOpen(code);
+  }
+  function sequenceOpen(code) {
+    if (code === codes.numberSign && size++ < constants.atxHeadingOpeningFenceSizeMax) {
+      effects.consume(code);
+      return sequenceOpen;
+    }
+    if (code === codes.eof || markdownLineEndingOrSpace(code)) {
+      effects.exit(types.atxHeadingSequence);
+      return atBreak(code);
+    }
+    return nok(code);
+  }
+  function atBreak(code) {
+    if (code === codes.numberSign) {
+      effects.enter(types.atxHeadingSequence);
+      return sequenceFurther(code);
+    }
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.atxHeading);
+      return ok2(code);
+    }
+    if (markdownSpace(code)) {
+      return factorySpace(effects, atBreak, types.whitespace)(code);
+    }
+    effects.enter(types.atxHeadingText);
+    return data(code);
+  }
+  function sequenceFurther(code) {
+    if (code === codes.numberSign) {
+      effects.consume(code);
+      return sequenceFurther;
+    }
+    effects.exit(types.atxHeadingSequence);
+    return atBreak(code);
+  }
+  function data(code) {
+    if (code === codes.eof || code === codes.numberSign || markdownLineEndingOrSpace(code)) {
+      effects.exit(types.atxHeadingText);
+      return atBreak(code);
+    }
+    effects.consume(code);
+    return data;
+  }
+}
+var headingAtx;
+var init_heading_atx = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_dev();
+  init_default();
+  headingAtx = {
+    name: "headingAtx",
+    resolve: resolveHeadingAtx,
+    tokenize: tokenizeHeadingAtx
+  };
+});
+
+// box/node_modules/micromark-util-html-tag-name/index.js
+var htmlBlockNames, htmlRawNames;
+var init_micromark_util_html_tag_name = __esm(() => {
+  htmlBlockNames = [
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul"
+  ];
+  htmlRawNames = ["pre", "script", "style", "textarea"];
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
+function resolveToHtmlFlow(events) {
+  let index = events.length;
+  while (index--) {
+    if (events[index][0] === "enter" && events[index][1].type === types.htmlFlow) {
+      break;
+    }
+  }
+  if (index > 1 && events[index - 2][1].type === types.linePrefix) {
+    events[index][1].start = events[index - 2][1].start;
+    events[index + 1][1].start = events[index - 2][1].start;
+    events.splice(index - 2, 2);
+  }
+  return events;
+}
+function tokenizeHtmlFlow(effects, ok2, nok) {
+  const self = this;
+  let marker;
+  let closingTag;
+  let buffer;
+  let index;
+  let markerB;
+  return start;
+  function start(code) {
+    return before(code);
+  }
+  function before(code) {
+    ok(code === codes.lessThan, "expected `<`");
+    effects.enter(types.htmlFlow);
+    effects.enter(types.htmlFlowData);
+    effects.consume(code);
+    return open;
+  }
+  function open(code) {
+    if (code === codes.exclamationMark) {
+      effects.consume(code);
+      return declarationOpen;
+    }
+    if (code === codes.slash) {
+      effects.consume(code);
+      closingTag = true;
+      return tagCloseStart;
+    }
+    if (code === codes.questionMark) {
+      effects.consume(code);
+      marker = constants.htmlInstruction;
+      return self.interrupt ? ok2 : continuationDeclarationInside;
+    }
+    if (asciiAlpha(code)) {
+      ok(code !== null);
+      effects.consume(code);
+      buffer = String.fromCharCode(code);
+      return tagName;
+    }
+    return nok(code);
+  }
+  function declarationOpen(code) {
+    if (code === codes.dash) {
+      effects.consume(code);
+      marker = constants.htmlComment;
+      return commentOpenInside;
+    }
+    if (code === codes.leftSquareBracket) {
+      effects.consume(code);
+      marker = constants.htmlCdata;
+      index = 0;
+      return cdataOpenInside;
+    }
+    if (asciiAlpha(code)) {
+      effects.consume(code);
+      marker = constants.htmlDeclaration;
+      return self.interrupt ? ok2 : continuationDeclarationInside;
+    }
+    return nok(code);
+  }
+  function commentOpenInside(code) {
+    if (code === codes.dash) {
+      effects.consume(code);
+      return self.interrupt ? ok2 : continuationDeclarationInside;
+    }
+    return nok(code);
+  }
+  function cdataOpenInside(code) {
+    const value = constants.cdataOpeningString;
+    if (code === value.charCodeAt(index++)) {
+      effects.consume(code);
+      if (index === value.length) {
+        return self.interrupt ? ok2 : continuation;
+      }
+      return cdataOpenInside;
+    }
+    return nok(code);
+  }
+  function tagCloseStart(code) {
+    if (asciiAlpha(code)) {
+      ok(code !== null);
+      effects.consume(code);
+      buffer = String.fromCharCode(code);
+      return tagName;
+    }
+    return nok(code);
+  }
+  function tagName(code) {
+    if (code === codes.eof || code === codes.slash || code === codes.greaterThan || markdownLineEndingOrSpace(code)) {
+      const slash = code === codes.slash;
+      const name = buffer.toLowerCase();
+      if (!slash && !closingTag && htmlRawNames.includes(name)) {
+        marker = constants.htmlRaw;
+        return self.interrupt ? ok2(code) : continuation(code);
+      }
+      if (htmlBlockNames.includes(buffer.toLowerCase())) {
+        marker = constants.htmlBasic;
+        if (slash) {
+          effects.consume(code);
+          return basicSelfClosing;
+        }
+        return self.interrupt ? ok2(code) : continuation(code);
+      }
+      marker = constants.htmlComplete;
+      return self.interrupt && !self.parser.lazy[self.now().line] ? nok(code) : closingTag ? completeClosingTagAfter(code) : completeAttributeNameBefore(code);
+    }
+    if (code === codes.dash || asciiAlphanumeric(code)) {
+      effects.consume(code);
+      buffer += String.fromCharCode(code);
+      return tagName;
+    }
+    return nok(code);
+  }
+  function basicSelfClosing(code) {
+    if (code === codes.greaterThan) {
+      effects.consume(code);
+      return self.interrupt ? ok2 : continuation;
+    }
+    return nok(code);
+  }
+  function completeClosingTagAfter(code) {
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return completeClosingTagAfter;
+    }
+    return completeEnd(code);
+  }
+  function completeAttributeNameBefore(code) {
+    if (code === codes.slash) {
+      effects.consume(code);
+      return completeEnd;
+    }
+    if (code === codes.colon || code === codes.underscore || asciiAlpha(code)) {
+      effects.consume(code);
+      return completeAttributeName;
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return completeAttributeNameBefore;
+    }
+    return completeEnd(code);
+  }
+  function completeAttributeName(code) {
+    if (code === codes.dash || code === codes.dot || code === codes.colon || code === codes.underscore || asciiAlphanumeric(code)) {
+      effects.consume(code);
+      return completeAttributeName;
+    }
+    return completeAttributeNameAfter(code);
+  }
+  function completeAttributeNameAfter(code) {
+    if (code === codes.equalsTo) {
+      effects.consume(code);
+      return completeAttributeValueBefore;
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return completeAttributeNameAfter;
+    }
+    return completeAttributeNameBefore(code);
+  }
+  function completeAttributeValueBefore(code) {
+    if (code === codes.eof || code === codes.lessThan || code === codes.equalsTo || code === codes.greaterThan || code === codes.graveAccent) {
+      return nok(code);
+    }
+    if (code === codes.quotationMark || code === codes.apostrophe) {
+      effects.consume(code);
+      markerB = code;
+      return completeAttributeValueQuoted;
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return completeAttributeValueBefore;
+    }
+    return completeAttributeValueUnquoted(code);
+  }
+  function completeAttributeValueQuoted(code) {
+    if (code === markerB) {
+      effects.consume(code);
+      markerB = null;
+      return completeAttributeValueQuotedAfter;
+    }
+    if (code === codes.eof || markdownLineEnding(code)) {
+      return nok(code);
+    }
+    effects.consume(code);
+    return completeAttributeValueQuoted;
+  }
+  function completeAttributeValueUnquoted(code) {
+    if (code === codes.eof || code === codes.quotationMark || code === codes.apostrophe || code === codes.slash || code === codes.lessThan || code === codes.equalsTo || code === codes.greaterThan || code === codes.graveAccent || markdownLineEndingOrSpace(code)) {
+      return completeAttributeNameAfter(code);
+    }
+    effects.consume(code);
+    return completeAttributeValueUnquoted;
+  }
+  function completeAttributeValueQuotedAfter(code) {
+    if (code === codes.slash || code === codes.greaterThan || markdownSpace(code)) {
+      return completeAttributeNameBefore(code);
+    }
+    return nok(code);
+  }
+  function completeEnd(code) {
+    if (code === codes.greaterThan) {
+      effects.consume(code);
+      return completeAfter;
+    }
+    return nok(code);
+  }
+  function completeAfter(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      return continuation(code);
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return completeAfter;
+    }
+    return nok(code);
+  }
+  function continuation(code) {
+    if (code === codes.dash && marker === constants.htmlComment) {
+      effects.consume(code);
+      return continuationCommentInside;
+    }
+    if (code === codes.lessThan && marker === constants.htmlRaw) {
+      effects.consume(code);
+      return continuationRawTagOpen;
+    }
+    if (code === codes.greaterThan && marker === constants.htmlDeclaration) {
+      effects.consume(code);
+      return continuationClose;
+    }
+    if (code === codes.questionMark && marker === constants.htmlInstruction) {
+      effects.consume(code);
+      return continuationDeclarationInside;
+    }
+    if (code === codes.rightSquareBracket && marker === constants.htmlCdata) {
+      effects.consume(code);
+      return continuationCdataInside;
+    }
+    if (markdownLineEnding(code) && (marker === constants.htmlBasic || marker === constants.htmlComplete)) {
+      effects.exit(types.htmlFlowData);
+      return effects.check(blankLineBefore, continuationAfter, continuationStart)(code);
+    }
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.htmlFlowData);
+      return continuationStart(code);
+    }
+    effects.consume(code);
+    return continuation;
+  }
+  function continuationStart(code) {
+    return effects.check(nonLazyContinuation, continuationStartNonLazy, continuationAfter)(code);
+  }
+  function continuationStartNonLazy(code) {
+    ok(markdownLineEnding(code));
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return continuationBefore;
+  }
+  function continuationBefore(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      return continuationStart(code);
+    }
+    effects.enter(types.htmlFlowData);
+    return continuation(code);
+  }
+  function continuationCommentInside(code) {
+    if (code === codes.dash) {
+      effects.consume(code);
+      return continuationDeclarationInside;
+    }
+    return continuation(code);
+  }
+  function continuationRawTagOpen(code) {
+    if (code === codes.slash) {
+      effects.consume(code);
+      buffer = "";
+      return continuationRawEndTag;
+    }
+    return continuation(code);
+  }
+  function continuationRawEndTag(code) {
+    if (code === codes.greaterThan) {
+      const name = buffer.toLowerCase();
+      if (htmlRawNames.includes(name)) {
+        effects.consume(code);
+        return continuationClose;
+      }
+      return continuation(code);
+    }
+    if (asciiAlpha(code) && buffer.length < constants.htmlRawSizeMax) {
+      ok(code !== null);
+      effects.consume(code);
+      buffer += String.fromCharCode(code);
+      return continuationRawEndTag;
+    }
+    return continuation(code);
+  }
+  function continuationCdataInside(code) {
+    if (code === codes.rightSquareBracket) {
+      effects.consume(code);
+      return continuationDeclarationInside;
+    }
+    return continuation(code);
+  }
+  function continuationDeclarationInside(code) {
+    if (code === codes.greaterThan) {
+      effects.consume(code);
+      return continuationClose;
+    }
+    if (code === codes.dash && marker === constants.htmlComment) {
+      effects.consume(code);
+      return continuationDeclarationInside;
+    }
+    return continuation(code);
+  }
+  function continuationClose(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.htmlFlowData);
+      return continuationAfter(code);
+    }
+    effects.consume(code);
+    return continuationClose;
+  }
+  function continuationAfter(code) {
+    effects.exit(types.htmlFlow);
+    return ok2(code);
+  }
+}
+function tokenizeBlankLineBefore(effects, ok2, nok) {
+  return start;
+  function start(code) {
+    ok(markdownLineEnding(code), "expected a line ending");
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return effects.attempt(blankLine, ok2, nok);
+  }
+}
+var htmlFlow, blankLineBefore;
+var init_html_flow = __esm(() => {
+  init_development();
+  init_dev4();
+  init_micromark_util_html_tag_name();
+  init_default();
+  init_blank_line();
+  init_partial_non_lazy_continuation();
+  htmlFlow = {
+    concrete: true,
+    name: "htmlFlow",
+    resolveTo: resolveToHtmlFlow,
+    tokenize: tokenizeHtmlFlow
+  };
+  blankLineBefore = { partial: true, tokenize: tokenizeBlankLineBefore };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
+function tokenizeHtmlText(effects, ok2, nok) {
+  const self = this;
+  let marker;
+  let index;
+  let returnState;
+  return start;
+  function start(code) {
+    ok(code === codes.lessThan, "expected `<`");
+    effects.enter(types.htmlText);
+    effects.enter(types.htmlTextData);
+    effects.consume(code);
+    return open;
+  }
+  function open(code) {
+    if (code === codes.exclamationMark) {
+      effects.consume(code);
+      return declarationOpen;
+    }
+    if (code === codes.slash) {
+      effects.consume(code);
+      return tagCloseStart;
+    }
+    if (code === codes.questionMark) {
+      effects.consume(code);
+      return instruction;
+    }
+    if (asciiAlpha(code)) {
+      effects.consume(code);
+      return tagOpen;
+    }
+    return nok(code);
+  }
+  function declarationOpen(code) {
+    if (code === codes.dash) {
+      effects.consume(code);
+      return commentOpenInside;
+    }
+    if (code === codes.leftSquareBracket) {
+      effects.consume(code);
+      index = 0;
+      return cdataOpenInside;
+    }
+    if (asciiAlpha(code)) {
+      effects.consume(code);
+      return declaration;
+    }
+    return nok(code);
+  }
+  function commentOpenInside(code) {
+    if (code === codes.dash) {
+      effects.consume(code);
+      return commentEnd;
+    }
+    return nok(code);
+  }
+  function comment(code) {
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    if (code === codes.dash) {
+      effects.consume(code);
+      return commentClose;
+    }
+    if (markdownLineEnding(code)) {
+      returnState = comment;
+      return lineEndingBefore(code);
+    }
+    effects.consume(code);
+    return comment;
+  }
+  function commentClose(code) {
+    if (code === codes.dash) {
+      effects.consume(code);
+      return commentEnd;
+    }
+    return comment(code);
+  }
+  function commentEnd(code) {
+    return code === codes.greaterThan ? end(code) : code === codes.dash ? commentClose(code) : comment(code);
+  }
+  function cdataOpenInside(code) {
+    const value = constants.cdataOpeningString;
+    if (code === value.charCodeAt(index++)) {
+      effects.consume(code);
+      return index === value.length ? cdata : cdataOpenInside;
+    }
+    return nok(code);
+  }
+  function cdata(code) {
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    if (code === codes.rightSquareBracket) {
+      effects.consume(code);
+      return cdataClose;
+    }
+    if (markdownLineEnding(code)) {
+      returnState = cdata;
+      return lineEndingBefore(code);
+    }
+    effects.consume(code);
+    return cdata;
+  }
+  function cdataClose(code) {
+    if (code === codes.rightSquareBracket) {
+      effects.consume(code);
+      return cdataEnd;
+    }
+    return cdata(code);
+  }
+  function cdataEnd(code) {
+    if (code === codes.greaterThan) {
+      return end(code);
+    }
+    if (code === codes.rightSquareBracket) {
+      effects.consume(code);
+      return cdataEnd;
+    }
+    return cdata(code);
+  }
+  function declaration(code) {
+    if (code === codes.eof || code === codes.greaterThan) {
+      return end(code);
+    }
+    if (markdownLineEnding(code)) {
+      returnState = declaration;
+      return lineEndingBefore(code);
+    }
+    effects.consume(code);
+    return declaration;
+  }
+  function instruction(code) {
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    if (code === codes.questionMark) {
+      effects.consume(code);
+      return instructionClose;
+    }
+    if (markdownLineEnding(code)) {
+      returnState = instruction;
+      return lineEndingBefore(code);
+    }
+    effects.consume(code);
+    return instruction;
+  }
+  function instructionClose(code) {
+    return code === codes.greaterThan ? end(code) : instruction(code);
+  }
+  function tagCloseStart(code) {
+    if (asciiAlpha(code)) {
+      effects.consume(code);
+      return tagClose;
+    }
+    return nok(code);
+  }
+  function tagClose(code) {
+    if (code === codes.dash || asciiAlphanumeric(code)) {
+      effects.consume(code);
+      return tagClose;
+    }
+    return tagCloseBetween(code);
+  }
+  function tagCloseBetween(code) {
+    if (markdownLineEnding(code)) {
+      returnState = tagCloseBetween;
+      return lineEndingBefore(code);
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return tagCloseBetween;
+    }
+    return end(code);
+  }
+  function tagOpen(code) {
+    if (code === codes.dash || asciiAlphanumeric(code)) {
+      effects.consume(code);
+      return tagOpen;
+    }
+    if (code === codes.slash || code === codes.greaterThan || markdownLineEndingOrSpace(code)) {
+      return tagOpenBetween(code);
+    }
+    return nok(code);
+  }
+  function tagOpenBetween(code) {
+    if (code === codes.slash) {
+      effects.consume(code);
+      return end;
+    }
+    if (code === codes.colon || code === codes.underscore || asciiAlpha(code)) {
+      effects.consume(code);
+      return tagOpenAttributeName;
+    }
+    if (markdownLineEnding(code)) {
+      returnState = tagOpenBetween;
+      return lineEndingBefore(code);
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return tagOpenBetween;
+    }
+    return end(code);
+  }
+  function tagOpenAttributeName(code) {
+    if (code === codes.dash || code === codes.dot || code === codes.colon || code === codes.underscore || asciiAlphanumeric(code)) {
+      effects.consume(code);
+      return tagOpenAttributeName;
+    }
+    return tagOpenAttributeNameAfter(code);
+  }
+  function tagOpenAttributeNameAfter(code) {
+    if (code === codes.equalsTo) {
+      effects.consume(code);
+      return tagOpenAttributeValueBefore;
+    }
+    if (markdownLineEnding(code)) {
+      returnState = tagOpenAttributeNameAfter;
+      return lineEndingBefore(code);
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return tagOpenAttributeNameAfter;
+    }
+    return tagOpenBetween(code);
+  }
+  function tagOpenAttributeValueBefore(code) {
+    if (code === codes.eof || code === codes.lessThan || code === codes.equalsTo || code === codes.greaterThan || code === codes.graveAccent) {
+      return nok(code);
+    }
+    if (code === codes.quotationMark || code === codes.apostrophe) {
+      effects.consume(code);
+      marker = code;
+      return tagOpenAttributeValueQuoted;
+    }
+    if (markdownLineEnding(code)) {
+      returnState = tagOpenAttributeValueBefore;
+      return lineEndingBefore(code);
+    }
+    if (markdownSpace(code)) {
+      effects.consume(code);
+      return tagOpenAttributeValueBefore;
+    }
+    effects.consume(code);
+    return tagOpenAttributeValueUnquoted;
+  }
+  function tagOpenAttributeValueQuoted(code) {
+    if (code === marker) {
+      effects.consume(code);
+      marker = undefined;
+      return tagOpenAttributeValueQuotedAfter;
+    }
+    if (code === codes.eof) {
+      return nok(code);
+    }
+    if (markdownLineEnding(code)) {
+      returnState = tagOpenAttributeValueQuoted;
+      return lineEndingBefore(code);
+    }
+    effects.consume(code);
+    return tagOpenAttributeValueQuoted;
+  }
+  function tagOpenAttributeValueUnquoted(code) {
+    if (code === codes.eof || code === codes.quotationMark || code === codes.apostrophe || code === codes.lessThan || code === codes.equalsTo || code === codes.graveAccent) {
+      return nok(code);
+    }
+    if (code === codes.slash || code === codes.greaterThan || markdownLineEndingOrSpace(code)) {
+      return tagOpenBetween(code);
+    }
+    effects.consume(code);
+    return tagOpenAttributeValueUnquoted;
+  }
+  function tagOpenAttributeValueQuotedAfter(code) {
+    if (code === codes.slash || code === codes.greaterThan || markdownLineEndingOrSpace(code)) {
+      return tagOpenBetween(code);
+    }
+    return nok(code);
+  }
+  function end(code) {
+    if (code === codes.greaterThan) {
+      effects.consume(code);
+      effects.exit(types.htmlTextData);
+      effects.exit(types.htmlText);
+      return ok2;
+    }
+    return nok(code);
+  }
+  function lineEndingBefore(code) {
+    ok(returnState, "expected return state");
+    ok(markdownLineEnding(code), "expected eol");
+    effects.exit(types.htmlTextData);
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return lineEndingAfter;
+  }
+  function lineEndingAfter(code) {
+    ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
+    return markdownSpace(code) ? factorySpace(effects, lineEndingAfterPrefix, types.linePrefix, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize)(code) : lineEndingAfterPrefix(code);
+  }
+  function lineEndingAfterPrefix(code) {
+    effects.enter(types.htmlTextData);
+    return returnState(code);
+  }
+}
+var htmlText;
+var init_html_text = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  htmlText = { name: "htmlText", tokenize: tokenizeHtmlText };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
+function resolveAllLabelEnd(events) {
+  let index = -1;
+  const newEvents = [];
+  while (++index < events.length) {
+    const token = events[index][1];
+    newEvents.push(events[index]);
+    if (token.type === types.labelImage || token.type === types.labelLink || token.type === types.labelEnd) {
+      const offset = token.type === types.labelImage ? 4 : 2;
+      token.type = types.data;
+      index += offset;
+    }
+  }
+  if (events.length !== newEvents.length) {
+    splice(events, 0, events.length, newEvents);
+  }
+  return events;
+}
+function resolveToLabelEnd(events, context) {
+  let index = events.length;
+  let offset = 0;
+  let open;
+  let close;
+  let media;
+  while (index--) {
+    const token = events[index][1];
+    if (open) {
+      if (token.type === types.link || token.type === types.labelLink && token._inactive) {
+        break;
+      }
+      if (events[index][0] === "enter" && token.type === types.labelLink) {
+        token._inactive = true;
+      }
+    } else if (close) {
+      if (events[index][0] === "enter" && (token.type === types.labelImage || token.type === types.labelLink) && !token._balanced) {
+        open = index;
+        if (token.type !== types.labelLink) {
+          offset = 2;
+          break;
+        }
+      }
+    } else if (token.type === types.labelEnd) {
+      close = index;
+    }
+  }
+  ok(open !== undefined, "`open` is supposed to be found");
+  ok(close !== undefined, "`close` is supposed to be found");
+  const group = {
+    type: events[open][1].type === types.labelLink ? types.link : types.image,
+    start: { ...events[open][1].start },
+    end: { ...events[events.length - 1][1].end }
+  };
+  const label = {
+    type: types.label,
+    start: { ...events[open][1].start },
+    end: { ...events[close][1].end }
+  };
+  const text = {
+    type: types.labelText,
+    start: { ...events[open + offset + 2][1].end },
+    end: { ...events[close - 2][1].start }
+  };
+  media = [
+    ["enter", group, context],
+    ["enter", label, context]
+  ];
+  media = push(media, events.slice(open + 1, open + offset + 3));
+  media = push(media, [["enter", text, context]]);
+  ok(context.parser.constructs.insideSpan.null, "expected `insideSpan.null` to be populated");
+  media = push(media, resolveAll(context.parser.constructs.insideSpan.null, events.slice(open + offset + 4, close - 3), context));
+  media = push(media, [
+    ["exit", text, context],
+    events[close - 2],
+    events[close - 1],
+    ["exit", label, context]
+  ]);
+  media = push(media, events.slice(close + 1));
+  media = push(media, [["exit", group, context]]);
+  splice(events, open, events.length, media);
+  return events;
+}
+function tokenizeLabelEnd(effects, ok2, nok) {
+  const self = this;
+  const labelStarts = self._labelStarts;
+  let labelStart;
+  let defined;
+  if (labelStarts) {
+    while (labelStarts.length > 0 && labelStarts[labelStarts.length - 1]._balanced) {
+      labelStarts.pop();
+    }
+    labelStart = labelStarts[labelStarts.length - 1];
+  }
+  return start;
+  function start(code) {
+    ok(code === codes.rightSquareBracket, "expected `]`");
+    if (!labelStart) {
+      return nok(code);
+    }
+    if (labelStart._inactive) {
+      return labelEndNok(code);
+    }
+    defined = self.parser.defined.includes(normalizeIdentifier(self.sliceSerialize({ start: labelStart.end, end: self.now() })));
+    effects.enter(types.labelEnd);
+    effects.enter(types.labelMarker);
+    effects.consume(code);
+    effects.exit(types.labelMarker);
+    effects.exit(types.labelEnd);
+    return after;
+  }
+  function after(code) {
+    if (code === codes.leftParenthesis) {
+      return effects.attempt(resourceConstruct, labelEndOk, defined ? labelEndOk : labelEndNok)(code);
+    }
+    if (code === codes.leftSquareBracket) {
+      return effects.attempt(referenceFullConstruct, labelEndOk, defined ? referenceNotFull : labelEndNok)(code);
+    }
+    return defined ? labelEndOk(code) : labelEndNok(code);
+  }
+  function referenceNotFull(code) {
+    return effects.attempt(referenceCollapsedConstruct, labelEndOk, labelEndNok)(code);
+  }
+  function labelEndOk(code) {
+    ok(labelStarts, "expected `labelStarts` to be populated");
+    labelStarts.pop();
+    return ok2(code);
+  }
+  function labelEndNok(code) {
+    labelStart._balanced = true;
+    return nok(code);
+  }
+}
+function tokenizeResource(effects, ok2, nok) {
+  return resourceStart;
+  function resourceStart(code) {
+    ok(code === codes.leftParenthesis, "expected left paren");
+    effects.enter(types.resource);
+    effects.enter(types.resourceMarker);
+    effects.consume(code);
+    effects.exit(types.resourceMarker);
+    return resourceBefore;
+  }
+  function resourceBefore(code) {
+    return markdownLineEndingOrSpace(code) ? factoryWhitespace(effects, resourceOpen)(code) : resourceOpen(code);
+  }
+  function resourceOpen(code) {
+    if (code === codes.rightParenthesis) {
+      return resourceEnd(code);
+    }
+    return factoryDestination(effects, resourceDestinationAfter, resourceDestinationMissing, types.resourceDestination, types.resourceDestinationLiteral, types.resourceDestinationLiteralMarker, types.resourceDestinationRaw, types.resourceDestinationString, constants.linkResourceDestinationBalanceMax)(code);
+  }
+  function resourceDestinationAfter(code) {
+    return markdownLineEndingOrSpace(code) ? factoryWhitespace(effects, resourceBetween)(code) : resourceEnd(code);
+  }
+  function resourceDestinationMissing(code) {
+    return nok(code);
+  }
+  function resourceBetween(code) {
+    if (code === codes.quotationMark || code === codes.apostrophe || code === codes.leftParenthesis) {
+      return factoryTitle(effects, resourceTitleAfter, nok, types.resourceTitle, types.resourceTitleMarker, types.resourceTitleString)(code);
+    }
+    return resourceEnd(code);
+  }
+  function resourceTitleAfter(code) {
+    return markdownLineEndingOrSpace(code) ? factoryWhitespace(effects, resourceEnd)(code) : resourceEnd(code);
+  }
+  function resourceEnd(code) {
+    if (code === codes.rightParenthesis) {
+      effects.enter(types.resourceMarker);
+      effects.consume(code);
+      effects.exit(types.resourceMarker);
+      effects.exit(types.resource);
+      return ok2;
+    }
+    return nok(code);
+  }
+}
+function tokenizeReferenceFull(effects, ok2, nok) {
+  const self = this;
+  return referenceFull;
+  function referenceFull(code) {
+    ok(code === codes.leftSquareBracket, "expected left bracket");
+    return factoryLabel.call(self, effects, referenceFullAfter, referenceFullMissing, types.reference, types.referenceMarker, types.referenceString)(code);
+  }
+  function referenceFullAfter(code) {
+    return self.parser.defined.includes(normalizeIdentifier(self.sliceSerialize(self.events[self.events.length - 1][1]).slice(1, -1))) ? ok2(code) : nok(code);
+  }
+  function referenceFullMissing(code) {
+    return nok(code);
+  }
+}
+function tokenizeReferenceCollapsed(effects, ok2, nok) {
+  return referenceCollapsedStart;
+  function referenceCollapsedStart(code) {
+    ok(code === codes.leftSquareBracket, "expected left bracket");
+    effects.enter(types.reference);
+    effects.enter(types.referenceMarker);
+    effects.consume(code);
+    effects.exit(types.referenceMarker);
+    return referenceCollapsedOpen;
+  }
+  function referenceCollapsedOpen(code) {
+    if (code === codes.rightSquareBracket) {
+      effects.enter(types.referenceMarker);
+      effects.consume(code);
+      effects.exit(types.referenceMarker);
+      effects.exit(types.reference);
+      return ok2;
+    }
+    return nok(code);
+  }
+}
+var labelEnd, resourceConstruct, referenceFullConstruct, referenceCollapsedConstruct;
+var init_label_end = __esm(() => {
+  init_development();
+  init_dev8();
+  init_dev9();
+  init_dev10();
+  init_dev11();
+  init_dev4();
+  init_dev();
+  init_dev3();
+  init_default();
+  labelEnd = {
+    name: "labelEnd",
+    resolveAll: resolveAllLabelEnd,
+    resolveTo: resolveToLabelEnd,
+    tokenize: tokenizeLabelEnd
+  };
+  resourceConstruct = { tokenize: tokenizeResource };
+  referenceFullConstruct = { tokenize: tokenizeReferenceFull };
+  referenceCollapsedConstruct = { tokenize: tokenizeReferenceCollapsed };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
+function tokenizeLabelStartImage(effects, ok2, nok) {
+  const self = this;
+  let labelImage;
+  return start;
+  function start(code) {
+    ok(code === codes.exclamationMark, "expected `!`");
+    effects.enter(types.labelImage);
+    effects.enter(types.labelImageMarker);
+    effects.consume(code);
+    effects.exit(types.labelImageMarker);
+    return open;
+  }
+  function open(code) {
+    if (code === codes.leftSquareBracket) {
+      effects.enter(types.labelMarker);
+      effects.consume(code);
+      effects.exit(types.labelMarker);
+      labelImage = effects.exit(types.labelImage);
+      return after;
+    }
+    return nok(code);
+  }
+  function after(code) {
+    if (code === codes.caret && "_hiddenFootnoteSupport" in self.parser.constructs) {
+      return nok(code);
+    }
+    self._labelStarts = self._labelStarts || [];
+    self._labelStarts.push(labelImage);
+    return ok2(code);
+  }
+}
+var labelStartImage;
+var init_label_start_image = __esm(() => {
+  init_development();
+  init_default();
+  init_label_end();
+  labelStartImage = {
+    name: "labelStartImage",
+    resolveAll: labelEnd.resolveAll,
+    tokenize: tokenizeLabelStartImage
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
+function tokenizeLabelStartLink(effects, ok2, nok) {
+  const self = this;
+  let labelLink;
+  return start;
+  function start(code) {
+    ok(code === codes.leftSquareBracket, "expected `[`");
+    effects.enter(types.labelLink);
+    effects.enter(types.labelMarker);
+    effects.consume(code);
+    effects.exit(types.labelMarker);
+    labelLink = effects.exit(types.labelLink);
+    return after;
+  }
+  function after(code) {
+    if (code === codes.caret && "_hiddenFootnoteSupport" in self.parser.constructs) {
+      return nok(code);
+    }
+    self._labelStarts = self._labelStarts || [];
+    self._labelStarts.push(labelLink);
+    return ok2(code);
+  }
+}
+var labelStartLink;
+var init_label_start_link = __esm(() => {
+  init_development();
+  init_default();
+  init_label_end();
+  labelStartLink = {
+    name: "labelStartLink",
+    resolveAll: labelEnd.resolveAll,
+    tokenize: tokenizeLabelStartLink
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
+function tokenizeLineEnding(effects, ok2) {
+  return start;
+  function start(code) {
+    ok(markdownLineEnding(code), "expected eol");
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    return factorySpace(effects, ok2, types.linePrefix);
+  }
+}
+var lineEnding;
+var init_line_ending = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  lineEnding = { name: "lineEnding", tokenize: tokenizeLineEnding };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
+function tokenizeThematicBreak(effects, ok2, nok) {
+  let size = 0;
+  let marker;
+  return start;
+  function start(code) {
+    effects.enter(types.thematicBreak);
+    return before(code);
+  }
+  function before(code) {
+    ok(code === codes.asterisk || code === codes.dash || code === codes.underscore, "expected `*`, `-`, or `_`");
+    marker = code;
+    return atBreak(code);
+  }
+  function atBreak(code) {
+    if (code === marker) {
+      effects.enter(types.thematicBreakSequence);
+      return sequence(code);
+    }
+    if (size >= constants.thematicBreakMarkerCountMin && (code === codes.eof || markdownLineEnding(code))) {
+      effects.exit(types.thematicBreak);
+      return ok2(code);
+    }
+    return nok(code);
+  }
+  function sequence(code) {
+    if (code === marker) {
+      effects.consume(code);
+      size++;
+      return sequence;
+    }
+    effects.exit(types.thematicBreakSequence);
+    return markdownSpace(code) ? factorySpace(effects, atBreak, types.whitespace)(code) : atBreak(code);
+  }
+}
+var thematicBreak;
+var init_thematic_break = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  thematicBreak = {
+    name: "thematicBreak",
+    tokenize: tokenizeThematicBreak
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/list.js
+function tokenizeListStart(effects, ok2, nok) {
+  const self = this;
+  const tail = self.events[self.events.length - 1];
+  let initialSize = tail && tail[1].type === types.linePrefix ? tail[2].sliceSerialize(tail[1], true).length : 0;
+  let size = 0;
+  return start;
+  function start(code) {
+    ok(self.containerState, "expected state");
+    const kind = self.containerState.type || (code === codes.asterisk || code === codes.plusSign || code === codes.dash ? types.listUnordered : types.listOrdered);
+    if (kind === types.listUnordered ? !self.containerState.marker || code === self.containerState.marker : asciiDigit(code)) {
+      if (!self.containerState.type) {
+        self.containerState.type = kind;
+        effects.enter(kind, { _container: true });
+      }
+      if (kind === types.listUnordered) {
+        effects.enter(types.listItemPrefix);
+        return code === codes.asterisk || code === codes.dash ? effects.check(thematicBreak, nok, atMarker)(code) : atMarker(code);
+      }
+      if (!self.interrupt || code === codes.digit1) {
+        effects.enter(types.listItemPrefix);
+        effects.enter(types.listItemValue);
+        return inside(code);
+      }
+    }
+    return nok(code);
+  }
+  function inside(code) {
+    ok(self.containerState, "expected state");
+    if (asciiDigit(code) && ++size < constants.listItemValueSizeMax) {
+      effects.consume(code);
+      return inside;
+    }
+    if ((!self.interrupt || size < 2) && (self.containerState.marker ? code === self.containerState.marker : code === codes.rightParenthesis || code === codes.dot)) {
+      effects.exit(types.listItemValue);
+      return atMarker(code);
+    }
+    return nok(code);
+  }
+  function atMarker(code) {
+    ok(self.containerState, "expected state");
+    ok(code !== codes.eof, "eof (`null`) is not a marker");
+    effects.enter(types.listItemMarker);
+    effects.consume(code);
+    effects.exit(types.listItemMarker);
+    self.containerState.marker = self.containerState.marker || code;
+    return effects.check(blankLine, self.interrupt ? nok : onBlank, effects.attempt(listItemPrefixWhitespaceConstruct, endOfPrefix, otherPrefix));
+  }
+  function onBlank(code) {
+    ok(self.containerState, "expected state");
+    self.containerState.initialBlankLine = true;
+    initialSize++;
+    return endOfPrefix(code);
+  }
+  function otherPrefix(code) {
+    if (markdownSpace(code)) {
+      effects.enter(types.listItemPrefixWhitespace);
+      effects.consume(code);
+      effects.exit(types.listItemPrefixWhitespace);
+      return endOfPrefix;
+    }
+    return nok(code);
+  }
+  function endOfPrefix(code) {
+    ok(self.containerState, "expected state");
+    self.containerState.size = initialSize + self.sliceSerialize(effects.exit(types.listItemPrefix), true).length;
+    return ok2(code);
+  }
+}
+function tokenizeListContinuation(effects, ok2, nok) {
+  const self = this;
+  ok(self.containerState, "expected state");
+  self.containerState._closeFlow = undefined;
+  return effects.check(blankLine, onBlank, notBlank);
+  function onBlank(code) {
+    ok(self.containerState, "expected state");
+    ok(typeof self.containerState.size === "number", "expected size");
+    self.containerState.furtherBlankLines = self.containerState.furtherBlankLines || self.containerState.initialBlankLine;
+    return factorySpace(effects, ok2, types.listItemIndent, self.containerState.size + 1)(code);
+  }
+  function notBlank(code) {
+    ok(self.containerState, "expected state");
+    if (self.containerState.furtherBlankLines || !markdownSpace(code)) {
+      self.containerState.furtherBlankLines = undefined;
+      self.containerState.initialBlankLine = undefined;
+      return notInCurrentItem(code);
+    }
+    self.containerState.furtherBlankLines = undefined;
+    self.containerState.initialBlankLine = undefined;
+    return effects.attempt(indentConstruct, ok2, notInCurrentItem)(code);
+  }
+  function notInCurrentItem(code) {
+    ok(self.containerState, "expected state");
+    self.containerState._closeFlow = true;
+    self.interrupt = undefined;
+    ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
+    return factorySpace(effects, effects.attempt(list2, ok2, nok), types.linePrefix, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize)(code);
+  }
+}
+function tokenizeIndent(effects, ok2, nok) {
+  const self = this;
+  ok(self.containerState, "expected state");
+  ok(typeof self.containerState.size === "number", "expected size");
+  return factorySpace(effects, afterPrefix, types.listItemIndent, self.containerState.size + 1);
+  function afterPrefix(code) {
+    ok(self.containerState, "expected state");
+    const tail = self.events[self.events.length - 1];
+    return tail && tail[1].type === types.listItemIndent && tail[2].sliceSerialize(tail[1], true).length === self.containerState.size ? ok2(code) : nok(code);
+  }
+}
+function tokenizeListEnd(effects) {
+  ok(this.containerState, "expected state");
+  ok(typeof this.containerState.type === "string", "expected type");
+  effects.exit(this.containerState.type);
+}
+function tokenizeListItemPrefixWhitespace(effects, ok2, nok) {
+  const self = this;
+  ok(self.parser.constructs.disable.null, "expected `disable.null` to be populated");
+  return factorySpace(effects, afterPrefix, types.listItemPrefixWhitespace, self.parser.constructs.disable.null.includes("codeIndented") ? undefined : constants.tabSize + 1);
+  function afterPrefix(code) {
+    const tail = self.events[self.events.length - 1];
+    return !markdownSpace(code) && tail && tail[1].type === types.listItemPrefixWhitespace ? ok2(code) : nok(code);
+  }
+}
+var list2, listItemPrefixWhitespaceConstruct, indentConstruct;
+var init_list = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  init_blank_line();
+  init_thematic_break();
+  list2 = {
+    continuation: { tokenize: tokenizeListContinuation },
+    exit: tokenizeListEnd,
+    name: "list",
+    tokenize: tokenizeListStart
+  };
+  listItemPrefixWhitespaceConstruct = {
+    partial: true,
+    tokenize: tokenizeListItemPrefixWhitespace
+  };
+  indentConstruct = { partial: true, tokenize: tokenizeIndent };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
+function resolveToSetextUnderline(events, context) {
+  const editMap = new EditMap;
+  let index = events.length;
+  let content;
+  let text;
+  let definition;
+  while (index--) {
+    if (events[index][0] === "enter") {
+      if (events[index][1].type === types.content) {
+        content = index;
+        break;
+      }
+      if (events[index][1].type === types.paragraph) {
+        text = index;
+      }
+    } else {
+      if (events[index][1].type === types.content) {
+        editMap.add(index, 1, []);
+      }
+      if (!definition && events[index][1].type === types.definition) {
+        definition = index;
+      }
+    }
+  }
+  ok(text !== undefined, "expected a `text` index to be found");
+  ok(content !== undefined, "expected a `text` index to be found");
+  ok(events[content][2] === context, "enter context should be same");
+  ok(events[events.length - 1][2] === context, "enter context should be same");
+  const heading = {
+    type: types.setextHeading,
+    start: { ...events[content][1].start },
+    end: { ...events[events.length - 1][1].end }
+  };
+  events[text][1].type = types.setextHeadingText;
+  if (definition) {
+    editMap.add(text, 0, [["enter", heading, context]]);
+    editMap.add(definition + 1, 0, [["exit", events[content][1], context]]);
+    events[content][1].end = { ...events[definition][1].end };
+  } else {
+    events[content][1] = heading;
+  }
+  editMap.add(events.length, 0, [["exit", heading, context]]);
+  editMap.consume(events);
+  return events;
+}
+function tokenizeSetextUnderline(effects, ok2, nok) {
+  const self = this;
+  let marker;
+  return start;
+  function start(code) {
+    let index = self.events.length;
+    let paragraph;
+    ok(code === codes.dash || code === codes.equalsTo, "expected `=` or `-`");
+    while (index--) {
+      if (self.events[index][1].type !== types.lineEnding && self.events[index][1].type !== types.linePrefix && self.events[index][1].type !== types.content) {
+        paragraph = self.events[index][1].type === types.paragraph;
+        break;
+      }
+    }
+    if (!self.parser.lazy[self.now().line] && (self.interrupt || paragraph)) {
+      effects.enter(types.setextHeadingLine);
+      marker = code;
+      return before(code);
+    }
+    return nok(code);
+  }
+  function before(code) {
+    effects.enter(types.setextHeadingLineSequence);
+    return inside(code);
+  }
+  function inside(code) {
+    if (code === marker) {
+      effects.consume(code);
+      return inside;
+    }
+    effects.exit(types.setextHeadingLineSequence);
+    return markdownSpace(code) ? factorySpace(effects, after, types.lineSuffix)(code) : after(code);
+  }
+  function after(code) {
+    if (code === codes.eof || markdownLineEnding(code)) {
+      effects.exit(types.setextHeadingLine);
+      return ok2(code);
+    }
+    return nok(code);
+  }
+}
+var setextUnderline;
+var init_setext_underline = __esm(() => {
+  init_development();
+  init_dev5();
+  init_dev4();
+  init_default();
+  setextUnderline = {
+    name: "setextUnderline",
+    resolveTo: resolveToSetextUnderline,
+    tokenize: tokenizeSetextUnderline
+  };
+});
+
+// box/node_modules/micromark-core-commonmark/dev/index.js
+var init_dev12 = __esm(() => {
+  init_attention();
+  init_autolink();
+  init_blank_line();
+  init_block_quote();
+  init_character_escape();
+  init_character_reference();
+  init_code_fenced();
+  init_code_indented();
+  init_code_text();
+  init_content2();
+  init_definition();
+  init_hard_break_escape();
+  init_heading_atx();
+  init_html_flow();
+  init_html_text();
+  init_label_end();
+  init_label_start_image();
+  init_label_start_link();
+  init_line_ending();
+  init_list();
+  init_setext_underline();
+  init_thematic_break();
+});
+
+// box/node_modules/micromark/dev/lib/initialize/flow.js
+function initializeFlow(effects) {
+  const self = this;
+  const initial = effects.attempt(blankLine, atBlankEnding, effects.attempt(this.parser.constructs.flowInitial, afterConstruct, factorySpace(effects, effects.attempt(this.parser.constructs.flow, afterConstruct, effects.attempt(content2, afterConstruct)), types.linePrefix)));
+  return initial;
+  function atBlankEnding(code) {
+    ok(code === codes.eof || markdownLineEnding(code), "expected eol or eof");
+    if (code === codes.eof) {
+      effects.consume(code);
+      return;
+    }
+    effects.enter(types.lineEndingBlank);
+    effects.consume(code);
+    effects.exit(types.lineEndingBlank);
+    self.currentConstruct = undefined;
+    return initial;
+  }
+  function afterConstruct(code) {
+    ok(code === codes.eof || markdownLineEnding(code), "expected eol or eof");
+    if (code === codes.eof) {
+      effects.consume(code);
+      return;
+    }
+    effects.enter(types.lineEnding);
+    effects.consume(code);
+    effects.exit(types.lineEnding);
+    self.currentConstruct = undefined;
+    return initial;
+  }
+}
+var flow;
+var init_flow = __esm(() => {
+  init_development();
+  init_dev12();
+  init_dev5();
+  init_dev4();
+  init_default();
+  flow = { tokenize: initializeFlow };
+});
+
+// box/node_modules/micromark/dev/lib/initialize/text.js
+function initializeFactory(field) {
+  return {
+    resolveAll: createResolver(field === "text" ? resolveAllLineSuffixes : undefined),
+    tokenize: initializeText
+  };
+  function initializeText(effects) {
+    const self = this;
+    const constructs = this.parser.constructs[field];
+    const text = effects.attempt(constructs, start, notText);
+    return start;
+    function start(code) {
+      return atBreak(code) ? text(code) : notText(code);
+    }
+    function notText(code) {
+      if (code === codes.eof) {
+        effects.consume(code);
+        return;
+      }
+      effects.enter(types.data);
+      effects.consume(code);
+      return data;
+    }
+    function data(code) {
+      if (atBreak(code)) {
+        effects.exit(types.data);
+        return text(code);
+      }
+      effects.consume(code);
+      return data;
+    }
+    function atBreak(code) {
+      if (code === codes.eof) {
+        return true;
+      }
+      const list = constructs[code];
+      let index = -1;
+      if (list) {
+        ok(Array.isArray(list), "expected `disable.null` to be populated");
+        while (++index < list.length) {
+          const item = list[index];
+          if (!item.previous || item.previous.call(self, self.previous)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+  }
+}
+function createResolver(extraResolver) {
+  return resolveAllText;
+  function resolveAllText(events, context) {
+    let index = -1;
+    let enter;
+    while (++index <= events.length) {
+      if (enter === undefined) {
+        if (events[index] && events[index][1].type === types.data) {
+          enter = index;
+          index++;
+        }
+      } else if (!events[index] || events[index][1].type !== types.data) {
+        if (index !== enter + 2) {
+          events[enter][1].end = events[index - 1][1].end;
+          events.splice(enter + 2, index - enter - 2);
+          index = enter + 2;
+        }
+        enter = undefined;
+      }
+    }
+    return extraResolver ? extraResolver(events, context) : events;
+  }
+}
+function resolveAllLineSuffixes(events, context) {
+  const editMap = new EditMap;
+  let eventIndex = 0;
+  while (++eventIndex <= events.length) {
+    if ((eventIndex === events.length || events[eventIndex][1].type === types.lineEnding) && events[eventIndex - 1][1].type === types.data) {
+      const data = events[eventIndex - 1][1];
+      const chunks = context.sliceStream(data);
+      let index = chunks.length;
+      let bufferIndex = -1;
+      let size = 0;
+      let tabs;
+      while (index--) {
+        const chunk = chunks[index];
+        if (typeof chunk === "string") {
+          bufferIndex = chunk.length;
+          while (chunk.charCodeAt(bufferIndex - 1) === codes.space) {
+            size++;
+            bufferIndex--;
+          }
+          if (bufferIndex) {
+            break;
+          }
+          bufferIndex = -1;
+        } else if (chunk === codes.horizontalTab) {
+          tabs = true;
+          size++;
+        } else if (chunk === codes.virtualSpace) {} else {
+          index++;
+          break;
+        }
+      }
+      if (context._contentTypeTextTrailing && eventIndex === events.length) {
+        size = 0;
+      }
+      if (size) {
+        const token = {
+          type: eventIndex === events.length || tabs || size < constants.hardBreakPrefixSizeMin ? types.lineSuffix : types.hardBreakTrailing,
+          start: {
+            _bufferIndex: index ? bufferIndex : data.start._bufferIndex + bufferIndex,
+            _index: data.start._index + index,
+            line: data.end.line,
+            column: data.end.column - size,
+            offset: data.end.offset - size
+          },
+          end: { ...data.end }
+        };
+        data.end = { ...token.start };
+        if (data.start.offset === data.end.offset) {
+          Object.assign(data, token);
+        } else {
+          editMap.add(eventIndex, 0, [
+            ["enter", token, context],
+            ["exit", token, context]
+          ]);
+        }
+      }
+      eventIndex++;
+    }
+  }
+  editMap.consume(events);
+  return events;
+}
+var resolver, string2, text;
+var init_text2 = __esm(() => {
+  init_development();
+  init_default();
+  resolver = { resolveAll: createResolver() };
+  string2 = initializeFactory("string");
+  text = initializeFactory("text");
+});
+
+// box/node_modules/micromark/dev/lib/constructs.js
+var exports_constructs = {};
+__export(exports_constructs, {
+  attentionMarkers: () => attentionMarkers,
+  contentInitial: () => contentInitial,
+  disable: () => disable,
+  document: () => document3,
+  flow: () => flow2,
+  flowInitial: () => flowInitial,
+  insideSpan: () => insideSpan,
+  string: () => string3,
+  text: () => text2
+});
+var document3, contentInitial, flowInitial, flow2, string3, text2, insideSpan, attentionMarkers, disable;
+var init_constructs = __esm(() => {
+  init_dev12();
+  init_default();
+  init_text2();
+  document3 = {
+    [codes.asterisk]: list2,
+    [codes.plusSign]: list2,
+    [codes.dash]: list2,
+    [codes.digit0]: list2,
+    [codes.digit1]: list2,
+    [codes.digit2]: list2,
+    [codes.digit3]: list2,
+    [codes.digit4]: list2,
+    [codes.digit5]: list2,
+    [codes.digit6]: list2,
+    [codes.digit7]: list2,
+    [codes.digit8]: list2,
+    [codes.digit9]: list2,
+    [codes.greaterThan]: blockQuote
+  };
+  contentInitial = {
+    [codes.leftSquareBracket]: definition
+  };
+  flowInitial = {
+    [codes.horizontalTab]: codeIndented,
+    [codes.virtualSpace]: codeIndented,
+    [codes.space]: codeIndented
+  };
+  flow2 = {
+    [codes.numberSign]: headingAtx,
+    [codes.asterisk]: thematicBreak,
+    [codes.dash]: [setextUnderline, thematicBreak],
+    [codes.lessThan]: htmlFlow,
+    [codes.equalsTo]: setextUnderline,
+    [codes.underscore]: thematicBreak,
+    [codes.graveAccent]: codeFenced,
+    [codes.tilde]: codeFenced
+  };
+  string3 = {
+    [codes.ampersand]: characterReference,
+    [codes.backslash]: characterEscape
+  };
+  text2 = {
+    [codes.carriageReturn]: lineEnding,
+    [codes.lineFeed]: lineEnding,
+    [codes.carriageReturnLineFeed]: lineEnding,
+    [codes.exclamationMark]: labelStartImage,
+    [codes.ampersand]: characterReference,
+    [codes.asterisk]: attention,
+    [codes.lessThan]: [autolink, htmlText],
+    [codes.leftSquareBracket]: labelStartLink,
+    [codes.backslash]: [hardBreakEscape, characterEscape],
+    [codes.rightSquareBracket]: labelEnd,
+    [codes.underscore]: attention,
+    [codes.graveAccent]: codeText
+  };
+  insideSpan = { null: [attention, resolver] };
+  attentionMarkers = { null: [codes.asterisk, codes.underscore] };
+  disable = { null: [] };
+});
+
+// box/node_modules/ms/index.js
+var require_ms = __commonJS(function(exports, module) {
+  var s = 1000;
+  var m = s * 60;
+  var h = m * 60;
+  var d = h * 24;
+  var w = d * 7;
+  var y = d * 365.25;
+  module.exports = function(val, options) {
+    options = options || {};
+    var type = typeof val;
+    if (type === "string" && val.length > 0) {
+      return parse(val);
+    } else if (type === "number" && isFinite(val)) {
+      return options.long ? fmtLong(val) : fmtShort(val);
+    }
+    throw new Error("val is not a non-empty string or a valid number. val=" + JSON.stringify(val));
+  };
+  function parse(str) {
+    str = String(str);
+    if (str.length > 100) {
+      return;
+    }
+    var match = /^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(str);
+    if (!match) {
+      return;
+    }
+    var n = parseFloat(match[1]);
+    var type = (match[2] || "ms").toLowerCase();
+    switch (type) {
+      case "years":
+      case "year":
+      case "yrs":
+      case "yr":
+      case "y":
+        return n * y;
+      case "weeks":
+      case "week":
+      case "w":
+        return n * w;
+      case "days":
+      case "day":
+      case "d":
+        return n * d;
+      case "hours":
+      case "hour":
+      case "hrs":
+      case "hr":
+      case "h":
+        return n * h;
+      case "minutes":
+      case "minute":
+      case "mins":
+      case "min":
+      case "m":
+        return n * m;
+      case "seconds":
+      case "second":
+      case "secs":
+      case "sec":
+      case "s":
+        return n * s;
+      case "milliseconds":
+      case "millisecond":
+      case "msecs":
+      case "msec":
+      case "ms":
+        return n;
+      default:
+        return;
+    }
+  }
+  function fmtShort(ms) {
+    var msAbs = Math.abs(ms);
+    if (msAbs >= d) {
+      return Math.round(ms / d) + "d";
+    }
+    if (msAbs >= h) {
+      return Math.round(ms / h) + "h";
+    }
+    if (msAbs >= m) {
+      return Math.round(ms / m) + "m";
+    }
+    if (msAbs >= s) {
+      return Math.round(ms / s) + "s";
+    }
+    return ms + "ms";
+  }
+  function fmtLong(ms) {
+    var msAbs = Math.abs(ms);
+    if (msAbs >= d) {
+      return plural(ms, msAbs, d, "day");
+    }
+    if (msAbs >= h) {
+      return plural(ms, msAbs, h, "hour");
+    }
+    if (msAbs >= m) {
+      return plural(ms, msAbs, m, "minute");
+    }
+    if (msAbs >= s) {
+      return plural(ms, msAbs, s, "second");
+    }
+    return ms + " ms";
+  }
+  function plural(ms, msAbs, n, name) {
+    var isPlural = msAbs >= n * 1.5;
+    return Math.round(ms / n) + " " + name + (isPlural ? "s" : "");
+  }
+});
+
+// box/node_modules/debug/src/common.js
+var require_common = __commonJS(function(exports, module) {
+  function setup(env) {
+    createDebug.debug = createDebug;
+    createDebug.default = createDebug;
+    createDebug.coerce = coerce;
+    createDebug.disable = disable;
+    createDebug.enable = enable;
+    createDebug.enabled = enabled;
+    createDebug.humanize = require_ms();
+    createDebug.destroy = destroy;
+    Object.keys(env).forEach((key) => {
+      createDebug[key] = env[key];
+    });
+    createDebug.names = [];
+    createDebug.skips = [];
+    createDebug.formatters = {};
+    function selectColor(namespace) {
+      let hash = 0;
+      for (let i = 0;i < namespace.length; i++) {
+        hash = (hash << 5) - hash + namespace.charCodeAt(i);
+        hash |= 0;
+      }
+      return createDebug.colors[Math.abs(hash) % createDebug.colors.length];
+    }
+    createDebug.selectColor = selectColor;
+    function createDebug(namespace) {
+      let prevTime;
+      let enableOverride = null;
+      let namespacesCache;
+      let enabledCache;
+      function debug(...args) {
+        if (!debug.enabled) {
+          return;
+        }
+        const self = debug;
+        const curr = Number(new Date);
+        const ms = curr - (prevTime || curr);
+        self.diff = ms;
+        self.prev = prevTime;
+        self.curr = curr;
+        prevTime = curr;
+        args[0] = createDebug.coerce(args[0]);
+        if (typeof args[0] !== "string") {
+          args.unshift("%O");
+        }
+        let index = 0;
+        args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
+          if (match === "%%") {
+            return "%";
+          }
+          index++;
+          const formatter = createDebug.formatters[format];
+          if (typeof formatter === "function") {
+            const val = args[index];
+            match = formatter.call(self, val);
+            args.splice(index, 1);
+            index--;
+          }
+          return match;
+        });
+        createDebug.formatArgs.call(self, args);
+        const logFn = self.log || createDebug.log;
+        logFn.apply(self, args);
+      }
+      debug.namespace = namespace;
+      debug.useColors = createDebug.useColors();
+      debug.color = createDebug.selectColor(namespace);
+      debug.extend = extend;
+      debug.destroy = createDebug.destroy;
+      Object.defineProperty(debug, "enabled", {
+        enumerable: true,
+        configurable: false,
+        get: () => {
+          if (enableOverride !== null) {
+            return enableOverride;
+          }
+          if (namespacesCache !== createDebug.namespaces) {
+            namespacesCache = createDebug.namespaces;
+            enabledCache = createDebug.enabled(namespace);
+          }
+          return enabledCache;
+        },
+        set: (v) => {
+          enableOverride = v;
+        }
+      });
+      if (typeof createDebug.init === "function") {
+        createDebug.init(debug);
+      }
+      return debug;
+    }
+    function extend(namespace, delimiter) {
+      const newDebug = createDebug(this.namespace + (typeof delimiter === "undefined" ? ":" : delimiter) + namespace);
+      newDebug.log = this.log;
+      return newDebug;
+    }
+    function enable(namespaces) {
+      createDebug.save(namespaces);
+      createDebug.namespaces = namespaces;
+      createDebug.names = [];
+      createDebug.skips = [];
+      const split = (typeof namespaces === "string" ? namespaces : "").trim().replace(/\s+/g, ",").split(",").filter(Boolean);
+      for (const ns of split) {
+        if (ns[0] === "-") {
+          createDebug.skips.push(ns.slice(1));
+        } else {
+          createDebug.names.push(ns);
+        }
+      }
+    }
+    function matchesTemplate(search, template) {
+      let searchIndex = 0;
+      let templateIndex = 0;
+      let starIndex = -1;
+      let matchIndex = 0;
+      while (searchIndex < search.length) {
+        if (templateIndex < template.length && (template[templateIndex] === search[searchIndex] || template[templateIndex] === "*")) {
+          if (template[templateIndex] === "*") {
+            starIndex = templateIndex;
+            matchIndex = searchIndex;
+            templateIndex++;
+          } else {
+            searchIndex++;
+            templateIndex++;
+          }
+        } else if (starIndex !== -1) {
+          templateIndex = starIndex + 1;
+          matchIndex++;
+          searchIndex = matchIndex;
+        } else {
+          return false;
+        }
+      }
+      while (templateIndex < template.length && template[templateIndex] === "*") {
+        templateIndex++;
+      }
+      return templateIndex === template.length;
+    }
+    function disable() {
+      const namespaces = [
+        ...createDebug.names,
+        ...createDebug.skips.map((namespace) => "-" + namespace)
+      ].join(",");
+      createDebug.enable("");
+      return namespaces;
+    }
+    function enabled(name) {
+      for (const skip of createDebug.skips) {
+        if (matchesTemplate(name, skip)) {
+          return false;
+        }
+      }
+      for (const ns of createDebug.names) {
+        if (matchesTemplate(name, ns)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    function coerce(val) {
+      if (val instanceof Error) {
+        return val.stack || val.message;
+      }
+      return val;
+    }
+    function destroy() {
+      console.warn("Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.");
+    }
+    createDebug.enable(createDebug.load());
+    return createDebug;
+  }
+  module.exports = setup;
+});
+
+// box/node_modules/debug/src/browser.js
+var require_browser = __commonJS(function(exports, module) {
+  exports.formatArgs = formatArgs;
+  exports.save = save;
+  exports.load = load;
+  exports.useColors = useColors;
+  exports.storage = localstorage();
+  exports.destroy = (() => {
+    let warned = false;
+    return () => {
+      if (!warned) {
+        warned = true;
+        console.warn("Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.");
+      }
+    };
+  })();
+  exports.colors = [
+    "#0000CC",
+    "#0000FF",
+    "#0033CC",
+    "#0033FF",
+    "#0066CC",
+    "#0066FF",
+    "#0099CC",
+    "#0099FF",
+    "#00CC00",
+    "#00CC33",
+    "#00CC66",
+    "#00CC99",
+    "#00CCCC",
+    "#00CCFF",
+    "#3300CC",
+    "#3300FF",
+    "#3333CC",
+    "#3333FF",
+    "#3366CC",
+    "#3366FF",
+    "#3399CC",
+    "#3399FF",
+    "#33CC00",
+    "#33CC33",
+    "#33CC66",
+    "#33CC99",
+    "#33CCCC",
+    "#33CCFF",
+    "#6600CC",
+    "#6600FF",
+    "#6633CC",
+    "#6633FF",
+    "#66CC00",
+    "#66CC33",
+    "#9900CC",
+    "#9900FF",
+    "#9933CC",
+    "#9933FF",
+    "#99CC00",
+    "#99CC33",
+    "#CC0000",
+    "#CC0033",
+    "#CC0066",
+    "#CC0099",
+    "#CC00CC",
+    "#CC00FF",
+    "#CC3300",
+    "#CC3333",
+    "#CC3366",
+    "#CC3399",
+    "#CC33CC",
+    "#CC33FF",
+    "#CC6600",
+    "#CC6633",
+    "#CC9900",
+    "#CC9933",
+    "#CCCC00",
+    "#CCCC33",
+    "#FF0000",
+    "#FF0033",
+    "#FF0066",
+    "#FF0099",
+    "#FF00CC",
+    "#FF00FF",
+    "#FF3300",
+    "#FF3333",
+    "#FF3366",
+    "#FF3399",
+    "#FF33CC",
+    "#FF33FF",
+    "#FF6600",
+    "#FF6633",
+    "#FF9900",
+    "#FF9933",
+    "#FFCC00",
+    "#FFCC33"
+  ];
+  function useColors() {
+    if (typeof window !== "undefined" && window.process && (window.process.type === "renderer" || window.process.__nwjs)) {
+      return true;
+    }
+    if (typeof navigator !== "undefined" && navigator.userAgent && navigator.userAgent.toLowerCase().match(/(edge|trident)\/(\d+)/)) {
+      return false;
+    }
+    let m;
+    return typeof document !== "undefined" && document.documentElement && document.documentElement.style && document.documentElement.style.WebkitAppearance || typeof window !== "undefined" && window.console && (window.console.firebug || window.console.exception && window.console.table) || typeof navigator !== "undefined" && navigator.userAgent && (m = navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/)) && parseInt(m[1], 10) >= 31 || typeof navigator !== "undefined" && navigator.userAgent && navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/);
+  }
+  function formatArgs(args) {
+    args[0] = (this.useColors ? "%c" : "") + this.namespace + (this.useColors ? " %c" : " ") + args[0] + (this.useColors ? "%c " : " ") + "+" + module.exports.humanize(this.diff);
+    if (!this.useColors) {
+      return;
+    }
+    const c = "color: " + this.color;
+    args.splice(1, 0, c, "color: inherit");
+    let index = 0;
+    let lastC = 0;
+    args[0].replace(/%[a-zA-Z%]/g, (match) => {
+      if (match === "%%") {
+        return;
+      }
+      index++;
+      if (match === "%c") {
+        lastC = index;
+      }
+    });
+    args.splice(lastC, 0, c);
+  }
+  exports.log = console.debug || console.log || (() => {});
+  function save(namespaces) {
+    try {
+      if (namespaces) {
+        exports.storage.setItem("debug", namespaces);
+      } else {
+        exports.storage.removeItem("debug");
+      }
+    } catch (error) {}
+  }
+  function load() {
+    let r;
+    try {
+      r = exports.storage.getItem("debug") || exports.storage.getItem("DEBUG");
+    } catch (error) {}
+    if (!r && typeof process !== "undefined" && "env" in process) {
+      r = process.env.DEBUG;
+    }
+    return r;
+  }
+  function localstorage() {
+    try {
+      return localStorage;
+    } catch (error) {}
+  }
+  module.exports = require_common()(exports);
+  var { formatters } = module.exports;
+  formatters.j = function(v) {
+    try {
+      return JSON.stringify(v);
+    } catch (error) {
+      return "[UnexpectedJSONParseError]: " + error.message;
+    }
+  };
+});
+
+// box/node_modules/debug/src/node.js
+var require_node = __commonJS(function(exports, module) {
+  var tty = __require("tty");
+  var util = __require("util");
+  exports.init = init;
+  exports.log = log;
+  exports.formatArgs = formatArgs;
+  exports.save = save;
+  exports.load = load;
+  exports.useColors = useColors;
+  exports.destroy = util.deprecate(() => {}, "Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.");
+  exports.colors = [6, 2, 3, 4, 5, 1];
+  try {
+    const supportsColor = (()=>{throw new Error("Cannot require module "+"supports-color");})();
+    if (supportsColor && (supportsColor.stderr || supportsColor).level >= 2) {
+      exports.colors = [
+        20,
+        21,
+        26,
+        27,
+        32,
+        33,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        56,
+        57,
+        62,
+        63,
+        68,
+        69,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79,
+        80,
+        81,
+        92,
+        93,
+        98,
+        99,
+        112,
+        113,
+        128,
+        129,
+        134,
+        135,
+        148,
+        149,
+        160,
+        161,
+        162,
+        163,
+        164,
+        165,
+        166,
+        167,
+        168,
+        169,
+        170,
+        171,
+        172,
+        173,
+        178,
+        179,
+        184,
+        185,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206,
+        207,
+        208,
+        209,
+        214,
+        215,
+        220,
+        221
+      ];
+    }
+  } catch (error) {}
+  exports.inspectOpts = Object.keys(process.env).filter((key) => {
+    return /^debug_/i.test(key);
+  }).reduce((obj, key) => {
+    const prop = key.substring(6).toLowerCase().replace(/_([a-z])/g, (_, k) => {
+      return k.toUpperCase();
+    });
+    let val = process.env[key];
+    if (/^(yes|on|true|enabled)$/i.test(val)) {
+      val = true;
+    } else if (/^(no|off|false|disabled)$/i.test(val)) {
+      val = false;
+    } else if (val === "null") {
+      val = null;
+    } else {
+      val = Number(val);
+    }
+    obj[prop] = val;
+    return obj;
+  }, {});
+  function useColors() {
+    return "colors" in exports.inspectOpts ? Boolean(exports.inspectOpts.colors) : tty.isatty(process.stderr.fd);
+  }
+  function formatArgs(args) {
+    const { namespace: name, useColors } = this;
+    if (useColors) {
+      const c = this.color;
+      const colorCode = "\x1B[3" + (c < 8 ? c : "8;5;" + c);
+      const prefix = `  ${colorCode};1m${name} \x1B[0m`;
+      args[0] = prefix + args[0].split(`
+`).join(`
+` + prefix);
+      args.push(colorCode + "m+" + module.exports.humanize(this.diff) + "\x1B[0m");
+    } else {
+      args[0] = getDate() + name + " " + args[0];
+    }
+  }
+  function getDate() {
+    if (exports.inspectOpts.hideDate) {
+      return "";
+    }
+    return new Date().toISOString() + " ";
+  }
+  function log(...args) {
+    return process.stderr.write(util.formatWithOptions(exports.inspectOpts, ...args) + `
+`);
+  }
+  function save(namespaces) {
+    if (namespaces) {
+      process.env.DEBUG = namespaces;
+    } else {
+      delete process.env.DEBUG;
+    }
+  }
+  function load() {
+    return process.env.DEBUG;
+  }
+  function init(debug) {
+    debug.inspectOpts = {};
+    const keys = Object.keys(exports.inspectOpts);
+    for (let i = 0;i < keys.length; i++) {
+      debug.inspectOpts[keys[i]] = exports.inspectOpts[keys[i]];
+    }
+  }
+  module.exports = require_common()(exports);
+  var { formatters } = module.exports;
+  formatters.o = function(v) {
+    this.inspectOpts.colors = this.useColors;
+    return util.inspect(v, this.inspectOpts).split(`
+`).map((str) => str.trim()).join(" ");
+  };
+  formatters.O = function(v) {
+    this.inspectOpts.colors = this.useColors;
+    return util.inspect(v, this.inspectOpts);
+  };
+});
+
+// box/node_modules/debug/src/index.js
+var require_src = __commonJS(function(exports, module) {
+  if (typeof process === "undefined" || process.type === "renderer" || false || process.__nwjs) {
+    module.exports = require_browser();
+  } else {
+    module.exports = require_node();
+  }
+});
+
+// box/node_modules/micromark/dev/lib/create-tokenizer.js
+function createTokenizer(parser, initialize, from) {
+  let point = {
+    _bufferIndex: -1,
+    _index: 0,
+    line: from && from.line || 1,
+    column: from && from.column || 1,
+    offset: from && from.offset || 0
+  };
+  const columnStart = {};
+  const resolveAllConstructs = [];
+  let chunks = [];
+  let stack = [];
+  let consumed = true;
+  const effects = {
+    attempt: constructFactory(onsuccessfulconstruct),
+    check: constructFactory(onsuccessfulcheck),
+    consume,
+    enter,
+    exit,
+    interrupt: constructFactory(onsuccessfulcheck, { interrupt: true })
+  };
+  const context = {
+    code: codes.eof,
+    containerState: {},
+    defineSkip,
+    events: [],
+    now,
+    parser,
+    previous: codes.eof,
+    sliceSerialize,
+    sliceStream,
+    write
+  };
+  let state = initialize.tokenize.call(context, effects);
+  let expectedCode;
+  if (initialize.resolveAll) {
+    resolveAllConstructs.push(initialize);
+  }
+  return context;
+  function write(slice) {
+    chunks = push(chunks, slice);
+    main();
+    if (chunks[chunks.length - 1] !== codes.eof) {
+      return [];
+    }
+    addResult(initialize, 0);
+    context.events = resolveAll(resolveAllConstructs, context.events, context);
+    return context.events;
+  }
+  function sliceSerialize(token, expandTabs) {
+    return serializeChunks(sliceStream(token), expandTabs);
+  }
+  function sliceStream(token) {
+    return sliceChunks(chunks, token);
+  }
+  function now() {
+    const { _bufferIndex, _index, line, column, offset } = point;
+    return { _bufferIndex, _index, line, column, offset };
+  }
+  function defineSkip(value) {
+    columnStart[value.line] = value.column;
+    accountForPotentialSkip();
+    debug("position: define skip: `%j`", point);
+  }
+  function main() {
+    while (point._index < chunks.length) {
+      const chunk = chunks[point._index];
+      if (typeof chunk === "string") {
+        const chunkIndex = point._index;
+        if (point._bufferIndex < 0) {
+          point._bufferIndex = 0;
+        }
+        while (point._index === chunkIndex && point._bufferIndex < chunk.length) {
+          go(chunk.charCodeAt(point._bufferIndex));
+        }
+      } else {
+        go(chunk);
+      }
+    }
+  }
+  function go(code) {
+    ok(consumed === true, "expected character to be consumed");
+    consumed = undefined;
+    debug("main: passing `%s` to %s", code, state && state.name);
+    expectedCode = code;
+    ok(typeof state === "function", "expected state");
+    state = state(code);
+  }
+  function consume(code) {
+    ok(code === expectedCode, "expected given code to equal expected code");
+    debug("consume: `%s`", code);
+    ok(consumed === undefined, "expected code to not have been consumed: this might be because `return x(code)` instead of `return x` was used");
+    ok(code === null ? context.events.length === 0 || context.events[context.events.length - 1][0] === "exit" : context.events[context.events.length - 1][0] === "enter", "expected last token to be open");
+    if (markdownLineEnding(code)) {
+      point.line++;
+      point.column = 1;
+      point.offset += code === codes.carriageReturnLineFeed ? 2 : 1;
+      accountForPotentialSkip();
+      debug("position: after eol: `%j`", point);
+    } else if (code !== codes.virtualSpace) {
+      point.column++;
+      point.offset++;
+    }
+    if (point._bufferIndex < 0) {
+      point._index++;
+    } else {
+      point._bufferIndex++;
+      if (point._bufferIndex === chunks[point._index].length) {
+        point._bufferIndex = -1;
+        point._index++;
+      }
+    }
+    context.previous = code;
+    consumed = true;
+  }
+  function enter(type, fields) {
+    const token = fields || {};
+    token.type = type;
+    token.start = now();
+    ok(typeof type === "string", "expected string type");
+    ok(type.length > 0, "expected non-empty string");
+    debug("enter: `%s`", type);
+    context.events.push(["enter", token, context]);
+    stack.push(token);
+    return token;
+  }
+  function exit(type) {
+    ok(typeof type === "string", "expected string type");
+    ok(type.length > 0, "expected non-empty string");
+    const token = stack.pop();
+    ok(token, "cannot close w/o open tokens");
+    token.end = now();
+    ok(type === token.type, "expected exit token to match current token");
+    ok(!(token.start._index === token.end._index && token.start._bufferIndex === token.end._bufferIndex), "expected non-empty token (`" + type + "`)");
+    debug("exit: `%s`", token.type);
+    context.events.push(["exit", token, context]);
+    return token;
+  }
+  function onsuccessfulconstruct(construct, info) {
+    addResult(construct, info.from);
+  }
+  function onsuccessfulcheck(_, info) {
+    info.restore();
+  }
+  function constructFactory(onreturn, fields) {
+    return hook;
+    function hook(constructs, returnState, bogusState) {
+      let listOfConstructs;
+      let constructIndex;
+      let currentConstruct;
+      let info;
+      return Array.isArray(constructs) ? handleListOfConstructs(constructs) : ("tokenize" in constructs) ? handleListOfConstructs([constructs]) : handleMapOfConstructs(constructs);
+      function handleMapOfConstructs(map) {
+        return start;
+        function start(code) {
+          const left = code !== null && map[code];
+          const all = code !== null && map.null;
+          const list = [
+            ...Array.isArray(left) ? left : left ? [left] : [],
+            ...Array.isArray(all) ? all : all ? [all] : []
+          ];
+          return handleListOfConstructs(list)(code);
+        }
+      }
+      function handleListOfConstructs(list) {
+        listOfConstructs = list;
+        constructIndex = 0;
+        if (list.length === 0) {
+          ok(bogusState, "expected `bogusState` to be given");
+          return bogusState;
+        }
+        return handleConstruct(list[constructIndex]);
+      }
+      function handleConstruct(construct) {
+        return start;
+        function start(code) {
+          info = store();
+          currentConstruct = construct;
+          if (!construct.partial) {
+            context.currentConstruct = construct;
+          }
+          ok(context.parser.constructs.disable.null, "expected `disable.null` to be populated");
+          if (construct.name && context.parser.constructs.disable.null.includes(construct.name)) {
+            return nok(code);
+          }
+          return construct.tokenize.call(fields ? Object.assign(Object.create(context), fields) : context, effects, ok2, nok)(code);
+        }
+      }
+      function ok2(code) {
+        ok(code === expectedCode, "expected code");
+        consumed = true;
+        onreturn(currentConstruct, info);
+        return returnState;
+      }
+      function nok(code) {
+        ok(code === expectedCode, "expected code");
+        consumed = true;
+        info.restore();
+        if (++constructIndex < listOfConstructs.length) {
+          return handleConstruct(listOfConstructs[constructIndex]);
+        }
+        return bogusState;
+      }
+    }
+  }
+  function addResult(construct, from) {
+    if (construct.resolveAll && !resolveAllConstructs.includes(construct)) {
+      resolveAllConstructs.push(construct);
+    }
+    if (construct.resolve) {
+      splice(context.events, from, context.events.length - from, construct.resolve(context.events.slice(from), context));
+    }
+    if (construct.resolveTo) {
+      context.events = construct.resolveTo(context.events, context);
+    }
+    ok(construct.partial || context.events.length === 0 || context.events[context.events.length - 1][0] === "exit", "expected last token to end");
+  }
+  function store() {
+    const startPoint = now();
+    const startPrevious = context.previous;
+    const startCurrentConstruct = context.currentConstruct;
+    const startEventsIndex = context.events.length;
+    const startStack = Array.from(stack);
+    return { from: startEventsIndex, restore };
+    function restore() {
+      point = startPoint;
+      context.previous = startPrevious;
+      context.currentConstruct = startCurrentConstruct;
+      context.events.length = startEventsIndex;
+      stack = startStack;
+      accountForPotentialSkip();
+      debug("position: restore: `%j`", point);
+    }
+  }
+  function accountForPotentialSkip() {
+    if (point.line in columnStart && point.column < 2) {
+      point.column = columnStart[point.line];
+      point.offset += columnStart[point.line] - 1;
+    }
+  }
+}
+function sliceChunks(chunks, token) {
+  const startIndex = token.start._index;
+  const startBufferIndex = token.start._bufferIndex;
+  const endIndex = token.end._index;
+  const endBufferIndex = token.end._bufferIndex;
+  let view;
+  if (startIndex === endIndex) {
+    ok(endBufferIndex > -1, "expected non-negative end buffer index");
+    ok(startBufferIndex > -1, "expected non-negative start buffer index");
+    view = [chunks[startIndex].slice(startBufferIndex, endBufferIndex)];
+  } else {
+    view = chunks.slice(startIndex, endIndex);
+    if (startBufferIndex > -1) {
+      const head = view[0];
+      if (typeof head === "string") {
+        view[0] = head.slice(startBufferIndex);
+      } else {
+        ok(startBufferIndex === 0, "expected `startBufferIndex` to be `0`");
+        view.shift();
+      }
+    }
+    if (endBufferIndex > 0) {
+      view.push(chunks[endIndex].slice(0, endBufferIndex));
+    }
+  }
+  return view;
+}
+function serializeChunks(chunks, expandTabs) {
+  let index = -1;
+  const result = [];
+  let atTab;
+  while (++index < chunks.length) {
+    const chunk = chunks[index];
+    let value;
+    if (typeof chunk === "string") {
+      value = chunk;
+    } else {
+      switch (chunk) {
+        case codes.carriageReturn: {
+          value = values.cr;
+          break;
+        }
+        case codes.lineFeed: {
+          value = values.lf;
+          break;
+        }
+        case codes.carriageReturnLineFeed: {
+          value = values.cr + values.lf;
+          break;
+        }
+        case codes.horizontalTab: {
+          value = expandTabs ? values.space : values.ht;
+          break;
+        }
+        case codes.virtualSpace: {
+          if (!expandTabs && atTab) {
+            continue;
+          }
+          value = values.space;
+          break;
+        }
+        default: {
+          ok(typeof chunk === "number", "expected number");
+          value = String.fromCharCode(chunk);
+        }
+      }
+    }
+    atTab = chunk === codes.horizontalTab;
+    result.push(value);
+  }
+  return result.join("");
+}
+var import_debug, debug;
+var init_create_tokenizer = __esm(() => {
+  init_development();
+  init_dev4();
+  init_dev();
+  init_default();
+  import_debug = __toESM(require_src(), 1);
+  debug = import_debug.default("micromark");
+});
+
+// box/node_modules/micromark/dev/lib/parse.js
+function parse(options) {
+  const settings = options || {};
+  const constructs = combineExtensions([exports_constructs, ...settings.extensions || []]);
+  const parser = {
+    constructs,
+    content: create(content),
+    defined: [],
+    document: create(document2),
+    flow: create(flow),
+    lazy: {},
+    string: create(string2),
+    text: create(text)
+  };
+  return parser;
+  function create(initial) {
+    return creator;
+    function creator(from) {
+      return createTokenizer(parser, initial, from);
+    }
+  }
+}
+var init_parse = __esm(() => {
+  init_micromark_util_combine_extensions();
+  init_content();
+  init_document();
+  init_flow();
+  init_text2();
+  init_constructs();
+  init_create_tokenizer();
+});
+
+// box/node_modules/micromark/dev/lib/postprocess.js
+function postprocess(events) {
+  while (!subtokenize(events)) {}
+  return events;
+}
+var init_postprocess = __esm(() => {
+  init_dev7();
+});
+
+// box/node_modules/micromark/dev/lib/preprocess.js
+function preprocess() {
+  let column = 1;
+  let buffer = "";
+  let start = true;
+  let atCarriageReturn;
+  return preprocessor;
+  function preprocessor(value, encoding, end) {
+    value = buffer + (typeof value === "string" ? value.toString() : new TextDecoder(encoding || undefined).decode(value));
+    const chunks = [];
+    let startPosition = 0;
+    buffer = "";
+    if (start) {
+      if (value.charCodeAt(0) === codes.byteOrderMarker) {
+        startPosition++;
+      }
+      start = undefined;
+    }
+    while (startPosition < value.length) {
+      search.lastIndex = startPosition;
+      const match = search.exec(value);
+      const endPosition = match && match.index !== undefined ? match.index : value.length;
+      const code = value.charCodeAt(endPosition);
+      if (!match) {
+        buffer = value.slice(startPosition);
+        break;
+      }
+      if (code === codes.lf && startPosition === endPosition && atCarriageReturn) {
+        chunks.push(codes.carriageReturnLineFeed);
+        atCarriageReturn = undefined;
+      } else {
+        if (atCarriageReturn) {
+          chunks.push(codes.carriageReturn);
+          atCarriageReturn = undefined;
+        }
+        if (startPosition < endPosition) {
+          chunks.push(value.slice(startPosition, endPosition));
+          column += endPosition - startPosition;
+        }
+        switch (code) {
+          case codes.nul: {
+            chunks.push(codes.replacementCharacter);
+            column++;
+            break;
+          }
+          case codes.ht: {
+            const next = Math.ceil(column / constants.tabSize) * constants.tabSize;
+            chunks.push(codes.horizontalTab);
+            while (column++ < next) {
+              chunks.push(codes.virtualSpace);
+            }
+            break;
+          }
+          case codes.lf: {
+            chunks.push(codes.lineFeed);
+            column = 1;
+            break;
+          }
+          default: {
+            atCarriageReturn = true;
+            column = 1;
+          }
+        }
+      }
+      startPosition = endPosition + 1;
+    }
+    if (end) {
+      if (atCarriageReturn) {
+        chunks.push(codes.carriageReturn);
+      }
+      if (buffer) {
+        chunks.push(buffer);
+      }
+      chunks.push(codes.eof);
+    }
+    return chunks;
+  }
+}
+var search;
+var init_preprocess = __esm(() => {
+  init_default();
+  search = /[\0\t\n\r]/g;
+});
+
+// box/node_modules/micromark/dev/index.js
+var init_dev13 = __esm(() => {
+  init_parse();
+  init_postprocess();
+  init_preprocess();
+});
+
+// box/node_modules/micromark-util-decode-string/dev/index.js
+function decodeString(value) {
+  return value.replace(characterEscapeOrReference, decode);
+}
+function decode($0, $1, $2) {
+  if ($1) {
+    return $1;
+  }
+  const head = $2.charCodeAt(0);
+  if (head === codes.numberSign) {
+    const head = $2.charCodeAt(1);
+    const hex = head === codes.lowercaseX || head === codes.uppercaseX;
+    return decodeNumericCharacterReference($2.slice(hex ? 2 : 1), hex ? constants.numericBaseHexadecimal : constants.numericBaseDecimal);
+  }
+  return decodeNamedCharacterReference($2) || $0;
+}
+var characterEscapeOrReference;
+var init_dev14 = __esm(() => {
+  init_decode_named_character_reference();
+  init_dev2();
+  init_default();
+  characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
+});
+
+// box/node_modules/unist-util-stringify-position/lib/index.js
+function stringifyPosition(value) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  if ("position" in value || "type" in value) {
+    return position(value.position);
+  }
+  if ("start" in value || "end" in value) {
+    return position(value);
+  }
+  if ("line" in value || "column" in value) {
+    return point(value);
+  }
+  return "";
+}
+function point(point) {
+  return index(point && point.line) + ":" + index(point && point.column);
+}
+function position(pos) {
+  return point(pos && pos.start) + "-" + point(pos && pos.end);
+}
+function index(value) {
+  return value && typeof value === "number" ? value : 1;
+}
+
+// box/node_modules/unist-util-stringify-position/index.js
+var init_unist_util_stringify_position = () => {};
+
+// box/node_modules/mdast-util-from-markdown/dev/lib/index.js
+function fromMarkdown(value, encoding, options) {
+  if (encoding && typeof encoding === "object") {
+    options = encoding;
+    encoding = undefined;
+  }
+  return compiler(options)(postprocess(parse(options).document().write(preprocess()(value, encoding, true))));
+}
+function compiler(options) {
+  const config = {
+    transforms: [],
+    canContainEols: ["emphasis", "fragment", "heading", "paragraph", "strong"],
+    enter: {
+      autolink: opener(link),
+      autolinkProtocol: onenterdata,
+      autolinkEmail: onenterdata,
+      atxHeading: opener(heading),
+      blockQuote: opener(blockQuote),
+      characterEscape: onenterdata,
+      characterReference: onenterdata,
+      codeFenced: opener(codeFlow),
+      codeFencedFenceInfo: buffer,
+      codeFencedFenceMeta: buffer,
+      codeIndented: opener(codeFlow, buffer),
+      codeText: opener(codeText, buffer),
+      codeTextData: onenterdata,
+      data: onenterdata,
+      codeFlowValue: onenterdata,
+      definition: opener(definition),
+      definitionDestinationString: buffer,
+      definitionLabelString: buffer,
+      definitionTitleString: buffer,
+      emphasis: opener(emphasis),
+      hardBreakEscape: opener(hardBreak),
+      hardBreakTrailing: opener(hardBreak),
+      htmlFlow: opener(html, buffer),
+      htmlFlowData: onenterdata,
+      htmlText: opener(html, buffer),
+      htmlTextData: onenterdata,
+      image: opener(image),
+      label: buffer,
+      link: opener(link),
+      listItem: opener(listItem),
+      listItemValue: onenterlistitemvalue,
+      listOrdered: opener(list, onenterlistordered),
+      listUnordered: opener(list),
+      paragraph: opener(paragraph),
+      reference: onenterreference,
+      referenceString: buffer,
+      resourceDestinationString: buffer,
+      resourceTitleString: buffer,
+      setextHeading: opener(heading),
+      strong: opener(strong),
+      thematicBreak: opener(thematicBreak)
+    },
+    exit: {
+      atxHeading: closer(),
+      atxHeadingSequence: onexitatxheadingsequence,
+      autolink: closer(),
+      autolinkEmail: onexitautolinkemail,
+      autolinkProtocol: onexitautolinkprotocol,
+      blockQuote: closer(),
+      characterEscapeValue: onexitdata,
+      characterReferenceMarkerHexadecimal: onexitcharacterreferencemarker,
+      characterReferenceMarkerNumeric: onexitcharacterreferencemarker,
+      characterReferenceValue: onexitcharacterreferencevalue,
+      characterReference: onexitcharacterreference,
+      codeFenced: closer(onexitcodefenced),
+      codeFencedFence: onexitcodefencedfence,
+      codeFencedFenceInfo: onexitcodefencedfenceinfo,
+      codeFencedFenceMeta: onexitcodefencedfencemeta,
+      codeFlowValue: onexitdata,
+      codeIndented: closer(onexitcodeindented),
+      codeText: closer(onexitcodetext),
+      codeTextData: onexitdata,
+      data: onexitdata,
+      definition: closer(),
+      definitionDestinationString: onexitdefinitiondestinationstring,
+      definitionLabelString: onexitdefinitionlabelstring,
+      definitionTitleString: onexitdefinitiontitlestring,
+      emphasis: closer(),
+      hardBreakEscape: closer(onexithardbreak),
+      hardBreakTrailing: closer(onexithardbreak),
+      htmlFlow: closer(onexithtmlflow),
+      htmlFlowData: onexitdata,
+      htmlText: closer(onexithtmltext),
+      htmlTextData: onexitdata,
+      image: closer(onexitimage),
+      label: onexitlabel,
+      labelText: onexitlabeltext,
+      lineEnding: onexitlineending,
+      link: closer(onexitlink),
+      listItem: closer(),
+      listOrdered: closer(),
+      listUnordered: closer(),
+      paragraph: closer(),
+      referenceString: onexitreferencestring,
+      resourceDestinationString: onexitresourcedestinationstring,
+      resourceTitleString: onexitresourcetitlestring,
+      resource: onexitresource,
+      setextHeading: closer(onexitsetextheading),
+      setextHeadingLineSequence: onexitsetextheadinglinesequence,
+      setextHeadingText: onexitsetextheadingtext,
+      strong: closer(),
+      thematicBreak: closer()
+    }
+  };
+  configure(config, (options || {}).mdastExtensions || []);
+  const data = {};
+  return compile;
+  function compile(events) {
+    let tree = { type: "root", children: [] };
+    const context = {
+      stack: [tree],
+      tokenStack: [],
+      config,
+      enter,
+      exit,
+      buffer,
+      resume,
+      data
+    };
+    const listStack = [];
+    let index = -1;
+    while (++index < events.length) {
+      if (events[index][1].type === types.listOrdered || events[index][1].type === types.listUnordered) {
+        if (events[index][0] === "enter") {
+          listStack.push(index);
+        } else {
+          const tail = listStack.pop();
+          ok(typeof tail === "number", "expected list to be open");
+          index = prepareList(events, tail, index);
+        }
+      }
+    }
+    index = -1;
+    while (++index < events.length) {
+      const handler = config[events[index][0]];
+      if (own2.call(handler, events[index][1].type)) {
+        handler[events[index][1].type].call(Object.assign({ sliceSerialize: events[index][2].sliceSerialize }, context), events[index][1]);
+      }
+    }
+    if (context.tokenStack.length > 0) {
+      const tail = context.tokenStack[context.tokenStack.length - 1];
+      const handler = tail[1] || defaultOnError;
+      handler.call(context, undefined, tail[0]);
+    }
+    tree.position = {
+      start: point2(events.length > 0 ? events[0][1].start : { line: 1, column: 1, offset: 0 }),
+      end: point2(events.length > 0 ? events[events.length - 2][1].end : { line: 1, column: 1, offset: 0 })
+    };
+    index = -1;
+    while (++index < config.transforms.length) {
+      tree = config.transforms[index](tree) || tree;
+    }
+    return tree;
+  }
+  function prepareList(events, start, length) {
+    let index = start - 1;
+    let containerBalance = -1;
+    let listSpread = false;
+    let listItem;
+    let lineIndex;
+    let firstBlankLineIndex;
+    let atMarker;
+    while (++index <= length) {
+      const event = events[index];
+      switch (event[1].type) {
+        case types.listUnordered:
+        case types.listOrdered:
+        case types.blockQuote: {
+          if (event[0] === "enter") {
+            containerBalance++;
+          } else {
+            containerBalance--;
+          }
+          atMarker = undefined;
+          break;
+        }
+        case types.lineEndingBlank: {
+          if (event[0] === "enter") {
+            if (listItem && !atMarker && !containerBalance && !firstBlankLineIndex) {
+              firstBlankLineIndex = index;
+            }
+            atMarker = undefined;
+          }
+          break;
+        }
+        case types.linePrefix:
+        case types.listItemValue:
+        case types.listItemMarker:
+        case types.listItemPrefix:
+        case types.listItemPrefixWhitespace: {
+          break;
+        }
+        default: {
+          atMarker = undefined;
+        }
+      }
+      if (!containerBalance && event[0] === "enter" && event[1].type === types.listItemPrefix || containerBalance === -1 && event[0] === "exit" && (event[1].type === types.listUnordered || event[1].type === types.listOrdered)) {
+        if (listItem) {
+          let tailIndex = index;
+          lineIndex = undefined;
+          while (tailIndex--) {
+            const tailEvent = events[tailIndex];
+            if (tailEvent[1].type === types.lineEnding || tailEvent[1].type === types.lineEndingBlank) {
+              if (tailEvent[0] === "exit")
+                continue;
+              if (lineIndex) {
+                events[lineIndex][1].type = types.lineEndingBlank;
+                listSpread = true;
+              }
+              tailEvent[1].type = types.lineEnding;
+              lineIndex = tailIndex;
+            } else if (tailEvent[1].type === types.linePrefix || tailEvent[1].type === types.blockQuotePrefix || tailEvent[1].type === types.blockQuotePrefixWhitespace || tailEvent[1].type === types.blockQuoteMarker || tailEvent[1].type === types.listItemIndent) {} else {
+              break;
+            }
+          }
+          if (firstBlankLineIndex && (!lineIndex || firstBlankLineIndex < lineIndex)) {
+            listItem._spread = true;
+          }
+          listItem.end = Object.assign({}, lineIndex ? events[lineIndex][1].start : event[1].end);
+          events.splice(lineIndex || index, 0, ["exit", listItem, event[2]]);
+          index++;
+          length++;
+        }
+        if (event[1].type === types.listItemPrefix) {
+          const item = {
+            type: "listItem",
+            _spread: false,
+            start: Object.assign({}, event[1].start),
+            end: undefined
+          };
+          listItem = item;
+          events.splice(index, 0, ["enter", item, event[2]]);
+          index++;
+          length++;
+          firstBlankLineIndex = undefined;
+          atMarker = true;
+        }
+      }
+    }
+    events[start][1]._spread = listSpread;
+    return length;
+  }
+  function opener(create, and) {
+    return open;
+    function open(token) {
+      enter.call(this, create(token), token);
+      if (and)
+        and.call(this, token);
+    }
+  }
+  function buffer() {
+    this.stack.push({ type: "fragment", children: [] });
+  }
+  function enter(node, token, errorHandler) {
+    const parent = this.stack[this.stack.length - 1];
+    ok(parent, "expected `parent`");
+    ok("children" in parent, "expected `parent`");
+    const siblings = parent.children;
+    siblings.push(node);
+    this.stack.push(node);
+    this.tokenStack.push([token, errorHandler || undefined]);
+    node.position = {
+      start: point2(token.start),
+      end: undefined
+    };
+  }
+  function closer(and) {
+    return close;
+    function close(token) {
+      if (and)
+        and.call(this, token);
+      exit.call(this, token);
+    }
+  }
+  function exit(token, onExitError) {
+    const node = this.stack.pop();
+    ok(node, "expected `node`");
+    const open = this.tokenStack.pop();
+    if (!open) {
+      throw new Error("Cannot close `" + token.type + "` (" + stringifyPosition({ start: token.start, end: token.end }) + "): it’s not open");
+    } else if (open[0].type !== token.type) {
+      if (onExitError) {
+        onExitError.call(this, token, open[0]);
+      } else {
+        const handler = open[1] || defaultOnError;
+        handler.call(this, token, open[0]);
+      }
+    }
+    ok(node.type !== "fragment", "unexpected fragment `exit`ed");
+    ok(node.position, "expected `position` to be defined");
+    node.position.end = point2(token.end);
+  }
+  function resume() {
+    return toString(this.stack.pop());
+  }
+  function onenterlistordered() {
+    this.data.expectingFirstListItemValue = true;
+  }
+  function onenterlistitemvalue(token) {
+    if (this.data.expectingFirstListItemValue) {
+      const ancestor = this.stack[this.stack.length - 2];
+      ok(ancestor, "expected nodes on stack");
+      ok(ancestor.type === "list", "expected list on stack");
+      ancestor.start = Number.parseInt(this.sliceSerialize(token), constants.numericBaseDecimal);
+      this.data.expectingFirstListItemValue = undefined;
+    }
+  }
+  function onexitcodefencedfenceinfo() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "code", "expected code on stack");
+    node.lang = data;
+  }
+  function onexitcodefencedfencemeta() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "code", "expected code on stack");
+    node.meta = data;
+  }
+  function onexitcodefencedfence() {
+    if (this.data.flowCodeInside)
+      return;
+    this.buffer();
+    this.data.flowCodeInside = true;
+  }
+  function onexitcodefenced() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "code", "expected code on stack");
+    node.value = data.replace(/^(\r?\n|\r)|(\r?\n|\r)$/g, "");
+    this.data.flowCodeInside = undefined;
+  }
+  function onexitcodeindented() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "code", "expected code on stack");
+    node.value = data.replace(/(\r?\n|\r)$/g, "");
+  }
+  function onexitdefinitionlabelstring(token) {
+    const label = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "definition", "expected definition on stack");
+    node.label = label;
+    node.identifier = normalizeIdentifier(this.sliceSerialize(token)).toLowerCase();
+  }
+  function onexitdefinitiontitlestring() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "definition", "expected definition on stack");
+    node.title = data;
+  }
+  function onexitdefinitiondestinationstring() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "definition", "expected definition on stack");
+    node.url = data;
+  }
+  function onexitatxheadingsequence(token) {
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "heading", "expected heading on stack");
+    if (!node.depth) {
+      const depth = this.sliceSerialize(token).length;
+      ok(depth === 1 || depth === 2 || depth === 3 || depth === 4 || depth === 5 || depth === 6, "expected `depth` between `1` and `6`");
+      node.depth = depth;
+    }
+  }
+  function onexitsetextheadingtext() {
+    this.data.setextHeadingSlurpLineEnding = true;
+  }
+  function onexitsetextheadinglinesequence(token) {
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "heading", "expected heading on stack");
+    node.depth = this.sliceSerialize(token).codePointAt(0) === codes.equalsTo ? 1 : 2;
+  }
+  function onexitsetextheading() {
+    this.data.setextHeadingSlurpLineEnding = undefined;
+  }
+  function onenterdata(token) {
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok("children" in node, "expected parent on stack");
+    const siblings = node.children;
+    let tail = siblings[siblings.length - 1];
+    if (!tail || tail.type !== "text") {
+      tail = text();
+      tail.position = {
+        start: point2(token.start),
+        end: undefined
+      };
+      siblings.push(tail);
+    }
+    this.stack.push(tail);
+  }
+  function onexitdata(token) {
+    const tail = this.stack.pop();
+    ok(tail, "expected a `node` to be on the stack");
+    ok("value" in tail, "expected a `literal` to be on the stack");
+    ok(tail.position, "expected `node` to have an open position");
+    tail.value += this.sliceSerialize(token);
+    tail.position.end = point2(token.end);
+  }
+  function onexitlineending(token) {
+    const context = this.stack[this.stack.length - 1];
+    ok(context, "expected `node`");
+    if (this.data.atHardBreak) {
+      ok("children" in context, "expected `parent`");
+      const tail = context.children[context.children.length - 1];
+      ok(tail.position, "expected tail to have a starting position");
+      tail.position.end = point2(token.end);
+      this.data.atHardBreak = undefined;
+      return;
+    }
+    if (!this.data.setextHeadingSlurpLineEnding && config.canContainEols.includes(context.type)) {
+      onenterdata.call(this, token);
+      onexitdata.call(this, token);
+    }
+  }
+  function onexithardbreak() {
+    this.data.atHardBreak = true;
+  }
+  function onexithtmlflow() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "html", "expected html on stack");
+    node.value = data;
+  }
+  function onexithtmltext() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "html", "expected html on stack");
+    node.value = data;
+  }
+  function onexitcodetext() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "inlineCode", "expected inline code on stack");
+    node.value = data;
+  }
+  function onexitlink() {
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "link", "expected link on stack");
+    if (this.data.inReference) {
+      const referenceType = this.data.referenceType || "shortcut";
+      node.type += "Reference";
+      node.referenceType = referenceType;
+      delete node.url;
+      delete node.title;
+    } else {
+      delete node.identifier;
+      delete node.label;
+    }
+    this.data.referenceType = undefined;
+  }
+  function onexitimage() {
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "image", "expected image on stack");
+    if (this.data.inReference) {
+      const referenceType = this.data.referenceType || "shortcut";
+      node.type += "Reference";
+      node.referenceType = referenceType;
+      delete node.url;
+      delete node.title;
+    } else {
+      delete node.identifier;
+      delete node.label;
+    }
+    this.data.referenceType = undefined;
+  }
+  function onexitlabeltext(token) {
+    const string = this.sliceSerialize(token);
+    const ancestor = this.stack[this.stack.length - 2];
+    ok(ancestor, "expected ancestor on stack");
+    ok(ancestor.type === "image" || ancestor.type === "link", "expected image or link on stack");
+    ancestor.label = decodeString(string);
+    ancestor.identifier = normalizeIdentifier(string).toLowerCase();
+  }
+  function onexitlabel() {
+    const fragment = this.stack[this.stack.length - 1];
+    ok(fragment, "expected node on stack");
+    ok(fragment.type === "fragment", "expected fragment on stack");
+    const value = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "image" || node.type === "link", "expected image or link on stack");
+    this.data.inReference = true;
+    if (node.type === "link") {
+      const children = fragment.children;
+      node.children = children;
+    } else {
+      node.alt = value;
+    }
+  }
+  function onexitresourcedestinationstring() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "image" || node.type === "link", "expected image or link on stack");
+    node.url = data;
+  }
+  function onexitresourcetitlestring() {
+    const data = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "image" || node.type === "link", "expected image or link on stack");
+    node.title = data;
+  }
+  function onexitresource() {
+    this.data.inReference = undefined;
+  }
+  function onenterreference() {
+    this.data.referenceType = "collapsed";
+  }
+  function onexitreferencestring(token) {
+    const label = this.resume();
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "image" || node.type === "link", "expected image reference or link reference on stack");
+    node.label = label;
+    node.identifier = normalizeIdentifier(this.sliceSerialize(token)).toLowerCase();
+    this.data.referenceType = "full";
+  }
+  function onexitcharacterreferencemarker(token) {
+    ok(token.type === "characterReferenceMarkerNumeric" || token.type === "characterReferenceMarkerHexadecimal");
+    this.data.characterReferenceType = token.type;
+  }
+  function onexitcharacterreferencevalue(token) {
+    const data = this.sliceSerialize(token);
+    const type = this.data.characterReferenceType;
+    let value;
+    if (type) {
+      value = decodeNumericCharacterReference(data, type === types.characterReferenceMarkerNumeric ? constants.numericBaseDecimal : constants.numericBaseHexadecimal);
+      this.data.characterReferenceType = undefined;
+    } else {
+      const result = decodeNamedCharacterReference(data);
+      ok(result !== false, "expected reference to decode");
+      value = result;
+    }
+    const tail = this.stack[this.stack.length - 1];
+    ok(tail, "expected `node`");
+    ok("value" in tail, "expected `node.value`");
+    tail.value += value;
+  }
+  function onexitcharacterreference(token) {
+    const tail = this.stack.pop();
+    ok(tail, "expected `node`");
+    ok(tail.position, "expected `node.position`");
+    tail.position.end = point2(token.end);
+  }
+  function onexitautolinkprotocol(token) {
+    onexitdata.call(this, token);
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "link", "expected link on stack");
+    node.url = this.sliceSerialize(token);
+  }
+  function onexitautolinkemail(token) {
+    onexitdata.call(this, token);
+    const node = this.stack[this.stack.length - 1];
+    ok(node, "expected node on stack");
+    ok(node.type === "link", "expected link on stack");
+    node.url = "mailto:" + this.sliceSerialize(token);
+  }
+  function blockQuote() {
+    return { type: "blockquote", children: [] };
+  }
+  function codeFlow() {
+    return { type: "code", lang: null, meta: null, value: "" };
+  }
+  function codeText() {
+    return { type: "inlineCode", value: "" };
+  }
+  function definition() {
+    return {
+      type: "definition",
+      identifier: "",
+      label: null,
+      title: null,
+      url: ""
+    };
+  }
+  function emphasis() {
+    return { type: "emphasis", children: [] };
+  }
+  function heading() {
+    return {
+      type: "heading",
+      depth: 0,
+      children: []
+    };
+  }
+  function hardBreak() {
+    return { type: "break" };
+  }
+  function html() {
+    return { type: "html", value: "" };
+  }
+  function image() {
+    return { type: "image", title: null, url: "", alt: null };
+  }
+  function link() {
+    return { type: "link", title: null, url: "", children: [] };
+  }
+  function list(token) {
+    return {
+      type: "list",
+      ordered: token.type === "listOrdered",
+      start: null,
+      spread: token._spread,
+      children: []
+    };
+  }
+  function listItem(token) {
+    return {
+      type: "listItem",
+      spread: token._spread,
+      checked: null,
+      children: []
+    };
+  }
+  function paragraph() {
+    return { type: "paragraph", children: [] };
+  }
+  function strong() {
+    return { type: "strong", children: [] };
+  }
+  function text() {
+    return { type: "text", value: "" };
+  }
+  function thematicBreak() {
+    return { type: "thematicBreak" };
+  }
+}
+function point2(d) {
+  return { line: d.line, column: d.column, offset: d.offset };
+}
+function configure(combined, extensions) {
+  let index = -1;
+  while (++index < extensions.length) {
+    const value = extensions[index];
+    if (Array.isArray(value)) {
+      configure(combined, value);
+    } else {
+      extension(combined, value);
+    }
+  }
+}
+function extension(combined, extension) {
+  let key;
+  for (key in extension) {
+    if (own2.call(extension, key)) {
+      switch (key) {
+        case "canContainEols": {
+          const right = extension[key];
+          if (right) {
+            combined[key].push(...right);
+          }
+          break;
+        }
+        case "transforms": {
+          const right = extension[key];
+          if (right) {
+            combined[key].push(...right);
+          }
+          break;
+        }
+        case "enter":
+        case "exit": {
+          const right = extension[key];
+          if (right) {
+            Object.assign(combined[key], right);
+          }
+          break;
+        }
+      }
+    }
+  }
+}
+function defaultOnError(left, right) {
+  if (left) {
+    throw new Error("Cannot close `" + left.type + "` (" + stringifyPosition({ start: left.start, end: left.end }) + "): a different token (`" + right.type + "`, " + stringifyPosition({ start: right.start, end: right.end }) + ") is open");
+  } else {
+    throw new Error("Cannot close document, a token (`" + right.type + "`, " + stringifyPosition({ start: right.start, end: right.end }) + ") is still open");
+  }
+}
+var own2;
+var init_lib2 = __esm(() => {
+  init_development();
+  init_mdast_util_to_string();
+  init_dev13();
+  init_dev2();
+  init_dev14();
+  init_dev3();
+  init_default();
+  init_decode_named_character_reference();
+  init_unist_util_stringify_position();
+  own2 = {}.hasOwnProperty;
+});
+
+// box/node_modules/mdast-util-from-markdown/dev/index.js
+var init_dev15 = __esm(() => {
+  init_lib2();
+});
+
+// box/src/link/work-queue/markdown.ts
+function markdownRanges(text, select) {
+  const ranges = [];
+  const visit = (node) => {
+    if (select(node)) {
+      const start = node.position?.start.offset, end = node.position?.end.offset;
+      if (start !== undefined && end !== undefined)
+        ranges.push({ start, end, node });
+    } else if ("children" in node) {
+      node.children.forEach(visit);
+    }
+  };
+  visit(fromMarkdown(text));
+  return ranges;
+}
+function withoutPictures(text, urls) {
+  if (!urls.size)
+    return text;
+  const ranges = markdownRanges(text, (node) => node.type === "image" && urls.has(node.url));
+  if (text.includes("[Image ") && [...urls].some((url) => url.startsWith("kuvo-attachment:legacy/"))) {
+    const protectedText = protectedRanges(text);
+    for (const match of text.matchAll(/\[Image ([0-9]{1,3})\]/g)) {
+      const start = match.index, end = start + match[0].length;
+      if (!urls.has(`kuvo-attachment:legacy/${match[1]}`) || text[start - 1] === "\\" || protectedText.some((range) => range.start < end && start < range.end))
+        continue;
+      ranges.push({ start, end });
+    }
+  }
+  ranges.sort((a, b) => b.start - a.start);
+  for (const { start, end } of ranges)
+    text = text.slice(0, start) + text.slice(end);
+  return text;
+}
+var protectedRanges = (text) => markdownRanges(text, (node) => ["code", "inlineCode", "link", "linkReference", "image", "imageReference", "definition"].includes(node.type));
+var init_markdown = __esm(() => {
+  init_dev15();
+});
+
 // box/src/link/work-queue/relations.ts
 function references(text) {
   if (!text.includes("#"))
     return [];
-  const skipped = [...text.matchAll(/!?\[(?:\\.|[^\]\\\n])*\](?:\([^\n)]*\)|\[[^\]\n]*\])|(?:https?:\/\/|www\.)[^\s<]+|gh:[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/[A-Za-z0-9_.-]{1,100}#[0-9]{1,10}/giu)].map((match) => [match.index, match.index + match[0].length]);
-  for (const tick of text.matchAll(/`+/g)) {
-    if (skipped.some(([start, end]) => start <= tick.index && tick.index < end))
-      continue;
-    const end = text.indexOf(tick[0], tick.index + tick[0].length);
-    if (end >= 0 || tick[0].length >= 3)
-      skipped.push([tick.index, end >= 0 ? end + tick[0].length : text.length]);
+  const skipped = protectedRanges(text).map(({ start, end }) => ({ start, end }));
+  for (const match of text.matchAll(/(?:https?:\/\/|www\.)[^\s<]+|gh:[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/[A-Za-z0-9_.-]{1,100}#[0-9]{1,10}/giu)) {
+    skipped.push({ start: match.index, end: match.index + match[0].length });
   }
+  skipped.sort((a, b) => a.start - b.start);
+  let at = 0;
   const found = [];
   for (const match of text.matchAll(/#([0-9]+)/g)) {
     const start = match.index, end = start + match[0].length;
@@ -3032,7 +11344,9 @@ function references(text) {
       continue;
     if (match[1].length > 6 || Number(match[1]) === 0 || word.test(String.fromCodePoint(text.codePointAt(end) ?? 0)))
       continue;
-    if (skipped.some(([a, b]) => a < end && b > start))
+    while (at < skipped.length && skipped[at].end <= start)
+      at++;
+    if (skipped[at]?.start < end)
       continue;
     const prefix = text.slice(Math.max(0, start - 80), start).trimEnd();
     if (/(?:^|[^\p{L}\p{N}])(?:pr|mr|pull request|issue|step)$/iu.test(prefix))
@@ -3072,53 +11386,111 @@ function setRelation(from, to, kind) {
 function mentionLinkOf(value) {
   return isObject(value) && typeof value.item === "string" && ITEM_ID.test(value.item) && (value.kind === "mentions" || value.kind === "mentioned-in");
 }
-function mentionGraph(items) {
-  const live = items.filter((item) => !item.removed);
-  const byNumber = new Map;
-  for (const item of live) {
-    if (item.number !== undefined && !byNumber.has(item.number))
-      byNumber.set(item.number, item);
-  }
-  const graph = new Map;
-  const link = (from, item, kind) => {
-    const list = graph.get(from) ?? [];
-    if (!list.length)
-      graph.set(from, list);
-    list.push({ item, kind });
-  };
-  for (const item of live) {
-    const numbers = new Set([item.body, ...item.notes.map((note) => note.text)].flatMap((text) => references(text).map((ref) => ref.number)));
-    for (const number of numbers) {
-      const other = byNumber.get(number);
-      if (!other || other.id === item.id)
-        continue;
-      link(item.id, other.id, "mentions");
-      link(other.id, item.id, "mentioned-in");
-    }
-  }
-  return graph;
+function mentionIndexOf(given, body, notes) {
+  if (!isObject(given) || !Array.isArray(given.notes) || given.notes.length !== notes.length || !Array.isArray(given.targets) || !given.targets.every(isItemId))
+    return;
+  const ranges = rangesOf(given.body, body);
+  const noteRanges = given.notes.map((ranges, at) => rangesOf(ranges, notes[at].text));
+  return ranges && noteRanges.every((ranges) => ranges !== null) ? { body: ranges, notes: noteRanges, targets: given.targets } : undefined;
 }
-function syncMentions(items) {
-  const graph = mentionGraph(items);
+function targetsOf(body, notes) {
+  return [...new Set([body, ...notes].flatMap((ranges) => ranges.flatMap((range) => range.item ? [range.item] : [])))];
+}
+function mentionSnapshot(item) {
+  return { id: item.id, number: item.number, removed: item.removed, body: item.body, notes: item.notes.slice(), mentionIndex: item.mentionIndex, mentionLinks: item.mentionLinks };
+}
+function syncMentions(items, previous = new Map) {
+  const byNumber = new Map;
+  const byId = new Map(items.map((item) => [item.id, item]));
   for (const item of items) {
-    const links = graph.get(item.id);
-    if (links)
-      item.mentionLinks = links;
-    else
-      delete item.mentionLinks;
+    if (!item.removed && item.number !== undefined && !byNumber.has(item.number))
+      byNumber.set(item.number, item.id);
+  }
+  const newlyAvailable = new Set;
+  for (const [number, id] of byNumber) {
+    const before = previous.get(id);
+    if (!before || before.removed || before.number !== number)
+      newlyAvailable.add(number);
+  }
+  for (const item of items) {
+    const saved = previous.get(item.id);
+    const before = item.mentionIndex && item.mentionIndex !== saved?.mentionIndex ? item : saved ?? item;
+    const index = before.mentionIndex;
+    const unchanged = index && before.body === item.body && before.notes.length === item.notes.length && before.notes.every((note, at) => note.text === item.notes[at].text);
+    if (unchanged && (!newlyAvailable.size || [index.body, ...index.notes].every((ranges) => ranges.every((range) => range.item || !newlyAvailable.has(range.number) || byNumber.get(range.number) === item.id))))
+      continue;
+    const bindings = new Map;
+    for (const range of [index?.body ?? [], ...index?.notes ?? []].flat()) {
+      if (range.item)
+        bindings.set(range.number, range.item);
+    }
+    for (const link of before.mentionLinks ?? []) {
+      const number = byId.get(link.item)?.number;
+      if (link.kind === "mentions" && number !== undefined && !bindings.has(number))
+        bindings.set(number, link.item);
+    }
+    const bind = (ranges) => ranges.map((range) => {
+      const id = range.item ?? bindings.get(range.number) ?? byNumber.get(range.number);
+      return id && id !== item.id && id !== range.item ? { ...range, item: id } : range;
+    });
+    const body = bind(index && before.body === item.body ? index.body : references(item.body));
+    const keptNotes = new Map(before.notes.map((note, at) => [note.text, index?.notes[at]]));
+    const notes = item.notes.map((note) => bind(keptNotes.get(note.text) ?? references(note.text)));
+    item.mentionIndex = { body, notes, targets: targetsOf(body, notes) };
+    delete item.mentionLinks;
   }
 }
 function relationsOf(item, items) {
+  if (item.removed)
+    return [];
   const live = new Map(items.filter((other) => !other.removed).map((other) => [other.id, other]));
-  const backward = [...live.values()].flatMap((other) => (other.relations ?? []).filter((link) => link.item === item.id).map((link) => ({ item: other.id, kind: inverse[link.kind] })));
-  const links = [...item.relations ?? [], ...backward, ...mentionGraph(items).get(item.id) ?? []];
+  const backward = [];
+  for (const other of live.values()) {
+    if (other.id === item.id)
+      continue;
+    for (const link of other.relations ?? []) {
+      if (link.item === item.id)
+        backward.push({ item: other.id, kind: inverse[link.kind] });
+    }
+    if (outgoing(other).includes(item.id))
+      backward.push({ item: other.id, kind: "mentioned-in" });
+  }
+  const links = [
+    ...item.relations ?? [],
+    ...outgoing(item).map((id) => ({ item: id, kind: "mentions" })),
+    ...backward
+  ];
   return links.flatMap(({ item: id, kind }) => {
     const other = live.get(id);
     return other ? [{ id, kind, title: other.title, number: other.number }] : [];
   });
 }
-var word, letters, ranks, inverse;
+function pruneRelations(items, gone) {
+  if (!gone.size)
+    return;
+  for (const item of items) {
+    if (!item.relations)
+      continue;
+    const kept = item.relations.filter((link) => !gone.has(link.item));
+    if (kept.length)
+      item.relations = kept;
+    else
+      delete item.relations;
+  }
+}
+var word, letters, ranks, inverse, isItemId = (value) => typeof value === "string" && ITEM_ID.test(value), rangesOf = (given, text) => {
+  if (!Array.isArray(given))
+    return null;
+  let end = 0;
+  for (const range of given) {
+    if (!isObject(range) || typeof range.start !== "number" || !Number.isSafeInteger(range.start) || range.start < end || typeof range.end !== "number" || !Number.isSafeInteger(range.end) || range.end > text.length || typeof range.number !== "number" || !/^#[0-9]{1,6}$/.test(text.slice(range.start, range.end)) || range.number !== Number(text.slice(range.start + 1, range.end)) || range.item !== undefined && !isItemId(range.item))
+      return null;
+    end = range.end;
+  }
+  return given;
+}, outgoing = (item) => item.mentionIndex?.targets ?? item.mentionTargets ?? [];
 var init_relations = __esm(() => {
+  init_markdown();
   init_store();
   word = /[\p{L}\p{N}_]/u;
   letters = /\p{L}/u;
@@ -3440,13 +11812,16 @@ function itemOf(given, owner) {
   const updated = isObject(given.updated) && typeof given.updated.at === "number" ? { at: given.updated.at, by: whoOf(given.updated.by) ?? created.by } : created;
   const list = (value, keep) => Array.isArray(value) ? value.filter((each) => isObject(each) && keep(each)) : [];
   const unknown = Object.fromEntries(Object.entries(given).filter(([key]) => !KNOWN.has(key)));
+  const body = typeof given.body === "string" ? given.body : "";
+  const notes = list(given.notes, (each) => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null);
+  const mentionIndex = mentionIndexOf(given.mentionIndex, body, notes);
   return {
     ...unknown,
     id: given.id,
     ...typeof given.number === "number" && Number.isInteger(given.number) && given.number > 0 ? { number: given.number } : {},
     owner,
     title: given.title,
-    body: typeof given.body === "string" ? given.body : "",
+    body,
     status: before ? before.status : given.status.slice(0, 40),
     order: typeof given.order === "number" && Number.isFinite(given.order) ? given.order : 0,
     ...typeof given.priority === "string" && PRIORITY_ID.test(given.priority) && given.priority !== "normal" ? { priority: given.priority } : {},
@@ -3454,7 +11829,8 @@ function itemOf(given, owner) {
     ...assigneeOf(given.assignee) ? { assignee: assigneeOf(given.assignee) } : {},
     ...dayOf(given.due) ? { due: dayOf(given.due) } : {},
     ...isObject(given.progress) ? { progress: { ...typeof given.progress.value === "number" ? { value: given.progress.value } : {}, ...typeof given.progress.note === "string" ? { note: given.progress.note } : {} } } : {},
-    notes: list(given.notes, (each) => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null),
+    notes,
+    ...mentionIndex ? { mentionIndex } : {},
     ...Array.isArray(given.events) ? { events: list(given.events, eventKept).slice(-MOST_EVENTS) } : {},
     files: list(given.files, (each) => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
     ...Array.isArray(given.relations) ? { relations: list(given.relations, relationOf) } : {},
@@ -3577,14 +11953,23 @@ function onceEach(queues) {
   }
   return queues;
 }
+function allItems() {
+  const items = readAll().flatMap((queue) => queue.items);
+  if (items.some((item) => !item.mentionIndex))
+    syncMentions(items);
+  return items;
+}
 
 class Book {
   queues = new Map;
   before = new Map;
+  mentionsBefore = new Map;
   constructor() {
     for (const owner of owners())
       this.load(owner);
     onceEach([...this.queues.values()]);
+    for (const item of this.items())
+      this.mentionsBefore.set(item.id, mentionSnapshot(item));
   }
   load(owner) {
     let queue = this.queues.get(owner);
@@ -3621,6 +12006,11 @@ class Book {
     this.load(owner).items.push(item);
   }
   save() {
+    const items = this.items();
+    const live = new Set(items.map((item) => item.id));
+    const gone = new Set([...this.mentionsBefore.keys()].filter((id) => !live.has(id)));
+    pruneRelations(items, gone);
+    syncMentions(items, this.mentionsBefore);
     let any = false;
     const changed = [...this.queues].filter(([owner, queue]) => JSON.stringify(queue.items) !== this.before.get(owner));
     const gained = (owner, queue) => {
@@ -3664,7 +12054,6 @@ function changeQueues(work, now = Date.now(), { onItsOwn = false } = {}) {
       purged.push(...gone.map((item) => item.id));
     }
     const value = work(book);
-    syncMentions(book.items());
     const changed = book.save();
     for (const id of purged)
       fs47.rmSync(path47.join(FILES2, id), { recursive: true, force: true });
@@ -3733,7 +12122,7 @@ var WORK_QUEUE2, QUEUES2, FILES2, LOCK3, YOURS = "usr_you", OWNER2, KEPT_OWNER, 
       return { owner, items: [] };
     throw error;
   }
-}, readAll = () => onceEach(owners().map(readQueueOrNone)), allItems = () => readAll().flatMap((queue) => queue.items), Refusal, QueueSetAside, matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf2 = (item) => path47.join(FILES2, item);
+}, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching2 = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf2 = (item) => path47.join(FILES2, item);
 var init_store = __esm(() => {
   init_relations();
   init_files2();
@@ -3752,7 +12141,7 @@ var init_store = __esm(() => {
   KEPT_REMOVED = 30 * 86400000;
   queueFollowers2 = new Set;
   FILE_NAME = /^(?!\.\.?$)[^/\\\0]{1,200}$/;
-  KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
+  KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "relations", "mentionLinks", "mentionIndex", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
   UnreadableQueue = class UnreadableQueue extends Error {
     owner;
     aside;
@@ -3995,6 +12384,7 @@ function toldItemOf(given, latest = Infinity) {
     linkCount: count(given.linkCount),
     ...typeof given.handedBy === "string" && OWNER2.test(given.handedBy) ? { handedBy: given.handedBy } : {},
     ...Array.isArray(given.handedFrom) ? { handedFrom: given.handedFrom.filter((each) => typeof each === "string" && OWNER2.test(each)).slice(0, 20) } : {},
+    ...Array.isArray(given.mentionTargets) ? { mentionTargets: [...new Set(given.mentionTargets.filter((id) => typeof id === "string" && ITEM_ID.test(id)))] } : {},
     ...source ? { source } : {},
     ...seen ? { seen } : {},
     ...keptIn ? { keptIn } : {},
@@ -4409,7 +12799,7 @@ function grantOn(kept, by, claims, said = {}) {
   return ranges;
 }
 function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(), link = readLink(), restores = [] } = {}) {
-  const claims = rangesOf(numbers);
+  const claims = rangesOf2(numbers);
   if (!claims.length)
     return { granted: [] };
   return changeNumbers((kept) => {
@@ -4418,7 +12808,7 @@ function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(),
       return { granted: grantOn(kept, "self", claims) };
     const highest = claims[claims.length - 1][1];
     kept.leases = kept.leases.map(([from, to]) => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
-    const back = joined(kept.asking?.restores ?? [], overlap(rangesOf(restores), claims)).slice(-MOST_RANGES);
+    const back = joined(kept.asking?.restores ?? [], overlap(rangesOf2(restores), claims)).slice(-MOST_RANGES);
     kept.asking = { id: askID(), count: BLOCK, claims: joined(kept.asking?.claims ?? [], claims).slice(-MOST_RANGES), ...back.length ? { restores: back } : {}, since: now };
     return { granted: null };
   }, file);
@@ -4520,7 +12910,7 @@ function numberWaiting(book, primary, answer, options = {}) {
   used.push(...restoreNumbers(book, now));
   if (used.length)
     changeNumbers((kept) => {
-      kept.used = joined(kept.used ?? [], rangesOf(used)).slice(-MOST_RANGES);
+      kept.used = joined(kept.used ?? [], rangesOf2(used)).slice(-MOST_RANGES);
     }, options.file);
   const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && !item.source && OWNER2.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
   for (const item of waiting) {
@@ -4592,7 +12982,7 @@ function reclaimWaiting(primary = primaryOf(), options = {}) {
   const restores = waiting.flatMap((item) => item.number !== undefined && item.wanted !== undefined && !inRanges(asked, item.wanted) ? [item.wanted] : []);
   if ("self" in primary) {
     const granted = wanted.length ? claimNumbers(primary, wanted, { ...options, restores }).granted : [];
-    changeQueues((book) => numberWaiting(book, primary, { granted: granted ?? [], claimed: rangesOf(wanted) }, options), undefined, { onItsOwn: true });
+    changeQueues((book) => numberWaiting(book, primary, { granted: granted ?? [], claimed: rangesOf2(wanted) }, options), undefined, { onItsOwn: true });
     return true;
   }
   if (wanted.length)
@@ -4684,7 +13074,7 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
       ranges.push([from, to]);
   }
   return ranges;
-}, rangesOf = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto18.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto18.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
@@ -6017,13 +14407,13 @@ var init_outside = __esm(() => {
 
 // box/src/link/rehome/database.ts
 import fs135 from "node:fs";
-import { createRequire as createRequire2 } from "node:module";
+import { createRequire as createRequire3 } from "node:module";
 import path143 from "node:path";
 import { pathToFileURL as pathToFileURL2 } from "node:url";
 function open2(file, readonly = false) {
   let sqlite;
   try {
-    sqlite = createRequire2(import.meta.url)(["bun", "sqlite"].join(":"));
+    sqlite = createRequire3(import.meta.url)(["bun", "sqlite"].join(":"));
   } catch {
     throw new Error("The engine's database can only be rewritten by Kuvo running with the engine's Bun.");
   }
@@ -7551,7 +15941,7 @@ function starredModels(file = MODELS_FILE) {
       return [];
     const out = [];
     for (const each of kept.starred)
-      if (isStarred(each) && !out.some((other) => same2(other, each)))
+      if (isStarred(each) && !out.some((other) => same3(other, each)))
         out.push({ providerID: each.providerID, id: each.id });
     return out;
   } catch {
@@ -7567,9 +15957,9 @@ function setStarred(model, starred, file = MODELS_FILE) {
         kept = read;
     } catch {}
     const was = starredModels(file);
-    const without = was.filter((each) => !same2(each, model));
+    const without = was.filter((each) => !same3(each, model));
     const now = !starred ? without : without.length < was.length ? was : [...was, { providerID: model.providerID, id: model.id }].slice(-MOST3);
-    if (now.length !== was.length || now.some((each, ix) => !same2(each, was[ix])))
+    if (now.length !== was.length || now.some((each, ix) => !same3(each, was[ix])))
       writePrivate(file, JSON.stringify({ ...kept, starred: now }, null, 2));
     return now;
   });
@@ -7581,7 +15971,7 @@ function starredFromKeys(keys) {
     if (at <= 0 || at === key.length - 1)
       continue;
     const each = { providerID: key.slice(0, at), id: key.slice(at + 1) };
-    if (!out.some((other) => same2(other, each)))
+    if (!out.some((other) => same3(other, each)))
       out.push(each);
   }
   return out.slice(-MOST3);
@@ -7598,7 +15988,7 @@ async function* modelsStarredRoute({ request, json }) {
   }
   return yield* json(200, { starred: setStarred(given, given.starred) });
 }
-var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, MOST3 = 200, LONGEST = 300, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST, same2 = (a, b) => a.providerID === b.providerID && a.id === b.id;
+var MODELS_STARRED_ROUTE = "kuvo/models/starred", MODELS_FILE, MOST3 = 200, LONGEST = 300, isStarred = (value) => isObject(value) && typeof value.providerID === "string" && value.providerID !== "" && value.providerID.length <= LONGEST && typeof value.id === "string" && value.id !== "" && value.id.length <= LONGEST, same3 = (a, b) => a.providerID === b.providerID && a.id === b.id;
 var init_models_starred = __esm(() => {
   init_files2();
   init_home();
@@ -9759,12 +18149,12 @@ function since(at, now) {
   const hours = Math.floor(minutes / 60);
   return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)} days ago`;
 }
-function windowName(window) {
-  const minutes = typeof window.minutes === "number" ? window.minutes : undefined;
+function windowName(window2) {
+  const minutes = typeof window2.minutes === "number" ? window2.minutes : undefined;
   const length = minutes === 300 ? "5-hour window" : minutes === 10080 ? "weekly limit" : minutes && minutes >= 40000 && minutes <= 45000 ? "monthly limit" : minutes ? `${minutes >= 1440 ? `${Math.round(minutes / 1440)}-day` : `${Math.round(minutes / 60)}-hour`} window` : "limit";
-  if (typeof window.name === "string" && window.name)
-    return window.name;
-  return typeof window.model === "string" && window.model ? `${window.model} ${length}` : length;
+  if (typeof window2.name === "string" && window2.name)
+    return window2.name;
+  return typeof window2.model === "string" && window2.model ? `${window2.model} ${length}` : length;
 }
 function rowTitle(account) {
   const service = typeof account.agent === "string" ? AGENT_NAMES[account.agent] ?? account.agent : ENGINE_NAMES[String(account.service)] ?? String(account.service);
@@ -9812,20 +18202,20 @@ function describePlanLimits(data, now = Date.now()) {
       continue;
     }
     const windows = Array.isArray(account.windows) ? account.windows.filter(isObject) : [];
-    for (const window of windows) {
-      const resetsAt = typeof window.resetsAt === "number" ? window.resetsAt : undefined;
-      if (window.expired === true) {
-        lines.push(`  - ${windowName(window)}: started over, not read since`);
+    for (const window2 of windows) {
+      const resetsAt = typeof window2.resetsAt === "number" ? window2.resetsAt : undefined;
+      if (window2.expired === true) {
+        lines.push(`  - ${windowName(window2)}: started over, not read since`);
         continue;
       }
       if (resetsAt && resetsAt <= now) {
-        lines.push(`  - ${windowName(window)}: started over at ${resetTime(resetsAt)}, not read since`);
+        lines.push(`  - ${windowName(window2)}: started over at ${resetTime(resetsAt)}, not read since`);
         continue;
       }
-      const used = Math.round(Number(window.used) * 100);
-      const read = typeof window.read === "number" ? `, as of ${since(window.read, now)}` : "";
-      const counted = isObject(window.amount) ? ` (${amount(Number(window.amount.used), window.amount.unit)} of ${amount(Number(window.amount.limit), window.amount.unit)})` : "";
-      lines.push(`  - ${windowName(window)}: ${used}% used${counted}${resetsAt ? `, resets ${until(resetsAt, now)} (${resetTime(resetsAt)})` : ""}${read}`);
+      const used = Math.round(Number(window2.used) * 100);
+      const read = typeof window2.read === "number" ? `, as of ${since(window2.read, now)}` : "";
+      const counted = isObject(window2.amount) ? ` (${amount(Number(window2.amount.used), window2.amount.unit)} of ${amount(Number(window2.amount.limit), window2.amount.unit)})` : "";
+      lines.push(`  - ${windowName(window2)}: ${used}% used${counted}${resetsAt ? `, resets ${until(resetsAt, now)} (${resetTime(resetsAt)})` : ""}${read}`);
     }
     const balance = isObject(account.balance) ? account.balance : undefined;
     if (balance)
@@ -15788,7 +24178,7 @@ init_host_interface();
 init_files2();
 init_home();
 import fs38 from "node:fs";
-import { createRequire } from "node:module";
+import { createRequire as createRequire2 } from "node:module";
 import path40 from "node:path";
 
 // box/src/link/browser/history.ts
@@ -16086,7 +24476,7 @@ var chromeTime = (microseconds) => microseconds / 1000 - FROM_1601;
 async function inDatabase(file, readonly, work) {
   let made;
   try {
-    made = createRequire(import.meta.url)(["bun", "sqlite"].join(":"));
+    made = createRequire2(import.meta.url)(["bun", "sqlite"].join(":"));
   } catch {
     return null;
   }
@@ -20394,7 +28784,7 @@ import path64 from "node:path";
 
 // box/src/shared/git.ts
 import { execFile as execFile3, spawnSync as spawnSync6 } from "node:child_process";
-import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, promises as fsp, readSync, realpathSync } from "node:fs";
+import { accessSync, closeSync, constants as constants2, fstatSync, lstatSync, openSync, promises as fsp, readSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 var EVERY = ["-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "log.showSignature=false"];
 var OWN = [...EVERY, "-c", "safe.bareRepository=explicit", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "credential.helper="];
@@ -20455,7 +28845,7 @@ function found(tool) {
     let place = null;
     for (const folder of (process.env.PATH ?? "").split(":").filter(Boolean)) {
       try {
-        accessSync(join(folder, tool), constants.X_OK);
+        accessSync(join(folder, tool), constants2.X_OK);
         place = realpathSync(join(folder, tool));
         break;
       } catch {}
@@ -20530,8 +28920,8 @@ function built(lead, rest, found) {
 }
 var NOTHING2 = { settings: [], converters: false };
 var MOST_NAMED = 4096;
-var O_NONBLOCK = constants.O_NONBLOCK ?? 0;
-var O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+var O_NONBLOCK = constants2.O_NONBLOCK ?? 0;
+var O_NOFOLLOW = constants2.O_NOFOLLOW ?? 0;
 var places2 = (folder, named) => [folder, resolve(folder, named.replace(/[\r\n]+$/, "")), dirname(dirname(folder))];
 function leadsHome(folder, [own, common, above]) {
   if (!own || !common)
@@ -20548,7 +28938,7 @@ var realOrNull = (where) => {
 function readNamed(file) {
   let fd;
   try {
-    fd = openSync(file, constants.O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    fd = openSync(file, constants2.O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
   } catch (error) {
     return error.code === "ENOENT" ? null : undefined;
   }
@@ -20567,7 +28957,7 @@ function readNamed(file) {
 async function readNamedLater(file) {
   let handle;
   try {
-    handle = await fsp.open(file, constants.O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+    handle = await fsp.open(file, constants2.O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
   } catch (error) {
     return error.code === "ENOENT" ? null : undefined;
   }
@@ -24897,6 +33287,7 @@ init_labels();
 init_statuses();
 
 // box/src/link/work-queue/ops.ts
+init_markdown();
 import fs84 from "node:fs";
 import os9 from "node:os";
 import path88 from "node:path";
@@ -26024,7 +34415,7 @@ var TYPES = {
   ".mov": "video/quicktime"
 };
 var typeOf = (name) => TYPES[path88.extname(name).toLowerCase()] ?? "application/octet-stream";
-var text = (value, most, what) => {
+var text3 = (value, most, what) => {
   if (typeof value !== "string")
     return refuse(`${what} should be text.`);
   if (value.length > most)
@@ -26145,7 +34536,7 @@ function applyFileOps(acting) {
 }
 var openIn = (book, owner) => book.queue(owner).items.filter((item) => !item.removed && !isClosed(item.status) && !(item.source && doneByRead(seenOf(item.source)))).length;
 function addItem2(book, owner, fields, acting, primary, source) {
-  const title = plainName(text(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
+  const title = plainName(text3(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
   if (!title)
     refuse("Say what it is (title), in a line.");
   if (openIn(book, owner) >= MOST_ITEMS)
@@ -26190,13 +34581,35 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
   const placeNow = () => ({ status: item.status, index: book.items().filter((each) => each.id !== item.id && !each.removed && each.status === item.status && each.order < item.order).length });
   const was = placeNow();
   if (fields.title !== undefined) {
-    const title = plainName(text(fields.title, MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
+    const title = plainName(text3(fields.title, MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
     if (!title)
       refuse("A title can't be empty.");
     item.title = title;
   }
   if (fields.body !== undefined)
-    item.body = text(fields.body, MOST_BODY, "The description (body)");
+    item.body = text3(fields.body, MOST_BODY, "The description (body)");
+  if (fields.removeInlineImages !== undefined) {
+    if (!Array.isArray(fields.removeInlineImages) || fields.removeInlineImages.length > MOST_FILES)
+      refuse("Choose pictures to remove and try again.");
+    const images = item.files.filter((file) => typeof file.type === "string" && file.type.startsWith("image/"));
+    const urls = new Set;
+    for (const removal of fields.removeInlineImages) {
+      if (!isObject(removal) || typeof removal.url !== "string" || typeof removal.name !== "string")
+        refuse("Choose pictures to remove and try again.");
+      const { url, name } = removal;
+      const kept = url.match(/^kuvo-attachment:file\/([a-f0-9]{24})$/);
+      const legacy = url.match(/^kuvo-attachment:legacy\/([0-9]{1,3})$/);
+      const draft = url.match(/^kuvo-attachment:draft\/[0-9]+\/([^/]+)$/);
+      let named;
+      try {
+        if (draft)
+          named = decodeURIComponent(draft[1]);
+      } catch {}
+      if (kept && images.some((file) => file.anchor === kept[1] && file.name === name) || legacy && images[Number(legacy[1]) - 1]?.name === name || named === name && images.some((file) => file.name === name))
+        urls.add(url);
+    }
+    item.body = withoutPictures(item.body, urls);
+  }
   if (fields.status !== undefined) {
     const status = statusFor(fields.status);
     if (item.source && isClosed(status))
@@ -26269,7 +34682,7 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
     }
   }
   if (fields.progress_note !== undefined) {
-    const note = fields.progress_note === null ? "" : plainName(text(fields.progress_note, MOST_PROGRESS_NOTE * 2, "progress_note")).slice(0, MOST_PROGRESS_NOTE);
+    const note = fields.progress_note === null ? "" : plainName(text3(fields.progress_note, MOST_PROGRESS_NOTE * 2, "progress_note")).slice(0, MOST_PROGRESS_NOTE);
     item.progress = { ...item.progress ?? {} };
     if (note)
       item.progress.note = note;
@@ -26279,7 +34692,7 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
   if (item.progress && item.progress.value === undefined && item.progress.note === undefined)
     delete item.progress;
   if (fields.note !== undefined) {
-    const note = text(fields.note, MOST_NOTE, "The note").trim();
+    const note = text3(fields.note, MOST_NOTE, "The note").trim();
     if (note)
       item.notes = [...item.notes, { at: now, by: who, text: note }].slice(-MOST_NOTES);
   }
@@ -26301,36 +34714,62 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
   const left = item.files.filter((file) => !gone.has(file.name));
   if (left.length + staged.length > MOST_FILES)
     refuse(`An item keeps ${MOST_FILES} files at most: take some away first (remove).`);
-  for (const file of item.files)
-    if (gone.has(file.name))
-      acting.fileOps.push(() => fs84.rmSync(path88.join(filesOf2(item.id), file.name), { force: true }));
+  const removed = item.files.filter((file) => gone.has(file.name));
   item.files = left;
-  const anchors = new Map;
-  for (const each of staged) {
-    const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
-    const ext = path88.extname(base);
-    let name = base;
-    for (let n = 2;item.files.some((file) => file.name === name); n++)
-      name = `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
-    const anchor = each.clientIndex === undefined ? undefined : crypto31.randomBytes(12).toString("hex");
-    if (anchor && each.clientIndex !== undefined)
-      anchors.set(each.clientIndex, anchor);
-    item.files.push({ name, size: each.size, type: typeOf(name), at: now, ...anchor ? { anchor } : {} });
+  if (staged.length || removed.length)
     acting.fileOps.push(() => {
-      fs84.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-      fs84.renameSync(each.staged, path88.join(filesOf2(item.id), name));
+      const folder = filesOf2(item.id);
+      const reserved = [];
+      const anchors = new Map;
+      const fold = (name) => name.normalize("NFC").toLowerCase();
+      const used = new Set(left.map((file) => fold(file.name)));
+      try {
+        for (const each of staged) {
+          const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
+          const ext = path88.extname(base);
+          fs84.mkdirSync(folder, { recursive: true, mode: 448 });
+          let kept = false;
+          for (let n = 1;n <= 1000; n++) {
+            const name = n === 1 ? base : `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
+            if (used.has(fold(name)))
+              continue;
+            try {
+              fs84.linkSync(each.staged, path88.join(folder, name));
+            } catch (error) {
+              if (error.code === "EEXIST")
+                continue;
+              return refuse("The attachment couldn’t be saved. Check the available space and try again.");
+            }
+            reserved.push(name);
+            used.add(fold(name));
+            const anchor = each.clientIndex === undefined ? undefined : crypto31.randomBytes(12).toString("hex");
+            const file = { name, size: each.size, type: typeOf(name), at: now, ...anchor ? { anchor } : {} };
+            if (each.clientIndex !== undefined)
+              anchors.set(each.clientIndex, file);
+            item.files.push(file);
+            kept = true;
+            break;
+          }
+          if (!kept)
+            refuse("There are too many files with that name. Rename the attachment and try again.");
+        }
+        if (fields.body !== undefined && anchors.size) {
+          item.body = text3(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
+            const file = anchors.get(Number(index));
+            if (!file)
+              return marker;
+            const label = file.name.replace(/[\\[\]]/g, (char) => "\\" + char).replace(/[\r\n]/g, " ");
+            return `![${label}](kuvo-attachment:file/${file.anchor})`;
+          }), MOST_BODY, "The description (body)");
+        }
+      } catch (error) {
+        for (const name of reserved)
+          fs84.rmSync(path88.join(folder, name), { force: true });
+        throw error;
+      }
+      for (const file of removed)
+        fs84.rmSync(path88.join(folder, file.name), { force: true });
     });
-  }
-  if (fields.body !== undefined && anchors.size) {
-    item.body = text(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
-      const anchor = anchors.get(Number(index));
-      const file = anchor && item.files.find((file) => file.anchor === anchor);
-      if (!file)
-        return marker;
-      const label = file.name.replace(/[\\[\]]/g, (char) => "\\" + char).replace(/[\r\n]/g, " ");
-      return `![${label}](kuvo-attachment:file/${anchor})`;
-    }), MOST_BODY, "The description (body)");
-  }
   item.updated = { at: now, by: who };
 }
 function linkSource(item, source, title, body, { who, now }) {
@@ -26376,12 +34815,60 @@ function handItem(book, item, to, who, now) {
 }
 
 // box/src/link/work-queue/hand.ts
+import crypto35 from "node:crypto";
+import fs109 from "node:fs";
+
+// box/src/link/work-queue/attachment-file.ts
+init_store();
+import fs85 from "node:fs";
+import path89 from "node:path";
+var readFlags = fs85.constants.O_RDONLY | fs85.constants.O_NOFOLLOW | fs85.constants.O_NONBLOCK;
+var same2 = (a, b) => a.dev === b.dev && a.ino === b.ino;
+var entry = (file) => fs85.lstatSync(file, { bigint: true });
+function readAttachment(item, name) {
+  if (!ITEM_ID.test(item) || !FILE_NAME.test(name))
+    return null;
+  try {
+    const run = fs85.realpathSync(path89.dirname(WORK_QUEUE2));
+    const queue = path89.join(run, path89.basename(WORK_QUEUE2));
+    const root = path89.join(queue, path89.basename(FILES2));
+    const folder = path89.join(root, item);
+    const parents = [run, queue, root, folder];
+    const before = parents.map(entry);
+    if (before.some((stat) => !stat.isDirectory()))
+      return null;
+    const dir = fs85.openSync(folder, readFlags | fs85.constants.O_DIRECTORY);
+    try {
+      if (!same2(fs85.fstatSync(dir, { bigint: true }), before[before.length - 1]))
+        return null;
+      const file = path89.join(folder, name);
+      const fd = fs85.openSync(file, readFlags);
+      try {
+        const opened = fs85.fstatSync(fd, { bigint: true });
+        if (!opened.isFile() || !same2(opened, entry(file)))
+          return null;
+        if (parents.some((parent, at) => {
+          const after = entry(parent);
+          return !same2(before[at], after) || before[at].ctimeNs !== after.ctimeNs;
+        }))
+          return null;
+        return fs85.readFileSync(fd);
+      } finally {
+        fs85.closeSync(fd);
+      }
+    } finally {
+      fs85.closeSync(dir);
+    }
+  } catch {
+    return null;
+  }
+}
+
+// box/src/link/work-queue/hand.ts
 init_text();
 init_files2();
 init_home();
-import crypto35 from "node:crypto";
-import fs108 from "node:fs";
-import path110 from "node:path";
+import path111 from "node:path";
 
 // box/src/link/letters/tools.ts
 init_home();
@@ -26558,24 +35045,24 @@ async function readConversation(target, session, data, name, signal) {
 init_files2();
 init_home();
 import crypto32 from "node:crypto";
-import fs85 from "node:fs";
-import path89 from "node:path";
+import fs86 from "node:fs";
+import path90 from "node:path";
 init_state();
-var RELAY_DOWN = path89.join(RUN, "relay-down");
+var RELAY_DOWN = path90.join(RUN, "relay-down");
 var DOWN_AFTER = 30000;
 function noteRelay(online, since, now = Date.now()) {
   try {
     if (online)
-      fs85.rmSync(RELAY_DOWN, { force: true });
-    else if (now - since > DOWN_AFTER && !fs85.existsSync(RELAY_DOWN))
+      fs86.rmSync(RELAY_DOWN, { force: true });
+    else if (now - since > DOWN_AFTER && !fs86.existsSync(RELAY_DOWN))
       writePrivate(RELAY_DOWN, "");
   } catch {}
 }
-var offRelay = () => IS_MAC ? !macLink.host?.welcomed : fs85.existsSync(RELAY_DOWN);
+var offRelay = () => IS_MAC ? !macLink.host?.welcomed : fs86.existsSync(RELAY_DOWN);
 function leaveLetter(letter, now = Date.now()) {
   const id = "ltr_" + crypto32.randomBytes(16).toString("base64url");
-  fs85.mkdirSync(SENDING, { recursive: true, mode: 448 });
-  writePrivate(path89.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, text: cutText(letter.text), at: now }));
+  fs86.mkdirSync(SENDING, { recursive: true, mode: 448 });
+  writePrivate(path90.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, text: cutText(letter.text), at: now }));
   if (IS_MAC)
     macSendOutbox();
   return id;
@@ -26585,28 +35072,28 @@ async function letterAnswer(id, signal, { most = LETTER_WAIT, step = 2000, cut }
     const answer = await macLetterAnswer(id, signal, most, cut);
     return "text" in answer && answer.text === null ? null : answer;
   }
-  const file = path89.join(REPLIES, `${id}.json`);
-  const alive = path89.join(REPLIES, `${id}.alive`);
+  const file = path90.join(REPLIES, `${id}.json`);
+  const alive = path90.join(REPLIES, `${id}.alive`);
   const began = Date.now();
   try {
-    fs85.mkdirSync(REPLIES, { recursive: true, mode: 448 });
+    fs86.mkdirSync(REPLIES, { recursive: true, mode: 448 });
     while (Date.now() - began < most && !signal?.aborted) {
-      fs85.writeFileSync(alive, "", { mode: 384 });
+      fs86.writeFileSync(alive, "", { mode: 384 });
       await pause(step, signal);
       if (signal?.aborted)
         break;
       let answer = null;
       try {
-        answer = JSON.parse(fs85.readFileSync(file, "utf8"));
+        answer = JSON.parse(fs86.readFileSync(file, "utf8"));
       } catch {}
       if (!answer)
         continue;
-      fs85.rmSync(file, { force: true });
+      fs86.rmSync(file, { force: true });
       return answer;
     }
-    fs85.writeFileSync(path89.join(REPLIES, `${id}.gaveup`), "", { mode: 384 });
+    fs86.writeFileSync(path90.join(REPLIES, `${id}.gaveup`), "", { mode: 384 });
   } catch {} finally {
-    fs85.rmSync(alive, { force: true });
+    fs86.rmSync(alive, { force: true });
   }
   return null;
 }
@@ -26614,21 +35101,21 @@ async function letterAnswer(id, signal, { most = LETTER_WAIT, step = 2000, cut }
 // box/src/link/letters/limits.ts
 init_files2();
 init_home();
-import fs86 from "node:fs";
-import path90 from "node:path";
+import fs87 from "node:fs";
+import path91 from "node:path";
 var LIMITS2 = {
   messages: { most: 20, within: 600000 },
   sessions: { most: 6, within: 600000 },
   botSessions: { most: 40, within: 600000 }
 };
-var LIMITS_FILE = path90.join(RUN, "tool-limits.json");
-var LIMITS_LOCK = path90.join(RUN, ".tool-limits.lock");
+var LIMITS_FILE = path91.join(RUN, "tool-limits.json");
+var LIMITS_LOCK = path91.join(RUN, ".tool-limits.lock");
 var STARTING_FOR = 120000;
 function changeCounts(now, change, file) {
   return locked(LIMITS_LOCK, () => {
     let counts = {};
     try {
-      counts = JSON.parse(fs86.readFileSync(file, "utf8")) ?? {};
+      counts = JSON.parse(fs87.readFileSync(file, "utf8")) ?? {};
     } catch {}
     for (const kind of Object.keys(LIMITS2)) {
       const byKey = counts[kind] ?? {};
@@ -26707,19 +35194,19 @@ function startedAs(bot, token, session, prompted = false, file = LIMITS_FILE) {
 }
 
 // box/src/link/letters/start.ts
-import fs99 from "node:fs";
-import path100 from "node:path";
+import fs100 from "node:fs";
+import path101 from "node:path";
 
 // box/src/link/engine/chats.ts
 init_home();
-import fs87 from "node:fs";
+import fs88 from "node:fs";
 var chatsReal = null;
 function isChatsFolder(directory) {
   if (typeof directory !== "string" || !directory)
     return false;
   if (directory === CHATS)
     return true;
-  if (!chatsReal && fs87.existsSync(CHATS))
+  if (!chatsReal && fs88.existsSync(CHATS))
     chatsReal = located(CHATS);
   return located(directory) === (chatsReal ?? located(CHATS));
 }
@@ -26781,13 +35268,13 @@ init_text();
 // box/src/link/areas/worktree-records.ts
 init_files2();
 init_home();
-import fs89 from "node:fs";
-import path92 from "node:path";
+import fs90 from "node:fs";
+import path93 from "node:path";
 
 // box/src/link/work/project-trees.ts
-import fs88 from "node:fs";
-import path91 from "node:path";
-var fsp2 = fs88.promises;
+import fs89 from "node:fs";
+import path92 from "node:path";
+var fsp2 = fs89.promises;
 var MOST_READ2 = 4096;
 async function real2(where) {
   await askedAbout([where]);
@@ -26798,19 +35285,19 @@ async function real2(where) {
   }
 }
 async function realishLater(where) {
-  const full = path91.resolve(where);
-  for (let at = full, rest = "";; rest = path91.join(path91.basename(at), rest), at = path91.dirname(at)) {
+  const full = path92.resolve(where);
+  for (let at = full, rest = "";; rest = path92.join(path92.basename(at), rest), at = path92.dirname(at)) {
     const found = await real2(at);
     if (found)
-      return path91.join(found, rest);
-    if (path91.dirname(at) === at)
+      return path92.join(found, rest);
+    if (path92.dirname(at) === at)
       return full;
   }
 }
 async function smallFile(file) {
   let handle;
   try {
-    handle = await fsp2.open(file, fs88.constants.O_RDONLY | fs88.constants.O_NONBLOCK | fs88.constants.O_NOFOLLOW);
+    handle = await fsp2.open(file, fs89.constants.O_RDONLY | fs89.constants.O_NONBLOCK | fs89.constants.O_NOFOLLOW);
     const kind = await handle.stat();
     if (!kind.isFile() || kind.size > MOST_READ2)
       return null;
@@ -26825,20 +35312,20 @@ async function smallFile(file) {
 }
 async function isRepository(git) {
   try {
-    if ((await fsp2.lstat(git)).isSymbolicLink() || !(await fsp2.lstat(path91.join(git, "HEAD"))).isFile())
+    if ((await fsp2.lstat(git)).isSymbolicLink() || !(await fsp2.lstat(path92.join(git, "HEAD"))).isFile())
       return false;
-    return (await fsp2.stat(path91.join(git, "objects"))).isDirectory() && (await fsp2.stat(path91.join(git, "refs"))).isDirectory();
+    return (await fsp2.stat(path92.join(git, "objects"))).isDirectory() && (await fsp2.stat(path92.join(git, "refs"))).isDirectory();
   } catch {
     return false;
   }
 }
 async function namedBack(top) {
-  const named = (await smallFile(path91.join(top, ".git")))?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
-  return named ? real2(path91.resolve(top, named)) : null;
+  const named = (await smallFile(path92.join(top, ".git")))?.match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
+  return named ? real2(path92.resolve(top, named)) : null;
 }
 async function repositoryOf(folder) {
-  for (let at = await realishLater(folder);; at = path91.dirname(at)) {
-    const git = path91.join(at, ".git");
+  for (let at = await realishLater(folder);; at = path92.dirname(at)) {
+    const git = path92.join(at, ".git");
     let kind;
     try {
       kind = await fsp2.lstat(git);
@@ -26847,14 +35334,14 @@ async function repositoryOf(folder) {
       return await isRepository(git) ? { top: at, main: at } : null;
     if (kind?.isFile()) {
       const own = await namedBack(at);
-      if (!own || path91.basename(path91.dirname(own)) !== "worktrees")
+      if (!own || path92.basename(path92.dirname(own)) !== "worktrees")
         return null;
-      const common = path91.dirname(path91.dirname(own));
-      if (path91.basename(common) !== ".git" || !await isRepository(common))
+      const common = path92.dirname(path92.dirname(own));
+      if (path92.basename(common) !== ".git" || !await isRepository(common))
         return null;
-      return (await linkedWorktrees(path91.dirname(common))).includes(at) ? { top: at, main: path91.dirname(common) } : null;
+      return (await linkedWorktrees(path92.dirname(common))).includes(at) ? { top: at, main: path92.dirname(common) } : null;
     }
-    if (kind || path91.dirname(at) === at)
+    if (kind || path92.dirname(at) === at)
       return null;
   }
 }
@@ -26862,8 +35349,8 @@ async function linkedWorktrees(main) {
   const top = await real2(main);
   if (!top)
     return [];
-  const git = path91.join(top, ".git");
-  const trees = path91.join(git, "worktrees");
+  const git = path92.join(top, ".git");
+  const trees = path92.join(git, "worktrees");
   if (!await isRepository(git) || await real2(trees) !== trees)
     return [];
   let names = [];
@@ -26874,14 +35361,14 @@ async function linkedWorktrees(main) {
   }
   const found = [];
   for (const name of names) {
-    const own = path91.join(trees, name);
+    const own = path92.join(trees, name);
     try {
       if (!(await fsp2.lstat(own)).isDirectory() || await real2(own) !== own)
         continue;
-      const gitdir = (await smallFile(path91.join(own, "gitdir")))?.trim();
+      const gitdir = (await smallFile(path92.join(own, "gitdir")))?.trim();
       if (!gitdir)
         continue;
-      const tree = await real2(path91.dirname(path91.resolve(own, gitdir)));
+      const tree = await real2(path92.dirname(path92.resolve(own, gitdir)));
       if (tree && tree !== top && await namedBack(tree) === own)
         found.push(tree);
     } catch {}
@@ -26892,14 +35379,14 @@ async function projectWorktrees(folder) {
   const repository = await repositoryOf(folder);
   if (!repository || repository.top !== repository.main)
     return [];
-  const within = path91.relative(repository.top, await realishLater(folder));
-  return (await linkedWorktrees(repository.main)).map((tree) => path91.join(tree, within));
+  const within = path92.relative(repository.top, await realishLater(folder));
+  return (await linkedWorktrees(repository.main)).map((tree) => path92.join(tree, within));
 }
 async function inProjectWorktree(folder, project) {
   const repository = await repositoryOf(folder);
   if (!repository || repository.top === repository.main)
     return false;
-  const mapped = path91.join(repository.main, path91.relative(repository.top, await realishLater(folder)));
+  const mapped = path92.join(repository.main, path92.relative(repository.top, await realishLater(folder)));
   const home = await realishLater(project);
   return mapped === home || mapped.startsWith(home + "/");
 }
@@ -26950,11 +35437,11 @@ async function lookForTrees() {
 }
 
 // box/src/link/areas/worktree-records.ts
-var WORKTREES_FILE = path92.join(K, "box", "worktrees.json");
-var BRANCH_PREFIX_FILE = path92.join(K, "box", "git.json");
+var WORKTREES_FILE = path93.join(K, "box", "worktrees.json");
+var BRANCH_PREFIX_FILE = path93.join(K, "box", "git.json");
 function readWorktrees() {
   try {
-    const list = JSON.parse(fs89.readFileSync(WORKTREES_FILE, "utf8")).worktrees;
+    const list = JSON.parse(fs90.readFileSync(WORKTREES_FILE, "utf8")).worktrees;
     return Array.isArray(list) ? list.filter((each) => typeof each?.root === "string" && typeof each?.project === "string" && typeof each?.branch === "string") : [];
   } catch {
     return [];
@@ -26962,7 +35449,7 @@ function readWorktrees() {
 }
 function readRemovedWorktrees() {
   try {
-    const removed = JSON.parse(fs89.readFileSync(WORKTREES_FILE, "utf8")).removed;
+    const removed = JSON.parse(fs90.readFileSync(WORKTREES_FILE, "utf8")).removed;
     return isObject(removed) ? Object.fromEntries(Object.entries(removed).filter(([, project]) => typeof project === "string")) : {};
   } catch {
     return {};
@@ -26970,7 +35457,7 @@ function readRemovedWorktrees() {
 }
 function readHandedOver() {
   try {
-    const handed = JSON.parse(fs89.readFileSync(WORKTREES_FILE, "utf8")).handedOver;
+    const handed = JSON.parse(fs90.readFileSync(WORKTREES_FILE, "utf8")).handedOver;
     return isObject(handed) ? Object.fromEntries(Object.entries(handed).filter(([, project]) => typeof project === "string")) : {};
   } catch {
     return {};
@@ -26979,7 +35466,7 @@ function readHandedOver() {
 function worktreeProjects() {
   let kept = {};
   try {
-    kept = JSON.parse(fs89.readFileSync(WORKTREES_FILE, "utf8")) ?? {};
+    kept = JSON.parse(fs90.readFileSync(WORKTREES_FILE, "utf8")) ?? {};
   } catch {}
   const projects = { ...linkedTrees() };
   if (isObject(kept.handedOver)) {
@@ -27004,7 +35491,7 @@ function worktreeProjects() {
 var projectOf = (directory) => worktreeProjects()[directory] ?? directory;
 function readRestorableWorktrees() {
   try {
-    const list = JSON.parse(fs89.readFileSync(WORKTREES_FILE, "utf8")).restorable;
+    const list = JSON.parse(fs90.readFileSync(WORKTREES_FILE, "utf8")).restorable;
     return Array.isArray(list) ? list.filter((each) => typeof each?.root === "string" && typeof each?.project === "string" && typeof each?.branch === "string" && typeof each?.head === "string") : [];
   } catch {
     return [];
@@ -27025,14 +35512,14 @@ var worktreeFollowers = new Set;
 
 // box/src/link/areas/worktrees.ts
 import { spawnSync as spawnSync8 } from "node:child_process";
-import fs91 from "node:fs";
-import path93 from "node:path";
+import fs92 from "node:fs";
+import path94 from "node:path";
 init_home();
 
 // box/src/link/areas/git-words.ts
 init_files2();
 init_home();
-import fs90 from "node:fs";
+import fs91 from "node:fs";
 var GIT_SETTINGS = {
   branchPrefix: ["branch_prefix"],
   commitInstructions: ["commit_instructions"],
@@ -27041,7 +35528,7 @@ var GIT_SETTINGS = {
 var DEFAULT_BRANCH_PREFIX = "kuvo/";
 function readGitFile(file = BRANCH_PREFIX_FILE) {
   try {
-    const kept = JSON.parse(fs90.readFileSync(file, "utf8"));
+    const kept = JSON.parse(fs91.readFileSync(file, "utf8"));
     return isObject(kept) ? kept : {};
   } catch {
     return {};
@@ -27285,10 +35772,10 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     const worktrees = [];
     for (const tree of list) {
       const here = sessions.filter((session) => inside2(session.location?.directory ?? session.directory, tree.root));
-      const entry = { path: tree.root, folder: tree.folder ?? tree.root, project: tree.project, projectName: path93.basename(tree.project), branch: tree.branch, sessions: here.length, working: here.some((session) => active.has(session.id)) };
+      const entry = { path: tree.root, folder: tree.folder ?? tree.root, project: tree.project, projectName: path94.basename(tree.project), branch: tree.branch, sessions: here.length, working: here.some((session) => active.has(session.id)) };
       if (tree.base)
         entry.base = tree.base;
-      if (fs91.existsSync(tree.root)) {
+      if (fs92.existsSync(tree.root)) {
         const status = await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]);
         if (status !== null) {
           entry.uncommitted = status.length > 0;
@@ -27308,7 +35795,7 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     return { status: route.startsWith("kuvo/worktrees") ? 405 : 404, value: {} };
   if (route === "kuvo/worktrees") {
     const project = body?.project;
-    if (typeof project !== "string" || !path93.isAbsolute(project) || !fs91.existsSync(project))
+    if (typeof project !== "string" || !path94.isAbsolute(project) || !fs92.existsSync(project))
       return { status: 400, value: message(`Send the project's folder on this machine as {"project"}.`) };
     if (!engine?.port)
       return { status: 503, value: message("The engine isn't running.") };
@@ -27328,29 +35815,29 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     }
     if (typeof root !== "string")
       return { status: 502, value: message("The engine didn't make it.") };
-    const branch = freeBranch(root, prefix + path93.basename(root));
+    const branch = freeBranch(root, prefix + path94.basename(root));
     if (!branch || gitAsked(root, ["switch", "--quiet", "-c", branch]) === null && gitIn(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== branch) {
       await call(engine, "DELETE", "/api/worktree", { projectID: id, directory: root, force: true }, signal, project).catch(() => {});
       return { status: 502, value: message(prefix ? `A branch starting with “${prefix}” couldn’t be made in this repository. Change the branch prefix in Settings › Git, then try again.` : "Its branch couldn't be made.") };
     }
-    const tree = { project, root, folder: subpath ? path93.join(root, subpath.replace(/\/$/, "")) : root, branch, ...base ? { base } : {}, made: branch, prefix };
+    const tree = { project, root, folder: subpath ? path94.join(root, subpath.replace(/\/$/, "")) : root, branch, ...base ? { base } : {}, made: branch, prefix };
     updateWorktrees((list) => [...list.filter((each) => each.root !== root), tree]);
     return { status: 200, value: tree };
   }
   if (route === "kuvo/worktrees/record") {
     if (body?.removed === true) {
       const folder = body?.folder, project = body?.project;
-      if (typeof folder !== "string" || !path93.isAbsolute(folder) || typeof project !== "string" || !path93.isAbsolute(project) || folder === project)
+      if (typeof folder !== "string" || !path94.isAbsolute(folder) || typeof project !== "string" || !path94.isAbsolute(project) || folder === project)
         return { status: 400, value: message("Send {removed: true, project, folder}.") };
       if (!list.some((each) => (each.folder ?? each.root) === folder || each.root === folder) && !(folder in readRemovedWorktrees()) && !(folder in readHandedOver()))
         updateWorktrees((each) => each, undefined, undefined, { folder, project });
       return { status: 200, value: {} };
     }
     const given = { project: body?.project, root: body?.root, folder: typeof body?.folder === "string" ? body.folder : body?.root, branch: body?.branch, ...typeof body?.base === "string" ? { base: body.base } : {} };
-    const absolute = (folder) => typeof folder === "string" && path93.isAbsolute(folder);
+    const absolute = (folder) => typeof folder === "string" && path94.isAbsolute(folder);
     if (!absolute(given.project) || !absolute(given.root) || !absolute(given.folder) || typeof given.branch !== "string" || !given.branch)
       return { status: 400, value: message("Send {project, root, folder?, branch, base?}.") };
-    if (!fs91.existsSync(given.root))
+    if (!fs92.existsSync(given.root))
       return { status: 404, value: message("That worktree isn't on this machine any more.") };
     updateWorktrees((list) => list.some((each) => each.root === given.root) ? list : [...list, given]);
     return { status: 200, value: {} };
@@ -27364,11 +35851,11 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     return removingInTurn(tree.root, () => removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true, ...body && "was" in body ? { was: body.was } : {} }, engine, signal, bridge));
   return { status: 404, value: {} };
 }
-var removalLocks = lockedIn(path93.join(RUN, "worktree-removals"));
+var removalLocks = lockedIn(path94.join(RUN, "worktree-removals"));
 var removingInTurn = (root, work) => inTurn("worktree-removals", root, work, removalLocks);
 var isArchived2 = (session) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true);
 var folderOf2 = (session) => session.location?.directory ?? session.directory;
-var snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path93.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`;
+var snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path94.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`;
 var dropSnapshot = (project, root, commit) => gitIn(project, ["update-ref", "-d", snapshotRef(root, commit), commit]);
 function snapshot(root, branch) {
   const status = gitIn(root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
@@ -27379,7 +35866,7 @@ function snapshot(root, branch) {
   const gitFolder = gitIn(root, ["rev-parse", "--absolute-git-dir"]);
   if (!gitFolder)
     return;
-  const index = path93.join(gitFolder, "kuvo-snapshot-index");
+  const index = path94.join(gitFolder, "kuvo-snapshot-index");
   const env = { GIT_INDEX_FILE: index };
   try {
     if (gitAsked(root, ["read-tree", "HEAD"], env) === null || gitAsked(root, ["add", "-A"], env) === null)
@@ -27390,13 +35877,13 @@ function snapshot(root, branch) {
       return;
     return commit;
   } finally {
-    fs91.rmSync(index, { force: true });
+    fs92.rmSync(index, { force: true });
   }
 }
 function listedRestorable(tree) {
-  const branchThere = fs91.existsSync(tree.project) && gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
+  const branchThere = fs92.existsSync(tree.project) && gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
   const saved = Boolean(tree.snapshot);
-  const headThere = !branchThere && fs91.existsSync(tree.project) && gitIn(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
+  const headThere = !branchThere && fs92.existsSync(tree.project) && gitIn(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
   const entry = { project: tree.project, root: tree.root, folder: tree.folder ?? tree.root, branch: tree.branch, restorable: branchThere || saved || headThere, saved };
   if (tree.base) {
     entry.base = tree.base;
@@ -27414,8 +35901,8 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
   if ("was" in removal) {
     const was = removal.was;
     const record = readWorktrees().find((each) => each.root === tree.root) ?? null;
-    const status = fs91.existsSync(tree.root) ? gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) : null;
-    const ahead = tree.base && fs91.existsSync(tree.root) ? gitIn(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
+    const status = fs92.existsSync(tree.root) ? gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) : null;
+    const ahead = tree.base && fs92.existsSync(tree.root) ? gitIn(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
     const now = { record, ...status !== null ? { uncommitted: status.length > 0 } : {}, ...ahead !== null && /^\d+$/.test(ahead) ? { ahead: Number(ahead) } : {} };
     if (!isObject(was) || sortedJSON(now) !== sortedJSON(was))
       return { status: 409, value: message(CHANGED_SINCE) };
@@ -27427,7 +35914,7 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
   if (removal.forget && sessions.some((session) => inside2(folderOf2(session), tree.root))) {
     return { status: 409, value: message(`A session works in the worktree of ${tree.branch}, so it stays. Remove it with the session, or in Settings › Worktrees.`) };
   }
-  const gone = !fs91.existsSync(tree.root);
+  const gone = !fs92.existsSync(tree.root);
   if (!removal.discard && !removal.keep && !gone && gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) !== "") {
     return { status: 409, value: message(`The worktree of ${tree.branch} has changes that aren’t committed, so it stays. Commit them, or remove it in Settings › Worktrees, which throws them away.`) };
   }
@@ -27447,7 +35934,7 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
     return { status: 409, value: message(`What isn’t committed in the worktree of ${tree.branch} couldn’t be kept, so it stays.`) };
   try {
     if (gone) {
-      if (fs91.existsSync(tree.project))
+      if (fs92.existsSync(tree.project))
         gitIn(tree.project, ["worktree", "prune"]);
     } else {
       const force = removal.discard || removal.keep;
@@ -27475,9 +35962,9 @@ async function restoreTree(folder, engine, signal, bridge) {
   const tree = readRestorableWorktrees().find((each) => (each.folder ?? each.root) === folder || each.root === folder);
   if (!tree)
     return { status: 404, value: message("It can’t come back any more.") };
-  if (!fs91.existsSync(tree.project))
+  if (!fs92.existsSync(tree.project))
     return { status: 409, value: message("Its project folder is gone.") };
-  if (fs91.existsSync(tree.root) && fs91.readdirSync(tree.root).length)
+  if (fs92.existsSync(tree.root) && fs92.readdirSync(tree.root).length)
     return { status: 409, value: message("Something else is in its folder now.") };
   const saved = tree.snapshot && gitIn(tree.project, ["cat-file", "-e", `${tree.snapshot}^{commit}`]) !== null ? tree.snapshot : undefined;
   const branchThere = gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
@@ -27487,7 +35974,7 @@ async function restoreTree(folder, engine, signal, bridge) {
   gitIn(tree.project, ["worktree", "prune"]);
   const made = branchThere ? spawnGit(tree.project, ["worktree", "add", tree.root, tree.branch]) : spawnGit(tree.project, ["worktree", "add", "-b", tree.branch, tree.root, tree.head]);
   if (made !== null) {
-    if (fs91.existsSync(tree.root))
+    if (fs92.existsSync(tree.root))
       gitIn(tree.project, ["worktree", "remove", "--force", tree.root]);
     if (!branchThere)
       gitIn(tree.project, ["branch", "-D", tree.branch]);
@@ -27588,13 +36075,13 @@ async function sweep(signal, given, givenBridge) {
   if (!orphans.length)
     return;
   for (const tree of orphans)
-    if (tree.snapshot && fs91.existsSync(tree.project))
+    if (tree.snapshot && fs92.existsSync(tree.project))
       dropSnapshot(tree.project, tree.root, tree.snapshot);
   updateWorktrees((list) => list, undefined, (list) => list.filter((each) => !orphans.some((gone) => gone.root === each.root)));
 }
 async function worktreesWhere(directory, engine, signal, projects = readProjects().filter((each) => !each.removed).map((each) => each.directory)) {
   const value = typeof directory === "string" && directory !== "" ? directory : null;
-  const answer = { directory: value, default: path93.join(ENGINE_DATA, "worktree"), home: homeFolder(), projects: [] };
+  const answer = { directory: value, default: path94.join(ENGINE_DATA, "worktree"), home: homeFolder(), projects: [] };
   const ids = new Map;
   if (engine?.port) {
     try {
@@ -27605,24 +36092,24 @@ async function worktreesWhere(directory, engine, signal, projects = readProjects
     } catch {}
   }
   for (const project of projects) {
-    if (!fs91.existsSync(project))
+    if (!fs92.existsSync(project))
       continue;
     const common = await gitLater(project, ["rev-parse", "--git-common-dir"]);
     if (!common)
       continue;
-    const gitFolder = path93.resolve(project, common);
-    if (path93.basename(gitFolder) !== ".git")
+    const gitFolder = path94.resolve(project, common);
+    if (path94.basename(gitFolder) !== ".git")
       continue;
-    const checkout = realOr(path93.dirname(gitFolder));
+    const checkout = realOr(path94.dirname(gitFolder));
     const id = ids.get(checkout);
     if (id === null || id === undefined && !await gitLater(project, ["rev-list", "-n", "1", "--all"]))
       continue;
-    const folder = value === null ? id ? path93.join(answer.default, id.slice(0, 6)) : null : value.startsWith("~/") ? path93.join(answer.home, value.slice(2)) : path93.resolve(checkout, value);
-    const entry = { project, name: path93.basename(project), folder };
+    const folder = value === null ? id ? path94.join(answer.default, id.slice(0, 6)) : null : value.startsWith("~/") ? path94.join(answer.home, value.slice(2)) : path94.resolve(checkout, value);
+    const entry = { project, name: path94.basename(project), folder };
     if (folder) {
       entry.exists = (() => {
         try {
-          return fs91.statSync(folder).isDirectory();
+          return fs92.statSync(folder).isDirectory();
         } catch {
           return false;
         }
@@ -27631,7 +36118,7 @@ async function worktreesWhere(directory, engine, signal, projects = readProjects
         entry.canMake = canMake(folder);
       if (inside2(folder, checkout)) {
         entry.inside = true;
-        entry.ignored = await gitLater(checkout, ["check-ignore", "-q", path93.join(folder, "worktree")]) !== null;
+        entry.ignored = await gitLater(checkout, ["check-ignore", "-q", path94.join(folder, "worktree")]) !== null;
       }
     }
     answer.projects.push(entry);
@@ -27641,9 +36128,9 @@ async function worktreesWhere(directory, engine, signal, projects = readProjects
 }
 function apart(projects, home) {
   const parents = (project) => {
-    const folder = path93.dirname(project);
-    const inHome = folder === home || folder.startsWith(home + path93.sep);
-    const names = (inHome ? folder.slice(home.length) : folder).split(path93.sep).filter(Boolean);
+    const folder = path94.dirname(project);
+    const inHome = folder === home || folder.startsWith(home + path94.sep);
+    const names = (inHome ? folder.slice(home.length) : folder).split(path94.sep).filter(Boolean);
     return (inHome ? ["~", ...names] : names).reverse();
   };
   for (const name of new Set(projects.map((each) => each.name))) {
@@ -27665,20 +36152,20 @@ function apart(projects, home) {
 }
 function realOr(folder) {
   try {
-    return fs91.realpathSync(folder);
+    return fs92.realpathSync(folder);
   } catch {
     return folder;
   }
 }
 function canMake(folder) {
-  for (let at = path93.dirname(folder);; at = path93.dirname(at)) {
+  for (let at = path94.dirname(folder);; at = path94.dirname(at)) {
     try {
-      if (!fs91.statSync(at).isDirectory())
+      if (!fs92.statSync(at).isDirectory())
         return false;
-      fs91.accessSync(at, fs91.constants.W_OK);
+      fs92.accessSync(at, fs92.constants.W_OK);
       return true;
     } catch (error) {
-      if (error?.code !== "ENOENT" || at === path93.dirname(at))
+      if (error?.code !== "ENOENT" || at === path94.dirname(at))
         return false;
     }
   }
@@ -27707,7 +36194,7 @@ async function* worktreesRoute(context) {
 
 // box/src/link/letters/take.ts
 init_text();
-import fs92 from "node:fs";
+import fs93 from "node:fs";
 init_files2();
 init_directory();
 init_known();
@@ -27749,7 +36236,7 @@ function answerAfter(messages, id) {
 function lettersSeen(now) {
   let seen = {};
   try {
-    seen = JSON.parse(fs92.readFileSync(LETTERS_SEEN, "utf8"));
+    seen = JSON.parse(fs93.readFileSync(LETTERS_SEEN, "utf8"));
   } catch {}
   for (const [key, at] of Object.entries(seen))
     if (now - at > (key.startsWith("note:") ? NOTE_MEMORY : LETTER_MEMORY))
@@ -27990,8 +36477,8 @@ init_home();
 
 // box/src/link/work/model-rule.ts
 init_files();
-import fs93 from "node:fs";
-import path94 from "node:path";
+import fs94 from "node:fs";
+import path95 from "node:path";
 init_home();
 var ASK_WAIT = 5000;
 var PLANS = {
@@ -28053,12 +36540,12 @@ function forgetModelNames(restart = false) {
   noted2.clear();
   if (!restart)
     try {
-      fs93.rmSync(NAMES_FILE, { force: true });
+      fs94.rmSync(NAMES_FILE, { force: true });
     } catch {}
 }
 var lastNames = new Map;
 var nameKey = (ref) => `${ref.providerID}\x00${ref.id}`;
-var NAMES_FILE = path94.join(BOX, "model-names.json");
+var NAMES_FILE = path95.join(BOX, "model-names.json");
 var SAVED_MOST = 2000;
 var savedNames;
 var noted2 = new Map;
@@ -28066,7 +36553,7 @@ var saving;
 function namesSaved() {
   const names = new Map;
   try {
-    const read = JSON.parse(fs93.readFileSync(NAMES_FILE, "utf8"));
+    const read = JSON.parse(fs94.readFileSync(NAMES_FILE, "utf8"));
     if (isObject(read) && Array.isArray(read.names)) {
       for (const each of read.names.slice(-SAVED_MOST)) {
         if (Array.isArray(each) && each.length === 3 && each.every((part) => typeof part === "string"))
@@ -28115,7 +36602,7 @@ function saveNames() {
   savedNames = merged;
   const names = [...merged].map(([key, name]) => [...key.split("\x00"), name]);
   try {
-    fs93.mkdirSync(BOX, { recursive: true, mode: 448 });
+    fs94.mkdirSync(BOX, { recursive: true, mode: 448 });
     placeWhole(NAMES_FILE, JSON.stringify({ names }));
   } catch {}
 }
@@ -28465,22 +36952,22 @@ function pickModel(given, effort, from, where = HERE) {
 
 // box/src/link/areas/approval.ts
 init_home();
-import fs98 from "node:fs";
-import path99 from "node:path";
+import fs99 from "node:fs";
+import path100 from "node:path";
 
 // box/src/link/work/reviewer.ts
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
 import { execFile as execFile8 } from "node:child_process";
 import dns from "node:dns/promises";
-import fs95 from "node:fs";
-import path96 from "node:path";
+import fs96 from "node:fs";
+import path97 from "node:path";
 init_text();
 init_files2();
 init_home();
 
 // box/src/link/work/policy.ts
-import fs94 from "node:fs";
-import path95 from "node:path";
+import fs95 from "node:fs";
+import path96 from "node:path";
 function readLine(line, redirects = false) {
   const parts = [];
   let words = [], writes = [], reads = [], word = "", has = false, quote = null, start = 0;
@@ -28608,12 +37095,12 @@ function partsOf2(line) {
 }
 var FILES3 = new Set(["edit", "write", "patch", "multiedit", "read", "list", "glob", "grep"]);
 function realOf(given) {
-  const full = path95.resolve(given);
-  for (let at = full, rest = "";; rest = path95.join(path95.basename(at), rest), at = path95.dirname(at)) {
+  const full = path96.resolve(given);
+  for (let at = full, rest = "";; rest = path96.join(path96.basename(at), rest), at = path96.dirname(at)) {
     try {
-      return path95.join(fs94.realpathSync(at), rest);
+      return path96.join(fs95.realpathSync(at), rest);
     } catch {
-      if (path95.dirname(at) === at)
+      if (path96.dirname(at) === at)
         return full;
     }
   }
@@ -28633,7 +37120,7 @@ function allowRefusal(action, resources, folders, rules, ruleFor, seen, { sandbo
   if (!asked.every((resource) => ruleFor(rules, action, resource) === "allow"))
     return "above";
   if (FILES3.has(action)) {
-    const full = [...asked, ...named].filter((each) => each !== "*" && (path95.isAbsolute(each) || folders.length)).map((each) => path95.resolve(folders[0] ?? "/", each));
+    const full = [...asked, ...named].filter((each) => each !== "*" && (path96.isAbsolute(each) || folders.length)).map((each) => path96.resolve(folders[0] ?? "/", each));
     const outside = full.filter((each) => !folders.some((folder) => within3(realOf(each), realOf(folder))));
     if (outside.some((each) => [each, realOf(each)].some((at) => ruleFor(rules, "external_directory", at) !== "allow")))
       return "above";
@@ -28690,7 +37177,7 @@ function namedPath(word, folder) {
   text = homeWord(text);
   if (!text.includes("/") && !text.startsWith("."))
     return null;
-  return path96.resolve(folder, text);
+  return path97.resolve(folder, text);
 }
 function namedBy(action) {
   if (action.kind === "file")
@@ -28799,7 +37286,7 @@ function ownInside(own, policy) {
   });
 }
 function attachmentsPlace(at) {
-  return /^ses_[A-Za-z0-9_-]{1,120}$/.test(path96.basename(at)) && attachmentRoots().some((root) => realish(root) === path96.dirname(at));
+  return /^ses_[A-Za-z0-9_-]{1,120}$/.test(path97.basename(at)) && attachmentRoots().some((root) => realish(root) === path97.dirname(at));
 }
 function conversationPlace(at) {
   const { inside: holders, shared } = conversationPlaces();
@@ -28894,7 +37381,7 @@ function commandLine2(command, start, policy, own, depth) {
     const program = at < 0 ? "" : nameOf2(part.words[at]);
     const args = part.words.slice(at + 1);
     for (const word of takenAway(program, args, part.words, at)) {
-      const where = realish(path96.resolve(folder, homeWord(word.replace(/^['"]|['"]$/g, ""))));
+      const where = realish(path97.resolve(folder, homeWord(word.replace(/^['"]|['"]$/g, ""))));
       if (deletesHome(where, policy.home))
         return WRECKS_HOME;
     }
@@ -28904,7 +37391,7 @@ function commandLine2(command, start, policy, own, depth) {
       return found;
     if (program === "cd" || program === "pushd") {
       const to = part.words.slice(at + 1).find((word) => !word.startsWith("-"));
-      folder = realish(path96.resolve(folder, homeWord(to ?? "~")));
+      folder = realish(path97.resolve(folder, homeWord(to ?? "~")));
       continue;
     }
     for (const word of part.words.slice(Math.max(at, 0))) {
@@ -29009,7 +37496,7 @@ function commandPersists(command, start, policy, depth) {
       return true;
     if (program === "cd" || program === "pushd") {
       const to = part.words.slice(at + 1).find((word) => !word.startsWith("-"));
-      folder = realish(path96.resolve(folder, homeWord(to ?? "~")));
+      folder = realish(path97.resolve(folder, homeWord(to ?? "~")));
       continue;
     }
     if (WRITERS.has(program))
@@ -29184,7 +37671,7 @@ function commandOwn(command, start, policy, depth) {
       return found;
     if (program === "cd" || program === "pushd") {
       const to = part.words.slice(at + 1).find((word) => !word.startsWith("-"));
-      folder = realish(path96.resolve(folder, homeWord(to ?? "~")));
+      folder = realish(path97.resolve(folder, homeWord(to ?? "~")));
       continue;
     }
     if (WRITERS.has(program)) {
@@ -29193,7 +37680,7 @@ function commandOwn(command, start, policy, depth) {
       const written = copies ? named.slice(-1) : named;
       for (const word of written) {
         const where = pathOf(word, folder);
-        const landed = where && copies && (word.endsWith("/") || fs95.statSync(where, { throwIfNoEntry: false })?.isDirectory()) ? named.slice(0, -1).map((source) => path96.join(where, path96.basename(source))) : [where];
+        const landed = where && copies && (word.endsWith("/") || fs96.statSync(where, { throwIfNoEntry: false })?.isDirectory()) ? named.slice(0, -1).map((source) => path97.join(where, path97.basename(source))) : [where];
         const kind = landed.map((each) => each ? ownAt(each, policy.home) : null).find(Boolean);
         if (kind)
           return kind;
@@ -29311,7 +37798,7 @@ function scriptsOf(command, start) {
   const parts = "unreadable" in line ? command.split(/(?:&&|\|\||[;&|\n])+/).map((text) => ({ words: text.trim().split(/\s+/).filter(Boolean), text })) : line.parts;
   const exists = (file) => {
     try {
-      return fs95.statSync(file).isFile();
+      return fs96.statSync(file).isFile();
     } catch {
       return false;
     }
@@ -29324,7 +37811,7 @@ function scriptsOf(command, start) {
       continue;
     const program = nameOf2(words[at]);
     if (program === "cd" || program === "pushd") {
-      folder = path96.resolve(folder, homeWord(words.slice(at + 1).find((word) => !word.startsWith("-")) ?? "~"));
+      folder = path97.resolve(folder, homeWord(words.slice(at + 1).find((word) => !word.startsWith("-")) ?? "~"));
       continue;
     }
     const inner = innerScript(program, words, at);
@@ -29344,17 +37831,17 @@ function scriptsOf(command, start) {
     else if (RUNNERS.test(program) && !words.slice(at + 1).some((word) => givenInline(program, word)))
       runs = words.slice(at + 1).find((word) => !word.startsWith("-"));
     if (runs) {
-      const file = path96.resolve(folder, homeWord(runs.replace(/^['"]|['"]$/g, "")));
+      const file = path97.resolve(folder, homeWord(runs.replace(/^['"]|['"]$/g, "")));
       files.push(file);
       if (!exists(file))
         missing.push(file);
-      if (downloads.some((each) => path96.resolve(folder, homeWord(each)) === file || path96.basename(each) === path96.basename(file)))
-        unpinned ??= `It runs ${path96.basename(file)}, which it downloads first, so what runs can't be read here.`;
+      if (downloads.some((each) => path97.resolve(folder, homeWord(each)) === file || path97.basename(each) === path97.basename(file)))
+        unpinned ??= `It runs ${path97.basename(file)}, which it downloads first, so what runs can't be read here.`;
     }
     const module = /^python[0-9.]*$/.test(program) && words[at + 1] === "-m" ? words[at + 2] ?? "" : program;
     for (const [pattern, names] of BUILD_FILES)
       if (pattern.test(module))
-        files.push(...names.map((name) => path96.resolve(folder, name)));
+        files.push(...names.map((name) => path97.resolve(folder, name)));
     if (/^(curl|wget)$/.test(program)) {
       downloads.push(...downloadsOf(program, words.slice(at + 1)), ...parts[index].writes ?? []);
       const next = parts[index + 1]?.words;
@@ -29375,7 +37862,7 @@ function scriptsOf(command, start) {
   if (/\b(curl|wget)\b[^;&\n]*\|[^;&\n|]*\|\s*(\S*\/)?(sudo\s+(-\S+\s+)*)?((ba|z|da|fi)?sh|python[0-9.]*|node|bun|deno|ruby|perl|php)\b/.test(command))
     unpinned ??= "It hands a script from the web through another program to run it, so what runs can't be pinned to a copy read here.";
   if ((downloads.length || fetches) && missing.length)
-    unpinned ??= `It downloads something and runs ${path96.basename(missing[0])} from it, so what runs can't be read here first.`;
+    unpinned ??= `It downloads something and runs ${path97.basename(missing[0])} from it, so what runs can't be read here first.`;
   return { files: [...new Set(files.filter(exists))], urls: [...new Set(urls)], ...unpinned ? { unpinned } : {} };
 }
 function isSecret(given, policy) {
@@ -29396,8 +37883,8 @@ async function projectScript(file, text, folders) {
   const at = realish(file);
   if (!folders.some((folder) => exactly(at, realish(folder))))
     return null;
-  const where = path96.dirname(at);
-  const name = path96.basename(at);
+  const where = path97.dirname(at);
+  const name = path97.basename(at);
   if (await gitIn2(where, ["ls-files", "--error-unmatch", "--", name]) === null)
     return null;
   const committed = await gitIn2(where, ["cat-file", "--filters", `HEAD:./${name}`]) ?? await gitIn2(where, ["show", `HEAD:./${name}`]);
@@ -29405,19 +37892,19 @@ async function projectScript(file, text, folders) {
     return null;
   let changed = "";
   if (committed !== text) {
-    fs95.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
-    const copy = path96.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.committed`);
+    fs96.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
+    const copy = path97.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.committed`);
     writePrivate(copy, committed);
     try {
       changed = await gitIn2(where, ["diff", "--no-index", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "--", copy, at], [0, 1]) ?? "";
     } finally {
-      fs95.rmSync(copy, { force: true });
+      fs96.rmSync(copy, { force: true });
     }
     if (!changed)
       return null;
   }
   if (changed.length > MOST_SCRIPT)
-    return `It runs ${path96.basename(file)}, too long to be read whole first, and changed too much since its last commit to show what changed.`;
+    return `It runs ${path97.basename(file)}, too long to be read whole first, and changed too much since its last commit to show what changed.`;
   const label = `${file} (tracked in git, too long to show whole: only its start is shown${changed ? ", then how it differs from its last commit" : ""}; what's past the start, as committed, isn't shown, and the agent may have committed it)`;
   return { name: label, text: changed ? `${cut(text, MOST_SCRIPT)}
 
@@ -29493,15 +37980,15 @@ function readVerdict(answer) {
     return null;
   }
 }
-var REVIEWS_FOLDER = path96.join(BOX, "reviews");
+var REVIEWS_FOLDER = path97.join(BOX, "reviews");
 var KEPT2 = 200;
 var BREAKER = { inRow: 3, inAll: 20 };
-var logFile = (session, folder) => path96.join(folder, `${session.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+var logFile = (session, folder) => path97.join(folder, `${session.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 function reviewLog(session, folder = REVIEWS_FOLDER) {
   try {
     const kept = JSON.parse(textOf(logFile(session, folder)) ?? "");
     if (isObject(kept) && Array.isArray(kept.decisions)) {
-      const places = Array.isArray(kept.places) ? kept.places.filter((each) => typeof each === "string" && path96.isAbsolute(each)) : [];
+      const places = Array.isArray(kept.places) ? kept.places.filter((each) => typeof each === "string" && path97.isAbsolute(each)) : [];
       return {
         decisions: kept.decisions,
         refusedInRow: Number(kept.refusedInRow) || 0,
@@ -29519,8 +38006,8 @@ function shownReviews(log) {
   return { decisions: log.decisions.map(({ key: _, ...shown }) => shown), ...log.paused ? { paused: log.paused } : {}, ...log.seen ? { seen: log.seen } : {} };
 }
 function changeLog(session, folder, change) {
-  fs95.mkdirSync(folder, { recursive: true, mode: 448 });
-  return locked(path96.join(folder, ".lock"), () => {
+  fs96.mkdirSync(folder, { recursive: true, mode: 448 });
+  return locked(path97.join(folder, ".lock"), () => {
     const log = reviewLog(session, folder);
     const value = change(log);
     writePrivate(logFile(session, folder), JSON.stringify(log));
@@ -29636,7 +38123,7 @@ function takeApproval(session, key, now, folder) {
 }
 function forgetReviews(session, folder = REVIEWS_FOLDER) {
   try {
-    fs95.rmSync(logFile(session, folder), { force: true });
+    fs96.rmSync(logFile(session, folder), { force: true });
   } catch {}
 }
 function actionKey(action, scripts = []) {
@@ -29710,8 +38197,8 @@ async function keptPlace(action, policy, own) {
   if (action.kind !== "file" || action.access !== "write" || !action.tool || !action.input)
     return;
   const file = landsAt(action.path);
-  const repository = await inTime(repositoryOf(path96.dirname(file)), null);
-  const place = repository?.top ?? path96.dirname(file);
+  const repository = await inTime(repositoryOf(path97.dirname(file)), null);
+  const place = repository?.top ?? path97.dirname(file);
   const home = own[0] ? realish(own[0]) : null;
   if (home && holds3(place, home))
     return;
@@ -29721,10 +38208,10 @@ async function keptPlace(action, policy, own) {
     return;
   return await keptFromSessions(place, policy) ? undefined : place;
 }
-var pathFolders = () => (process.env.PATH ?? "").split(":").filter((folder) => path96.isAbsolute(folder)).map(realish);
+var pathFolders = () => (process.env.PATH ?? "").split(":").filter((folder) => path97.isAbsolute(folder)).map(realish);
 function holdsRepository(folder) {
   try {
-    return fs95.readdirSync(folder, { withFileTypes: true }).some((each) => each.isDirectory() && fs95.existsSync(path96.join(folder, each.name, ".git")));
+    return fs96.readdirSync(folder, { withFileTypes: true }).some((each) => each.isDirectory() && fs96.existsSync(path97.join(folder, each.name, ".git")));
   } catch (error) {
     return error?.code !== "ENOENT";
   }
@@ -29737,7 +38224,7 @@ function walledForOwn(where, policy = fencePolicy(), own = []) {
 function inLibrary(at, policy) {
   if (!(policy.homeKept ?? []).some((wall) => inside3(at, wall) || holds3(at, wall)))
     return false;
-  return !(policy.homeOpen ?? []).filter((each) => /\/Library\/Mobile Documents$/i.test(each)).some((each) => exceptedIn(at, path96.join(each, "com~apple~CloudDocs")));
+  return !(policy.homeOpen ?? []).filter((each) => /\/Library\/Mobile Documents$/i.test(each)).some((each) => exceptedIn(at, path97.join(each, "com~apple~CloudDocs")));
 }
 var WORKTREE_RECORDS = pathPattern(String.raw`/\.git/worktrees(/|$)`);
 function runsLater(where, policy) {
@@ -29767,11 +38254,11 @@ async function judge(action, context, given, now, folder) {
         continue;
       let text;
       try {
-        text = fs95.readFileSync(file, "utf8");
+        text = fs96.readFileSync(file, "utf8");
       } catch {
-        const stat = fs95.statSync(file, { throwIfNoEntry: false });
+        const stat = fs96.statSync(file, { throwIfNoEntry: false });
         seen.push({ text: `${file}\x00${stat ? `${stat.size}\x00${stat.mtimeMs}` : "none"}` });
-        problem = heldBack(`It runs ${path96.basename(file)}, which couldn't be read first.`, "unread");
+        problem = heldBack(`It runs ${path97.basename(file)}, which couldn't be read first.`, "unread");
         continue;
       }
       seen.push({ text });
@@ -29785,7 +38272,7 @@ async function judge(action, context, given, now, folder) {
           scripts.push(own);
           continue;
         }
-        problem = heldBack(`It runs ${path96.basename(file)}, too long to be read whole first.`, "unread");
+        problem = heldBack(`It runs ${path97.basename(file)}, too long to be read whole first.`, "unread");
         continue;
       }
       scripts.push({ name: file, text });
@@ -29847,12 +38334,12 @@ async function judged(action, context, given, scripts, notes) {
     return { decision: "allow", reason: read.reason, by: "model" };
   return { decision: "refuse", reason: read.reason, by: "model", held: true, why: "reviewer" };
 }
-var FETCHED_FOLDER = path96.join(RUN, "fetched");
+var FETCHED_FOLDER = path97.join(RUN, "fetched");
 var localScripts = () => IN_TEST_FOLDER && process.env.KUVO_TEST_LOCAL_SCRIPTS === "1";
 var FETCH_WITHIN = 20000;
 function clearFetched(folder = FETCHED_FOLDER) {
   try {
-    fs95.rmSync(folder, { recursive: true, force: true });
+    fs96.rmSync(folder, { recursive: true, force: true });
   } catch {}
 }
 function privateHost(url) {
@@ -29936,8 +38423,8 @@ async function fetchScripts(command, folder, urls, given) {
     }
     if (text.length > MOST_FETCHED)
       return fail(`It runs a script from ${oneLine(url, 120)}, too long to be read whole first.`);
-    fs95.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
-    const copy = path96.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.script`);
+    fs96.mkdirSync(FETCHED_FOLDER, { recursive: true, mode: 448 });
+    const copy = path97.join(FETCHED_FOLDER, `${randomBytes2(8).toString("hex")}.script`);
     writePrivate(copy, text);
     fetched.files.push(copy);
     if (!fetchingOf(url).test(fetched.command))
@@ -29953,14 +38440,14 @@ async function fetchScripts(command, folder, urls, given) {
 function forgetFetched(fetched) {
   for (const file of fetched?.files ?? [])
     try {
-      fs95.rmSync(file, { force: true });
+      fs96.rmSync(file, { force: true });
     } catch {}
 }
 
 // box/src/link/work/reviewing.ts
 init_text();
-import fs96 from "node:fs";
-import path97 from "node:path";
+import fs97 from "node:fs";
+import path98 from "node:path";
 init_home();
 var ownEngine = () => {
   try {
@@ -30244,7 +38731,7 @@ async function takeUpWaitingAsks(source, sessions, signal, place) {
     await reviewPermission(source, { type: "permission.asked", data: { id: each.id, sessionID: each.asker, action: each.action } }, signal, undefined, place).catch(() => null);
   }
 }
-var attachedOf = (session) => attachmentRoots().map((root) => path97.join(root, session));
+var attachedOf = (session) => attachmentRoots().map((root) => path98.join(root, session));
 async function ownFolders(at, withTrees = true) {
   const folder = at.data.location?.directory;
   const folders = typeof folder === "string" ? [folder, commandTemporary(folder)].filter((each) => Boolean(each)) : [];
@@ -30334,7 +38821,7 @@ function changedBy(seen, folder) {
   };
   for (const [key, value] of Object.entries(seen.input))
     walk(value, key, 0);
-  return named.map(({ raw, folder: asFolder }) => ({ raw, path: path97.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder())), folder: asFolder }));
+  return named.map(({ raw, folder: asFolder }) => ({ raw, path: path98.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder())), folder: asFolder }));
 }
 var PATCHING = new Set(["patch", "apply_patch", "applypatch"]);
 var PATH_KEY = /path|file|dir|folder|destination|save_?as|^(dest|dst|src|source|from|to|target|output|out|location|cwd|workdir|movedto|root|uri|url|name)$/i;
@@ -30342,14 +38829,14 @@ var WRITING = new Set(["write", "edit", "multiedit", "patch", "apply_patch", "ap
 var plainName2 = (raw) => raw === raw.normalize("NFC") && raw.toUpperCase().toLowerCase() === raw.toLowerCase();
 var UNPLAIN = /[\x00-\x1f\x7f\u0085\u2028\u2029\\]|\p{Default_Ignorable_Code_Point}/u;
 function plainlyIn(file, folder, asFolder = false) {
-  if (!path97.isAbsolute(file) || file.split("/").includes(".."))
+  if (!path98.isAbsolute(file) || file.split("/").includes(".."))
     return null;
-  const parts = path97.resolve(file).split("/");
+  const parts = path98.resolve(file).split("/");
   for (let top = 1;top <= parts.length; top++) {
     const named = parts.slice(0, top).join("/") || "/";
     let real;
     try {
-      real = fs96.realpathSync(named);
+      real = fs97.realpathSync(named);
     } catch {
       return null;
     }
@@ -30360,7 +38847,7 @@ function plainlyIn(file, folder, asFolder = false) {
     for (let at = top;at < parts.length; at++) {
       let kind;
       try {
-        kind = fs96.lstatSync(parts.slice(0, at + 1).join("/"));
+        kind = fs97.lstatSync(parts.slice(0, at + 1).join("/"));
       } catch (error) {
         if (error?.code === "ENOENT")
           break;
@@ -30373,13 +38860,13 @@ function plainlyIn(file, folder, asFolder = false) {
       if (asDirectory ? !kind.isDirectory() : !kind.isFile() || kind.nlink !== 1)
         return null;
     }
-    return path97.join(folder, ...parts.slice(top));
+    return path98.join(folder, ...parts.slice(top));
   }
   return null;
 }
 function within4(file, folder) {
-  const inside = path97.relative(folder, file);
-  return inside === "" || !inside.startsWith("..") && !path97.isAbsolute(inside);
+  const inside = path98.relative(folder, file);
+  return inside === "" || !inside.startsWith("..") && !path98.isAbsolute(inside);
 }
 async function answerPermission(source, id, sessionID, signal, found) {
   let { permissions } = await asksIn(source, sessionID, signal);
@@ -30413,14 +38900,14 @@ async function answerPermission(source, id, sessionID, signal, found) {
     return null;
   }
   const given = seen && [seen.input.filePath, seen.input.file_path, seen.input.notebook_path, seen.input.path, seen.input.file].find((each) => typeof each === "string" && each !== "");
-  const file = given ? path97.resolve(folder, given === "~" ? homeFolder() : given.startsWith("~/") ? path97.join(homeFolder(), given.slice(2)) : given) : undefined;
-  const named = permission.resources.filter((each) => each !== "*").map((each) => path97.resolve(folder, each.replace(/^~(?=\/|$)/, homeFolder()).replace(/\/\*$/, "") || "/"));
+  const file = given ? path98.resolve(folder, given === "~" ? homeFolder() : given.startsWith("~/") ? path98.join(homeFolder(), given.slice(2)) : given) : undefined;
+  const named = permission.resources.filter((each) => each !== "*").map((each) => path98.resolve(folder, each.replace(/^~(?=\/|$)/, homeFolder()).replace(/\/\*$/, "") || "/"));
   const actions = seen && file ? [{ kind: "file", path: file, access: READING.has(seen.tool.toLowerCase()) ? "read" : "write", folder, tool: seen.tool, input: seen.input }] : named.length ? named.map((each) => ({ kind: "file", path: each, access: "write", folder })) : [{ kind: "tool", tool: seen?.tool || "work outside its folder", args: seen?.input ?? { asked: permission.resources }, folder }];
   const readsOwn = [commandTemporary(folder), ...[at.data.id, at.data.parentID].filter((each) => typeof each === "string").flatMap(attachedOf)].filter((each) => Boolean(each));
   const ownReads = (within) => actions.every((action) => action.kind === "file" && action.access === "read" && OWN_READING.has(String(action.tool).toLowerCase()) && readsOwn.some((place) => within(action.path, place)));
   const ownByName = ownReads((file, place) => {
-    const inside = path97.relative(place, path97.resolve(file));
-    return inside === "" || !inside.startsWith("..") && !path97.isAbsolute(inside);
+    const inside = path98.relative(place, path98.resolve(file));
+    return inside === "" || !inside.startsWith("..") && !path98.isAbsolute(inside);
   });
   if (!ownByName && !inAuto(at)) {
     try {
@@ -30431,7 +38918,7 @@ async function answerPermission(source, id, sessionID, signal, found) {
   }
   const reads = Boolean(seen && file && seen.tool.toLowerCase() === "read");
   if (reads)
-    await askedAbout([folder, path97.resolve(file)]);
+    await askedAbout([folder, path98.resolve(file)]);
   const alikes = reads ? [...new Map([...lookalikesOf(file), ...lookalikesOf(landsAt(file))].map((each) => [landsAt(each), each])).values()] : [];
   actions.push(...alikes.map((each) => ({ ...actions[0], path: each })));
   const reply = async (body, decided) => {
@@ -30463,7 +38950,7 @@ async function answerPermission(source, id, sessionID, signal, found) {
   const trees = typeof folder === "string" ? await projectTrees(folder) : [];
   const policy = fencePolicy();
   const places = [...own.map(foundAt), ...trees];
-  const resolve = (raw) => path97.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder()));
+  const resolve = (raw) => path98.resolve(folder, raw.replace(/^~(?=\/|$)/, homeFolder()));
   const resources = permission.resources.map((raw) => ({ raw, path: resolve(raw.replace(/\/\*$/, "") || "/"), folder: raw.endsWith("/*") ? true : null }));
   const changes = [
     ...resources,
@@ -30502,36 +38989,36 @@ async function answerPermission(source, id, sessionID, signal, found) {
 
 // box/src/link/work/full.ts
 init_home();
-import fs97 from "node:fs";
-import path98 from "node:path";
-var FULL_ACCESS_FOLDER = path98.join(RUN, "fence", "full");
+import fs98 from "node:fs";
+import path99 from "node:path";
+var FULL_ACCESS_FOLDER = path99.join(RUN, "fence", "full");
 var named4 = (session) => /^ses_[A-Za-z0-9_]+$/.test(session);
 function markFullAccess(session, on, root = session, folder = FULL_ACCESS_FOLDER) {
   if (!named4(session))
     return;
-  const file = path98.join(folder, session);
+  const file = path99.join(folder, session);
   try {
     if (!on)
-      return fs97.rmSync(file, { force: true });
-    fs97.mkdirSync(folder, { recursive: true, mode: 448 });
-    fs97.writeFileSync(file, named4(root) ? root : session, { mode: 384 });
+      return fs98.rmSync(file, { force: true });
+    fs98.mkdirSync(folder, { recursive: true, mode: 448 });
+    fs98.writeFileSync(file, named4(root) ? root : session, { mode: 384 });
   } catch {}
 }
-var markedFullAccess = (session, folder = FULL_ACCESS_FOLDER) => named4(session) && fs97.existsSync(path98.join(folder, session));
+var markedFullAccess = (session, folder = FULL_ACCESS_FOLDER) => named4(session) && fs98.existsSync(path99.join(folder, session));
 function markConversation(root, on, folder = FULL_ACCESS_FOLDER) {
   markFullAccess(root, on, root, folder);
   if (on)
     return;
   let names = [];
   try {
-    names = fs97.readdirSync(folder);
+    names = fs98.readdirSync(folder);
   } catch {}
   for (const name of names) {
     if (!named4(name) || name === root)
       continue;
     try {
-      if (fs97.readFileSync(path98.join(folder, name), "utf8") === root)
-        fs97.rmSync(path98.join(folder, name), { force: true });
+      if (fs98.readFileSync(path99.join(folder, name), "utf8") === root)
+        fs98.rmSync(path99.join(folder, name), { force: true });
     } catch {}
   }
 }
@@ -30778,7 +39265,7 @@ function keepApprovals(engine = ownEngine2, bridge = bridgeTarget, every = (roun
   setInterval(round, 2000).unref?.();
 }) {
   try {
-    fs98.rmSync(path99.join(BOX, "tell-auto.json"), { force: true });
+    fs99.rmSync(path100.join(BOX, "tell-auto.json"), { force: true });
   } catch {}
   try {
     approvalsSince();
@@ -30948,7 +39435,7 @@ var ownName = () => plainName(IS_MAC ? macLink.config?.name : readLink()?.name) 
 var takesNoWork = () => `${ownName()} doesn't take work from your other computers. Ask the user to allow it in Settings › Permissions on ${ownName()}.`;
 var SEAT = "Not from a group chat: talk it through here; the work is handed out after the wrap-up.";
 var seatRefusal = () => ({ status: 403, message: SEAT });
-var isBotFolder = (folder) => folder.startsWith(path100.resolve(BOTS) + "/");
+var isBotFolder = (folder) => folder.startsWith(path101.resolve(BOTS) + "/");
 function rulesFor(approval, parent, folders, held = []) {
   const own = Array.isArray(parent?.permissions) ? parent.permissions.filter((rule) => !isFolderRule(rule) || rule.resource.includes("/bots/bot_")) : [];
   return approvalRules(approval, [...own, ...projectFolderRules(folders, own)], held);
@@ -30958,12 +39445,12 @@ function projectOf3(folder) {
     return null;
   const directory = projectOf(folder);
   const known = readProjects().find((each) => each.directory === directory);
-  if (!known && directory === folder && fs99.existsSync(PROJECTS_FILE)) {
+  if (!known && directory === folder && fs100.existsSync(PROJECTS_FILE)) {
     try {
       changeProjects((projects) => projects.some((each) => each.directory === directory) ? projects : [{ directory, folders: [], addedByBox: true }, ...projects]);
     } catch {}
   }
-  return { name: known?.name ?? path100.basename(directory), folders: directory !== folder ? [] : known?.folders ?? [] };
+  return { name: known?.name ?? path101.basename(directory), folders: directory !== folder ? [] : known?.folders ?? [] };
 }
 async function keptAs(folder) {
   const projects = readProjects().filter((each) => !each.removed);
@@ -30973,7 +39460,7 @@ async function keptAs(folder) {
   const at = realish(folder);
   return projects.find((each) => realish(each.directory) === at)?.directory ?? projects.find((each) => each.folders.some((other) => realish(other) === at))?.directory ?? null;
 }
-var projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path100.basename(directory);
+var projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path101.basename(directory);
 function filedOf(session) {
   const filed = session?.metadata?.kuvo?.filed;
   return isObject(filed) && typeof filed.folder === "string" && typeof filed.project === "string" ? { folder: filed.folder, project: filed.project } : null;
@@ -30981,10 +39468,10 @@ function filedOf(session) {
 function findProject(named) {
   const written = named.trim().replace(/^~(?=$|\/)/, homeFolder());
   const projects = readProjects().filter((each) => !each.removed);
-  const found = projects.find((each) => each.directory === written) ?? projects.find((each) => (each.name ?? path100.basename(each.directory)).toLowerCase() === written.toLowerCase());
-  return found ? { directory: found.directory, name: found.name ?? path100.basename(found.directory) } : null;
+  const found = projects.find((each) => each.directory === written) ?? projects.find((each) => (each.name ?? path101.basename(each.directory)).toLowerCase() === written.toLowerCase());
+  return found ? { directory: found.directory, name: found.name ?? path101.basename(found.directory) } : null;
 }
-var projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path100.basename(each.directory)).slice(0, 12);
+var projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path101.basename(each.directory)).slice(0, 12);
 async function inProject(folder, directory) {
   await askedAbout([folder, directory]);
   const at = realish(folder);
@@ -31042,16 +39529,16 @@ async function startSession(given, by, place) {
         ...readWorktrees().map((each) => each.folder ?? each.root),
         ...parentFolder ? [parentFolder] : []
       ];
-      if (path100.isAbsolute(full))
+      if (path101.isAbsolute(full))
         await askedAbout([full, ...by ? oursGiven : []]);
       let isFolder = false;
       try {
-        isFolder = fs99.statSync(full).isDirectory();
+        isFolder = fs100.statSync(full).isDirectory();
       } catch {}
-      if (!path100.isAbsolute(full) || !isFolder)
+      if (!path101.isAbsolute(full) || !isFolder)
         return no(400, `${written} isn't a folder on ${HERE}. Give a full path to one.`);
       const ours = by ? oursGiven.map(realish) : [];
-      const at = by ? fs99.realpathSync(full) : full;
+      const at = by ? fs100.realpathSync(full) : full;
       const bridgeNow = place.bridge?.() ?? null;
       const fullAccess = remote ? effectiveApproval(remote.approval).approval === "fullAccess" : Boolean(by?.place && approvalOf(by.place.data, { agents: Boolean(bridgeNow && by.place.target.port === bridgeNow.port), bot: Boolean(botOfConversation(by.session) ?? worksFor(by.place.data)) }).effective === "fullAccess");
       const kept = by && !fullAccess && !ours.includes(at) ? await keptFromSessions(at) : null;
@@ -31188,7 +39675,7 @@ async function startSession(given, by, place) {
       giveBack();
       return no(400, "A chat has no worktree: give a project.");
     }
-    const before = place.tree && fs99.existsSync(place.tree.folder) ? place.tree : null;
+    const before = place.tree && fs100.existsSync(place.tree.folder) ? place.tree : null;
     if (before) {
       folder = before.folder;
       madeTree = before.root;
@@ -31199,7 +39686,7 @@ async function startSession(given, by, place) {
       const tree = made.value;
       if (made.status !== 200 || typeof tree.folder !== "string") {
         giveBack();
-        return no(made.status === 409 ? 400 : 502, `Couldn't make a worktree of ${path100.basename(project)}: ${String(tree.message ?? "it failed")}`);
+        return no(made.status === 409 ? 400 : 502, `Couldn't make a worktree of ${path101.basename(project)}: ${String(tree.message ?? "it failed")}`);
       }
       folder = tree.folder;
       madeTree = typeof tree.root === "string" ? tree.root : null;
@@ -31476,7 +39963,7 @@ function notifyUserTool(caller, args, now = Date.now(), telling = tellingNow) {
 
 // box/src/link/vault/who.ts
 init_platform();
-import path101 from "node:path";
+import path102 from "node:path";
 async function sessionAt(targets, id) {
   for (const target of targets) {
     try {
@@ -31518,7 +40005,7 @@ async function callerOf(session, readEngine, readBridge) {
     root,
     ...current?.metadata?.kuvo?.autopilot === true ? { autopilot: true } : {},
     ...current?.title ? { sessionName: current.title } : {},
-    ...folder ? { folder: path101.resolve(folder) } : {},
+    ...folder ? { folder: path102.resolve(folder) } : {},
     ...bot ? { bot: bot.id, botName: bot.name } : {},
     ...seat || unsure ? { seat: true, ...typeof seat?.group === "string" && seat.group ? { group: seat.group } : {} } : {}
   };
@@ -31586,7 +40073,7 @@ function grantFor(item, caller, grants = readGrants()) {
   for (const grant of grants) {
     if (grant.item !== item.id)
       continue;
-    const fits = grant.who.everyone || grant.who.bot && grant.who.bot === caller.bot || grant.who.project && caller.folder && (caller.folder === grant.who.project || caller.folder.startsWith(grant.who.project + path101.sep));
+    const fits = grant.who.everyone || grant.who.bot && grant.who.bot === caller.bot || grant.who.project && caller.folder && (caller.folder === grant.who.project || caller.folder.startsWith(grant.who.project + path102.sep));
     if (!fits)
       continue;
     if (grant.how === "own" && !caller.seat)
@@ -31597,8 +40084,8 @@ function grantFor(item, caller, grants = readGrants()) {
 }
 
 // box/src/link/work/tools.ts
-import fs100 from "node:fs";
-import path102 from "node:path";
+import fs101 from "node:fs";
+import path103 from "node:path";
 init_home();
 var onBridge = (target) => {
   try {
@@ -31837,8 +40324,8 @@ async function makeProjectTool(caller, args, { signal, wait, every } = {}) {
   const place = named ?? projectPlace(name);
   const listed = place ? readProjects().find((each) => each.directory === place && !each.removed) : null;
   if (listed)
-    return refused2(`There's a project at ${shownPath(place)} already: ${listed.name ?? path102.basename(place)}. Start sessions in it with start_session.`);
-  if (place && fs100.existsSync(place) && !isEmptyFolder(place))
+    return refused2(`There's a project at ${shownPath(place)} already: ${listed.name ?? path103.basename(place)}. Start sessions in it with start_session.`);
+  if (place && fs101.existsSync(place) && !isEmptyFolder(place))
     return refused2(`There's a folder at ${shownPath(place)} already, with files in it. ${named ? `To work on what's there, start sessions in it with start_session (folder: "${shownPath(place)}").` : "Pick another name."}`);
   const asker = { session: caller.session, name: bot?.name ?? caller.name, ...bot ? { bot: bot.bot } : {} };
   const action = clone ? "cloneProject" : "makeProject";
@@ -31876,7 +40363,7 @@ function listProjectsTool(where = HERE) {
     return said2(`There are no projects on ${where} yet.${folder}`);
   const lines = projects.slice(0, 60).map((each) => {
     const git = gitIn(each.directory, ["rev-parse", "--is-inside-work-tree"]) === "true" ? "git" : "not git";
-    return `- ${each.name ?? path102.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`;
+    return `- ${each.name ?? path103.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`;
   });
   return said2(`Projects on ${where}:
 ${lines.join(`
@@ -31930,8 +40417,8 @@ init_reach();
 
 // box/src/link/letters/start-call.ts
 init_text();
-import fs101 from "node:fs";
-import path103 from "node:path";
+import fs102 from "node:fs";
+import path104 from "node:path";
 init_files2();
 init_home();
 init_directory();
@@ -31944,7 +40431,7 @@ var SESSION5 = /^ses_[A-Za-z0-9]{1,60}$/;
 var MOST_HELD = 300;
 var START_WAIT = 45000;
 var rule = (given) => isObject(given) && typeof given.action === "string" && typeof given.resource === "string" && typeof given.effect === "string" && given.effect !== "" ? { action: given.action.slice(0, 200), resource: given.resource.slice(0, 2000), effect: given.effect.slice(0, 40) } : null;
-var text2 = (value, most) => typeof value === "string" ? value.slice(0, most) : "";
+var text4 = (value, most) => typeof value === "string" ? value.slice(0, most) : "";
 function startAsOfMail(given) {
   if (!isObject(given) || !isApproval(given.approval) || !Array.isArray(given.held) || given.held.length > MOST_HELD || !Array.isArray(given.line))
     return null;
@@ -31954,7 +40441,7 @@ function startAsOfMail(given) {
   const line = given.line.filter((each) => typeof each === "string" && SESSION5.test(each)).slice(-20);
   if (line.length !== given.line.length || !line.length)
     return null;
-  const model = isObject(given.model) && typeof given.model.providerID === "string" && typeof given.model.id === "string" ? { providerID: text2(given.model.providerID, 120), id: text2(given.model.id, 200), ...typeof given.model.variant === "string" ? { variant: text2(given.model.variant, 60) } : {} } : null;
+  const model = isObject(given.model) && typeof given.model.providerID === "string" && typeof given.model.id === "string" ? { providerID: text4(given.model.providerID, 120), id: text4(given.model.id, 200), ...typeof given.model.variant === "string" ? { variant: text4(given.model.variant, 60) } : {} } : null;
   const works = isObject(given.works) && typeof given.works.bot === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.works.bot) && typeof given.works.name === "string" ? { bot: given.works.bot, name: plainName(given.works.name).slice(0, 100) || "a bot" } : null;
   const depth = typeof given.depth === "number" && Number.isInteger(given.depth) && given.depth >= 1 ? Math.min(given.depth, 50) : 1;
   const homes = {};
@@ -32124,11 +40611,11 @@ async function startElsewhere(peer, args, caller, lead, place, callPeer) {
   return no(`Couldn't confirm the session started on ${name}: ${why}. It may still have started, and if it did you'll hear as a message${outcome.away === AWAY_WORDS ? ` once ${name} is back` : ""}. Check with list_sessions before you start it again.`);
 }
 var AWAY_WORDS = "it may be asleep, off or offline";
-var CALLS = path103.join(RUN, "calls");
-var journalFile2 = (id) => path103.join(CALLS, `${id}.json`);
+var CALLS = path104.join(RUN, "calls");
+var journalFile2 = (id) => path104.join(CALLS, `${id}.json`);
 function readJournal2(id) {
   try {
-    const kept = JSON.parse(fs101.readFileSync(journalFile2(id), "utf8"));
+    const kept = JSON.parse(fs102.readFileSync(journalFile2(id), "utf8"));
     if (!isObject(kept) || kept.id !== id)
       return null;
     if (isObject(kept.making) && "target" in kept.making) {
@@ -32141,7 +40628,7 @@ function readJournal2(id) {
   }
 }
 var keepJournal = (journal) => {
-  fs101.mkdirSync(CALLS, { recursive: true, mode: 448 });
+  fs102.mkdirSync(CALLS, { recursive: true, mode: 448 });
   writePrivate(journalFile2(journal.id), JSON.stringify(journal));
 };
 var startsRunning = new Set;
@@ -32336,7 +40823,7 @@ async function resumeStarts(answer, now = Date.now(), places = { readEngine: rea
         }
       }
       if (now - journal.at > NOTE_MEMORY)
-        fs101.rmSync(journalFile2(journal.id), { force: true });
+        fs102.rmSync(journalFile2(journal.id), { force: true });
       continue;
     }
     if (startsRunning.has(journal.id))
@@ -32420,48 +40907,59 @@ function noteLineHomes(homes, line, at = Date.now()) {
 
 // box/src/link/letters/own-tools.ts
 import { execFile as execFile9 } from "node:child_process";
-import fs107 from "node:fs";
+import fs108 from "node:fs";
 import os10 from "node:os";
-import path109 from "node:path";
+import path110 from "node:path";
 
 // box/src/link/bots/edit.ts
 init_text();
-import fs106 from "node:fs";
-import path108 from "node:path";
+import fs107 from "node:fs";
+import path109 from "node:path";
 
 // box/src/link/areas/carry.ts
-import fs103 from "node:fs";
-import path105 from "node:path";
+import fs104 from "node:fs";
+import path106 from "node:path";
 init_files2();
 init_home();
 
 // box/src/link/work-queue/moves.ts
 init_labels();
 init_statuses();
-import fs102 from "node:fs";
-import path104 from "node:path";
+import fs103 from "node:fs";
+import path105 from "node:path";
+init_relations();
 init_store();
 function packWorkQueues(owners) {
-  const items = owners.flatMap((owner) => OWNER2.test(owner) ? readQueueSettingAside(owner).items : readKeptQueue(owner)?.items ?? []);
+  const wanted = new Set(owners);
+  for (const owner of wanted)
+    if (OWNER2.test(owner))
+      readQueueSettingAside(owner);
+  const items = allItems().filter((item) => wanted.has(item.owner));
+  for (const owner of wanted)
+    if (!OWNER2.test(owner))
+      items.push(...readKeptQueue(owner)?.items ?? []);
   if (!items.length)
     return null;
+  const travelling = new Set(items.map((item) => item.id));
+  const split = new Set(items.flatMap((item) => (item.relations ?? []).map((link) => link.item)).filter((id) => !travelling.has(id)));
+  pruneRelations(items, split);
   const used = new Set(items.flatMap((item) => item.labels));
   return {
     items,
     labels: labels().filter((each) => used.has(each.id)),
-    withFiles: items.filter((item) => item.files.length && fs102.existsSync(filesOf2(item.id))).map((item) => item.id)
+    withFiles: items.filter((item) => item.files.length && fs103.existsSync(filesOf2(item.id))).map((item) => item.id)
   };
 }
 function stageFiles2(carried, staging) {
   if (!carried?.withFiles.length)
     return false;
   for (const id of carried.withFiles)
-    fs102.cpSync(filesOf2(id), path104.join(staging, "work-queue", id), { recursive: true });
+    fs103.cpSync(filesOf2(id), path105.join(staging, "work-queue", id), { recursive: true });
   return true;
 }
 var filesSize = (carried) => (carried?.withFiles ?? []).reduce((sum, id) => {
   try {
-    return sum + fs102.readdirSync(filesOf2(id)).reduce((each, name) => each + fs102.statSync(path104.join(filesOf2(id), name)).size, 0);
+    return sum + fs103.readdirSync(filesOf2(id)).reduce((each, name) => each + fs103.statSync(path105.join(filesOf2(id), name)).size, 0);
   } catch {
     return sum;
   }
@@ -32489,19 +40987,19 @@ function placeWorkQueues(carried, owners, opened) {
       if (before)
         book.queue(before.owner).items = book.queue(before.owner).items.filter((each) => each.id !== item.id);
       book.queue(item.owner).items.push(item);
-      const from = opened ? path104.join(opened, "work-queue", item.id) : null;
-      fs102.rmSync(filesOf2(item.id), { recursive: true, force: true });
+      const from = opened ? path105.join(opened, "work-queue", item.id) : null;
+      fs103.rmSync(filesOf2(item.id), { recursive: true, force: true });
       for (const file of item.files) {
         if (!from || !FILE_NAME.test(file.name))
           continue;
         try {
-          fs102.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-          const handle = fs102.openSync(path104.join(from, file.name), fs102.constants.O_RDONLY | (fs102.constants.O_NOFOLLOW ?? 0) | (fs102.constants.O_NONBLOCK ?? 0));
+          fs103.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
+          const handle = fs103.openSync(path105.join(from, file.name), fs103.constants.O_RDONLY | (fs103.constants.O_NOFOLLOW ?? 0) | (fs103.constants.O_NONBLOCK ?? 0));
           try {
-            if (fs102.fstatSync(handle).isFile())
-              fs102.writeFileSync(path104.join(filesOf2(item.id), file.name), fs102.readFileSync(handle), { mode: 384 });
+            if (fs103.fstatSync(handle).isFile())
+              fs103.writeFileSync(path105.join(filesOf2(item.id), file.name), fs103.readFileSync(handle), { mode: 384 });
           } finally {
-            fs102.closeSync(handle);
+            fs103.closeSync(handle);
           }
         } catch {}
       }
@@ -32516,7 +41014,7 @@ function forgetWorkQueues(owners) {
         continue;
       const queue = book.queue(owner);
       for (const item of queue.items)
-        fs102.rmSync(filesOf2(item.id), { recursive: true, force: true });
+        fs103.rmSync(filesOf2(item.id), { recursive: true, force: true });
       queue.items = [];
     }
   }, undefined, { onItsOwn: true });
@@ -32588,7 +41086,7 @@ async function carryToAgents(id, model, readEngine, agents) {
   if (session.metadata?.kuvoAgent || session.metadata?.["kuvo.carriedTo"])
     return no(409, "It’s with the coding agents already.");
   const bot = listOf(BOTS).map(botHere).find((here) => here?.session === id) ?? null;
-  if (isMoving(bot?.folder ?? path105.join(SESSION_WAKES, id)))
+  if (isMoving(bot?.folder ?? path106.join(SESSION_WAKES, id)))
     return no(409, MOVING);
   if (model.providerID !== "auto") {
     const integration = (await engineGet(agents, `api/integration/${encodeURIComponent(model.providerID)}`).catch(() => null))?.data;
@@ -32675,20 +41173,20 @@ async function carryToAgents(id, model, readEngine, agents) {
       const kit = readKit();
       if (kit)
         await tellBot(agents, bot, moved, toldNow(kit, bot));
-      const via = path105.join(bot.folder, "via");
+      const via = path106.join(bot.folder, "via");
       let wasVia = null;
       try {
-        wasVia = fs103.readFileSync(via, "utf8");
+        wasVia = fs104.readFileSync(via, "utf8");
       } catch {}
       try {
-        fs103.writeFileSync(via, "bridge");
-        fs103.writeFileSync(path105.join(bot.folder, "session"), moved);
+        fs104.writeFileSync(via, "bridge");
+        fs104.writeFileSync(path106.join(bot.folder, "session"), moved);
       } catch (error) {
         try {
           if (wasVia === null)
-            fs103.rmSync(via, { force: true });
+            fs104.rmSync(via, { force: true });
           else
-            fs103.writeFileSync(via, wasVia);
+            fs104.writeFileSync(via, wasVia);
         } catch {}
         throw error;
       }
@@ -32728,15 +41226,15 @@ async function carryToAgents(id, model, readEngine, agents) {
       console.error(`Work Queue: ${id}'s queue wasn't carried to ${moved}: ${error.message}`);
     }
     if (!bot) {
-      const from = path105.join(SESSION_WAKES, id), to = path105.join(SESSION_WAKES, moved);
-      if (fs103.existsSync(path105.join(from, "session")) && !fs103.existsSync(to)) {
+      const from = path106.join(SESSION_WAKES, id), to = path106.join(SESSION_WAKES, moved);
+      if (fs104.existsSync(path106.join(from, "session")) && !fs104.existsSync(to)) {
         try {
-          fs103.renameSync(from, to);
-          fs103.writeFileSync(path105.join(to, "session"), moved);
-          fs103.writeFileSync(path105.join(to, "directory"), directory ?? "");
-          fs103.writeFileSync(path105.join(to, "via"), "bridge");
-          if (fs103.readFileSync(path105.join(to, "paused"), "utf8") === "archived")
-            fs103.rmSync(path105.join(to, "paused"), { force: true });
+          fs104.renameSync(from, to);
+          fs104.writeFileSync(path106.join(to, "session"), moved);
+          fs104.writeFileSync(path106.join(to, "directory"), directory ?? "");
+          fs104.writeFileSync(path106.join(to, "via"), "bridge");
+          if (fs104.readFileSync(path106.join(to, "paused"), "utf8") === "archived")
+            fs104.rmSync(path106.join(to, "paused"), { force: true });
         } catch {}
       }
     }
@@ -32778,7 +41276,7 @@ init_home();
 init_agents_down();
 
 // box/src/link/server/naming.ts
-import fs104 from "node:fs";
+import fs105 from "node:fs";
 init_directory();
 async function namedIn(body, session, naming) {
   if (!naming)
@@ -32801,7 +41299,7 @@ var refreshOwnShared = (readEngine) => refreshingOwn ??= refreshOwn(readEngine).
 var ownRefreshed = () => refreshingOwn ?? Promise.resolve();
 function listedAgents() {
   try {
-    const read = JSON.parse(fs104.readFileSync(AGENTS_FILE, "utf8"));
+    const read = JSON.parse(fs105.readFileSync(AGENTS_FILE, "utf8"));
     return { machine: read?.machine ?? null, agents: Array.isArray(read?.agents) ? read.agents : [] };
   } catch {
     return { machine: null, agents: [] };
@@ -32925,8 +41423,8 @@ init_library();
 
 // box/src/link/bots/make.ts
 import crypto33 from "node:crypto";
-import fs105 from "node:fs";
-import path106 from "node:path";
+import fs106 from "node:fs";
+import path107 from "node:path";
 init_text();
 init_home();
 init_library();
@@ -33035,17 +41533,17 @@ async function makeOnce(given, readEngine, readBridge, machine) {
       return no(422, refused);
   }
   const id = newID("bot_");
-  const folder = path106.join(BOTS, id);
-  const directory = project ?? path106.join(folder, "workspace");
-  const discard = () => fs105.rmSync(folder, { recursive: true, force: true });
+  const folder = path107.join(BOTS, id);
+  const directory = project ?? path107.join(folder, "workspace");
+  const discard = () => fs106.rmSync(folder, { recursive: true, force: true });
   let session;
   try {
-    fs105.mkdirSync(path106.join(folder, "workspace"), { recursive: true });
-    fs105.mkdirSync(path106.join(folder, "wakes"), { recursive: true });
+    fs106.mkdirSync(path107.join(folder, "workspace"), { recursive: true });
+    fs106.mkdirSync(path107.join(folder, "wakes"), { recursive: true });
     if (!project)
-      fs105.mkdirSync(path106.join(folder, "memory"), { recursive: true });
-    fs105.writeFileSync(path106.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
-    const rules = [{ action: "external_directory", resource: path106.join(folder, "*"), effect: "allow" }];
+      fs106.mkdirSync(path107.join(folder, "memory"), { recursive: true });
+    fs106.writeFileSync(path107.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
+    const rules = [{ action: "external_directory", resource: path107.join(folder, "*"), effect: "allow" }];
     const made = await call(target, "POST", "/api/session", { title: name, location: { directory }, model, permissions: rules, metadata: { kuvo: { bot: id } } }, AbortSignal.timeout(BOT_STEP));
     if (typeof made?.id !== "string" || !made.id)
       throw new Error("No conversation was made.");
@@ -33059,15 +41557,15 @@ async function makeOnce(given, readEngine, readBridge, machine) {
       throw new Error("The conversation it made went.");
     const told = botInstructions(kit, name, folder, personality?.instruction, project);
     await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session.id)}/instructions/entries/kuvo.bot`, { value: told }, AbortSignal.timeout(BOT_STEP));
-    fs105.writeFileSync(path106.join(folder, "session"), session.id);
+    fs106.writeFileSync(path107.join(folder, "session"), session.id);
     noteTold(folder, { session: session.id, instructions: toldDigest(told), rules: folder });
-    fs105.writeFileSync(path106.join(folder, "directory"), directory);
+    fs106.writeFileSync(path107.join(folder, "directory"), directory);
     writeZoneFiles(folder);
     if (agents)
-      fs105.writeFileSync(path106.join(folder, "via"), "bridge");
+      fs106.writeFileSync(path107.join(folder, "via"), "bridge");
     const now = stamp();
     const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...personality ? { personality: personality.id } : {}, ...project ? { project } : {}, updated: now };
-    fs105.writeFileSync(path106.join(folder, "bot.json"), JSON.stringify(described, null, 2));
+    fs106.writeFileSync(path107.join(folder, "bot.json"), JSON.stringify(described, null, 2));
     await settleAgain2(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
   } catch (error) {
     if (session?.id)
@@ -33085,12 +41583,12 @@ async function makeOnce(given, readEngine, readBridge, machine) {
 
 // box/src/link/bots/edited.ts
 init_files2();
-import path107 from "node:path";
+import path108 from "node:path";
 var KEPT3 = 30 * 86400000;
 var EDITED_FILE = "edited.json";
 function readTimes(folder, now) {
   try {
-    const kept = JSON.parse(textOf(path107.join(folder, EDITED_FILE)) ?? "");
+    const kept = JSON.parse(textOf(path108.join(folder, EDITED_FILE)) ?? "");
     if (!isObject(kept))
       return {};
     return Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number" && now - at < KEPT3).map(([field, at]) => [field, Math.min(at, now)]));
@@ -33107,11 +41605,11 @@ function noteEdited(bot, fields, at = Date.now(), now = Date.now()) {
   if (!fields.length || !here)
     return;
   try {
-    locked(path107.join(here.folder, ".edited.lock"), () => {
+    locked(path108.join(here.folder, ".edited.lock"), () => {
       const times = readTimes(here.folder, now);
       for (const field of fields)
         times[field] = Math.max(times[field] ?? 0, Math.min(now, typeof at === "number" ? at : at[field] ?? now));
-      writePrivate(path107.join(here.folder, EDITED_FILE), JSON.stringify(times));
+      writePrivate(path108.join(here.folder, EDITED_FILE), JSON.stringify(times));
     });
   } catch {}
 }
@@ -33333,7 +41831,7 @@ async function effortOf(model, given, readEngine, readBridge, signal) {
     return { status: 400, refused: `${listed.name} has no “${given}” effort: its efforts are ${listed.efforts.join(", ")}.` };
   return { variant: given };
 }
-var LEFT_FILE = path108.join(RUN, "bots-left.json");
+var LEFT_FILE = path109.join(RUN, "bots-left.json");
 function botsLeft() {
   try {
     const listed = JSON.parse(textOf(LEFT_FILE) ?? "");
@@ -33347,11 +41845,11 @@ function noteLeft(id, left) {
   if (left)
     bots.push(left);
   try {
-    fs106.mkdirSync(RUN, { recursive: true });
+    fs107.mkdirSync(RUN, { recursive: true });
     if (!bots.length)
-      return fs106.rmSync(LEFT_FILE, { force: true });
-    fs106.writeFileSync(`${LEFT_FILE}.new`, JSON.stringify({ left: bots }));
-    fs106.renameSync(`${LEFT_FILE}.new`, LEFT_FILE);
+      return fs107.rmSync(LEFT_FILE, { force: true });
+    fs107.writeFileSync(`${LEFT_FILE}.new`, JSON.stringify({ left: bots }));
+    fs107.renameSync(`${LEFT_FILE}.new`, LEFT_FILE);
   } catch {}
 }
 async function leaveBehind(left, readEngine, readBridge) {
@@ -33408,7 +41906,7 @@ async function finishDeletes(readEngine, readBridge) {
       noteLeft(left.id, still);
   }
 }
-var DELETED_FILE = path108.join(BOTS, "deleted.json");
+var DELETED_FILE = path109.join(BOTS, "deleted.json");
 function noteDeleted(id) {
   let kept = [];
   try {
@@ -33416,9 +41914,9 @@ function noteDeleted(id) {
     if (Array.isArray(listed?.deleted))
       kept = listed.deleted.filter((each) => typeof each === "string" && each !== id);
   } catch {}
-  fs106.mkdirSync(BOTS, { recursive: true });
-  fs106.writeFileSync(`${DELETED_FILE}.new`, JSON.stringify({ deleted: [id, ...kept].slice(0, 500) }));
-  fs106.renameSync(`${DELETED_FILE}.new`, DELETED_FILE);
+  fs107.mkdirSync(BOTS, { recursive: true });
+  fs107.writeFileSync(`${DELETED_FILE}.new`, JSON.stringify({ deleted: [id, ...kept].slice(0, 500) }));
+  fs107.renameSync(`${DELETED_FILE}.new`, DELETED_FILE);
 }
 async function deleteBot(id, readEngine, readBridge) {
   const no = (status, message) => ({ status, value: { message } });
@@ -33434,10 +41932,10 @@ async function deleteBot(id, readEngine, readBridge) {
     const now = new Date;
     const two = (number) => String(number).padStart(2, "0");
     const when = `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}-${two(now.getHours())}${two(now.getMinutes())}${two(now.getSeconds())}`;
-    const trash = path108.join(K, "trash", `${when}-${process.pid}`);
-    fs106.mkdirSync(trash, { recursive: true });
-    trashed = path108.join(trash, id);
-    fs106.renameSync(here.folder, trashed);
+    const trash = path109.join(K, "trash", `${when}-${process.pid}`);
+    fs107.mkdirSync(trash, { recursive: true });
+    trashed = path109.join(trash, id);
+    fs107.renameSync(here.folder, trashed);
   } catch (error) {
     return no(503, `The bot couldn’t be deleted: ${error?.message ?? error}`);
   }
@@ -33445,9 +41943,9 @@ async function deleteBot(id, readEngine, readBridge) {
   noteLeft(id, leaving);
   if (IS_MAC) {
     await hostTrash(trashed).catch(() => {});
-    if (!fs106.existsSync(trashed))
+    if (!fs107.existsSync(trashed))
       try {
-        fs106.rmdirSync(path108.dirname(trashed));
+        fs107.rmdirSync(path109.dirname(trashed));
       } catch {}
   }
   noteLeft(id, await leaveBehind(leaving, readEngine, readBridge));
@@ -33524,14 +42022,14 @@ async function wakeTool(name, args, calling, bridge) {
       break;
     }
   }
-  const folder = bot?.folder ?? path109.join(SESSION_WAKES, owner);
-  const exists = fs107.existsSync(path109.join(folder, bot ? "bot.json" : "session"));
+  const folder = bot?.folder ?? path110.join(SESSION_WAKES, owner);
+  const exists = fs108.existsSync(path110.join(folder, bot ? "bot.json" : "session"));
   if (!exists && name === "cancel_wake_up")
     return refused3(`No wake-up "${given("id")}". See list_wake_ups.`);
   if (exists && isMoving(folder))
     return refused3(MOVING);
   const directory = root?.place.data.location?.directory ?? root?.place.data.directory;
-  const cwd = directory && fs107.existsSync(directory) ? directory : os10.homedir();
+  const cwd = directory && fs108.existsSync(directory) ? directory : os10.homedir();
   const env = { ...process.env, PWD: cwd, KUVO_BOTS: BOTS, KUVO_WAKES: SESSION_WAKES, KUVO_WAKE_TOOL: "1" };
   if (viaBridge)
     env.KUVO_WAKE_VIA = "bridge";
@@ -33584,7 +42082,7 @@ function showTool(name, args, calling, inView) {
   const raw = typeof args.path === "string" ? args.path : "";
   const kind = (full) => {
     try {
-      return fs107.statSync(full).isDirectory() ? "folder" : "file";
+      return fs108.statSync(full).isDirectory() ? "folder" : "file";
     } catch {
       return null;
     }
@@ -33601,7 +42099,7 @@ function showTool(name, args, calling, inView) {
       const expanded = trimmed(home2(raw));
       const place = calling.own ?? calling.root?.place;
       const base = place?.data.location?.directory ?? place?.data.directory ?? os10.homedir();
-      const full = isFullPath(expanded) ? expanded : path109.resolve(base, expanded);
+      const full = isFullPath(expanded) ? expanded : path110.resolve(base, expanded);
       if (full !== trimmed(raw))
         return refused3(`Give the full path: ${full}`);
       const found = kind(full);
@@ -33640,7 +42138,7 @@ var isAgentTool = (name) => AGENT_TOOLS.includes(name);
 var said4 = (text) => ({ text, isError: false });
 var refused4 = (text) => ({ text, isError: true });
 var why3 = (error) => String(error?.message ?? error);
-function targetsOf(place) {
+function targetsOf2(place) {
   const targets = [];
   try {
     targets.push(place.readEngine());
@@ -33846,7 +42344,7 @@ async function readOne2(args, caller, all, targets, place) {
   return refused4(unreachable ? asleep : later);
 }
 async function agentTool(name, args, session, place) {
-  const targets = targetsOf(place);
+  const targets = targetsOf2(place);
   if (name === "show_file" || name === "mark_final" || name === "show_widget")
     return showTool(name, args, { session, own: null, root: null }, place.inView);
   const root = await rootOf(session, targets);
@@ -34018,8 +42516,8 @@ init_numbers();
 init_sources();
 var HAND_LIFE = 30 * 86400000;
 var HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
-var SEEN = path110.join(WORK_QUEUE2, "handed.json");
-var SEEN_LOCK = path110.join(WORK_QUEUE2, ".handed.lock");
+var SEEN = path111.join(WORK_QUEUE2, "handed.json");
+var SEEN_LOCK = path111.join(WORK_QUEUE2, ".handed.lock");
 var refuse2 = (words) => {
   throw new Refusal(words);
 };
@@ -34029,7 +42527,7 @@ function handElsewhere(item, to, who, now) {
   let bytes = 0;
   for (const file of item.files) {
     try {
-      bytes += fs108.statSync(path110.join(filesOf2(item.id), file.name)).size;
+      bytes += fs109.statSync(path111.join(filesOf2(item.id), file.name)).size;
     } catch {}
   }
   if (bytes > MOST_HANDED_FILES)
@@ -34038,13 +42536,10 @@ function handElsewhere(item, to, who, now) {
 }
 var sent = new Map;
 function handPayload(item) {
-  const { handing, ...rest } = item;
+  const { handing, relations: _local, ...rest } = item;
   const files = item.files.flatMap((file) => {
-    try {
-      return [{ name: file.name, data: fs108.readFileSync(path110.join(filesOf2(item.id), file.name)).toString("base64") }];
-    } catch {
-      return [];
-    }
+    const bytes = readAttachment(item.id, file.name);
+    return bytes === null ? [] : [{ name: file.name, data: bytes.toString("base64") }];
   });
   const has = labels().filter((each) => item.labels.includes(each.id));
   return { hand: { id: handing.id, to: handing.to, from: item.owner, by: handing.by, at: handing.at, item: rest, files, ...has.length ? { labels: has } : {} } };
@@ -34052,7 +42547,7 @@ function handPayload(item) {
 var scanned = null;
 var queuesMark = () => {
   try {
-    return String(fs108.statSync(path110.join(WORK_QUEUE2, "queues"), { bigint: true }).mtimeNs);
+    return String(fs109.statSync(path111.join(WORK_QUEUE2, "queues"), { bigint: true }).mtimeNs);
   } catch {
     return "-";
   }
@@ -34191,15 +42686,15 @@ function handedBack(sender, given, now = Date.now()) {
     book.queue(found.owner).items = book.queue(found.owner).items.filter((each) => each.id !== found.id);
   }, now, { onItsOwn: true });
   if (!allItems().some((each) => each.id === item.id))
-    fs108.rmSync(filesOf2(item.id), { recursive: true, force: true });
+    fs109.rmSync(filesOf2(item.id), { recursive: true, force: true });
 }
 function seenHand(id, now, note = false) {
   try {
-    fs108.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+    fs109.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
     return locked(SEEN_LOCK, () => {
       let seen = {};
       try {
-        seen = JSON.parse(fs108.readFileSync(SEEN, "utf8")) ?? {};
+        seen = JSON.parse(fs109.readFileSync(SEEN, "utf8")) ?? {};
       } catch {}
       if (!note)
         return id in seen;
@@ -34283,6 +42778,7 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     if (!statusNamed(item.status))
       intoTodo(item, item.status, now);
     item.owner = owner;
+    delete item.relations;
     item.order = placeIn(book.items(), item.status);
     delete item.removed;
     book.queue(owner).items.push(item);
@@ -34290,10 +42786,10 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     if (owner.startsWith("ses_") && !isClosed(item.status))
       linkSession(book, item, owner, now);
     item.updated = { at: now, by };
-    fs108.rmSync(filesOf2(item.id), { recursive: true, force: true });
+    fs109.rmSync(filesOf2(item.id), { recursive: true, force: true });
     for (const file of files) {
-      fs108.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-      fs108.writeFileSync(path110.join(filesOf2(item.id), file.name), file.bytes, { mode: 384 });
+      fs109.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
+      fs109.writeFileSync(path111.join(filesOf2(item.id), file.name), file.bytes, { mode: 384 });
     }
     if (item.number === undefined)
       numberWaiting(book, primary, null);
@@ -34315,8 +42811,6 @@ function elsewhereOf2(session, link = readLink()) {
 
 // box/src/link/work-queue/acts.ts
 init_relations();
-import fs109 from "node:fs";
-import path111 from "node:path";
 init_numbers();
 init_records();
 init_store();
@@ -34330,14 +42824,14 @@ function changed3(work) {
   try {
     const item = work();
     tellQueuesAgain();
-    return { status: 200, value: { item: withCan(summaryOf(item, new Set, new Map, assignable())) } };
+    return { status: 200, value: { item: { ...withCan(summaryOf(item, new Set, new Map, assignable())), mentionTargets: item.mentionIndex?.targets ?? [] } } };
   } catch (error) {
     if (error instanceof Refusal)
       return { status: error instanceof Missing ? 404 : 400, value: { message: error.message } };
     throw error;
   }
 }
-var fieldsOf2 = ({ title, body, status, priority, labels, assignee, due, before, after, top, files }) => ({ title, body, status, priority, labels, assignee, due, before, after, top, files });
+var fieldsOf2 = ({ title, body, status, priority, labels, assignee, due, before, after, top, files, removeInlineImages }) => ({ title, body, status, priority, labels, assignee, due, before, after, top, files, removeInlineImages });
 function addHere(given, local = false) {
   const now = Date.now();
   const primary = primaryOf();
@@ -34374,7 +42868,10 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
     await readSeen([item], GITHUB_WAIT);
     const { titles } = await ownersOf(item.owner, [item], facts, targets);
     const whole = wholeOf(item, facts.working, titles, assignable());
-    return { status: 200, value: { item: { ...withCan(whole), itemRelations: relationsOf(item, items), bodyMentions: references(whole.body), canLinkItems: !item.removed && !item.handing && !frozen().has(item.owner) } } };
+    const elsewhere = itemsElsewhere("all", undefined, new Set(items.filter((each) => !each.removed).map((each) => each.id)), new Set(items.filter((each) => each.removed).map((each) => each.id))).items;
+    const notes = whole.notes.map((note, at) => ({ ...note, mentions: item.mentionIndex?.notes[at]?.filter((range) => range.item) ?? [] }));
+    const bodyMentions = item.mentionIndex?.body.filter((range) => range.item) ?? [];
+    return { status: 200, value: { item: { ...withCan(whole), notes, itemRelations: relationsOf(item, [...items, ...elsewhere]), bodyMentions, canLinkItems: !item.removed && !item.handing && !frozen().has(item.owner) } } };
   }
   const now = Date.now();
   const primary = primaryOf();
@@ -34426,7 +42923,7 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
   }
   let staged;
   try {
-    return changed3(() => {
+    const applied = changed3(() => {
       staged = stageClientFiles(given.files, local);
       return inBook((item, book) => {
         if (item.removed)
@@ -34434,7 +42931,7 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
         const fields = fieldsOf2(given);
         if ([fields.before, fields.after].some((each) => each !== undefined && refOf(each) === null))
           throw new Refusal("There's no item like that to put it beside.");
-        if (item.source && (fields.title !== undefined || fields.body !== undefined))
+        if (item.source && (fields.title !== undefined || fields.body !== undefined || fields.removeInlineImages !== undefined))
           throw new Refusal(`${nameOf(item)} takes its title and description from GitHub: change them there.`);
         if (item.source && staged.staged.length)
           throw new Refusal(`${nameOf(item)} takes its description from GitHub: attach files there.`);
@@ -34449,6 +42946,9 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
         applyFileOps(acting);
       })();
     });
+    if (given.removeInlineImages !== undefined && applied.status === 200 && isObject(applied.value))
+      applied.value.inlineImagesApplied = true;
+    return applied;
   } finally {
     staged?.clear();
   }
@@ -34456,13 +42956,10 @@ async function actHere({ method, action, ref, given = {}, targets, signal, local
 function fileOf4(ref, name) {
   const item = matching2(allItems(), ref)[0];
   const kept = item?.files.find((each) => each.name === name);
-  if (!item || !kept || !FILE_NAME.test(name))
+  if (!item || !kept)
     return null;
-  try {
-    return { type: kept.type, bytes: fs109.readFileSync(path111.join(filesOf2(item.id), name)) };
-  } catch {
-    return null;
-  }
+  const bytes = readAttachment(item.id, name);
+  return bytes === null ? null : { type: kept.type, bytes };
 }
 async function actForPeer(act, targets) {
   const ref = refOf(act.item);
@@ -35589,6 +44086,7 @@ var toldItem = (item, working, titles) => {
     summary.assignee = { kind: summary.assignee.kind, id: summary.assignee.id, name: summary.assignee.name };
   return {
     ...summary,
+    ...item.mentionIndex?.targets.length ? { mentionTargets: item.mentionIndex.targets } : {},
     ...summary.lastNote ? { lastNote: { ...summary.lastNote, text: summary.lastNote.text.slice(0, 500) } } : {},
     ...from.length ? { handedFrom: from } : {},
     ...summary.seen && checked !== undefined ? { seen: { ...summary.seen, checked } } : {}
@@ -37904,7 +46402,7 @@ var fingerprint = (conversation, queues) => `${conversation}.${crypto42.createHa
 var queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
   throw error instanceof CantCarry ? new Refused(say.waiting(name)) : error;
 });
-var outgoing = new Map;
+var outgoing2 = new Map;
 async function carryOn(id) {
   let record = readMove(id);
   if (!record || record.role !== "from" || record.stage !== "holding" || record.failed)
@@ -38008,7 +46506,7 @@ async function carryOn(id) {
     throw new Refused(say.tooBig(record.name));
   if (takenBack())
     return;
-  outgoing.set(id, { got: new Set, flying: new Map, exports: fingerprint(digest, queues), digest });
+  outgoing2.set(id, { got: new Set, flying: new Map, exports: fingerprint(digest, queues), digest });
   const now = changeMove(id, (each) => {
     Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, wasPaused: record.wasPaused, pausedAs: record.pausedAs, members: record.members, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), holdSince: undefined });
   });
@@ -38083,7 +46581,7 @@ function offer(record) {
   tell2(record.peer, { op: "offer", id: record.id, kind: record.kind, thing: record.thing, name: record.name, size: record.size, hash: record.hash, wasPaused: record.wasPaused, ...record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}, from: record.from, ...record.members ? { members: record.members } : {}, ...record.lane ? { lane: true } : {} });
 }
 function sendParts(record, now = Date.now()) {
-  const state = outgoing.get(record.id);
+  const state = outgoing2.get(record.id);
   if (!state || !record.size)
     return;
   const of = Math.ceil(record.size / PART_BYTES);
@@ -38121,14 +46619,14 @@ async function arrived(record, placed) {
   if (record.kind !== "group") {
     const target = record.lane ? readBridgeFile() : readEngineFile();
     await settle4(target, record.sessions, record.name);
-    if (record.lane && placed !== outgoing.get(record.id)?.digest)
+    if (record.lane && placed !== outgoing2.get(record.id)?.digest)
       throw new Refused(say.notSame(record.name));
     const again = record.lane ? (await carry(target, "digest", { root: record.sessions[0] }).catch((error) => {
       if (error?.status === 423)
         return { digest: "" };
       throw error;
     })).digest : conversationHash(await exportAll(target, record.sessions[0]));
-    const before = outgoing.get(record.id)?.exports;
+    const before = outgoing2.get(record.id)?.exports;
     if (!still())
       return;
     if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name)) !== before) {
@@ -38206,14 +46704,14 @@ async function finish2(id) {
   }
   noteMovedAway(record.sessions, record.to);
   forgetMove(id);
-  outgoing.delete(id);
+  outgoing2.delete(id);
   ended2(id, { ok: true, move: shownMove({ ...record, stage: "finishing" }), ...record.note ? { note: record.note } : {} });
 }
 async function takeBack2(id, message, status = 409) {
   const record = readMove(id);
   if (!record || record.role !== "from" || record.failed || record.stage === "switching" || record.stage === "finishing")
     return;
-  outgoing.delete(id);
+  outgoing2.delete(id);
   unhold(record.folder, record.wasPaused, record.pausedAs);
   if (record.offered) {
     changeMove(id, (each) => {
@@ -38238,7 +46736,7 @@ async function takeBack2(id, message, status = 409) {
   ended2(id, { ok: false, status, message });
 }
 async function restore(record, message) {
-  outgoing.delete(record.id);
+  outgoing2.delete(record.id);
   unhold(record.folder, record.wasPaused, record.pausedAs);
   forgetMove(record.id);
   try {
@@ -38265,7 +46763,7 @@ function partsOf3(id) {
 }
 function forgetMovesInMemory() {
   incoming.clear();
-  outgoing.clear();
+  outgoing2.clear();
   heard.clear();
   waitingFor.clear();
   loggedStuck.clear();
@@ -38802,7 +47300,7 @@ async function moveMail(sender, given, id) {
     case "got": {
       if (mine?.role !== "from" || mine.step !== "parts" || !Number.isInteger(given.i))
         return;
-      const state = outgoing.get(id);
+      const state = outgoing2.get(id);
       if (!state)
         return;
       const fresh = !state.got.has(given.i);
@@ -38990,7 +47488,7 @@ function keepMoving(now = Date.now()) {
     }
     switch (record.step) {
       case "offer":
-        if (record.tries === 0 && now - (record.sentAt ?? 0) > NO_ANSWER && !outgoing.get(record.id)?.got.size) {
+        if (record.tries === 0 && now - (record.sentAt ?? 0) > NO_ANSWER && !outgoing2.get(record.id)?.got.size) {
           inTurn2(record.id, () => takeBack2(record.id, say.notConnected(nameOf5(record.peer)), 503)).catch(() => {});
         } else if (due) {
           changeMove(record.id, (each) => {
@@ -39008,7 +47506,7 @@ function keepMoving(now = Date.now()) {
         }
         break;
       case "parts":
-        if (outgoing.has(record.id))
+        if (outgoing2.has(record.id))
           sendParts(record, now);
         else
           inTurn2(record.id, () => takeBack2(record.id, `${record.name} didn’t get there. Try again.`, 409)).catch(() => {});
@@ -39829,7 +48327,7 @@ function freshPeriods(goal, now = Date.now()) {
   });
   return changed;
 }
-var text3 = (value, most) => typeof value === "string" && value.trim() ? value.trim().slice(0, most) : null;
+var text5 = (value, most) => typeof value === "string" && value.trim() ? value.trim().slice(0, most) : null;
 var https = (value) => {
   if (typeof value !== "string")
     return null;
@@ -39853,7 +48351,7 @@ var siteOf3 = (value) => {
 var newID2 = (prefix) => `${prefix}_${crypto44.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`;
 var PERIODS = ["day", "week", "month", "goal"];
 var DIGESTS = ["day", "week", "milestones", "none"];
-var line = (value, most) => text3(typeof value === "string" ? value.replace(/\s+/g, " ") : value, most);
+var line = (value, most) => text5(typeof value === "string" ? value.replace(/\s+/g, " ") : value, most);
 var appGiven = (value) => {
   const name = appNameGiven(value);
   return name ? appNamed(name) : null;
@@ -39865,17 +48363,17 @@ function appsNamed(given) {
 }
 function stepGiven(each) {
   if (typeof each === "string")
-    return text3(each, 300) ? { text: text3(each, 300) } : null;
+    return text5(each, 300) ? { text: text5(each, 300) } : null;
   if (!isObject(each))
     return null;
-  const said = text3(each.text, 300);
+  const said = text5(each.text, 300);
   if (!said)
     return null;
   const after = Array.isArray(each.after) ? each.after.filter((one) => Number.isInteger(one) && one >= 1) : [];
   const site = siteOf3(each.site);
   const app = appGiven(each.app);
   const detail = line(each.detail, 120);
-  return { text: said, ...detail ? { detail } : {}, ...text3(each.phase, 80) ? { phase: text3(each.phase, 80) } : {}, ...site ? { site } : {}, ...app ? { app } : {}, ...after.length ? { after } : {} };
+  return { text: said, ...detail ? { detail } : {}, ...text5(each.phase, 80) ? { phase: text5(each.phase, 80) } : {}, ...site ? { site } : {}, ...app ? { app } : {}, ...after.length ? { after } : {} };
 }
 var keptSteps = (given, from = 0) => given.filter((each) => Boolean(each)).map((each, at) => {
   const { after, ...rest } = each;
@@ -39969,7 +48467,7 @@ var wordsOf = (said) => said.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boole
 var names = (check, what) => what.length > 1 && check.some((_, at) => what.every((word, by) => check[at + by] === word));
 var pricesIn = (said) => [...said.matchAll(/\d+(?:[.,]\d+)?/g)].map((each) => Number(each[0].replace(",", ".")));
 function planGiven(given) {
-  const goal = text3(given.goal, 2000);
+  const goal = text5(given.goal, 2000);
   if (!goal)
     return { refused: "Say the goal, in the user's words (goal)." };
   if (Array.isArray(given.steps) && given.steps.length > 200)
@@ -39981,23 +48479,23 @@ function planGiven(given) {
   for (const each of Array.isArray(given.checks) ? given.checks.slice(0, 12) : []) {
     if (!isObject(each))
       continue;
-    const said = text3(each.text, 200);
+    const said = text5(each.text, 200);
     if (!said)
       continue;
     const url = https(each.url);
     const state = each.ok === true ? "ok" : "needs";
     const site = siteOf3(each.site) ?? siteOf3(url);
-    checks.push({ id: `c${checks.length + 1}`, text: said, ...text3(each.detail, 300) ? { detail: text3(each.detail, 300) } : {}, state, by: "bot", ...site ? { site } : {}, ...url && state === "needs" ? { action: { kind: "open", label: text3(each.button, 30) ?? "Open", url } } : {} });
+    checks.push({ id: `c${checks.length + 1}`, text: said, ...text5(each.detail, 300) ? { detail: text5(each.detail, 300) } : {}, state, by: "bot", ...site ? { site } : {}, ...url && state === "needs" ? { action: { kind: "open", label: text5(each.button, 30) ?? "Open", url } } : {} });
   }
   const spend = [];
   const yours = checks.filter((each) => each.state === "needs").map((each) => ({ words: wordsOf(each.text), prices: pricesIn(`${each.text} ${each.detail ?? ""}`) }));
   for (const each of Array.isArray(given.spend) ? given.spend.slice(0, 10) : []) {
-    if (!isObject(each) || !text3(each.what, 200) || typeof each.cap !== "number" || !(each.cap > 0))
+    if (!isObject(each) || !text5(each.what, 200) || typeof each.cap !== "number" || !(each.cap > 0))
       return { refused: "Each spend line needs what it's for (what) and a cap above 0 (cap)." };
     if (yours.some((check) => check.prices.includes(each.cap) && names(check.words, wordsOf(each.what))))
       continue;
     const per = PERIODS.includes(each.per) ? each.per : "goal";
-    spend.push({ what: text3(each.what, 200), cap: each.cap, currency: (text3(each.currency, 3) ?? "USD").toUpperCase(), per, spent: 0 });
+    spend.push({ what: text5(each.what, 200), cap: each.cap, currency: (text5(each.currency, 3) ?? "USD").toUpperCase(), per, spent: 0 });
   }
   const named = projectsGiven((Array.isArray(given.projects) ? given.projects.slice(0, 5) : []).filter((each) => !(typeof each === "string" && !each.trim())));
   if ("refused" in named)
@@ -40007,7 +48505,7 @@ function planGiven(given) {
   if (ends === null)
     return { refused: "An end (ends) is a date and time to come, like 2026-11-30T18:00." };
   const digest = DIGESTS.includes(given.digest) ? given.digest : steps.length > 12 || steps.some((step) => step.phase) ? "day" : "none";
-  return { plan: { goal, ...text3(given.title, 80) ? { title: text3(given.title, 80) } : {}, steps: keptSteps(steps), checks, spend, public: [], projects, digest, ...ends ? { ends } : {} } };
+  return { plan: { goal, ...text5(given.title, 80) ? { title: text5(given.title, 80) } : {}, steps: keptSteps(steps), checks, spend, public: [], projects, digest, ...ends ? { ends } : {} } };
 }
 async function answerGoal(id, given, targets, file = GOALS_FILE) {
   const action = given.action;
@@ -40352,7 +48850,7 @@ var GOAL_PLANNING = [
   "Make nothing before [Goal started]: no folders, files or code."
 ];
 async function askGoal(session, words, targets) {
-  const said = text3(words, 2000);
+  const said = text5(words, 2000);
   if (!said)
     return { refused: { status: 400, message: "Say the goal (goal)." } };
   if (frozen().has(session))
@@ -40555,22 +49053,22 @@ function progressGiven(bot, given, file) {
       return { refused: "A step's state is todo, doing, done, waiting, paused or skipped." };
     if (mark.progress !== undefined && mark.progress !== null && !(typeof mark.progress === "number" && mark.progress >= 0 && mark.progress <= 1))
       return { refused: "A step's progress is a share from 0 to 1, given only where you can measure it (3 of 8 pages is 0.375)." };
-    if (typeof mark.progress === "number" && mark.progress < 1 && !text3(mark.note, 300))
+    if (typeof mark.progress === "number" && mark.progress < 1 && !text5(mark.note, 300))
       return { refused: 'Say what you counted with the share, in note: progress 0.375 with note "3 of 8 pages". The user sees the count.' };
     if (mark.until !== undefined && mark.until !== null && untilOf(mark.until) === null)
       return { refused: "until is when the step can start, as a time like 2026-11-02T09:00 (or null to take it away)." };
     if (mark.app !== undefined && mark.app !== null && mark.app !== "" && !appNameGiven(mark.app))
       return { refused: 'app is the app the step is done in on the computer, by its name, like "Xcode" (or null to take it away).' };
   }
-  if (isObject(given.waiting) && (!text3(given.waiting.text, 300) || !WAITING_KINDS.includes(given.waiting.kind)))
+  if (isObject(given.waiting) && (!text5(given.waiting.text, 300) || !WAITING_KINDS.includes(given.waiting.kind)))
     return { refused: "What waits needs its kind (you, judgment or outside) and what it is (text)." };
-  if (given.decided !== undefined && (!isObject(given.decided) || !text3(given.decided.text, 300) || !text3(given.decided.choice, 200)))
+  if (given.decided !== undefined && (!isObject(given.decided) || !text5(given.decided.text, 300) || !text5(given.decided.choice, 200)))
     return { refused: "A call you made is {text (what it was), choice, why}." };
   if (isObject(given.waiting) && given.waiting.step !== undefined && given.waiting.step !== null && !running.steps[stepAt(given.waiting.step, running.steps)])
     return { refused: `The step it holds up (step) is one of the plan's, from 1 to ${running.steps.length}.` };
   const spent = Array.isArray(given.spent) ? given.spent : isObject(given.spent) ? [given.spent] : [];
   for (const each of spent)
-    if (!isObject(each) || !text3(each.what, 200) || typeof each.amount !== "number" || !(each.amount > 0))
+    if (!isObject(each) || !text5(each.what, 200) || typeof each.amount !== "number" || !(each.amount > 0))
       return { refused: "What's spent is {what, amount}." };
   return { marks, spent };
 }
@@ -40580,7 +49078,7 @@ function goalProgress(bot, given, file = GOALS_FILE) {
     return checked;
   const { marks, spent } = checked;
   const added = (Array.isArray(given.add) ? given.add : []).map(stepGiven).filter((each) => Boolean(each));
-  const resolved = (Array.isArray(given.resolved) ? given.resolved : []).map((each) => text3(each, 300)).filter((each) => Boolean(each));
+  const resolved = (Array.isArray(given.resolved) ? given.resolved : []).map((each) => text5(each, 300)).filter((each) => Boolean(each));
   const notes = [];
   const unplanned = [];
   const goneOn = new Set;
@@ -40609,8 +49107,8 @@ function goalProgress(bot, given, file = GOALS_FILE) {
         next.ended = next.ended ?? Date.now();
       else
         delete next.ended;
-      if (text3(mark.note, 300))
-        next.note = text3(mark.note, 300);
+      if (text5(mark.note, 300))
+        next.note = text5(mark.note, 300);
       else if (mark.note === null || mark.note === "")
         delete next.note;
       if (next.state !== "paused")
@@ -40641,7 +49139,7 @@ function goalProgress(bot, given, file = GOALS_FILE) {
       notes.push(`step ${goal.steps.length} added`);
     }
     if (Array.isArray(given.watching)) {
-      goal.watching = given.watching.map((each) => text3(each, 200)).filter((each) => Boolean(each)).slice(0, 10);
+      goal.watching = given.watching.map((each) => text5(each, 200)).filter((each) => Boolean(each)).slice(0, 10);
       notes.push(goal.watching.length ? `watching ${goal.watching.length}` : "watching nothing");
     }
     freshPeriods(goal);
@@ -40672,7 +49170,7 @@ function goalProgress(bot, given, file = GOALS_FILE) {
     const url = https(given.waiting.url);
     const site = siteOf3(given.waiting.site) ?? siteOf3(url);
     const app = appGiven(given.waiting.app);
-    addWaiting(bot, { kind: given.waiting.kind, text: text3(given.waiting.text, 300), ...text3(given.waiting.detail, 500) ? { detail: text3(given.waiting.detail, 500) } : {}, ...url ? { url } : {}, ...site ? { site } : {}, ...app ? { app } : {}, ...holds && !goneOn.has(holds) ? { step: holds } : {} }, file);
+    addWaiting(bot, { kind: given.waiting.kind, text: text5(given.waiting.text, 300), ...text5(given.waiting.detail, 500) ? { detail: text5(given.waiting.detail, 500) } : {}, ...url ? { url } : {}, ...site ? { site } : {}, ...app ? { app } : {}, ...holds && !goneOn.has(holds) ? { step: holds } : {} }, file);
     notes.push("kept as waiting for the user: carry on with what doesn't depend on it");
   }
   if (isObject(given.decided)) {
@@ -40689,7 +49187,7 @@ function maySpend(bot, given, file = GOALS_FILE) {
   const goal = runningGoal(bot, file);
   if (!goal)
     return { refused: "No goal is running. Ask the user." };
-  const what = text3(given.what, 200);
+  const what = text5(given.what, 200);
   const amount = given.amount;
   if (!what || typeof amount !== "number" || !(amount > 0))
     return { refused: "Say what it's for (what) and how much (amount)." };
@@ -40704,7 +49202,7 @@ function maySpend(bot, given, file = GOALS_FILE) {
   return { said: `No: only ${Math.max(0, left)} ${line.currency} is left${end ? ` until ${resetTime(end)}, when it starts again: carry on with what doesn't spend, and it can wait till then` : ": keep it as waiting for the user, who can raise the cap on the goal"}.` };
 }
 async function finishGoal(bot, given, targets, file = GOALS_FILE) {
-  const report = text3(given.report, 6000);
+  const report = text5(given.report, 6000);
   if (!report)
     return { refused: "Give the report (report): what needs the user first, then what got done and where, what it spent, and what you're still watching." };
   const done = changeKept((all) => {
@@ -40715,7 +49213,7 @@ async function finishGoal(bot, given, targets, file = GOALS_FILE) {
     goal.ended = Date.now();
     goal.report = report;
     if (Array.isArray(given.watching))
-      goal.watching = given.watching.map((each) => text3(each, 200)).filter((each) => Boolean(each)).slice(0, 10);
+      goal.watching = given.watching.map((each) => text5(each, 200)).filter((each) => Boolean(each)).slice(0, 10);
     return goal;
   }, file);
   if (!done)
@@ -45309,7 +53807,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "98fab1edac4a";
+var BRIDGE_VERSION = "f136fa30fcd2";
 
 // box/src/link/rehome/move.ts
 init_outside();
@@ -51277,7 +59775,7 @@ function readIndex(top, root) {
   return { repository: top, backups: [] };
 }
 var queues2 = new Map;
-function one(key, work) {
+function one2(key, work) {
   const next = (queues2.get(key) ?? Promise.resolve()).then(work, work);
   const settled = next.catch(() => {});
   queues2.set(key, settled);
@@ -51345,7 +59843,7 @@ function withoutSignIn(url) {
   return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, "$1").replace(/^([a-z][a-z0-9+.-]*:\/\/[^?#]*)[?#].*$/i, "$1");
 }
 var shape = (a) => JSON.stringify([a.head, a.detached ?? [], Object.entries(a.branches).sort(), a.stashes.map((each) => each.commit), Object.entries(a.remotes).sort()]);
-var same3 = (a, b) => shape(a) === shape(b);
+var same4 = (a, b) => shape(a) === shape(b);
 var commitsOf = (backup) => [...Object.values(backup.branches), ...backup.stashes.map((each) => each.commit), ...backup.detached ?? [], ...backup.head && "commit" in backup.head ? [backup.head.commit] : []];
 async function makeStore(store, gitDir) {
   fs163.mkdirSync(path172.dirname(store), { recursive: true, mode: 448 });
@@ -51387,13 +59885,13 @@ function takeBackup(folder, root = BACKUPS_FOLDER, now = Date.now()) {
   return repositoryOf2(folder).then((repository) => {
     if (!repository)
       return null;
-    return one(storeOf(repository.top, root), async () => {
+    return one2(storeOf(repository.top, root), async () => {
       const state = await stateOf2(repository.gitDir);
       if (!state || !commitsOf(state).length)
         return null;
       const index = readIndex(repository.top, root);
       const last = index.backups.at(-1);
-      if (last && same3(last, state))
+      if (last && same4(last, state))
         return null;
       const store = gitStore(repository.top, root);
       if (!fs163.existsSync(path172.join(store, "HEAD")) && !await makeStore(store, repository.gitDir))
@@ -51482,7 +59980,7 @@ async function restoreBackup(folder, id, root = BACKUPS_FOLDER) {
   const at = await backedUpAt(folder, root);
   if (!at)
     throw new RestoreError("There are no backups of a repository here.", 404);
-  return one(storeOf(at.top, root), async () => {
+  return one2(storeOf(at.top, root), async () => {
     const backup = readIndex(at.top, root).backups.find((each) => each.id === id);
     if (!backup)
       throw new RestoreError("That backup isn't here.", 404);
@@ -51899,7 +60397,7 @@ async function git3(folder, given, changing = false, more = {}, program = "git",
     }));
   });
 }
-var text4 = async (folder, args) => {
+var text6 = async (folder, args) => {
   const ran = await git3(folder, args);
   return ran.ok ? ran.out.toString("utf8") : null;
 };
@@ -51926,12 +60424,12 @@ var realOr2 = (folder) => {
   }
 };
 async function scoped(directory, scope, base) {
-  const root = (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim();
+  const root = (await text6(directory, ["rev-parse", "--show-toplevel"]))?.trim();
   if (!root)
     return null;
   let against = (await git3(root, ["rev-parse", "--verify", "-q", "HEAD"])).ok ? "HEAD" : EMPTY_TREE;
   if (scope === "branch" && base) {
-    const fork = (await text4(root, ["merge-base", "HEAD", base]))?.trim();
+    const fork = (await text6(root, ["merge-base", "HEAD", base]))?.trim();
     if (fork)
       against = fork;
   }
@@ -51943,10 +60441,10 @@ async function scoped(directory, scope, base) {
 async function untrackedIn(root, limit, scope) {
   if (scope === "staged")
     return [];
-  return (await text4(root, ["-c", "core.quotepath=off", "ls-files", "--others", "--exclude-standard", "-z", "--", limit]) ?? "").split("\x00").filter(Boolean);
+  return (await text6(root, ["-c", "core.quotepath=off", "ls-files", "--others", "--exclude-standard", "-z", "--", limit]) ?? "").split("\x00").filter(Boolean);
 }
 async function uncommittedIn(root, scope) {
-  const status = scope === "branch" ? await text4(root, ["status", "--porcelain", "--untracked-files=normal"]) : "x";
+  const status = scope === "branch" ? await text6(root, ["status", "--porcelain", "--untracked-files=normal"]) : "x";
   return status === null || status.length > 0;
 }
 function gitLook(gitDir) {
@@ -52003,7 +60501,7 @@ async function changesIn(directory, scope, base, only) {
   const args = ["-c", "core.quotepath=off", "-c", "diff.suppressBlankEmpty=false", "-c", "diff.submodule=short", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--src-prefix=a/", "--dst-prefix=b/", "-U100000"];
   if (only)
     return oneFileIn(root, against, scope, compared, args, only);
-  const patch = await text4(root, [...args, ...compared, "--", limit]);
+  const patch = await text6(root, [...args, ...compared, "--", limit]);
   if (patch === null)
     return null;
   const untracked = await untrackedIn(root, limit, scope);
@@ -52051,7 +60549,7 @@ async function oneFileIn(root, against, scope, compared, args, only) {
     if (side === "disk")
       sizes.push(onDisk2(() => fs166.statSync(path176.join(root, only.path)))?.size ?? 0);
     else {
-      const size = (await text4(root, ["cat-file", "-s", side]))?.trim();
+      const size = (await text6(root, ["cat-file", "-s", side]))?.trim();
       if (size)
         sizes.push(Number(size));
     }
@@ -52084,13 +60582,13 @@ async function stampOf2(root, name, indexed, since) {
 }
 var UNREAD = "repository-unread";
 async function insideOf(folder) {
-  const top = (await text4(folder, ["rev-parse", "--show-toplevel"]))?.trim();
+  const top = (await text6(folder, ["rev-parse", "--show-toplevel"]))?.trim();
   if (!top || realOr2(top) !== realOr2(folder))
     return null;
-  const status = await text4(folder, ["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+  const status = await text6(folder, ["-c", "core.quotepath=off", "status", "--porcelain=v1", "-z", "--untracked-files=all"]);
   if (status === null)
     return null;
-  const head = (await text4(folder, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() || "none";
+  const head = (await text6(folder, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() || "none";
   const hash = crypto58.createHash("sha256").update(status);
   let newest = 0n;
   for (const record of status.split("\x00")) {
@@ -52105,7 +60603,7 @@ async function insideOf(folder) {
   return { is: `${head}-${hash.digest("hex").slice(0, 32)}`, newest };
 }
 async function indexEntryOf(root, name) {
-  const said = await text4(root, ["--literal-pathspecs", "-c", "core.quotepath=off", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--", name]) ?? "";
+  const said = await text6(root, ["--literal-pathspecs", "-c", "core.quotepath=off", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--", name]) ?? "";
   for (const record of said.split("\x00")) {
     if (record[0] !== "1" && record[0] !== "2")
       continue;
@@ -52119,7 +60617,7 @@ async function indexEntryOf(root, name) {
 }
 async function staleDiscard(root, file, stamp) {
   const name = file.path.replace(/\/$/, "");
-  if (file.status === "added" && (await text4(root, ["--literal-pathspecs", "ls-tree", "--name-only", "HEAD", "--", name]))?.trim() && (await git3(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", name])).ok) {
+  if (file.status === "added" && (await text6(root, ["--literal-pathspecs", "ls-tree", "--name-only", "HEAD", "--", name]))?.trim() && (await git3(root, ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", name])).ok) {
     return `${name} is in the last commit now, so it isn’t a new file any more. Look at it again before you discard it.`;
   }
   const now = await stampOf2(root, name, await indexEntryOf(root, name)) + (file.oldPath ? `|${await stampOf2(root, file.oldPath, undefined)}` : "");
@@ -52224,10 +60722,10 @@ async function filesIn2(directory) {
   files.sort((a, b) => GROUPS.indexOf(a.group) - GROUPS.indexOf(b.group) || a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" }));
   const commits = await hasStaged(root) ? "staged" : "all";
   const inFolder = (name) => limit === "." || name === limit || name.startsWith(limit + "/");
-  const stagedNames = (await text4(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean);
+  const stagedNames = (await text6(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean);
   const stagedElsewhere = stagedNames.filter((name) => !inFolder(name)).length;
   const underway = await underwayIn(root);
-  const stagedFiles = (await text4(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--find-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean).length;
+  const stagedFiles = (await text6(root, ["-c", "core.quotepath=off", "diff", "--cached", "--name-only", "-z", "--find-renames", "--no-ext-diff", against]) ?? "").split("\x00").filter(Boolean).length;
   const takes = commits === "staged" ? stagedFiles : new Set(files.map((file) => file.path)).size + more;
   return {
     repository: true,
@@ -52244,7 +60742,7 @@ async function filesIn2(directory) {
 }
 var NEW_FILES_MOST = 1000;
 async function underwayIn(root) {
-  const gitDir = (await text4(root, ["rev-parse", "--absolute-git-dir"]))?.trim();
+  const gitDir = (await text6(root, ["rev-parse", "--absolute-git-dir"]))?.trim();
   if (!gitDir)
     return;
   const has = (name) => fs166.existsSync(path176.join(gitDir, name));
@@ -52337,8 +60835,8 @@ function inTheWay(root, name) {
   return null;
 }
 async function sameAsCommitted(root, name) {
-  const committed = (await text4(root, ["--literal-pathspecs", "ls-tree", "HEAD", "--", name]))?.split("\t")[0]?.split(" ")[2];
-  const onDisk = (await text4(root, ["hash-object", "--no-filters", "--", name]))?.trim();
+  const committed = (await text6(root, ["--literal-pathspecs", "ls-tree", "HEAD", "--", name]))?.split("\t")[0]?.split(" ")[2];
+  const onDisk = (await text6(root, ["hash-object", "--no-filters", "--", name]))?.trim();
   return !!committed && committed === onDisk;
 }
 async function perform(action, root, file, scope) {
@@ -52377,7 +60875,7 @@ async function perform(action, root, file, scope) {
       const target = path176.join(root, name);
       if (!kind(target)?.isDirectory())
         continue;
-      const kept = await text4(root, ["--literal-pathspecs", ...scope === "unstaged" ? ["ls-files", "-s"] : ["ls-tree", "HEAD"], "--", name]);
+      const kept = await text6(root, ["--literal-pathspecs", ...scope === "unstaged" ? ["ls-files", "-s"] : ["ls-tree", "HEAD"], "--", name]);
       const entry = kept?.split(`
 `).find((line) => line.slice(line.indexOf("\t") + 1) === name);
       if (!entry || !/^(100|120)/.test(entry))
@@ -52401,7 +60899,7 @@ async function perform(action, root, file, scope) {
     const failed = await untrack(file.path) ?? await clear([file.oldPath]) ?? await run(scope === "unstaged" ? ["restore", "--worktree", "--", file.oldPath] : ["restore", "--source=HEAD", "--staged", "--worktree", "--", file.oldPath]);
     return failed ?? gone(file.path);
   }
-  if (file.status === "modified" && (await text4(root, ["--literal-pathspecs", "ls-files", "-s", "--", file.path]))?.startsWith("160000") && (await text4(path176.join(root, file.path), ["status", "--porcelain"]))?.trim()) {
+  if (file.status === "modified" && (await text6(root, ["--literal-pathspecs", "ls-files", "-s", "--", file.path]))?.startsWith("160000") && (await text6(path176.join(root, file.path), ["status", "--porcelain"]))?.trim()) {
     return `${file.path} is a submodule: its changes are in its own repository, so discard them there.`;
   }
   if (file.status === "deleted" && scope !== "unstaged" && kind(path176.join(root, file.path))?.isFile() && !await sameAsCommitted(root, file.path)) {
@@ -52427,7 +60925,7 @@ async function pushFrom(root, said = refusal2(root)) {
   return pushed?.includes("no upstream branch") ? said(["push", "-u", "origin", "HEAD"]) : pushed;
 }
 async function commit2(directory, message, push, author) {
-  const root = (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim();
+  const root = (await text6(directory, ["rev-parse", "--show-toplevel"]))?.trim();
   if (!root)
     return { failed: "Not a git repository.", committed: false };
   const said = refusal2(root, author);
@@ -52446,12 +60944,12 @@ async function commit2(directory, message, push, author) {
   return pushed ? { failed: `Committed, but the push didn’t go through:
 ${pushed}`, committed: true } : null;
 }
-var rootOf3 = async (directory) => (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim() || null;
+var rootOf3 = async (directory) => (await text6(directory, ["rev-parse", "--show-toplevel"]))?.trim() || null;
 async function repositoryOf3(directory) {
   const root = await rootOf3(directory);
   if (root)
     return { root };
-  return (await text4(directory, ["rev-parse", "--git-dir"]))?.trim() ? { root: null } : null;
+  return (await text6(directory, ["rev-parse", "--git-dir"]))?.trim() ? { root: null } : null;
 }
 async function branchesIn(directory) {
   const found = await repositoryOf3(directory);
@@ -52459,11 +60957,11 @@ async function branchesIn(directory) {
     return { repository: false };
   const { root } = found;
   const at = root ?? directory;
-  const listed = await text4(at, ["for-each-ref", "--sort=-committerdate", "--format=%(refname)", "refs/heads"]);
+  const listed = await text6(at, ["for-each-ref", "--sort=-committerdate", "--format=%(refname)", "refs/heads"]);
   if (listed === null)
     return null;
   const branch = (ref) => ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : null;
-  const head = (await text4(at, ["symbolic-ref", "--quiet", "HEAD"]))?.trim() ?? "";
+  const head = (await text6(at, ["symbolic-ref", "--quiet", "HEAD"]))?.trim() ?? "";
   const branches = listed.split(`
 `).map(branch).filter((name) => !!name);
   const tree = root ? await mergedFrom(root) : null;
@@ -52480,7 +60978,7 @@ async function pullRequestBase(directory, root) {
   const recorded = worktreeOf(directory)?.base;
   if (recorded)
     return recorded;
-  const main = (await text4(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim().replace(/^origin\//, "") || undefined;
+  const main = (await text6(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]))?.trim().replace(/^origin\//, "") || undefined;
   if (main)
     return main;
   for (const name of ["main", "master"]) {
@@ -52505,15 +61003,15 @@ async function statusIn(directory) {
   const { root } = found;
   if (!root)
     return { repository: true, root, uncommitted: false };
-  const status = await text4(root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]);
+  const status = await text6(root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]);
   return status === null ? null : { repository: true, root, uncommitted: status.length > 0 };
 }
-var branchOf = async (directory) => (await text4(directory, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim() || null;
+var branchOf = async (directory) => (await text6(directory, ["symbolic-ref", "--quiet", "--short", "HEAD"]))?.trim() || null;
 async function unready(directory, branch, target) {
-  const status = await text4(directory, ["status", "--porcelain", "--untracked-files=normal"]);
+  const status = await text6(directory, ["status", "--porcelain", "--untracked-files=normal"]);
   if (status === null || status.trim())
     return "Commit the changes first. Only what’s committed goes.";
-  const ahead = (await text4(directory, ["rev-list", "--count", `${target}..HEAD`]))?.trim();
+  const ahead = (await text6(directory, ["rev-list", "--count", `${target}..HEAD`]))?.trim();
   if (ahead === undefined)
     return `There’s no branch ${target} to compare with.`;
   return ahead === "0" ? `${branch} has nothing ${target} doesn’t have yet.` : null;
@@ -52526,7 +61024,7 @@ async function mergedFrom(directory) {
   const tree = worktreeOf(directory);
   if (tree)
     return tree;
-  const [own, common] = (await text4(directory, ["rev-parse", "--absolute-git-dir", "--git-common-dir"]) ?? "").trim().split(`
+  const [own, common] = (await text6(directory, ["rev-parse", "--absolute-git-dir", "--git-common-dir"]) ?? "").trim().split(`
 `);
   if (!own || !common)
     return null;
@@ -52557,7 +61055,7 @@ async function mergeInto(directory, given, author = {}) {
   const failed = await said(["merge", "--no-edit", branch]);
   if (!failed)
     return { into };
-  const conflicts = (await text4(target, ["-c", "core.quotepath=off", "diff", "--name-only", "-z", "--diff-filter=U"]) ?? "").split("\x00").filter(Boolean);
+  const conflicts = (await text6(target, ["-c", "core.quotepath=off", "diff", "--name-only", "-z", "--diff-filter=U"]) ?? "").split("\x00").filter(Boolean);
   if ((await git3(target, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])).ok)
     await said(["merge", "--abort"]);
   if (!conflicts.length)
@@ -52610,16 +61108,16 @@ function comparePage(remote, branch, base, title, body) {
   const named = (branch) => encodeURIComponent(branch).replace(/%2F/g, "/");
   return `${at}/compare/${(base ? `${named(base)}...` : "") + named(branch)}?${query}`;
 }
-var originOf = async (directory) => (await text4(directory, ["remote", "get-url", "origin"]))?.trim() || null;
+var originOf = async (directory) => (await text6(directory, ["remote", "get-url", "origin"]))?.trim() || null;
 async function pullRequestWay(directory) {
   const branch = await branchOf(directory);
   if (!branch)
     return { status: 409, failed: "This folder isn’t on a branch." };
-  const root = (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim() ?? directory;
+  const root = (await text6(directory, ["rev-parse", "--show-toplevel"]))?.trim() ?? directory;
   const base = await pullRequestBase(directory, root);
   if (isBase(branch, base))
     return { status: 409, failed: `${branch} is the branch a pull request goes into. Make one from a branch of its own.` };
-  const remote = (await text4(root, ["remote", "get-url", "origin"]))?.trim() || undefined;
+  const remote = (await text6(root, ["remote", "get-url", "origin"]))?.trim() || undefined;
   if (!remote)
     return { status: 409, failed: "This repository has no origin to push to. Add a remote called origin first." };
   const against = base && ((await git3(root, ["rev-parse", "--verify", "-q", base])).ok ? base : (await git3(root, ["rev-parse", "--verify", "-q", `origin/${base}`])).ok ? `origin/${base}` : undefined);
@@ -52637,9 +61135,9 @@ function ghOn(root, host) {
 }
 async function pullRequestSummary(root, against, limit = 30000) {
   const range = against ? `${against}...HEAD` : "HEAD~1...HEAD";
-  const commits = await text4(root, ["log", "--no-color", "--format=- %s%n%b", against ? `${against}..HEAD` : "-1"]) ?? "";
-  const files = await text4(root, ["diff", "--no-color", "--stat", range]) ?? "";
-  let diff = await text4(root, ["diff", "--no-color", "--no-ext-diff", range]) ?? "";
+  const commits = await text6(root, ["log", "--no-color", "--format=- %s%n%b", against ? `${against}..HEAD` : "-1"]) ?? "";
+  const files = await text6(root, ["diff", "--no-color", "--stat", range]) ?? "";
+  let diff = await text6(root, ["diff", "--no-color", "--no-ext-diff", range]) ?? "";
   if (diff.length > limit)
     diff = diff.slice(0, limit) + `
 …`;
@@ -52655,12 +61153,12 @@ async function pullRequestDraft(directory, withSummary = false) {
   if ("failed" in way)
     return way;
   const { root, branch, base, against, remote } = way;
-  const subjects = (await text4(root, ["log", "--no-color", "--format=%s", against ? `${against}..HEAD` : "-1"]) ?? "").split(`
+  const subjects = (await text6(root, ["log", "--no-color", "--format=%s", against ? `${against}..HEAD` : "-1"]) ?? "").split(`
 `).filter(Boolean);
   let title, body;
   if (subjects.length === 1) {
     title = subjects[0];
-    body = (await text4(root, ["log", "-1", "--no-color", "--format=%b"]) ?? "").trim();
+    body = (await text6(root, ["log", "-1", "--no-color", "--format=%b"]) ?? "").trim();
   } else {
     const named = branch.replace(/[-_]+/g, " ").trim();
     title = named.charAt(0).toUpperCase() + named.slice(1);
@@ -52706,10 +61204,10 @@ async function commitDiff(directory, limit = 40000) {
   const staged = await hasStaged(directory);
   let diff;
   if (staged)
-    diff = await text4(directory, ["diff", "--cached", "--no-color", "--no-ext-diff"]) ?? "";
+    diff = await text6(directory, ["diff", "--cached", "--no-color", "--no-ext-diff"]) ?? "";
   else {
-    diff = await text4(directory, ["diff", "HEAD", "--no-color", "--no-ext-diff", "--", "."]) ?? "";
-    const untracked = (await text4(directory, ["ls-files", "--others", "--exclude-standard"]) ?? "").trim();
+    diff = await text6(directory, ["diff", "HEAD", "--no-color", "--no-ext-diff", "--", "."]) ?? "";
+    const untracked = (await text6(directory, ["ls-files", "--others", "--exclude-standard"]) ?? "").trim();
     if (untracked)
       diff += `
 New files:
@@ -52753,7 +61251,7 @@ async function* changesRoute(context) {
       const found = await filesIn2(directory);
       return yield* found ? json(200, found) : json(500, { message: "git couldn’t read the changes." });
     }
-    const gitDir = (await text4(directory, ["rev-parse", "--absolute-git-dir"]))?.trim();
+    const gitDir = (await text6(directory, ["rev-parse", "--absolute-git-dir"]))?.trim();
     const clock = changeClock(() => gitDir ? gitLook(gitDir) : "");
     const look = clock.look;
     const watched = process.platform === "darwin" && !!gitDir;
@@ -52884,7 +61382,7 @@ async function* changesRoute(context) {
     if (!directory)
       return yield* json(404, { message: "That folder isn’t there." });
     if (route === "kuvo/git/push") {
-      const root = (await text4(directory, ["rev-parse", "--show-toplevel"]))?.trim();
+      const root = (await text6(directory, ["rev-parse", "--show-toplevel"]))?.trim();
       if (!root)
         return yield* json(422, { message: "Not a git repository." });
       const failed = await pushFrom(root);
@@ -58698,7 +67196,7 @@ async function* startRoute(context) {
     return yield* json(400, { message: "Send {task}, and title, folder, startedBy, wait." });
   let by = null;
   if (given.startedBy !== undefined && given.startedBy !== null) {
-    const root = typeof given.startedBy === "string" && ADDRESS2.test(given.startedBy) ? await rootOf(given.startedBy, targetsOf({ readEngine, bridge })) : null;
+    const root = typeof given.startedBy === "string" && ADDRESS2.test(given.startedBy) ? await rootOf(given.startedBy, targetsOf2({ readEngine, bridge })) : null;
     if (!root)
       return yield* json(404, { message: "There's no such conversation here." });
     const all = await everyone({ readEngine });
@@ -58936,7 +67434,7 @@ async function* sessionActionRoute(context, match) {
   const moving = frozen().has(id);
   if (moving && action !== "actions")
     return yield* json(409, { message: MOVING });
-  const targets = targetsOf(context);
+  const targets = targetsOf2(context);
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   let place;
@@ -60503,7 +69001,7 @@ function importItems(book, owner, items, who, primary, now = Date.now()) {
   const restores = back.map(({ item }) => item.wanted);
   const claimed = [...made.map((item) => item.wanted), ...restores];
   const { granted } = claimNumbers(primary, claimed, { restores });
-  numberWaiting(book, primary, granted ? { granted, claimed: rangesOf(claimed) } : null, { now });
+  numberWaiting(book, primary, granted ? { granted, claimed: rangesOf2(claimed) } : null, { now });
   outcome.waiting = made.filter((item) => item.number === undefined).length;
   const refused = made.filter((item) => item.importedAs !== undefined).map((item) => ({ from: item.importedAs, item }));
   outcome.renumbered = [...fresh, ...refused].sort((a, b) => a.from - b.from).map(({ from, item }) => item.number !== undefined ? `#${from} is #${item.number}` : `#${from} waits for a new number`);
@@ -60526,7 +69024,7 @@ function numbersElsewhere() {
         found.set(item.number, item.title);
   return found;
 }
-var runsWords = (numbers) => rangesOf(numbers).map(([from, to]) => from === to ? `#${from}` : `#${from}–${to}`).join(", ");
+var runsWords = (numbers) => rangesOf2(numbers).map(([from, to]) => from === to ? `#${from}` : `#${from}–${to}`).join(", ");
 function importWords(outcome, skipped, names) {
   const parts = Object.entries(outcome.byStatus).map(([status, count]) => `${count} ${names(status)}`);
   const all = [...skipped, ...outcome.skipped];
@@ -61101,7 +69599,11 @@ async function showWords(item, facts, targets, caller) {
   const status = statusName(item.status);
   const read = seenOf(item.source);
   const names = new Map(labels().map((each) => [each.id, each.name]));
-  const related = relationsOf(item, allItems().filter((each) => inView(caller.owner, each, overseenBy(caller.owner, facts.all)) || linkedTo(caller.owner, each)));
+  const all = allItems();
+  const overseen = overseenBy(caller.owner, facts.all);
+  const here = all.filter((each) => inView(caller.owner, each, overseen) || linkedTo(caller.owner, each));
+  const elsewhere = itemsElsewhere(caller.owner, undefined, new Set(all.filter((each) => !each.removed).map((each) => each.id)), new Set(all.filter((each) => each.removed).map((each) => each.id)), { linked: true }).items;
+  const related = relationsOf(item, [...here, ...elsewhere]);
   const parts = [
     `${nameOf({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
     item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords(read.value.state)} before)` : `${seenWords(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",
@@ -61517,14 +70019,14 @@ var connects = (offered) => offered.methods.some((method) => method.type === "ex
 var SIGN_IN_WORDS = { first: "Sign In", again: "Sign In Again", another: "Add Another Account" };
 var KEY_WORDS = { first: "Add Key", again: "Replace Key", another: "Add Another Key" };
 var CONNECT_WORDS = { first: "Connect", again: "Reconnect", another: "Add Another Account" };
-var text5 = (value) => typeof value === "string" ? plainName(value) : "";
+var text7 = (value) => typeof value === "string" ? plainName(value) : "";
 function connectionSaid(connection, name, computer, ended) {
   const status = isObject(connection.status) ? connection.status : {};
-  const label = text5(connection.label);
+  const label = text7(connection.label);
   const kind = connection.method === "key" ? "API key" : connection.method === "external" ? `Credentials on ${computer}` : "";
   const who = label && label !== name && label.toLowerCase() !== kind.toLowerCase() ? label : "";
-  const line = connection.type === "env" ? `From ${text5(connection.name) || "its environment"}` : kind ? who ? `${kind} · ${who}` : kind : who || "Signed in";
-  const trouble = status.status === "failed" ? text5(status.message) : "";
+  const line = connection.type === "env" ? `From ${text7(connection.name) || "its environment"}` : kind ? who ? `${kind} · ${who}` : kind : who || "Signed in";
+  const trouble = status.status === "failed" ? text7(status.message) : "";
   return {
     ...connection.type === "credential" && typeof connection.id === "string" && connection.id ? { id: connection.id } : {},
     state: ended || status.status === "needs_auth" ? "ended" : trouble ? "problem" : "signedIn",
@@ -61537,7 +70039,7 @@ function connectionSaid(connection, name, computer, ended) {
 }
 function accountState(account, offered, { agents = false, ended, computer }) {
   const id = typeof account.id === "string" ? account.id : "";
-  const name = text5(account.name) || id;
+  const name = text7(account.name) || id;
   const meta = isObject(account.metadata) ? account.metadata : {};
   const listed = (Array.isArray(account.connections) ? account.connections : []).filter(isObject);
   const said = listed.map((each) => connectionSaid(each, name, computer, !agents && ended !== undefined && each.type === "credential" && each.id === ended));
@@ -61606,7 +70108,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
       actions.push(said.length || state === "ended" ? { id: "signInAgain", label: words.again, ...here } : { id: "signIn", label: words.first, ...here });
     if (!added && !installs && signsIn && meta.addedAccounts === true)
       actions.push({ id: "addAnother", label: words.another, ...here });
-    const latest = text5(meta.latestVersion);
+    const latest = text7(meta.latestVersion);
     const updating = isObject(meta.programUpdate) && meta.programUpdate.state === "updating";
     if (!added && !installs && meta.outdated === true && meta.updates === true && latest && !updating)
       actions.push({ id: "update", label: `Update to ${latest}` });
@@ -61627,7 +70129,7 @@ function accountState(account, offered, { agents = false, ended, computer }) {
     actions.push({ id: "addAnother", label: words.another });
   }
   if (meta.source !== "mcp" && listed.some((each) => each.type === "credential")) {
-    const stays = listed.filter((each) => each.type === "env").map((each) => text5(each.name)).filter(Boolean);
+    const stays = listed.filter((each) => each.type === "env").map((each) => text7(each.name)).filter(Boolean);
     const message = stays.length ? `Its saved sign-ins and keys go from ${computer}. It stays signed in from ${stays.join(" and ")} in its shell’s environment, so its models stay.` : `Its sign-ins and keys go from ${computer}, and its models leave the model picker there. Sessions on its models stop until you sign in again.`;
     actions.push({ id: "disconnect", label: "Disconnect", confirm: { title: `Disconnect ${name}?`, message, label: "Disconnect" } });
   }
@@ -63055,7 +71557,7 @@ async function* sending3(context, session) {
     return yield* json(400, { message: "There's nothing to send." });
   if (frozen().has(session))
     return yield* json(409, { message: MOVING });
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   let place;
@@ -63169,13 +71671,13 @@ async function* queueRoute(context, match) {
     if (method !== "GET")
       return yield* json(405, {});
     const wantsItems = new URLSearchParams(request.path.split("?")[1] ?? "").get("items") === "1";
-    return yield* json(200, wantsItems ? await queueShown(session, targetsOf({ readEngine, bridge })) : shownQueue(queueOf(session)));
+    return yield* json(200, wantsItems ? await queueShown(session, targetsOf2({ readEngine, bridge })) : shownQueue(queueOf(session)));
   }
   if (step === "events") {
     if (method !== "GET")
       return yield* json(405, {});
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followedLive(() => queueShown(session, targetsOf({ readEngine, bridge })), (told) => {
+    return yield* followedLive(() => queueShown(session, targetsOf2({ readEngine, bridge })), (told) => {
       const heard = (changed) => {
         if (changed === session)
           told();
@@ -63195,12 +71697,12 @@ async function* queueRoute(context, match) {
   if (item && !now) {
     if (method !== "DELETE")
       return yield* json(405, {});
-    const place = await placeOfSession(session, targetsOf({ readEngine, bridge })).catch(() => {
+    const place = await placeOfSession(session, targetsOf2({ readEngine, bridge })).catch(() => {
       return;
     });
     const dropped = dropWaiting(session, decodeURIComponent(item), place ? await inboxFor(place.target, session) : []);
     if (!dropped) {
-      if (place === undefined && targetsOf({ readEngine, bridge }).length)
+      if (place === undefined && targetsOf2({ readEngine, bridge }).length)
         return yield* json(503, { message: "The engine isn't answering." });
       let taken = null;
       if (place) {
@@ -63223,7 +71725,7 @@ async function* queueRoute(context, match) {
   }
   if (method !== "POST")
     return yield* json(405, {});
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   let place;
@@ -64275,7 +72777,7 @@ async function* glanceRoute(context, match) {
   const ids = sessionsAsked(request.path);
   if (!ids)
     return yield* json(400, { message: `Name the sessions: sessions=<id>,<id>… (${GLANCE_MOST} at most).` });
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   if (!match[1]) {
@@ -64293,7 +72795,7 @@ async function* glanceRoute(context, match) {
     const seen = changes();
     let line = null;
     try {
-      line = JSON.stringify({ sessions: await glances(ids, targetsOf({ readEngine, bridge }), signal ?? undefined) });
+      line = JSON.stringify({ sessions: await glances(ids, targetsOf2({ readEngine, bridge }), signal ?? undefined) });
     } catch (error) {
       if (!(error instanceof Unreached))
         throw error;
@@ -64311,7 +72813,7 @@ async function* glanceRoute(context, match) {
 
 // box/src/link/areas/session-asks.ts
 var SESSION_ASKS_ROUTE = /^kuvo\/sessions\/([^/]+)\/asks(?:\/([^/]+))?$/;
-var text6 = (value) => typeof value === "string" ? value : null;
+var text8 = (value) => typeof value === "string" ? value : null;
 var strings2 = (value) => Array.isArray(value) ? value.filter((each) => typeof each === "string") : [];
 function relativeTo(folder, file) {
   if (!folder)
@@ -64361,7 +72863,7 @@ function permissionAsk(request, asker, folder, command, home, forConversation = 
     kind: "permission",
     session: asker,
     title: permissionTitle(action, resources, folder, command),
-    message: text6(request.message),
+    message: text8(request.message),
     command,
     files,
     resources: resources.map((each) => action === "external_directory" ? outsideShown(each, home) : relativeTo(folder, each)),
@@ -64381,13 +72883,13 @@ function questionsOf(form) {
     const options = (Array.isArray(field.options) ? field.options : []).filter(isObject).map((option) => ({
       value: String(option.value ?? option.label ?? ""),
       label: String(option.label ?? option.value ?? ""),
-      description: text6(option.description)
+      description: text8(option.description)
     }));
     const multiple = field.type === "multiselect";
     return {
       key: field.key,
-      title: text6(field.title),
-      question: text6(field.description) ?? text6(field.title) ?? text6(form.title) ?? "",
+      title: text8(field.title),
+      question: text8(field.description) ?? text8(field.title) ?? text8(form.title) ?? "",
       options,
       multiple,
       custom: field.custom === true || !multiple && !options.length,
@@ -64519,7 +73021,7 @@ async function asksOf(target, session, folder, signal, place = {}) {
         continue;
       const fields = (Array.isArray(form.fields) ? form.fields : []).filter(isObject);
       const questions = questionsOf(form);
-      const title = text6(form.title) || "Question";
+      const title = text8(form.title) || "Question";
       const shown = questions ? { id: form.id, kind: "question", session: asker, title, questions } : { id: form.id, kind: "other", session: asker, title, message: describeForm(form), dismiss: true };
       found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker, form: { fields } } });
     }
@@ -64529,13 +73031,13 @@ async function asksOf(target, session, folder, signal, place = {}) {
   }) : null;
   const get = (route) => call(target, "GET", `/${route}`, undefined, wait()).then((data) => ({ data }));
   for (const form of Array.isArray(shared) ? shared : []) {
-    const server = isObject(form) && isObject(form.metadata) ? text6(form.metadata.server) : null;
+    const server = isObject(form) && isObject(form.metadata) ? text8(form.metadata.server) : null;
     if (!isObject(form) || typeof form.id !== "string" || !server)
       continue;
     const owner = (await sessionsWaitingOnServer(server, folder, get))[0];
     if (!owner || !askers.includes(owner))
       continue;
-    const shown = { id: form.id, kind: "other", session, title: text6(form.title) || server, message: describeForm(form), dismiss: true };
+    const shown = { id: form.id, kind: "other", session, title: text8(form.title) || server, message: describeForm(form), dismiss: true };
     found.push({ at: timeOf(form.id, form.time?.created), ask: { shown, target, asker: "global", folder } });
   }
   const asking = new Set(askers);
@@ -64555,7 +73057,7 @@ async function asksOf(target, session, folder, signal, place = {}) {
   return found.sort((a, b) => elsewhere(a.ask) - elsewhere(b.ask) || a.at - b.at).map((each) => each.ask);
 }
 async function placeOf3(context, session) {
-  const targets = targetsOf({ readEngine: context.readEngine, bridge: context.bridge });
+  const targets = targetsOf2({ readEngine: context.readEngine, bridge: context.bridge });
   if (!targets.length)
     throw new Unreached("The engine isn't running.");
   const here = await sessionHere(targets, session, context.signal ?? undefined);
@@ -64865,7 +73367,7 @@ async function* mentionsRoute(context, match) {
   const asked = Number.parseInt(query.get("limit") ?? "", 10);
   const limit = Number.isFinite(asked) && asked > 0 ? Math.min(asked, MENTIONS_MOST) : MENTIONS_SHOWN;
   const session = decodeURIComponent(match[1]);
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   let here;
@@ -65089,7 +73591,7 @@ async function* sessionModelsRoute(context) {
   const ids = sessionsAsked(request.path);
   if (!ids)
     return yield* json(400, { message: `Name the sessions: sessions=<id>,<id>… (${GLANCE_MOST} at most).` });
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   let engine = null;
@@ -65138,7 +73640,7 @@ async function* modelsOfferedRoute(context) {
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
   const folder = await folderIn(request.path);
-  if (!targetsOf({ readEngine, bridge }).length)
+  if (!targetsOf2({ readEngine, bridge }).length)
     return yield* json(503, { message: "The engine isn't running." });
   let engine = null;
   try {
@@ -65398,7 +73900,7 @@ async function* workQueueRoute(context, match) {
   const { request, json, signal, readEngine, readBridge, bridge } = context;
   const method = request.method.toUpperCase();
   const [, part, rawItem, action, rawFile] = match;
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};
   if (part === "tools") {
@@ -65985,7 +74487,7 @@ var repeatText2 = (every) => every.unit === "weekdays" ? "weekdays" : `${every.c
 var keepsTimeOfDay = (every) => every.unit !== "m" && every.unit !== "h";
 var MINUTE_UNITS = ["m", "min", "mins", "minute", "minutes"];
 var HOUR_UNITS = ["h", "hr", "hrs", "hour", "hours"];
-var same4 = (a, b) => a.length === b.length && a.every((word, at) => word === b[at]);
+var same5 = (a, b) => a.length === b.length && a.every((word, at) => word === b[at]);
 function clock(text) {
   let said = text;
   const half = said.endsWith("am") ? "am" : said.endsWith("pm") ? "pm" : null;
@@ -66006,7 +74508,7 @@ function clock(text) {
   return [hour, minute];
 }
 function scheduleOf(said) {
-  const is = (...each) => each.some((words) => same4(said, words));
+  const is = (...each) => each.some((words) => same5(said, words));
   if (is(["hourly"], ["every", "hour"]))
     return { every: { unit: "h", count: 1 } };
   if (is(["daily"], ["every", "day"], ["every", "morning"]))
@@ -66042,7 +74544,7 @@ function scheduleOf(said) {
     return null;
   const [hour, minute] = time;
   const days = said.slice(0, at);
-  const are = (...each) => each.some((words) => same4(days, words));
+  const are = (...each) => each.some((words) => same5(days, words));
   if (are(["every", "morning"], ["mornings"], ["every", "day"], ["daily"]))
     return { every: { unit: "d", count: 1 }, hour, minute };
   if (are(["weekdays"], ["every", "weekday"], ["on", "weekdays"]))
@@ -66514,7 +75016,7 @@ async function doStep(step, session, place, context) {
       return { goalCleared: true };
     }
     case "askBot": {
-      const outcome = await askGoal(session, step.words, () => targetsOf({ readEngine, bridge }));
+      const outcome = await askGoal(session, step.words, () => targetsOf2({ readEngine, bridge }));
       if ("refused" in outcome)
         throw new Error(outcome.refused.message);
       return { askedBot: true };
@@ -66629,7 +75131,7 @@ async function* typedAnswer(context, match) {
   if (method === "POST" && typeof body.text !== "string")
     return yield* json(400, { message: "Send what was typed (text)." });
   const back = method === "POST" ? { restore: writtenBack(body.text) } : {};
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running.", ...back });
   let place;
@@ -66962,7 +75464,7 @@ var GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
 var APP_ICON_ROUTE = "kuvo/work/apps/icon";
 async function botWork(bot, context) {
   const { readEngine, bridge, signal } = context;
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   const work = ofBot(bot, await workSessions(targets, signal ?? undefined));
   const working = await atWorkNow(targets, signal ?? undefined);
   const sessions = [];
@@ -67063,7 +75565,7 @@ async function* workRoute(context, match) {
   const bot = decodeURIComponent(match[3] ?? "");
   if (!botHere(bot))
     return yield* json(404, { message: "There's no such bot here." });
-  const targets = targetsOf({ readEngine, bridge });
+  const targets = targetsOf2({ readEngine, bridge });
   if (!targets.length)
     return yield* json(503, { message: "The engine isn't running." });
   const stopped = await stopBotWork(bot, targets, signal ?? undefined);
@@ -67122,7 +75624,7 @@ async function* workAsksRoute(context, match) {
   if (method !== "POST")
     return yield* json(405, {});
   const given = parsed(request.body);
-  const outcome = await answerWork(decodeURIComponent(match[1] ?? ""), isObject(given) ? given : {}, () => targetsOf({ readEngine, bridge }));
+  const outcome = await answerWork(decodeURIComponent(match[1] ?? ""), isObject(given) ? given : {}, () => targetsOf2({ readEngine, bridge }));
   if ("refused" in outcome)
     return yield* json(outcome.refused.status, { message: outcome.refused.message });
   return yield* json(200, { answer: outcome.answered.answer, text: outcome.answered.text, isError: outcome.answered.isError });
@@ -67155,7 +75657,7 @@ async function* goalsRoute(context, match) {
   if (method !== "POST")
     return yield* json(405, {});
   const given = parsed(request.body);
-  const targets = () => targetsOf({ readEngine, bridge });
+  const targets = () => targetsOf2({ readEngine, bridge });
   if (match[1] === "ask") {
     if (!isObject(given) || typeof given.session !== "string" || !botOfConversation(given.session))
       return yield* json(400, { message: "Send {session, goal}: a bot's conversation, and the goal in your words." });
@@ -67649,7 +76151,7 @@ import path208 from "node:path";
 init_home();
 var NOTE5 = "Type / and a command's name at the start of a message to run it. What you type after the name fills in $ARGUMENTS.";
 var PROMPT = "What the agent gets. $ARGUMENTS is what you type after the command; $1, $2 and so on are its words. !`command` puts in a command's output.";
-var text7 = (value) => typeof value === "string" ? value : "";
+var text9 = (value) => typeof value === "string" ? value : "";
 var commandName = (value) => value.trim().replace(/^\/+|\/+$/g, "").replaceAll(" ", "-").replace(/[^\p{L}\p{N}_-]/gu, "");
 async function facts3(context) {
   const config = await asked8(context, settingsRoute, "GET", "kuvo/config");
@@ -67671,15 +76173,15 @@ var modelOf3 = (id) => {
   return at > 0 && at < id.length - 1 ? { model: { providerID: id.slice(0, at), id: id.slice(at + 1) } } : {};
 };
 function form2(known, name, before = {}) {
-  const agents = [...new Set([...known.agents.filter((each) => !each.hidden).map((each) => text7(each.id || each.name)), ...text7(before.agent) ? [text7(before.agent)] : []])].filter(Boolean);
-  const models = [...new Map([...known.models.filter((each) => typeof each.providerID === "string" && typeof each.id === "string").map((each) => [`${each.providerID}/${each.id}`, text7(each.name) || each.id]), ...text7(before.model) ? [[text7(before.model), text7(before.model)]] : []]).entries()];
+  const agents = [...new Set([...known.agents.filter((each) => !each.hidden).map((each) => text9(each.id || each.name)), ...text9(before.agent) ? [text9(before.agent)] : []])].filter(Boolean);
+  const models = [...new Map([...known.models.filter((each) => typeof each.providerID === "string" && typeof each.id === "string").map((each) => [`${each.providerID}/${each.id}`, text9(each.name) || each.id]), ...text9(before.model) ? [[text9(before.model), text9(before.model)]] : []]).entries()];
   return { title: name ? `/${name}` : "New Command", submit: name ? "Save" : "Create Command", fields: [
     ...name === null ? [{ id: "name", title: "Name", kind: "text", value: "", placeholder: "test" }] : [],
-    { id: "description", title: "Description", kind: "lines", value: text7(before.description), placeholder: "Shown in the list when you type /" },
-    { id: "agent", title: "Agent", kind: "choice", value: text7(before.agent), choices: [{ id: "", title: "The session's agent" }, ...agents.map((id) => ({ id, title: id }))] },
-    { id: "model", title: "Model", kind: "choice", value: text7(before.model), choices: [{ id: "", title: "The agent's or session's model" }, ...models.map(([id, title]) => ({ id, title, ...modelOf3(id) }))] },
+    { id: "description", title: "Description", kind: "lines", value: text9(before.description), placeholder: "Shown in the list when you type /" },
+    { id: "agent", title: "Agent", kind: "choice", value: text9(before.agent), choices: [{ id: "", title: "The session's agent" }, ...agents.map((id) => ({ id, title: id }))] },
+    { id: "model", title: "Model", kind: "choice", value: text9(before.model), choices: [{ id: "", title: "The agent's or session's model" }, ...models.map(([id, title]) => ({ id, title, ...modelOf3(id) }))] },
     { id: "subagent", title: "Run as a subagent", kind: "switch", value: before.subagent === true, line: "In the background, without filling up the conversation." },
-    { id: "template", title: "Prompt", kind: "lines", mono: true, value: text7(before.template), line: PROMPT }
+    { id: "template", title: "Prompt", kind: "lines", mono: true, value: text9(before.template), line: PROMPT }
   ] };
 }
 function readForm3(known, name, values, before = {}) {
@@ -67689,8 +76191,8 @@ function readForm3(known, name, values, before = {}) {
     fields.push({ id, words, tone: "warning" });
     ready = false;
   };
-  const typed = text7(values.name).trim().replace(/^\/+|\/+$/g, "");
-  const id = name ?? commandName(text7(values.name));
+  const typed = text9(values.name).trim().replace(/^\/+|\/+$/g, "");
+  const id = name ?? commandName(text9(values.name));
   if (name === null) {
     if (!id) {
       fields.push({ id: "name", words: typed ? "A name needs a letter or a number." : "A short name without spaces: you'll type / and this name.", tone: typed ? "warning" : "quiet" });
@@ -67713,9 +76215,9 @@ function readForm3(known, name, values, before = {}) {
   const models = form2(known, name, before).fields.find((each) => each.id === "model").choices;
   if (typeof values.model === "string" && !models.some((each) => each.id === values.model))
     warn("model", "Pick one of its choices.");
-  const entry = { ...before, template: text7(values.template) };
+  const entry = { ...before, template: text9(values.template) };
   for (const key of ["description", "agent", "model"]) {
-    const value = text7(values[key]).trim();
+    const value = text9(values[key]).trim();
     if (value)
       entry[key] = value;
     else
@@ -67739,7 +76241,7 @@ async function page3(context) {
     const entry = commands[name];
     const valid = isObject(entry);
     const can = valid ? true : { why: "This command isn't a set of fields: change it in the settings file." };
-    return item({ id: `command-${name}`, title: `/${name}`, kind: "actions", ...valid && text7(entry.description) ? { line: text7(entry.description) } : {}, actions: [
+    return item({ id: `command-${name}`, title: `/${name}`, kind: "actions", ...valid && text9(entry.description) ? { line: text9(entry.description) } : {}, actions: [
       { id: "edit", title: "Edit…", can, form: form2(known, name, valid ? entry : {}) },
       { id: "remove", title: "Delete Command…", can, style: "destructive", confirm: { title: `Delete /${name}?`, body: "It's removed from the engine's settings.", button: "Delete" } }
     ] });
@@ -67749,7 +76251,7 @@ async function page3(context) {
     groups.push({ id: "claude-commands", title: "From Claude Code", note: "Commands in ~/.claude/commands. Their prompts come over as they are.", rows: known.imports.map((each) => row({ id: `import-${each.name}`, title: `/${each.name}`, line: each.description, kind: each.imported ? "status" : "actions", ...each.imported ? { value: "Imported" } : { actions: [{ id: "import", title: "Import" }] } })) });
   const others = known.commands.filter((each) => typeof each.name === "string" && !(each.name in commands));
   if (others.length)
-    groups.push({ id: "other-commands", title: "Also Available", rows: others.map((each) => row({ id: `available-${each.name}`, title: `/${each.name}`, kind: "status", ...text7(each.description) ? { line: text7(each.description).replace(/^./, (letter) => letter.toUpperCase()) } : {} })) });
+    groups.push({ id: "other-commands", title: "Also Available", rows: others.map((each) => row({ id: `available-${each.name}`, title: `/${each.name}`, kind: "status", ...text9(each.description) ? { line: text9(each.description).replace(/^./, (letter) => letter.toUpperCase()) } : {} })) });
   return { id: "commands", title: "Commands", groups };
 }
 var write3 = (context, name, value, was) => asked8(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["commands", name], value, was: was ?? null }] });
@@ -68144,15 +76646,15 @@ var filled = (setup, name) => ({
   runs: setup.url ? "remote" : "local",
   ...setup.url ? { url: setup.url, headers: Object.entries(setup.headers).map(([key, value]) => ({ key, value })) } : { command: commandLine3(setup.command), environment: Object.entries(setup.environment).map(([key, value]) => ({ key, value })) }
 });
-var text8 = (value) => typeof value === "string" ? value : "";
-var pairs = (value) => Array.isArray(value) ? value.filter(isObject).map((each) => ({ key: text8(each.key).trim(), value: text8(each.value) })) : [];
+var text10 = (value) => typeof value === "string" ? value : "";
+var pairs = (value) => Array.isArray(value) ? value.filter(isObject).map((each) => ({ key: text10(each.key).trim(), value: text10(each.value) })) : [];
 function readForm4(context, known, name, values, before = {}) {
   const fields = [];
   const say = (id, words, tone) => fields.push({ id, words, tone });
   let ready = true;
   let fill;
   for (const at of name === null ? ["name", "command"] : ["command"]) {
-    const typed = text8(values[at]);
+    const typed = text10(values[at]);
     const several = serverSetups(typed);
     if (several.length > 1) {
       say(at, `This sets up ${several.length} servers (${several.map((each) => each.name ?? "unnamed").join(", ")}). Paste one server’s part at a time.`, "warning");
@@ -68169,7 +76671,7 @@ function readForm4(context, known, name, values, before = {}) {
   }
   let id;
   if (name === null) {
-    const typed = text8(values.name).trim();
+    const typed = text10(values.name).trim();
     id = serverId(typed);
     const taken = valueAt(known.settings, [...SERVERS2, id]) !== undefined || (known.servers ?? []).some((each) => each?.name === id);
     const why = !id ? typed ? "A name needs a letter or a number." : null : BUILT_IN.has(id) ? "Kuvo Code uses that name for its own tools." : known.integrations.has(id) ? `${known.integrations.get(id)} uses that name: add it in Integrations, or pick another name.` : taken ? `There's a server called ${id} already.` : null;
@@ -68192,7 +76694,7 @@ function readForm4(context, known, name, values, before = {}) {
       entry.oauth = before.oauth;
     else if (values.oauth === false)
       entry.oauth = false;
-    const typed = text8(values.url).trim();
+    const typed = text10(values.url).trim();
     const url = webAddress(typed);
     if (!typed) {
       say("url", "Its address, like https://example.com/mcp.", "quiet");
@@ -68206,7 +76708,7 @@ function readForm4(context, known, name, values, before = {}) {
       entry.url = url;
     }
   } else {
-    const words = commandWords2(text8(values.command));
+    const words = commandWords2(text10(values.command));
     if (!words.length) {
       if (!fields.some((each) => each.id === "command"))
         say("command", "The command that starts it.", "quiet");
@@ -68222,7 +76724,7 @@ function readForm4(context, known, name, values, before = {}) {
           say("command", `${found.name} isn’t on ${where}` + (sourceOf2(found.name) ? `. It comes with ${sourceOf2(found.name)}: install that there first.` : ". Install it there first, or use a command it has."), "warning");
       }
     }
-    const cwd = text8(values.cwd).trim();
+    const cwd = text10(values.cwd).trim();
     if (cwd)
       entry.cwd = cwd;
   }
@@ -68441,7 +76943,7 @@ async function mcpAct(context, at, action, values) {
     case "sign-in":
       return signIn(context, known, at.id, name);
     case "finish": {
-      const pasted = text8(values?.code).trim();
+      const pasted = text10(values?.code).trim();
       if (!pasted)
         return { status: 400, message: "Paste the address the sign-in page ended on." };
       const loaded = await asked8(context, (ctx) => loadSignInReturn(ctx.request.body, ctx.signal), "POST", "kuvo/sign-in/return", { url: pasted });
@@ -68594,8 +77096,8 @@ function listedAgents2(known) {
 }
 var engineAgent = (known, id) => known.agents?.find((each) => each.id === id);
 var nameOf6 = (known, id) => isBuiltIn(id) ? engineAgent(known, id)?.name || id.charAt(0).toUpperCase() + id.slice(1) : id;
-var text9 = (value) => typeof value === "string" ? value : "";
-var modeOf2 = (known, id, entry) => text9(entry?.mode) || engineAgent(known, id)?.mode || BUILT_IN_MODES[id] || "all";
+var text11 = (value) => typeof value === "string" ? value : "";
+var modeOf2 = (known, id, entry) => text11(entry?.mode) || engineAgent(known, id)?.mode || BUILT_IN_MODES[id] || "all";
 var BUILT_IN_RULES = {
   plan: { edit: "deny" },
   general: { subagent: "deny" },
@@ -68652,7 +77154,7 @@ function agentForm(context, known, id) {
   const { rules, editable, list } = ownRules(entry);
   const own = Array.isArray(permissions) ? permissions : [];
   const locked = !list ? { why: "Its permissions in the settings file aren't a list of rules: change them there." } : editable ? undefined : { why: "Its permissions are in an order only the settings file keeps: change them there." };
-  const model = text9(entry?.model);
+  const model = text11(entry?.model);
   const models = [
     { id: "", title: "Default", line: "A mode uses the session's model; a subagent the one Settings › Models gives subagents." },
     ...(known.models ?? []).map((each) => ({ id: each.id, title: each.title, line: each.line })),
@@ -68665,7 +77167,7 @@ function agentForm(context, known, id) {
       id: "description",
       title: "Description",
       kind: "lines",
-      value: text9(entry?.description),
+      value: text11(entry?.description),
       placeholder: builtIn ? BUILT_IN_WORDS[id] ?? "" : "What it's for, like: Finds bugs and explains them, without changing code",
       line: "Other agents read it to know when to hand it work."
     },
@@ -68675,7 +77177,7 @@ function agentForm(context, known, id) {
       id: "system",
       title: "Instructions",
       kind: "lines",
-      value: text9(entry?.system),
+      value: text11(entry?.system),
       placeholder: builtIn ? "Its built-in instructions" : "How it works: what to look for, what to leave alone, how to report back.",
       line: builtIn ? "Leave empty to keep its built-in instructions. Anything here replaces them; the project's AGENTS.md, skills and MCP servers still apply." : "The project's AGENTS.md, skills and MCP servers apply too."
     },
@@ -68719,7 +77221,7 @@ function readForm5(known, id, values) {
     return { fields: [{ id: "name", words: "The engine's agents in its settings file aren't in a form Kuvo can change: change them there.", tone: "warning" }], ready: false };
   let target = id;
   if (id === null) {
-    const typed = text9(values.name).trim();
+    const typed = text11(values.name).trim();
     const made = agentId(typed);
     const lower = made.toLowerCase();
     const taken = Object.keys(agents).some((each) => each.toLowerCase() === lower) || isBuiltIn(lower) || (known.agents ?? []).some((each) => each.id?.toLowerCase() === lower || each.name?.toLowerCase() === lower);
@@ -68741,15 +77243,15 @@ function readForm5(known, id, values) {
     target = made || null;
   }
   const before = id === null ? undefined : entryOf2(known, id);
-  const mode = text9(values.mode);
+  const mode = text11(values.mode);
   if (!MODES2.some((each) => each.id === mode)) {
     say("mode", "Pick how it's used.", "warning");
     ready = false;
   } else {
     say("mode", MODE_DETAIL[mode], "quiet");
   }
-  const model = text9(values.model);
-  const offered = !model || model === text9(before?.model) || (known.models ?? []).some((each) => each.id === model);
+  const model = text11(values.model);
+  const offered = !model || model === text11(before?.model) || (known.models ?? []).some((each) => each.id === model);
   if (!offered) {
     say("model", `${model} isn't a model here.`, "warning");
     ready = false;
@@ -68774,7 +77276,7 @@ function readForm5(known, id, values) {
     }
     const named = [...new Set([...OTHER_ACTIONS, ...kept.filter(isRule2).map((rule) => rule.action)])];
     const rules = RULE_FIELDS.flatMap((field) => {
-      const read = parseRules(text9(values[field.id]), field.effect, named);
+      const read = parseRules(text11(values[field.id]), field.effect, named);
       if (read.why) {
         say(field.id, read.why, "warning");
         ready = false;
@@ -68790,7 +77292,7 @@ function readForm5(known, id, values) {
     delete entry.mode;
   else
     entry.mode = mode;
-  for (const [key, value] of [["description", text9(values.description).trim()], ["model", model], ["system", text9(values.system).trim()]]) {
+  for (const [key, value] of [["description", text11(values.description).trim()], ["model", model], ["system", text11(values.system).trim()]]) {
     if (value)
       entry[key] = value;
     else if (typeof before?.[key] === "string")
@@ -68823,7 +77325,7 @@ async function agentsPage(context) {
     const entry = entryOf2(known, id);
     const builtIn = isBuiltIn(id);
     const mode = modeOf2(known, id, entry);
-    const description = text9(entry?.description) || (builtIn ? BUILT_IN_WORDS[id] : "") || "";
+    const description = text11(entry?.description) || (builtIn ? BUILT_IN_WORDS[id] : "") || "";
     const name = nameOf6(known, id);
     const actions = [
       { id: "edit", title: "Edit…", form: agentForm(context, known, id) },
@@ -69053,8 +77555,8 @@ function itemFields(each) {
 var keptWords = (state, computer) => state.store === "keychain" ? `Kept in ${whose(computer)} Keychain. Agents fill them in or hand them to a command without ever seeing them, only as you allow.` : `Kept on ${computer}, encrypted, with a key only the Kuvo that made it keeps. Agents fill them in or hand them to a command without ever seeing them, only as you allow. Its browser runs as you, so a program you or an agent runs there could get an item an agent there may use.`;
 var addForm = (known, computer) => ({ title: "Add Item", submit: "Add", fields: itemFields(null), note: keptWords(known.state, computer) });
 var editForm = (each) => ({ title: each.name, submit: "Save", fields: itemFields(each), note: "A value left empty stays as it is." });
-var text10 = (value) => typeof value === "string" ? value : "";
-var pairs2 = (value) => Array.isArray(value) ? value.filter(isObject).map((each) => ({ key: text10(each.key).trim(), value: text10(each.value) })) : [];
+var text12 = (value) => typeof value === "string" ? value : "";
+var pairs2 = (value) => Array.isArray(value) ? value.filter(isObject).map((each) => ({ key: text12(each.key).trim(), value: text12(each.value) })) : [];
 var SHORTEST2 = 4;
 var FIELD2 = /^[a-z][a-z0-9_]{0,39}$/;
 var LARGEST_FILE = 700000;
@@ -69069,7 +77571,7 @@ function readForm6(known, each, values, submit = false) {
   const kind = each?.kind ?? values.kind;
   if (!ITEM_KINDS.includes(kind))
     return { fields: [{ id: "kind", words: "Pick what it is.", tone: "warning" }], ready: false };
-  const name = text10(values.name).trim();
+  const name = text12(values.name).trim();
   if (!name) {
     say("name", "Give it a name.", "quiet");
     ready = false;
@@ -69079,7 +77581,7 @@ function readForm6(known, each, values, submit = false) {
   const siteField = kind === "login" ? "site" : "hosts";
   const sites = [];
   if (kind === "login" || kind === "key") {
-    for (const typed of text10(values[siteField]).split(/[\s,]+/).filter(Boolean)) {
+    for (const typed of text12(values[siteField]).split(/[\s,]+/).filter(Boolean)) {
       const site = siteOf2(typed);
       if (!site)
         say(siteField, `“${typed.slice(0, 80)}” isn’t a site.`, "warning");
@@ -69091,13 +77593,13 @@ function readForm6(known, each, values, submit = false) {
       ready = false;
     }
   }
-  const given = { kind, name, sites, username: kind === "login" ? text10(values.username).trim() : "", values: {} };
+  const given = { kind, name, sites, username: kind === "login" ? text12(values.username).trim() : "", values: {} };
   if (kind === "login")
     given.signInOnly = values.signInOnly === true;
   if (kind === "note")
     given.readable = values.readable === true;
   const secret = (id, field, required) => {
-    const typed = text10(values[id]);
+    const typed = text12(values[id]);
     if (!typed) {
       if (required) {
         say(id, kind === "note" ? "What it says." : kind === "login" ? "Its password." : "Its value.", "quiet");
@@ -69113,10 +77615,10 @@ function readForm6(known, each, values, submit = false) {
     secret("password", "password", !each);
   if (kind === "key") {
     secret("value", "value", !each);
-    const removed = text10(values.remove);
+    const removed = text12(values.remove);
     for (const field of each?.fields.filter((name) => name !== "value") ?? []) {
       if (field === removed) {
-        if (text10(values[`field-${field}`]))
+        if (text12(values[`field-${field}`]))
           say(`field-${field}`, `${label(field)} is being removed: leave it empty, or don’t remove it.`, "warning");
         else
           given.values[field] = null;
@@ -69153,7 +77655,7 @@ function readForm6(known, each, values, submit = false) {
     } else if (size === 0) {
       say("file", "That file is empty.", "warning");
     } else {
-      const fileName = path211.basename(text10(file?.name).trim());
+      const fileName = path211.basename(text12(file?.name).trim());
       if (fileName)
         given.fileName = fileName;
       if (data !== null)
@@ -69458,7 +77960,7 @@ async function vaultAct(context, at, action, values) {
           return { status: 403, message: CANT_CONFIRM };
         return staleOr404(await answer({ answer: "always" }));
       case "give": {
-        const given = text10(values?.item);
+        const given = text12(values?.item);
         if (!known.items.some((each) => each.id === given))
           return { status: 400, message: "Pick an item to give.", fields: [{ id: "item", words: "Pick an item to give.", tone: "warning" }] };
         const always = values?.how === "always";
@@ -69532,7 +78034,7 @@ async function vaultAct(context, at, action, values) {
         if (now(who) !== value)
           wanted.push({ who, how: value });
       }
-      const more = text10(values?.["add-bot"]);
+      const more = text12(values?.["add-bot"]);
       if (more && more !== "none") {
         if (!confirmsYou(context))
           return { status: 403, message: CANT_CONFIRM };
@@ -72211,7 +80713,7 @@ function rollBackCode() {
   const ran = spawnSync22("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
   return ran.status === 0 && !updateOnTrial();
 }
-async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
+async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window: window2 = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
   noteTrialEnded();
   if (!updateOnTrial() || isUpdating() || judging2() || stoppedOnPurpose2())
     return "none";
@@ -72291,7 +80793,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
       }
       judged.well = PIECES.every((piece) => looked[piece].ok) ? judged.well + passed : 0;
       noteUpdate({ trial: { ...trial, judged } });
-      if (judged.well >= window) {
+      if (judged.well >= window2) {
         noteUpdate({ trial: { ...trial, judged, healthy: true } });
         if (!confirmUpdate())
           return "none";

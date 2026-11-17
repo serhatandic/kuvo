@@ -734,10 +734,24 @@ impl Queue {
                 }
             }
         }
+        let removals = body["removeInlineImages"].as_array();
+        if let Some(removals) = removals {
+            let mut text = item["body"].as_str().unwrap_or_default().to_owned();
+            for (range, url) in kuvo_ui::markdown::image_ranges(&text).into_iter().rev() {
+                if removals.iter().any(|removal| removal["url"].as_str() == Some(&url)) {
+                    text.replace_range(range, "");
+                }
+            }
+            item["body"] = json!(text);
+        }
         item["updated"] = json!({ "at": now, "by": { "user": true } });
         let said = self.answered(&item);
         self.items[at] = item;
-        (200, json!({ "item": said }))
+        let mut answer = json!({ "item": said });
+        if removals.is_some() {
+            answer["inlineImagesApplied"] = json!(true);
+        }
+        (200, answer)
     }
 
     fn change_labels(&mut self, body: &Value) -> (u16, Value) {

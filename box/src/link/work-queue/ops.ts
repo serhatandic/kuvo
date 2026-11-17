@@ -1,3 +1,4 @@
+import { withoutPictures } from "./markdown";
 // What changes the Work Queue (PROTOCOL.md, "The Work Queue"): an item added, changed, handed on,
 // deleted or brought back, moved by you, and files kept with it. The tools and the routes both come
 // here, so an agent's change and yours follow the same rules.
@@ -392,6 +393,7 @@ export interface Fields {
   files?: unknown;
   /** Links (by address) and files (by name) to take away: one list for both. */
   remove?: unknown;
+  removeInlineImages?: unknown;
 }
 
 /** Who acts, when, the files it read for the change (`stageFiles`), and what's to be done on disk
@@ -466,6 +468,24 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
     item.title = title;
   }
   if (fields.body !== undefined) item.body = text(fields.body, MOST_BODY, "The description (body)");
+  if (fields.removeInlineImages !== undefined) {
+    if (!Array.isArray(fields.removeInlineImages) || fields.removeInlineImages.length > MOST_FILES) refuse("Choose pictures to remove and try again.");
+    const images = item.files.filter(file => typeof file.type === "string" && file.type.startsWith("image/"));
+    const urls = new Set<string>();
+    for (const removal of fields.removeInlineImages as unknown[]) {
+      if (!isObject(removal) || typeof removal.url !== "string" || typeof removal.name !== "string") refuse("Choose pictures to remove and try again.");
+      const { url, name } = removal as { url: string; name: string };
+      const kept = url.match(/^kuvo-attachment:file\/([a-f0-9]{24})$/);
+      const legacy = url.match(/^kuvo-attachment:legacy\/([0-9]{1,3})$/);
+      const draft = url.match(/^kuvo-attachment:draft\/[0-9]+\/([^/]+)$/);
+      let named: string | undefined;
+      try { if (draft) named = decodeURIComponent(draft[1]); } catch {}
+      if ((kept && images.some(file => file.anchor === kept[1] && file.name === name)) ||
+          (legacy && images[Number(legacy[1]) - 1]?.name === name) ||
+          (named === name && images.some(file => file.name === name))) urls.add(url);
+    }
+    item.body = withoutPictures(item.body, urls);
+  }
   if (fields.status !== undefined) {
     const status = statusFor(fields.status);
     // (An issue's or a pull request's Done is GitHub's: never set, nor left, here.)
@@ -553,31 +573,56 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
   const staged = fields.files === undefined ? [] : acting.staged ?? refuse("Only an agent's own files are kept with an item.");
   const left = item.files.filter(file => !gone.has(file.name));
   if (left.length + staged.length > MOST_FILES) refuse(`An item keeps ${MOST_FILES} files at most: take some away first (remove).`);
-  for (const file of item.files) if (gone.has(file.name)) acting.fileOps.push(() => fs.rmSync(path.join(filesOf(item.id), file.name), { force: true }));
+  const removed = item.files.filter(file => gone.has(file.name));
   item.files = left;
-  const anchors = new Map<number, string>();
-  for (const each of staged) {
-    const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
-    const ext = path.extname(base);
-    let name = base;
-    for (let n = 2; item.files.some(file => file.name === name); n++) name = `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
-    const anchor = each.clientIndex === undefined ? undefined : crypto.randomBytes(12).toString("hex");
-    if (anchor && each.clientIndex !== undefined) anchors.set(each.clientIndex, anchor);
-    item.files.push({ name, size: each.size, type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) });
-    acting.fileOps.push(() => {
-      fs.mkdirSync(filesOf(item.id), { recursive: true, mode: 0o700 });
-      fs.renameSync(each.staged, path.join(filesOf(item.id), name));
-    });
-  }
-  if (fields.body !== undefined && anchors.size) {
-    item.body = text(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
-      const anchor = anchors.get(Number(index));
-      const file = anchor && item.files.find(file => file.anchor === anchor);
-      if (!file) return marker;
-      const label = file.name.replace(/[\\[\]]/g, char => "\\" + char).replace(/[\r\n]/g, " ");
-      return `![${label}](kuvo-attachment:file/${anchor})`;
-    }), MOST_BODY, "The description (body)");
-  }
+  if (staged.length || removed.length) acting.fileOps.push(() => {
+    const folder = filesOf(item.id);
+    const reserved: string[] = [];
+    const anchors = new Map<number, KeptFile>();
+    const fold = (name: string) => name.normalize("NFC").toLowerCase();
+    const used = new Set(left.map(file => fold(file.name)));
+    try {
+      for (const each of staged) {
+        const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
+        const ext = path.extname(base);
+        fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+        let kept = false;
+        for (let n = 1; n <= 1_000; n++) {
+          const name = n === 1 ? base : `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
+          if (used.has(fold(name))) continue;
+          try {
+            // Staging lives under the same queue directory. Linking either takes the name or
+            // fails without overwriting even on a case-insensitive volume.
+            fs.linkSync(each.staged, path.join(folder, name));
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+            return refuse("The attachment couldn’t be saved. Check the available space and try again.");
+          }
+          reserved.push(name);
+          used.add(fold(name));
+          const anchor = each.clientIndex === undefined ? undefined : crypto.randomBytes(12).toString("hex");
+          const file: KeptFile = { name, size: each.size, type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
+          if (each.clientIndex !== undefined) anchors.set(each.clientIndex, file);
+          item.files.push(file);
+          kept = true;
+          break;
+        }
+        if (!kept) refuse("There are too many files with that name. Rename the attachment and try again.");
+      }
+      if (fields.body !== undefined && anchors.size) {
+        item.body = text(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
+          const file = anchors.get(Number(index));
+          if (!file) return marker;
+          const label = file.name.replace(/[\\[\]]/g, char => "\\" + char).replace(/[\r\n]/g, " ");
+          return `![${label}](kuvo-attachment:file/${file.anchor})`;
+        }), MOST_BODY, "The description (body)");
+      }
+    } catch (error) {
+      for (const name of reserved) fs.rmSync(path.join(folder, name), { force: true });
+      throw error;
+    }
+    for (const file of removed) fs.rmSync(path.join(folder, file.name), { force: true });
+  });
   item.updated = { at: now, by: who };
 }
 

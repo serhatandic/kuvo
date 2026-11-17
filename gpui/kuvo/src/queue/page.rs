@@ -12,7 +12,6 @@ use kuvo_box::work_queue::{File, Item, ItemChange, ItemSession, Link};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
     button::{Button, ButtonSize},
-    markdown::Markdown,
     menu::{Menu, MenuEntry, PopoverMenu, Tooltip},
     small::{Chip, Switch, spinner},
     theme::{radius, space},
@@ -207,7 +206,7 @@ impl QueueView {
             Row::Session { session, first, last } => self.session_row(session, first, last, cx),
             Row::Link { link, first, last } => self.link_row(link, first, last, cx),
             Row::File { file, first, last } => self.file_row(file, first, last, cx),
-            Row::Said { ix, who, ago, text, first, last } => card_row(first, last, cx)
+            Row::Said { ix, who, ago, text, mentions, first, last } => card_row(first, last, cx)
                 .debug_selector(move || format!("item-note-{ix}"))
                 .px(space::S5)
                 .py(space::S3)
@@ -222,7 +221,7 @@ impl QueueView {
                         .when(!who.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(who)))
                         .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(ago)),
                 )
-                .child(Markdown::new(SharedString::from(format!("item-note-{ix}")), &text))
+                .child(self.item_reference_markdown(SharedString::from(format!("item-note-{ix}")), &text, &mentions, &[], cx))
                 .into_any_element(),
             Row::Facts(words) => div().debug_selector(|| "item-facts".into()).pt(space::S5).text_ui(TypeSize::Caption).text_color(c.text_faint).child(words).into_any_element(),
             Row::End => div().h(space::S10).into_any_element(),
@@ -697,7 +696,6 @@ impl QueueView {
         for (_, url) in attachments::anchors(text, &files) {
             if let Some(file) = attachments::resolve(&url, &files) { self.load_attachment(file, false, cx); }
         }
-        let display = self.item_reference_markdown(text, &mentions, &files);
         let cards = self.attachment_cards(cx);
         let width = (f32::from(self.viewport.width) - 380.).clamp(160., PAGE_WIDTH - 40.);
         let can_remove = self.whole().is_some_and(|whole| whole.item.can.edit && !whole.told);
@@ -707,20 +705,7 @@ impl QueueView {
         let mut seen = std::collections::HashSet::new();
         let extras = extras.into_iter().filter(|file| seen.insert(file.key()))
             .map(|file| cards.draw(file, width, 0., None, cx)).collect::<Vec<_>>();
-        let queue = self.queue().cloned().map(std::rc::Rc::new);
-        let items: std::collections::HashMap<_, _> = mentions.iter().filter_map(|mention| {
-            let item = self.numbered_item(mention.number)?.clone();
-            Some((mention.number, super::preview::Reference::new(item, queue.clone()?, self.client.clone(), self.live)))
-        }).collect();
-        let open = self.reference_click(cx);
-        let chip_open = open.clone();
-        let markdown = Markdown::new("item-body", "").item_links(&display, open)
-            .item_chips(std::rc::Rc::new(move |number, cx| {
-                let item = items.get(&number)?;
-                let open = chip_open.clone();
-                let url = format!("kuvo-item:{number}");
-                Some(item.chip(("description-item", number), move |window, cx| open(&url, window, cx), cx))
-            }))
+        let markdown = self.item_reference_markdown("item-body", text, &mentions, &files, cx)
             .pictures(std::rc::Rc::new(move |url, alt, cx| {
                 match attachments::resolve(url, &files) {
                     Some(file) if file.image => cards.draw(file, width, 450., can_remove.then(|| (url.to_owned(), false)), cx),

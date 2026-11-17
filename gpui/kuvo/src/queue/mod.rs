@@ -201,7 +201,7 @@ enum Row {
     Session { session: ItemSession, first: bool, last: bool },
     Link { link: Link, first: bool, last: bool },
     File { file: File, first: bool, last: bool },
-    Said { ix: usize, who: String, ago: String, text: String, first: bool, last: bool },
+    Said { ix: usize, who: String, ago: String, text: String, mentions: Vec<kuvo_box::work_queue::Mention>, first: bool, last: bool },
     Facts(String),
     End,
 }
@@ -943,7 +943,7 @@ impl QueueView {
             rows.push(Row::Section("Notes".into()));
             let last = whole.notes.len() - 1;
             // The newest first.
-            rows.extend(whole.notes.iter().rev().enumerate().map(|(ix, note)| Row::Said { ix, who: who(&note.by), ago: ago(note.at, now), text: note.text.clone(), first: ix == 0, last: ix == last }));
+            rows.extend(whole.notes.iter().rev().enumerate().map(|(ix, note)| Row::Said { ix, who: who(&note.by), ago: ago(note.at, now), text: note.text.clone(), mentions: note.mentions.clone(), first: ix == 0, last: ix == last }));
         }
         // Who added it and who changed it last, and whose queue it's in, as the box names them.
         let mut facts = Vec::new();
@@ -1380,6 +1380,7 @@ fn merge(wanted: &mut ItemChange, later: &ItemChange) {
         ($($field:ident),*) => { $(if later.$field.is_some() { wanted.$field = later.$field.clone(); })* };
     }
     over!(title, body, status, priority, labels, assignee, due);
+    wanted.remove_inline_images.extend(later.remove_inline_images.iter().cloned());
 }
 
 /// Who did something, by name: you, or the name the box gave (none: unsaid).

@@ -1,6 +1,6 @@
 use std::{ops::Range, rc::Rc, time::Duration};
 
-use gpui::{App, Context, Focusable as _, Window};
+use gpui::{App, Context, ElementId, Focusable as _, SharedString, Window};
 use kuvo_box::work_queue::{Item, Mention};
 use kuvo_ui::text_field::FieldLink;
 
@@ -93,11 +93,17 @@ impl QueueView {
     }
 
     pub(super) fn field_links(&self, text: &str, cx: &Context<Self>) -> Vec<FieldLink> {
-        if text != self.draft_mentions.0 { return Vec::new(); }
-        ranges(text, &self.draft_mentions.1).into_iter().filter_map(|(range, mention)| {
-            self.numbered_item(mention.number)?;
+        let mentions = if let Some(whole) = self.whole().filter(|whole| whole.body == text) {
+            &whole.mentions
+        } else if self.draft_mentions.0 == text {
+            &self.draft_mentions.1
+        } else {
+            return Vec::new();
+        };
+        ranges(text, mentions).into_iter().filter_map(|(range, mention)| {
+            self.mentioned_item(mention)?;
             let open = self.reference_click(cx);
-            let url = format!("kuvo-item:{}", mention.number);
+            let url = format!("kuvo-item:{}", mention_key(mention));
             Some(FieldLink { range, open: Rc::new(move |window, cx| open(&url, window, cx)) })
         }).collect()
     }
@@ -105,13 +111,16 @@ impl QueueView {
     pub(super) fn reference_click(&self, cx: &Context<Self>) -> kuvo_ui::markdown::LinkClick {
         let queue = cx.entity().downgrade();
         Rc::new(move |url: &str, _: &mut Window, cx: &mut App| {
-            if let Some(number) = url.strip_prefix("kuvo-item:").and_then(|number| number.parse().ok()) {
-                queue.update(cx, |queue, cx| {
-                    if let Some(id) = queue.numbered_item(number).map(|item| item.id.clone()) {
-                        queue.open_reference(id, cx);
-                    }
-                }).ok();
-            }
+            let Some(key) = url.strip_prefix("kuvo-item:") else { return };
+            queue.update(cx, |queue, cx| {
+                let item = match key.parse() {
+                    Ok(number) => queue.numbered_item(number),
+                    Err(_) => queue.queue().and_then(|said| said.items.iter().find(|item| item.id == key)),
+                };
+                if let Some(id) = item.map(|item| item.id.clone()) {
+                    queue.open_reference(id, cx);
+                }
+            }).ok();
         })
     }
 
@@ -133,11 +142,18 @@ impl QueueView {
         self.rebuild(cx);
     }
 
-    pub(super) fn item_reference_markdown(&self, text: &str, mentions: &[Mention], files: &[super::attachments::Attachment]) -> String {
-        let mut edits: Vec<_> = ranges(text, mentions).into_iter().filter(|(_, mention)| self.numbered_item(mention.number).is_some())
+    fn mentioned_item(&self, mention: &Mention) -> Option<&Item> {
+        match mention.item.as_deref() {
+            Some(id) => self.queue()?.items.iter().find(|item| item.id == id),
+            None => self.numbered_item(mention.number),
+        }
+    }
+
+    pub(super) fn item_reference_markdown(&self, id: impl Into<ElementId>, text: &str, mentions: &[Mention], files: &[super::attachments::Attachment], cx: &Context<Self>) -> kuvo_ui::markdown::Markdown {
+        let mut edits: Vec<_> = ranges(text, mentions).into_iter().filter(|(_, mention)| self.mentioned_item(mention).is_some())
             .map(|(range, mention)| {
                 let label = &text[range.clone()];
-                (range, format!("[{label}](kuvo-item:{})", mention.number))
+                (range, format!("[{label}](kuvo-item:{})", mention_key(mention)))
             }).collect();
         edits.extend(super::attachments::anchors(text, files).into_iter()
             .filter_map(|(range, url)| {
@@ -154,6 +170,23 @@ impl QueueView {
         for (range, value) in edits.into_iter().rev() {
             source.replace_range(range, &value);
         }
-        source
+        let queue = self.queue().cloned().map(Rc::new);
+        let items: std::collections::HashMap<_, _> = mentions.iter().filter_map(|mention| {
+            let item = self.mentioned_item(mention)?.clone();
+            Some((mention_key(mention), super::preview::Reference::new(item, queue.clone()?, self.client.clone(), self.live)))
+        }).collect();
+        let open = self.reference_click(cx);
+        let chip_open = open.clone();
+        kuvo_ui::markdown::Markdown::new(id, "").item_links(&source, open)
+            .item_chips(Rc::new(move |key, cx| {
+                let item = items.get(key)?;
+                let open = chip_open.clone();
+                let url = format!("kuvo-item:{key}");
+                Some(item.chip(SharedString::from(key.to_owned()), move |window, cx| open(&url, window, cx), cx))
+            }))
     }
+}
+
+fn mention_key(mention: &Mention) -> String {
+    mention.item.clone().unwrap_or_else(|| mention.number.to_string())
 }

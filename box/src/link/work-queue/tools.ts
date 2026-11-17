@@ -599,7 +599,13 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
   const status = statusName(item.status);
   const read = seenOf(item.source);
   const names = new Map(labels().map(each => [each.id, each.name]));
-  const related = relationsOf(item, allItems().filter(each => inView(caller.owner, each, overseenBy(caller.owner, facts.all)) || linkedTo(caller.owner, each)));
+  const all = allItems();
+  const overseen = overseenBy(caller.owner, facts.all);
+  const here = all.filter(each => inView(caller.owner, each, overseen) || linkedTo(caller.owner, each));
+  const elsewhere = itemsElsewhere(caller.owner, undefined,
+    new Set(all.filter(each => !each.removed).map(each => each.id)),
+    new Set(all.filter(each => each.removed).map(each => each.id)), { linked: true }).items;
+  const related = relationsOf(item, [...here, ...elsewhere]);
   const parts = [
     `${nameOf({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,
     item.source ? `On GitHub: ${read?.value ? read.gone ? `gone, or no longer visible to gh here, since ${agoWords(read.at, now)} (${seenWords(read.value.state)} before)` : `${seenWords(read.value.state)}, as read ${agoWords(read.at, now)}` : "not read yet"} · ${item.source.url ?? item.source.ref}${item.number !== undefined ? ` · was #${item.number}` : ""}` : "",

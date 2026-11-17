@@ -7,6 +7,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { readAttachment } from "./attachment-file";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
@@ -66,14 +67,12 @@ const sent = new Map<string, { at: number; key: string }>();
 // What goes for `item`: it whole (without where it's going), its files' bytes, and the labels it
 // has.
 function handPayload(item: Item): Record<string, unknown> {
-  const { handing, ...rest } = item;
+  const { handing, relations: _local, ...rest } = item;
   const files = item.files.flatMap(file => {
-    try {
-      return [{ name: file.name, data: fs.readFileSync(path.join(filesOf(item.id), file.name)).toString("base64") }];
-    } catch {
-      return [];
-    }
+    const bytes = readAttachment(item.id, file.name);
+    return bytes === null ? [] : [{ name: file.name, data: bytes.toString("base64") }];
   });
+
   const has = labels().filter(each => item.labels.includes(each.id));
   return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
 }
@@ -315,6 +314,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     }
     if (!statusNamed(item.status)) intoTodo(item, item.status, now);
     item.owner = owner;
+    delete item.relations;
     item.order = placeIn(book.items(), item.status);
     delete item.removed;
     book.queue(owner).items.push(item);

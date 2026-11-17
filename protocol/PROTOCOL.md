@@ -6812,13 +6812,13 @@ before (a linked item is its owner's to change). A client shows them first, as "
   on its own (one it can't read is as null, the others still chips), and keeps what it learns by
   the ref as asked, not by a number.
 - `POST kuvo/work-queue/refs {text}` → `{mentions: [{start, end, number}]}` for a client
-  editing a description. Ranges use UTF-16 code units. The same reference rule reads saved
-  descriptions and notes. Resolve the numbers against visible Work Queue items before drawing
-  links.
-- A whole item can include `bodyMentions`, with the same ranges into `body`, plus
-  `canLinkItems` and `itemRelations: [{id, title, number?, kind}]`. A mention is shown as
-  `mentions` and as `mentioned-in` on the other item. Both are derived from saved descriptions
-  and notes. They disappear when the last mention is removed.
+  editing a description. Ranges use UTF-16 code units. Code and Markdown links are skipped.
+- A whole item can include `bodyMentions` and `notes[].mentions`. Each uses the same ranges into
+  the corresponding text and names its target as `item`, the stable item ID. Use that ID when
+  showing or opening the chip. The box saves the binding with the text so an item keeps its
+  references when it moves or the number changes. `itemRelations: [{id, title, number?, kind}]`
+  lists `mentions` and `mentioned-in` from the saved descriptions and notes. The link goes away
+  when the last mention is removed.
 - `GET kuvo/work-queue/labels` → `{labels}`.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
@@ -6845,7 +6845,10 @@ An attachment can appear in a description as
 `![Attachment](kuvo-attachment:draft/<index>/<encoded original name>)` during a client
 save. The zero-based index refers to the `files` in that request. The box substitutes
 `![<stored name>](kuvo-attachment:file/<anchor>)` and includes that `anchor` on the stored
-file. A file's anchor stays with it when the item moves.
+file. A file's anchor stays with it when the item moves. To remove a picture from the item
+page, use `PATCH` with `removeInlineImages: [{url, name}]`, where `url` is the picture marker
+and `name` is the saved file name. The box applies it to the current description under the queue
+lock and answers `inlineImagesApplied: true`. The file stays attached.
 
 `POST kuvo/work-queue/items` `{title, body?, status?, priority?, labels?, assignee?, due?, top?,
 owner?, files?}` → `{item}`: an item added, `todo` and `normal` unless said, numbered as an agent's is. The
@@ -7085,7 +7088,8 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?}, shared?,
   items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
-  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on), an issue's or pull
+  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on) and
+  `mentionTargets` (stable IDs it mentions), an issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the

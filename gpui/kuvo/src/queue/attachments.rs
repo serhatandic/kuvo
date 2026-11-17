@@ -248,19 +248,21 @@ impl QueueView {
                 return;
             }
         }
-        let mut body = if editor { self.body.read(cx).text().to_owned() }
-            else if let Some(whole) = self.whole().filter(|whole| whole.item.can.edit && !whole.told) { whole.body.clone() }
-            else { return };
-        let files = self.whole().map(kept).unwrap_or_default();
-        let Some((range, _)) = anchors(&body, &files).into_iter().find(|(_, anchor)| anchor == url) else { return };
         if editor {
+            let files = self.whole().map(kept).unwrap_or_default();
+            let Some((range, _)) = anchors(self.body.read(cx).text(), &files).into_iter().find(|(_, anchor)| anchor == url) else { return };
             self.body.update(cx, |field, cx| {
                 field.select_range(range, cx);
                 field.replace_selection("", cx);
             });
-        } else if let Origin::Kept(item, _) = &file.origin {
-            body.replace_range(range, "");
-            self.act(super::Act::Set { item: item.clone(), change: Box::new(kuvo_box::work_queue::ItemChange { body: Some(body), ..Default::default() }) }, cx);
+        } else if let Origin::Kept(item, _) = &file.origin
+            && self.whole().is_some_and(|whole| whole.item.can.edit && !whole.told)
+        {
+            let change = kuvo_box::work_queue::ItemChange {
+                remove_inline_images: vec![(url.to_owned(), file.name.clone())],
+                ..Default::default()
+            };
+            self.act(super::Act::Set { item: item.clone(), change: Box::new(change) }, cx);
         }
     }
 

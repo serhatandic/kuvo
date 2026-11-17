@@ -151,6 +151,8 @@ pub struct Note {
     pub by: Who,
     #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
 }
 
 /// How far an item is, and what's being done now.
@@ -323,6 +325,8 @@ pub struct Mention {
     pub start: usize,
     pub end: usize,
     pub number: u64,
+    #[serde(default)]
+    pub item: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -464,6 +468,8 @@ pub struct ItemChange {
     pub body: Option<String>,
     /// New files to append; existing files stay with the item.
     pub files: Vec<crate::parts::File>,
+    /// Picture markers to remove from the current description, by URL and saved file name.
+    pub remove_inline_images: Vec<(String, String)>,
     pub status: Option<String>,
     pub priority: Option<String>,
     /// All of its labels, in place of those it had.
@@ -483,6 +489,10 @@ impl ItemChange {
             }
         };
         if !self.files.is_empty() { put("files", Some(json!(self.files))); }
+        if !self.remove_inline_images.is_empty() {
+            put("removeInlineImages", Some(json!(self.remove_inline_images.iter()
+                .map(|(url, name)| json!({ "url": url, "name": name })).collect::<Vec<_>>())));
+        }
         put("title", self.title.as_ref().map(|title| json!(title)));
         put("body", self.body.as_ref().map(|body| json!(body)));
         put("status", self.status.as_ref().map(|status| json!(status)));
@@ -608,7 +618,12 @@ impl BoxClient {
 
     /// Changes an item: what it says, where it stands, its priority, labels, assignee or due day.
     pub fn change_work_item(&self, item: &str, change: &ItemChange) -> Result<Item> {
-        self.item_answer(Request { method: "PATCH".into(), path: item_route(item), headers: Vec::new(), body: Some(change.body()) })
+        let request = Request { method: "PATCH".into(), path: item_route(item), headers: Vec::new(), body: Some(change.body()) };
+        let answer = self.item_reply(request)?;
+        if !change.remove_inline_images.is_empty() && answer.get("inlineImagesApplied").and_then(Value::as_bool) != Some(true) {
+            return Err(Error::BadAnswer("The picture couldn’t be removed. Update Kuvo on the computer that keeps this item, then try again.".into()));
+        }
+        Self::answered_item(answer)
     }
 
     /// Deletes an item (the box keeps it a while, to bring back).
@@ -657,11 +672,18 @@ impl BoxClient {
     }
 
     fn item_answer(&self, request: Request) -> Result<Item> {
+        Self::answered_item(self.item_reply(request)?)
+    }
+
+    fn item_reply(&self, request: Request) -> Result<Value> {
         let response = self.send(&request)?;
         if !response.is_success() {
             return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
         }
-        let answer: Value = serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(format!("The answer couldn't be read: {error}")))?;
+        serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(format!("The answer couldn't be read: {error}")))
+    }
+
+    fn answered_item(answer: Value) -> Result<Item> {
         serde_json::from_value(answer.get("item").cloned().unwrap_or(Value::Null)).map_err(|error| Error::BadAnswer(format!("The item couldn't be read: {error}")))
     }
 }
