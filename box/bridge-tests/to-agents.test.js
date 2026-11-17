@@ -208,7 +208,8 @@ test("what can't be is said, and nothing moves", async () => {
   const signedOut = await agentsBridge({ signedIn: false });
   const tried = async (id, model, agents = signedOut.at) => link.carryToAgents(id, model, () => engine.at, agents, undefined);
   assert.deepEqual(await tried("ses_mine", { id: "gpt", providerID: "openai" }), { status: 400, value: { message: "That isn’t a coding agent’s model." } });
-  assert.deepEqual(await tried("ses_mine", sonnet, null), { status: 503, value: { message: "The coding agents aren’t running on this machine." } });
+  // (No bridge here, and its program isn't in this test's home either: not installed, as it says.)
+  assert.deepEqual(await tried("ses_mine", sonnet, null), { status: 503, value: { message: "The coding agents aren't installed here yet. Kuvo's next update brings them." } });
   assert.deepEqual(await tried("ses_mine", sonnet), { status: 422, value: { message: "Claude Code needs a sign-in on this machine: sign in in Settings › Accounts, or choose another model." } });
   assert.equal((await tried("ses_gone", sonnet)).status, 404);
   // On its way to another computer.
