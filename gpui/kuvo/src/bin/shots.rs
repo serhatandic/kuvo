@@ -118,6 +118,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "select-code", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_code) },
     Screen { slug: "select-across", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_across) },
     Screen { slug: "select-menu", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(select_paragraph) },
+    Screen { slug: "message-hover-yours", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "message-hover-agent", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "select-finished", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "select-drag-1", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -149,6 +152,9 @@ const SCREENS: &[Screen] = &[
     // other area with a row picked, a narrow window folded and opened, and the first run.
     Screen { slug: "area-sessions", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "area-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "titlebar-bots-folded", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots_folded) },
+    Screen { slug: "titlebar-session", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "titlebar-session-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_folded) },
     Screen { slug: "area-queue", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "area-computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
     Screen { slug: "area-settings", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(usage) },
@@ -362,6 +368,17 @@ fn pick(workspace: &mut Workspace, area: Area, key: &str, window: &mut Window, c
     if let Some(view) = workspace.area_view(area).cloned() {
         view.update(cx, |view, cx| view.select(Some(key.to_owned()), cx));
     }
+}
+
+/// Bots with the sidebar folded: the group and the divider stay together, then the title.
+fn bots_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Bots, "bot:bot_mira", window, cx);
+    workspace.toggle_sidebar(window, cx);
+}
+
+/// A session with the sidebar folded.
+fn sidebar_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.toggle_sidebar(window, cx);
 }
 
 fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -1559,7 +1576,7 @@ fn main() -> anyhow::Result<()> {
                 cx.run_until_parked();
             }
             // A right-click on the selection, a row's session menu, or a drag that's under way, through the window.
-            if screen.slug == "select-menu" || screen.slug.starts_with("select-drag-") || screen.slug == "session-menu-row-menu" || screen.slug == "session-menu-held" {
+            if screen.slug == "select-menu" || screen.slug.starts_with("message-hover-") || screen.slug == "select-finished" || screen.slug.starts_with("select-drag-") || screen.slug == "session-menu-row-menu" || screen.slug == "session-menu-held" {
                 use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
                 cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");
@@ -1568,6 +1585,19 @@ fn main() -> anyhow::Result<()> {
                         mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
                         mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: at, button: MouseButton::Right, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
                         assert!(workspace.read(cx).session_menu().row_menus.get("session-project:ses_dark").is_some_and(|h| h.is_open()), "right-click at {at:?} missed ses_dark");
+                    } else if screen.slug.starts_with("message-hover-") {
+                        // The pointer over a message of yours, or of the agent's: its time, Copy and Quote show.
+                        let at = spot_of(workspace.read(cx), if screen.slug == "message-hover-yours" { "Keep what they typed" } else { "success path" }, false, cx);
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+                    } else if screen.slug == "select-finished" {
+                        // A drag finished: the button's up, and Add to Chat shows over the selection's end.
+                        use gpui::MouseUpEvent;
+                        let from = spot_of(workspace.read(cx), "the reset into the success path", false, cx);
+                        let to = spot_of(workspace.read(cx), "sets the error on", true, cx);
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: from, pressed_button: None, modifiers: Modifiers::default() }));
+                        mouse(window, cx, PlatformInput::MouseDown(MouseDownEvent { position: from, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+                        mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: to, pressed_button: Some(MouseButton::Left), modifiers: Modifiers::default() }));
+                        mouse(window, cx, PlatformInput::MouseUp(MouseUpEvent { position: to, button: MouseButton::Left, modifiers: Modifiers::default(), click_count: 1 }));
                     } else if screen.slug == "select-menu" {
                         let at = spot_of(workspace.read(cx), "success path", false, cx);
                         mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));

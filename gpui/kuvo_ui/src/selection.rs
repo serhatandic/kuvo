@@ -296,6 +296,14 @@ struct Inner {
     laid: Vec<Laid>,
     /// Whether the selection is the one in use (its transcript has the keyboard).
     emphasized: bool,
+    /// Whether the button came up on a selection (a drag, a double or triple click, a shift-click)
+    /// and nothing since has pressed, cleared or replaced it: the moment "Add to Chat" shows near
+    /// its end.
+    finished: bool,
+    /// Where the end of the selection was drawn when the card over it was last placed.
+    card_at: Option<Bounds<Pixels>>,
+    /// Whether its transcript puts a card over it at all (a group chat's doesn't yet).
+    card_used: bool,
 }
 
 /// A transcript's selection. Cheap to clone; clones share it.
@@ -315,6 +323,7 @@ impl SelectionState {
         if gone {
             inner.selection = None;
             inner.pending = false;
+            inner.finished = false;
         }
     }
 
@@ -341,6 +350,7 @@ impl SelectionState {
         let mut inner = self.0.borrow_mut();
         inner.selection = None;
         inner.pending = false;
+        inner.finished = false;
     }
 
     /// Selects from `anchor` to `head`.
@@ -370,6 +380,42 @@ impl SelectionState {
 
     pub fn is_dragging(&self) -> bool {
         self.0.borrow().pending
+    }
+
+    /// Whether a selection has just been finished (the button came up on it): it's what the
+    /// "Add to Chat" card over its end shows for, until the selection clears, a press lands
+    /// elsewhere, or it's used.
+    pub fn is_finished(&self) -> bool {
+        let inner = self.0.borrow();
+        inner.finished && !inner.pending && inner.selection.is_some()
+    }
+
+    /// Hides what shows for a finished selection, leaving the selection as it is.
+    pub fn dismiss_finished(&self) {
+        self.0.borrow_mut().finished = false;
+    }
+
+    /// Where the end of the selection (in reading order) was drawn this frame: its line's height,
+    /// at the end character's left edge. None if there's no selection, or its end isn't on screen.
+    pub fn end_bounds(&self) -> Option<Bounds<Pixels>> {
+        let (_, end) = self.range()?;
+        let inner = self.0.borrow();
+        let laid = inner.laid.iter().find(|laid| laid.unit == end.unit)?;
+        let at = laid.layout.position_for_index(end.offset.min(laid.text.len()))?;
+        let line = Bounds { origin: point(at.x, at.y), size: size(px(0.), laid.layout.line_height()) };
+        (laid.visible.contains(&line.origin) || laid.visible.contains(&point(at.x, at.y + line.size.height / 2.))).then_some(line)
+    }
+
+    /// The end's bounds for placing the card over it, remembered so a frame that draws it
+    /// elsewhere (the transcript scrolled) is seen, and drawn again.
+    pub fn card_anchor(&self) -> Option<Bounds<Pixels>> {
+        let at = if self.is_finished() { self.end_bounds() } else { None };
+        {
+            let mut inner = self.0.borrow_mut();
+            inner.card_at = at;
+            inner.card_used = true;
+        }
+        at
     }
 
     /// Where the character at `offset` of `unit` was drawn this frame (the middle of its line's
@@ -428,6 +474,7 @@ impl SelectionState {
         let text = self.laid(&spot.unit).unwrap_or_default();
         let mut inner = self.0.borrow_mut();
         inner.pending = true;
+        inner.finished = false;
         inner.press_selected = clicks > 1 || shift;
         inner.last_row = Some(spot.unit.row.clone());
         let within = |range: Range<usize>| (Spot::new(spot.unit.clone(), range.start), Spot::new(spot.unit.clone(), range.end));
@@ -479,6 +526,8 @@ impl SelectionState {
     /// shift-click to extend from.)
     pub fn release(&self) {
         let mut inner = self.0.borrow_mut();
+        let selected = inner.selection.as_ref().is_some_and(|s| s.anchor != s.head);
+        inner.finished = inner.pending && selected;
         inner.pending = false;
         inner.pointer = None;
         inner.origin = None;
@@ -490,6 +539,7 @@ impl SelectionState {
     fn press_off_text(&self, spot: Spot) {
         let mut inner = self.0.borrow_mut();
         inner.pending = true;
+        inner.finished = false;
         inner.press_selected = false;
         inner.deferred = Some(spot);
     }
@@ -925,6 +975,12 @@ impl Element for SelectionArea {
             window.refresh();
         });
         self.child.paint(window, cx);
+        // The card over a finished selection was placed from the frame before: if its end has moved
+        // (scrolled, or the window resized) or gone, draw again.
+        let (finished, placed, used) = (self.state.is_finished(), self.state.0.borrow().card_at, self.state.0.borrow().card_used);
+        if used && finished && self.state.end_bounds() != placed {
+            window.refresh();
+        }
     }
 }
 

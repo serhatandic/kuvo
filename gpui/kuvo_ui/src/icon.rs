@@ -154,6 +154,7 @@ icons! {
     Plus => "plus",
     Question => "question",
     Queue => "queue",
+    Quote => "quote",
     Return => "return",
     Search => "search",
     Send => "send",

@@ -19,7 +19,7 @@ use kuvo_box::pictures::Picture;
 
 use crate::pictures::Looks;
 use kuvo_ui::{
-    ActiveTheme, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     markdown::{self, Markdown, Selectable},
     output::{DiffView, OutputWell, diff_units, parse_patch, well_units},
     selection::{Lead, SelectableText, SelectionState, Unit},
@@ -279,8 +279,10 @@ pub fn render(
     around: &Around,
     selection: &SelectionState,
     looks: &Looks,
+    actions: Option<Actions>,
     cx: &App,
 ) -> AnyElement {
+    let actions = actions.map(|actions| actions_row(entry.key(), matches!(entry, Entry::Message(_)), &actions, cx));
     let body: AnyElement = match entry {
         Entry::Earlier => own,
         Entry::Outgoing { words, files, pictures, failed, waits, .. } => {
@@ -307,7 +309,7 @@ pub fn render(
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
     };
-    frame(ix, entry.key(), body, matches!(entry, Entry::Working { .. }))
+    frame_with(ix, entry.key(), body, matches!(entry, Entry::Working { .. }), actions)
 }
 
 /// A message as a conversation draws it, its text selectable in `selection` under row `key` (as
@@ -345,17 +347,103 @@ pub fn message_body(
 /// Row `ix` of a conversation, `key`: centred in a readable column and spaced from the next
 /// (`last`: the run under way, at the end, with more room under it).
 pub fn frame(ix: usize, key: &str, body: AnyElement, last: bool) -> AnyElement {
+    frame_with(ix, key, body, last, None)
+}
+
+/// [`frame`], with `actions` (a message's time, Copy and Quote) under it, in the gap to the next
+/// row: shown while the pointer is over the row, and taking no room, so nothing moves.
+pub fn frame_with(ix: usize, key: &str, body: AnyElement, last: bool, actions: Option<AnyElement>) -> AnyElement {
     let last_gap = if last { space::S8 } else { space::S5 };
     let selector = format!("entry-{key}");
+    let group = SharedString::from(format!("row-{key}"));
     div()
         .debug_selector(move || selector)
+        .group(group.clone())
         .w_full()
         .flex()
         .justify_center()
         .px(space::S6)
         .pb(last_gap)
         .when(ix == 0, |d| d.pt(space::S6))
-        .child(div().w_full().max_w(px(COLUMN)).child(body))
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .max_w(px(COLUMN))
+                .child(body)
+                .children(actions.map(|actions| div().absolute().left_0().right_0().bottom(-ACTIONS).h(ACTIONS).invisible().group_hover(group, |s| s.visible()).child(actions))),
+        )
+        .into_any_element()
+}
+
+/// The height of a message's actions row: the gap under a row, which it fills without growing.
+const ACTIONS: gpui::Pixels = space::S5;
+
+/// What a message's row can do under the pointer: its time, Copy and Quote.
+#[derive(Clone)]
+pub struct Actions {
+    /// When the message was written (ms since 1970).
+    pub time: f64,
+    /// Now, for saying its day.
+    pub now: f64,
+    /// Copy was just used on it.
+    pub copied: bool,
+    /// Copies its text, as Markdown.
+    pub copy: Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Quotes it into the composer, as Add to Chat does.
+    pub quote: Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// What Copy takes of `entry`, as Markdown, and when it was written: yours, and the agent's words.
+pub fn copyable(entry: &Entry) -> Option<(String, f64)> {
+    match entry {
+        Entry::Message(message) => match &**message {
+            Message::User(user) if !user.is_letter() => {
+                let words = user.parts().words.trim().to_owned();
+                (!words.is_empty()).then_some((words, user.time.created))
+            }
+            _ => None,
+        },
+        Entry::Words { step, parts, .. } => {
+            let text = parts.iter().filter_map(|n| match &step.content[*n] {
+                Content::Text(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+                _ => None,
+            });
+            let text = text.collect::<Vec<_>>().join("\n\n");
+            (!text.is_empty()).then_some((text, step.time.created))
+        }
+        _ => None,
+    }
+}
+
+/// A message's actions: its time (the day too, in its tooltip, when it isn't today), then Copy and
+/// Quote, at the row's end under yours and at its start under the agent's.
+fn actions_row(key: &str, yours: bool, actions: &Actions, cx: &App) -> AnyElement {
+    let c = &cx.theme().colors;
+    let clock = crate::time::clock(actions.time);
+    let when = crate::time::when(actions.time, actions.now);
+    let id = |what: &str| SharedString::from(format!("{what}-{key}"));
+    let (copy, quote) = (actions.copy.clone(), actions.quote.clone());
+    let time = div().id(id("message-time")).debug_selector({ let selector = format!("message-time-{key}"); move || selector }).px(space::S1).text_ui(TypeSize::Caption).text_color(c.text_faint).child(clock.clone()).when(when != clock, |d| {
+        let when = SharedString::from(when.clone());
+        d.tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(when.clone()).build(cx))
+    });
+    div()
+        .debug_selector({ let selector = format!("message-actions-{key}"); move || selector })
+        .size_full()
+        .flex()
+        .items_center()
+        .gap(space::S0_5)
+        .when(yours, |d| d.justify_end())
+        .child(time)
+        .child(
+            Button::icon_only(id("message-copy"), if actions.copied { IconName::Check } else { IconName::Copy }, if actions.copied { "Copied" } else { "Copy" })
+                .ghost()
+                .size(ButtonSize::Small)
+                .icon_size(IconSize::Nav)
+                .on_click(move |_, window, cx| copy(window, cx)),
+        )
+        .child(Button::icon_only(id("message-quote"), IconName::Quote, "Add to Chat").ghost().size(ButtonSize::Small).icon_size(IconSize::Nav).on_click(move |_, window, cx| quote(window, cx)))
         .into_any_element()
 }
 

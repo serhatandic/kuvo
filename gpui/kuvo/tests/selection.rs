@@ -351,3 +351,86 @@ fn what_you_select_in_a_reply_is_quoted_in_the_composer_and_sent_ahead_of_your_a
     let quoted = composer.read_with(cx, |composer, cx| composer.quotes(cx).first().map(|quote| quote.text.clone()));
     assert!(quoted.is_some_and(|text| text.contains("completely wiped if the email is already taken")));
 }
+
+#[gpui::test]
+fn finishing_a_selection_shows_add_to_chat_near_its_end_until_it_is_cleared_or_used(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    assert!(cx.debug_bounds("add-to-chat-card").is_none(), "nothing selected, no card");
+    let from = at(&view, "msg_s2#3", &[3, 0], "When the server", false, cx);
+    let to = at(&view, "msg_s2#3", &[3, 0], "(the email is taken)", true, cx);
+    // Mid-drag nothing shows; once the button comes up it does, over the selection's end.
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    assert!(cx.debug_bounds("add-to-chat-card").is_none(), "still dragging");
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let card = cx.debug_bounds("add-to-chat-card").expect("shown once the selection is finished");
+    assert!(card.bottom() <= to.y, "above the end of the selection: {card:?} / {to:?}");
+    assert!(card.left() <= to.x + px(1.) && to.x <= card.right() + px(1.) || card.left() >= to.x - px(1.), "level with its end: {card:?} / {to:?}");
+    // It doesn't take the keyboard: ⌘C still copies the selection.
+    assert_eq!(copied(cx), "When the server answers 409 (the email is taken)");
+    assert!(cx.debug_bounds("add-to-chat-card").is_some());
+
+    // A click elsewhere in the text clears it, and the card with it.
+    let elsewhere = at(&view, "msg_s1", &[0], "completely", false, cx);
+    clicks(elsewhere, 1, cx);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("add-to-chat-card").is_none(), "a click elsewhere takes it away");
+
+    // A double click finishes a selection too, and Escape lets go of it.
+    clicks(at(&view, "msg_s2#3", &[3, 0], "server", false, cx), 2, cx);
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("add-to-chat-card").is_some(), "a double click selects a word and finishes it");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("add-to-chat-card").is_none() && view.read_with(cx, |view, _| view.selected_text().is_empty()), "Escape clears it");
+
+    // Used: it quotes the selection as the menu's Add to Chat does, and goes.
+    drag(from, to, cx);
+    cx.run_until_parked();
+    let at_card = cx.debug_bounds("add-to-chat-card").unwrap().center();
+    cx.simulate_mouse_down(at_card, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_up(at_card, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    let composer = view.read_with(cx, |view, _| view.composer().clone());
+    assert_eq!(composer.read_with(cx, |composer, cx| composer.quotes(cx).iter().map(|quote| quote.text.clone()).collect::<Vec<_>>()), ["When the server answers 409 (the email is taken)"]);
+    assert!(cx.debug_bounds("add-to-chat-card").is_none() && view.read_with(cx, |view, _| view.selected_text().is_empty()));
+}
+
+
+fn bounds(cx: &mut VisualTestContext, selector: &str) -> Option<gpui::Bounds<Pixels>> {
+    cx.debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
+}
+
+#[gpui::test]
+fn a_message_shows_its_time_copy_and_quote_under_the_pointer_without_moving_anything(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx, "ses_signup");
+    let key = "msg_s2#3";
+    assert!(bounds(cx, &format!("message-actions-{key}")).is_none(), "hidden until the pointer is over it");
+    let row = bounds(cx, &format!("entry-{key}")).expect("the reply is drawn");
+    let below = cx.debug_bounds("entry-msg_s3").map(|next| next.top());
+    cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    let actions = bounds(cx, &format!("message-actions-{key}")).expect("shown on hover");
+    assert_eq!(bounds(cx, &format!("entry-{key}")), Some(row), "nothing moved");
+    assert_eq!(cx.debug_bounds("entry-msg_s3").map(|next| next.top()), below, "nor the next row");
+    let time = bounds(cx, &format!("message-time-{key}")).expect("its time");
+    assert!(actions.top() >= row.bottom() - px(24.) && time.left() < actions.left() + px(8.), "under the agent's words, at their start: {actions:?} / {time:?}");
+    assert!(time.right() <= bounds(cx, &format!("message-copy-{key}")).unwrap_or(time).left() + px(1.));
+
+    // Copy puts its Markdown on the clipboard, and shows a check.
+    let copy = bounds(cx, &format!("message-copy-{key}")).expect("Copy");
+    cx.simulate_click(copy.center(), Modifiers::default());
+    cx.run_until_parked();
+    let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+    assert!(text.contains("When the server answers **409** (the email is taken)"), "Markdown, as written: {text}");
+    assert!(view.read_with(cx, |view, _| view.copied_row() == Some(key.to_owned())), "the check shows");
+
+    // Quote does what the menu's Reply does.
+    let quote = bounds(cx, &format!("message-quote-{key}")).expect("Quote");
+    cx.simulate_click(quote.center(), Modifiers::default());
+    cx.run_until_parked();
+    let composer = view.read_with(cx, |view, _| view.composer().clone());
+    let quoted = composer.read_with(cx, |composer, cx| composer.quotes(cx).first().map(|quote| quote.text.clone()));
+    assert!(quoted.is_some_and(|text| text.contains("When the server answers 409")));
+}

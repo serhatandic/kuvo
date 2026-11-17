@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- In the desktop app's title bar, the sidebar button, the computer picker and back and forward now sit together over the sidebar, with a thin divider where the sidebar ends, and the page title starts after it. The extra + beside them is gone: New Session is still ⌘N and File › New Session, and each area keeps its own +.
+
+- In the desktop app, hover over any message, yours or the agent's, to see when it was written (the day too, in a tooltip, when it isn't today) and buttons to copy it as Markdown or add it to the chat.
+
+- In the desktop app, **Add to Chat** now shows over the end of what you select as soon as you let go, not only in the right-click menu. Esc, a click elsewhere, or using it puts it away.
+
 - In the desktop app, the bots in the Bots sidebar are bigger (40 points, with taller rows), so their faces and moods read at a glance. Bots elsewhere (the header, mentions, pickers) keep their sizes.
 
 - In the desktop app, menus and cards open from what you clicked, as on macOS: a button's menu right under it, lined up with its edge; the composer's menus just above their control; a usage ring's card to its right, level with its top; a right-click menu at the pointer. Near the window's edge, a menu opens up or to the left instead of covering what opened it, and always stays fully in the window.

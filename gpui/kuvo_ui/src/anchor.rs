@@ -144,6 +144,8 @@ enum Target {
     Parent(Rc<Cell<Option<Bounds<Pixels>>>>),
     /// A point in the window (the pointer, for a right-click).
     Point(Point<Pixels>),
+    /// An area in the window (the end of a selection's line), measured by the caller.
+    Area(Bounds<Pixels>),
 }
 
 /// A popover over everything else, opened from its trigger by [`place`]. Make it a child of its
@@ -169,6 +171,12 @@ impl Popover {
         Self { id: id.into(), target: Target::Point(position), placement: Placement::below().flush(), priority: 1, content: content.into_any_element() }
     }
 
+    /// `content`, opened from `area` in the window (the end of a selection, say), placed as
+    /// `placement` says: the one rule, whatever it opens from.
+    pub fn from_area(id: impl Into<ElementId>, area: Bounds<Pixels>, placement: Placement, content: impl IntoElement) -> Self {
+        Self { id: id.into(), target: Target::Area(area), placement, priority: 1, content: content.into_any_element() }
+    }
+
     /// Drawn over popovers of a lower priority (and what they draw, like a scrim).
     pub fn priority(mut self, priority: usize) -> Self {
         self.priority = priority;
@@ -182,7 +190,7 @@ impl RenderOnce for Popover {
         let placed = deferred(Placed { target: self.target.clone(), placement: self.placement, content }).with_priority(self.priority);
         match self.target {
             // (Absolute, so it takes no room in what holds it.)
-            Target::Point(_) => div().absolute().child(placed),
+            Target::Point(_) | Target::Area(_) => div().absolute().child(placed),
             // Measures the trigger as it's prepainted; the popover, deferred, is placed after.
             Target::Parent(measured) => div()
                 .absolute()
@@ -225,6 +233,7 @@ impl Element for Placed {
         let trigger = match &self.target {
             Target::Parent(measured) => measured.get().unwrap_or(Bounds { origin: bounds.origin, size: Size::default() }),
             Target::Point(at) => Bounds { origin: *at, size: Size::default() },
+            Target::Area(area) => *area,
         };
         let area = Bounds { origin: Point::default(), size: window.viewport_size() }.inset(window.client_inset().unwrap_or(px(0.)));
         let placed = place(trigger, size, area, self.placement);

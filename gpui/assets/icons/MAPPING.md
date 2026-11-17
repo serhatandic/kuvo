@@ -49,6 +49,7 @@ All icons use Lucide; none were kept/redrawn. SidebarLeft aliases sidebar.svg. S
 | plus | plus |
 | question | circle-help |
 | queue | list-todo |
+| quote | quote |
 | return | corner-down-left |
 | search | search |
 | send | send |

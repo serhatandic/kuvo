@@ -15,6 +15,7 @@ use kuvo_box::follow::{ConversationUpdate, Follow, Followed, Timing};
 use kuvo_box::BoxClient;
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    anchor::{Placement, Popover},
     chat_list::{ChatListState, chat_list},
     menu::{ContextMenuArea, Menu, MenuEntry},
     selection::{self, SelectionArea, SelectionState},
@@ -80,6 +81,9 @@ pub struct ConversationView {
     /// What's selected in its messages, and the keyboard for it (⌘C, ⌘A) once you select there.
     selection: SelectionState,
     transcript: FocusHandle,
+    /// The row whose Copy was just used (it shows a check for a moment), and how many times Copy
+    /// has been used, so only the last one's timer takes the check away.
+    copied: Option<(String, u64)>,
     client: BoxClient,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
@@ -148,6 +152,7 @@ impl ConversationView {
             focus: cx.focus_handle(),
             selection: SelectionState::new(),
             transcript: cx.focus_handle(),
+            copied: None,
             client: client.clone(),
             live,
             _queue_follow: None,
@@ -261,6 +266,76 @@ impl ConversationView {
         window.focus(&self.transcript, cx);
         cx.notify();
         found
+    }
+
+    /// The row whose Copy was just used (for tests).
+    pub fn copied_row(&self) -> Option<String> {
+        self.copied.as_ref().map(|(key, _)| key.clone())
+    }
+
+    /// Copies message `key`'s text (as Markdown) from the row's Copy: a check shows for two seconds.
+    fn copy_message(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some((text, _)) = self.entries.iter().find(|entry| entry.key() == key).and_then(entries::copyable) else { return };
+        selection::copy_to_clipboard(text, cx);
+        let clicks = self.copied.as_ref().map_or(0, |(_, clicks)| *clicks) + 1;
+        self.copied = Some((key.to_owned(), clicks));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            this.update(cx, |this, cx| {
+                if this.copied.as_ref().is_some_and(|(_, latest)| *latest == clicks) {
+                    this.copied = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Replies to message `key` whole, from the row's Quote: the same quote as the menu's Reply.
+    fn quote_message(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.entries.iter().position(|entry| entry.key() == key) else { return };
+        let text = self.message_text(ix);
+        self.quote(&text, window, cx);
+    }
+
+    /// Adds what's selected to the composer as a quote (the menu's Add to Chat), and lets go of the
+    /// selection.
+    fn add_selection_to_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.selected_text();
+        if text.is_empty() {
+            return;
+        }
+        self.quote(&text, window, cx);
+        self.selection.clear();
+        cx.notify();
+    }
+
+    /// The "Add to Chat" card over the end of a selection just finished (the button came up on it):
+    /// above it, flipping at the window's edges by the app's one rule. It takes no keyboard, so
+    /// ⌘C still copies; it goes with the selection, a press elsewhere, Escape, or its use.
+    fn selection_card(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let area = self.selection.card_anchor()?;
+        let theme = cx.theme().clone();
+        let c = &theme.colors;
+        let card = div()
+            .id("add-to-chat-card")
+            .debug_selector(|| "add-to-chat-card".into())
+            .occlude()
+            .p(space::S1)
+            .rounded(radius::NAV)
+            .bg(c.elevated)
+            .border_1()
+            .border_color(c.border)
+            .shadow(theme.elevated_shadow())
+            // (A press here is the card's: it neither starts a selection nor takes the keyboard.)
+            .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+            .child(Button::new("add-to-chat", "Add to Chat").icon(IconName::Quote).ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| this.add_selection_to_chat(window, cx))));
+        Some(Popover::from_area("add-to-chat-motion", area, Placement::above(), card).into_any_element())
     }
 
     fn copy(&mut self, _: &selection::Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -1219,7 +1294,19 @@ impl Render for ConversationView {
                 let around = entries::Around { open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))), waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix) };
                 let shown = this.row_pictures.get(entry.key()).map(|(_, _, pictures)| pictures.as_slice()).unwrap_or(&[]);
                 let looks = Looks { read: &this.pictures, shown, open: open.clone(), again: again.clone() };
-                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, cx)
+                let actions = entries::copyable(entry).map(|(_, time)| {
+                    let key = entry.key().to_owned();
+                    let (copier, quoter) = (list_view.clone(), list_view.clone());
+                    let (copy_key, quote_key) = (key.clone(), key.clone());
+                    entries::Actions {
+                        time,
+                        now: crate::time::now_ms(),
+                        copied: this.copied.as_ref().is_some_and(|(copied, _)| *copied == key),
+                        copy: Rc::new(move |_, cx| copier.update(cx, |this, cx| this.copy_message(&copy_key, cx))),
+                        quote: Rc::new(move |window, cx| quoter.update(cx, |this, cx| this.quote_message(&quote_key, window, cx))),
+                    }
+                });
+                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, actions, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.
@@ -1231,6 +1318,13 @@ impl Render for ConversationView {
                 .track_focus(&self.transcript)
                 .on_action(cx.listener(Self::copy))
                 .on_action(cx.listener(Self::select_all))
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                    if event.keystroke.key == "escape" && this.selection.is_finished() {
+                        this.selection.clear();
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }))
                 .size_full()
                 .child(ContextMenuArea::new("transcript-menu", area, move |window, cx| Self::transcript_menu(&menu_view, window, cx)).fill())
                 .into_any_element()
@@ -1274,6 +1368,7 @@ impl Render for ConversationView {
                             .child(div().w_full().max_w(px(COLUMN)).child(if asking && !beside { self.asks.clone().into_any_element() } else { self.composer.clone().into_any_element() }))
                     }),
             )
+            .children(self.selection_card(cx))
             .children(viewer)
     }
 }
