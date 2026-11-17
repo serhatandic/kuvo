@@ -266,7 +266,7 @@ keep)
     else
       boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
     fi
-    # COMPAT(0.7 files): the box tools put back from bin/.own. Goes once every box has repaired from a release once.
+    # COMPAT(0.7 files): the box tools put back from bin/.own. Goes 3 months after 0.8.0.
     # (Only until this box has repaired its files from a release once, which removes bin/.own: from
     # then on the repair below puts them back, from the release itself.)
     # An older Kuvo Code on a Mac (which touches run/attached as it connects) put its own

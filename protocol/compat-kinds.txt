@@ -8,6 +8,7 @@
 #          (GitHub's newest, 0.7.2, has no `boxes.json`); goes once a release with one is the newest
 # An item not named here is what an earlier version left, taken in once: it keeps its date from
 # before until the box's move carries it (#713) or it goes.
+0.7 app-agents-stopped stays
 0.7 engine-stop stays
 0.7 files stays
 0.7 keeper stays

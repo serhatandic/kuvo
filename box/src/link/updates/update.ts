@@ -392,7 +392,7 @@ export function roomForData(): boolean {
   return !free || Number(free) * 1024 + backupsSize() > size * 1.1 + 200_000_000;
 }
 
-// COMPAT(0.7 files): `bin/.own`, the box's own copies of the tools an older Mac puts its own over. Goes once every box has repaired from a release once.
+// COMPAT(0.7 files): `bin/.own`, the box's own copies of the tools an older Mac puts its own over. Goes on the user's word, once no Mac from before 1.0 connects.
 // The box's tools that an older Kuvo Code on a Mac (0.7 and before) puts its own over as it
 // connects: the box keeps copies of its own (`bin/.own`), which its keeper puts back, until a
 // repair from the release it runs (`repair.ts`) has found its files sound, and removed them.
@@ -607,7 +607,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     if (process.platform !== "darwin") bundles.length = 0;
     if (!files.includes("bin/box-version") || fs.readFileSync(path.join(stage, "files", "bin", "box-version"), "utf8").trim() !== manifest.version) throw new Error("The release's files aren't what it says.");
-    // COMPAT(0.7 files): the release's tools kept in `bin/.own`. Goes once every box has repaired from a release once.
+    // COMPAT(0.7 files): the release's tools kept in `bin/.own`. Goes on the user's word, once no Mac from before 1.0 connects.
     // Its tools kept as the box's own too (and put back with the rest, if it goes back), while it
     // keeps them (a box that has repaired from a release keeps none).
     if (fs.existsSync(path.join(K, "bin", ".own"))) for (const tool of OWN_TOOLS) {

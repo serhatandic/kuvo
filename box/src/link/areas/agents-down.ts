@@ -100,7 +100,7 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
     seenRunning();
     return { state: "running" };
   }
-  // COMPAT(retired-app agents-stopped): a box in a retired Mac app's folder, whose app wrote why it gave up. Goes once no Mac runs the retired app.
+  // COMPAT(0.7 app-agents-stopped): a box in the retired Mac app's folder, whose app wrote why it gave up. Goes on the user's word, once no Mac from before 1.0 connects.
   if (IS_MAC && !OWN_HOME_MAC && place.run === undefined) {
     try {
       const { why, retrying } = JSON.parse(fs.readFileSync(path.join(run, "agents-stopped"), "utf8"));

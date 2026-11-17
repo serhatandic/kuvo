@@ -11567,8 +11567,8 @@ before connects (the box notes one: `run/attached`).
   update refreshes while it's there), and its keeper puts each back where it differs once
   `run/attached` is newer than `bin/box-version`, but not while a Mac installs
   (`run/mac-installing`, an hour at most) or the box updates itself. Marking a box, a Mac puts its
-  `kuvo-npx` there only with its own engine version there, which it runs. This goes once every box
-  has repaired from a release once.
+  `kuvo-npx` there only with its own engine version there, which it runs. It goes on the user's
+  word, once no Mac from before 1.0 connects.
   <!-- compat: 0.7 files -->
 - **Messages it writes itself**: such a Mac, and every Mac and phone from before `messages.send`,
   writes a message's blocks itself and sends its text (`api/session/<id>/prompt`, `queue/add` with
@@ -11736,6 +11736,12 @@ can go three months after 0.8.0 ships.
   what that app kept in its own files and preferences brought into the box's, and its saved
   sign-ins taken into the vault. Like `kuvo-keys`, it goes on the user's word, never on a date.
   <!-- compat: 0.7 move -->
+- A box still in the folder of the retired Mac app (before 1.0), whose app ran the coding agents'
+  bridge and wrote why it gave up (`run/agents-stopped`, `{why, retrying}`): while that bridge is
+  down, the box says "This Mac's coding agents aren't running." with that why, and that Restart on
+  the Mac starts them unless they're tried again by themselves; with none written, they're
+  restarting, and a request doesn't wait for them ("The coding agents' state"). It goes on the
+  user's word, once no Mac runs the retired app. <!-- compat: 0.7 app-agents-stopped -->
 
 **Kuvo Code 0.8.0-beta.1.** It can go once 0.8.0 is out (a beta copy is offered the release).
 - It signs no documents: its setup and mail give its peers as a list (`peers`, with `peersAt` or
