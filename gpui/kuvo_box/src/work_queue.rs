@@ -309,12 +309,28 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct File {
     pub name: String,
+    pub anchor: Option<String>,
     #[serde(default)]
     pub size: u64,
     #[serde(default, rename = "type")]
     pub kind: String,
     #[serde(default)]
     pub at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Mention {
+    pub start: usize,
+    pub end: usize,
+    pub number: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ItemRelation {
+    pub id: String,
+    pub title: String,
+    pub number: Option<u64>,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -336,6 +352,9 @@ pub struct Whole {
     pub notes: Vec<Note>,
     pub files: Vec<File>,
     pub links: Vec<Link>,
+    pub mentions: Vec<Mention>,
+    pub relations: Vec<ItemRelation>,
+    pub can_link_items: bool,
 }
 
 /// An owner in a view: what it is, and its title.
@@ -530,7 +549,21 @@ impl BoxClient {
             notes: read_all(said.get("notes")),
             files: read_all(said.get("files")),
             links: read_all(said.get("links")),
+            mentions: read_all(said.get("bodyMentions")),
+            relations: read_all(said.get("itemRelations")),
+            can_link_items: said.get("canLinkItems").and_then(Value::as_bool).unwrap_or(false),
         })
+    }
+
+    /// Finds textual mentions by the same rule the queue uses to keep backlinks.
+    pub fn work_item_mentions(&self, text: &str) -> Result<Vec<Mention>> {
+        let answer: Value = self.value(&Request::post("kuvo/work-queue/refs", json!({ "text": text })))?;
+        Ok(read_all(answer.get("mentions")))
+    }
+
+    pub fn set_work_item_relation(&self, item: &str, other: &str, kind: Option<&str>) -> Result<Item> {
+        let request = Request { method: "PATCH".into(), path: item_route(item), headers: Vec::new(), body: Some(json!({ "itemRelation": { "item": other, "kind": kind } })) };
+        self.item_answer(request)
     }
 
     /// Reads a file kept with an item, including one routed to another computer.

@@ -326,7 +326,7 @@ fn an_item_on_a_computer_thats_away_says_so_and_offers_nothing(cx: &mut TestAppC
     click(cx, "item-wqi_242");
     assert!(shown(cx, "item-elsewhere") && !shown(cx, "item-body") && !shown(cx, "item-no-body"));
     assert!(page.read_with(cx, |page, _| page.whole().is_some_and(|whole| whole.told)));
-    assert!(!shown(cx, "item-finish") && !shown(cx, "item-edit") && !shown(cx, "item-more"));
+    assert!(!shown(cx, "item-finish") && !shown(cx, "item-edit") && !shown(cx, "item-more") && !shown(cx, "link-item"));
     // Its status is said, and opens no menu.
     click(cx, "chip-status");
     assert_eq!(menu(&page, cx), None);
@@ -1340,14 +1340,14 @@ mod live {
 }
 
 #[gpui::test]
-fn images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
+fn queue_editor_images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
     use gpui::{ClipboardItem, Image, ImageFormat};
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, page, cx) = queue(cx, &stand_in);
     let pasted = tempfile::tempdir().unwrap();
     cx.update(|_, cx| cx.set_global(kuvo::pasted::PastedFolder(pasted.path().to_path_buf())));
     let mut out = std::io::Cursor::new(Vec::new());
-    image::RgbaImage::new(3, 2).write_to(&mut out, image::ImageFormat::Png).unwrap();
+    image::RgbaImage::new(300, 200).write_to(&mut out, image::ImageFormat::Png).unwrap();
     let bytes = out.into_inner();
     let drop_path = pasted.path().join("dropped.png");
     std::fs::write(&drop_path, &bytes).unwrap();
@@ -1371,8 +1371,14 @@ fn images_paste_into_new_and_edit_item_descriptions(cx: &mut TestAppContext) {
     let paths = composer.read_with(cx, |composer, _| composer.attached().to_vec());
     assert_eq!(paths.len(), 1);
     assert_eq!(std::fs::read(&paths[0]).unwrap(), bytes);
-    assert!(shown(cx, "attachments"));
-    assert_eq!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().to_owned()), "[Image 1] ");
+    let picture = format!("picture-draft/0/{}", paths[0].display());
+    assert!(shown(cx, &picture));
+    assert!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().contains("kuvo-attachment:draft/0/")));
+    click(cx, &picture);
+    assert!(shown(cx, "picture-viewer"));
+    keys(cx, "escape");
+    assert!(shown(cx, "queue-sheet"));
+    assert!(!shown(cx, "picture-viewer"));
     drop_image(cx);
     assert_eq!(composer.read_with(cx, |composer, _| composer.attached().len()), 2);
     keys(cx, "cmd-enter");
@@ -1404,6 +1410,7 @@ fn a_computer_without_attachments_offers_none_in_its_item_forms(cx: &mut TestApp
     let mut out = std::io::Cursor::new(Vec::new());
     image::RgbaImage::new(3, 2).write_to(&mut out, image::ImageFormat::Png).unwrap();
     click(cx, "queue-new");
+    assert!(!shown(cx, "sheet-attach"));
     cx.simulate_input("No pictures here");
     keys(cx, "enter");
     cx.write_to_clipboard(ClipboardItem::from(Image::from_bytes(ImageFormat::Png, out.into_inner())));
@@ -1415,4 +1422,119 @@ fn a_computer_without_attachments_offers_none_in_its_item_forms(cx: &mut TestApp
     keys(cx, "cmd-enter");
     let sent = bodies(&stand_in, "POST", "kuvo/work-queue/items");
     assert!(sent.last().unwrap().get("files").is_none());
+}
+
+#[gpui::test]
+fn queue_editor_tab_order_and_large_editor(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "queue-new");
+    let compact = bounds(cx, "queue-sheet").unwrap();
+    cx.simulate_input("A title");
+    keys(cx, "tab");
+    cx.simulate_input("A description");
+    keys(cx, "shift-tab");
+    cx.simulate_input(" updated");
+    assert_eq!(page.read_with(cx, |page, cx| {
+        let (title, body) = page.item_fields();
+        (title.read(cx).text().to_owned(), body.read(cx).text().to_owned())
+    }), ("A title updated".to_owned(), "A description".to_owned()));
+    assert!(shown(cx, "sheet-attach"));
+    click(cx, "sheet-size");
+    let large = bounds(cx, "queue-sheet").unwrap();
+    assert!(large.size.height > compact.size.height + px(200.));
+    assert!(large.size.width > compact.size.width);
+    click(cx, "sheet-size");
+    assert_eq!(bounds(cx, "queue-sheet").unwrap().size.width, compact.size.width);
+}
+
+#[gpui::test]
+fn queue_editor_known_numbers_are_offered_and_can_be_inserted_from_the_keyboard(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_queue_mention_fixture("🖼 #234 ", json!([{ "start": 3, "end": 7, "number": 234 }]));
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    click(cx, "queue-new");
+    cx.simulate_input("Add the review");
+    keys(cx, "tab");
+    cx.simulate_input("🖼 #234");
+    cx.run_until_parked();
+    assert!(shown(cx, "reference-choice-234"));
+    keys(cx, "enter");
+    assert_eq!(page.read_with(cx, |page, cx| page.item_fields().1.read(cx).text().to_owned()), "🖼 #234 ");
+    assert!(!shown(cx, "reference-choice-234"));
+    keys(cx, "cmd-enter");
+    assert_eq!(bodies(&stand_in, "POST", "kuvo/work-queue/items").last().unwrap()["body"], "🖼 #234");
+}
+
+#[gpui::test]
+fn queue_editor_kept_picture_opens_from_page_and_edit_and_uses_its_saved_name(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::new(300, 180).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    stand_in.work_item_fixture("wqi_231", json!({
+        "body": "Before [Image 1] after.\n\n![Review 2.png](kuvo-attachment:file/review2)\n\nFinish",
+        "files": [
+            { "name": "Review 2.png", "type": "image/png", "anchor": "review2", "at": 2 },
+            { "name": "Screenshot.png", "type": "image/png", "at": 3 },
+        ],
+    }), Some(("Review 2.png", png.get_ref().clone())));
+    stand_in.work_item_fixture("wqi_231", json!({}), Some(("Screenshot.png", png.into_inner())));
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    click(cx, "picture-wqi_231/2/Review 2.png");
+    assert!(shown(cx, "picture-viewer"));
+    keys(cx, "escape");
+    click(cx, "item-edit");
+    click(cx, "picture-wqi_231/2/Review 2.png");
+    assert!(shown(cx, "picture-viewer"));
+    keys(cx, "escape");
+    assert!(shown(cx, "queue-sheet"));
+}
+
+#[gpui::test]
+fn queue_editor_link_item_sends_the_chosen_kind_and_target(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.work_item_fixture("wqi_231", json!({ "canLinkItems": true }), None);
+    let (_workspace, _page, cx) = queue(cx, &stand_in);
+    click(cx, "item-wqi_231");
+    click(cx, "link-item");
+    cx.simulate_input("#234");
+    cx.run_until_parked();
+    click(cx, "blocks");
+    click(cx, "link-choice-wqi_234");
+    assert_eq!(bodies(&stand_in, "PATCH", "kuvo/work-queue/items/wqi_231").last().unwrap(), &json!({
+        "itemRelation": { "item": "wqi_234", "kind": "blocks" },
+    }));
+}
+
+#[gpui::test]
+fn queue_editor_attach_button_takes_any_file_with_a_long_description(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_workspace, page, cx) = queue(cx, &stand_in);
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("Trace bundle.bin");
+    std::fs::write(&path, b"sample trace").unwrap();
+    click(cx, "queue-new");
+    cx.simulate_input("Investigate the trace");
+    keys(cx, "tab");
+    page.update(cx, |page, cx| {
+        page.item_fields().1.update(cx, |field, cx| field.set_text("A trace log with a long description.\n".repeat(80), cx));
+    });
+    cx.run_until_parked();
+    click(cx, "sheet-attach");
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && options.multiple && !options.directories);
+        Some(vec![path.clone()])
+    });
+    cx.run_until_parked();
+    assert!(shown(cx, "sheet-save"));
+    click(cx, &format!("save-draft/0/{}", path.display()));
+    let copy = folder.path().join("Saved Trace.bin");
+    cx.simulate_new_path_selection(|_| Some(copy.clone()));
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(copy).unwrap(), b"sample trace");
+    click(cx, "sheet-save");
+    let sent = bodies(&stand_in, "POST", "kuvo/work-queue/items");
+    assert_eq!(sent.last().unwrap()["files"][0]["name"], "Trace bundle.bin");
 }

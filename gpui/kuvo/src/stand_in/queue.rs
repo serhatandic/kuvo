@@ -14,6 +14,7 @@ use crate::time;
 #[derive(Default)]
 pub struct Queue {
     labels: Vec<Value>,
+    mention_replies: std::collections::HashMap<String, Value>,
     /// Its items whole, each with its `body`, `notes`, `files` and `links`.
     items: Vec<Value>,
     removed: Vec<Value>,
@@ -356,6 +357,18 @@ impl Queue {
         vec!["work-queue", "work-queue.elsewhere", "work-queue.forward"]
     }
 
+    pub fn item_fixture(&mut self, id: &str, fields: Value) {
+        if let Some(item) = self.items.iter_mut().find(|item| item["id"] == id)
+            && let (Some(item), Some(fields)) = (item.as_object_mut(), fields.as_object())
+        {
+            item.extend(fields.clone());
+        }
+    }
+
+    pub fn mention_fixture(&mut self, text: &str, reply: Value) {
+        self.mention_replies.insert(text.to_owned(), reply);
+    }
+
     /// Its answer to `method path` (a route, with its query), if it's one of the Work Queue's.
     pub fn answer(&mut self, method: &str, path: &str, body: &Value, now: f64) -> Option<(u16, Value)> {
         let route = path.split('?').next().unwrap_or(path);
@@ -372,6 +385,7 @@ impl Queue {
                 let filters = Filters { computers: list("computers"), sources: list("sources"), owners: list("owners"), labels: list("labels") };
                 (200, self.view(words.as_deref(), &filters, now))
             }
+            ("POST", ["refs"]) => (200, json!({ "mentions": self.mention_replies.get(body["text"].as_str().unwrap_or_default()).cloned().unwrap_or_else(|| json!([])) })),
             ("GET", ["labels"]) => (200, json!({ "labels": self.labels })),
             ("POST", ["labels"]) => self.change_labels(body),
             ("POST", ["items"]) => self.add(body, now),
@@ -860,7 +874,7 @@ fn summary(item: &Value, today: &str) -> Value {
         said["lastNote"] = last.clone();
     }
     if let Some(fields) = said.as_object_mut() {
-        for field in ["body", "notes", "events", "files", "links", "handed"] {
+        for field in ["body", "notes", "events", "files", "links", "handed", "bodyMentions", "itemRelations", "canLinkItems"] {
             fields.remove(field);
         }
     }
@@ -882,6 +896,11 @@ fn whole(item: &Value, today: &str) -> Value {
     let away = item["computer"]["key"] == json!(STUDIO.0);
     if item.get("computer").is_some() {
         said["told"] = json!(away);
+    }
+    if !away {
+        for field in ["bodyMentions", "itemRelations", "canLinkItems"] {
+            if let Some(value) = item.get(field) { said[field] = value.clone(); }
+        }
     }
     for field in ["body", "notes", "events", "files", "links", "handed"] {
         said[field] = if away { if field == "body" { json!("") } else { json!([]) } } else { item[field].clone() };

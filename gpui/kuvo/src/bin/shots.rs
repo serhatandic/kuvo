@@ -225,6 +225,13 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "queue-item-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_elsewhere) },
     Screen { slug: "queue-item-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item_done) },
     Screen { slug: "queue-new", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new) },
+    Screen { slug: "queue-new-empty", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_empty) },
+    Screen { slug: "queue-new-picture", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_picture) },
+    Screen { slug: "queue-new-enlarged", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_enlarged) },
+    Screen { slug: "queue-edit-pictures", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_edit) },
+    Screen { slug: "queue-item-references", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-item-links", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
+    Screen { slug: "queue-collapsed-lanes", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_collapsed_lanes) },
     Screen { slug: "queue-new-status", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_status) },
     Screen { slug: "queue-new-priority", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_priority) },
     Screen { slug: "queue-new-assignee", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_assignee) },
@@ -631,6 +638,38 @@ fn queue_writing(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 fn queue_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     queue_writing(workspace, window, cx);
 }
+fn queue_new_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::New, cx));
+}
+
+fn queue_new_enlarged(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_empty(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| page.act(QueueAct::ToggleEditorSize, cx));
+}
+
+fn queue_new_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_new_empty(workspace, window, cx);
+    let page = queue_page(workspace, cx);
+    let (title, body, composer) = page.read_with(cx, |page, _| {
+        (page.item_fields().0.clone(), page.item_fields().1.clone(), page.item_composer().clone())
+    });
+    title.update(cx, |field, cx| field.set_text("Tighten the Work Queue layout", cx));
+    body.update(cx, |field, cx| field.set_text("The current Work Queue leaves a large gap between groups.", cx));
+    let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../shots/screens-queue-light.png");
+    composer.update(cx, |composer, cx| composer.attach_named([image], cx));
+    body.update(cx, |field, cx| field.replace_selection("Keep the group names and counts visible.", cx));
+}
+
+fn queue_collapsed_lanes(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    queue_all(workspace, window, cx);
+    queue_page(workspace, cx).update(cx, |page, cx| {
+        for status in ["needs-you", "in-review", "in-progress", "waiting", "todo", "backlog"] {
+            page.act(QueueAct::Fold(status.into()), cx);
+        }
+    });
+}
+
 /// New Item with one of its chips' menus open.
 fn queue_new_with(field: Field, workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let page = queue_writing(workspace, window, cx);
@@ -1445,6 +1484,30 @@ fn main() -> anyhow::Result<()> {
             }
             // One computer turned down a change held for it, in its words.
             // A queue with many more labels than a menu shows at once.
+            if screen.slug == "queue-edit-pictures" {
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({
+                    "body": "The email field should keep its value if the address is taken.\n\n![signup.png](kuvo-attachment:file/signup)\n\nCheck the other fields after submitting.",
+                    "files": [{"name": "signup.png", "type": "image/png", "anchor": "signup", "at": 1},
+                              {"name": "signup-wide.png", "type": "image/png", "at": 2}],
+                }), Some(("signup.png", include_bytes!("../../../shots/screens-composer-row-light.png").to_vec())));
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({}), Some(("signup-wide.png", include_bytes!("../../../shots/screens-composer-row-dark.png").to_vec())));
+            }
+            if matches!(screen.slug, "queue-item-references" | "queue-item-links") {
+                let body = "Coordinate the error copy with #234 before merging. The page ranked #1.";
+                let start = body.find("#234").unwrap();
+                let links = if screen.slug == "queue-item-links" {
+                    serde_json::json!([
+                        {"kind": "mentions", "id": "wqi_234", "number": 234, "title": "Review the empty states"},
+                        {"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": "Write the sign-up checklist"},
+                        {"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Ship the updated form"},
+                        {"kind": "related", "id": "wqi_237", "number": 237, "title": "Update the form guidelines"},
+                    ])
+                } else { serde_json::json!([]) };
+                stand_in.work_item_fixture("wqi_231", serde_json::json!({
+                    "body": body, "bodyMentions": [{"start": start, "end": start + 4, "number": 234}],
+                    "itemRelations": links, "canLinkItems": true, "files": [], "links": [], "notes": [],
+                }), None);
+            }
             if screen.slug == "queue-new-many-labels" {
                 stand_in.many_labels();
             }

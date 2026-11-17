@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 use gpui::{
-    AnyElement, App, ElementId, FontStyle, FontWeight, Hsla, IntoElement, ParentElement, RenderOnce,
+    AnyElement, App, ElementId, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     SharedString, StrikethroughStyle, Styled, TextRun, Window, div, prelude::FluentBuilder as _, px,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -88,6 +88,10 @@ enum InlineKind {
 
 /// Parses markdown into blocks.
 pub fn parse(source: &str) -> Vec<Block> {
+    parse_with(source, |_| false)
+}
+
+fn parse_with(source: &str, internal: impl Fn(&str) -> bool) -> Vec<Block> {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES;
     let mut stack = vec![Container::Root(Vec::new())];
     let mut inline: Option<(InlineKind, Inline)> = None;
@@ -243,7 +247,7 @@ pub fn parse(source: &str) -> Vec<Block> {
             }
             Event::End(TagEnd::Link) => {
                 if let (Some((start, url)), Some((_, text))) = (link.take(), inline.as_mut()) {
-                    if opens(&url) {
+                    if opens(&url) || internal(&url) {
                         text.links.push((start..text.text.len(), url));
                     } else {
                         // Not a web or mail link: shown as the plain text it is, never opened.
@@ -312,10 +316,29 @@ pub struct Markdown {
     blocks: Vec<Block>,
     selectable: Option<Selectable>,
     pictures: Option<Pictures>,
+    on_link: Option<LinkClick>,
 }
 
 /// What draws a markdown's pictures, given each one's address and alt text.
 pub type Pictures = std::rc::Rc<dyn Fn(&str, &str, &App) -> AnyElement>;
+
+pub type LinkClick = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+/// Source ranges of Markdown images, with their parsed destinations.
+pub fn image_ranges(source: &str) -> Vec<(Range<usize>, String)> {
+    Parser::new(source).into_offset_iter().filter_map(|(event, range)| match event {
+        Event::Start(Tag::Image { dest_url, .. }) => Some((range, dest_url.to_string())),
+        _ => None,
+    }).collect()
+}
+
+/// Markdown ranges where literal markers are part of another element.
+pub fn protected_ranges(source: &str) -> Vec<Range<usize>> {
+    Parser::new(source).into_offset_iter().filter_map(|(event, range)| match event {
+        Event::Start(Tag::CodeBlock(_) | Tag::Link { .. } | Tag::Image { .. }) | Event::Code(_) => Some(range),
+        _ => None,
+    }).collect()
+}
 
 /// Where a markdown's text sits in its transcript's selection: the state, the row, and the path
 /// its blocks' paths go under ([`units`] gives the same paths).
@@ -341,7 +364,13 @@ impl Selectable {
 
 impl Markdown {
     pub fn new(id: impl Into<ElementId>, source: &str) -> Self {
-        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None }
+        Self { id: id.into(), blocks: parse(source), selectable: None, pictures: None, on_link: None }
+    }
+
+    pub fn item_links(mut self, source: &str, open: LinkClick) -> Self {
+        self.blocks = parse_with(source, |url| url.strip_prefix("kuvo-item:").is_some_and(|number| number.parse::<u64>().is_ok()));
+        self.on_link = Some(open);
+        self
     }
 
     /// Draws its pictures with `draw` (else each shows as its alt text).
@@ -361,7 +390,7 @@ impl RenderOnce for Markdown {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = cx.theme().colors.clone();
         let mut path = Vec::new();
-        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), cx };
+        let draw = Draw { id: &self.id, c: &colors, sel: self.selectable.as_ref(), pictures: self.pictures.as_ref(), on_link: self.on_link.as_ref(), cx };
         blocks(&draw, &mut path, &self.blocks, TextLevel::Normal)
             .text_ui(TypeSize::Body)
             .text_color(colors.text)
@@ -374,6 +403,7 @@ struct Draw<'a> {
     c: &'a Colors,
     sel: Option<&'a Selectable>,
     pictures: Option<&'a Pictures>,
+    on_link: Option<&'a LinkClick>,
     cx: &'a App,
 }
 
@@ -528,7 +558,7 @@ fn block(d: &Draw, path: &mut Vec<u32>, block: &Block, level: TextLevel, first: 
         }
         Block::Rule => div().h(px(1.)).my(space::S1).bg(c.border).into_any_element(),
         Block::Image { url, alt } => match d.pictures {
-            Some(draw) => draw(url, alt, d.cx),
+            Some(draw) => div().id(element_id(id, path)).child(draw(url, alt, d.cx)).into_any_element(),
             // (Nothing to draw it with: its words, as written.)
             None => div().text_color(c.text_muted).child(if alt.is_empty() { url.clone() } else { alt.clone() }).into_any_element(),
         },
@@ -659,10 +689,18 @@ pub fn code_chips(inline: &Inline, c: &Colors) -> Vec<(Range<usize>, Hsla)> {
 
 fn text(d: &Draw, path: &[u32], inline: &Inline, color: Hsla, weight: FontWeight) -> AnyElement {
     let runs = inline_runs(inline, d.c, color, weight);
+    let open = d.on_link.cloned();
     SelectableText::new(element_id(d.id, path), inline.text.clone())
         .runs(runs)
         .chips(code_chips(inline, d.c))
-        .links(inline.links.clone(), |url, _, cx| cx.open_url(url))
+        .links(inline.links.clone(), move |url, window, cx| {
+            if opens(url) {
+                cx.open_url(url);
+            } else if let Some(open) = &open {
+                open(url, window, cx);
+            }
+        })
+        .link_title(|url| url.strip_prefix("kuvo-item:").map_or_else(|| url.to_string(), |number| format!("Open #{number}")))
         .selectable(d.unit(path))
         .into_any_element()
 }

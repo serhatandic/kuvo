@@ -12,7 +12,11 @@
 //! Drawn as Bots' and Settings' pages are: the page's rows worked out once each time what they're
 //! drawn from changes, then a virtual list that lays out only what's on screen.
 
+pub(crate) mod attachments;
+mod editor;
 pub mod marks;
+mod references;
+mod relations;
 mod page;
 mod picker;
 
@@ -28,6 +32,10 @@ pub use picker::{Field, Picker, Target};
 
 use crate::areas::Reading;
 use crate::time;
+
+pub(crate) fn bind_keys(cx: &mut App) {
+    editor::bind_keys(cx);
+}
 
 /// The fold's key for what's deleted.
 pub const DELETED: &str = "deleted";
@@ -125,6 +133,7 @@ pub enum Act {
     Restore(String),
     New,
     Edit,
+    ToggleEditorSize,
     /// Open the menu of a chip (or close it, open already).
     Pick { target: Target, field: Field },
     ClosePicker,
@@ -185,6 +194,7 @@ enum Row {
     Progress { value: Option<f64>, note: String },
     Section(String),
     Body(String),
+    ItemLinks { relations: Vec<kuvo_box::work_queue::ItemRelation>, can_link: bool },
     Session { session: ItemSession, first: bool, last: bool },
     Link { link: Link, first: bool, last: bool },
     File { file: File, first: bool, last: bool },
@@ -241,6 +251,14 @@ pub struct QueueView {
     body_composer: Entity<crate::composer::Composer>,
     picture_reads: HashMap<String, crate::pictures::Read>,
     viewing: Option<kuvo_box::pictures::Picture>,
+    viewer_focus: FocusHandle,
+    viewer_return: Option<FocusHandle>,
+    enlarged: bool,
+    draft_mentions: (String, Vec<kuvo_box::work_queue::Mention>),
+    suggestion_at: usize,
+    suggestions_dismissed: bool,
+    return_to_draft: Option<(Shown, Reading<Whole>)>,
+    relation_picker: Option<relations::Picker>,
     name: Entity<TextField>,
     /// What New Item's chips say.
     draft: Draft,
@@ -286,6 +304,7 @@ impl QueueView {
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let picker_field = cx.new(|cx| TextField::new(cx).bare());
         let subscriptions = vec![
+            cx.observe(&body_composer, |_, _, cx| cx.notify()),
             cx.subscribe(&search, |this: &mut QueueView, field, event: &TextFieldEvent, cx| match event {
                 TextFieldEvent::Changed => {
                     let query = field.read(cx).text().trim().to_owned();
@@ -314,8 +333,10 @@ impl QueueView {
                 TextFieldEvent::Changed => {}
             }),
             cx.subscribe(&body, |this: &mut QueueView, _, event: &TextFieldEvent, cx| {
-                if matches!(event, TextFieldEvent::Cancel) {
-                    this.close_sheet(cx);
+                match event {
+                    TextFieldEvent::Cancel => this.close_sheet(cx),
+                    TextFieldEvent::Changed => this.refresh_draft_mentions(cx),
+                    _ => {}
                 }
             }),
             cx.subscribe(&picker_field, |this: &mut QueueView, _, event: &TextFieldEvent, cx| this.picker_typed(event, cx)),
@@ -351,6 +372,14 @@ impl QueueView {
             body_composer,
             picture_reads: HashMap::new(),
             viewing: None,
+            viewer_focus: cx.focus_handle(),
+            viewer_return: None,
+            enlarged: false,
+            draft_mentions: Default::default(),
+            suggestion_at: 0,
+            suggestions_dismissed: false,
+            return_to_draft: None,
+            relation_picker: None,
             name,
             draft: Draft::default(),
             create_more: false,
@@ -586,6 +615,10 @@ impl QueueView {
             self.shown = shown;
             self.problem = None;
             self.sheet = None;
+            self.return_to_draft = None;
+            self.relation_picker = None;
+            self.viewing = None;
+            self.picture_reads.clear();
             self.picker = None;
             self.sheet_error = None;
             // (A change still on its way answers for its own item, not for what's shown now.)
@@ -827,7 +860,7 @@ impl QueueView {
     }
 
     fn item_rows(&self, id: &str) -> Vec<Row> {
-        let mut rows = vec![Row::Back(self.scope_name(&self.scope))];
+        let mut rows = vec![Row::Back(if self.return_to_draft.is_some() { "Back to draft".into() } else { self.scope_name(&self.scope) })];
         let Some(item) = self.item(id).cloned() else {
             rows.push(match (&self.whole, &self.said) {
                 (Reading::Failed(why), _) => Row::Note { key: "item-failed".into(), words: format!("The item couldn’t be read: {why}"), busy: false },
@@ -888,15 +921,23 @@ impl QueueView {
             let last = item.sessions.len() - 1;
             rows.extend(item.sessions.iter().enumerate().map(|(ix, session)| Row::Session { session: session.clone(), first: ix == 0, last: ix == last }));
         }
+        if !whole.links.is_empty() || !whole.relations.is_empty() || whole.can_link_items {
+            rows.push(Row::ItemLinks { relations: whole.relations.clone(), can_link: whole.can_link_items });
+        }
         if !whole.links.is_empty() {
-            rows.push(Row::Section("Links".into()));
             let last = whole.links.len() - 1;
             rows.extend(whole.links.iter().enumerate().map(|(ix, link)| Row::Link { link: link.clone(), first: ix == 0, last: ix == last }));
         }
         if !whole.files.is_empty() {
-            rows.push(Row::Section("Files".into()));
-            let last = whole.files.len() - 1;
-            rows.extend(whole.files.iter().enumerate().map(|(ix, file)| Row::File { file: file.clone(), first: ix == 0, last: ix == last }));
+            let kept = attachments::kept(whole);
+            let placed: std::collections::HashSet<_> = attachments::anchors(&whole.body, &kept).iter()
+                .filter_map(|(_, url)| attachments::resolve(url, &kept).map(|file| file.name.as_str())).collect();
+            let extra: Vec<_> = whole.files.iter().filter(|file| !placed.contains(file.name.as_str())).collect();
+            if !extra.is_empty() {
+                rows.push(Row::Section("Files".into()));
+                let last = extra.len() - 1;
+                rows.extend(extra.into_iter().enumerate().map(|(ix, file)| Row::File { file: file.clone(), first: ix == 0, last: ix == last }));
+            }
         }
         if !whole.notes.is_empty() {
             rows.push(Row::Section("Notes".into()));
@@ -957,7 +998,16 @@ impl QueueView {
             return;
         }
         match act {
+            Act::Open(item) if self.return_to_draft.is_some() => self.open_reference(item, cx),
             Act::Open(item) => cx.emit(QueueEvent::Select(Some(format!("item:{item}")))),
+            Act::Back if self.return_to_draft.is_some() => {
+                if let Some((shown, whole)) = self.return_to_draft.take() {
+                    self.shown = shown;
+                    self.whole = whole;
+                    self.list.scroll_to(gpui::ListOffset::default());
+                    self.wants_focus = Some(self.body.focus_handle(cx));
+                }
+            }
             Act::Back => cx.emit(QueueEvent::Select(self.scope.key())),
             Act::Session(session) => cx.emit(QueueEvent::Session(session)),
             Act::Link(url) => {
@@ -1008,7 +1058,7 @@ impl QueueView {
                 let asked = item.clone();
                 self.change(&item, move |client| client.restore_work_item(&asked), cx);
             }
-            Act::New => {
+            Act::New if self.return_to_draft.is_none() => {
                 self.title.update(cx, |field, cx| field.set_text("", cx));
                 // (Files go with a new one where this computer keeps them.)
                 let attaching = self.client.gate().has("work-queue.attachments");
@@ -1029,13 +1079,12 @@ impl QueueView {
                 self.created = None;
                 self.open_sheet(Sheet::New, Some(self.title.focus_handle(cx)));
             }
-            Act::Edit => {
+            Act::Edit if self.return_to_draft.is_none() => {
                 // (Its title and description, where the box says they may be changed.)
                 let Some(whole) = self.whole().filter(|whole| whole.item.can.edit).cloned() else { return };
                 self.title.update(cx, |field, cx| field.set_text(whole.item.title.clone(), cx));
                 self.body_composer.update(cx, |composer, cx| {
                     composer.clear_attachments(cx);
-                    composer.set_image_offset(whole.files.iter().filter(|file| file.kind.starts_with("image/")).count());
                     // (As its box says: where its computer keeps them.)
                     composer.set_attaching(whole.item.can.attach, cx);
                 });
@@ -1044,9 +1093,12 @@ impl QueueView {
                     // (From its start, so a long one opens on its first lines.)
                     field.select_range(0..0, cx);
                 });
+                self.draft_mentions = (whole.body.clone(), whole.mentions.clone());
                 self.editing = Some((whole.item.title.trim().to_owned(), whole.body.trim().to_owned()));
                 self.open_sheet(Sheet::Edit(whole.item.id), Some(self.title.focus_handle(cx)));
             }
+            Act::New | Act::Edit => {}
+            Act::ToggleEditorSize => self.enlarged = !self.enlarged,
             Act::Pick { target, field } => self.open_picker(target, field, cx),
             Act::ClosePicker => self.close_picker(cx),
             Act::CreateMore(on) => self.create_more = on,
@@ -1185,6 +1237,9 @@ impl QueueView {
 
     fn open_sheet(&mut self, sheet: Sheet, focus: Option<FocusHandle>) {
         self.sheet_opened += 1;
+        self.enlarged = false;
+        self.suggestions_dismissed = false;
+        self.suggestion_at = 0;
         self.text_focus = None;
         self.sheet = Some(sheet);
         self.picker = None;
@@ -1214,13 +1269,19 @@ impl QueueView {
             return;
         }
         let Some(sheet) = self.sheet.clone() else { return };
-        let (title, body, name) = (self.title.read(cx).text().trim().to_owned(), self.body.read(cx).text().trim().to_owned(), self.name.read(cx).text().trim().to_owned());
+        let (title, name) = (self.title.read(cx).text().trim().to_owned(), self.name.read(cx).text().trim().to_owned());
+        let files = self.body_composer.read(cx).item_attachments().map(|(key, path)| (key, path.clone())).collect();
+        let (body, paths) = if matches!(sheet, Sheet::New | Sheet::Edit(_)) {
+            attachments::for_save(self.body.read(cx).text().trim(), files)
+        } else {
+            (String::new(), Vec::new())
+        };
         // An item rewritten: only what was changed is sent; nothing changed, nothing is.
         let mut rewritten = ItemChange::default();
         if let (Sheet::Edit(_), Some((was_title, was_body))) = (&sheet, &self.editing) {
             rewritten.title = (&title != was_title).then(|| title.clone());
             rewritten.body = (&body != was_body).then(|| body.clone());
-            if rewritten == ItemChange::default() && self.body_composer.read(cx).attached().is_empty() {
+            if rewritten == ItemChange::default() && paths.is_empty() {
                 self.close_sheet(cx);
                 return;
             }
@@ -1234,7 +1295,6 @@ impl QueueView {
             Item(Box<kuvo_box::Result<Item>>),
             Labels(kuvo_box::Result<Vec<Label>>),
         }
-        let paths = if matches!(sheet, Sheet::New | Sheet::Edit(_)) { self.body_composer.read(cx).attached().to_vec() } else { Vec::new() };
         let pasted = crate::pasted::folder(cx);
         let remote_item = matches!(sheet, Sheet::Edit(_)) && self.whole().is_some_and(|whole| whole.item.computer.is_some() || whole.told);
         // (Under its own name: a later sheet's save never drops this one's answer.)

@@ -407,6 +407,18 @@ impl StandIn {
         self.state().queue.down = !readable;
     }
 
+    pub fn work_item_fixture(&self, id: &str, fields: Value, file: Option<(&str, Vec<u8>)>) {
+        let mut state = self.state();
+        state.queue.item_fixture(id, fields);
+        if let Some((name, bytes)) = file {
+            state.files.insert(format!("kuvo/work-queue/items/{id}/files/{}", kuvo_box::paths::segment(name)), bytes);
+        }
+    }
+
+    pub fn work_queue_mention_fixture(&self, text: &str, reply: Value) {
+        self.state().queue.mention_fixture(text, reply);
+    }
+
     /// What it says `status` counts, whatever its items are.
     pub fn count_status(&self, status: &str, count: usize) {
         self.state().queue.counted.push((status.to_owned(), count));
@@ -1707,6 +1719,11 @@ impl StandIn {
         }
         let body = request.body.clone().unwrap_or(Value::Null);
         let made = state.made.unwrap_or_else(now_ms);
+        if method == "GET" && route.starts_with("kuvo/work-queue/items/")
+            && let Some(bytes) = state.files.get(route)
+        {
+            return Ok(Response { status: 200, content_type: Some("application/octet-stream".into()), body: bytes.clone() });
+        }
         if let Some((status, value)) = state.queue.answer(method, path, &body, made) {
             return answer(status, value);
         }

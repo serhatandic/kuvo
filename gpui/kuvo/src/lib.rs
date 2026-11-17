@@ -57,6 +57,7 @@ actions!(kuvo, [NewSession, ToggleAppearance, Quit, TogglePanel, ToggleSidebar, 
 pub fn bind_keys(cx: &mut App) {
     kuvo_ui::bind_keys(cx);
     composer::bind_keys(cx);
+    queue::bind_keys(cx);
     model_picker::bind_keys(cx);
     sidebar::bind_keys(cx);
     session_menu::bind_keys(cx);

@@ -222,8 +222,9 @@ pub struct Composer {
     item_attaching: bool,
     /// Which draft of attachments is the latest: a paste or copy finishing for an earlier one is left.
     attachment_generation: u64,
-    /// The pictures an item keeps already: a new one's name (`[Image n]`) follows them.
-    image_offset: usize,
+    /// Stable keys for attachments in an item description.
+    item_keys: Vec<usize>,
+    item_key: usize,
     /// What you're replying to (a message, or a part of one), ahead of your words as it's sent,
     /// each with your answer to it in a field of its own (`answers`, in the same order), as 0.7's.
     quotes: Vec<Quote>,
@@ -325,7 +326,8 @@ impl Composer {
             item_editor,
             item_attaching: false,
             attachment_generation: 0,
-            image_offset: 0,
+            item_keys: Vec::new(),
+            item_key: 0,
             client,
             target,
             field,
@@ -1260,15 +1262,12 @@ impl Composer {
     /// Start a fresh attachment draft, invalidating pending paste and copy completions.
     pub fn clear_attachments(&mut self, cx: &mut Context<Self>) {
         self.attachment_generation += 1;
-        self.image_offset = 0;
+        self.item_keys.clear();
+        self.item_key = 0;
+        if self.item_editor { self.note = None; }
         self.attached.clear();
         self.note = None;
         cx.notify();
-    }
-
-    /// Continue picture names after the images already kept with an item.
-    pub fn set_image_offset(&mut self, count: usize) {
-        self.image_offset = count;
     }
 
     /// Whether an item's description takes files (its computer keeps them, as its box says): where
@@ -1280,6 +1279,14 @@ impl Composer {
     }
 
     /// What goes with what's written: files and pictures, in order.
+    pub fn item_attaching(&self) -> bool {
+        self.item_attaching
+    }
+
+    pub fn item_attachments(&self) -> impl Iterator<Item = (usize, &PathBuf)> {
+        self.item_keys.iter().copied().zip(&self.attached)
+    }
+
     pub fn attached(&self) -> &[PathBuf] {
         &self.attached
     }
@@ -1316,6 +1323,29 @@ impl Composer {
     }
 
     fn name_attached(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.item_editor {
+            if !self.item_attaching { return; }
+            let mut anchors = Vec::new();
+            for path in paths {
+                if path.is_dir() || self.attached.contains(&path) { continue; }
+                let name = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+                anchors.push(crate::queue::attachments::draft_marker(self.item_key, &name));
+                self.item_keys.push(self.item_key);
+                self.item_key += 1;
+                self.attached.push(path);
+            }
+            if !anchors.is_empty() {
+                self.field.update(cx, |field, cx| {
+                    let selection = field.selection();
+                    let text = field.text();
+                    let lead = if selection.start == 0 || text[..selection.start].ends_with('\n') { "" } else { "\n" };
+                    field.replace_selection(&format!("{lead}{}
+", anchors.join("\n")), cx);
+                });
+            }
+            cx.notify();
+            return;
+        }
         let mut names = Vec::new();
         for path in paths {
             if path.is_dir() || self.attached.contains(&path) {
@@ -1323,7 +1353,7 @@ impl Composer {
             }
             self.attached.push(path.clone());
             if is_picture(&path) {
-                names.push(image_names::name(self.image_offset + self.attached.iter().filter(|each| is_picture(each)).count()));
+                names.push(image_names::name(self.attached.iter().filter(|each| is_picture(each)).count()));
             }
         }
         // (Not into a "!" command, which is the shell's.)
@@ -1529,8 +1559,22 @@ impl Composer {
 
     /// Takes a file off the message, and a picture's name with it (the later ones a number down).
     pub fn detach(&mut self, at: usize, cx: &mut Context<Self>) {
+        if self.item_editor {
+            let Some(index) = self.item_keys.iter().position(|key| *key == at) else { return };
+            self.item_keys.remove(index);
+            self.attached.remove(index);
+            self.field.update(cx, |field, cx| {
+                let ranges = crate::queue::attachments::draft_ranges(field.text(), at);
+                for range in ranges.into_iter().rev() {
+                    field.select_range(range, cx);
+                    field.replace_selection("", cx);
+                }
+            });
+            cx.notify();
+            return;
+        }
         if at < self.attached.len() {
-            let number = is_picture(&self.attached[at]).then(|| self.image_offset + self.attached[..=at].iter().filter(|each| is_picture(each)).count());
+            let number = is_picture(&self.attached[at]).then(|| self.attached[..=at].iter().filter(|each| is_picture(each)).count());
             self.attached.remove(at);
             if let Some(number) = number {
                 let (now, words) = (self.text(cx), image_names::removing(number, &self.text(cx)));
@@ -1544,11 +1588,14 @@ impl Composer {
     }
 
     /// The system's file picker, for files and pictures to attach.
-    fn pick_files(&mut self, cx: &mut Context<Self>) {
+    pub fn pick_files(&mut self, cx: &mut Context<Self>) {
+        let generation = self.attachment_generation;
         let picked = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) });
         self.tasks.push(cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(paths))) = picked.await {
-                this.update(cx, |this, cx| this.attach_named(paths, cx)).ok();
+                this.update(cx, |this, cx| {
+                    if !this.item_editor || this.attachment_generation == generation { this.attach_named(paths, cx); }
+                }).ok();
             }
         }));
     }
@@ -2265,7 +2312,7 @@ impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.item_editor {
             return div().id("item-composer").debug_selector(|| "item-composer".into()).w_full().flex().flex_col().gap(space::S2)
-                .children(self.attachments(cx)).child(self.field.clone())
+                .child(self.field.clone())
                 .children(self.note.as_ref().map(|note| div().child(note.text.clone())))
                 .when(self.item_attaching, |editor| editor.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.attach_named(paths.paths().to_vec(), cx))))
                 .into_any_element();

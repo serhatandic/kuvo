@@ -9,13 +9,13 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hsla,
-    InspectorElementId, LayoutId, Pixels, Point, SharedString, Size, Style,
-    TextAlign, TextRun, UnderlineStyle, Window, WrappedLine, fill, point, px, relative, size,
+    AnyElement, App, AvailableSpace, Bounds, Element, ElementId, ElementInputHandler, Entity, GlobalElementId, Hsla,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Point, SharedString, Size, Style,
+    TextAlign, TextRun, UnderlineStyle, Window, WrappedLine, div, fill, point, px, relative, size,
 };
 use smallvec::SmallVec;
 
-use super::TextField;
+use super::{InlineBlock, TextField};
 use crate::theme::{ActiveTheme, TypeSize, UI_FONT};
 
 /// The type a field's text is set in: its size (the body's unless told otherwise) and, where it
@@ -39,6 +39,7 @@ pub(super) struct Layout {
     pub text: String,
     /// One wrapped line per paragraph (the text split at newlines).
     pub lines: SmallVec<[WrappedLine; 1]>,
+    blocks: Vec<(usize, Range<usize>, Pixels)>,
     /// The byte offset each paragraph starts at.
     pub starts: Vec<usize>,
     /// The top of each paragraph, from the top of the text.
@@ -68,6 +69,7 @@ impl Layout {
     /// since the last paint (an input method placing its window, an arrow key pressed twice
     /// within a frame). The next paint replaces it.
     pub fn reshape(&mut self, text: &str, marked: Option<&Range<usize>>, window: &Window) {
+        self.blocks.clear();
         if text.is_empty() {
             self.lines = SmallVec::new();
             self.starts = vec![0];
@@ -117,6 +119,9 @@ impl Layout {
         }
         let offset = self.shown(offset);
         let ix = self.line_of(offset);
+        if let Some((_, range, height)) = self.blocks.iter().find(|(row, _, _)| *row == ix) {
+            return point(px(0.), self.tops[ix] + if offset >= range.end { *height - self.line_height } else { px(0.) });
+        }
         let local = offset.saturating_sub(self.starts[ix]).min(self.lines[ix].len());
         let at = self.lines[ix].position_for_index(local, self.line_height).unwrap_or_default();
         point(at.x, at.y + self.tops[ix])
@@ -139,6 +144,9 @@ impl Layout {
 
     fn offset_shown(&self, at: Point<Pixels>) -> usize {
         let ix = self.tops.partition_point(|top| *top <= at.y).saturating_sub(1);
+        if let Some((_, range, height)) = self.blocks.iter().find(|(row, _, _)| *row == ix) {
+            return if at.y - self.tops[ix] < *height / 2. { range.start } else { range.end };
+        }
         let line = &self.lines[ix];
         let rows = line.wrap_boundaries.len() + 1;
         let local_y = (at.y - self.tops[ix]).min(self.line_height * rows as f32 - px(0.5));
@@ -146,6 +154,20 @@ impl Layout {
             Ok(i) | Err(i) => i,
         };
         self.starts[ix] + local.min(line.len())
+    }
+
+    pub fn vertical_y(&self, y: Pixels, rows: f32) -> Pixels {
+        let step = self.line_height * rows;
+        let mut target = y + step + self.line_height / 2.;
+        for (row, _, height) in &self.blocks {
+            let top = self.tops[*row];
+            if rows > 0. && target >= top && target < top + *height {
+                target = top + *height + self.line_height / 2.;
+            } else if rows < 0. && target >= top && target < top + *height {
+                target = top - self.line_height / 2.;
+            }
+        }
+        target
     }
 
     /// Rectangles covering a range, one per visual row, relative to the text's top-left.
@@ -157,6 +179,9 @@ impl Layout {
         let range = &(self.shown(range.start)..self.shown(range.end));
         let newline_width = px(6.);
         for (ix, line) in self.lines.iter().enumerate() {
+            if self.blocks.iter().any(|(row, _, _)| *row == ix) {
+                continue;
+            }
             let start = self.starts[ix];
             let end = start + line.len();
             if range.end < start || range.start > end {
@@ -198,6 +223,13 @@ pub(super) fn shape(
     kind: FieldType,
     window: &Window,
 ) -> (SmallVec<[WrappedLine; 1]>, Vec<usize>, Vec<Pixels>, Pixels) {
+    shape_runs(text, marked, color, width, kind, window, &[], color)
+}
+
+fn shape_runs(
+    text: &str, marked: Option<&Range<usize>>, color: Hsla, width: Option<Pixels>,
+    kind: FieldType, window: &Window, links: &[Range<usize>], accent: Hsla,
+) -> (SmallVec<[WrappedLine; 1]>, Vec<usize>, Vec<Pixels>, Pixels) {
     let style = window.text_style();
     let mut font = gpui::Font { family: UI_FONT.into(), ..style.font() };
     if let Some(weight) = kind.weight {
@@ -211,7 +243,21 @@ pub(super) fn shape(
         underline: None,
         strikethrough: None,
     };
-    let runs: Vec<TextRun> = match marked {
+    let runs: Vec<TextRun> = if !links.is_empty() {
+        let mut runs = Vec::new();
+        let mut at = 0;
+        for link in links {
+            if at < link.start { runs.push(TextRun { len: link.start - at, ..run.clone() }); }
+            runs.push(TextRun {
+                len: link.len(), color: accent,
+                underline: Some(UnderlineStyle { color: Some(accent), thickness: px(1.), wavy: false }),
+                ..run.clone()
+            });
+            at = link.end;
+        }
+        if at < text.len() { runs.push(TextRun { len: text.len() - at, ..run.clone() }); }
+        runs
+    } else { match marked {
         Some(marked) if !marked.is_empty() => [
             TextRun { len: marked.start, ..run.clone() },
             TextRun {
@@ -225,7 +271,7 @@ pub(super) fn shape(
         .filter(|r| r.len > 0)
         .collect(),
         _ => vec![run],
-    };
+    }};
     let line_height = kind.size.line_height();
     let lines = window
         .text_system()
@@ -243,6 +289,56 @@ pub(super) fn shape(
     (lines, starts, tops, top)
 }
 
+type Shaped = (SmallVec<[WrappedLine; 1]>, Vec<usize>, Vec<Pixels>, Pixels);
+type BlockRows = Vec<(usize, Range<usize>, Pixels)>;
+
+fn shape_editor(
+    text: &str, marked: Option<&Range<usize>>, color: Hsla, width: Option<Pixels>,
+    kind: FieldType, window: &Window, blocks: &[InlineBlock], links: &[Range<usize>], accent: Hsla,
+) -> (Shaped, BlockRows) {
+    if blocks.is_empty() {
+        return (shape_runs(text, marked, color, width, kind, window, links, accent), Vec::new());
+    }
+    let mut lines = SmallVec::new();
+    let mut starts = Vec::new();
+    let mut tops = Vec::new();
+    let mut rows = Vec::new();
+    let mut top = px(0.);
+    let mut at = 0;
+    for (end, block) in blocks.iter().map(|block| (block.range.start, Some(block))).chain([(text.len(), None)]) {
+        let mut piece = &text[at..end];
+        let after_block = at != 0;
+        if after_block && piece.starts_with('\n') {
+            at += 1;
+            piece = &piece[1..];
+        }
+        if block.is_some() {
+            piece = piece.strip_suffix('\n').unwrap_or(piece);
+        }
+        if !piece.is_empty() || block.is_none() {
+            let local_links: Vec<_> = links.iter().filter(|link| link.start >= at && link.end <= at + piece.len())
+                .map(|link| link.start - at..link.end - at).collect();
+            let local_mark = marked.filter(|mark| mark.start >= at && mark.end <= at + piece.len())
+                .map(|mark| mark.start - at..mark.end - at);
+            let (part, offsets, heights, height) = shape_runs(piece, local_mark.as_ref(), color, width, kind, window, &local_links, accent);
+            lines.extend(part);
+            starts.extend(offsets.into_iter().map(|offset| at + offset));
+            tops.extend(heights.into_iter().map(|height| top + height));
+            top += height;
+        }
+        if let Some(block) = block {
+            let (blank, _, _, _) = shape(" ", None, color, None, kind, window);
+            rows.push((lines.len(), block.range.clone(), block.height));
+            lines.extend(blank);
+            starts.push(block.range.start);
+            tops.push(top);
+            top += block.height;
+            at = block.range.end;
+        }
+    }
+    ((lines, starts, tops, top), rows)
+}
+
 /// The element that draws a [`TextField`]'s text.
 pub(super) struct TextElement {
     pub field: Entity<TextField>,
@@ -255,6 +351,8 @@ pub(super) struct Prepainted {
     /// The placeholder, when the field is empty: it isn't part of the field's layout.
     placeholder: Option<SmallVec<[WrappedLine; 1]>>,
     line_height: Pixels,
+    tops: Vec<Pixels>,
+    blocks: Vec<(usize, AnyElement)>,
 }
 
 impl Element for TextElement {
@@ -286,14 +384,32 @@ impl Element for TextElement {
             return (window.request_layout(style, [], cx), ());
         };
         let text = field.content.clone();
+        let block_sizes = field.blocks().iter().map(|block| (block.range.clone(), block.height)).collect::<Vec<_>>();
+        let height_limit = field.editor_height;
         let layout_id = window.request_measured_layout(style, move |known, available, window, _cx| {
             let width = known.width.or(match available.width {
                 gpui::AvailableSpace::Definite(w) => Some(w),
                 _ => None,
             });
-            let (_, _, _, height) = shape(&text, None, gpui::black(), width, kind, window);
-            let rows = ((height / line_height).round() as usize).clamp(min_lines, max_lines);
-            Size { width: width.unwrap_or_default(), height: line_height * rows as f32 }
+            let mut height = px(0.);
+            let mut at = 0;
+            for (range, block_height) in &block_sizes {
+                let piece = &text[at..range.start];
+                if !piece.is_empty() {
+                    height += shape(piece.trim_matches('\n'), None, gpui::black(), width, kind, window).3;
+                }
+                height += *block_height;
+                at = range.end;
+            }
+            let last = &text[at..];
+            height += shape(if at == 0 { last } else { last.strip_prefix('\n').unwrap_or(last) }, None, gpui::black(), width, kind, window).3.max(line_height);
+            let min = line_height * min_lines as f32;
+            let height = match height_limit {
+                Some((limit, true)) => limit.max(line_height),
+                Some((limit, false)) => height.max(min).min(limit.max(line_height)),
+                None => height.max(min).min(line_height * max_lines as f32),
+            };
+            Size { width: width.unwrap_or_default(), height }
         });
         (layout_id, ())
     }
@@ -309,7 +425,7 @@ impl Element for TextElement {
     ) -> Prepainted {
         let colors = cx.theme().colors.clone();
         let focused = self.field.read(cx).focus.is_focused(window);
-        self.field.update(cx, |field, _cx| {
+        let (mut painted, overlays) = self.field.update(cx, |field, _cx| {
             let multi = field.lines.is_some();
             let showing_placeholder = field.content.is_empty() && field.marked.is_none();
             let (text, color) = if showing_placeholder {
@@ -318,8 +434,9 @@ impl Element for TextElement {
                 (if field.masked { dots(&field.content) } else { field.content.clone() }, if field.disabled { colors.text_faint } else { colors.text })
             };
             let wrap = multi.then_some(bounds.size.width);
-            let (lines, starts, tops, content_height) =
-                shape(&text, if field.masked { None } else { field.marked.as_ref() }, color, wrap, field.kind, window);
+            let links: Vec<_> = field.links().iter().map(|link| link.range.clone()).collect();
+            let ((lines, starts, tops, content_height), block_rows) =
+                shape_editor(&text, if field.masked { None } else { field.marked.as_ref() }, color, wrap, field.kind, window, field.blocks(), &links, colors.accent);
             let line_height = field.kind.size.line_height();
 
             // Keep the caret in view: vertically for many lines, sideways for one.
@@ -328,6 +445,7 @@ impl Element for TextElement {
             let mut layout = Layout {
                 text: field.content.clone(),
                 lines,
+                blocks: block_rows,
                 starts: if showing_placeholder { vec![0] } else { starts },
                 tops: if showing_placeholder { vec![px(0.)] } else { tops },
                 line_height,
@@ -383,9 +501,26 @@ impl Element for TextElement {
                     size(px(2.), line_height - px(2.)),
                 )
             });
+            let overlays = layout.blocks.iter().zip(field.blocks()).filter_map(|((row, _, height), block)| {
+                let top = origin.y + layout.tops[*row];
+                (top < bounds.bottom() && top + *height > bounds.top()).then(|| (*row, top, *height, block.draw.clone()))
+            }).collect::<Vec<_>>();
+            let tops = layout.tops.clone();
             field.layout = Some(layout);
-            Prepainted { selection, caret, origin, placeholder, line_height }
-        })
+            (Prepainted { selection, caret, origin, placeholder, line_height, tops, blocks: Vec::new() }, overlays)
+        });
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for (row, top, height, draw) in overlays {
+                let mut block = div()
+                    .id(("field-inline-block", row))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(draw(bounds.size.width, cx))
+                    .into_any_element();
+                block.prepaint_as_root(point(painted.origin.x, top), size(AvailableSpace::Definite(bounds.size.width), AvailableSpace::Definite(height)), window, cx);
+                painted.blocks.push((row, block));
+            }
+        });
+        painted
     }
 
     fn paint(
@@ -413,7 +548,12 @@ impl Element for TextElement {
             let lent = placeholder.is_none();
             let lines = placeholder.or(laid_out).unwrap_or_default();
             let mut top = prepainted.origin.y;
-            for line in &lines {
+            for (row, line) in lines.iter().enumerate() {
+                if lent {
+                    top = prepainted.origin.y + prepainted.tops[row];
+                    let is_block = self.field.read(cx).layout.as_ref().is_some_and(|layout| layout.blocks.iter().any(|(ix, _, _)| *ix == row));
+                    if is_block { continue; }
+                }
                 let rows = line.wrap_boundaries.len() + 1;
                 line.paint(
                     point(prepainted.origin.x, top),
@@ -432,6 +572,9 @@ impl Element for TextElement {
                         layout.lines = lines;
                     }
                 });
+            }
+            for (_, block) in &mut prepainted.blocks {
+                block.paint(window, cx);
             }
             if let Some(caret) = prepainted.caret.take() {
                 window.paint_quad(fill(caret, colors.accent).corner_radii(px(1.)));
