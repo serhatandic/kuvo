@@ -39334,6 +39334,8 @@ var writeRecord = (renewal, first = false) => {
   }
 };
 writeRecord(null, true);
+if (onMachine)
+  rmSync19(join43(machineHome, "run", "agents-renewing"), { force: true });
 var launchSaid;
 renewal = onMachine && build ? new Renewal({
   script,
@@ -39347,7 +39349,7 @@ renewal = onMachine && build ? new Renewal({
   hold: (on) => sessions.hold(on),
   renew: () => {
     console.error("A newer bridge is in place: this one makes way for it.");
-    stop();
+    stop(true);
   },
   told: (state) => writeRecord(state),
   paused: () => updateUnderWay(join43(machineHome, "run")),
@@ -39411,10 +39413,16 @@ if (renewing)
 if (runFolder)
   new HangWatch({ name: "engine", run: runFolder, record: join43(runFolder, "engine.json"), isIt: isEngine }).start();
 var stopping = false;
-function stop() {
+function stop(handOver = false) {
   if (stopping)
     return;
   stopping = true;
+  const run = onMachine ? join43(machineHome, "run") : undefined;
+  if (handOver && run) {
+    try {
+      writeSecret(join43(run, "agents-renewing"), JSON.stringify({ at: Date.now(), pid: process.pid }));
+    } catch {}
+  }
   goals.stopAll();
   sideQuestions.stopAll();
   reviews.stopAll();
@@ -39427,13 +39435,29 @@ function stop() {
   stopAllHeld();
   store.flush();
   server4.stop(true);
+  if (handOver && run && kept3)
+    startNext(run);
   process.exit(0);
 }
+function startNext(run) {
+  try {
+    if (basename13(machineHome) !== ".kuvo-code")
+      return;
+    if (Number(readFileSync41(join43(run, "agents.pid"), "utf8").trim()) !== process.pid)
+      return;
+    rmSync19(join43(run, "agents.pid"), { force: true });
+    const start = join43(machineHome, "bin", "kuvo-start");
+    const env = { HOME: dirname24(machineHome), PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    spawn7("sh", [start, "bridge"], { detached: true, stdio: "ignore", env, cwd: machineHome }).unref();
+  } catch (error) {
+    console.error("couldn't start the next bridge:", error);
+  }
+}
 if (!onMachine) {
-  process.stdin.on("end", stop);
-  process.stdin.on("close", stop);
+  process.stdin.on("end", () => stop());
+  process.stdin.on("close", () => stop());
   process.stdin.resume();
 }
-process.on("SIGTERM", stop);
-process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 28494eaad42caf63afb0119101798eaa1a21fe5a2c2779c9cbc1dec0ebf6efcc
+process.on("SIGTERM", () => stop());
+process.on("SIGINT", () => stop());
+// Built from Packages/Box/src/agents 083b8f6a11c04190f052ea1a6bbad02b2218d2c3c0687f815499dc016b631d7a

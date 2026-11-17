@@ -3,7 +3,14 @@
  "error": {
   "object": {
    "message?": "string",
-   "problem?": "string"
+   "problem?": "string",
+   "reason?": "string",
+   "action?": {
+    "object": {
+     "label": "string",
+     "route": "string"
+    }
+   }
   }
  },
  "passedOn": [
@@ -12197,12 +12204,26 @@
     },
     "404": {
      "object": {
-      "message": "string"
+      "message": "string",
+      "reason?": "string",
+      "action?": {
+       "object": {
+        "label": "string",
+        "route": "string"
+       }
+      }
      }
     },
     "503": {
      "object": {
-      "message": "string"
+      "message": "string",
+      "reason?": "string",
+      "action?": {
+       "object": {
+        "label": "string",
+        "route": "string"
+       }
+      }
      }
     }
    }
