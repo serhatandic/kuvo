@@ -334,12 +334,10 @@ pub struct Colors {
 
     /// The accent: focus rings, links, the text cursor, switches that are on, unread badges.
     pub accent: Hsla,
-    /// The accent for small text on the sidebar, including its selection wash.
-    pub accent_text: Hsla,
     pub accent_hover: Hsla,
     pub accent_pressed: Hsla,
     /// What waits on you, in words ("1 waiting on you"): the accent's hue, calmer, so it marks
-    /// what needs attention or is scheduled without outshouting the name above it.
+    /// what needs attention without outshouting the name above it.
     pub attention: Hsla,
     /// The accent, faint, behind selected text.
     pub selection: Hsla,
@@ -430,7 +428,6 @@ impl Colors {
             // The macOS system blue, which is also the Mac app's accent unless the user picks
             // another; the accent itself is a brand decision left to the user.
             accent: hex(0x0A7AFF),
-            accent_text: hex(0x0761CC),
             accent_hover: hex(0x086DE6),
             accent_pressed: hex(0x0761CC),
             attention: hex(0x3466B2),
@@ -501,7 +498,6 @@ impl Colors {
             primary_pressed: hex(0xD4D4D4),
 
             accent: hex(0x2E8BFF),
-            accent_text: hex(0x4799FF),
             accent_hover: hex(0x4799FF),
             accent_pressed: hex(0x2479E0),
             attention: hex(0x85AEE0),
@@ -707,10 +703,10 @@ mod tests {
         for colors in [Colors::light(), Colors::dark()] {
             let sidebar = colors.sidebar;
             for background in [sidebar, sidebar.blend(colors.hover), sidebar.blend(colors.selected)] {
-                for tint in [colors.attention, colors.accent_text] {
-                    let ratio = contrast(tint, background);
-                    assert!(ratio >= 4.5, "wake-up status contrast {ratio:.2} on {background:?}");
-                }
+                let text = contrast(colors.text_muted, background);
+                assert!(text >= 4.5, "wake-up text contrast {text:.2} on {background:?}");
+                let dot = contrast(colors.accent, background);
+                assert!(dot >= 3.0, "wake-up dot contrast {dot:.2} on {background:?}");
             }
         }
     }

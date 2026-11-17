@@ -840,18 +840,27 @@ impl AreaView {
         for bot in &bots.bots {
             let key = format!("bot:{}", bot.id);
             let selected = self.is_selected(&key);
-            let wake_status = self.reached.then(|| bot_row_wake(bot, self.now())).flatten();
-            let detail = if let Some((words, waking)) = wake_status {
-                let tint = if waking { c.accent_text } else { c.attention };
+            let now = self.now();
+            let waking = self.reached && bot.now.waking;
+            let detail = if waking && bot.now.asking == 0 && bot.now.state != kuvo_box::areas::BotState::Blocked {
                 div().flex().items_center().gap(space::S1).text_role(TextRole::RowDetail)
-                    .text_color(tint)
-                    .child(Icon::new(kuvo_ui::IconName::Clock).size(IconSize::XSmall).color(tint))
-                    .child(div().min_w_0().truncate().child(words))
+                    .text_color(c.text_muted)
+                    .child(div().size(px(5.)).flex_none().rounded(radius::PILL).bg(c.accent))
+                    .child("Waking up…")
             } else {
-                let doing = self.reached.then(|| doing_parts(&bot.now, self.now())).flatten();
+                let doing = self.reached.then(|| doing_parts(&bot.now, now)).flatten();
                 let (words, waiting) = doing.map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
                 div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx))
             };
+            let next = bot.wakes.filter(|_| self.reached && !waking && !bot.paused)
+                .and_then(|due| time::next_wake(due * 1000., now));
+            // These rows have no trailing hover control. The timestamp can stay in place.
+            let trail = next.map(|label| {
+                div().flex().items_baseline().flex_none().gap(space::S1)
+                    .text_role(TextRole::Meta).text_color(c.text_muted)
+                    .child(Icon::new(kuvo_ui::IconName::Clock).size(IconSize::Indicator).color(c.text_muted))
+                    .child(div().child(label))
+            });
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
             rows.push(
@@ -871,6 +880,7 @@ impl AreaView {
                     .on_click(self.row_click(key, cx))
                     .child(bot_face(&bot.id, &bot.look, px(BOT_FACE)))
                     .child(two_lines(bot.name.clone(), detail, &c))
+                    .children(trail)
                     .into_any_element(),
             );
         }
@@ -1181,20 +1191,6 @@ impl Doing {
     pub fn into_parts(self) -> (String, Option<std::ops::Range<usize>>) {
         (self.words, self.waiting)
     }
-}
-
-fn bot_row_wake(bot: &Bot, now: f64) -> Option<(String, bool)> {
-    let wake = wakes::Status::from(bot);
-    if wake.waking && bot.now.asking == 0 && bot.now.state != kuvo_box::areas::BotState::Blocked {
-        return Some(("Waking up…".into(), true));
-    }
-    if bot.now.working == 0 && bot.now.asking == 0
-        && !matches!(bot.now.state, kuvo_box::areas::BotState::Blocked | kuvo_box::areas::BotState::Done)
-        && let Some(words) = wake.scheduled(now)
-    {
-        return Some((words, false));
-    }
-    None
 }
 
 pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
