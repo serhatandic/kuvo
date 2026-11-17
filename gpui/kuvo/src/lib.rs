@@ -23,6 +23,7 @@ pub mod groups;
 pub mod home;
 pub mod keeper;
 pub mod model_picker;
+pub mod moves;
 mod landing;
 pub mod launch;
 pub mod notifications;

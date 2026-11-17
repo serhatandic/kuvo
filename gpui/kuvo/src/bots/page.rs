@@ -34,28 +34,33 @@ impl BotsView {
         let body: AnyElement = match item {
             Item::Title(title) => div().pt(space::S8).pb(space::S2).text_ui(TypeSize::Title).medium().text_color(c.text).child(title).into_any_element(),
             Item::Head { bot, doing } => self.head(&bot, doing, cx),
-            Item::ElsewhereHead { key, name, look, line } => div()
-                .debug_selector({
-                    let key = key.clone();
-                    move || format!("elsewhere-head-{key}")
-                })
-                .pt(space::S8)
-                .pb(space::S2)
-                .flex()
-                .items_center()
-                .gap(space::S4)
-                .child(face_or_blank(&key, look.as_ref(), px(64.), cx))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(space::S1)
-                        .child(div().truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(name))
-                        .child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(line)),
-                )
-                .into_any_element(),
+            Item::ElsewhereHead { key, name, look, line } => {
+                let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, &key);
+                let status = self.moves.as_ref().and_then(|moves| moves.read(cx).row_status(&target, cx));
+                let face = match look.as_ref() {
+                    Some(look) if status.is_some() => crate::bot_face::still_bot_face(&key, look, px(64.)),
+                    _ => face_or_blank(&key, look.as_ref(), px(64.), cx),
+                };
+                let source = self.move_source(&key);
+                let detail = status.unwrap_or_else(|| div().text_ui(TypeSize::Body).text_color(c.text_muted).child(line).into_any_element());
+                div()
+                    .debug_selector(move || format!("elsewhere-head-{key}"))
+                    .pt(space::S8)
+                    .pb(space::S2)
+                    .flex()
+                    .items_center()
+                    .gap(space::S4)
+                    .child(face)
+                    .child(
+                        div().flex_1().min_w_0().flex().flex_col().gap(space::S1)
+                            .child(div().truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(name))
+                            .child(detail),
+                    )
+                    .children(self.moves.as_ref().zip(source).map(|(moves, source)| {
+                        crate::moves::MovesView::head_button_from(moves, target, Some(source), cx)
+                    }))
+                    .into_any_element()
+            }
             Item::Notice { key, tone, title, words } => {
                 let (icon, color) = match tone {
                     Tone::Waiting => (IconName::Clock, c.icon),
@@ -158,6 +163,13 @@ impl BotsView {
                 .children(mark)
                 .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(kuvo_ui::small::status_words(doing.words, doing.waiting, cx)))
         });
+        let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, &bot.id);
+        let moving = self.moves.as_ref().and_then(|moves| moves.read(cx).row_status(&target, cx));
+        let face = if moving.is_some() {
+            crate::bot_face::still_bot_face(&bot.id, &bot.look, px(64.))
+        } else {
+            bot_face(&bot.id, &bot.look, px(64.))
+        };
         div()
             .debug_selector(|| "bot-head".into())
             .pt(space::S8)
@@ -165,7 +177,7 @@ impl BotsView {
             .flex()
             .items_center()
             .gap(space::S4)
-            .child(bot_face(&bot.id, &bot.look, px(64.)))
+            .child(face)
             .child(
                 div()
                     .flex_1()
@@ -174,8 +186,11 @@ impl BotsView {
                     .flex_col()
                     .child(div().debug_selector(|| "bot-head-name".into()).truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(bot.name.clone()))
                     .when(!bot.job.is_empty(), |d| d.child(div().text_ui(TypeSize::Body).text_color(c.text_muted).child(bot.job.clone())))
-                    .children(now),
+                    .children(moving.or_else(|| now.map(IntoElement::into_any_element))),
             )
+            .children(self.moves.as_ref().map(|moves| crate::moves::MovesView::head_button(
+                moves, target, cx,
+            )))
             .child(div().flex_none().child(Button::new("bot-chat", "Chat").primary().icon(IconName::Message).on_click(cx.listener(|this, _, _, cx| this.act(Act::Chat, cx)))))
             .into_any_element()
     }

@@ -75,6 +75,7 @@ struct Form {
 
 pub struct GroupsView {
     client: BoxClient,
+    moves: Option<Entity<crate::moves::MovesView>>,
     live: bool,
     shown: Shown,
     /// The chats as the box lists them, and its bots (who wrote a message in a chat they've left).
@@ -107,10 +108,15 @@ impl Focusable for GroupsView {
 }
 
 impl GroupsView {
+    pub fn set_moves(&mut self, moves: Entity<crate::moves::MovesView>, cx: &mut Context<Self>) {
+        self.moves = Some(moves);
+        cx.notify();
+    }
+
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> GroupsView {
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let purpose = cx.new(|cx| TextField::new(cx).placeholder("Optional"));
-        GroupsView { client, live, shown: Shown::Nothing, groups: Vec::new(), bots: Vec::new(), chats: HashMap::new(), joinable: Reading::NotYet, name, purpose, form: Form::default(), listed: false, on_screen: false, now: None, focus: cx.focus_handle(), tasks: Vec::new() }
+        GroupsView { client, moves: None, live, shown: Shown::Nothing, groups: Vec::new(), bots: Vec::new(), chats: HashMap::new(), joinable: Reading::NotYet, name, purpose, form: Form::default(), listed: false, on_screen: false, now: None, focus: cx.focus_handle(), tasks: Vec::new() }
     }
 
     pub fn shown(&self) -> &Shown {
@@ -483,6 +489,9 @@ impl GroupsView {
             .border_color(c.border)
             .children(group.map(|group| faces(group, px(20.), cx)))
             .child(div().debug_selector(|| "group-members".into()).flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(joined(&names)))
+            .children(self.moves.as_ref().zip(group).map(|(moves, group)| crate::moves::MovesView::head_button(
+                moves, kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Group, &group.id), cx,
+            )))
             .child(
                 div().debug_selector(|| "group-edit".into()).child(
                     Button::new("group-edit", "Edit")

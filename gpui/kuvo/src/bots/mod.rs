@@ -180,6 +180,7 @@ struct Form {
 /// The Bots area's main view.
 pub struct BotsView {
     client: BoxClient,
+    moves: Option<Entity<crate::moves::MovesView>>,
     live: bool,
     said: Reading<BotsSaid>,
     shown: Shown,
@@ -224,6 +225,16 @@ impl Focusable for BotsView {
 }
 
 impl BotsView {
+    fn move_source(&self, id: &str) -> Option<crate::moves::RemoteSource> {
+        let Reading::Ready(said) = &self.said else { return None };
+        crate::moves::RemoteSource::of(said.elsewhere.iter().find(|bot| bot.id == id)?)
+    }
+
+    pub fn set_moves(&mut self, moves: Entity<crate::moves::MovesView>, cx: &mut Context<Self>) {
+        self._subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
+        self.moves = Some(moves);
+    }
+
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> BotsView {
         let name = cx.new(|cx| TextField::new(cx).placeholder("Name"));
         let line = cx.new(|cx| TextField::new(cx).placeholder("What it does, in a few words"));
@@ -245,6 +256,7 @@ impl BotsView {
         ];
         let mut view = BotsView {
             client,
+            moves: None,
             live,
             said: Reading::NotYet,
             shown: Shown::Nothing,

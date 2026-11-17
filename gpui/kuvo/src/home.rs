@@ -344,6 +344,7 @@ impl Home {
         let switching = !self.workspaces.is_empty() || slot != NEAREST;
         let workspace = cx.new(|cx| {
             let mut workspace = Workspace::new(client, live, window, cx);
+            workspace.moves().update(cx, |moves, _| moves.set_computers(self.boxes.clone()));
             if switching {
                 workspace.skip_first_run(cx);
             }
@@ -365,6 +366,13 @@ impl Home {
                 this.restoring = None;
                 if this.switch_to(key, window, cx) {
                     this.keep_shown(cx);
+                }
+            }
+            Switch::OpenMoved { computer, target } => {
+                this.restoring = None;
+                if this.switch_to(computer, window, cx) {
+                    this.keep_shown(cx);
+                    this.workspace().clone().update(cx, |view, cx| view.open_moved(target, window, cx));
                 }
             }
             Switch::PairAgain => this.pair_again(cx),

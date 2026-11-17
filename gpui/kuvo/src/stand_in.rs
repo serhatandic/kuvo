@@ -23,6 +23,7 @@ pub mod first_run;
 pub mod permissions;
 pub mod git;
 pub mod groups;
+pub mod moves;
 pub mod queue;
 pub mod settings;
 pub mod work_bars;
@@ -76,6 +77,7 @@ struct State {
     /// The boxes of your other computers it reaches, by key.
     peers: HashMap<String, StandIn>,
     older: bool,
+    move_scenario: Option<moves::Scenario>,
     /// What its `kuvo/info` leaves out of what this app draws (a box behind on those features).
     lacks: Vec<String>,
     /// It doesn't answer (asleep, off, offline): every request fails.
@@ -1651,6 +1653,9 @@ impl StandIn {
         let mut state = self.state();
         state.seen.push(Seen { method: method.into(), path: path.into(), body: request.body.clone() });
         let segments: Vec<&str> = route.split('/').collect();
+        if let Some((status, value)) = moves::answer(&mut state, request) {
+            return answer(status, value);
+        }
         // The coding agents' bridge not running: what needs it answers with their state.
         if let Some((status, value)) = state.settings.agents_away_answer(method, route, &|name| query(path, name).map(decoded)) {
             return answer(status, value);

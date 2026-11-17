@@ -11,6 +11,8 @@ use kuvo::panel::Tab;
 use kuvo_box::git::Group;
 use kuvo::first_run::{FirstRun, Step};
 use kuvo::stand_in::first_run::Scenario;
+use kuvo::stand_in::moves::Scenario as MoveScenario;
+use kuvo_box::moves::{Kind as MoveKind, Target as MoveTarget};
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::BoxState;
 use kuvo::bots::{Act as BotAct, BotsView};
@@ -183,6 +185,11 @@ const SCREENS: &[Screen] = &[
     // Bots (`kuvo/src/bots`): a bot's page, its conversation, New Bot, each sheet, a bot waiting
     // for another computer, a narrow window and the first run.
     Screen { slug: "bot-page", width: 1280., height: 1180., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-move-menu", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_menu) },
+    Screen { slug: "bot-move-confirm", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_confirm) },
+    Screen { slug: "bot-move-moving", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "bot-move-failed", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_result) },
+    Screen { slug: "bot-move-done", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_move_result) },
     Screen { slug: "bot-quiet", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_quiet) },
     Screen { slug: "bot-chat", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
     Screen { slug: "bot-new", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_new) },
@@ -412,6 +419,23 @@ fn sidebar_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
 
 fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_mira", window, cx);
+}
+
+fn bot_move_menu(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    kuvo::moves::MovesView::open_head_menu(workspace.moves(), MoveTarget::new(MoveKind::Bot, "bot_mira"), window, cx);
+}
+
+fn bot_move_confirm(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    let target = MoveTarget::new(MoveKind::Bot, "bot_mira");
+    let place = workspace.client().move_places(&target).expect("move places").places.remove(0);
+    workspace.moves().update(cx, |view, cx| view.ask(target, place, None, window, cx));
+}
+
+fn bot_move_result(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_move_confirm(workspace, window, cx);
+    workspace.moves().update(cx, |view, cx| view.submit(window, cx));
 }
 
 /// Bots' page view.
@@ -1500,6 +1524,13 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "settings-a-permissions-services" {
                 stand_in.set_sandbox(serde_json::json!({ "on": true, "needsYou": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox" }));
+            }
+            if screen.slug.starts_with("bot-move-") {
+                stand_in.set_move_scenario(match screen.slug {
+                    "bot-move-moving" => MoveScenario::Copying,
+                    "bot-move-failed" => MoveScenario::Failed,
+                    _ => MoveScenario::Ready,
+                });
             }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");

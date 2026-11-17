@@ -246,6 +246,7 @@ enum Open {
 /// Asked of what holds the window's workspaces ([`crate::home::Home`]) from the switcher.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Switch {
+    OpenMoved { computer: String, target: kuvo_box::moves::Target },
     /// Show the computer with this key.
     To(String),
     /// This app was removed from your devices: pair it again.
@@ -265,6 +266,7 @@ impl gpui::EventEmitter<Switch> for Workspace {}
 
 pub struct Workspace {
     client: BoxClient,
+    moves: Entity<crate::moves::MovesView>,
     /// Your computers as this app reaches them, where the window can show another's (none: a
     /// workspace by itself, which shows its one box).
     switching: Option<crate::home::Switching>,
@@ -410,8 +412,24 @@ impl Workspace {
             }
         });
         let permissions = cx.new(|cx| crate::permissions::HeadsUp::new(client.clone(), live, window, cx));
+        let moves = cx.new(|cx| crate::moves::MovesView::new(client.clone(), live, cx));
         let areas = areas::views(&client, live, cx);
+        if let Some((_, bots)) = areas.iter().find(|(area, _)| *area == Area::Bots) {
+            bots.update(cx, |bots, cx| bots.set_moves(moves.clone(), cx));
+        }
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
+        area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
+        area_subscriptions.push(cx.subscribe(&moves, |_: &mut Self, _, moved: &crate::moves::OpenMoved, cx| {
+            cx.emit(Switch::OpenMoved { computer: moved.computer.clone(), target: moved.target.clone() });
+        }));
+        area_subscriptions.push(cx.subscribe(&moves, |this: &mut Self, _, finished: &crate::moves::MoveFinished, cx| {
+            use kuvo_box::moves::Kind;
+            if finished.0.kind == Kind::Chat {
+                this.refresh_list_after_action(cx);
+            } else if let Some(bots) = this.area_view(Area::Bots).cloned() {
+                bots.update(cx, |bots, cx| bots.refresh_after_move(cx));
+            }
+        }));
         for (_, view) in &areas {
             area_subscriptions.push(cx.subscribe(view, |this: &mut Workspace, _, said: &areas::QueueDelivered, cx| {
                 match &said.0 {
@@ -427,8 +445,16 @@ impl Workspace {
         area_subscriptions.extend(areas.iter().map(|(_, view)| cx.observe(view, |this: &mut Workspace, _, cx| this.check_picks(cx))));
 
         area_subscriptions.extend(areas.iter().map(|(_, view)| {
-            cx.subscribe_in(view, window, |this: &mut Workspace, _, go: &Go, window, cx| match go {
+            cx.subscribe_in(view, window, |this: &mut Workspace, view, go: &Go, window, cx| match go {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
+                Go::BotRehomed => {
+                    if this.area == Area::Bots {
+                        this.area_picked(&view, window, cx);
+                    } else {
+                        this.in_bot_chat = false;
+                        this.keep_place(cx);
+                    }
+                }
                 Go::Session(session) => this.open_session_now(session, window, cx),
                 Go::Sessions => this.show_area(Area::Sessions, window, cx),
                 Go::ReadComputers => {
@@ -467,6 +493,7 @@ impl Workspace {
         let mut workspace = Workspace {
             client: client.clone(),
             switching: None,
+            moves,
             lister: None,
             own_update: None,
             carries_release: false,
@@ -2699,6 +2726,8 @@ impl Workspace {
     /// A bot's conversation in Bots: a strip saying whose it is, with the way back to its page,
     /// over the conversation.
     fn bot_chat_view(&self, bot: &str, chat: &Entity<ConversationView>, cx: &mut Context<Self>) -> AnyElement {
+        let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
+        let move_status = self.moves.read(cx).row_status(&target, cx);
         let c = cx.theme().colors.clone();
         let listed = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
             Reading::Ready(bots) => bots.bots.iter().find(|each| each.id == bot).cloned(),
@@ -2715,12 +2744,19 @@ impl Workspace {
             .border_b_1()
             .border_color(c.border)
             .child(Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings").ghost().size(ButtonSize::Small).icon_size(kuvo_ui::IconSize::Medium).tooltip("Bot Settings").on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx))))
-            .children(listed.as_ref().map(|bot| areas::bot_face(&bot.id, &bot.look, px(22.))))
-            .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
             .children(listed.as_ref().map(|bot| {
+                if move_status.is_some() {
+                    crate::bot_face::still_bot_face(&bot.id, &bot.look, px(22.))
+                } else {
+                    areas::bot_face(&bot.id, &bot.look, px(22.))
+                }
+            }))
+            .children(listed.as_ref().map(|bot| div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child(bot.name.clone())))
+            .children(move_status.or_else(|| listed.as_ref().map(|bot| {
                 let words = bot.job.clone();
-                div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words)
-            }));
+                div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(words).into_any_element()
+            })))
+            .child(crate::moves::MovesView::head_button(&self.moves, target, cx));
         div().debug_selector(|| "bot-chat".into()).size_full().flex().flex_col().child(strip).child(div().flex_1().min_h_0().child(chat.clone().cached(gpui::StyleRefinement::default().size_full()))).into_any_element()
     }
 
@@ -2919,14 +2955,49 @@ impl Workspace {
         }
     }
 
+    pub fn moves(&self) -> &Entity<crate::moves::MovesView> {
+        &self.moves
+    }
+
+    pub fn move_chat_menu(&mut self, session: &str, anchor: &PopoverAnchor, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = match anchor {
+            PopoverAnchor::TitleBar => self.session_menu.title_menu.clone(),
+            PopoverAnchor::Row(key) => self.session_menu.row_menu_handle(key),
+        };
+        let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Chat, session);
+        let moves = self.moves.clone();
+        window.defer(cx, move |window, cx| {
+            handle.open(crate::moves::MovesView::menu(&moves, target, window, cx), window, cx);
+        });
+    }
+
+    fn is_move_chat(&self, session: &str) -> bool {
+        self.listing().facts(session).is_some_and(|facts| facts.kind.is_chat())
+    }
+
+    pub fn open_moved(&mut self, target: &kuvo_box::moves::Target, window: &mut Window, cx: &mut Context<Self>) {
+        use kuvo_box::moves::Kind;
+        if target.kind == Kind::Chat {
+            self.open_session(&target.id, window, cx);
+            return;
+        }
+        self.show_area(Area::Bots, window, cx);
+        let kind = if target.kind == Kind::Bot { "bot" } else { "group" };
+        if let Some(bots) = self.area_view(Area::Bots).cloned() {
+            bots.update(cx, |bots, cx| bots.select(Some(format!("{kind}:{}", target.id)), cx));
+            self.area_picked(&bots, window, cx);
+        }
+    }
+
     pub fn open_row_menu(&mut self, session: &str, key: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
         let anchor = PopoverAnchor::Row(key.to_owned());
+        let move_chat = self.is_move_chat(session);
         if !self.live {
             let result = self.client.session_actions(session);
             if let Ok(actions) = &result {
                 self.session_menu.cache_actions(session, actions.clone());
             }
-            return session_menu::menu_from_actions(result, session.to_owned(), anchor, cx.entity().downgrade(), cx);
+            return session_menu::menu_from_actions(result, session.to_owned(), anchor, cx.entity().downgrade(), move_chat, cx);
         }
         session_menu::open_actions_menu(
             self.client.clone(),
@@ -2934,12 +3005,14 @@ impl Workspace {
             session.to_owned(),
             anchor,
             cx.entity().downgrade(),
+            move_chat,
             window,
             cx,
         )
     }
 
     pub fn open_title_menu(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Menu> {
+        let move_chat = self.is_move_chat(session);
         if !self.live {
             let result = self.client.session_actions(session);
             if let Ok(actions) = &result {
@@ -2950,6 +3023,7 @@ impl Workspace {
                 session.to_owned(),
                 PopoverAnchor::TitleBar,
                 cx.entity().downgrade(),
+                move_chat,
                 cx,
             );
         }
@@ -2959,6 +3033,7 @@ impl Workspace {
             session.to_owned(),
             PopoverAnchor::TitleBar,
             cx.entity().downgrade(),
+            move_chat,
             window,
             cx,
         )
@@ -3404,6 +3479,7 @@ impl Render for Workspace {
         });
         let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
         div()
+            .relative()
             .key_context("Workspace")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &NewSession, window, cx| this.new_session(None, window, cx)))
@@ -3486,5 +3562,6 @@ impl Render for Workspace {
                         .children(panel),
                 ),
             )
+            .child(self.moves.clone())
     }
 }

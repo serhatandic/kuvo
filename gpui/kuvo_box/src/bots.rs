@@ -106,6 +106,9 @@ pub struct Elsewhere {
     /// What it does, in a few words; empty where its computer said none.
     #[serde(default)]
     pub job: String,
+    /// The computer it lives on, by its box key.
+    #[serde(default, rename = "box")]
+    pub computer_key: String,
     /// The name of the computer it lives on, as the box asked knows it.
     #[serde(default)]
     pub computer: String,

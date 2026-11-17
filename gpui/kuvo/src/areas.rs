@@ -13,6 +13,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Task, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use kuvo_box::BoxClient;
+use kuvo_box::moves::{Kind as MoveKind, Target as MoveTarget};
 use kuvo_box::areas::{Bot, BotNow, Computer, Group, Look};
 use kuvo_ui::bot::State;
 use kuvo_box::work_queue::QueueSaid;
@@ -29,6 +30,7 @@ use crate::area::Area;
 use crate::bots::{BotsEvent, BotsView, There};
 use crate::computers::{ComputersEvent, ComputersView};
 use crate::groups::{GroupsEvent, GroupsView};
+use crate::moves::RemoteSource;
 use crate::queue::marks::{label_dot, status_mark};
 use crate::queue::{Act as QueueAct, QueueEvent, QueueView};
 use crate::settings::{AddMachine, Opened, Pick, SettingsView};
@@ -73,6 +75,8 @@ pub struct Picked;
 pub enum Go {
     /// A bot's own conversation, with `draft` in its composer where the box gave one.
     BotChat { bot: String, session: String, draft: Option<String> },
+    /// The selected bot now appears under its new computer.
+    BotRehomed,
     /// One of the box's sessions.
     Session(String),
     /// The Sessions area.
@@ -98,6 +102,7 @@ pub struct AreaView {
     _computers_page: Vec<gpui::Subscription>,
     area: Area,
     client: BoxClient,
+    moves: Option<gpui::Entity<crate::moves::MovesView>>,
     live: bool,
     bots: Reading<Bots>,
     queue: Reading<QueueSaid>,
@@ -276,7 +281,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { moves: None, _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -287,6 +292,24 @@ impl AreaView {
     /// Bots' main view, in the Bots area.
     pub fn page(&self) -> Option<&gpui::Entity<BotsView>> {
         self.page.as_ref()
+    }
+
+    pub fn set_moves(&mut self, moves: gpui::Entity<crate::moves::MovesView>, cx: &mut Context<Self>) {
+        self._page.push(cx.observe(&moves, |_, _, cx| cx.notify()));
+        if let Some(page) = &self.page {
+            page.update(cx, |page, cx| page.set_moves(moves.clone(), cx));
+        }
+        if let Some(groups) = &self.groups {
+            groups.update(cx, |groups, cx| groups.set_moves(moves.clone(), cx));
+        }
+        self.moves = Some(moves);
+    }
+
+    fn move_menu(&self, key: &str, row: impl IntoElement, target: MoveTarget, source: Option<RemoteSource>) -> AnyElement {
+        let Some(moves) = self.moves.clone() else { return row.into_any_element() };
+        ContextMenuArea::new(SharedString::from(format!("move-menu-{key}")), row, move |window, cx| {
+            crate::moves::MovesView::menu_from(&moves, target.clone(), source.clone(), window, cx)
+        }).into_any_element()
     }
 
     /// The group chats' main view, in the Bots area.
@@ -510,6 +533,12 @@ impl AreaView {
         self.read_list(cx);
     }
 
+    pub fn refresh_after_move(&mut self, cx: &mut Context<Self>) {
+        if self.reading.is_none() {
+            self.read_list(cx);
+        }
+    }
+
     /// Reads the area's list from the box, what's on screen staying meanwhile.
     fn read_list(&mut self, cx: &mut Context<Self>) {
         let (area, client) = (self.area, self.client.clone());
@@ -552,6 +581,17 @@ impl AreaView {
                     let said = said.keeping(Some(&BotsSaid { bots: Vec::new(), elsewhere: bots.elsewhere.clone(), held: bots.held.clone(), refused: bots.refused.clone(), held_unsaid: false }));
                     (bots.bots, bots.elsewhere, bots.held, bots.refused) = (said.bots, said.elsewhere, said.held, said.refused);
                 }
+                let rehomed = match (self.selected.as_deref().and_then(|key| key.split_once(':')), &self.bots) {
+                    (Some((kind, id)), Reading::Ready(bots)) => {
+                        let here = bots.bots.iter().any(|bot| bot.id == id);
+                        match kind {
+                            "bot" if !here && bots.elsewhere.iter().any(|bot| bot.id == id && !bot.unlisted) => Some(format!("elsewhere:{id}")),
+                            "elsewhere" if here => Some(format!("bot:{id}")),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
                 self.tell_faces(cx);
                 // The same reading, handed to the page.
                 let said = match &self.bots {
@@ -568,6 +608,10 @@ impl AreaView {
                 {
                     let (chats, all) = (bots.groups.clone(), bots.bots.clone());
                     groups.update(cx, |groups, cx| groups.set_listed(chats, all, cx));
+                }
+                if let Some(key) = rehomed {
+                    self.select(Some(key), cx);
+                    cx.emit(Go::BotRehomed);
                 }
             }
             Read::Queue(queue) => {
@@ -804,8 +848,16 @@ impl AreaView {
             let (words, waiting) = doing_parts(&bot.now, self.now()).map(Doing::into_parts).unwrap_or_else(|| (bot.job.clone(), None));
             let (hover, selected_bg) = (c.hover, c.selected);
             let selector = format!("bot-{}", bot.id);
-            rows.push(
-                div()
+            let target = MoveTarget::new(MoveKind::Bot, &bot.id);
+            let move_status = self.moves.as_ref().and_then(|moves| moves.read(cx).row_status(&target, cx));
+            let face = if move_status.is_some() {
+                crate::bot_face::still_bot_face(&bot.id, &bot.look, px(BOT_FACE))
+            } else {
+                bot_face(&bot.id, &bot.look, px(BOT_FACE))
+            };
+            let detail = move_status.unwrap_or_else(|| div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted)
+                .child(status_words(words, waiting, cx)).into_any_element());
+            let row = div()
                     .id(SharedString::from(selector.clone()))
                     .debug_selector(move || selector)
                     .flex()
@@ -818,17 +870,16 @@ impl AreaView {
                     .cursor_pointer()
                     .when(selected, |r| r.bg(selected_bg))
                     .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
-                    .on_click(self.row_click(key, cx))
-                    .child(bot_face(&bot.id, &bot.look, px(BOT_FACE)))
-                    .child(two_lines(bot.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(status_words(words, waiting, cx)), &c))
-                    .into_any_element(),
-            );
+                    .on_click(self.row_click(key.clone(), cx))
+                    .child(face)
+                    .child(two_lines(bot.name.clone(), detail, &c));
+            rows.push(self.move_menu(&key, row, target, None));
         }
         // The bots that live on your other computers, as the box says each last told it.
-        let elsewhere = bots.there();
-        if !elsewhere.is_empty() {
+        if !bots.elsewhere.is_empty() {
             rows.push(SectionHeader::new("elsewhere", "On Other Computers").into_any_element());
-            for there in elsewhere {
+            for bot in &bots.elsewhere {
+                let there = There::of(bot);
                 let key = format!("elsewhere:{}", there.id);
                 let selected = self.is_selected(&key);
                 let (hover, selected_bg) = (c.hover, c.selected);
@@ -842,12 +893,15 @@ impl AreaView {
                 } else {
                     format!("On {computer}")
                 };
+                let target = MoveTarget::new(MoveKind::Bot, &there.id);
+                let move_status = self.moves.as_ref().and_then(|moves| moves.read(cx).row_status(&target, cx));
                 let face = match &there.look {
+                    Some(look) if move_status.is_some() => crate::bot_face::still_bot_face(&there.id, look, px(BOT_FACE)),
                     Some(look) => bot_face(&there.id, look, px(BOT_FACE)),
                     None => div().flex().flex_none().items_center().justify_center().size(px(BOT_FACE)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
                 };
-                rows.push(
-                    div()
+                let detail = move_status.unwrap_or_else(|| div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(line).into_any_element());
+                let row = div()
                         .id(SharedString::from(selector.clone()))
                         .debug_selector(move || selector)
                         .flex()
@@ -860,11 +914,14 @@ impl AreaView {
                         .cursor_pointer()
                         .when(selected, |r| r.bg(selected_bg))
                         .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
-                        .on_click(self.row_click(key, cx))
+                        .on_click(self.row_click(key.clone(), cx))
                         .child(face)
-                        .child(two_lines(there.name.clone(), div().truncate().text_role(TextRole::RowDetail).text_color(c.text_muted).child(line), &c))
-                        .into_any_element(),
-                );
+                        .child(two_lines(there.name.clone(), detail, &c));
+                let row = match RemoteSource::of(bot) {
+                    Some(source) => self.move_menu(&key, row, target, Some(source)),
+                    None => row.into_any_element(),
+                };
+                rows.push(row);
             }
         }
         // Group chats: those that live on this box, and New Group beside their header.
@@ -885,12 +942,14 @@ impl AreaView {
                 Icon::new(kuvo_ui::IconName::Message).color(c.icon).into_any_element()
             };
             let selected = self.is_selected(&key) || self.is_selected(&format!("edit-group:{}", group.id));
+            let target = MoveTarget::new(MoveKind::Group, &group.id);
+            let detail = self.moves.as_ref().and_then(|moves| moves.read(cx).row_status(&target, cx));
             let row = NavRow::new(SharedString::from(selector.clone()), group.name.clone())
                 .leading(leading)
-                .trailing(div().debug_selector(move || when_selector).text_role(TextRole::Meta).text_color(c.text_faint).child(when))
+                .trailing(detail.unwrap_or_else(|| div().debug_selector(move || when_selector).text_role(TextRole::Meta).text_color(c.text_faint).child(when).into_any_element()))
                 .selected(selected)
-                .on_click(self.row_click(key, cx));
-            rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(row).into_any_element());
+                .on_click(self.row_click(key.clone(), cx));
+            rows.push(div().debug_selector(move || selector).pb(space::S0_5).child(self.move_menu(&key, row, target, None)).into_any_element());
         }
         rows
     }

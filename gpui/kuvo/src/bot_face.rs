@@ -234,6 +234,18 @@ pub fn bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
         .into_any_element()
 }
 
+/// A still pose for a move row and its header.
+pub fn still_bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
+    let mut motion = Motion::settled_in(seed_of(id), &look.face, State::Idle);
+    motion.reduced = true;
+    let pose = motion.pose(f32::from(size));
+    let shape = Shape::of(&look.shape);
+    let color = look.color.clone();
+    canvas(|_, _, _| (), move |bounds, _, window, cx| {
+        paint_bot(bounds, shape, &color, &pose, cx.theme().appearance.is_dark(), window);
+    }).size(size).flex_none().into_any_element()
+}
+
 /// The next frame for `view`'s bots, at most 60 a second: on a faster display, frames come and go
 /// without drawing until a 60th of a second has passed.
 fn ask_frame(view: EntityId, window: &mut Window, cx: &mut App) {

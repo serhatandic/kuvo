@@ -662,7 +662,11 @@ fn session_row(workspace: &mut Workspace, id: &str, section: &str, cursor: bool,
         div().into_any_element()
     };
     let when = facts.as_ref().map(|facts| time::ago(facts.updated, workspace.now())).unwrap_or_default();
-    let end: AnyElement = if show_actions {
+    let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Chat, id);
+    let move_status = workspace.moves().read(cx).row_status(&target, cx);
+    let end: AnyElement = if let Some(status) = move_status {
+        div().max_w(px(120.)).child(status).into_any_element()
+    } else if show_actions {
         row_hover_actions(id, &row_key, &hover_buttons, cx)
     } else {
         div()

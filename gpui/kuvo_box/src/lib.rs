@@ -34,6 +34,7 @@ pub mod mentions;
 pub mod local;
 pub mod messages;
 pub mod models;
+pub mod moves;
 pub mod notices;
 pub mod parts;
 pub mod paths;
