@@ -708,6 +708,16 @@ health rule and code-only rollback. Never older, never unsigned.
     button. "Another Mac: its own app updates it" goes: another Mac follows like any computer, and the
     box listing your computers says "Kuvo on <name> updates in a moment".
 
+### Two Macs
+A Mac's box's peers are its own machines (`peersOf`: `link.macPeers`); another Mac is a peer only
+where it was added as one, and otherwise a box "vouched for" by a machine both Macs set up, which
+gets plan limits only. So the mini follows the MacBook directly where they're peers, and otherwise
+through a machine both set up: that machine takes the release from the MacBook, holds it once it's
+judged well there (the health window, about five minutes), and the mini takes it from the machine.
+Every pair of your computers that list each other is joined that way, as a vouched box exists only
+beside a machine both set up. A release's trust is its signature, not who hands it over, so taking
+it from a vouched box too would be safe; not built, as no vouched box tells which release it holds.
+
 ### What stays, and why
 - A release whose engine its code wasn't checked with (a box two engine releases behind) still waits
   for nothing at work before it's taken: that one update stops the engine, and cutting work is worse
