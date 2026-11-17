@@ -11,7 +11,7 @@ use std::time::Duration;
 use gpui::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, SharedString, Styled,
-    Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
+    Subscription, Task, Window, deferred, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_box::accounts::Confirm;
 use kuvo_box::follow::{Follow, ListUpdate, Timing};
@@ -51,6 +51,14 @@ const WELCOME_AGAIN: Duration = Duration::from_secs(2);
 pub const NARROW: Pixels = px(820.);
 /// How far back the window remembers where it's been.
 const HISTORY: usize = 100;
+/// The raised panel's leading edge, between the rail and the sidebar.
+const CARD_EDGE: Pixels = px(1.);
+
+struct SidebarDrag {
+    from: Pixels,
+    initial: Pixels,
+    width: Pixels,
+}
 
 /// Where the window was: a place back and forward go to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -327,6 +335,7 @@ pub struct Workspace {
     panel_open: bool,
     panel_width: Pixels,
     resizing: Option<(Pixels, Pixels)>,
+    sidebar_drag: Option<SidebarDrag>,
     /// The area open, the other areas' sidebars (kept while hidden), and the accounts' rings.
     area: Area,
     areas: Vec<(Area, Entity<AreaView>)>,
@@ -464,6 +473,7 @@ impl Workspace {
             area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
         }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
+        area_subscriptions.push(cx.observe_global::<crate::yours::Store>(|_, cx| cx.notify()));
         let mut workspace = Workspace {
             client: client.clone(),
             switching: None,
@@ -503,6 +513,7 @@ impl Workspace {
             panel_open: false,
             panel_width: panel::WIDTH,
             resizing: None,
+            sidebar_drag: None,
             area: Area::Sessions,
             areas,
             rings,
@@ -1839,7 +1850,7 @@ impl Workspace {
     /// bounds, never leaving the conversation narrower than its narrowest.
     pub fn resize_to(&mut self, x: Pixels, wide: Pixels, cx: &mut Context<Self>) {
         let Some((from, width)) = self.resizing else { return };
-        self.panel_width = (width + (from - x)).clamp(panel::NARROWEST, self.widest_panel(wide));
+        self.panel_width = (width + (from - x)).clamp(panel::NARROWEST, self.widest_panel(wide, cx));
         cx.notify();
     }
 
@@ -1860,7 +1871,7 @@ impl Workspace {
         let c = cx.theme().colors.clone();
         // In a window narrower than it was made for, the panel gives way before the conversation
         // does; its width is kept for a wider one.
-        let width = self.panel_width.min(self.widest_panel(window.viewport_size().width));
+        let width = self.panel_width.min(self.widest_panel(window.viewport_size().width, cx));
         let resizing = self.resizing.is_some();
         div()
             .relative()
@@ -2254,6 +2265,9 @@ impl Workspace {
             self.keep_place(cx);
         }
         self.prune_session_popover(cx);
+        if !self.sidebar_shown() {
+            self.end_sidebar_resize(cx);
+        }
         // Folded with the keyboard in it (its search, its list): the keyboard goes to the main view.
         if !self.sidebar_shown() && (self.search.focus_handle(cx).is_focused(window) || self.list_focus.is_focused(window)) {
             self.walked = None;
@@ -3293,15 +3307,57 @@ impl Workspace {
         }
     }
 
-    /// How wide the area's sidebar and the rail are now, together.
-    fn sidebars_width(&self) -> Pixels {
-        rail::WIDTH + if self.sidebar_shown() { px(sidebar::WIDTH) } else { px(0.) }
+    fn sidebar_width(&self, viewport: Pixels, cx: &App) -> Pixels {
+        let preferred = self.sidebar_drag.as_ref().map_or_else(
+            || sidebar::preferred_width(crate::yours::sidebar_width(cx)),
+            |drag| drag.width,
+        );
+        sidebar::fit_width(preferred, viewport, self.area == Area::Bots)
+    }
+
+    fn end_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if let Some(drag) = self.sidebar_drag.take() {
+            if drag.width != drag.initial {
+                crate::yours::change(crate::yours::Change::SidebarWidth(f32::from(drag.width)), cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn sidebar_handle(&self, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let dragging = self.sidebar_drag.is_some();
+        deferred(
+            div()
+                .id("sidebar-edge")
+                .debug_selector(|| "sidebar-edge".into())
+                .absolute()
+                .right(px(-4.))
+                .top_0()
+                .bottom_0()
+                .w(px(8.))
+                .flex()
+                .justify_center()
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        this.sidebar_drag = None;
+                        crate::yours::change(crate::yours::Change::SidebarWidth(sidebar::WIDTH), cx);
+                    } else {
+                        this.sidebar_drag = Some(SidebarDrag { from: event.position.x, initial: width, width });
+                    }
+                    cx.notify();
+                }))
+                .child(div().w(px(2.)).h_full().when(dragging, |d| d.bg(c.accent)).hover(|s| s.bg(c.border_strong))),
+        ).into_any_element()
     }
 
     /// The widest the side panel goes in a window `wide`: never leaving the conversation narrower
     /// than its narrowest (the rail, the area's sidebar and the panel's edge apart).
-    fn widest_panel(&self, wide: Pixels) -> Pixels {
-        let room = wide - self.sidebars_width() - panel::CONVERSATION_NARROWEST - px(8.);
+    fn widest_panel(&self, wide: Pixels, cx: &App) -> Pixels {
+        let sidebar = if self.sidebar_shown() { self.sidebar_width(wide, cx) } else { px(0.) };
+        let room = wide - rail::WIDTH - CARD_EDGE - sidebar - panel::CONVERSATION_NARROWEST - px(8.);
         panel::WIDEST.min(room).max(panel::NARROWEST)
     }
 }
@@ -3398,9 +3454,28 @@ impl Render for Workspace {
             _ => landing::render(self, window, cx),
         } };
         let area_view = (!sessions).then(|| self.area_view(self.area).cloned()).flatten();
-        let sidebar: Option<AnyElement> = (self.sidebar_shown() && blocked.is_none()).then(|| match area_view {
-            Some(view) => view.into_any_element(),
-            None => sidebar::render(self, window, cx),
+        let width = (self.sidebar_shown() && blocked.is_none()).then(|| self.sidebar_width(window.viewport_size().width, cx));
+        let compact = self.area == Area::Bots && width.is_some_and(sidebar::compact_bots);
+        if let Some(view) = &area_view {
+            view.update(cx, |view, cx| view.set_compact(compact, cx));
+        }
+        let sidebar = width.map(|width| {
+            let content = match area_view {
+                Some(view) => view.into_any_element(),
+                None => sidebar::render(self, window, cx),
+            };
+            div()
+                .id("area-sidebar")
+                .debug_selector(|| "area-sidebar".into())
+                .relative()
+                .w(width)
+                .h_full()
+                .flex_none()
+                .bg(c.sidebar)
+                .border_r_1()
+                .border_color(c.border)
+                .child(content)
+                .child(self.sidebar_handle(width, cx))
         });
         let panel = (sessions && self.panel_open && !self.client.gate().is_held()).then(|| self.panel_card(window, cx));
         div()
@@ -3453,6 +3528,23 @@ impl Render for Workspace {
                     }))
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| this.end_resize(cx)))
             })
+            .when(self.sidebar_drag.is_some(), |d| {
+                d.cursor_col_resize()
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            this.end_sidebar_resize(cx);
+                        } else if let Some(drag) = &mut this.sidebar_drag {
+                            let width = drag.initial + event.position.x - drag.from;
+                            drag.width = sidebar::fit_width(width, window.viewport_size().width, this.area == Area::Bots);
+                            cx.notify();
+                        }
+                    }))
+                    .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                        if event.button == MouseButton::Left {
+                            this.end_sidebar_resize(cx);
+                        }
+                    }))
+            })
             .on_action(cx.listener(|_, _: &ToggleAppearance, _, cx| {
                 let next = cx.theme().appearance.toggled();
                 crate::yours::set_theme(next, cx);
@@ -3463,7 +3555,7 @@ impl Render for Workspace {
             .bg(c.background)
             .text_ui(TypeSize::Small)
             .text_color(c.text)
-            .child(title_bar::render(self, cx))
+            .child(title_bar::render(self, width.map(|width| rail::WIDTH + CARD_EDGE + width), compact, cx))
             .child(
                 div().flex_1().min_h_0().flex().child(rail::render(self, cx)).child(
                     // The area's sidebar and its main view share one raised panel, its corner
@@ -3479,9 +3571,7 @@ impl Render for Workspace {
                         .border_l_1()
                         .border_color(c.border)
                         .overflow_hidden()
-                        .children(sidebar.map(|sidebar| {
-                            div().id("area-sidebar").debug_selector(|| "area-sidebar".into()).w(px(sidebar::WIDTH)).h_full().flex_none().bg(c.sidebar).border_r_1().border_color(c.border).child(sidebar)
-                        }))
+                        .children(sidebar)
                         .child(div().relative().flex_1().min_w_0().h_full().child(content))
                         .children(panel),
                 ),

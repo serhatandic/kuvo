@@ -142,7 +142,7 @@ impl SettingsView {
         let trigger = div()
             .id("settings-computer")
             .debug_selector(|| "settings-computer".into())
-            .w(px(PICKER_WIDTH))
+            .w_full()
             .h(px(36.))
             .px(space::S2)
             .flex()
@@ -157,7 +157,7 @@ impl SettingsView {
             .child(Icon::new(IconName::ChevronDown).color(c.icon))
             .into_any_element();
         let build = self.picker_menu(cx);
-        PopoverMenu::new("settings-computer-menu", trigger, move |_, cx| build(cx)).with_handle(self.picker.clone()).into_any_element()
+        PopoverMenu::new("settings-computer-menu", trigger, move |_, cx| build(cx)).fill().with_handle(self.picker.clone()).into_any_element()
     }
 
     /// What makes the picker's menu, from your computers as they're listed now.

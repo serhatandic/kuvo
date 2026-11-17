@@ -4,7 +4,7 @@
 
 use kuvo_ui::motion::{MotionExt as _};
 use gpui::{
-    AnyElement, AppContext as _, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
+    AnyElement, AppContext as _, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, StatefulInteractiveElement as _, Styled, div, prelude::FluentBuilder as _, px,
 };
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRole, TypeSize,
@@ -18,59 +18,61 @@ use crate::areas::{Reading, computer_line};
 use crate::session_menu::{ActivePopover, title_anchored_popover};
 use crate::workspace::{BoxState, Switch, Workspace};
 use kuvo_box::boxes::{Pairing, Reach, Row};
-use crate::{rail, sidebar};
 
 /// How tall it is.
 pub const HEIGHT: f32 = 44.;
 /// The room the window's own buttons take at its left (macOS's traffic lights).
 const LIGHTS: f32 = 76.;
 
-pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement {
+pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &mut Context<Workspace>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let (title, beside) = workspace.title(cx);
     let in_sessions = workspace.area() == Area::Sessions && !workspace.client().gate().is_held();
     let archived = in_sessions && workspace.opened_is_archived();
     let more_menu = (in_sessions).then(|| workspace.opened().map(|session| session_more_menu(workspace, session, cx))).flatten();
-    // Over the rail and the area's sidebar, one group: the sidebar toggle, the switcher, back and
-    // forward, evenly spaced (Zed's title bar groups its left controls the same way). A thin
-    // divider closes the group where the sidebar column ends, so the title starts over the content;
-    // with the sidebar folded the group and the divider stay together.
-    let zone = rail::WIDTH + if workspace.sidebar_shown() { px(sidebar::WIDTH) } else { px(0.) };
+    let button_size = if compact { ButtonSize::Small } else { ButtonSize::Medium };
+    let icon_size = if compact { IconSize::Medium } else { IconSize::Large };
+    let gap = space::S0_5;
+    let divider_gap = space::S1;
+    let divider_width = px(1.);
+    let picker_room = edge.map_or(px(184.), |edge| {
+        edge - px(LIGHTS) - button_size.height() * 3. - gap * 3. - divider_gap - divider_width
+    });
     let group = div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(space::S0_5)
+        .gap(gap)
         .child(buttons(
             Button::icon_only("toggle-sidebar", IconName::SidebarLeft, if workspace.sidebar_shown() { "Hide Sidebar" } else { "Show Sidebar" })
                 .ghost()
-                .size(ButtonSize::Medium)
-                .icon_size(IconSize::Large)
+                .size(button_size)
+                .icon_size(icon_size)
                 // (No "on" wash: the sidebar beside it says it's shown, as Finder's and
                 // Codex's sidebar buttons do; a filled tile was the bar's heaviest thing.)
-                .tooltip("⌘B")
+                .tooltip_keys("⌘B")
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
         ))
-        .child(buttons(computer_switcher(workspace, cx)))
+        .child(buttons(computer_switcher(workspace, compact, picker_room, cx)))
         .child(buttons(
             Button::icon_only("back", IconName::ArrowLeft, "Back")
                 .ghost()
-                .size(ButtonSize::Medium)
-                .icon_size(IconSize::Large)
-                .tooltip("⌘[")
+                .size(button_size)
+                .icon_size(icon_size)
+                .tooltip_keys("⌘[")
                 .disabled(!workspace.can_go_back())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(Back), cx)),
         ))
         .child(buttons(
             Button::icon_only("forward", IconName::ArrowRight, "Forward")
                 .ghost()
-                .size(ButtonSize::Medium)
-                .icon_size(IconSize::Large)
-                .tooltip("⌘]")
+                .size(button_size)
+                .icon_size(icon_size)
+                .tooltip_keys("⌘]")
                 .disabled(!workspace.can_go_forward())
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(Forward), cx)),
         ));
-    let divider = div().id("title-bar-divider").debug_selector(|| "title-bar-divider".into()).flex_none().w(px(1.)).h(px(16.)).bg(c.border);
+    let divider = div().id("title-bar-divider").debug_selector(|| "title-bar-divider".into()).flex_none().w(divider_width).h(px(16.)).bg(c.border);
     let panel_button = (workspace.area() == Area::Sessions).then(|| {
         Button::icon_only("toggle-panel", IconName::PanelRight, if workspace.is_panel_open() { "Hide Panel" } else { "Show Panel" })
             .ghost()
@@ -97,12 +99,12 @@ pub fn render(workspace: &Workspace, cx: &mut Context<Workspace>) -> AnyElement 
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(space::S1)
-                .min_w(zone)
+                .gap(divider_gap)
+                .when_some(edge, |zone, edge| zone.w(edge))
                 .h_full()
                 .pl(px(LIGHTS))
                 .child(group)
-                .when(workspace.sidebar_shown(), |zone| zone.child(div().flex_1()))
+                .when(edge.is_some(), |zone| zone.justify_between())
                 .child(divider),
         )
         .child(
@@ -168,20 +170,27 @@ fn buttons(child: impl IntoElement) -> impl IntoElement {
 }
 
 /// The computer whose box the window shows, and how it stands; it opens the list of your computers.
-fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyElement {
+fn computer_switcher(workspace: &Workspace, compact: bool, room: Pixels, cx: &Context<Workspace>) -> AnyElement {
     let c = &cx.theme().colors;
     let name = workspace.box_name();
     let (dot, said) = match workspace.box_state() {
         BoxState::Connected => (None, None),
         BoxState::Connecting => (Some(c.text_faint), Some("Connecting…".to_owned())),
         BoxState::Held => (None, None),
-        BoxState::Unreachable(why) => (Some(c.danger), Some(why.clone())),
+        BoxState::Unreachable(_) => (Some(c.danger), Some("Can’t connect".to_owned())),
     };
-    // A long name is cut, so back and forward stay in the group.
-    let shown: gpui::SharedString = if name.chars().count() > 18 { format!("{}…", name.chars().take(17).collect::<String>()).into() } else { name.clone() };
-    // Where the window is, not what to do: its words quieter than the title's, its icon the
-    // toolbar's 16 px beside 13 px words.
-    let trigger = Button::new("computer-switcher", shown).ghost().quiet().size(ButtonSize::Medium).icon_size(IconSize::Medium).icon(IconName::Computer).icon_after(IconName::ChevronDown);
+    let trigger = if compact {
+        Button::icon_only("computer-switcher", IconName::Computer, name.clone())
+            .size(ButtonSize::Small)
+    } else {
+        Button::new("computer-switcher", name.clone())
+            .ghost()
+            .quiet()
+            .icon(IconName::Computer)
+            .icon_after(IconName::ChevronDown)
+            .truncate_at(room)
+            .tooltip(name.clone())
+    }.icon_size(IconSize::Medium);
     let menu_name = name.clone();
     // Your other computers, as the box lists them (`kuvo/computers`), each with how it's reached.
     // A workspace by itself shows its one box: they're listed, and can't be switched to.
@@ -192,9 +201,9 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
     let switching = workspace.switching().cloned();
     let this = cx.entity().downgrade();
     div()
+        .relative()
         .flex()
         .items_center()
-        .gap(space::S1)
         .child(
             PopoverMenu::new("computer-menu", trigger, move |_, cx| {
                 let (name, said, others, switching, this) = (menu_name.clone(), said.clone(), others.clone(), switching.clone(), this.clone());
@@ -248,7 +257,7 @@ fn computer_switcher(workspace: &Workspace, cx: &Context<Workspace>) -> AnyEleme
             })
             .into_any_element(),
         )
-        .children(dot.map(status_dot))
+        .children(dot.map(|color| div().absolute().top(px(1.)).right(px(1.)).child(status_dot(color))))
         .into_any_element()
 }
 

@@ -580,12 +580,17 @@ impl StandIn {
         self.state().settings.set_config(path, value);
     }
 
-    /// From now on, it says this of its sandbox (`kuvo/sandbox`).
     /// From now on it stands in for a box on another computer (a machine's), or this one's again.
     pub fn set_elsewhere(&self, elsewhere: bool) {
         self.state().elsewhere = elsewhere;
     }
 
+    /// The computer's name as reported by the stand-in.
+    pub fn set_computer_name(&self, name: &str) {
+        self.state().name = Some(name.to_owned());
+    }
+
+    /// From now on, it says this of its sandbox (`kuvo/sandbox`).
     pub fn set_sandbox(&self, sandbox: Value) {
         self.state().settings.set_sandbox(sandbox);
     }

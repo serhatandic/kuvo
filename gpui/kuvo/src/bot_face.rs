@@ -234,6 +234,22 @@ pub fn bot_face(id: &str, look: &Look, size: Pixels) -> AnyElement {
         .into_any_element()
 }
 
+/// A settled avatar for the compact sidebar, with no frame or motion scheduling.
+pub fn still_avatar(id: &str, look: &Look, state: State, size: Pixels) -> AnyElement {
+    let pose = Motion::settled_in(seed_of(id), &look.face, state).pose(f32::from(size));
+    let shape = Shape::of(&look.shape);
+    let color = look.color.clone();
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            paint_bot(bounds, shape, &color, &pose, cx.theme().appearance.is_dark(), window);
+        },
+    )
+    .size(size)
+    .flex_none()
+    .into_any_element()
+}
+
 /// The next frame for `view`'s bots, at most 60 a second: on a faster display, frames come and go
 /// without drawing until a 60th of a second has passed.
 fn ask_frame(view: EntityId, window: &mut Window, cx: &mut App) {

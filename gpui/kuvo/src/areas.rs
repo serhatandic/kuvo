@@ -20,7 +20,7 @@ use kuvo_box::bots::{BotsSaid, Elsewhere, Held, Refused};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconSize, StyledType, TextRole, TypeSize,
     row::{NavRow, SectionHeader},
-    menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
+    menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu, Tooltip},
     small::{spinner, status_dot, status_words},
     theme::{radius, space},
 };
@@ -97,6 +97,7 @@ pub struct AreaView {
     computers_page: Option<gpui::Entity<ComputersView>>,
     _computers_page: Vec<gpui::Subscription>,
     area: Area,
+    compact: bool,
     client: BoxClient,
     live: bool,
     bots: Reading<Bots>,
@@ -276,7 +277,7 @@ impl AreaView {
             });
             (follow, task)
         });
-        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
+        AreaView { _bots_follow: bots_follow, reached: true, chat_open: None, seen_told: None, followed_meanwhile: None, _groups_follow: groups_follow, groups, _groups: groups_subscriptions, computers_page, _computers_page: computers_subscriptions, queue_page, _queue_page: queue_subscriptions, page, _page: page_subscriptions, area, compact: false, client, live, bots: Reading::NotYet, queue: Reading::NotYet, computers: Reading::NotYet, this_box: "This Mac".into(), this_kind: String::new(), selected, now: None, reading: None, settings, _settings_picks: picks, _settings_adds: adds, _settings_opens: opens, _settings_changes: changes }
     }
 
     /// Settings' view, in the Settings area.
@@ -329,16 +330,23 @@ impl AreaView {
     /// otherwise (its state is its own box's to say).
     fn tell_faces(&mut self, cx: &mut Context<Self>) {
         let Reading::Ready(bots) = &self.bots else { return };
-        let mut told: Vec<(String, State)> = bots.bots.iter().map(|bot| (bot.id.clone(), if self.reached { crate::bot_face::state_of(&bot.now) } else { State::Offline })).collect();
-        let away = |computer: &str| match &self.computers {
-            Reading::Ready(computers) => computers.iter().any(|each| each.name == computer && each.reach == "away"),
-            _ => false,
-        };
-        told.extend(bots.elsewhere.iter().map(|there| (there.id.clone(), if !self.reached || away(&there.computer) { State::Offline } else { State::Idle })));
+        let mut told: Vec<(String, State)> = bots.bots.iter().map(|bot| (bot.id.clone(), self.bot_state(bot))).collect();
+        told.extend(bots.elsewhere.iter().map(|there| (there.id.clone(), self.elsewhere_state(&there.computer))));
         for (id, state) in told {
             crate::bot_face::tell(&id, state, cx);
         }
         self.tell_seen(cx);
+    }
+
+    fn bot_state(&self, bot: &Bot) -> State {
+        if self.reached { crate::bot_face::state_of(&bot.now) } else { State::Offline }
+    }
+
+    fn elsewhere_state(&self, computer: &str) -> State {
+        let away = ready(&self.computers).is_some_and(|computers| {
+            computers.iter().any(|each| each.name == computer && each.reach == "away")
+        });
+        if !self.reached || away { State::Offline } else { State::Idle }
     }
 
     /// Whether the box is reached (the window's own word): its bots are drawn offline while not.
@@ -746,6 +754,7 @@ impl Render for AreaView {
             return div().id("area-frame").debug_selector(|| "held-area-sidebar".into()).size_full();
         }
         let rows = match self.area {
+            Area::Bots if self.compact => self.bot_avatars(cx),
             Area::Bots => self.bots_rows(cx),
             Area::Queue => self.queue_rows(cx),
             Area::Computers => self.computer_rows(cx),
@@ -758,18 +767,97 @@ impl Render for AreaView {
             .id("area-frame")
             .relative()
             .size_full()
-            .child(div().id(SharedString::from(format!("area-{}", self.area.slug()))).size_full().overflow_y_scroll().px(space::S2).pt(space::S2).pb(space::S4).children(rows))
+            .child(
+                div()
+                    .id(SharedString::from(if self.compact { "bot-avatars".into() } else { format!("area-{}", self.area.slug()) }))
+                    .size_full()
+                    .overflow_y_scroll()
+                    .px(space::S2)
+                    .pt(space::S2)
+                    .pb(space::S4)
+                    .when(self.compact, |d| d.flex().flex_col().items_center().gap(space::S1))
+                    .children(rows),
+            )
             .when(dimmed, |d| d.child(div().id("area-sidebar-dim").debug_selector(|| "area-sidebar-dim".into()).absolute().inset_0().bg(crate::bots::dim(cx)).occlude()))
     }
 }
 
 impl AreaView {
+    pub(crate) fn set_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
+        if self.compact != compact {
+            self.compact = compact;
+            cx.notify();
+        }
+    }
+
     fn row_click(&self, key: String, cx: &mut Context<Self>) -> impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static {
         cx.listener(move |this, _, _, cx| this.pick(key.clone(), cx))
     }
 
     fn is_selected(&self, key: &str) -> bool {
         self.selected.as_deref() == Some(key)
+    }
+
+    fn bot_avatars(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let c = cx.theme().colors.clone();
+        let search = Button::icon_only("bot-avatar-search", kuvo_ui::IconName::Search, "Search Sessions")
+            .icon_size(IconSize::Large)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::sidebar::FocusSearch), cx));
+        let mut rows = vec![search.into_any_element()];
+        let Some(bots) = ready(&self.bots) else { return rows };
+        for bot in &bots.bots {
+            let state = self.bot_state(bot);
+            let status = if state == State::Offline {
+                None
+            } else if bot.now.asking > 0 || state == State::NeedsYou {
+                Some(("Needs you", c.accent, "bot-avatar-needs-you"))
+            } else if bot.now.working > 0 || matches!(state, State::Working | State::Thinking) {
+                Some(("At work", c.success, "bot-avatar-at-work"))
+            } else {
+                None
+            };
+            let face = crate::bot_face::still_avatar(&bot.id, &bot.look, state, px(38.));
+            let name = status.map_or_else(|| bot.name.clone(), |(words, _, _)| format!("{} · {words}", bot.name));
+            let mark = status.map(|(_, color, selector)| {
+                div().debug_selector(move || selector.into()).absolute().bottom_0().right_0().size(px(10.)).rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
+            });
+            rows.push(self.avatar_row(format!("bot:{}", bot.id), name, face, mark, cx));
+        }
+        for there in bots.there() {
+            let state = self.elsewhere_state(&there.computer);
+            let face = there.look.as_ref().map_or_else(
+                || div().flex().items_center().justify_center().size(px(38.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
+                |look| crate::bot_face::still_avatar(&there.id, look, state, px(38.)),
+            );
+            rows.push(self.avatar_row(format!("elsewhere:{}", there.id), there.name, face, None, cx));
+        }
+        rows
+    }
+
+    fn avatar_row(&self, key: String, name: String, face: AnyElement, mark: Option<gpui::Div>, cx: &mut Context<Self>) -> AnyElement {
+        let c = &cx.theme().colors;
+        let selected = self.is_selected(&key);
+        let fill = if selected { c.selected } else { c.hover };
+        let ring = c.focus_ring;
+        let selector = format!("bot-avatar-{key}");
+        div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(56.))
+            .rounded(radius::NAV)
+            .when(selected, |d| d.bg(fill))
+            .hover(move |d| d.bg(fill))
+            .focus_visible(move |d| d.shadow(kuvo_ui::button::focus_ring(ring)))
+            .cursor_pointer()
+            .tab_index(0)
+            .tooltip(move |_, cx| Tooltip::new(name.clone()).build(cx))
+            .on_click(self.row_click(key, cx))
+            .child(div().relative().child(face).children(mark))
+            .into_any_element()
     }
 
     fn bots_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {

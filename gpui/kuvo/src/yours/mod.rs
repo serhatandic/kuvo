@@ -204,6 +204,8 @@ pub struct Yours {
     pub appearance: Appearance,
     pub general: General,
     pub panel: Panel,
+    /// Preferred left sidebar width in logical pixels, shared across computers on this device.
+    pub sidebar_width: Option<f32>,
     pub notifications: Notifications,
     pub privacy: Privacy,
     /// The first Quit's note was seen on this device (`quit_note`).
@@ -219,6 +221,7 @@ pub enum Change {
     TextSize(TextSize),
     Editor(Option<String>),
     PanelStart(PanelStart),
+    SidebarWidth(f32),
     Sessions(bool),
     Sound(bool),
     Dock(bool),
@@ -244,6 +247,7 @@ impl Change {
             Change::TextSize(size) => yours.appearance.text_size = size,
             Change::Editor(editor) => yours.general.editor = editor,
             Change::PanelStart(start) => yours.panel.starts_with = start,
+            Change::SidebarWidth(width) => yours.sidebar_width = Some(width),
             Change::Sessions(on) => yours.notifications.sessions = on,
             Change::Sound(on) => yours.notifications.sound = on,
             Change::Dock(on) => yours.notifications.dock = on,
@@ -284,7 +288,7 @@ impl Store {
         let file = file.unwrap_or_default();
         let value = Value::Object(file.clone());
         let quit_note_seen = value.get(QUIT_NOTE_SEEN).and_then(Value::as_bool).unwrap_or(false);
-        let now = Yours { welcomed: value.get("welcomed").and_then(Value::as_bool).unwrap_or(false), queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
+        let now = Yours { welcomed: value.get("welcomed").and_then(Value::as_bool).unwrap_or(false), queue_opened_count: page(&value, "queueOpenedCount"), queue_last_opened: page(&value, "queueLastOpened"), appearance: page(&value, "appearance"), general: page(&value, "general"), panel: page(&value, "panel"), sidebar_width: page(&value, "sidebarWidth"), notifications: page(&value, "notifications"), privacy: page(&value, "privacy"), quit_note_seen };
         let place: Place = page(&value, "place");
         Store { path, now, place: place.into(), file: file.into(), problem: None.into() }
     }
@@ -346,6 +350,9 @@ impl Store {
         file.insert("queueOpenedCount".into(), serde_json::to_value(&self.now.queue_opened_count).unwrap());
         file.insert("queueLastOpened".into(), serde_json::to_value(&self.now.queue_last_opened).unwrap());
         file.insert("place".into(), serde_json::to_value(&*self.place.borrow()).unwrap());
+        if let Some(width) = self.now.sidebar_width {
+            file.insert("sidebarWidth".into(), Value::from(width));
+        }
         if self.now.welcomed {
             file.insert("welcomed".into(), Value::Bool(true));
         }
@@ -375,6 +382,10 @@ pub fn init(path: Option<PathBuf>, cx: &mut App) {
 /// Your settings now (the defaults where nothing read them yet).
 pub fn now(cx: &App) -> Yours {
     cx.try_global::<Store>().map(|store| store.now.clone()).unwrap_or_default()
+}
+
+pub(crate) fn sidebar_width(cx: &App) -> Option<f32> {
+    cx.try_global::<Store>().and_then(|store| store.now.sidebar_width)
 }
 
 /// Makes a change to your settings and keeps it, and makes what it changes for every window at

@@ -489,6 +489,7 @@ pub struct PopoverMenu {
     align_right: bool,
     above: bool,
     centered: bool,
+    fill: bool,
 }
 
 impl PopoverMenu {
@@ -506,7 +507,7 @@ impl PopoverMenu {
             let view = view(window, cx);
             handle.open(view, window, cx);
         });
-        Self { id: id.into(), trigger: trigger.into_any_element(), menu, handle: None, align_right: false, above: false, centered: false }
+        Self { id: id.into(), trigger: trigger.into_any_element(), menu, handle: None, align_right: false, above: false, centered: false, fill: false }
     }
 
     /// Opens above the trigger (a composer's control, at the window's foot).
@@ -518,6 +519,12 @@ impl PopoverMenu {
     /// Centred on the row it's in, rather than at its top (a toolbar's controls of other heights).
     pub fn centered(mut self) -> Self {
         self.centered = true;
+        self
+    }
+
+    /// Takes the available width, so the trigger can size itself to the parent.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
 
@@ -552,6 +559,7 @@ impl RenderOnce for PopoverMenu {
             .relative()
             .flex()
             .flex_none()
+            .when(self.fill, |d| d.w_full().min_w_0())
             .when(!self.centered, |d| d.self_start())
             .when(self.centered, |d| d.self_center())
             // A press on the trigger while the menu is open closes it, rather than closing on

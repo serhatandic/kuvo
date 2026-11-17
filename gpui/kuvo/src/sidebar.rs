@@ -9,7 +9,7 @@
 
 use gpui::{
     AnyElement, App, Context, InteractiveElement, IntoElement, KeyBinding, MouseButton,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, actions, div,
+    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Window, actions, div,
     prelude::FluentBuilder as _, px,
 };
 use kuvo_box::search::SEARCHED_FROM;
@@ -29,8 +29,26 @@ use crate::workspace::{Lists, Workspace};
 
 actions!(sidebar, [WalkNext, WalkPrevious, WalkOpen, WalkLeave, FocusSearch]);
 
-/// How wide an area's sidebar is.
+/// Default width of an area's sidebar.
 pub const WIDTH: f32 = 272.;
+const MIN_WIDTH: f32 = 136.;
+const MAX_WIDTH: f32 = 440.;
+const BOTS_COMPACT_BELOW: f32 = 216.;
+
+pub(crate) fn preferred_width(saved: Option<f32>) -> Pixels {
+    px(saved.filter(|width| width.is_finite()).unwrap_or(WIDTH).clamp(MIN_WIDTH, MAX_WIDTH))
+}
+
+pub(crate) fn fit_width(preferred: Pixels, viewport: Pixels, bots: bool) -> Pixels {
+    let min = px(if bots { MIN_WIDTH } else { BOTS_COMPACT_BELOW });
+    let room = viewport - crate::rail::WIDTH - px(1.) - crate::panel::CONVERSATION_NARROWEST;
+    preferred.clamp(min, room.clamp(min, px(MAX_WIDTH)))
+}
+
+pub(crate) fn compact_bots(width: Pixels) -> bool {
+    width < px(BOTS_COMPACT_BELOW)
+}
+
 /// How many of a project's sessions show before "Show more".
 pub const SHOWN: usize = 6;
 /// The key context of the list while the keyboard walks it, and of the search around its field.

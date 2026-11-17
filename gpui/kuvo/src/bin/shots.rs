@@ -173,6 +173,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "area-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "titlebar-bots-folded", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots_folded) },
     Screen { slug: "titlebar-session", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "sidebar-long-computer", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
+    Screen { slug: "sidebar-wide", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "sidebar-narrow-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "titlebar-session-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_folded) },
     Screen { slug: "area-queue", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "area-computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
@@ -1397,8 +1400,24 @@ fn main() -> anyhow::Result<()> {
             } else {
                 kuvo::yours::TextSize::Default
             };
-            cx.update(|cx| kuvo::yours::change(kuvo::yours::Change::TextSize(text_size), cx));
+            cx.update(|cx| {
+                use kuvo::yours::{Change, change};
+                change(Change::TextSize(text_size), cx);
+                let width = match screen.slug {
+                    "sidebar-wide" => 420.,
+                    "sidebar-narrow-bots" => 136.,
+                    _ => kuvo::sidebar::WIDTH,
+                };
+                change(Change::SidebarWidth(width), cx);
+            });
             let stand_in = if screen.slug.starts_with("held-box") { StandIn::held_older(Replies::Never) } else if screen.empty { StandIn::empty(Replies::Never) } else { StandIn::at(Replies::Never, NOW) };
+            if screen.slug == "sidebar-long-computer" {
+                stand_in.set_elsewhere(true);
+                stand_in.set_computer_name("WWWWW Engineering Workstation East Coast");
+            }
+            if screen.slug == "sidebar-narrow-bots" {
+                stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW - 60_000. }));
+            }
             if screen.slug.starts_with("settings-commands") {
                 stand_in.add_settings_section(serde_json::json!({"id":"commands","title":"Commands","group":"Agents & Tools","icon":"terminal","line":"Prompts you use often, run by typing / and their name."}), serde_json::from_str(include_str!("../stand_in/settings/commands.json")).expect("Commands fixture"));
             }

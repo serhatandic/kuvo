@@ -3,7 +3,7 @@
 //! button and in a narrow window, "Needs you" on top of Sessions, back and forward, and the rings.
 //! Clicks and keys go through the window as AppKit hands them on.
 
-use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
+use gpui::{Bounds, Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, TestAppContext, VisualTestContext, point, px, size};
 use kuvo::area::Area;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
@@ -693,4 +693,125 @@ fn title_bar_groups_the_sidebar_side_buttons_before_a_divider_and_the_title(cx: 
         assert!(pair[0].right() <= pair[1].left(), "left to right, sidebar hidden: {pair:?}");
     }
     assert!(hidden[4].left() - hidden[3].right() <= gpui::px(16.), "the divider stays with the group");
+}
+
+fn drag_sidebar(cx: &mut VisualTestContext, delta: f32) {
+    let from = bounds(cx, "sidebar-edge").unwrap().center();
+    let to = point(from.x + px(delta), from.y);
+    let modifiers = Modifiers::default();
+    cx.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    cx.simulate_mouse_move(to, Some(MouseButton::Left), modifiers);
+    cx.simulate_mouse_up(to, MouseButton::Left, modifiers);
+    cx.run_until_parked();
+}
+
+fn resizable_sidebar_width(cx: &mut VisualTestContext) -> Pixels {
+    let sidebar = bounds(cx, "area-sidebar").unwrap();
+    let divider = bounds(cx, "title-bar-divider").unwrap();
+    assert_eq!(divider.right(), sidebar.right(), "the border and divider share the same edge");
+    for name in ["toggle-sidebar", "computer-switcher", "back", "forward"] {
+        assert!(bounds(cx, name).unwrap().right() <= divider.left(), "{name} fits");
+    }
+    sidebar.size.width
+}
+
+#[gpui::test]
+fn resizable_sidebar_keeps_a_long_computer_name_inside_the_header(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let name = "WWWWW Engineering Workstation East Coast";
+    assert_eq!(name.chars().count(), 40);
+    stand_in.set_elsewhere(true);
+    stand_in.set_computer_name(name);
+    let (workspace, cx) = open(cx, stand_in);
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.box_name().to_string()), name);
+    click(cx, "rail-queue");
+    assert_eq!(resizable_sidebar_width(cx), px(272.));
+    let picker = bounds(cx, "computer-switcher").unwrap().size.width;
+    drag_sidebar(cx, 160.);
+    assert_eq!(resizable_sidebar_width(cx), px(432.));
+    assert!(bounds(cx, "computer-switcher").unwrap().size.width > picker);
+}
+
+#[gpui::test]
+fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_now("bot_mira", serde_json::json!({ "working": 1, "asking": 0, "state": "working", "since": NOW }));
+    let (workspace, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -56.);
+    assert_eq!(resizable_sidebar_width(cx), px(216.));
+    assert!(bounds(cx, "bot-bot_mira").is_some());
+    drag_sidebar(cx, -1.);
+    assert_eq!(resizable_sidebar_width(cx), px(215.));
+    assert!(bounds(cx, "bot-bot_mira").is_none());
+    assert!(bounds(cx, "bot-avatar-at-work").is_some());
+    assert!(bounds(cx, "bot-avatar-needs-you").is_some());
+    assert!(bounds(cx, "group-grp_launch").is_none());
+    drag_sidebar(cx, -130.);
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    click(cx, "bot-avatar-bot:bot_mira");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Mira"));
+    cx.simulate_keystrokes("cmd-b");
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_none());
+    click(cx, "rail-bots");
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    click(cx, "bot-avatar-search");
+    assert_eq!(area(&workspace, cx), Area::Sessions);
+    assert!(bounds(cx, "sidebar-search").is_some());
+    assert_eq!(resizable_sidebar_width(cx), px(216.));
+    click(cx, "rail-bots");
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    drag_sidebar(cx, 80.);
+    assert_eq!(resizable_sidebar_width(cx), px(216.));
+    assert!(bounds(cx, "bot-bot_mira").is_some());
+}
+
+#[gpui::test]
+fn resizable_sidebar_saves_width_on_this_device_and_double_click_resets_it(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join(kuvo::yours::FILE);
+    cx.update(|cx| kuvo::yours::init(Some(path.clone()), cx));
+    let (_, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    drag_sidebar(cx, 400.);
+    assert_eq!(resizable_sidebar_width(cx), px(440.));
+    assert_eq!(kuvo::yours::Store::read(Some(path.clone())).now().sidebar_width, Some(440.));
+    cx.simulate_resize(size(px(820.), px(800.)));
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(413.));
+    cx.simulate_resize(size(px(1200.), px(800.)));
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(440.));
+
+    let position = bounds(cx, "sidebar-edge").unwrap().center();
+    let modifiers = Modifiers::default();
+    let button = MouseButton::Left;
+    cx.simulate_event(MouseDownEvent { button, position, modifiers, click_count: 2, first_mouse: false });
+    cx.simulate_event(MouseUpEvent { button, position, modifiers, click_count: 2 });
+    cx.run_until_parked();
+    assert_eq!(resizable_sidebar_width(cx), px(272.));
+    assert_eq!(kuvo::yours::Store::read(Some(path)).now().sidebar_width, Some(272.));
+}
+
+#[gpui::test]
+fn resizable_sidebar_handles_one_bot_and_a_computer_going_away(cx: &mut TestAppContext) {
+    let stand_in = StandIn::empty(Replies::Never);
+    stand_in.set_elsewhere(true);
+    stand_in.add_bot("solo", "One Bot with a Very Long Name", serde_json::json!({
+        "color": "mint", "shape": "round", "face": "calm",
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -200.);
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    click(cx, "bot-avatar-bot:solo");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("One Bot with a Very Long Name"));
+
+    stand_in.set_down(true);
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "area-sidebar").is_none());
+    assert!(bounds(cx, "held-area").is_some());
+    click(cx, "computer-switcher");
+    assert!(bounds(cx, "menu-item-Show Computers").is_some());
 }
