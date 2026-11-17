@@ -101,7 +101,21 @@ fn model_picker_provider(workspace: &mut Workspace, window: &mut Window, cx: &mu
     }
 }
 
+fn bot_wake_list(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_chat(workspace, window, cx);
+    let chat = workspace.bot_chat().unwrap().1.clone();
+    chat.update(cx, |chat, cx| chat.open_wake_schedule(window, cx));
+}
+
 const SCREENS: &[Screen] = &[
+    Screen { slug: "bot-wake-row-waking", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-row-scheduled", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-badge-hover", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-row-none", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_none) },
+    Screen { slug: "bot-wake-chip", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat) },
+    Screen { slug: "bot-wake-list-many", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
+    Screen { slug: "bot-wake-list-long-note", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
+    Screen { slug: "bot-wake-list-empty", width: 1200., height: 800., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_wake_list) },
     // The model picker (#775): open on the conversation's provider, searching, another provider;
     // and the composer's row with a message written (the paperclip, the picks and Send on one line).
     Screen { slug: "model-picker", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_open) },
@@ -1538,6 +1552,25 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "settings-a-permissions-services" {
                 stand_in.set_sandbox(serde_json::json!({ "on": true, "needsYou": true, "able": true, "agents": true, "gaps": ["services"], "needs": "user namespaces", "why": "Commands run in the sandbox, but this machine doesn’t let it keep them from your login’s services, like systemd. Until it allows user namespaces, agents don’t use your vault here and goals don’t run on their own.", "action": "help", "actionLabel": "How to Check…", "opens": "https://www.kuvo.run/code/docs/machines/#sandbox" }));
             }
+            if screen.slug.starts_with("bot-wake-") {
+                use serde_json::json;
+                let waking = screen.slug == "bot-wake-row-waking";
+                stand_in.set_bot_now("bot_mira", json!({ "working": usize::from(waking), "asking": 0, "waking": waking, "state": if waking { "working" } else { "idle" }, "since": NOW }));
+                let count = match screen.slug {
+                    "bot-wake-row-none" | "bot-wake-list-empty" => 0,
+                    "bot-wake-list-many" => 9,
+                    _ => 1,
+                };
+                let notes = ["Review the deployment", "Check the staging error rate", "Draft the Friday release notes", "Review signup conversion", "Run the accessibility audit", "Check links in the help center", "Review pending translations", "Send the weekly traffic summary", "Check the production backup"];
+                let wakes = notes.iter().take(count).enumerate().map(|(index, note)| {
+                    let summary = if screen.slug == "bot-wake-list-long-note" {
+                        "Review this morning’s rollout across all regions, compare signup conversion with the last successful release, check the error rate for each browser and flag the steps that need another look."
+                    } else { note };
+                    json!({ "id": format!("wake{index}"), "due": NOW / 1000. + 180. + index as f64 * 3600., "every": if index % 2 == 0 { Some("1d") } else { None }, "summary": summary, "cancelKey": format!("wake{index}") })
+                }).collect();
+                let watches = if count > 1 { vec![json!({ "letters": "ci", "every": "30m", "summary": "Watch the CI checks", "next": NOW / 1000. + 900. })] } else { Vec::new() };
+                stand_in.set_bot_wakes("bot_mira", wakes, watches);
+            }
             if screen.slug == "bot-waiting" {
                 stand_in.refuse_bot_edit("bot_scout", "studio-mini", "studio-mini has no personality “Ship’s Cook”.");
             }
@@ -1656,6 +1689,16 @@ fn main() -> anyhow::Result<()> {
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if screen.slug == "bot-wake-badge-hover" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                // Mira's avatar, the first bot in this fixture.
+                cx.update_window(any, |_, window, cx| mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                    position: gpui::point(px(83.), px(118.)), pressed_button: None, modifiers: Modifiers::default(),
+                })))?;
+                cx.run_until_parked();
+                cx.advance_clock(std::time::Duration::from_millis(550));
+                cx.run_until_parked();
+            }
             // A composer's menu opened with a press on its chip, through the window.
             if let Some(at) = match screen.slug {
                 "mode-menu" => Some(gpui::point(px(526.), px(767.))),

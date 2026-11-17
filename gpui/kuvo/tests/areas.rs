@@ -977,6 +977,28 @@ fn compact_sidebar_selection_follows_the_open_sessions_bot(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn compact_sidebar_shows_a_scheduled_wake_badge_and_tooltip(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_now("bot_mira", serde_json::json!({"working":0,"asking":0,"state":"idle"}));
+    stand_in.set_bot_wakes("bot_mira", vec![serde_json::json!({
+        "id": "at-build", "due": NOW / 1000. + 180., "summary": "Check the build", "cancelKey": "build",
+    })], vec![]);
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -210.);
+
+    let avatar = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
+    let badge = bounds(cx, "bot-avatar-wake").unwrap();
+    assert_eq!(badge.size, size(px(14.), px(14.)));
+    assert!(avatar.contains(&badge.center()));
+    cx.simulate_mouse_move(avatar.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(bounds(cx, "tooltip-Mira · Wakes in 3 min").is_some());
+}
+
+#[gpui::test]
 fn compact_sidebar_marks_remote_bot_changes(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.refuse_bot_edit("bot_wren", "lab", "The change was declined.");

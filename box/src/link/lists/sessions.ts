@@ -25,6 +25,7 @@ import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
 import { factsOf, listedProjects, needsYou, type ListPlace, type Stopped } from "./rule";
 import { isJudged, judgingFollowers } from "../work/tree";
+import { wakeTurnIsOpen } from "../work/wakes";
 import { Moments } from "./moments";
 import type { EngineSession } from "../engine/sessions";
 import type { ListedProject, NeedsYou, SessionFacts, SessionList } from "../../shared/routes/sessions";
@@ -43,12 +44,16 @@ const READ_EVERY = 5 * 60_000;
 /** A session's events that change what's listed of it: it's read again. */
 const RELOADS = new Set(["session.created", "session.updated", "session.renamed", "session.moved", "session.metadata.updated", "session.revert.staged", "session.revert.cleared", "session.revert.committed"]);
 const STARTS = "session.execution.started";
+const DELIVERED = "session.inbox.delivered";
 const ENDS = new Set(["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"]);
 
 /** One place's sessions (the engine's, or the coding agents' bridge's), and those at work there. */
 interface Place {
   sessions: Map<string, EngineSession>;
   running: Set<string>;
+  wakeReads: Map<string, object>;
+  wakeRetries: Map<string, ReturnType<typeof setTimeout>>;
+  waking: Set<string>;
 }
 
 /** The list as it's kept: where it's at, each session's facts with the change it came with and the
@@ -158,14 +163,14 @@ export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSe
 // Each session's facts as last worked out, while what they come from is the same (the session as
 // read, what the box knew then, whether it runs, asks or is away, and its moments): not worked out
 // again each time.
-interface Made { known: BoxKnows; running: boolean; asked?: number; away: boolean; thinking: boolean; stopped?: Stopped; retrying?: string; judged: boolean; facts: SessionFacts }
+interface Made { known: BoxKnows; running: boolean; wakeTurn: boolean; asked?: number; away: boolean; thinking: boolean; stopped?: Stopped; retrying?: string; judged: boolean; facts: SessionFacts }
 const factsMade = new WeakMap<EngineSession, Made>();
 
 function factsNow(session: EngineSession, place: ListPlace, known?: BoxKnows): SessionFacts {
   if (!known) return factsOf(session, place);
   const id = session.id;
   const now: Omit<Made, "facts"> = {
-    known, running: place.running.has(id), asked: place.asked.get(id), away: place.away.has(id),
+    known, running: place.running.has(id), wakeTurn: place.wakeTurns?.has(id) ?? false, asked: place.asked.get(id), away: place.away.has(id),
     thinking: place.thinking?.has(id) ?? false, stopped: place.stopped?.get(id), retrying: place.retrying?.get(id), judged: place.judging?.(id) ?? false,
   };
   const made = factsMade.get(session);
@@ -426,7 +431,9 @@ export function keepList(): () => void {
     asked.clear();
     deleted.clear();
     moments.clear();
+    for (const place of places.values()) for (const timer of place.wakeRetries.values()) clearTimeout(timer);
     places.clear();
+    runningReads.clear();
     placeTargets.clear();
     reading.clear();
     wholeReads.clear();
@@ -438,6 +445,7 @@ const placeTargets = new Map<string, Target>();
 // The sessions each place's events named while it was read whole, to read again once it's in.
 const reading = new Map<string, Set<string>>();
 // Each place's whole read under way: one at a time, and one more after it if it's asked for meanwhile.
+const runningReads = new Map<string, Set<string>>();
 const wholeReads = new Map<string, { done: Promise<void>; again: boolean; target: Target }>();
 
 /** A place heard (it started, or its events came back after they couldn't be): read whole now, as
@@ -472,19 +480,40 @@ function readPlace(name: string, target: Target): Promise<void> {
   return read.done;
 }
 
+async function readRunningSnapshot(name: string, target: Target, alongside?: Promise<unknown>) {
+  const changed = new Set<string>();
+  runningReads.set(name, changed);
+  try {
+    const [running] = await Promise.all([readRunning(target), alongside]);
+    return { running, changed };
+  }
+  finally { if (runningReads.get(name) === changed) runningReads.delete(name); }
+}
+
+function applyRunning(place: Place, snapshot: Awaited<ReturnType<typeof readRunningSnapshot>>): void {
+  if (!snapshot.running) return;
+  const { running, changed } = snapshot;
+  for (const id of changed) {
+    if (place.running.has(id)) running.add(id);
+    else running.delete(id);
+  }
+  place.running = running;
+}
+
 async function readOnce(name: string, target: Target): Promise<void> {
   const touched = new Set<string>();
   reading.set(name, touched);
   let sessions: EngineSession[] | null = null;
-  let running: Set<string> | null = null;
+  let running: Awaited<ReturnType<typeof readRunningSnapshot>>;
   try {
-    [sessions, running] = await Promise.all([readSessions(target), readRunning(target)]);
+    const listed = readSessions(target);
+    [sessions, running] = await Promise.all([listed, readRunningSnapshot(name, target, listed)]);
   } finally {
     if (reading.get(name) === touched) reading.delete(name);
   }
   if (!keeping || !sessions) return;
   // (Only a whole read makes a place: until then its events have nothing to change.)
-  const place = places.get(name) ?? { sessions: new Map(), running: new Set() };
+  const place = places.get(name) ?? { sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
   // (Not one deleted as it was read: a read begun before says it's there.)
   const gone = deleted.get(name);
   place.sessions = new Map(sessions.filter(each => !gone?.has(each.id)).map(each => [each.id, withViewed(each, place.sessions.get(each.id))]));
@@ -493,15 +522,47 @@ async function readOnce(name: string, target: Target): Promise<void> {
   for (const key of asked.keys()) if (key.startsWith(name + " ")) asked.delete(key);
   // And what the box knows read again, in case a watch missed a change.
   known = null;
-  if (running) place.running = running;
+  applyRunning(place, running);
   places.set(name, place);
   // What its events said meanwhile may be newer than what was read: read those again.
   if (touched.size) {
     await Promise.all([...touched].map(id => readOne(name, target, id)));
-    const now = await readRunning(target);
-    if (now) place.running = now;
+    const refreshed = await readRunningSnapshot(name, target);
+    if (!keeping || places.get(name) !== place) return;
+    applyRunning(place, refreshed);
   }
+  for (const id of new Set([...place.wakeReads.keys(), ...place.wakeRetries.keys(), ...place.waking])) if (!place.running.has(id)) clearWakeTurn(place, id);
+  const bots = readBoxKnows().botSessions;
+  await Promise.all([...place.running].filter(id => bots.has(id) && !place.wakeReads.has(id)).map(id => readWakeTurn(place, target, id)));
   workOut();
+}
+
+function clearWakeTurn(place: Place, id: string): void {
+  place.wakeReads.delete(id);
+  clearTimeout(place.wakeRetries.get(id));
+  place.wakeRetries.delete(id);
+  place.waking.delete(id);
+}
+
+async function readWakeTurn(place: Place, target: Target, id: string): Promise<void> {
+  // An end (or the next start) invalidates a read of the preceding turn, even if it lands later.
+  clearTimeout(place.wakeRetries.get(id));
+  place.wakeRetries.delete(id);
+  const read = {};
+  place.wakeReads.set(id, read);
+  const waking = await wakeTurnIsOpen(target, id).catch(() => null);
+  if (place.wakeReads.get(id) !== read || !place.running.has(id)) return;
+  place.wakeReads.delete(id);
+  if (waking === null) {
+    if (!keeping || ![...places.values()].includes(place)) return;
+    const retry = setTimeout(() => void readWakeTurn(place, target, id), 250);
+    retry.unref?.();
+    place.wakeRetries.set(id, retry);
+    return;
+  }
+  if (waking) place.waking.add(id);
+  else place.waking.delete(id);
+  scheduleWorkOut();
 }
 
 // Each session's events so far, by place, so a read answers only for the latest (one read after an
@@ -544,6 +605,11 @@ export async function noteListEvent(name: string, target: Target, event: { type?
     reading.get(name)?.add(id);
     return noteViewed(name, id, Number(event.data?.idle));
   }
+  if (event.type === DELIVERED) {
+    const place = places.get(name);
+    if (place?.running.has(id) && !place.waking.has(id) && (known ??= readBoxKnows()).botSessions.has(id)) await readWakeTurn(place, target, id);
+    return;
+  }
   // (What it streams: worked out again only where a fact changed, as `moments` tells it.)
   const moment = moments.hear(event.type, id, event.data);
   if (moment && event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type)) return;
@@ -552,6 +618,7 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   if (event.type !== "session.deleted" && event.type !== STARTS && !ENDS.has(event.type) && !RELOADS.has(event.type)) return;
   // (Read whole now: it's read again once that's in.)
   reading.get(name)?.add(id);
+  if (event.type === STARTS || ENDS.has(event.type) || event.type === "session.deleted") runningReads.get(name)?.add(id);
   const mine = ++eventCount;
   asked.set(`${name} ${id}`, mine);
   if (event.type === "session.deleted") {
@@ -563,10 +630,17 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   if (event.type === "session.deleted") {
     place.sessions.delete(id);
     place.running.delete(id);
+    clearWakeTurn(place, id);
     return scheduleWorkOut();
   }
-  if (event.type === STARTS) place.running.add(id);
-  else if (ENDS.has(event.type)) place.running.delete(id);
+  if (event.type === STARTS) {
+    clearWakeTurn(place, id);
+    place.running.add(id);
+    if ((known ??= readBoxKnows()).botSessions.has(id)) void readWakeTurn(place, target, id);
+  } else if (ENDS.has(event.type)) {
+    place.running.delete(id);
+    clearWakeTurn(place, id);
+  }
   scheduleWorkOut();
   // As it is now: its folder, title, notes and times.
   const stop = moments.stopped.get(id);
@@ -644,13 +718,14 @@ const pendingPlaces = (): string[] => (places.has("bridge") || bridgeTarget() ==
 
 /** `sessions` (each with its place) as listed, with the sessions of `pending` places carried over as
  * `before` had them. */
-function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows, stopped?: ReadonlyMap<string, Stopped>): Listed {
+function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows, stopped?: ReadonlyMap<string, Stopped>, wakeTurns?: ReadonlySet<string>): Listed {
   const box = placeNow(running, sessions, knows, undefined, stopped);
-  const listed = listOfSessions(sessions, box, knows).sessions;
+  const listed = listOfSessions(sessions, { ...box, wakeTurns }, knows).sessions;
   if (pending.length && before) {
     for (const [id, entry] of Object.entries(before.sessions)) {
       if (id in listed || !entry.place || !pending.includes(entry.place)) continue;
-      listed[id] = entry.facts;
+      const { wakeTurn: _, ...facts } = entry.facts;
+      listed[id] = facts;
       placeOf[id] = entry.place;
     }
   }
@@ -668,7 +743,9 @@ export function workOut(now = Date.now()): void {
   const sessions: EngineSession[] = [];
   const placeOf: Record<string, string> = {};
   const running = new Set<string>();
+  const wakeTurns = new Set<string>();
   for (const [name, place] of places) {
+    for (const id of place.waking) if (place.running.has(id)) wakeTurns.add(id);
     for (const session of place.sessions.values()) {
       sessions.push(session);
       placeOf[session.id] ??= name;
@@ -678,7 +755,7 @@ export function workOut(now = Date.now()): void {
   const was = latest ? cursorOf(latest) : null;
   if (!watchesWhole()) known = null;
   known ??= readBoxKnows();
-  const listed = withPending(sessions, placeOf, running, pendingPlaces(), latest ?? readList(), known);
+  const listed = withPending(sessions, placeOf, running, pendingPlaces(), latest ?? readList(), known, undefined, wakeTurns);
   if (latest?.owner === process.pid && latest.started === STARTED) {
     // Its own, as it keeps it: what changed taken in here, the file written a moment after (a few
     // changes at once are one write; one of when sessions last changed alone, more slowly).
@@ -776,7 +853,14 @@ export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge
   const running = new Set([...(engineRunning ?? wasRunning("engine")), ...(bridgeRunning ?? (bridge ? wasRunning("bridge") : []))]);
   const pending = bridge && !bridgeSessions ? ["bridge"] : [];
   // (Those stopped on an error or a limit, as last listed: this process hears no events.)
-  return commit(withPending(sessions, placeOf, running, pending, file, undefined, new Map(wasStopped(file))));
+  const knows = readBoxKnows();
+  const wakeTurns = new Set<string>();
+  await Promise.all([...knows.botSessions].map(async id => {
+    const target = placeOf[id] === "bridge" ? bridge : engine;
+    const active = placeOf[id] === "bridge" ? bridgeRunning : engineRunning;
+    if (target && active?.has(id) && await wakeTurnIsOpen(target, id).catch(() => false)) wakeTurns.add(id);
+  }));
+  return commit(withPending(sessions, placeOf, running, pending, file, knows, new Map(wasStopped(file)), wakeTurns));
 }
 
 export async function* listRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {

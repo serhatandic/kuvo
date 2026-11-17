@@ -1,6 +1,6 @@
 import "./safety"
 import { afterAll, expect, jest, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import fs, { renameSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 // Every client's session lists come from the box (PROTOCOL.md, "Session lists"): what each session
@@ -72,6 +72,8 @@ writeFileSync(join(home, "box", "projects.json"), JSON.stringify({ version: 1, p
 const sessions = new Map<string, any>()
 const messages = new Map<string, any[]>()
 const active = new Set<string>()
+let holdActive: (() => Promise<void>) | undefined
+const failedMessages = new Map<string, number>()
 const add = (id: string, directory: string, updated: number, extra: Record<string, unknown> = {}) => sessions.set(id, { id, location: { directory }, time: { created: updated, updated }, ...extra })
 let listReads = 0
 // Each session read (`POST …/view`) and up to where; and how many times one was read alone.
@@ -105,10 +107,22 @@ const engine = Bun.serve({
       if (held) { heldAsked(); await held }
       return Response.json({ data: page, cursor: { next: from + page.length < all.length ? String(from + page.length) : null } })
     }
-    if (url.pathname === "/api/session/active") return Response.json({ data: Object.fromEntries([...active].map(id => [id, { type: "busy" }])) })
+    if (url.pathname === "/api/session/active") {
+      const snapshot = Response.json({ data: Object.fromEntries([...active].map(id => [id, { type: "busy" }])) })
+      await holdActive?.()
+      return snapshot
+    }
     // A session's messages, newest first, one page; and nothing it asks.
     const said = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/)
-    if (said) return Response.json({ data: messages.get(said[1]!) ?? [], cursor: null })
+    if (said) {
+      const id = said[1]!
+      const failures = failedMessages.get(id) ?? 0
+      if (failures > 0) {
+        failedMessages.set(id, failures - 1)
+        return Response.json({}, { status: 503 })
+      }
+      return Response.json({ data: messages.get(id) ?? [], cursor: null })
+    }
     if (/^\/api\/session\/[^/]+\/(permission|form)$/.test(url.pathname)) return Response.json({ data: [] })
     // Read up to where it ended (`time.viewed`), as the engine keeps the later.
     const viewed = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/)
@@ -946,10 +960,10 @@ function following(path: string, pick: (line: any) => any) {
   return { until, end: async () => { stop.abort(); await stream.return(undefined) } }
 }
 
-async function post(path: string): Promise<{ status: number; body: any }> {
+async function post(path: string, body: Record<string, unknown> = {}): Promise<{ status: number; body: any }> {
   let status = 0
   let text = ""
-  for await (const piece of handler({ method: "POST", path, headers: {}, body: Buffer.from("{}"), fromApp: true } as any, undefined)) {
+  for await (const piece of handler({ method: "POST", path, headers: {}, body: Buffer.from(JSON.stringify(body)), fromApp: true } as any, undefined)) {
     if ("head" in piece) status = piece.head.status
     if ("body" in piece) text += Buffer.from(piece.body).toString()
   }
@@ -1373,6 +1387,236 @@ test("a bot seen while the box still judges its work's turn is blocked by it onc
   } finally {
     stop()
     for (const id of ["ses_judged", "ses_judgedled"]) { sessions.delete(id); messages.delete(id); active.delete(id) }
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a bot wakes only during its wake-up turn, including after the box starts mid-turn", async () => {
+  const id = "ses_waking", bot = "bot_waking"
+  const folder = await aBot(bot, id, { "wakes/1-again-1d": "Check the build" })
+  add(id, folder, 700)
+  active.add(id)
+  const wake = { id: "msg_waking", type: "user", text: "[Wake-up] Check the build" }
+  messages.set(id, [wake])
+  const stop = keepList()
+  const hear = hearing(id)
+  const followed = following("kuvo/bots/events", line => line.bots.find((each: any) => each.id === bot))
+  try {
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot(bot)).toMatchObject({ waking: true, working: 1 })
+    await followed.until(bot => bot?.now.waking === true)
+
+    active.delete(id)
+    messages.set(id, [{ id: "msg_end", type: "idle" }, wake])
+    await hear("session.execution.succeeded")
+    workOut()
+    const ended = await followed.until(bot => bot?.now.working === 0)
+    expect(ended.now.waking).toBeUndefined()
+    expect(ended.wakes).toBe(1) // A past-due timer still on disk says nothing about the turn.
+
+    active.add(id)
+    await hear("session.execution.started")
+    await hear("session.inbox.delivered")
+    workOut()
+    expect(await nowOfBot(bot)).not.toHaveProperty("waking")
+    messages.set(id, [wake, { id: "msg_end", type: "idle" }, wake])
+    await hear("session.inbox.delivered")
+    workOut()
+    await followed.until(bot => bot?.now.waking === true)
+    active.delete(id)
+    await hear("session.execution.interrupted")
+    workOut()
+    expect((await followed.until(bot => bot?.now.working === 0)).now.waking).toBeUndefined()
+  } finally {
+    await followed.end()
+    stop()
+    active.delete(id)
+    messages.delete(id)
+    sessions.delete(id)
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a bot's schedule stream supplies stored summaries, watch check times and stable cancellation keys", async () => {
+  const id = "ses_schedule"
+  const folder = await aBot("bot_schedule", id, {
+    "wakes/100-first-1d": "Long instructions, which the agent still reads.",
+    "summaries/first": "Check build status",
+    "wakes/200-later": "Read release notes. The rest is the full note.",
+    "watches/ci/check": "check",
+    "watches/ci/every": "5m",
+    "watches/ci/next": "300",
+    "watches/ci/note": "Full CI instructions.",
+    "watches/ci/summary": "Watch CI",
+  })
+  const stream = following(`kuvo/wakes/${id}/events`, line => line)
+  try {
+    const listed = await stream.until(line => line.wakes.length === 2)
+    expect(listed.wakes).toMatchObject([
+      { due: 100, every: "1d", summary: "Check build status", cancelKey: "first" },
+      { due: 200, summary: "Read release notes.", cancelKey: "later" },
+    ])
+    expect(listed.watches).toMatchObject([{ letters: "ci", next: 300, every: "5m", summary: "Watch CI" }])
+    // A repeat can advance while its confirmation is open.
+    rmSync(join(folder, "wakes/100-first-1d"))
+    writeFileSync(join(folder, "wakes/999-first-1d"), "Long instructions.")
+    expect((await post(`kuvo/wakes/${id}/cancel`, { wake: "first" })).status).toBe(200)
+    expect((await post(`kuvo/wakes/${id}/cancel`, { watch: "ci" })).status).toBe(200)
+    const after = await stream.until(line => line.wakes.length === 1 && line.watches.length === 0)
+    expect(after.wakes[0].cancelKey).toBe("later")
+  } finally {
+    await stream.end()
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("cancel waits for the keeper's lock and unlinks the renamed repeat", async () => {
+  const id = "ses_cancelrace"
+  const folder = await aBot("bot_cancelrace", id, { "wakes/100-repeat-1d": "Check the build" })
+  const lock = join(dirname(folder), ".firing")
+  mkdirSync(lock)
+  try {
+    let settled = false
+    const cancel = post(`kuvo/wakes/${id}/cancel`, { wake: "repeat" }).finally(() => { settled = true })
+    await Bun.sleep(50)
+    expect(settled).toBe(false)
+    renameSync(join(folder, "wakes/100-repeat-1d"), join(folder, "wakes/999-repeat-1d"))
+    rmSync(lock, { recursive: true })
+    expect((await cancel).status).toBe(200)
+    expect((await ask(`kuvo/wakes/${id}`)).lines[0].wakes).toEqual([])
+  } finally {
+    rmSync(lock, { force: true, recursive: true })
+    rmSync(folder, { force: true, recursive: true })
+  }
+})
+
+test("the second active snapshot preserves a wake turn started while its response is held", async () => {
+  const id = "ses_refreshwake"
+  const folder = await aBot("bot_refreshwake", id)
+  add(id, folder, 700)
+  const stop = keepList()
+  let releaseList = () => {}
+  let releaseActive = () => {}
+  try {
+    await listPlaceHeard("engine", target)
+    const startedList = new Promise<void>(done => { heldAsked = done })
+    held = new Promise<void>(done => { releaseList = done })
+    const heldSecond = new Promise<void>(asked => {
+      let calls = 0
+      holdActive = async () => {
+        if (++calls === 2) {
+          const release = new Promise<void>(done => { releaseActive = done })
+          asked()
+          await release
+        }
+      }
+    })
+    const refresh = listPlaceHeard("engine", target)
+    await startedList
+    await hearing(id)("session.updated")
+    held = null
+    releaseList()
+    await heldSecond
+    messages.set(id, [{ id: "msg_wake", type: "user", text: "[Wake-up] Check the build" }])
+    active.add(id)
+    await hearing(id)("session.execution.started")
+    await hearing(id)("session.inbox.delivered")
+    releaseActive()
+    await refresh
+    expect(await nowOfBot("bot_refreshwake")).toMatchObject({ waking: true, working: 1 })
+  } finally {
+    held = null
+    holdActive = undefined
+    releaseList()
+    releaseActive()
+    stop()
+    active.delete(id)
+    sessions.delete(id)
+    messages.delete(id)
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("a wake turn retries a failed message read and keeps its confirmed state during refresh failure", async () => {
+  const id = "ses_retrywake", bot = "bot_retrywake"
+  const folder = await aBot(bot, id)
+  add(id, folder, 700)
+  active.add(id)
+  messages.set(id, [{ id: "msg_wake", type: "user", text: "[Wake-up] Check the build" }])
+  failedMessages.set(id, 1)
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot(bot)).not.toHaveProperty("waking")
+    for (let tries = 0; tries < 30 && !(await nowOfBot(bot)).waking; tries++) await Bun.sleep(50)
+    expect(await nowOfBot(bot)).toMatchObject({ waking: true })
+    failedMessages.set(id, 5)
+    await listPlaceHeard("engine", target)
+    expect(await nowOfBot(bot)).toMatchObject({ waking: true })
+    active.delete(id)
+    await hearing(id)("session.execution.succeeded")
+    workOut()
+    expect(await nowOfBot(bot)).not.toHaveProperty("waking")
+  } finally {
+    stop()
+    active.delete(id)
+    sessions.delete(id)
+    messages.delete(id)
+    failedMessages.delete(id)
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
+test("schedule streams share root watches and skip unrelated or superseded updates", async () => {
+  const a = await aBot("bot_watchone", "ses_watchone", { "wakes/100-one": "First" })
+  const b = await aBot("bot_watchtwo", "ses_watchtwo", { "wakes/100-two": "Other" })
+  const { wakesChanged } = await import("../src/link/areas/wakes")
+  const watch = jest.spyOn(fs, "watch")
+  const read = jest.spyOn(fs, "readFileSync")
+  const first = following("kuvo/wakes/ses_watchone/events", line => line)
+  const second = following("kuvo/wakes/ses_watchtwo/events", line => line)
+  try {
+    await first.until(line => line.wakes.length === 1)
+    await second.until(line => line.wakes.length === 1)
+    const { BOTS, SESSION_WAKES } = await import("../src/link/home")
+    const roots = [BOTS, SESSION_WAKES]
+    expect(watch.mock.calls.filter(([path]) => roots.includes(String(path)))).toHaveLength(2)
+    writeFileSync(join(a, "wakes/100-one"), "From the filesystem")
+    expect((await first.until(() => true)).wakes[0].summary).toBe("From the filesystem")
+    read.mockClear()
+    for (const summary of ["Second", "Third", "Last"]) {
+      writeFileSync(join(a, "wakes/100-one"), summary)
+      wakesChanged("ses_watchone")
+    }
+    expect(read.mock.calls.filter(([path]) => String(path).startsWith(`${b}/wakes/`))).toHaveLength(0)
+    expect((await first.until(() => true)).wakes[0].summary).toBe("Last")
+  } finally {
+    await first.end()
+    await second.end()
+    read.mockRestore()
+    watch.mockRestore()
+    rmSync(a, { recursive: true, force: true })
+    rmSync(b, { recursive: true, force: true })
+  }
+})
+
+test("a schedule stream empties when ownership switches away from its source", async () => {
+  const id = "ses_movewake", bot = "bot_movewake", move = "mov_wakemove"
+  const folder = await aBot(bot, id, { "wakes/100-one": "First" })
+  const { MOVES, saveMove, forgetMove, changeMove } = await import("../src/link/moves/records")
+  mkdirSync(MOVES, { recursive: true })
+  saveMove({ id: move, thing: bot, kind: "bot", name: "Ada", from: "here", to: "there", peer: "there",
+    role: "from", stage: "copying", sessions: [id], started: Date.now(), wasPaused: false, tries: 0 })
+  const stream = following(`kuvo/wakes/${id}/events`, line => line)
+  try {
+    await stream.until(line => line.wakes.length === 1)
+    changeMove(move, record => { record.stage = "switching" })
+    expect((await ask(`kuvo/wakes/${id}`)).lines[0].wakes).toEqual([])
+    expect((await stream.until(() => true)).wakes).toEqual([])
+    expect(fs.existsSync(join(folder, "wakes/100-one"))).toBe(true)
+  } finally {
+    await stream.end()
+    forgetMove(move)
     rmSync(folder, { recursive: true, force: true })
   }
 })

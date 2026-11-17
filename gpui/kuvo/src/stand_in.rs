@@ -51,6 +51,7 @@ pub struct Seen {
 /// What a conversation's follower follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Followed {
+    Wakes,
     Asks,
     Queue,
 }
@@ -143,6 +144,7 @@ struct State {
     settings: settings::Settings,
     /// Its bots.
     bots: bots::Bots,
+    wakes: HashMap<String, Value>,
     /// Its Work Queue.
     queue: queue::Queue,
     /// Its group chats, and those following one (`kuvo/groups/<id>/events`): the chat, and where
@@ -646,6 +648,18 @@ impl StandIn {
             listed["now"] = now;
         }
         state.sync_bots();
+    }
+
+    /// A bot's schedule, as its computer says it on both routes.
+    pub fn set_bot_wakes(&self, bot: &str, wakes: Vec<Value>, watches: Vec<Value>) {
+        let mut state = self.state();
+        let Some(listed) = state.bots.bots.iter_mut().find(|each| each["id"] == bot) else { return };
+        let session = listed["session"].as_str().expect("bot session").to_owned();
+        listed["wakes"] = wakes.first().map(|wake| wake["due"].clone()).unwrap_or_default();
+        listed["watching"] = json!(watches.len());
+        state.wakes.insert(session.clone(), json!({ "wakes": wakes, "watches": watches, "paused": false }));
+        state.sync_bots();
+        state.told(&session, Followed::Wakes);
     }
 
     /// `bot`'s computer no longer lists it (deleted there, or that computer was removed).
@@ -1307,9 +1321,14 @@ impl State {
         }
     }
 
-    /// A conversation's asks, or its queue, as its follower reads them.
+    fn wake_schedule(&self, session: &str) -> Value {
+        self.wakes.get(session).cloned().unwrap_or_else(|| json!({ "wakes": [], "watches": [], "paused": false }))
+    }
+
+    /// A conversation's asks, queue, or wake-ups, as its follower reads them.
     fn followed(&self, session: &str, what: Followed) -> String {
         match what {
+            Followed::Wakes => self.wake_schedule(session),
             Followed::Asks => json!({ "asks": self.asks.get(session).cloned().unwrap_or_default() }),
             Followed::Queue => json!({ "paused": self.paused.contains(session), "held": [], "items": self.queues.get(session).cloned().unwrap_or_default(), "line": self.queue_lines.get(session) }),
         }
@@ -1767,6 +1786,25 @@ impl StandIn {
             return answer(status, value);
         }
         match (method, segments.as_slice()) {
+            ("GET", ["kuvo", "wakes", session]) => answer(200, state.wake_schedule(session)),
+            ("POST", ["kuvo", "wakes", session, "cancel"]) => {
+                let Some(schedule) = state.wakes.get_mut(*session) else { return answer(404, json!({})); };
+                let (kind, field, key) = if let Some(key) = body["wake"].as_str() { ("wakes", "cancelKey", key) }
+                    else if let Some(key) = body["watch"].as_str() { ("watches", "letters", key) }
+                    else { return answer(400, json!({})); };
+                let entries = schedule[kind].as_array_mut().expect("schedule entries");
+                let before = entries.len();
+                entries.retain(|entry| entry[field] != key);
+                if entries.len() == before { return answer(404, json!({})); }
+                let schedule = schedule.clone();
+                if let Some(bot) = state.bots.bots.iter_mut().find(|bot| bot["session"] == *session) {
+                    bot["wakes"] = schedule["wakes"][0]["due"].clone();
+                    bot["watching"] = json!(schedule["watches"].as_array().map_or(0, Vec::len));
+                }
+                state.sync_bots();
+                state.told(session, Followed::Wakes);
+                answer(200, json!({}))
+            }
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
                 features.extend(["queue", "asks"]);
@@ -2445,8 +2483,18 @@ impl Transport for StandIn {
         let route = request.route();
         // A conversation's asks or queue, followed: as it is now, then a line as it changes.
         let parts: Vec<&str> = route.split('/').collect();
-        if let ["kuvo", "sessions", session, which @ ("asks" | "queue"), "events"] = parts.as_slice() {
-            let what = if *which == "asks" { Followed::Asks } else { Followed::Queue };
+        let followed = match parts.as_slice() {
+            ["kuvo", "sessions", session, "asks", "events"] => Some((session, Followed::Asks)),
+            ["kuvo", "sessions", session, "queue", "events"] => Some((session, Followed::Queue)),
+            ["kuvo", "wakes", session, "events"] => {
+                if self.state().down {
+                    return Err(kuvo_box::Error::Unreachable("The computer is away.".into()));
+                }
+                Some((session, Followed::Wakes))
+            }
+            _ => None,
+        };
+        if let Some((session, what)) = followed {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();

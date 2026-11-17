@@ -388,7 +388,7 @@ function endWakeUps(session: string): void {
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(session)) return;
   const folder = path.join(SESSION_WAKES, session);
   for (const kind of ["wakes", "watches"]) fs.rmSync(path.join(folder, kind), { recursive: true, force: true });
-  wakesChanged();
+  wakesChanged(session);
 }
 
 // What it left running, ended: a command with its process group's signal, as Stop on its row does

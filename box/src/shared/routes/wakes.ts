@@ -5,9 +5,9 @@ import { bool, type Infer, list, NOTHING, number, object, type RouteShape, strin
 
 /** A wake-up waiting: when it's due (seconds since 1970), what it says, and how often it comes
  * back (left out for one that doesn't). */
-export const WAKE = object({ id: string, due: number, note: string, "every?": string });
+export const WAKE = object({ id: string, due: number, note: string, "every?": string, "summary?": string, "cancelKey?": string });
 /** A watch: its letters, how often it looks, the check it runs and what to do when that changes. */
-export const WATCH = object({ letters: string, every: string, check: string, note: string });
+export const WATCH = object({ letters: string, every: string, check: string, note: string, "summary?": string, "next?": number });
 /** A conversation's wake-ups (soonest first), its watches, and whether you paused them. */
 export const WAKES = object({ wakes: list(WAKE), watches: list(WATCH), paused: bool });
 /** Each conversation here with some: its soonest wake-up, and whether it watches; and, from a
