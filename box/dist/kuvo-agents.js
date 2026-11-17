@@ -7266,6 +7266,7 @@ class RPC {
   next = 1;
   pending = new Map;
   child;
+  held;
   closed = false;
   stderr = "";
   onNotification = () => {};
@@ -7279,9 +7280,7 @@ class RPC {
     if (options.firstID)
       this.next = options.firstID;
     this.filter = options.filter;
-    const env = options.cleanEnv ? options.env : { ...process.env, ...options.env };
-    this.child = Bun.spawn(command, { cwd: options.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    this.exited = this.child.exited.then((code) => {
+    const ended = (code) => {
       this.closed = true;
       for (const { reject } of this.pending.values())
         reject(new Error(this.stderr.trim().split(`
@@ -7290,23 +7289,38 @@ class RPC {
       this.pending.clear();
       this.onExit(code);
       return code;
-    });
-    this.read();
-    this.errorsRead = this.readErrors().catch(() => {});
+    };
+    if (!Array.isArray(command)) {
+      const held = this.held = command;
+      held.onStderr((text) => this.stderr = (this.stderr + text).slice(-8000));
+      queueMicrotask(() => held.onLine((line) => {
+        const trimmed = line.replace(/\r$/, "");
+        if (trimmed.trim() && (!this.filter || this.filter(trimmed)))
+          this.receive(trimmed);
+      }));
+      this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
+      this.errorsRead = this.exited.then(() => {});
+      return;
+    }
+    const env = options.cleanEnv ? options.env : { ...process.env, ...options.env };
+    const child = this.child = Bun.spawn(command, { cwd: options.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    this.exited = child.exited.then(ended);
+    this.read(child);
+    this.errorsRead = this.readErrors(child).catch(() => {});
   }
   errorsRead;
   jsonrpc;
   filter;
   get pid() {
-    return this.child.pid;
+    return this.child ? this.child.pid : this.held.pid;
   }
   get isClosed() {
     return this.closed;
   }
-  async read() {
+  async read(child) {
     const decoder = new TextDecoder;
     let buffer = "";
-    for await (const chunk of this.child.stdout) {
+    for await (const chunk of child.stdout) {
       buffer += decoder.decode(chunk, { stream: true });
       let newline;
       while ((newline = buffer.indexOf(`
@@ -7318,9 +7332,9 @@ class RPC {
       }
     }
   }
-  async readErrors() {
+  async readErrors(child) {
     const decoder = new TextDecoder;
-    for await (const chunk of this.child.stderr) {
+    for await (const chunk of child.stderr) {
       this.stderr = (this.stderr + decoder.decode(chunk, { stream: true })).slice(-8000);
     }
   }
@@ -7359,6 +7373,8 @@ class RPC {
     if (this.closed)
       return;
     const body = this.jsonrpc ? { jsonrpc: "2.0", ...message } : message;
+    if (this.held)
+      return void this.held.write(JSON.stringify(body));
     try {
       this.child.stdin.write(JSON.stringify(body) + `
 `);
@@ -7390,6 +7406,11 @@ class RPC {
   kill() {
     if (this.closed)
       return;
+    if (this.held) {
+      this.held.end();
+      this.held.kill();
+      return;
+    }
     try {
       this.child.stdin.end();
     } catch {}
@@ -37839,4 +37860,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-// Built from Packages/Box/src/agents 36df721f8b6034b4f369f11a7815b48aab58dfea24a3fe71e6be07c00f1e5c57
+// Built from Packages/Box/src/agents 880b2d675db90945ce335237d3572c99850de0baa90cb2d4688fe348294f780d

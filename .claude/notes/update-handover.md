@@ -434,3 +434,53 @@ older one, a journal of every line). Run them with `bun <script> <args>`, as eac
   provider, the agent's own ids (Claude session, Codex thread, ACP session), and what the bridge
   had open (`opened`, in-flight request ids, the turn's message): S1/S2 show the agent side holds;
   the bridge side is what steps 8-9 build.
+
+## Status, 2026-11-17: step 8, holders built (8a), not yet what agents start with (8b)
+
+**Built (8a), tested on macOS and Linux:**
+- `box/src/agents/hold/program.js`: the holder (`hold/1`), plain JavaScript on Node's modules. The
+  bridge imports it as text, writes it to `run/agents/hold/kuvo-hold-<HOLDER>.js` and runs it on its
+  own Bun (about 13 MB per holder, against 35 MB for the bridge's bundle). It runs the agent as its
+  child on pipes, in a session of its own, numbers each stdout line and keeps the latest 4 MB in
+  memory. It listens on `<id>.sock` in a 0700 folder and records `<id>.json` (0600, with a
+  per-holder key). It takes one bridge at a time, by key and generation: a higher generation fences
+  off the older bridge, and a stale or keyless one is refused. On attach it replays from the last
+  `ack`.
+  - `jsonrpc` holders also send again what the agent asked that no bridge answered.
+  - `claude` holders never replay control requests, from the journal or otherwise: Claude Code
+    re-sends its asks itself (S1), so a replayed one is asked twice. The test caught this.
+  - The holder ends once its agent ended and a bridge heard it (or after 15 minutes with none). Its
+    files go with it.
+- `box/src/agents/hold/client.ts`: `hold()`, `attach()` (generation+1), `heldIn()`, `holdFolder()`
+  (`run/agents/hold`; on macOS, past the 104-byte socket limit, Kuvo Code's short folder in `/tmp`
+  as `SSH_AGENTS` does; elsewhere none: unheld). It also gives `Held` (lines, stderr, exit, write,
+  end, kill, `note` for record metadata, `detach`) and `heldProcess()` (a `SpawnedProcess` for
+  Claude's SDK `spawnClaudeCodeProcess`).
+- `RPC` takes a `Held` in place of a command (Codex, ACP, Cursor's worker): the same lines, and
+  `firstID` for a generation's own ids.
+- Tests (`box/test/agents/hold.test.ts`, `hold-claude.test.ts`): the first bridge, a process of its
+  own, is SIGKILLed with an approval open. The agent lives; a new bridge attaches (generation 2), is
+  asked again once, answers, and the turn ends (`turn/completed`, or the SDK's `result`), the command
+  run once. Also covered: fencing, a stale or wrong key, an agent that ended before anyone attached,
+  and what each kind sends again.
+
+**Not built (8b), so nothing runs under a holder yet:**
+1. Agents started under holders: `codex.ts` `start()` (`new RPC(held)`), `acp.ts`,
+   `claude.ts` `open()`/`whole()` (`spawnClaudeCodeProcess: heldProcess(hold(...))`, also when the
+   sandbox's launcher is the command), and `!` commands (`sessions.ts` `runCommand`, kind `raw`).
+   Each records `meta` {provider, session, slot, thread/claude session, turn, sdk version, opened}.
+2. Adopting after a crash or handover. The new bridge reads `heldIn()`, and `Sessions.repair` must
+   not close a turn whose agent is held and live. The bridge's turn state is in memory (codex.ts
+   `Active`, the session's `Run`/`Turn`, permission maps), so adoption rebuilds it:
+   - attach at generation+1, with no `initialize` for Codex (refused) and a new `query()` for Claude;
+   - rebuild the open turn's message from the journal (drop what the store kept of that turn and
+     replay from its `turn/started`; if the journal has a `gap`, end the turn as today);
+   - answers to ids the old bridge sent: match them from the record (`meta`), not by `pending`;
+   - Claude asks are deduped by request_id / tool_use_id (S1).
+   Without this, holding only delays the cut: a new bridge would have to end the held agents.
+3. Keeper and footprint: `kuvo-start stop` must stop holders by their record's pid (never by
+   pattern). The bridge removes `kuvo-hold-*.js` that no live holder runs and the records of dead
+   holders (`forgetHolder`). `uninstall.md`, `privacy.md` and docs/footprint.md need
+   `run/agents/hold` and the `/tmp` fallback.
+4. Renewal: a held, adoptable bridge can hand over (step 9) instead of draining; until then it
+   drains as today.

@@ -4,6 +4,7 @@
 
 import type { Subprocess } from "bun"
 import { TookTooLong } from "./agent"
+import type { Held } from "./hold/client"
 
 export class RPCError extends Error {
   constructor(
@@ -21,7 +22,9 @@ type Handler = (method: string, params: any, id: number | string) => Promise<unk
 export class RPC {
   private next = 1
   private pending = new Map<number | string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
-  private child: Subprocess<"pipe", "pipe", "pipe">
+  /** The agent's process: one of the bridge's own, or one under a holder (hold/client.ts). */
+  private child?: Subprocess<"pipe", "pipe", "pipe">
+  private held?: Held
   private closed = false
   /** What the child wrote to stderr lately, for errors. */
   stderr = ""
@@ -32,25 +35,47 @@ export class RPC {
   onExit: (code: number) => void = () => {}
   readonly exited: Promise<number>
 
+  /**
+   * `command` started as the bridge's own child, or an agent's process under a holder (`Held`):
+   * the same lines either way. A held one that a newer bridge took over is gone for this one
+   * (its requests fail), though the agent goes on.
+   */
   constructor(
-    command: string[],
+    command: string[] | Held,
     options: { cwd?: string; env?: Record<string, string | undefined>; cleanEnv?: boolean; jsonrpc?: boolean; firstID?: number; filter?: (line: string) => boolean } = {},
   ) {
     this.jsonrpc = options.jsonrpc ?? false
     if (options.firstID) this.next = options.firstID
     this.filter = options.filter
-    // `cleanEnv`: only what's given (an agent that mustn't see your other keys).
-    const env = options.cleanEnv ? options.env : { ...process.env, ...options.env }
-    this.child = Bun.spawn(command, { cwd: options.cwd, env: env as Record<string, string>, stdin: "pipe", stdout: "pipe", stderr: "pipe" })
-    this.exited = this.child.exited.then((code) => {
+    const ended = (code: number) => {
       this.closed = true
       for (const { reject } of this.pending.values()) reject(new Error(this.stderr.trim().split("\n").slice(-3).join("\n") || `The agent stopped (exit code ${code}).`))
       this.pending.clear()
       this.onExit(code)
       return code
-    })
-    void this.read()
-    this.errorsRead = this.readErrors().catch(() => {})
+    }
+    if (!Array.isArray(command)) {
+      const held = (this.held = command)
+      held.onStderr((text) => (this.stderr = (this.stderr + text).slice(-8_000)))
+      // (From the next moment: what the holder sends again as this bridge attaches waits for the
+      // handlers its caller sets right after this, or an ask would be answered "not found".)
+      queueMicrotask(() =>
+        held.onLine((line) => {
+          const trimmed = line.replace(/\r$/, "")
+          if (trimmed.trim() && (!this.filter || this.filter(trimmed))) this.receive(trimmed)
+        }),
+      )
+      // (Taken over by a newer bridge: the agent didn't stop, but it's that bridge's now.)
+      this.exited = held.exited.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)))
+      this.errorsRead = this.exited.then(() => {})
+      return
+    }
+    // `cleanEnv`: only what's given (an agent that mustn't see your other keys).
+    const env = options.cleanEnv ? options.env : { ...process.env, ...options.env }
+    const child = (this.child = Bun.spawn(command, { cwd: options.cwd, env: env as Record<string, string>, stdin: "pipe", stdout: "pipe", stderr: "pipe" }))
+    this.exited = child.exited.then(ended)
+    void this.read(child)
+    this.errorsRead = this.readErrors(child).catch(() => {})
   }
 
   /** Once all it wrote to stderr is in `stderr` (after it's gone). */
@@ -60,17 +85,17 @@ export class RPC {
   private readonly filter?: (line: string) => boolean
 
   get pid() {
-    return this.child.pid
+    return this.child ? this.child.pid : this.held!.pid
   }
 
   get isClosed() {
     return this.closed
   }
 
-  private async read() {
+  private async read(child: Subprocess<"pipe", "pipe", "pipe">) {
     const decoder = new TextDecoder()
     let buffer = ""
-    for await (const chunk of this.child.stdout) {
+    for await (const chunk of child.stdout) {
       buffer += decoder.decode(chunk, { stream: true })
       let newline: number
       while ((newline = buffer.indexOf("\n")) >= 0) {
@@ -81,9 +106,9 @@ export class RPC {
     }
   }
 
-  private async readErrors() {
+  private async readErrors(child: Subprocess<"pipe", "pipe", "pipe">) {
     const decoder = new TextDecoder()
-    for await (const chunk of this.child.stderr) {
+    for await (const chunk of child.stderr) {
       this.stderr = (this.stderr + decoder.decode(chunk, { stream: true })).slice(-8_000)
     }
   }
@@ -121,9 +146,10 @@ export class RPC {
   private write(message: Record<string, unknown>) {
     if (this.closed) return
     const body = this.jsonrpc ? { jsonrpc: "2.0", ...message } : message
+    if (this.held) return void this.held.write(JSON.stringify(body))
     try {
-      this.child.stdin.write(JSON.stringify(body) + "\n")
-      this.child.stdin.flush()
+      this.child!.stdin.write(JSON.stringify(body) + "\n")
+      this.child!.stdin.flush()
     } catch {}
   }
 
@@ -149,9 +175,14 @@ export class RPC {
 
   kill() {
     if (this.closed) return
+    if (this.held) {
+      this.held.end()
+      this.held.kill()
+      return
+    }
     try {
-      this.child.stdin.end()
+      this.child!.stdin.end()
     } catch {}
-    this.child.kill()
+    this.child!.kill()
   }
 }
