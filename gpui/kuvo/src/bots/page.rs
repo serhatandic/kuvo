@@ -246,12 +246,12 @@ impl BotsView {
                 }
             },
             Control::Button(label, act) => button(key, label, act, false, cx).into_any_element(),
-            Control::MoveTo { bot, source } => {
+            Control::MoveTo { bot, computer, source } => {
                 let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Bot, bot);
-                self.moves.as_ref().map_or_else(
-                    || div().into_any_element(),
-                    |moves| crate::moves::MovesView::settings_button(moves, key, target, source, cx),
-                )
+                match &self.moves {
+                    Some(moves) => crate::moves::MovesView::settings_picker(moves, key, computer, target, source, cx),
+                    None => div().text_ui(TypeSize::Body).text_color(c.text_muted).child(computer).into_any_element(),
+                }
             }
             Control::Danger(label, act) => button(key, label, act, true, cx).into_any_element(),
             Control::Face(look, label, act) => {
@@ -301,27 +301,7 @@ impl BotsView {
             }
             Control::Menu { shown, choices } => {
                 let this = cx.entity().downgrade();
-                let id = SharedString::from(format!("{key}-menu"));
-                let trigger = div()
-                    .id(id.clone())
-                    .debug_selector({
-                        let id = id.to_string();
-                        move || id
-                    })
-                    .flex()
-                    .items_center()
-                    .gap(space::S2)
-                    .min_w(px(160.))
-                    .max_w(px(280.))
-                    .h(px(32.))
-                    .px(space::S3)
-                    .rounded(radius::NAV)
-                    .border_1()
-                    .border_color(c.border_strong)
-                    .bg(c.card)
-                    .cursor_pointer()
-                    .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(c.text).child(shown))
-                    .child(div().flex().flex_none().flex_col().child(Icon::new(IconName::ChevronUp).size(IconSize::Indicator).color(c.icon)).child(Icon::new(IconName::ChevronDown).size(IconSize::Indicator).color(c.icon)));
+                let trigger = crate::model_picker::setting_trigger(key, shown, cx);
                 // (The menu is made only as it opens.)
                 PopoverMenu::new(SharedString::from(format!("{key}-popover")), trigger, move |_, cx| {
                     let (choices, this) = (choices.clone(), this.clone());

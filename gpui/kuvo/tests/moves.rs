@@ -150,9 +150,10 @@ fn bot_move_controls_also_open_for_chats_and_group_chats(cx: &mut TestAppContext
             });
     });
     cx.run_until_parked();
-    assert!(cx.debug_bounds("group-computer-button").is_none());
+    assert!(cx.debug_bounds("group-computer-menu").is_none());
     click(cx, "group-edit");
-    click(cx, "group-computer-button");
+    click(cx, "group-computer-menu");
+    assert!(cx.debug_bounds("menu-item-This Mac").is_some());
     assert!(cx.debug_bounds("menu-item-Studio").is_some());
     assert!(
         stand_in
@@ -187,8 +188,9 @@ fn bot_move_from_other_computers_uses_the_bots_source(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     click(cx, "elsewhere-bot_mira");
-    assert!(cx.debug_bounds("bot-computer-detail").is_some());
-    click(cx, "bot-computer-button");
+    assert!(cx.debug_bounds("bot-computer").is_some());
+    click(cx, "bot-computer-menu");
+    assert!(cx.debug_bounds("menu-item-devbox").is_some());
     click(cx, "menu-item-Studio");
     click(cx, "move-go");
     assert!(cx.debug_bounds("move-failed").is_some());
@@ -208,14 +210,20 @@ fn bot_move_settings_row_is_below_the_header(cx: &mut TestAppContext) {
     cx.simulate_resize(size(px(1280.), px(1180.)));
     cx.run_until_parked();
     click(cx, "bot-bot_mira");
-    assert!(cx.debug_bounds("bot-computer-button").is_none());
+    assert!(cx.debug_bounds("bot-computer-menu").is_none());
     click(cx, "bot-chat-settings");
     let chat = cx.debug_bounds("bot-chat").expect("Chat button");
     let row = cx
-        .debug_bounds("bot-computer-detail")
+        .debug_bounds("bot-computer")
         .expect("Computer settings row");
     assert!(row.center().y > chat.center().y);
-    click(cx, "bot-computer-button");
-    assert!(cx.debug_bounds("menu-item-MacBook Air").is_some());
-    assert!(cx.debug_bounds("menu-item-Studio").is_some());
+    click(cx, "bot-computer-menu");
+    assert!(cx.debug_bounds("menu-item-This Mac").is_some());
+    click(cx, "menu-item-This Mac");
+    assert!(cx.debug_bounds("move-confirm").is_none());
+    click(cx, "bot-computer-menu");
+    click(cx, "menu-item-MacBook Air");
+    assert!(cx.debug_bounds("move-confirm").is_none());
+    click(cx, "menu-item-Studio");
+    assert!(cx.debug_bounds("move-confirm").is_some());
 }

@@ -424,7 +424,7 @@ fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
 
 fn bot_move_menu(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     bots(workspace, window, cx);
-    kuvo::moves::MovesView::open_settings_menu(workspace.moves(), MoveTarget::new(MoveKind::Bot, "bot_mira"), window, cx);
+    kuvo::moves::MovesView::open_settings_menu(workspace.moves(), MoveTarget::new(MoveKind::Bot, "bot_mira"), workspace.box_name().to_string(), window, cx);
 }
 
 fn bot_move_confirm(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {

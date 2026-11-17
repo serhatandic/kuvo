@@ -99,7 +99,7 @@ pub enum Control {
     Text(String),
     Busy(String),
     Button(String, Act),
-    MoveTo { bot: String, source: Option<crate::moves::RemoteSource> },
+    MoveTo { bot: String, computer: String, source: Option<crate::moves::RemoteSource> },
     /// A bot's face beside a button.
     Face(Option<Look>, String, Act),
     Danger(String, Act),
@@ -632,11 +632,16 @@ impl BotsView {
         items
     }
 
-    fn computer_row(computer: &str, control: Control) -> Row {
+    fn computer_row(bot: &str, computer: &str, source: Option<crate::moves::RemoteSource>, can_move: bool) -> Row {
+        let control = if can_move {
+            Control::MoveTo { bot: bot.to_owned(), computer: computer.to_owned(), source }
+        } else {
+            Control::Text(computer.to_owned())
+        };
         Row {
             key: "bot-computer".into(),
             title: "Computer".into(),
-            detail: format!("Lives on {computer}"),
+            detail: String::new(),
             control,
         }
     }
@@ -655,7 +660,7 @@ impl BotsView {
                 detail: if bot.job.is_empty() { "None yet. Tell it in its chat, or write one here.".into() } else { bot.job.clone() },
                 control: Control::Button("Edit…".into(), Act::EditJob),
             },
-            Self::computer_row(bot.machine.as_deref().unwrap_or(&self.this_box), Control::MoveTo { bot: bot.id.clone(), source: None }),
+            Self::computer_row(&bot.id, bot.machine.as_deref().unwrap_or(&self.this_box), None, true),
         ];
         // Its personality, among those the box offers (`kuvo/bots/templates`).
         let personality = match &self.templates {
@@ -721,10 +726,11 @@ impl BotsView {
             let rows = vec![
                 Row { key: "bot-name".into(), title: "Name".into(), detail: "What it’s called, here and in group chats.".into(), control: Control::Button("Rename…".into(), Act::Rename) },
                 Row { key: "bot-look".into(), title: "Look".into(), detail: "Its colour and shape, wherever it shows.".into(), control: Control::Face(there.look.clone(), "Change…".into(), Act::EditLook) },
-                Self::computer_row(&computer, self.move_source(id).map_or_else(
-                    || Control::Text(String::new()),
-                    |source| Control::MoveTo { bot: id.to_owned(), source: Some(source) },
-                )),
+                {
+                    let source = self.move_source(id);
+                    let can_move = source.is_some();
+                    Self::computer_row(id, &computer, source, can_move)
+                },
             ];
             let count = rows.len();
             items.extend(rows.into_iter().enumerate().map(|(ix, row)| Item::Row { row: Box::new(row), first: ix == 0, last: ix + 1 == count }));

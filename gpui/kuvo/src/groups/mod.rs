@@ -531,7 +531,7 @@ impl GroupsView {
                         .flex_col()
                         .gap(space::S0_5)
                         .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
-                        .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)),
+                        .when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail))),
                 )
                 .child(div().flex_none().child(control))
         };
@@ -539,8 +539,8 @@ impl GroupsView {
         let computer = match (&self.shown, &self.moves) {
             (Shown::Edit(id), Some(moves)) if self.group(id).is_some() => {
                 let target = kuvo_box::moves::Target::new(kuvo_box::moves::Kind::Group, id);
-                Some(field_row("group-computer", "Computer", format!("Lives on {}", self.this_box),
-                    crate::moves::MovesView::settings_button(moves, "group-computer", target, None, cx), true).into_any_element())
+                Some(field_row("group-computer", "Computer", String::new(),
+                    crate::moves::MovesView::settings_picker(moves, "group-computer", self.this_box.clone(), target, None, cx), true).into_any_element())
             }
             _ => None,
         };

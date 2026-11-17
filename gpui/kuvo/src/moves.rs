@@ -164,26 +164,30 @@ impl MovesView {
         })
     }
 
-    pub(crate) fn settings_button(
+    pub(crate) fn settings_picker(
         view: &Entity<Self>,
         key: &str,
+        computer: String,
         target: Target,
         source: Option<RemoteSource>,
         cx: &App,
     ) -> AnyElement {
-        let state = view.read(cx);
-        let trigger = Button::new(
-            gpui::SharedString::from(format!("{key}-button")),
-            "Move to…",
-        )
-        .size(ButtonSize::Small)
-        .disabled(state.busy(&target));
-        let handle = state.settings_menu.clone();
+        let trigger = crate::model_picker::setting_trigger(key, computer.clone(), cx);
+        let handle = view.read(cx).settings_menu.clone();
         let view = view.clone();
         PopoverMenu::new(
-            gpui::SharedString::from(format!("{key}-menu")),
+            gpui::SharedString::from(format!("{key}-popover")),
             trigger,
-            move |window, cx| Self::menu_from(&view, target.clone(), source.clone(), window, cx),
+            move |window, cx| {
+                Self::destination_menu(
+                    &view,
+                    target.clone(),
+                    source.clone(),
+                    Some(computer.clone()),
+                    window,
+                    cx,
+                )
+            },
         )
         .with_handle(handle)
         .align_right()
@@ -194,11 +198,13 @@ impl MovesView {
     pub fn open_settings_menu(
         view: &Entity<Self>,
         target: Target,
+        computer: String,
         window: &mut Window,
         cx: &mut App,
     ) {
         let handle = view.read(cx).settings_menu.clone();
-        handle.open(Self::menu(view, target, window, cx), window, cx);
+        let menu = Self::destination_menu(view, target, None, Some(computer), window, cx);
+        handle.open(menu, window, cx);
     }
 
     pub fn menu(
@@ -214,6 +220,17 @@ impl MovesView {
         view: &Entity<Self>,
         target: Target,
         source: Option<RemoteSource>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Menu> {
+        Self::destination_menu(view, target, source, None, window, cx)
+    }
+
+    fn destination_menu(
+        view: &Entity<Self>,
+        target: Target,
+        source: Option<RemoteSource>,
+        current: Option<String>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Menu> {
@@ -236,29 +253,39 @@ impl MovesView {
                     source.name
                 )
             })
-            .unwrap_or_else(|| "Couldn’t load your computers. Open Move to… to try again.".into());
+            .unwrap_or_else(|| "Couldn’t load your computers. Reopen the menu to try again.".into());
         let target_for_read = target.clone();
         let return_to = window.focused(cx);
-        let menu = cx.new(|cx| Menu::new(cx).width(px(320.)).header("Move to…"));
-        if busy {
-            let message = busy_words.unwrap_or_else(|| "Starting the move…".into());
+        let heading = move || match &current {
+            Some(computer) => MenuItem::Entry(MenuEntry::new(computer.clone()).checked(true)),
+            None => MenuItem::Header("Move to…".into()),
+        };
+        let menu = cx.new(|cx| Menu::new(cx).width(px(320.)));
+        let show_status = |message: String, cx: &mut App| {
             menu.update(cx, |menu, cx| {
-                menu.set_items(vec![MenuItem::Header(message.into())], cx)
+                menu.set_items(vec![heading(), MenuItem::Header(message.into())], cx)
             });
+        };
+        if busy {
+            show_status(
+                busy_words.unwrap_or_else(|| "Starting the move…".into()),
+                cx,
+            );
             return menu;
         }
         let Some(client) = client else {
-            menu.update(cx, |menu, cx| {
-                menu.set_items(vec![MenuItem::Header(source_error.into())], cx)
-            });
+            show_status(source_error, cx);
             return menu;
         };
+        if live {
+            show_status("Looking for your computers…".into(), cx);
+        }
         let source_client = client.clone();
         let view = view.downgrade();
         let fill = move |result: kuvo_box::Result<Places>,
                          menu: &mut Menu,
                          cx: &mut Context<Menu>| {
-            let mut items = vec![MenuItem::Header("Move to…".into())];
+            let mut items = vec![heading()];
             match result {
                 Ok(list) if list.places.is_empty() => {
                     items.push(MenuItem::Header("No other computers yet.".into()))
@@ -294,12 +321,6 @@ impl MovesView {
             menu.set_items(items, cx);
         };
         if live {
-            menu.update(cx, |menu, cx| {
-                menu.set_items(
-                    vec![MenuItem::Header("Looking for your computers…".into())],
-                    cx,
-                )
-            });
             let weak = menu.downgrade();
             window
                 .spawn(cx, async move |cx| {
