@@ -52,6 +52,7 @@ pub struct Seen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Followed {
     Wakes,
+    Outputs,
     Asks,
     Queue,
 }
@@ -146,6 +147,8 @@ struct State {
     /// Its bots.
     bots: bots::Bots,
     wakes: HashMap<String, Value>,
+    outputs: HashMap<String, Vec<Value>>,
+    output_bytes: HashMap<String, Vec<u8>>,
     /// Its Work Queue.
     queue: queue::Queue,
     /// Its group chats, and those following one (`kuvo/groups/<id>/events`): the chat, and where
@@ -687,6 +690,15 @@ impl StandIn {
     /// `bot`'s computer no longer lists it (deleted there, or that computer was removed).
     pub fn forget_bot_elsewhere(&self, bot: &str) {
         self.state().bots.elsewhere.retain(|each| each["id"] != json!(bot));
+    }
+
+    pub fn add_output(&self, session: &str, artifact: Value, bytes: &[u8]) {
+        let mut state = self.state();
+        let id = artifact["id"].as_str().expect("artifact id");
+        let version = artifact["latest"]["n"].as_u64().expect("artifact version");
+        state.output_bytes.insert(format!("kuvo/artifacts/{id}/versions/{version}"), bytes.to_vec());
+        state.outputs.entry(session.to_owned()).or_default().push(artifact);
+        state.told(session, Followed::Outputs);
     }
 
     /// Sign-ins under way are forgotten, as by an engine that started over.
@@ -1351,6 +1363,7 @@ impl State {
     fn followed(&self, session: &str, what: Followed) -> String {
         match what {
             Followed::Wakes => self.wake_schedule(session),
+            Followed::Outputs => json!({ "artifacts": self.outputs.get(session).cloned().unwrap_or_default(), "next": null }),
             Followed::Asks => json!({ "asks": self.asks.get(session).cloned().unwrap_or_default() }),
             Followed::Queue => json!({ "paused": self.paused.contains(session), "held": [], "items": self.queues.get(session).cloned().unwrap_or_default(), "line": self.queue_lines.get(session) }),
         }
@@ -1741,6 +1754,13 @@ impl StandIn {
                 }
                 return answer(status, value);
             }
+        }
+        if (method, route) == ("GET", "kuvo/artifacts") {
+            let session = query(path, "session").map(decoded).unwrap_or_default();
+            return answer(200, json!({ "artifacts": state.outputs.get(&session).cloned().unwrap_or_default(), "next": null }));
+        }
+        if method == "GET" && let Some(bytes) = state.output_bytes.get(route) {
+            return Ok(Response { status: 200, content_type: Some("application/octet-stream".into()), body: bytes.clone() });
         }
         // A file on its computer, by its address (`kuvo/file`).
         if (method, route) == ("GET", "kuvo/file") {
@@ -2509,14 +2529,16 @@ impl Transport for StandIn {
         let route = request.route();
         // A conversation's asks or queue, followed: as it is now, then a line as it changes.
         let parts: Vec<&str> = route.split('/').collect();
+        let output_session = (route == "kuvo/artifacts/events").then(|| query(&request.path, "session").map(decoded)).flatten();
         let followed = match parts.as_slice() {
-            ["kuvo", "sessions", session, "asks", "events"] => Some((session, Followed::Asks)),
-            ["kuvo", "sessions", session, "queue", "events"] => Some((session, Followed::Queue)),
+            ["kuvo", "sessions", session, "asks", "events"] => Some((*session, Followed::Asks)),
+            ["kuvo", "sessions", session, "queue", "events"] => Some((*session, Followed::Queue)),
+            ["kuvo", "artifacts", "events"] => output_session.as_deref().map(|session| (session, Followed::Outputs)),
             ["kuvo", "wakes", session, "events"] => {
                 if self.state().down {
                     return Err(kuvo_box::Error::Unreachable("The computer is away.".into()));
                 }
-                Some((session, Followed::Wakes))
+                Some((*session, Followed::Wakes))
             }
             _ => None,
         };
@@ -2528,7 +2550,7 @@ impl Transport for StandIn {
                 let id = state.next;
                 state.next += 1;
                 let _ = sender.send(state.followed(session, what));
-                state.followers.insert(id, ((*session).to_owned(), what, sender));
+                state.followers.insert(id, (session.to_owned(), what, sender));
                 id
             };
             let inner = self.inner.clone();

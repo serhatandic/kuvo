@@ -313,15 +313,7 @@ impl FilesView {
             Load::Failed(why) => div().p(space::S4).text_color(c.text_faint).child(format!("It couldn’t be read: {why}")).into_any_element(),
             Load::Ready(Shown::Unshown(why)) => div().p(space::S4).text_color(c.text_faint).child(why.clone()).into_any_element(),
             Load::Ready(Shown::Text { text, lines }) => {
-                let cut = text.split_inclusive('\n').take(LINES_MOST).collect::<String>();
-                let language = name.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::S2)
-                    .child(CodeBlock::new("file-code", cut).language(language).line_numbers(true))
-                    .when(*lines > LINES_MOST, |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("The first {LINES_MOST} of {lines} lines."))))
-                    .into_any_element()
+                text_preview(&name, text, *lines, cx)
             }
         };
         div()
@@ -376,6 +368,20 @@ impl FilesView {
             None => button,
         })
     }
+}
+
+/// The read-only text viewer, also used for recorded conversation outputs.
+pub(crate) fn text_preview(name: &str, text: &str, lines: usize, cx: &App) -> AnyElement {
+    let faint = cx.theme().colors.text_faint;
+    let cut = text.split_inclusive('\n').take(LINES_MOST).collect::<String>();
+    let language = name.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase()).unwrap_or_default();
+    div()
+        .flex()
+        .flex_col()
+        .gap(space::S2)
+        .child(CodeBlock::new("file-code", cut).language(language).line_numbers(true))
+        .when(lines > LINES_MOST, |d| d.child(div().text_ui(TypeSize::Caption).text_color(faint).child(format!("The first {LINES_MOST} of {lines} lines."))))
+        .into_any_element()
 }
 
 /// `folder/name`.

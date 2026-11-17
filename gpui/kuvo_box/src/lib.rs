@@ -14,6 +14,7 @@ pub mod accounts;
 pub mod approval;
 pub mod areas;
 pub mod asks;
+pub mod artifacts;
 pub mod background;
 pub mod bots;
 pub mod boxes;

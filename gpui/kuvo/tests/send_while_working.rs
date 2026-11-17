@@ -203,3 +203,35 @@ fn a_queue_held_for_an_engine_update_says_why_in_the_boxs_words(cx: &mut TestApp
     follow_queue(&view, &workspace, "ses_signup", cx);
     assert!(bounds(cx, "queue-line").is_none(), "gone once the engine is back");
 }
+
+#[gpui::test]
+fn the_queue_has_visible_remove_and_more_actions(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (_, composer) = open_session(&workspace, "ses_signup", cx);
+    click(cx, "queue-more-msg_q1");
+    assert!(bounds(cx, "menu-item-Edit").is_some());
+    click(cx, "menu-item-Edit");
+    assert!(bounds(cx, "queued-msg_q1").is_none());
+    assert!(!composer.read_with(cx, |composer, cx| composer.field().read(cx).text().to_string()).is_empty());
+    click(cx, "remove-msg_q2");
+    assert!(stand_in.queue_of("ses_signup").is_empty());
+    assert!(bounds(cx, "queue").is_none());
+}
+
+#[gpui::test]
+fn a_send_for_after_the_run_does_not_appear_in_the_transcript_while_waiting(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (view, composer) = open_session(&workspace, "ses_signup", cx);
+    let words = "After this run, check the links";
+    cx.simulate_input(words);
+    composer.update(cx, |composer, cx| composer.send_as(kuvo::composer::SendAs::Queue, cx));
+    cx.run_until_parked();
+    // Deliberately don't hand the queue update to the view yet.
+    assert!(!view.read_with(cx, |view, _| view.entries().iter().any(|entry|
+        matches!(entry, kuvo::entries::Entry::Outgoing { words: sent, .. } if sent == words))));
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    let row = stand_in.queue_of("ses_signup").into_iter().find(|item| item["words"] == words).unwrap();
+    assert!(bounds(cx, &format!("queued-{}", row["id"].as_str().unwrap())).is_some());
+}

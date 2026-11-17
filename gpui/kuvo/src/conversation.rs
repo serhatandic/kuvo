@@ -18,7 +18,7 @@ use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     anchor::{Placement, Popover},
     chat_list::{ChatListState, chat_list},
-    menu::{ContextMenuArea, Menu, MenuEntry},
+    menu::{ContextMenuArea, Menu, MenuEntry, PopoverMenu},
     selection::{self, SelectionArea, SelectionState},
     small::spinner,
     theme::{radius, space},
@@ -67,7 +67,7 @@ pub struct ConversationView {
     composer: Entity<Composer>,
     /// What it waits on you for, in the composer's place while anything does.
     asks: Entity<AskCard>,
-    /// What runs for it that it doesn't show as it happens, in bars over the composer.
+    /// The activity control in the header.
     bars: Entity<WorkBars>,
     follow: Option<Rc<Follow<ConversationUpdate>>>,
     _follow_task: Option<Task<()>>,
@@ -89,10 +89,6 @@ pub struct ConversationView {
     /// has been used, so only the last one's timer takes the check away.
     copied: Option<(String, u64)>,
     client: BoxClient,
-    wakes: Option<crate::wakes::Status>,
-    wake_handle: kuvo_ui::menu::PopoverMenuHandle,
-    wake_computer: String,
-    wake_now: Option<f64>,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
     tasks: Vec<Task<()>>,
@@ -163,7 +159,6 @@ impl ConversationView {
             transcript: cx.focus_handle(),
             copied: None,
             client: client.clone(),
-            wakes: None, wake_handle: Default::default(), wake_computer: String::new(), wake_now: None,
             live,
             _queue_follow: None,
             tasks: Vec::new(),
@@ -236,42 +231,23 @@ impl ConversationView {
     }
 
     pub(crate) fn set_wakes(&mut self, wakes: Option<crate::wakes::Status>, computer: String, now: Option<f64>, cx: &mut Context<Self>) {
-        if self.wakes != wakes || self.wake_computer != computer || self.wake_now != now {
-            self.wakes = wakes;
-            self.wake_computer = computer;
-            self.wake_now = now;
-            cx.notify();
-        }
+        self.bars.update(cx, |bars, cx| bars.set_wakes(wakes, computer, now, cx));
     }
 
     pub(crate) fn tick_wakes(&self, cx: &mut Context<Self>) {
-        if self.wakes.is_some() || self.wake_handle.is_open() { cx.notify(); }
-    }
-
-    fn wake_source(&self) -> crate::wakes::Source {
-        crate::wakes::Source { client: self.client.clone(), session: self.session.clone(), computer: self.wake_computer.clone(), live: self.live, now: self.wake_now }
+        self.bars.update(cx, |bars, cx| bars.tick_wakes(cx));
     }
 
     #[cfg(feature = "stand-in")]
     pub fn open_wake_schedule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let source = self.wake_source();
-        let list = cx.new(|cx| crate::wakes::WakeSchedule::new(source, cx));
-        self.wake_handle.open(list, window, cx);
-        cx.notify();
-    }
-
-    fn wake_chip(&self) -> Option<AnyElement> {
-        let now = self.wake_now.unwrap_or_else(crate::time::now_ms);
-        let label = self.wakes.as_ref().and_then(|status| status.chip_label(now))
-            .or_else(|| self.wake_handle.is_open().then(|| "Wake-ups".into()))?;
-        Some(div().w_full().max_w(px(COLUMN)).pb(space::S2).child(crate::wakes::chip("composer-wakes", label, self.wake_source(), true, self.wake_handle.clone())).into_any_element())
+        self.bars.update(cx, |bars, cx| bars.open_activity_with_wakes(true, window, cx));
     }
 
     pub fn composer(&self) -> &Entity<Composer> {
         &self.composer
     }
 
-    /// The bars over its composer.
+    /// The activity control for this conversation.
     pub fn bars(&self) -> &Entity<WorkBars> {
         &self.bars
     }
@@ -532,7 +508,11 @@ impl ConversationView {
     fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
         let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
         let running = self.running;
-        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter().filter(|outgoing| !outgoing.arrived).map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
+        // A send for after the run belongs to the queue unless the transcript confirms it went
+        // straight through. Keep failed sends here so Retry and Edit remain available.
+        let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter()
+            .filter(|outgoing| !outgoing.arrived && (!outgoing.is_queued() || outgoing.failed.is_some()))
+            .map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);
         (rows, revisions)
@@ -1205,19 +1185,16 @@ impl ConversationView {
             return None;
         }
         let c = cx.theme().colors.clone();
-        let count = items.len();
         let running = self.running;
         let paused = self.queue.paused && !running;
-        let said = if paused { format!("{count} waiting · paused") } else if count == 1 { "1 waiting".to_owned() } else { format!("{count} waiting") };
-        let rows = items.iter().enumerate().map(|(ix, item)| {
-            let group = SharedString::from(format!("queued-{ix}"));
-            let (edit_id, remove_id, go_id) = (item.id.clone(), item.id.clone(), item.id.clone());
+        let rows = items.iter().map(|item| {
+            let (remove_id, go_id) = (item.id.clone(), item.id.clone());
             let selector = format!("queued-{}", item.id);
             // Where it stands: for after the run, or for the agent's next step.
             let steered = !item.is_queued() && !item.is_on_box();
-            let mark = Icon::new(if steered { IconName::ArrowRight } else { IconName::Clock }).size(IconSize::Nav).color(if ix == 0 { c.accent } else { c.text_faint });
+            let mark = Icon::new(if steered { IconName::ArrowRight } else { IconName::QueuedMessage }).size(IconSize::Nav).color(c.text_faint);
             let lead: AnyElement = match &item.from {
-                Some(from) => div().flex().flex_none().items_center().gap(space::S1_5).child(mark).child(div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(from.clone())).into_any_element(),
+                Some(from) => div().flex().flex_none().items_center().gap(space::S1_5).child(mark).child(div().max_w(px(100.)).truncate().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child(from.clone())).into_any_element(),
                 None => mark.into_any_element(),
             };
             // Its way on: Steer while the run goes on (Send with none); one already for the agent's
@@ -1231,6 +1208,8 @@ impl ConversationView {
             let go = div().debug_selector(move || go_selector).child(
                 Button::new(SharedString::from(format!("go-{}", item.id)), go_label)
                     .ghost()
+                    .quiet()
+                    .when(go_steers, |button| button.icon(IconName::Steer).icon_size(IconSize::Nav))
                     .size(ButtonSize::Small)
                     .tooltip(match go_label {
                         "Steer" => "Steer: the agent takes this at its next step, without waiting for the run to end",
@@ -1261,14 +1240,14 @@ impl ConversationView {
                     menu.separator().entry(MenuEntry::new("Remove").destructive().on_select(move |_, cx| remove.update(cx, |this, cx| this.unqueue(r.clone(), false, cx))))
                 })
             };
+            let more = format!("queue-more-{}", item.id);
             let row = div()
                 .id(SharedString::from(format!("queued-{}", item.id)))
                 .debug_selector(move || selector)
-                .group(group.clone())
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .h(px(30.))
+                .h(px(32.))
                 .px(space::S2)
                 .rounded(radius::NAV)
                 .hover(|s| s.bg(c.hover))
@@ -1277,28 +1256,26 @@ impl ConversationView {
                 .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(item.words.lines().next().unwrap_or("").to_owned()))
                 .children((!item.files.is_empty()).then(|| {
                     let files = if item.files.len() == 1 { item.files[0].clone() } else { format!("{} files", item.files.len()) };
-                    div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(files)
+                    div().flex().flex_none().items_center().gap(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(Icon::new(IconName::Paperclip).size(IconSize::Nav).color(c.text_faint)).child(div().max_w(px(90.)).truncate().child(files))
                 }))
                 .children(next_step)
                 .child(go)
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .gap(space::S0_5)
-                        .opacity(0.)
-                        .group_hover(group, |s| s.opacity(1.))
-                        .when(item.is_yours(), |d| {
-                            let selector = format!("edit-{}", item.id);
-                            d.child(div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("edit-{}", item.id)), IconName::Pencil, "Edit").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(edit_id.clone(), true, cx)))))
-                        })
-                        // (Another's isn't yours to edit: its room kept, so every row's buttons line up.)
-                        .when(!item.is_yours(), |d| d.child(div().flex_none().size(px(24.))))
-                        .child({
-                            let selector = format!("remove-{}", item.id);
-                            div().debug_selector(move || selector).child(Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove").size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))))
-                        }),
-                );
+                .child({
+                    let selector = format!("remove-{}", item.id);
+                    div().flex_none().debug_selector(move || selector).child(
+                        Button::icon_only(SharedString::from(format!("remove-{}", item.id)), IconName::Trash, "Remove")
+                            .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav)
+                            .on_click(cx.listener(move |this, _, _, cx| this.unqueue(remove_id.clone(), false, cx))),
+                    )
+                })
+                .child(div().flex_none().debug_selector({
+                    let selector = more.clone();
+                    move || selector
+                }).child(
+                    PopoverMenu::button(SharedString::from(more.clone()), Button::icon_only(SharedString::from(format!("open-{more}")), IconName::More, "More actions")
+                            .ghost().quiet().size(ButtonSize::Small).icon_size(IconSize::Nav), menu.clone())
+                        .above().align_right(),
+                ));
             ContextMenuArea::new(SharedString::from(format!("queued-menu-{}", item.id)), row, menu)
         });
         Some(
@@ -1306,34 +1283,26 @@ impl ConversationView {
                 .debug_selector(|| "queue".into())
                 .w_full()
                 .max_w(px(COLUMN))
-                .mb(space::S2)
                 .flex()
                 .flex_col()
-                .p(space::S1)
-                .rounded(radius::CARD - px(4.))
-                .bg(c.sunken)
+                .px(space::S1)
+                .pt(space::S1)
+                .pb(space::S4)
+                .mb(-space::S3)
+                .rounded_t(radius::CARD)
+                .bg(c.surface.blend(c.sunken.opacity(0.45)))
                 .border_1()
                 .border_color(c.border)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(space::S2)
-                        .pt(space::S1)
-                        .pb(space::S0_5)
-                        .text_ui(TypeSize::Caption)
-                        .text_color(c.text_faint)
-                        .child(said)
-                        .children(paused.then(|| {
-                            div().debug_selector(|| "queue-resume".into()).child(
-                                Button::new("queue-resume", "Resume").ghost().size(ButtonSize::Small).tooltip("Send the waiting messages, one after another").on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx))),
-                            )
-                        })),
-                )
-                // Why it waits, in the box's words (its engine being updated): under the count, as plain as it.
+                .children(paused.then(|| {
+                    div().flex().items_center().justify_between().px(space::S2)
+                        .text_ui(TypeSize::Caption).text_color(c.text_muted)
+                        .child("Queue paused")
+                        .child(div().debug_selector(|| "queue-resume".into()).child(
+                            Button::new("queue-resume", "Resume").ghost().size(ButtonSize::Small).tooltip("Send the waiting messages, one after another").on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx))),
+                        ))
+                }))
                 .children(self.queue.line.clone().map(|line| div().debug_selector(|| "queue-line".into()).px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.text_muted).child(line)))
-                .child(div().id("queue-rows").max_h(px(30. * 4.)).overflow_y_scroll().children(rows))
+                .child(div().id("queue-rows").max_h(px(32. * 4.)).overflow_y_scroll().children(rows))
                 .children(self.queue_failed.clone().map(|why| div().px(space::S2).pb(space::S1).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
                 .into_any_element(),
         )
@@ -1358,9 +1327,6 @@ pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box:
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.keep_focus(window, cx);
-        // A bot's sessions' rows name their models as the composer's box offers them.
-        let names = self.composer.read(cx).menu_models().into_iter().map(|model| (model.id, model.name)).collect();
-        self.bars.update(cx, |bars, cx| bars.set_names(names, cx));
         let theme = cx.theme().clone();
         let c = &theme.colors;
         let view = cx.entity();
@@ -1479,14 +1445,13 @@ impl Render for ConversationView {
                     .children(self.asks_failed.clone().filter(|_| !gone).map(|why| {
                         div().w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)
                     }))
-                    .when(!gone, |d| d.children(self.wake_chip()).child(self.bars.clone()))
-                    .when(!gone, |d| d.children(self.queue_view(cx)))
                     // What it waits on you for takes the composer's place, as on the Mac and the phone.
                     // One this app can't answer sits over the composer, which stays usable.
                     .when(!gone, |d| {
                         let card = self.asks.read(cx);
                         let (asking, beside) = (card.is_asking(), card.leaves_composer());
                         d.when(asking && beside, |d| d.child(div().w_full().max_w(px(COLUMN)).pb(space::S2).child(self.asks.clone())))
+                            .children(self.queue_view(cx))
                             .child(div().w_full().max_w(px(COLUMN)).child(if asking && !beside { self.asks.clone().into_any_element() } else { self.composer.clone().into_any_element() }))
                     }),
             )
