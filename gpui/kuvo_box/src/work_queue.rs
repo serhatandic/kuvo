@@ -509,6 +509,11 @@ impl BoxClient {
         self.queue_view("kuvo/work-queue?owner=all&counts=1")
     }
 
+    /// A conversation's queue and the items linked to it, for resolving chat references.
+    pub fn work_queue_for_owner(&self, owner: &str) -> Result<QueueSaid> {
+        self.queue_view(&format!("kuvo/work-queue?owner={}&glance=1", paths::segment(owner)))
+    }
+
     /// The same view narrowed as `by` says (a search, filters), by the box: only the items it
     /// leaves, and its counts of those.
     pub fn work_queue_narrowed(&self, by: &Narrow) -> Result<QueueSaid> {

@@ -19,6 +19,10 @@ mod references;
 mod relations;
 mod page;
 mod picker;
+pub(crate) mod preview;
+#[cfg(feature = "shots")]
+pub use preview::ShotHoverPoint;
+pub(crate) mod chat_references;
 
 use std::collections::HashMap;
 
@@ -191,10 +195,9 @@ enum Row {
     Back(String),
     Head { item: Box<Item>, busy: bool },
     Notice { key: String, tone: Tone, title: String, words: String, act: Option<(String, Act)> },
-    Progress { value: Option<f64>, note: String },
     Section(String),
     Body(String),
-    ItemLinks { relations: Vec<kuvo_box::work_queue::ItemRelation>, can_link: bool },
+    ItemLinks { relations: Vec<kuvo_box::work_queue::ItemRelation>, can_link: bool, count: usize },
     Session { session: ItemSession, first: bool, last: bool },
     Link { link: Link, first: bool, last: bool },
     File { file: File, first: bool, last: bool },
@@ -897,9 +900,6 @@ impl QueueView {
         if let Some(why) = why {
             rows.push(Row::Notice { key: "item-why".into(), tone: Tone::Quiet, title: String::new(), words: why, act: None });
         }
-        if let Some(progress) = item.progress.as_ref().filter(|progress| progress.value.is_some() || progress.note.as_ref().is_some_and(|note| !note.is_empty())) {
-            rows.push(Row::Progress { value: progress.value, note: progress.note.clone().unwrap_or_default() });
-        }
         let Some(whole) = whole else {
             rows.push(match &self.whole {
                 Reading::Failed(why) => Row::Note { key: "item-failed".into(), words: format!("The rest of it couldn’t be read: {why}"), busy: false },
@@ -922,7 +922,7 @@ impl QueueView {
             rows.extend(item.sessions.iter().enumerate().map(|(ix, session)| Row::Session { session: session.clone(), first: ix == 0, last: ix == last }));
         }
         if !whole.links.is_empty() || !whole.relations.is_empty() || whole.can_link_items {
-            rows.push(Row::ItemLinks { relations: whole.relations.clone(), can_link: whole.can_link_items });
+            rows.push(Row::ItemLinks { relations: whole.relations.clone(), can_link: whole.can_link_items, count: whole.relations.len() + whole.links.len() });
         }
         if !whole.links.is_empty() {
             let last = whole.links.len() - 1;

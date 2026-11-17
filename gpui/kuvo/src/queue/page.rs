@@ -201,33 +201,9 @@ impl QueueView {
                     )
                     .into_any_element()
             }
-            Row::Progress { value, note } => div()
-                .pt(space::S3)
-                .child(
-                    div()
-                        .debug_selector(|| "item-progress".into())
-                        .flex()
-                        .flex_col()
-                        .gap(space::S2)
-                        .px(space::S5)
-                        .py(space::S4)
-                        .rounded(radius::POPOVER)
-                        .bg(c.card)
-                        .shadow(cx.theme().card_shadow())
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(space::S3)
-                                .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(if note.is_empty() { "Progress".to_owned() } else { note }))
-                                .children(value.map(|value| div().debug_selector(|| "item-progress-value".into()).flex_none().text_ui(TypeSize::Small).text_color(c.text_muted).child(format!("{}%", (value.clamp(0., 1.) * 100.).round() as u32)))),
-                        )
-                        .children(value.map(|value| bar(value, None, cx))),
-                )
-                .into_any_element(),
             Row::Section(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
             Row::Body(text) => div().debug_selector(|| "item-body".into()).px(space::S5).py(space::S4).rounded(radius::POPOVER).bg(c.card).shadow(cx.theme().card_shadow()).child(self.item_description(&text, cx)).into_any_element(),
-            Row::ItemLinks { relations, can_link } => self.relation_section(&relations, can_link, cx),
+            Row::ItemLinks { relations, can_link, count } => self.relation_section(&relations, can_link, count, cx),
             Row::Session { session, first, last } => self.session_row(session, first, last, cx),
             Row::Link { link, first, last } => self.link_row(link, first, last, cx),
             Row::File { file, first, last } => self.file_row(file, first, last, cx),
@@ -579,10 +555,17 @@ impl QueueView {
     fn head(&mut self, item: Item, busy: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let this = cx.entity().downgrade();
-        let state: Option<(AnyElement, &str)> = if busy {
-            Some((spinner("head-busy", IconSize::Nav, c.text_muted).into_any_element(), "Saving…"))
+        let progress = item.progress.as_ref().map(|progress| {
+            let note = progress.note.as_deref().filter(|note| !note.trim().is_empty());
+            let value = progress.value.map(|value| format!("{:.0}%", value.clamp(0., 1.) * 100.));
+            note.into_iter().chain(value.as_deref()).collect::<Vec<_>>().join(" · ")
+        }).filter(|text| !text.is_empty());
+        let state: Option<(AnyElement, String)> = if busy {
+            Some((spinner("head-busy", IconSize::Nav, c.text_muted).into_any_element(), "Saving…".to_owned()))
         } else if item.at_work() {
-            Some((spinner("head-spin", IconSize::Nav, c.text_muted).into_any_element(), "At work"))
+            Some((spinner("head-spin", IconSize::Nav, c.text_muted).into_any_element(), "At work".to_owned()))
+        } else if progress.is_some() {
+            Some((status_mark(&item.status, cx), self.status_name(&item.status).unwrap_or_else(|| "Progress".to_owned())))
         } else {
             None
         };
@@ -625,7 +608,10 @@ impl QueueView {
                     .gap(space::S2)
                     .h(px(30.))
                     .children(label(&item, cx))
-                    .children(state.map(|(mark, words)| div().debug_selector(|| "item-state".into()).flex().items_center().gap(space::S1_5).child(mark).child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words.to_owned()))))
+                    .children(state.map(|(mark, words)| div().id("item-state").debug_selector(|| "item-state".into())
+                        .flex().items_center().gap(space::S1_5).child(mark)
+                        .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words))
+                        .when_some(progress, |d, progress| d.tooltip(move |_, cx| Tooltip::new(progress.clone()).build(cx)))))
                     .child(div().flex_1())
                     .when_some(finish, |d, (id, name)| {
                         let finish = status(&id);
@@ -717,8 +703,10 @@ impl QueueView {
         let mut seen = std::collections::HashSet::new();
         let extras = extras.into_iter().filter(|file| seen.insert(file.key()))
             .map(|file| cards.draw(file, width, 0., None, cx)).collect::<Vec<_>>();
+        let queue = self.queue().cloned().map(std::rc::Rc::new);
         let items: std::collections::HashMap<_, _> = mentions.iter().filter_map(|mention| {
-            Some((mention.number, self.numbered_item(mention.number)?.clone()))
+            let item = self.numbered_item(mention.number)?.clone();
+            Some((mention.number, super::preview::Reference::new(item, queue.clone()?, self.client.clone(), self.live)))
         }).collect();
         let open = self.reference_click(cx);
         let chip_open = open.clone();
@@ -727,8 +715,7 @@ impl QueueView {
                 let item = items.get(&number)?;
                 let open = chip_open.clone();
                 let url = format!("kuvo-item:{number}");
-                Some(super::relations::item_chip(("description-item", number), Some(number), &item.title, &item.status,
-                    move |window, cx| open(&url, window, cx), cx))
+                Some(item.chip(("description-item", number), move |window, cx| open(&url, window, cx), cx))
             }))
             .pictures(std::rc::Rc::new(move |url, alt, cx| {
                 match attachments::resolve(url, &files) {

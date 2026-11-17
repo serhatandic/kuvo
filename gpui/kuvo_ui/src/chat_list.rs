@@ -69,6 +69,11 @@ impl ChatListState {
         }
     }
 
+    /// Late-arriving decorations changed how rows lay out.
+    pub fn remeasure(&self) {
+        self.list.remeasure();
+    }
+
     /// Everything was replaced (another conversation opened): show its latest.
     pub fn reset(&self, count: usize) {
         self.list.reset(count);

@@ -56,6 +56,18 @@ pub enum Entry {
 }
 
 impl Entry {
+    pub(crate) fn reference_text(&self) -> Vec<&str> {
+        match self {
+            Entry::Message(message) => crate::queue::chat_references::message_text(message),
+            Entry::Words { step, parts, .. } => parts.iter().filter_map(|&at| match step.content.get(at) {
+                Some(Content::Text(text)) => Some(text.as_str()),
+                _ => None,
+            }).collect(),
+            Entry::Outgoing { words, .. } => vec![words.as_str()],
+            _ => Vec::new(),
+        }
+    }
+
     /// What it's known by from one read to the next.
     pub fn key(&self) -> &str {
         match self {
@@ -280,6 +292,7 @@ pub fn render(
     selection: &SelectionState,
     looks: &Looks,
     actions: Option<Actions>,
+    references: Option<AnyElement>,
     cx: &App,
 ) -> AnyElement {
     let actions = actions.map(|actions| actions_row(entry.key(), matches!(entry, Entry::Message(_)), &actions, cx));
@@ -309,6 +322,7 @@ pub fn render(
         Entry::TurnEnd { outcome, worked, .. } => turn_end(outcome, *worked, cx),
         Entry::Working { title } => working(title, cx),
     };
+    let body = if let Some(references) = references { div().child(body).child(references).into_any_element() } else { body };
     frame_with(ix, entry.key(), body, matches!(entry, Entry::Working { .. }), actions)
 }
 

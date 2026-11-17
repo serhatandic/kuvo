@@ -229,6 +229,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "queue-new-picture", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_picture) },
     Screen { slug: "queue-new-enlarged", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_new_enlarged) },
     Screen { slug: "queue-edit-pictures", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_edit) },
+    Screen { slug: "queue-item-hover-card", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
     Screen { slug: "queue-item-references", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
     Screen { slug: "queue-item-links", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_item) },
     Screen { slug: "queue-collapsed-lanes", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue_collapsed_lanes) },
@@ -1492,15 +1493,20 @@ fn main() -> anyhow::Result<()> {
                 }), Some(("signup.png", include_bytes!("../../../shots/screens-composer-row-light.png").to_vec())));
                 stand_in.work_item_fixture("wqi_231", serde_json::json!({}), Some(("signup-wide.png", include_bytes!("../../../shots/screens-composer-row-dark.png").to_vec())));
             }
-            if matches!(screen.slug, "queue-item-references" | "queue-item-links") {
+            if matches!(screen.slug, "queue-item-references" | "queue-item-links" | "queue-item-hover-card") {
                 let body = "Coordinate the error copy with #234 before merging. The page ranked #1.";
                 let start = body.find("#234").unwrap();
+                stand_in.work_item_fixture("wqi_234", serde_json::json!({
+                    "body": "Use the new theme tokens throughout Settings. Check the sidebar and permission panels in both appearances.",
+                    "status": "in-progress", "priority": "high", "labels": ["lbl_design"],
+                    "assignee": {"kind": "bot", "id": "bot_mira", "name": "Mira"},
+                }), None);
                 let links = if screen.slug == "queue-item-links" {
                     serde_json::json!([
-                        {"kind": "mentions", "id": "wqi_234", "number": 234, "title": "Review the empty states"},
-                        {"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": "Write the sign-up checklist"},
-                        {"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Ship the updated form"},
-                        {"kind": "related", "id": "wqi_237", "number": 237, "title": "Update the form guidelines"},
+                        {"kind": "mentions", "id": "wqi_234", "number": 234, "title": "Dark mode for the settings page"},
+                        {"kind": "mentioned-in", "id": "wqi_235", "number": 235, "title": "Write the launch post, with the three screenshots and the short video from the design review"},
+                        {"kind": "blocks", "id": "wqi_236", "number": 236, "title": "Nightly builds for the Linux packages"},
+                        {"kind": "related", "id": "wqi_237", "number": 237, "title": "Get the Lighthouse score above 90"},
                     ])
                 } else { serde_json::json!([]) };
                 stand_in.work_item_fixture("wqi_231", serde_json::json!({
@@ -1759,6 +1765,24 @@ fn main() -> anyhow::Result<()> {
                     }));
                 })?;
                 cx.run_until_parked();
+            }
+            if screen.slug == "queue-item-hover-card" {
+                use gpui::{Modifiers, MouseMoveEvent, PlatformInput};
+                use kuvo::queue::ShotHoverPoint;
+                cx.update(|cx| cx.set_global(ShotHoverPoint { number: 234, point: Default::default() }));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, cx| {
+                    let point = cx.global::<ShotHoverPoint>().point.get().expect("the description's item chip");
+                    mouse(window, cx, PlatformInput::MouseMove(MouseMoveEvent {
+                        position: point, pressed_button: None, modifiers: Modifiers::default(),
+                    }));
+                })?;
+                cx.run_until_parked();
+                cx.advance_clock(std::time::Duration::from_millis(320));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.update(|cx| { cx.remove_global::<ShotHoverPoint>(); });
             }
             let image = cx.capture_screenshot(any)?;
             let name = format!("screens-{}-{}.png", screen.slug, if appearance.is_dark() { "dark" } else { "light" });

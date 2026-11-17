@@ -52,6 +52,7 @@ pub struct ConversationView {
     /// conversation's model again as it goes up.
     models_changed: Option<u64>,
     entries: Vec<Entry>,
+    chat_references: crate::queue::chat_references::ChatReferences,
     /// Each row's revision: a row is drawn again only once it's changed.
     revisions: Vec<u64>,
     list: ChatListState,
@@ -136,6 +137,7 @@ impl ConversationView {
             // (From the box's first word: a change heard before the first update counts too.)
             models_changed: Some(0),
             entries: Vec::new(),
+            chat_references: Default::default(),
             revisions: Vec::new(),
             list: ChatListState::new(0, cx),
             problem: None,
@@ -1320,6 +1322,7 @@ pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box:
 
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.chat_references.refresh(self.entries.iter().rev().flat_map(Entry::reference_text), &self.session, &self.client, self.live, self.list.clone(), cx);
         self.keep_focus(window, cx);
         // A bot's sessions' rows name their models as the composer's box offers them.
         let names = self.composer.read(cx).menu_models().into_iter().map(|model| (model.id, model.name)).collect();
@@ -1379,7 +1382,8 @@ impl Render for ConversationView {
                         quote: Rc::new(move |window, cx| quoter.update(cx, |this, cx| this.quote_message(&quote_key, window, cx))),
                     }
                 });
-                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, actions, cx)
+                let references = this.chat_references.chips(entry.reference_text(), &this.client, this.live, cx);
+                entries::render(ix, entry, &this.open, toggle, own, &around, &this.selection, &looks, actions, references, cx)
             });
             // One selection over all its messages: drag, double and triple click, shift-click, ⌘A
             // and ⌘C, and a right-click's Copy.

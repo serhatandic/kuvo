@@ -192,7 +192,7 @@ impl Cards {
                 .on_click(move |_, window, cx| {
                     open.update(cx, |page, cx| page.open_picture(picture.clone(), window, cx)).ok();
                 })
-                .child(img(thumb.clone()).size_full().object_fit(ObjectFit::Contain))
+                .child(img(thumb.clone()).size_full().rounded(px(8.)).object_fit(ObjectFit::Contain))
                 .child(tools).into_any_element();
         }
         if file.image {

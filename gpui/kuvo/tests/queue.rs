@@ -291,9 +291,10 @@ fn an_items_page_shows_what_the_box_says_of_it(cx: &mut TestAppContext) {
     assert_eq!(stand_in.seen_at("GET", "kuvo/work-queue/items/wqi_231").len(), 1);
 
     // Its title, that it's at work, its chips, how far it is, what it says, and what's kept with it.
-    for part in ["item-head", "item-state", "chip-status", "chip-priority", "chip-assignee", "chip-due", "chip-labels", "item-progress", "item-progress-value", "item-body", "item-session-ses_signup", "item-link-https://example.com/tone-guide", "item-file-before.png", "item-note-0", "item-note-2", "item-facts"] {
+    for part in ["item-head", "item-state", "chip-status", "chip-priority", "chip-assignee", "chip-due", "chip-labels", "item-body", "item-session-ses_signup", "item-link-https://example.com/tone-guide", "item-file-before.png", "item-note-0", "item-note-2", "item-facts"] {
         assert!(shown(cx, part), "{part}");
     }
+    assert!(!shown(cx, "item-progress"));
     let whole = page.read_with(cx, |page, _| page.whole().cloned().expect("read whole"));
     assert_eq!((whole.notes.len(), whole.files.len(), whole.links.len()), (3, 2, 2));
     // The newest note first.
@@ -1516,9 +1517,19 @@ fn queue_editor_kept_picture_opens_from_page_and_edit_and_uses_its_saved_name(cx
 #[gpui::test]
 fn queue_editor_link_item_sends_the_chosen_kind_and_target(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.work_item_fixture("wqi_231", json!({ "canLinkItems": true }), None);
+    stand_in.work_item_fixture("wqi_231", json!({
+        "canLinkItems": true,
+        "itemRelations": [{ "id": "wqi_234", "kind": "related", "title": "Dark mode for the settings page", "number": 234 }],
+    }), None);
     let (_workspace, _page, cx) = queue(cx, &stand_in);
     click(cx, "item-wqi_231");
+    let row = bounds(cx, "item-relation-0").unwrap();
+    assert_eq!(row.size.height, px(28.));
+    cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
     click(cx, "link-item");
     cx.simulate_input("#234");
     cx.run_until_parked();
@@ -1571,6 +1582,41 @@ fn queue_editor_item_page_renders_a_clickable_reference_chip(cx: &mut TestAppCon
     let (_workspace, page, cx) = queue(cx, &stand_in);
     click(cx, "item-wqi_231");
     assert!(!shown(cx, "item-chip-1"));
+    let tile = bounds(cx, "item-chip-234").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    assert!(stand_in.seen_at("GET", "kuvo/work-queue/items/wqi_234").is_empty());
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    assert!(!stand_in.seen_at("GET", "kuvo/work-queue/items/wqi_234").is_empty());
     click(cx, "item-chip-234");
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Item("wqi_234".into()));
+}
+
+#[gpui::test]
+fn chat_references_open_the_same_item_preview_and_page(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let text = "Please check #234 and #866666.";
+    stand_in.work_item_fixture("wqi_234", json!({ "owner": "ses_signup" }), None);
+    stand_in.work_queue_mention_fixture(text, json!([
+        { "start": 13, "end": 17, "number": 234 },
+        { "start": 22, "end": 29, "number": 866666 },
+    ]));
+    stand_in.add_message("ses_signup", json!({
+        "type": "user", "id": "msg-work-queue", "time": { "created": NOW }, "text": text,
+    }));
+    let (workspace, cx) = open(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, window, cx| workspace.open_read_at_once("ses_signup", window, cx));
+    cx.run_until_parked();
+    assert!(!shown(cx, "item-chip-866666"));
+    let tile = bounds(cx, "item-chip-234").unwrap();
+    cx.simulate_mouse_move(tile.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(320));
+    cx.run_until_parked();
+    assert!(shown(cx, "queue-item-hover-card"));
+    click(cx, "item-chip-234");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Queue);
+    assert!(shown(cx, "item-page"));
 }
