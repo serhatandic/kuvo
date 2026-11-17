@@ -41,6 +41,9 @@ use crate::sidebar::{FocusSearch, Line};
 use crate::panel::{self, Place, SidePanel, Tab};
 use crate::{NewSession, ShowChanges, ShowFiles, ToggleAppearance, TogglePanel, ToggleSidebar, areas, landing, sidebar, time, title_bar};
 
+#[path = "quick_search.rs"]
+mod quick_search;
+
 /// How long typing pauses before the box is asked to search conversations.
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 /// How many conversations a search shows.
@@ -336,6 +339,9 @@ pub struct Workspace {
     panel_width: Pixels,
     resizing: Option<(Pixels, Pixels)>,
     sidebar_drag: Option<SidebarDrag>,
+    quick_search: Option<quick_search::QuickSearch>,
+    /// Keep the bot strip beside a session opened with the compact sidebar's search.
+    session_with_bot_strip: bool,
     /// The area open, the other areas' sidebars (kept while hidden), and the accounts' rings.
     area: Area,
     areas: Vec<(Area, Entity<AreaView>)>,
@@ -440,6 +446,7 @@ impl Workspace {
                 Go::BotChat { bot, session, draft } => this.open_bot_chat(bot, session, draft.as_deref(), window, cx),
                 Go::Session(session) => this.open_session_now(session, window, cx),
                 Go::Sessions => this.show_area(Area::Sessions, window, cx),
+                Go::SearchBotsAndSessions => { this.open_quick_search(window, cx); }
                 Go::ReadComputers => {
                     if this._computers_follow.is_none() {
                         this.read_computers(cx);
@@ -514,6 +521,8 @@ impl Workspace {
             panel_width: panel::WIDTH,
             resizing: None,
             sidebar_drag: None,
+            quick_search: None,
+            session_with_bot_strip: false,
             area: Area::Sessions,
             areas,
             rings,
@@ -1963,22 +1972,32 @@ impl Workspace {
         self.find_task = None;
         self.finding = query.chars().count() >= SEARCHED_FROM;
         if self.finding {
-            let client = self.client.clone();
-            if self.live {
-                self.find_task = Some(cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(SEARCH_PAUSE).await;
-                    let asked = query.clone();
-                    let found = cx.background_executor().spawn(async move { client.search(&asked, SEARCH_MOST) }).await;
-                    this.update(cx, |this, cx| this.found(&query, found, cx)).ok();
-                }));
-            } else {
-                // (Tests and shots: at once, as the box would answer.)
-                let found = client.search(&query, SEARCH_MOST);
-                self.found(&query, found, cx);
-            }
+            self.find_task = self.search_conversations(query, Self::found, cx);
         }
         self.prune_session_popover(cx);
         cx.notify();
+    }
+
+    fn search_conversations(
+        &mut self,
+        query: String,
+        done: fn(&mut Self, &str, kuvo_box::Result<Vec<Found>>, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Option<Task<()>> {
+        let client = self.client.clone();
+        if self.live {
+            Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SEARCH_PAUSE).await;
+                let asked = query.clone();
+                let found = cx.background_executor().spawn(async move { client.search(&asked, SEARCH_MOST) }).await;
+                this.update(cx, |this, cx| done(this, &query, found, cx)).ok();
+            }))
+        } else {
+            // Tests and shots receive the stand-in's answer immediately.
+            let found = client.search(&query, SEARCH_MOST);
+            done(self, &query, found, cx);
+            None
+        }
     }
 
     /// What the box found for `query`, unless the search has changed since.
@@ -2005,6 +2024,10 @@ impl Workspace {
 
     /// Puts the keyboard in the sidebar's search.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar_shown() && sidebar::compact_bots(self.sidebar_width(window.viewport_size().width, cx)) {
+            self.open_quick_search(window, cx);
+            return;
+        }
         if self.area != Area::Sessions {
             self.show_area(Area::Sessions, window, cx);
         }
@@ -2189,6 +2212,7 @@ impl Workspace {
     }
 
     pub fn show_area(&mut self, area: Area, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_with_bot_strip = false;
         if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
         self.bring_out_sidebar(window);
@@ -2290,6 +2314,9 @@ impl Workspace {
 
     fn area_picked(&mut self, view: &Entity<AreaView>, window: &mut Window, cx: &mut Context<Self>) {
         let (area, picked) = view.read_with(cx, |view, _| (view.area(), view.selected().map(str::to_owned)));
+        if area == Area::Bots && self.area == Area::Sessions && self.session_with_bot_strip {
+            self.area = Area::Bots;
+        }
         if area == Area::Bots {
             self.restoring.bot = None;
         }
@@ -3312,13 +3339,18 @@ impl Workspace {
             || sidebar::preferred_width(crate::yours::sidebar_width(cx)),
             |drag| drag.width,
         );
-        sidebar::fit_width(preferred, viewport, self.area == Area::Bots)
+        sidebar::visible_width(sidebar::fit_width(preferred, viewport, self.can_show_bot_strip()))
+    }
+
+    fn can_show_bot_strip(&self) -> bool {
+        self.area == Area::Bots || (self.area == Area::Sessions && self.session_with_bot_strip)
     }
 
     fn end_sidebar_resize(&mut self, cx: &mut Context<Self>) {
         if let Some(drag) = self.sidebar_drag.take() {
-            if drag.width != drag.initial {
-                crate::yours::change(crate::yours::Change::SidebarWidth(f32::from(drag.width)), cx);
+            let width = sidebar::visible_width(drag.width);
+            if width != drag.initial {
+                crate::yours::change(crate::yours::Change::SidebarWidth(f32::from(width)), cx);
             }
             cx.notify();
         }
@@ -3453,9 +3485,10 @@ impl Render for Workspace {
             _ if self.restoring.session.is_some() => div().debug_selector(|| "restoring".into()).size_full().into_any_element(),
             _ => landing::render(self, window, cx),
         } };
-        let area_view = (!sessions).then(|| self.area_view(self.area).cloned()).flatten();
         let width = (self.sidebar_shown() && blocked.is_none()).then(|| self.sidebar_width(window.viewport_size().width, cx));
-        let compact = self.area == Area::Bots && width.is_some_and(sidebar::compact_bots);
+        let compact = self.can_show_bot_strip() && width.is_some_and(sidebar::compact_bots);
+        let sidebar_area = if compact { Area::Bots } else { self.area };
+        let area_view = self.area_view(sidebar_area).cloned();
         if let Some(view) = &area_view {
             view.update(cx, |view, cx| view.set_compact(compact, cx));
         }
@@ -3533,9 +3566,11 @@ impl Render for Workspace {
                     .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                         if event.pressed_button != Some(MouseButton::Left) {
                             this.end_sidebar_resize(cx);
-                        } else if let Some(drag) = &mut this.sidebar_drag {
+                        } else {
+                            let bots = this.can_show_bot_strip();
+                            let Some(drag) = &mut this.sidebar_drag else { return };
                             let width = drag.initial + event.position.x - drag.from;
-                            drag.width = sidebar::fit_width(width, window.viewport_size().width, this.area == Area::Bots);
+                            drag.width = sidebar::fit_width(width, window.viewport_size().width, bots);
                             cx.notify();
                         }
                     }))
@@ -3551,6 +3586,7 @@ impl Render for Workspace {
             }))
             .flex()
             .flex_col()
+            .relative()
             .size_full()
             .bg(c.background)
             .text_ui(TypeSize::Small)
@@ -3576,5 +3612,6 @@ impl Render for Workspace {
                         .children(panel),
                 ),
             )
+            .children(self.render_quick_search(cx))
     }
 }

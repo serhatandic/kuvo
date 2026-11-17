@@ -71,6 +71,7 @@ pub struct Picked;
 /// Somewhere the window is to go, asked from an area's page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Go {
+    SearchBotsAndSessions,
     /// A bot's own conversation, with `draft` in its composer where the box gave one.
     BotChat { bot: String, session: String, draft: Option<String> },
     /// One of the box's sessions.
@@ -640,7 +641,7 @@ impl AreaView {
         cx.notify();
     }
 
-    fn pick(&mut self, key: String, cx: &mut Context<Self>) {
+    pub(crate) fn pick(&mut self, key: String, cx: &mut Context<Self>) {
         self.selected = Some(key);
         self.show_section(cx);
         cx.emit(Picked);
@@ -772,10 +773,10 @@ impl Render for AreaView {
                     .id(SharedString::from(if self.compact { "bot-avatars".into() } else { format!("area-{}", self.area.slug()) }))
                     .size_full()
                     .overflow_y_scroll()
-                    .px(space::S2)
+                    .px(if self.compact { space::S1 } else { space::S2 })
                     .pt(space::S2)
                     .pb(space::S4)
-                    .when(self.compact, |d| d.flex().flex_col().items_center().gap(space::S1))
+                    .when(self.compact, |d| d.flex().flex_col().items_center().gap(space::S0_5))
                     .children(rows),
             )
             .when(dimmed, |d| d.child(div().id("area-sidebar-dim").debug_selector(|| "area-sidebar-dim".into()).absolute().inset_0().bg(crate::bots::dim(cx)).occlude()))
@@ -800,9 +801,9 @@ impl AreaView {
 
     fn bot_avatars(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let c = cx.theme().colors.clone();
-        let search = Button::icon_only("bot-avatar-search", kuvo_ui::IconName::Search, "Search Sessions")
+        let search = Button::icon_only("bot-avatar-search", kuvo_ui::IconName::Search, "Search bots and sessions")
             .icon_size(IconSize::Large)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::sidebar::FocusSearch), cx));
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(Go::SearchBotsAndSessions)));
         let mut rows = vec![search.into_any_element()];
         let Some(bots) = ready(&self.bots) else { return rows };
         for bot in &bots.bots {
@@ -816,18 +817,18 @@ impl AreaView {
             } else {
                 None
             };
-            let face = crate::bot_face::still_avatar(&bot.id, &bot.look, state, px(38.));
+            let face = crate::bot_face::still_avatar(&bot.id, &bot.look, state, COMPACT_FACE);
             let name = status.map_or_else(|| bot.name.clone(), |(words, _, _)| format!("{} · {words}", bot.name));
             let mark = status.map(|(_, color, selector)| {
-                div().debug_selector(move || selector.into()).absolute().bottom_0().right_0().size(px(10.)).rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
+                div().debug_selector(move || selector.into()).absolute().bottom(px(17.)).right(px(15.)).size(px(10.)).rounded(radius::PILL).border_1().border_color(c.sidebar).bg(color)
             });
             rows.push(self.avatar_row(format!("bot:{}", bot.id), name, face, mark, cx));
         }
         for there in bots.there() {
             let state = self.elsewhere_state(&there.computer);
             let face = there.look.as_ref().map_or_else(
-                || div().flex().items_center().justify_center().size(px(38.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).color(c.icon)).into_any_element(),
-                |look| crate::bot_face::still_avatar(&there.id, look, state, px(38.)),
+                || div().flex().items_center().justify_center().size(px(82.)).rounded(radius::PILL).bg(c.sunken).child(Icon::new(kuvo_ui::IconName::Bot).size(IconSize::Large).color(c.icon)).into_any_element(),
+                |look| crate::bot_face::still_avatar(&there.id, look, state, COMPACT_FACE),
             );
             rows.push(self.avatar_row(format!("elsewhere:{}", there.id), there.name, face, None, cx));
         }
@@ -847,8 +848,9 @@ impl AreaView {
             .flex_none()
             .items_center()
             .justify_center()
-            .size(px(56.))
-            .rounded(radius::NAV)
+            .w(COMPACT_FACE)
+            .h(px(100.))
+            .rounded(radius::CARD)
             .when(selected, |d| d.bg(fill))
             .hover(move |d| d.bg(fill))
             .focus_visible(move |d| d.shadow(kuvo_ui::button::focus_ring(ring)))
@@ -1236,6 +1238,7 @@ pub(crate) fn doing_parts(now: &BotNow, at: f64) -> Option<Doing> {
 /// A bot's face in the Bots sidebar, in points: its rows are this plus even padding above and
 /// below. Other places keep their own sizes (the header's 22, a mention's 16).
 const BOT_FACE: f32 = 40.;
+const COMPACT_FACE: Pixels = px(116.);
 
 /// A two-line row's words: its name over the line under it, set as the type ramp says
 /// (`TextRole::RowTitle` over `RowDetail`).

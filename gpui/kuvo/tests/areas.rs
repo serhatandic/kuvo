@@ -742,11 +742,15 @@ fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppCon
     assert_eq!(resizable_sidebar_width(cx), px(216.));
     assert!(bounds(cx, "bot-bot_mira").is_some());
     drag_sidebar(cx, -1.);
-    assert_eq!(resizable_sidebar_width(cx), px(215.));
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
     assert!(bounds(cx, "bot-bot_mira").is_none());
     assert!(bounds(cx, "bot-avatar-at-work").is_some());
     assert!(bounds(cx, "bot-avatar-needs-you").is_some());
     assert!(bounds(cx, "group-grp_launch").is_none());
+    let mira = bounds(cx, "bot-avatar-bot:bot_mira").unwrap();
+    let inbox = bounds(cx, "bot-avatar-bot:bot_inbox").unwrap();
+    assert!(mira.size.width >= px(110.));
+    assert!(inbox.top() - mira.bottom() <= px(2.));
     drag_sidebar(cx, -130.);
     assert_eq!(resizable_sidebar_width(cx), px(136.));
     click(cx, "bot-avatar-bot:bot_mira");
@@ -756,15 +760,48 @@ fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppCon
     assert!(bounds(cx, "area-sidebar").is_none());
     click(cx, "rail-bots");
     assert_eq!(resizable_sidebar_width(cx), px(136.));
-    click(cx, "bot-avatar-search");
-    assert_eq!(area(&workspace, cx), Area::Sessions);
-    assert!(bounds(cx, "sidebar-search").is_some());
-    assert_eq!(resizable_sidebar_width(cx), px(216.));
-    click(cx, "rail-bots");
-    assert_eq!(resizable_sidebar_width(cx), px(136.));
     drag_sidebar(cx, 80.);
     assert_eq!(resizable_sidebar_width(cx), px(216.));
     assert!(bounds(cx, "bot-bot_mira").is_some());
+}
+
+#[gpui::test]
+fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "rail-bots");
+    drag_sidebar(cx, -200.);
+    click(cx, "bot-avatar-search");
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+
+    cx.simulate_input("in");
+    assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox").is_some());
+    assert!(bounds(cx, "sidebar-search-result-ses_signup").is_some());
+    cx.simulate_keystrokes("escape");
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert_eq!(area(&workspace, cx), Area::Bots);
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+
+    click(cx, "bot-avatar-search");
+    cx.simulate_keystrokes("up down down enter");
+    assert_eq!(title(&workspace, cx).as_deref(), Some("Inbox Helper"));
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("redis");
+    click(cx, "sidebar-search-result-ses_limits");
+    assert_eq!(area(&workspace, cx), Area::Sessions);
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_limits"));
+    assert!(bounds(cx, "sidebar-quick-search").is_none());
+    assert_eq!(resizable_sidebar_width(cx), px(136.));
+    assert!(bounds(cx, "bot-avatar-search").is_some());
+
+    click(cx, "bot-avatar-search");
+    cx.simulate_input("zzzz");
+    assert!(bounds(cx, "sidebar-search-No matches.").is_some());
+    cx.simulate_keystrokes("enter");
+    assert!(bounds(cx, "sidebar-quick-search").is_some());
 }
 
 #[gpui::test]

@@ -176,6 +176,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "sidebar-long-computer", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "sidebar-wide", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "sidebar-narrow-bots", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
+    Screen { slug: "sidebar-search-results", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_results) },
+    Screen { slug: "sidebar-search-empty", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_search_empty) },
     Screen { slug: "titlebar-session-folded", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(sidebar_folded) },
     Screen { slug: "area-queue", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(queue) },
     Screen { slug: "area-computers", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
@@ -415,6 +417,16 @@ fn sidebar_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
 
 fn bots(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "bot:bot_mira", window, cx);
+}
+
+fn sidebar_search_results(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    workspace.open_quick_search(window, cx).update(cx, |field, cx| field.set_text("in", cx));
+}
+
+fn sidebar_search_empty(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bots(workspace, window, cx);
+    workspace.open_quick_search(window, cx).update(cx, |field, cx| field.set_text("zzzz", cx));
 }
 
 /// Bots' page view.
@@ -1405,7 +1417,7 @@ fn main() -> anyhow::Result<()> {
                 change(Change::TextSize(text_size), cx);
                 let width = match screen.slug {
                     "sidebar-wide" => 420.,
-                    "sidebar-narrow-bots" => 136.,
+                    "sidebar-narrow-bots" | "sidebar-search-results" | "sidebar-search-empty" => 136.,
                     _ => kuvo::sidebar::WIDTH,
                 };
                 change(Change::SidebarWidth(width), cx);

@@ -49,11 +49,16 @@ pub(crate) fn compact_bots(width: Pixels) -> bool {
     width < px(BOTS_COMPACT_BELOW)
 }
 
+pub(crate) fn visible_width(width: Pixels) -> Pixels {
+    if compact_bots(width) { px(MIN_WIDTH) } else { width }
+}
+
 /// How many of a project's sessions show before "Show more".
 pub const SHOWN: usize = 6;
 /// The key context of the list while the keyboard walks it, and of the search around its field.
 pub const CONTEXT: &str = "Sidebar";
 pub const SEARCH: &str = "SidebarSearch";
+pub(crate) const QUICK_SEARCH: &str = "SidebarQuickSearch";
 
 /// The keys the sidebar takes: the list's while it has the keyboard, and the search field's arrows,
 /// Return and Escape ahead of the field's own.
@@ -61,6 +66,8 @@ pub fn bind_keys(cx: &mut App) {
     let list = Some(CONTEXT);
     let search = format!("{SEARCH} > {}", kuvo_ui::text_field::CONTEXT);
     let search = Some(search.as_str());
+    let quick = format!("{QUICK_SEARCH} > {}", kuvo_ui::text_field::CONTEXT);
+    let quick = Some(quick.as_str());
     cx.bind_keys([
         KeyBinding::new("down", WalkNext, list),
         KeyBinding::new("up", WalkPrevious, list),
@@ -70,6 +77,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", WalkPrevious, search),
         KeyBinding::new("enter", WalkOpen, search),
         KeyBinding::new("escape", WalkLeave, search),
+        KeyBinding::new("down", WalkNext, quick),
+        KeyBinding::new("up", WalkPrevious, quick),
+        KeyBinding::new("enter", WalkOpen, quick),
+        KeyBinding::new("escape", WalkLeave, quick),
         KeyBinding::new("cmd-shift-f", FocusSearch, Some("Workspace")),
     ]);
 }
@@ -196,22 +207,9 @@ fn archived_lines(workspace: &Workspace) -> Vec<Line> {
 /// the box found the words in, less those found by name. When `archived_only` is on, only
 /// archived sessions show.
 fn found_lines(workspace: &Workspace, query: &str, archived_only: bool) -> Vec<Line> {
-    let listing = workspace.listing();
-    let named: Vec<String> = listing
-        .named(query)
-        .into_iter()
-        .filter(|id| listing.facts(id).is_some_and(|facts| facts.is_archived() == archived_only))
-        .collect();
+    let (named, matches) = matched_sessions(workspace.listing(), query, archived_only, workspace.finds());
     let searched = query.chars().count() >= SEARCHED_FROM;
-    let finds = workspace.finds();
-    let in_conversations: Vec<Line> = finds
-        .iter()
-        .filter(|found| {
-            !named.contains(&found.session)
-                && listing
-                    .facts(&found.session)
-                    .is_some_and(|facts| facts.is_archived() == archived_only)
-        })
+    let in_conversations: Vec<Line> = matches.into_iter()
         .map(|found| Line::Found { id: found.session.clone(), snippet: found.snippet.clone() })
         .collect();
     let mut lines = Vec::new();
@@ -234,6 +232,21 @@ fn found_lines(workspace: &Workspace, query: &str, archived_only: bool) -> Vec<L
         }
     }
     lines
+}
+
+/// The same title, project and conversation matches for both sidebar searches.
+pub(crate) fn matched_sessions<'a>(
+    listing: &Listing,
+    query: &str,
+    archived_only: bool,
+    finds: &'a [kuvo_box::search::Found],
+) -> (Vec<String>, Vec<&'a kuvo_box::search::Found>) {
+    let in_scope = |id: &str| listing.facts(id).is_some_and(|facts| facts.is_archived() == archived_only);
+    let named: Vec<_> = listing.named(query).into_iter().filter(|id| in_scope(id)).collect();
+    let conversations = finds.iter()
+        .filter(|found| !named.contains(&found.session) && in_scope(&found.session))
+        .collect();
+    (named, conversations)
 }
 
 pub fn render(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) -> AnyElement {
