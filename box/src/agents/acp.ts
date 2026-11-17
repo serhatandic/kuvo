@@ -241,8 +241,9 @@ export class AcpThread implements Thread {
   ) {}
 
   private async open(input: RunInput, hooks: TurnHooks) {
-    // (A close from now on stops this start: all but its own, below.)
+    // (A close from now on stops this start, as does a newer start.)
     const closes = this.closes
+    const opening = ++this.opens
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks)
     const subagents = await this.flavor.subagents?.(this.session.location.directory)
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...(subagents ? { subagents } : {}), ...(this.flavor.whole && fenceRules() ? { whole: true } : {}) }
@@ -262,7 +263,7 @@ export class AcpThread implements Thread {
     // Started again for another approval mode (the agent takes it as it starts), or an updated program.
     // (What it left going in the background ends with it: the next message says so.)
     if (this.rpc && !this.rpc.isClosed && this.tasks.size) this.cut.push(...this.taskWork())
-    this.close()
+    this.drop()
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
     const startedWith = JSON.stringify({ ...mode, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
     const launch = await this.flavor.command(mode)
@@ -289,9 +290,10 @@ export class AcpThread implements Thread {
             return undefined
           })
         : undefined
-      // Closed (its session closed, the bridge stopping) while it was being started: what its holder
-      // started already goes now, with its holder (its start fails once it has), and none is started.
-      if (this.closes !== closes + 1) {
+      // Closed (its session closed, the bridge stopping) while it was being started, or a newer start
+      // took its place: what its holder started already goes now, with its holder (its start fails
+      // once it has), and none is started.
+      if (this.closes !== closes || this.opens !== opening) {
         held?.stop()
         await held?.exited
         launch.onExit?.()
@@ -433,7 +435,7 @@ export class AcpThread implements Thread {
       }
     } catch (error) {
       // It couldn't get its session going: the next message starts it again.
-      if (this.rpc === rpc) this.close()
+      if (this.rpc === rpc) this.drop()
       throw error
     }
     return rpc
@@ -1193,7 +1195,7 @@ export class AcpThread implements Thread {
   /** It can't be asked to stop them one by one: it stops, and with it what it left going (the next message starts it again, going on with its conversation). */
   async stopBackgroundTasks() {
     if (!this.tasks.size || this.active) return
-    this.close()
+    this.drop()
   }
 
   /** (Where its output went is named, not read here: the agent can read it itself, and the bridge mustn't read for it what its sandbox hides.) */
@@ -1211,11 +1213,18 @@ export class AcpThread implements Thread {
     if (had) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
   }
 
-  /** How often it was closed: a start that a close came during isn't kept. */
+  /** How often it was closed, and started: a start that a close or a newer start came during isn't kept. */
   private closes = 0
+  private opens = 0
 
+  /** Stops it (its session closed or stopped, the bridge stopping): a start under way too. */
   close() {
     this.closes++
+    this.drop()
+  }
+
+  /** Stops the process it has now, which the next message starts again (a start under way goes on). */
+  private drop() {
     this.rpc?.kill()
     this.rpc = undefined
     this.leftRunning()

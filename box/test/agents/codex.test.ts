@@ -538,6 +538,8 @@ process.stdin.resume()
     // Stopped at once: its holder is starting it, and hasn't said it's ready.
     agent.shutdown()
     await expect(starting).rejects.toThrow("Codex stopped.")
+    // (Nothing of it outside the sandbox, which is off, any more: agents may use the vault again.)
+    expect(agent.outside()).toBe(false)
     const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : undefined
     if (pid) expect(() => process.kill(pid, 0)).toThrow()
     await until(() => heldIn(folder).every((record) => before.has(record.id)))

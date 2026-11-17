@@ -880,6 +880,8 @@ describe("Stopping an ACP agent", () => {
     await settled(id)
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed" })
     if (when === "its holder is still starting it") expect(outsideAsHeld).toBe(true)
+    // (And inside again, as nothing of it runs.)
+    expect(thread!.outside).toBe(false)
     for (const { pid } of received().filter((entry) => entry.argv)) expect(() => process.kill(pid, 0)).toThrow()
     await until(() => heldIn(folder).every((record) => before.has(record.id)))
   })
