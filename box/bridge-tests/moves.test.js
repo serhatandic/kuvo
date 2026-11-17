@@ -319,6 +319,7 @@ test("where something can go: each of your other computers", { timeout: 60_000 }
   assert.deepEqual(place, { key: lab.key, name: "lab", kind: "machine", ok: true });
   assert.equal(confirm.title, "Move “Trip plans” to lab?");
   assert.match(confirm.message, /conversation and wake-ups/);
+  assert.match(confirm.message, /sign-ins stay on Studio Mac/);
   assert.doesNotMatch(confirm.message, /A turn is running/);
   macEngine.active.add("ses_chat1");
   t.after(() => macEngine.active.delete("ses_chat1"));

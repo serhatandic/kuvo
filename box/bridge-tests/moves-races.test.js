@@ -1212,7 +1212,7 @@ test("asked whether it can run what's coming: not with its coding agents down, n
   assert.match(agents.message, /coding agents on this Mac aren’t running/);
   const signedOut = await answerTo("mov_chk4", { model: { providerID: "anthropic", id: "claude-opus-5-5" } });
   assert.equal(signedOut.ok, false);
-  assert.equal(signedOut.message, "Ada uses claude-opus-5-5, which needs a sign-in on this Mac. Sign in to it in Settings › Accounts there, or choose another model, then move Ada.");
+  assert.equal(signedOut.message, "Ada’s model needs a sign-in on this Mac. Sign in to it in Settings › Accounts there, or choose another model, then move Ada.");
   const fine = await answerTo("mov_chk5", { model: { providerID: "opencode", id: "big-pickle" } });
   assert.equal(fine.ok, true);
   // It keeps nothing of them: they're only questions.

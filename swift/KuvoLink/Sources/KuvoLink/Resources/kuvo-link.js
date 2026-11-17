@@ -36880,6 +36880,27 @@ init_text();
 import crypto42 from "node:crypto";
 import fs122 from "node:fs";
 import path126 from "node:path";
+
+// box/src/link/computer-name.ts
+init_text();
+init_home();
+init_link();
+init_known();
+init_state();
+function ownComputerName() {
+  let link;
+  try {
+    link = readLink();
+  } catch {}
+  const key = link ? ownKey(link) : undefined;
+  const named = !IS_MAC && link && key ? namedBoxes(link).find((box) => box.key === key)?.name : undefined;
+  return plainName(IS_MAC ? macLink.config?.name : plainName(named) || link?.name) || computerName2();
+}
+function computerInSentence(request) {
+  return request.fromApp === true && IS_MAC ? "this Mac" : ownComputerName();
+}
+
+// box/src/link/moves/move.ts
 init_files2();
 init_home();
 init_reach();
@@ -37375,11 +37396,11 @@ var say = {
   leftBoth: (name, place) => `${name} is on ${place} now, but couldn’t be let go of here, so it’s on both computers. Delete the one you don’t want.`,
   inProject: (name) => `${name} works in one of your projects, which stays where it is. Only a bot with a folder of its own can move.`,
   noAgents: (place) => `The coding agents on ${place} aren’t running. Try again once they are.`,
-  cantCarry: (name, why) => `${name} can’t move: ${why}.`,
+  cantCarry: (name) => `${name}’s conversation couldn’t be prepared for the move. Try again in a moment.`,
   agentNotThere: (name, agent, place) => `${name} talks with ${agent}, which isn’t installed on ${place}. Install it in Settings › Accounts there, then move ${name}.`,
   agentSignedOut: (name, agent, place) => `${name} talks with ${agent}, which isn’t signed in on ${place}. Sign in to it in Settings › Accounts there, then move ${name}.`,
   otherAccount: (name, agent, who, place) => `On ${place}, ${name} uses the ${agent} account signed in there${who}.`,
-  modelNotThere: (name, model, place) => `${name} uses ${model}, which needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
+  modelNotThere: (name, place) => `${name}’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
   notSame: (name) => `${name}’s conversation didn’t come out the same on the other computer, so it stayed here. Try again.`,
   background: (name, what) => `${name} has ${what} running. Wait for it to finish, or stop it, then move ${name}.`,
   onGoal: (name) => `${name} is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.`,
@@ -37626,7 +37647,7 @@ async function staysOf(kind, thing, what, signal) {
     stays.agent = true;
   return stays;
 }
-function question(kind, name, peer, place, stays, busy) {
+function question(kind, name, peer, place, source, stays, busy) {
   const words = [kind === "bot" ? "Its memory, files, wake-ups and conversation move with it." : kind === "group" ? "Its messages and meeting move with it. Its bots stay where they are." : "Its conversation and wake-ups move with it."];
   if (kind === "group" && peer.kind === "mac")
     words.push("The group runs while that Mac is on.");
@@ -37636,16 +37657,17 @@ function question(kind, name, peer, place, stays, busy) {
   if (stays?.startsOver)
     words.push(`${stays.startsOver} starts a new conversation there with what was said so far.`);
   if (stays?.agent)
-    words.push("A copy of the coding agent’s conversation stays here until a week after it first runs there.");
+    words.push(`A copy of the coding agent’s conversation stays on ${source} until a week after it first runs on ${place}.`);
   if (stays?.sessions)
-    words.push("Sessions it started stay here. It can still reach them from its new computer.");
+    words.push(`Sessions it started stay on ${source}. It can still reach them from ${place}.`);
   if (stays?.asks)
-    words.push("Its unanswered questions stay here.");
+    words.push(`Its unanswered questions stay on ${source}.`);
   if (stays?.goals)
-    words.push("Its proposed goals stay here.");
+    words.push(`Its proposed goals stay on ${source}.`);
   if (kind !== "group")
-    words.push("Vault items, integrations and browser sign-ins stay on this computer.");
-  words.push(kind === "group" ? "The group opens on the new computer after the move." : IS_MAC ? "The original goes to the Trash after the move." : "The original goes to Kuvo Code’s trash folder after the move.");
+    words.push(`Vault items, integrations and browser sign-ins stay on ${source}.`);
+  const trash = IS_MAC ? "the Trash" : "Kuvo Code’s trash folder";
+  words.push(kind === "group" ? "The group opens on the new computer after the move." : `The original goes to ${trash} on ${source}.`);
   const title = kind === "bot" ? `“${name}”` : name;
   return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
 }
@@ -37653,10 +37675,11 @@ function placesOf(kind, thing, what, stays, busy) {
   const moving = moveOf(thing) !== null;
   const own = ownKey(readLink() ?? {});
   const told = readPeerAgents(), reach = readReach();
+  const source = ownComputerName();
   return peersOf(readLink()).filter((peer) => peer.key !== own).map((peer) => {
     const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
     const not = moving ? [say.moving, note.moving] : what.why ? [what.why, what.note ?? what.why] : olderThanMoves(peer.key) || what.lane && olderThanCarrying(peer.key) ? [say.needsUpdate(name), note.needsUpdate] : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"] : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note.botsNotThere] : null;
-    return { key: peer.key, name, kind: peer.kind, ok: !not, ...not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, stays, busy) } };
+    return { key: peer.key, name, kind: peer.kind, ok: !not, ...not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, source, stays, busy) } };
   });
 }
 function olderThanMoves(key) {
@@ -37864,11 +37887,13 @@ async function carryOn(id) {
       throw new Refused(say.notPlain(record.name, odd));
     if (record.lane) {
       const packed = await carry(target, "pack", { root: record.sessions[0], into: path126.join(bundleOf(id), "carry"), most: MOST_BUNDLE }).catch((error) => {
-        const why = String(error?.message ?? error);
         const status = error?.status;
         if (status === 423)
           throw new Refused(say.working(record.name));
-        throw status === 413 ? new Refused(say.tooBig(record.name)) : new Refused(say.cantCarry(record.name, why));
+        if (status === 413)
+          throw new Refused(say.tooBig(record.name));
+        console.error("kuvo-link: a conversation couldn’t be packed for a move:", error);
+        throw new Refused(say.cantCarry(record.name));
       });
       digest = packed.digest;
       record.sessions = packed.sessions.map((each) => each.id);
@@ -37953,7 +37978,7 @@ async function checkHere(sender, given, id) {
     return answer({ ok: true });
   if (!lane) {
     const refused = await signInRefusal(model, target, wait).catch(() => null);
-    return answer(refused ? { ok: false, message: say.modelNotThere(name, model.id, place) } : { ok: true });
+    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
   }
   const kind = model.providerID.split("@")[0];
   if (kind === "auto")
@@ -37964,7 +37989,7 @@ async function checkHere(sender, given, id) {
   const ofKind = listed.filter((each) => typeof each?.id === "string" && each.id.split("@")[0] === kind);
   if (!ofKind.length) {
     const refused = await signInRefusal(model, readEngineFile(), wait).catch(() => null);
-    return answer(refused ? { ok: false, message: say.modelNotThere(name, model.id, place) } : { ok: true });
+    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
   }
   const agentName = ofKind[0].name ?? "its coding agent";
   if (!ofKind.some((each) => each.metadata?.installed))
@@ -42730,25 +42755,6 @@ init_directory();
 init_known();
 init_record();
 
-// box/src/link/computer-name.ts
-init_text();
-init_home();
-init_link();
-init_known();
-init_state();
-function ownComputerName() {
-  let link;
-  try {
-    link = readLink();
-  } catch {}
-  const key = link ? ownKey(link) : undefined;
-  const named = !IS_MAC && link && key ? namedBoxes(link).find((box) => box.key === key)?.name : undefined;
-  return plainName(IS_MAC ? macLink.config?.name : plainName(named) || link?.name) || computerName2();
-}
-function computerInSentence(request) {
-  return request.fromApp === true && IS_MAC ? "this Mac" : ownComputerName();
-}
-
 // box/src/shared/account-names.ts
 var short4 = {
   "claude-code": "Claude",
@@ -45210,7 +45216,7 @@ init_files2();
 init_home();
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d82ec2d2647e";
+var BRIDGE_VERSION = "55309699ad8d";
 
 // box/src/link/rehome/move.ts
 init_outside();

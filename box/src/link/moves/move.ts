@@ -17,6 +17,7 @@ import type { Target } from "../../shared/records";
 import type { Move, MoveConfirm, MoveKind, MovePlace, MoveStays } from "../../shared/routes/moves";
 import { plainName } from "../../shared/text";
 import { askGroups } from "../areas/groups";
+import { ownComputerName } from "../computer-name";
 import { botHere, MOVING, noteBotsChanged } from "../bots/here";
 import { signInRefusal } from "../bots/make";
 import { settleBot } from "../bots/tell";
@@ -100,11 +101,11 @@ export const say = {
   leftBoth: (name: string, place: string) => `${name} is on ${place} now, but couldn’t be let go of here, so it’s on both computers. Delete the one you don’t want.`,
   inProject: (name: string) => `${name} works in one of your projects, which stays where it is. Only a bot with a folder of its own can move.`,
   noAgents: (place: string) => `The coding agents on ${place} aren’t running. Try again once they are.`,
-  cantCarry: (name: string, why: string) => `${name} can’t move: ${why}.`,
+  cantCarry: (name: string) => `${name}’s conversation couldn’t be prepared for the move. Try again in a moment.`,
   agentNotThere: (name: string, agent: string, place: string) => `${name} talks with ${agent}, which isn’t installed on ${place}. Install it in Settings › Accounts there, then move ${name}.`,
   agentSignedOut: (name: string, agent: string, place: string) => `${name} talks with ${agent}, which isn’t signed in on ${place}. Sign in to it in Settings › Accounts there, then move ${name}.`,
   otherAccount: (name: string, agent: string, who: string, place: string) => `On ${place}, ${name} uses the ${agent} account signed in there${who}.`,
-  modelNotThere: (name: string, model: string, place: string) => `${name} uses ${model}, which needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
+  modelNotThere: (name: string, place: string) => `${name}’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
   notSame: (name: string) => `${name}’s conversation didn’t come out the same on the other computer, so it stayed here. Try again.`,
   background: (name: string, what: string) => `${name} has ${what} running. Wait for it to finish, or stop it, then move ${name}.`,
   onGoal: (name: string) => `${name} is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.`,
@@ -375,7 +376,7 @@ async function staysOf(kind: MoveKind, thing: string, what: Movable, signal?: Ab
   return stays;
 }
 
-function question(kind: MoveKind, name: string, peer: Peer, place: string, stays: MoveStays | undefined, busy: boolean): MoveConfirm {
+function question(kind: MoveKind, name: string, peer: Peer, place: string, source: string, stays: MoveStays | undefined, busy: boolean): MoveConfirm {
   const words = [kind === "bot" ? "Its memory, files, wake-ups and conversation move with it."
     : kind === "group" ? "Its messages and meeting move with it. Its bots stay where they are."
     : "Its conversation and wake-ups move with it."];
@@ -383,13 +384,13 @@ function question(kind: MoveKind, name: string, peer: Peer, place: string, stays
   if (busy) words.push("A turn is running. The move waits up to a minute for it to finish.");
   words.push(kind === "group" ? "The meeting pauses during the move." : "New messages and wake-ups wait during the move.");
   if (stays?.startsOver) words.push(`${stays.startsOver} starts a new conversation there with what was said so far.`);
-  if (stays?.agent) words.push("A copy of the coding agent’s conversation stays here until a week after it first runs there.");
-  if (stays?.sessions) words.push("Sessions it started stay here. It can still reach them from its new computer.");
-  if (stays?.asks) words.push("Its unanswered questions stay here.");
-  if (stays?.goals) words.push("Its proposed goals stay here.");
-  if (kind !== "group") words.push("Vault items, integrations and browser sign-ins stay on this computer.");
-  words.push(kind === "group" ? "The group opens on the new computer after the move."
-    : IS_MAC ? "The original goes to the Trash after the move." : "The original goes to Kuvo Code’s trash folder after the move.");
+  if (stays?.agent) words.push(`A copy of the coding agent’s conversation stays on ${source} until a week after it first runs on ${place}.`);
+  if (stays?.sessions) words.push(`Sessions it started stay on ${source}. It can still reach them from ${place}.`);
+  if (stays?.asks) words.push(`Its unanswered questions stay on ${source}.`);
+  if (stays?.goals) words.push(`Its proposed goals stay on ${source}.`);
+  if (kind !== "group") words.push(`Vault items, integrations and browser sign-ins stay on ${source}.`);
+  const trash = IS_MAC ? "the Trash" : "Kuvo Code’s trash folder";
+  words.push(kind === "group" ? "The group opens on the new computer after the move." : `The original goes to ${trash} on ${source}.`);
   const title = kind === "bot" ? `“${name}”` : name;
   return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
 }
@@ -398,6 +399,7 @@ function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays
   const moving = moveOf(thing) !== null;
   const own = ownKey(readLink() ?? {});
   const told = readPeerAgents(), reach = readReach();
+  const source = ownComputerName();
   return peersOf(readLink()).filter(peer => peer.key !== own).map(peer => {
     const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
     // Why not, and the same short: the thing's own reason first, then that computer's.
@@ -408,7 +410,7 @@ function placesOf(kind: MoveKind, thing: string, what: Movable, stays: MoveStays
       // A group chat goes to a machine only where all its bots live (to a Mac, they stay put).
       : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note.botsNotThere]
       : null;
-    return { key: peer.key, name, kind: peer.kind, ok: !not, ...(not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, stays, busy) }) };
+    return { key: peer.key, name, kind: peer.kind, ok: !not, ...(not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, source, stays, busy) }) };
   });
 }
 
@@ -608,11 +610,12 @@ async function carryOn(id: string): Promise<void> {
     if (odd) throw new Refused(say.notPlain(record.name, odd));
     if (record.lane) {
       const packed = await carry<Packed>(target, "pack", { root: record.sessions[0], into: path.join(bundleOf(id), "carry"), most: MOST_BUNDLE }).catch(error => {
-        const why = String((error as Error | null)?.message ?? error);
         const status = (error as { status?: number } | null)?.status;
         // (Its turn started again as it was packed: the bridge's 423.)
         if (status === 423) throw new Refused(say.working(record.name));
-        throw status === 413 ? new Refused(say.tooBig(record.name)) : new Refused(say.cantCarry(record.name, why));
+        if (status === 413) throw new Refused(say.tooBig(record.name));
+        console.error("kuvo-link: a conversation couldn’t be packed for a move:", error);
+        throw new Refused(say.cantCarry(record.name));
       });
       digest = packed.digest;
       record.sessions = packed.sessions.map(each => each.id);
@@ -700,7 +703,7 @@ async function checkHere(sender: MailSender, given: Record<string, unknown>, id:
   if (!model || given.kind === "group") return answer({ ok: true });
   if (!lane) {
     const refused = await signInRefusal(model, target, wait).catch(() => null);
-    return answer(refused ? { ok: false, message: say.modelNotThere(name, model.id, place) } : { ok: true });
+    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
   }
   // (Its agent's accounts there, by the provider they're all of: `claude-code`, `claude-code@<account>`.)
   const kind = model.providerID.split("@")[0]!;
@@ -712,7 +715,7 @@ async function checkHere(sender: MailSender, given: Record<string, unknown>, id:
   // Not a coding agent's: a model the engine's sign-ins give it, as for a bot of the engine's.
   if (!ofKind.length) {
     const refused = await signInRefusal(model, readEngineFile(), wait).catch(() => null);
-    return answer(refused ? { ok: false, message: say.modelNotThere(name, model.id, place) } : { ok: true });
+    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
   }
   const agentName = ofKind[0]!.name ?? "its coding agent";
   if (!ofKind.some(each => each.metadata?.installed)) return answer({ ok: false, message: say.agentNotThere(name, agentName, place) });
