@@ -774,7 +774,10 @@ fn resizable_sidebar_switches_to_avatars_below_the_threshold(cx: &mut TestAppCon
 #[gpui::test]
 fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.set_facts("ses_signup", |facts| facts["bot"] = serde_json::json!("bot_mira"));
+    stand_in.set_facts("ses_signup", |facts| {
+        facts["bot"] = serde_json::json!("bot_mira");
+        facts["title"] = serde_json::json!("Fix the sign-up form wiping on a taken email when the previous invitation has expired");
+    });
     let (workspace, cx) = open(cx, stand_in);
     click(cx, "rail-bots");
     drag_sidebar(cx, -200.);
@@ -787,6 +790,14 @@ fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut T
     assert!(bounds(cx, "sidebar-search-result-ses_signup").is_some());
     assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox-avatar").is_some());
     assert!(bounds(cx, "sidebar-search-result-ses_signup-avatar").is_some());
+    let leading = bounds(cx, "sidebar-search-leading").unwrap();
+    let input = bounds(cx, "sidebar-search-input").unwrap();
+    assert_eq!(leading.size.width, px(20.));
+    assert_eq!(input.left(), leading.right() + px(8.));
+    for selector in ["sidebar-search-result-bot:bot_inbox-leading", "sidebar-search-result-ses_signup-leading"] {
+        let row = bounds(cx, selector).unwrap();
+        assert_eq!((row.left(), row.size.width), (leading.left(), leading.size.width));
+    }
     cx.simulate_keystrokes("escape");
     assert!(bounds(cx, "sidebar-quick-search").is_none());
     assert_eq!(area(&workspace, cx), Area::Bots);
@@ -801,6 +812,8 @@ fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut T
     click(cx, "bot-avatar-search");
     cx.simulate_input("redis");
     assert!(bounds(cx, "sidebar-search-result-ses_limits-avatar").is_none());
+    let chat = bounds(cx, "sidebar-search-result-ses_limits-leading").unwrap();
+    assert_eq!((chat.left(), chat.size.width), (leading.left(), leading.size.width));
     click(cx, "sidebar-search-result-ses_limits");
     assert_eq!(area(&workspace, cx), Area::Sessions);
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_limits"));

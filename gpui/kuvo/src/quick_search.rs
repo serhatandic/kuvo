@@ -17,6 +17,20 @@ use super::Workspace;
 use crate::{area::Area, areas::Reading, sidebar};
 
 const PROMPT: &str = "Search bots and sessions";
+const LEADING: gpui::Pixels = px(20.);
+// Results have the list's padding plus NavRow's border and padding.
+const SEARCH_INSET: gpui::Pixels = px(17.);
+
+fn leading_slot(selector: String, icon: impl IntoElement) -> gpui::Div {
+    div()
+        .debug_selector(move || selector)
+        .size(LEADING)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .child(icon)
+}
 
 pub(super) struct QuickSearch {
     field: Entity<TextField>,
@@ -233,18 +247,19 @@ impl Workspace {
             };
             let selector = format!("sidebar-search-result-{key}");
             let leading = result.bot.as_deref().zip(bots);
-            let row = NavRow::new(selector.clone(), result.label);
-            let row = if let Some((bot, view)) = leading {
+            let leading = if let Some((bot, view)) = leading {
                 let avatar = format!("{selector}-avatar");
-                row.leading(
-                    div()
-                        .debug_selector(move || avatar)
-                        .child(view.read(cx).still_bot_avatar(bot, px(22.))),
-                )
+                div()
+                    .debug_selector(move || avatar)
+                    .child(view.read(cx).still_bot_avatar(bot, LEADING))
+                    .into_any_element()
             } else {
-                row.icon(icon)
+                Icon::new(icon)
+                    .size(kuvo_ui::IconSize::Nav)
+                    .into_any_element()
             };
-            let row = row
+            let row = NavRow::new(selector.clone(), result.label)
+                .leading(leading_slot(format!("{selector}-leading"), leading))
                 .trailing(
                     div()
                         .text_role(TextRole::Meta)
@@ -260,7 +275,7 @@ impl Workspace {
                 .child(row)
                 .children(result.snippet.map(|snippet| {
                     div()
-                        .pl(space::S8)
+                        .pl(px(1.) + space::S2 + LEADING + space::S2)
                         .pr(space::S2)
                         .pb(space::S1)
                         .truncate()
@@ -310,12 +325,21 @@ impl Workspace {
                         .flex_none()
                         .items_center()
                         .gap(space::S2)
-                        .px(space::S3)
+                        .px(SEARCH_INSET)
                         .h(px(44.))
                         .border_b_1()
                         .border_color(c.border)
-                        .child(Icon::new(IconName::Search))
-                        .child(div().flex_1().min_w_0().child(search.field.clone())),
+                        .child(leading_slot(
+                            "sidebar-search-leading".into(),
+                            Icon::new(IconName::Search),
+                        ))
+                        .child(
+                            div()
+                                .debug_selector(|| "sidebar-search-input".into())
+                                .flex_1()
+                                .min_w_0()
+                                .child(search.field.clone()),
+                        ),
                 )
                 .child(
                     div()
