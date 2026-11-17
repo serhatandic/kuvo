@@ -59,6 +59,10 @@ enum Notice {
         message: String,
         note: Option<String>,
     },
+    Tracking {
+        target: Target,
+        message: &'static str,
+    },
     Failed {
         choice: Choice,
         message: String,
@@ -68,7 +72,7 @@ enum Notice {
 impl Notice {
     fn target(&self) -> &Target {
         match self {
-            Self::Done { target, .. } => target,
+            Self::Done { target, .. } | Self::Tracking { target, .. } => target,
             Self::Failed { choice, .. } => &choice.target,
         }
     }
@@ -152,6 +156,19 @@ impl MovesView {
     }
 
     pub fn row_status(&self, target: &Target, cx: &App) -> Option<AnyElement> {
+        if self
+            .notices
+            .iter()
+            .any(|notice| matches!(notice, Notice::Tracking { target: item, .. } if item == target))
+        {
+            return Some(
+                div()
+                    .text_ui(TypeSize::Caption)
+                    .text_color(cx.theme().colors.text_muted)
+                    .child("Move status unavailable")
+                    .into_any_element(),
+            );
+        }
         if let Some(moving) = self.moving(target) {
             return Some(progress(moving, cx));
         }
@@ -253,7 +270,9 @@ impl MovesView {
                     source.name
                 )
             })
-            .unwrap_or_else(|| "Couldn’t load your computers. Reopen the menu to try again.".into());
+            .unwrap_or_else(|| {
+                "Couldn’t load your computers. Reopen the menu to try again.".into()
+            });
         let target_for_read = target.clone();
         let return_to = window.focused(cx);
         let heading = move || match &current {
@@ -395,21 +414,18 @@ impl MovesView {
         self.pending.insert(target.clone(), None);
         let (client, to) = (choice.client.clone(), choice.place.key.clone());
         if !self.live {
-            match client
-                .begin_move(target, &to)
-                .and_then(|accepted| client.move_receipt(&accepted.moving.id))
-            {
-                Ok(receipt) => {
-                    self.take_receipt(&choice, receipt, cx);
+            match client.begin_move(target, &to) {
+                Ok(accepted) => {
+                    let id = accepted.moving.id.clone();
+                    self.pending.insert(target.clone(), Some(accepted.moving));
+                    match client.move_receipt(&id) {
+                        Ok(receipt) => {
+                            self.take_receipt(&choice, receipt, cx);
+                        }
+                        Err(error) => self.tracking_problem(target, receipt_problem(&error).0, cx),
+                    }
                 }
-                Err(error) => self.failed(
-                    choice,
-                    words(
-                        &error,
-                        "Couldn’t start the move. Check the connection and try again.",
-                    ),
-                    cx,
-                ),
+                Err(error) => self.start_problem(choice, &error, cx),
             }
             return;
         }
@@ -436,48 +452,92 @@ impl MovesView {
                     id
                 }
                 Err(error) => {
-                    let message = words(
-                        &error,
-                        "Couldn’t confirm the move started. Check the connection and try again.",
-                    );
-                    this.update(cx, |view, cx| view.failed(choice, message, cx))
-                        .ok();
+                    this.update(cx, |view, cx| view.start_problem(choice, &error, cx)).ok();
                     return;
                 }
             };
-            let mut missing = 0;
+            let mut delay = Duration::from_secs(2);
             loop {
-                let (source, id) = (client.clone(), id.clone());
-                match worker.spawn(async move { source.move_receipt(&id) }).await {
-                    Ok(receipt) => {
-                        missing = 0;
-                        if !matches!(
-                            this.update(cx, |view, cx| view.take_receipt(&choice, receipt, cx)),
-                            Ok(true)
-                        ) {
-                            break;
+                let (source, receipt_id) = (client.clone(), id.clone());
+                let result = worker.spawn(async move { source.move_receipt(&receipt_id) }).await;
+                let again = this.update(cx, |view, cx| {
+                    // An in-flight read may arrive after dismissal or after a later move started.
+                    if !matches!(view.pending.get(&target), Some(Some(moving)) if moving.id == id) {
+                        return false;
+                    }
+                    match result {
+                        Ok(receipt) => {
+                            delay = Duration::from_secs(2);
+                            view.clear_tracking_problem(&target, cx);
+                            view.take_receipt(&choice, receipt, cx)
+                        }
+                        Err(error) => {
+                            let (message, retry) = receipt_problem(&error);
+                            view.tracking_problem(&target, message, cx);
+                            delay = (delay * 2).min(Duration::from_secs(60));
+                            retry
                         }
                     }
-                    Err(error) if error.status() == Some(404) => {
-                        // The source can be restoring a held group between removing the move and
-                        // writing its result. Give it a few reads before reporting a lost receipt.
-                        missing += 1;
-                        if missing == 5 {
-                            let message = words(
-                                &error,
-                                "Couldn’t read the move’s result. Check where it is and try again.",
-                            );
-                            this.update(cx, |view, cx| view.failed(choice, message, cx))
-                                .ok();
-                            break;
-                        }
-                    }
-                    // A lost connection doesn't change the outcome. Keep looking for the receipt.
-                    Err(_) => {}
+                });
+                if !matches!(again, Ok(true)) {
+                    break;
                 }
-                worker.timer(Duration::from_secs(2)).await;
+                worker.timer(delay).await;
+                if !matches!(this.update(cx, |view, _| matches!(view.pending.get(&target), Some(Some(moving)) if moving.id == id)), Ok(true)) {
+                    break;
+                }
             }
         }));
+        cx.notify();
+    }
+
+    fn start_problem(&mut self, choice: Choice, error: &Error, cx: &mut Context<Self>) {
+        if error
+            .refusal()
+            .is_some_and(|refusal| (400..500).contains(&refusal.status))
+        {
+            self.failed(
+                choice,
+                words(
+                    error,
+                    "The source computer declined the move. Check the connection and try again.",
+                ),
+                cx,
+            );
+        } else {
+            self.tracking_problem(&choice.target, "Kuvo couldn’t confirm that the move started. Check both computers before trying again.", cx);
+        }
+    }
+
+    fn tracking_problem(&mut self, target: &Target, message: &'static str, cx: &mut Context<Self>) {
+        if self.notices.iter().any(|notice| matches!(notice, Notice::Tracking { target: item, message: old } if item == target && *old == message)) {
+            return;
+        }
+        self.clear_tracking_problem(target, cx);
+        self.notices.push(Notice::Tracking {
+            target: target.clone(),
+            message,
+        });
+        cx.notify();
+    }
+
+    fn clear_tracking_problem(&mut self, target: &Target, cx: &mut Context<Self>) {
+        let count = self.notices.len();
+        self.notices.retain(
+            |notice| !matches!(notice, Notice::Tracking { target: item, .. } if item == target),
+        );
+        if self.notices.len() != count {
+            cx.notify();
+        }
+    }
+
+    fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        if let Some(Notice::Tracking { target, .. }) = self.notices.pop()
+            && let Some(Some(moving)) = self.pending.remove(&target)
+        {
+            self.remove_progress(&moving.id);
+        }
+        self.retrying = None;
         cx.notify();
     }
 
@@ -604,6 +664,34 @@ impl MovesView {
     }
 }
 
+/// A transport problem says nothing about the outcome. Refusals requiring user action and
+/// unknown receipts stop the automatic reads; a lost connection is retried more slowly.
+fn receipt_problem(error: &Error) -> (&'static str, bool) {
+    match error {
+        Error::NotRunning(_) | Error::Unreachable(_) => {
+            return ("Kuvo lost the connection to the source computer. It will check again.", true);
+        }
+        Error::NeedsUpdating { .. } => {
+            return ("Update Kuvo on the source computer, then check the move there.", false);
+        }
+        _ => {}
+    }
+    match error.status() {
+        Some(401 | 403) => (
+            "This app no longer has access to the source computer. Check the move there.",
+            false,
+        ),
+        Some(404) => (
+            "The source computer no longer has this move’s receipt. Check where it is.",
+            false,
+        ),
+        _ => (
+            "Kuvo couldn’t read the move’s status. It will check again.",
+            true,
+        ),
+    }
+}
+
 fn words(error: &Error, fallback: &str) -> String {
     error
         .refusal()
@@ -714,27 +802,35 @@ impl Render for MovesView {
                         "move-done",
                         message.clone(),
                         note.clone(),
-                        Button::new("move-open", label).on_click(cx.listener(
+                        Some(Button::new("move-open", label).on_click(cx.listener(
                             move |_, _, _, cx| {
                                 cx.emit(OpenMoved {
                                     computer: computer.clone(),
                                     target: target.clone(),
                                 });
                             },
-                        )),
+                        ))),
                     )
                 }
+                Notice::Tracking { message, .. } => (
+                    "move-tracking",
+                    "Move status unavailable".into(),
+                    Some((*message).into()),
+                    None,
+                ),
                 Notice::Failed { choice, message } => {
                     let choice = choice.clone();
                     (
                         "move-failed",
                         "Couldn’t move".into(),
                         Some(message.clone()),
-                        Button::new("move-again", "Try Again")
-                            .loading(self.retrying.is_some())
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.retry(choice.clone(), window, cx);
-                            })),
+                        Some(
+                            Button::new("move-again", "Try Again")
+                                .loading(self.retrying.is_some())
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.retry(choice.clone(), window, cx);
+                                })),
+                        ),
                     )
                 }
             };
@@ -772,12 +868,10 @@ impl Render for MovesView {
                                 .ghost()
                                 .size(ButtonSize::Small)
                                 .on_click(cx.listener(|view, _, _, cx| {
-                                    view.notices.pop();
-                                    view.retrying = None;
-                                    cx.notify();
+                                    view.dismiss_notice(cx);
                                 })),
                         )
-                        .child(action.size(ButtonSize::Small)),
+                        .children(action.map(|action| action.size(ButtonSize::Small))),
                 )
         });
 

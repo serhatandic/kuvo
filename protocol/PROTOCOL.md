@@ -911,9 +911,10 @@ A client asks the box it lives on once, and watches; the move goes on with no cl
 - `POST kuvo/moves {kind, id, to, receipt: true}` uses the same checks and move, and answers as soon
   as it is recorded with `202 {move}`. Read `GET kuvo/moves/receipt?id=…` on the source with that
   move's ID. It gives `200 {state: "moving", move}`, `{state: "done", move, message, note?}`, or
-  `{state: "failed", message}`. Results are kept for ten minutes. `404 {message}` means the source
-  no longer has a result for that receipt. The move routes give `move.progress` in words for the
-  current step or for a computer that's gone quiet, alongside the copy's byte counts.
+  `{state: "failed", message}`. Results are kept for 90 days. A confirmed move with source cleanup
+  pending is done and carries a note about cleanup. `404 {message}` means the source no longer has
+  a result for that receipt. The move routes give `move.progress` in words for the current step or
+  for a computer that's gone quiet, alongside the copy's byte counts.
 - `GET kuvo/moves` → `200 {moves: [Move], away: [session]}`, and `GET kuvo/moves/events`, the same
   as a line now and each time it changes. `Move = {id, kind, thing, name, from, to, role, stage,
   sessions, place?, sent?, size?, waiting?}`: `from` and `to` are boxes' keys; `role`, whether this box is
@@ -1028,10 +1029,10 @@ until it's answered:
 5. The box it leaves settles and reads it again, its queues too. Anything new, and it all goes again
    (from 1, three tries; then 409, `busy`). With a coding agent, a `digest` that isn't what it sent
    takes it back (409), and so does one that changed here since it was packed (it goes again).
-6. It notes the switch, and sends `switch` → `switched`: the box it went to lets its wake-ups go (as
-   they were), starts a group chat (`activate`), tells a bot what it is (as
-   `kuvo/bots/<id>/arrived` does), and lets a queue that wasn't paused go on (one you stopped
-   stays stopped, with what waits for it, until Resume there).
+6. It records the switch request and sends `switch`. The destination records its ownership before
+   letting wake-ups go (as they were), starting a group chat (`activate`), telling a bot what it is (as
+   `kuvo/bots/<id>/arrived` does), and resuming a queue that wasn't paused (one you stopped
+   stays stopped, with what waits for it, until Resume there). It answers `switched` after activation.
 7. Then the box it left lets the original go: its conversation saved in its folder (or
    `moved-<id>` in the box's folder) as `conversation.json`, its conversations deleted with their
    queues (what waited for them on this box went with them), a bot's own
@@ -1053,36 +1054,31 @@ back before then, what's here is the one: the older copy in the trash goes, and 
 The sessions it started aren't part of it: they stay on the computer they're on, and nothing here
 touches them, nor a memory folder one of them still uses.
 
-Each move's steps are taken one at a time on each box, in the order they come. The box it goes to
-sets a copy up once, whatever parts come again, and lets go of what it set up if setting it up
-fails. It keeps how each move that came to it ended, a dropped one for a week and a switched one
-for a year: a `switch` is answered `switched`
-only for a copy it has whole or switched to already, and `dropped` for any other (one it let go
-of, never set up, or doesn't know), and the box it left then goes on with its original, as it was.
-Before the switch, anything that goes wrong takes it back: the box it leaves sends `drop` →
-`dropped` (the copy there goes: its conversations, keys and folder, a group chat released) and
-goes on as it was. `dropped` comes as soon as the copy there is marked to go, so the box it left
-never waits on it: it's never switched to from then on, and what its engine or group chats can't
-let go of now (down) is kept held there (nothing reaches it), and let go of again each minute (after a week, each
-hour, said once in the log; never forgotten while any of it's here); offered again meanwhile, it's
-`refused`, saying an earlier copy couldn't be let go of yet. A group chat that
-can't go on again as it's taken back (its group chats down) is started each minute until it does,
-and as a box starts, a group chat held there that no move under way holds goes on. After it, only forward. Each box keeps its moves in `run/moves/<id>.json` (and
-the bundle beside it), so a move cut short by a restart carries on: one that switched finishes, one
-that didn't is taken back. Letting the original go after `switched` is tried again each minute
-until it's done (its engine was down); its engine, up, refusing to give its conversation to keep ten
-times, it goes on here as well, said in the move's 409 (two copies, never none). Before the switch, the other computer quiet about it for
-ten minutes (from when a step was first sent, whatever goes again) takes it back (503); a `drop` never answered is given up after a day (the copy there
-goes by itself after a week). A `switch` with no answer either way for ten minutes turns into a
-`drop`, sent until it's answered: `switched` (it did switch) and the original goes, `dropped` and
-it goes on here; the box it leaves never lets its original go without `switched`. A held copy no
-box asks about for a week goes. One thing moves once at a time, whoever asks (a lock in
-`run/moves`), and a move taken back keeps no bundle. A peer gone from your computers for five
-minutes (not one left out a moment as they're read again) ends its moves: what's here goes back as
-it was (a copy that came, or an original, switching or not), and only one that heard `switched`
-finishes. So a peer removed after it switched but before its `switched` came leaves the original
-going on here as well as the copy there: two copies, never none. As a box starts, a `moving` hold no move of its own made (a released Mac's move cut
-short) is lifted.
+Each move's steps are taken one at a time on each computer. New transfers agree on the durable
+switch protocol in the `offer` and `ready` messages (`safeSwitch: true`). Both computers must speak
+it before the source sends the bundle.
+
+1. The source holds its original while the destination sets up a held copy. Before requesting a
+   switch, the source records that ownership is now uncertain. It sends `switch {safeSwitch: true}`
+   and keeps the original held while awaiting the destination's decision.
+2. The destination records its decision to own the copy before activating the group, queues or
+   wake-ups. It resumes activation after a restart. Committed copies are protected against
+   `drop`, age limits and peer removal, including while activation is unfinished.
+3. Once activation completes, the destination records and sends `switched`. It keeps the decision
+   indefinitely, so it can answer again even if the source was offline for years. A late or
+   repeated offer cannot replace that copy.
+4. The source retires its original permanently on `switched`. Backup and cleanup are retried
+   separately. If they are blocked, the receipt reports success with cleanup pending. Source
+   sessions are only deleted after the backup is recorded.
+
+Before the source requests the switch, a failed transfer can go back to the original. Its failure
+is recorded before releasing the hold, and any held copy at the destination is dropped. A
+destination that durably records that it never switched answers `dropped {neverSwitched: true}`.
+That proof is the only way a source that has requested a switch can resume the original. Unknown
+moves give no ownership decision. An unanswered switch is sent again, and removing the computer
+does not release the hold. Legacy records which might contain an already activated copy are
+preserved until ownership can be reconciled. A pre-switch drop that cannot finish keeps the copy
+held while cleanup is retried. One thing moves once at a time, whoever asks.
 
 ### Agents' tools
 

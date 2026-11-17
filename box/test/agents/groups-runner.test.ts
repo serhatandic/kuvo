@@ -689,6 +689,33 @@ describe("a group chat on a machine", () => {
     expect(engine.requests.some((request) => request.method === "DELETE" && request.path === "/api/session/ses_seatA")).toBe(true)
   })
 
+  test("a moved group stays held if its activation record cannot be saved", () => {
+    const { groups, store } = runner()
+    const chat = group()
+    groups.put(chat, [], "held", false)
+    const save = store.saveGroup.bind(store)
+    store.saveGroup = () => { throw new Error("Disk failed during activation") }
+    expect(() => groups.activate(chat.id)).toThrow("Disk failed during activation")
+    expect(groups.get(chat.id)?.status).toBe("held")
+    store.saveGroup = save
+    expect(groups.activate(chat.id)).toBe(true)
+    expect(JSON.parse(readFileSync(join(root, "groups", chat.id, "group.json"), "utf8")).status).toBe("active")
+  })
+
+  test("a retired group remains held and can retry release if moving its folder fails", () => {
+    const { groups, store } = runner()
+    const chat = group()
+    groups.put(chat, [], "held", false)
+    const trash = store.trash.bind(store)
+    store.trash = () => { throw new Error("Trash could not be reached") }
+    expect(() => groups.release(chat.id)).toThrow("Trash could not be reached")
+    expect(groups.get(chat.id)?.status).toBe("held")
+    store.trash = trash
+    expect(groups.release(chat.id)).toBe(true)
+    expect(groups.get(chat.id)).toBeUndefined()
+    expect(existsSync(join(root, "groups", chat.id))).toBe(false)
+  })
+
   test("its routes: the list, a chat that's here already, one that's moving", async () => {
     const { groups, store } = runner()
     const call = (method: string, parts: string[], body: unknown = {}) => groupRoutes(groups, store, method, parts, async () => body)

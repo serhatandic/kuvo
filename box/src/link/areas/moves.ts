@@ -6,7 +6,7 @@ import { isObject } from "../../shared/json";
 import type { Move, MoveKind, MovePlaces, MoveReceipt, Moves } from "../../shared/routes/moves";
 import { plainName } from "../../shared/text";
 import { followed } from "../follow";
-import { beginMove, placesFor, readOutcome, startMove } from "../moves/move";
+import { beginMove, confirmedOutcome, placesFor, readOutcome, startMove } from "../moves/move";
 import { movesElsewhere } from "../moves/elsewhere";
 import { awaySessions, listedMoves, moveFollowers, movedAway, readMove, shownMove } from "../moves/records";
 import { peersOf } from "../peers/known";
@@ -45,9 +45,11 @@ export async function* moveReceiptRoute(context: RouteContext): AsyncGenerator<A
   const { request, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
   const id = new URLSearchParams(request.path.split("?")[1] ?? "").get("id") ?? "";
-  const answer = readOutcome(id);
+  const record = readMove(id);
+  const answer = record?.role === "from" && record.failed
+    ? { ok: false as const, message: record.failed }
+    : readOutcome(id) ?? (record?.role === "from" && record.stage === "finishing" ? confirmedOutcome(record, record.cleanupPending !== false) : null);
   if (answer && !answer.ok) return yield* json(200, { state: "failed", message: answer.message } satisfies MoveReceipt);
-  const record = answer ? null : readMove(id);
   const move = answer?.move ?? (record ? shownMove(record) : null);
   if (!move || move.role !== "from") {
     return yield* json(404, { message: "The move’s result isn’t available. Check where it is before trying again." });

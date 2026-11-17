@@ -11,6 +11,7 @@ import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
 import { readLink } from "../state";
 import { whatDeleteTakes } from "./deletes";
+import { readMoves } from "../moves/records";
 import { botHere } from "./here";
 import type { ToldAgents } from "../../shared/records";
 import type { BotElsewhere, BotLook, HeldEdit, RefusedEdit } from "../../shared/routes/bots";
@@ -45,13 +46,15 @@ export function botsElsewhere(link: LinkState | null = readLink(), told: Record<
       if (!other || heard(peer) > heard(other)) latest.set(agent.id!, peer);
     }
   }
+  const retired = new Map(readMoves().filter(move => move.kind === "bot" && move.role === "from" && move.stage === "finishing").map(move => [move.thing, move.to]));
   const listed: ListedElsewhere[] = [];
   for (const peer of peers) {
     const computer = shownName(peer);
     // Where its deleted bots' folders go, as it said; one that hasn't (from before it did) is said both ways.
     const trash = told[peer.key]?.trash;
     for (const agent of bots(peer)) {
-      if (latest.get(agent.id!)?.key !== peer.key || botHere(agent.id)) continue;
+      const destination = retired.get(agent.id!);
+      if (destination ? destination !== peer.key : (latest.get(agent.id!)?.key !== peer.key || botHere(agent.id))) continue;
       // (Listed once by each computer; one that names a bot twice is told once.)
       latest.delete(agent.id!);
       listed.push({

@@ -340,9 +340,10 @@ const bare = which => ({ moves: [], away: [] });
 
 test("a Claude Code bot moves with its conversation and memory, and comes back the same", { timeout: 120_000 }, async t => {
   signal = t.signal;
-  const places = await ask("GET", "kuvo/moves/places?kind=bot&id=bot_ada");
-  assert.equal(places.status, 200);
-  assert.equal(places.json.places[0].ok, true, JSON.stringify(places.json));
+  await eventually(async () => {
+    const places = await ask("GET", "kuvo/moves/places?kind=bot&id=bot_ada");
+    return places.status === 200 && places.json.places[0]?.ok === true;
+  });
   const before = hash(ada.file);
 
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: "bot_ada", to: machine.key });

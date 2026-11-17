@@ -312,7 +312,7 @@ export async function deleteSession(engine: Target, id: string): Promise<void> {
   try {
     await call(engine, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait());
   } catch (error) {
-    if ((error as { status?: number } | null)?.status !== 404 && !/404|not found/i.test(String((error as Error | null)?.message ?? error))) throw error;
+    if ((error as { status?: number } | null)?.status !== 404) throw error;
   }
 }
 

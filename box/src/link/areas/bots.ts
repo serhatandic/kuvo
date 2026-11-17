@@ -93,7 +93,7 @@ function botsWithNow(machine?: string) {
   const counts = botsNowHere();
   const at = Date.now();
   // A bundle can have its bot folder in place before the source tells this computer to start it.
-  const held = new Set(readMoves().filter(move => move.role === "to" && move.kind === "bot").map(move => move.thing));
+  const held = new Set(readMoves().filter(move => move.kind === "bot" && (move.role === "to" || move.stage === "finishing")).map(move => move.thing));
   const bots = listBots(machine).filter(bot => !held.has(bot.id));
   keepOnly(bots.map(bot => bot.id));
   return bots.map(bot => ({ ...bot, now: nowOf(bot.id, counts[bot.id], bot, at) }));

@@ -202,7 +202,7 @@ test("written after it was packed (a wake-up, a letter): it's noticed, and it al
       digests.push(await digestOf(late.session));
       // The first time it's written to as it goes, once it's been read for sending.
       if (offers === 1) fs.appendFileSync(late.file, '{"type":"assistant","late":true}\n');
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
@@ -228,7 +228,7 @@ for (const [what, bot, change] of [["renamed", () => named, { title: "Renamed on
       offers++;
       digests.push(await digestOf(session));
       if (offers === 1) assert.equal((await asks("PATCH", `/api/session/${session}`, change)).status, 200);
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
@@ -249,14 +249,14 @@ test("written to again and again: it stays where it is, as it was", async () => 
       digests.push(await digestOf(always.session));
       fs.appendFileSync(always.file, '{"type":"assistant"}\n');
       wrote = fs.readFileSync(always.file, "utf8");
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id, hash: move.hash, digest: digests.at(-1) });
     }
     if (move.op === "switch") assert.fail("it never switches to a copy that isn't the same");
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: always.bot, to: labKey });
   assert.equal(moved.status, 409);
@@ -267,13 +267,13 @@ test("written to again and again: it stays where it is, as it was", async () => 
 test("what's in place there isn't what was sent: taken back, and nothing's let go here", async () => {
   const wrote = fs.readFileSync(wrong.file, "utf8");
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id, hash: move.hash, digest: "not-the-same" });
     }
     if (move.op === "switch") assert.fail("it never switches to a copy that isn't the same");
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: wrong.bot, to: labKey });
   assert.equal(moved.status, 409);
@@ -285,8 +285,8 @@ test("the other computer quiet for good as it's sent: taken back, nothing half d
   const wrote = fs.readFileSync(quiet.file, "utf8");
   // It takes the offer, then is never heard from again.
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moving = ask("POST", "kuvo/moves", { kind: "bot", id: quiet.bot, to: labKey });
   await until(() => {
@@ -334,7 +334,7 @@ test("what came doesn't match what it says it is: nothing's placed, and what was
 test("a conversation with something in it that isn't a plain file can't be packed: it's said so, and it stays", async () => {
   const wrote = fs.readFileSync(linked.file, "utf8");
   script = move => {
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "bot", id: linked.bot, to: labKey });
   assert.equal(moved.status, 409);
@@ -399,7 +399,7 @@ const leftHere = () => {
 };
 const moveAway = async ({ bot, session }) => {
   script = async move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id, hash: move.hash, digest: await digestOf(session) });

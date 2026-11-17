@@ -169,7 +169,7 @@ test("a copy that couldn't be set up as it arrived leaves the original here as i
   // Lab takes the parts, says it arrived, and at once that setting it up failed (both on their
   // way before this box had read either); it let its copy go, so a switch is answered dropped.
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) {
@@ -177,7 +177,7 @@ test("a copy that couldn't be set up as it arrived leaves the original here as i
         say({ op: "failed", id: move.id, message: "Its disk is full." });
       }
     }
-    if (move.op === "switch") say({ op: "dropped", id: move.id });
+    if (move.op === "switch") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_race1", to: peerKey });
   assert.equal(moved.status, 409, JSON.stringify(moved.json));
@@ -187,12 +187,12 @@ test("a copy that couldn't be set up as it arrived leaves the original here as i
 test("a switch the other computer can't honour (it let its copy go) leaves the original here", async () => {
   chat("ses_race2");
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id });
     }
-    if (move.op === "switch") say({ op: "dropped", id: move.id });
+    if (move.op === "switch") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_race2", to: peerKey });
   assert.equal(moved.status, 409);
@@ -212,7 +212,7 @@ test("parts that come twice set a copy up once; a part after the switch changes 
   const bytes = fs.readFileSync(bundle);
   const hash = crypto.createHash("sha256").update(bytes).digest("base64url");
   const id = "mov_in1";
-  await say({ op: "offer", id, kind: "chat", thing: "ses_in1", name: "“Groceries”", size: bytes.length, hash, wasPaused: true, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing: "ses_in1", name: "“Groceries”", size: bytes.length, hash, wasPaused: true, from: peerKey });
   await until(() => told.some(move => move.id === id && move.op === "ready"));
   const part = { op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") };
   // The same part twice at once (its `got` was lost, and it was sent again).
@@ -223,7 +223,7 @@ test("parts that come twice set a copy up once; a part after the switch changes 
   // Held until the switch: not this box's yet.
   assert.deepEqual((await ask("GET", "kuvo/moves")).json.away, ["ses_in1"]);
   engine.sessions.get("ses_in1").replies = [{ id: "msg_in1last", type: "assistant", time: { created: 1 } }];
-  await say({ op: "switch", id });
+  await say({ op: "switch", safeSwitch: true, id });
   assert.ok(told.some(move => move.id === id && move.op === "switched"));
   // What it came with, noted: only what's after it is its running here.
   assert.equal(JSON.parse(fs.readFileSync(path.join(movesFolder, "ended.json"), "utf8"))[id]?.last, "msg_in1last");
@@ -233,7 +233,7 @@ test("parts that come twice set a copy up once; a part after the switch changes 
   assert.equal(engine.imports, 1);
   assert.deepEqual(underWay((await ask("GET", "kuvo/moves")).json), { moves: [], away: [] });
   // And a switch again (its answer was lost): switched still.
-  await say({ op: "switch", id });
+  await say({ op: "switch", safeSwitch: true, id });
   assert.equal(told.filter(move => move.id === id && move.op === "switched").length, 2);
 });
 
@@ -261,7 +261,7 @@ test("a part its relay connection didn't take (closing as it was sent) goes agai
     script = move => {
       if (move.op === "offer") {
         takesParts = false;
-        say({ op: "ready", id: move.id });
+        say({ op: "ready", safeSwitch: true, id: move.id });
       }
       if (move.op === "part") {
         say({ op: "got", id: move.id, i: move.i });
@@ -290,7 +290,7 @@ test("every part on its way lost at once (the relay dropped them all) goes again
   const lost = new Set();
   let losing = true;
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       if (losing) return void lost.add(move.i);
       say({ op: "got", id: move.id, i: move.i });
@@ -310,10 +310,10 @@ test("every part on its way lost at once (the relay dropped them all) goes again
   assert.equal(moved.status, 200, JSON.stringify(moved.json));
 });
 
-test("a step for a move this box doesn't have is answered dropped, never switched", async () => {
-  await say({ op: "switch", id: "mov_nothere1" });
+test("a step for a move this box doesn't have gives no ownership proof", async () => {
+  await say({ op: "switch", safeSwitch: true, id: "mov_nothere1" });
   await say({ op: "drop", id: "mov_nothere2" });
-  assert.deepEqual(told.filter(move => move.id?.startsWith("mov_nothere")).map(move => move.op), ["dropped", "dropped"]);
+  assert.deepEqual(told.filter(move => move.id?.startsWith("mov_nothere")).map(move => move.op), []);
 });
 
 // A bundle lab packs for a chat it moves here: its conversations, and its wake-ups' folder.
@@ -340,7 +340,7 @@ test("a copy whose setting up fails partway leaves nothing here: none of its con
   const { bytes, hash } = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }, { info: { id: "ses_part1sub", parentID: thing, title: "Sub" }, messages: [] }], { "wakes.json": "[]" });
   engine.refuse = "ses_part1sub";
   const id = "mov_part1";
-  await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === id && move.op === "failed"));
   engine.refuse = null;
@@ -352,7 +352,7 @@ test("a copy whose setting up fails partway leaves nothing here: none of its con
 test("the other computer going quiet partway: it's taken back after a while, and the original goes on here", async () => {
   chat("ses_quiet1");
   // Lab says it's ready, then nothing more (it went away).
-  script = move => { if (move.op === "offer") say({ op: "ready", id: move.id }); };
+  script = move => { if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id }); };
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_quiet1", to: peerKey });
   await until(() => told.slice(before).some(move => move.op === "part"));
@@ -372,7 +372,7 @@ test("the other computer going quiet partway: it's taken back after a while, and
 test("what another computer offers over one that lives here is refused, and what lives here stays as it is", async () => {
   chat("ses_here1");
   const { bytes, hash } = bundleFor("ses_here1", [{ info: { id: "ses_here1", title: "Not yours" }, messages: [] }]);
-  await say({ op: "offer", id: "mov_over1", kind: "chat", thing: "ses_here1", name: "“Trip plans”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_over1", kind: "chat", thing: "ses_here1", name: "“Trip plans”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   const answer = told.find(move => move.id === "mov_over1");
   assert.equal(answer.op, "refused");
   assert.match(answer.message, /already/);
@@ -383,7 +383,7 @@ test("what another computer offers over one that lives here is refused, and what
 test("a copy that brings a link (to somewhere else on this computer) isn't set up", async () => {
   const thing = "ses_link1";
   const { bytes, hash } = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }], { "wakes.json": "[]" }, { home: os.homedir() });
-  await say({ op: "offer", id: "mov_link1", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_link1", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_link1", hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_link1" && move.op === "failed"));
   assert.match(told.find(move => move.id === "mov_link1" && move.op === "failed").message, /a link/);
@@ -395,7 +395,7 @@ test("a copy whose links only seem to stay in its folder, one through another, i
   // folder (one there: refused for where it goes, not for going nowhere).
   const thing = "ses_link2";
   const { bytes, hash } = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }], { "wakes.json": "[]", "e/notes.txt": "x" }, { "d/L": "../e", A: "d/L/../../move.json" });
-  await say({ op: "offer", id: "mov_link2", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_link2", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_link2", hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_link2" && (move.op === "failed" || move.op === "arrived")));
   assert.match(told.find(move => move.id === "mov_link2" && move.op === "failed")?.message ?? "it was set up", /a link/);
@@ -405,9 +405,9 @@ test("a copy whose links only seem to stay in its folder, one through another, i
 test("a move under way from one computer can't be taken over by another", async () => {
   const thing = "ses_one1";
   const { bytes, hash } = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }]);
-  await say({ op: "offer", id: "mov_one1", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_one1", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   assert.equal(told.find(move => move.id === "mov_one1")?.op, "ready");
-  await link.takeMoveMail(studio, { op: "offer", id: "mov_one2", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: studio.key });
+  await link.takeMoveMail(studio, { op: "offer", safeSwitch: true, id: "mov_one2", kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: studio.key });
   assert.equal(told.find(move => move.id === "mov_one2")?.op, "refused");
   await link.takeMoveMail(studio, { op: "drop", id: "mov_one1" });
   assert.deepEqual((await ask("GET", "kuvo/moves")).json.moves.map(move => move.id), ["mov_one1"], "lab's move is as it was");
@@ -421,7 +421,7 @@ test("a copy on its way when this box starts again goes on from the parts it had
   assert.ok(bytes.length > 30_000 && bytes.length <= 60_000, `${bytes.length} bytes`);
   const id = "mov_restart1";
   const part = i => ({ op: "part", id, hash, i, of: 2, d: bytes.subarray(i * 30_000, (i + 1) * 30_000).toString("base64url") });
-  await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say(part(0));
   // This box starts again; the other sends the part it had no answer for.
   link.forgetMovesInMemory();
@@ -437,7 +437,7 @@ test("one that keeps getting messages while it moves goes again with them, and a
   script = move => {
     if (move.op === "offer") {
       offers += 1;
-      say({ op: "ready", id: move.id });
+      say({ op: "ready", safeSwitch: true, id: move.id });
     }
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
@@ -447,7 +447,7 @@ test("one that keeps getting messages while it moves goes again with them, and a
         say({ op: "arrived", id: move.id });
       }
     }
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
   const moved = await ask("POST", "kuvo/moves", { kind: "chat", id: "ses_busy1", to: peerKey });
   assert.equal(moved.status, 409);
@@ -464,7 +464,7 @@ test("while it moves, what waits for it stays as it is: a Remove, an Undo or a R
   // Asked to change it as its copy arrives there, then the copy there fails.
   let tried = null;
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) tried = Promise.all([
@@ -524,39 +524,40 @@ function recordOf(thing) {
 // Lab answers each step as a box would, and switch with `onSwitch` (nothing: it's gone quiet).
 function labAnswers(onSwitch) {
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id });
     }
-    if (move.op === "switch" && onSwitch) say({ op: onSwitch, id: move.id });
-    if (move.op === "drop") say({ op: "dropped", id: move.id });
+    if (move.op === "switch" && onSwitch) say({ op: onSwitch, ...(onSwitch === "dropped" ? { neverSwitched: true } : {}), id: move.id });
+    if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id });
   };
 }
 
-test("the other computer removed just as it was told to switch: the original stays here, as it was", async () => {
+test("removing a destination after its switch acknowledgement was lost keeps the source held", async () => {
   chat("ses_gone1");
   labAnswers(null);
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_gone1", to: peerKey });
   await until(() => told.slice(before).some(move => move.op === "switch"));
-  // Lab goes from your computers (removed, or just left out as they're read again).
+  const { id } = recordOf("ses_gone1");
   link.writeLink({ macPeers: [studio] });
-  let moved;
   try {
     const now = Date.now();
     link.keepMoving(now);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(recordOf("ses_gone1")?.stage, "switching", "left out a moment: nothing changes");
-    assert.ok(engine.sessions.has("ses_gone1"));
-    // Gone a while: it never heard `switched`, so the original goes on here.
     link.keepMoving(now + 6 * 60_000);
-    moved = await asked;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(recordOf("ses_gone1")?.stage, "switching");
+    assert.ok(engine.sessions.has("ses_gone1"));
+    // A reply from an older peer that lost its record can't free the original.
+    await link.takeMoveMail(lab, { op: "dropped", id });
+    assert.equal(recordOf("ses_gone1")?.stage, "switching");
   } finally {
     link.writeLink({ macPeers: [lab, studio] });
   }
-  assert.equal(moved.status, 409, JSON.stringify(moved.json));
-  await asItWas("ses_gone1");
+  await say({ op: "switched", id });
+  assert.equal((await asked).status, 200);
+  assert.ok(!engine.sessions.has("ses_gone1"));
 });
 
 test("a drop that comes while a copy's being set up waits for it, then lets all of it go", async () => {
@@ -566,7 +567,7 @@ test("a drop that comes while a copy's being set up waits for it, then lets all 
   let release;
   engine.hold = new Promise(resolve => { release = resolve; });
   const id = "mov_slow1";
-  await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   const settingUp = say({ op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => engine.holding);
   // Lab takes it back now (it stopped hearing from this box), as its conversation comes in here.
@@ -593,24 +594,27 @@ test("a switch heard while this box's engine is down: the original goes once it'
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_fin1", to: peerKey });
   await until(() => recordOf("ses_fin1")?.stage === "finishing" && engine.refused > refused);
   assert.ok(engine.sessions.has("ses_fin1"));
+  const moved = await asked;
+  assert.equal(moved.status, 200, JSON.stringify(moved.json));
+  assert.match(moved.json.note, /original is retired/);
   engine.down = false;
   link.keepMoving(Date.now() + 2 * 60_000);
   await until(() => !engine.sessions.has("ses_fin1") && !recordOf("ses_fin1"));
-  const moved = await asked;
-  assert.equal(moved.status, 200, JSON.stringify(moved.json));
   assert.deepEqual((await ask("GET", "kuvo/moves")).json.moves, []);
 });
 
-test("a switch never answered: it asks the other computer to let its copy go, and the original goes on here", async () => {
+test("an unanswered switch asks for the decision again and only a durable drop proof releases it", async () => {
   chat("ses_ask1");
   labAnswers(null);
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_ask1", to: peerKey });
   await until(() => told.slice(before).some(move => move.op === "switch"));
+  const { id } = recordOf("ses_ask1");
   link.keepMoving(Date.now() + 11 * 60_000);
-  await until(() => told.slice(before).some(move => move.op === "drop"));
-  const moved = await asked;
-  assert.equal(moved.status, 409);
+  assert.equal(told.slice(before).filter(move => move.op === "switch").length, 2);
+  assert.ok(!told.slice(before).some(move => move.op === "drop"));
+  await say({ op: "dropped", neverSwitched: true, id });
+  assert.equal((await asked).status, 409);
   await asItWas("ses_ask1");
 });
 
@@ -636,7 +640,7 @@ test("a switch asked again long after it switched (the other computer asleep all
   try { kept = JSON.parse(fs.readFileSync(file, "utf8")); } catch {}
   kept.mov_long1 = { as: "switched", at: Date.now() - 8 * 24 * 3600_000 };
   fs.writeFileSync(file, JSON.stringify(kept));
-  await say({ op: "switch", id: "mov_long1" });
+  await say({ op: "switch", safeSwitch: true, id: "mov_long1" });
   assert.deepEqual(told.filter(move => move.id === "mov_long1").map(move => move.op), ["switched"]);
 });
 
@@ -645,14 +649,14 @@ test("a copy whose conversations aren't its own is refused, and what lives here 
   // One that names a conversation of this box's as its subagent's.
   const thing = "ses_tie1";
   const one = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }, { info: { id: "ses_mine2", parentID: thing, title: "Not yours" }, messages: [] }]);
-  await say({ op: "offer", id: "mov_tie1", kind: "chat", thing, name: "“Notes”", size: one.bytes.length, hash: one.hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_tie1", kind: "chat", thing, name: "“Notes”", size: one.bytes.length, hash: one.hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_tie1", hash: one.hash, i: 0, of: 1, d: one.bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_tie1" && move.op === "failed"));
   assert.equal(engine.sessions.get("ses_mine2")?.title, "Trip plans", "this box's own is still here, as it was");
   assert.ok(!engine.sessions.has(thing));
   // And one whose conversation isn't the chat it says it moves.
   const other = bundleFor("ses_tie2", [{ info: { id: "ses_else1", title: "Else" }, messages: [] }]);
-  await say({ op: "offer", id: "mov_tie2", kind: "chat", thing: "ses_tie2", name: "“Notes”", size: other.bytes.length, hash: other.hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_tie2", kind: "chat", thing: "ses_tie2", name: "“Notes”", size: other.bytes.length, hash: other.hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_tie2", hash: other.hash, i: 0, of: 1, d: other.bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_tie2" && move.op === "failed"));
   assert.ok(!engine.sessions.has("ses_else1"));
@@ -664,7 +668,7 @@ test("a copy whose conversations aren't its own is refused, and what lives here 
   ]) {
     const thing = exports[0].info.id;
     const shape = bundleFor(thing, exports);
-    await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: shape.bytes.length, hash: shape.hash, wasPaused: false, from: peerKey });
+    await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: shape.bytes.length, hash: shape.hash, wasPaused: false, from: peerKey });
     await say({ op: "part", id, hash: shape.hash, i: 0, of: 1, d: shape.bytes.toString("base64url") });
     await until(() => told.some(move => move.id === id && move.op === "failed"));
     assert.match(told.find(move => move.id === id && move.op === "failed").message, /aren’t its own/);
@@ -682,7 +686,7 @@ test("a copy whose move.json is a link to a file here isn't set up, and nothing 
   assert.equal(spawnSync("tar", ["-czf", file, "-C", packed, "move.json"]).status, 0);
   const bytes = fs.readFileSync(file);
   const hash = crypto.createHash("sha256").update(bytes).digest("base64url");
-  await say({ op: "offer", id: "mov_sym1", kind: "chat", thing: "ses_sym1", name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_sym1", kind: "chat", thing: "ses_sym1", name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_sym1", hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_sym1" && move.op === "failed"));
   const said = told.find(move => move.id === "mov_sym1" && move.op === "failed").message;
@@ -713,11 +717,11 @@ test("offered again as a copy before it is still being set up: that one goes onc
   const first = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }]);
   let release;
   engine.hold = new Promise(resolve => { release = resolve; });
-  await say({ op: "offer", id: "mov_again1", kind: "chat", thing, name: "“Notes”", size: first.bytes.length, hash: first.hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_again1", kind: "chat", thing, name: "“Notes”", size: first.bytes.length, hash: first.hash, wasPaused: false, from: peerKey });
   const settingUp = say({ op: "part", id: "mov_again1", hash: first.hash, i: 0, of: 1, d: first.bytes.toString("base64url") });
   await until(() => engine.holding);
   // Lab started again, took that one back, and moves it once more.
-  const again = say({ op: "offer", id: "mov_again2", kind: "chat", thing, name: "“Notes”", size: first.bytes.length, hash: first.hash, wasPaused: false, from: peerKey });
+  const again = say({ op: "offer", safeSwitch: true, id: "mov_again2", kind: "chat", thing, name: "“Notes”", size: first.bytes.length, hash: first.hash, wasPaused: false, from: peerKey });
   // An offer that doesn't wait for the first copy is answered before it's all here.
   for (let tries = 0; tries < 2000 && !told.some(move => move.id === "mov_again2"); tries++) await new Promise(resolve => setImmediate(resolve));
   engine.hold = null;
@@ -729,10 +733,12 @@ test("offered again as a copy before it is still being set up: that one goes onc
   await say({ op: "drop", id: "mov_again2" });
 });
 
-test("a switch never answered, then asked to let go, answered switched: the original goes, as it would have", async () => {
+test("a repeated switch answers with the destination’s earlier decision", async () => {
   chat("ses_late1");
   labAnswers(null);
-  script = (answer => move => (move.op === "drop" ? say({ op: "switched", id: move.id }) : answer(move)))(script);
+  const first = script;
+  let switches = 0;
+  script = move => move.op === "switch" && ++switches === 2 ? say({ op: "switched", id: move.id }) : first(move);
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_late1", to: peerKey });
   await until(() => told.slice(before).some(move => move.op === "switch"));
@@ -751,9 +757,10 @@ test("letting the original go, cut short partway: tried again, it keeps the whol
   const refused = engine.refused;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_keep1", to: peerKey });
   await until(() => recordOf("ses_keep1")?.stage === "finishing" && !engine.sessions.has("ses_keep1sub") && engine.refused > refused);
+  assert.equal((await asked).status, 200);
   engine.downFor = null;
   link.keepMoving(Date.now() + 2 * 60_000);
-  assert.equal((await asked).status, 200);
+  await until(() => !recordOf("ses_keep1"));
   const trash = path.join(home, "trash");
   const kept = fs.readdirSync(trash).map(each => path.join(trash, each, "ses_keep1", "conversation.json")).find(each => fs.existsSync(each));
   assert.ok(kept, "kept in the trash");
@@ -772,7 +779,7 @@ test("a copy whose folder is a link (to a folder here) isn't set up, and that fo
   const bytes = fs.readFileSync(file);
   const hash = crypto.createHash("sha256").update(bytes).digest("base64url");
   const id = "mov_dirlink1";
-  await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === id && move.op === "failed"));
   assert.match(told.find(move => move.id === id && move.op === "failed").message, /a link/);
@@ -781,7 +788,7 @@ test("a copy whose folder is a link (to a folder here) isn't set up, and that fo
   assert.deepEqual(underWay((await ask("GET", "kuvo/moves")).json), { moves: [], away: [] });
 });
 
-test("letting the original go, its engine refusing again and again to give its conversation to keep: it goes on here too, and says so", async () => {
+test("letting the original go, its engine refusing the backup repeatedly: it stays retired and reports cleanup pending", async () => {
   chat("ses_stuck1");
   labAnswers(null);
   const answers = script;
@@ -794,19 +801,25 @@ test("letting the original go, its engine refusing again and again to give its c
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_stuck1", to: peerKey });
   try {
     await until(() => recordOf("ses_stuck1")?.stage === "finishing" && engine.exportsRefused > 0);
+    const moved = await asked;
+    assert.equal(moved.status, 200);
+    assert.match(moved.json.note, /original is retired/);
     // Tried again each minute, a while.
     for (let tries = 0; tries < 12 && recordOf("ses_stuck1"); tries++) {
       const refused = engine.exportsRefused;
-      link.keepMoving(Date.now() + 61_000);
-      await until(() => engine.exportsRefused > refused || !recordOf("ses_stuck1"));
+      await until(() => {
+        link.keepMoving(Date.now() + 61_000);
+        return engine.exportsRefused > refused || !recordOf("ses_stuck1");
+      });
     }
-    assert.equal(recordOf("ses_stuck1"), null, "it doesn't stay half gone for ever");
-    const moved = await asked;
-    assert.equal(moved.status, 409);
-    assert.match(moved.json.message, /on both computers/);
-    await asItWas("ses_stuck1");
+    assert.equal(recordOf("ses_stuck1")?.stage, "finishing");
+    assert.ok(engine.sessions.has("ses_stuck1"), "the source is not deleted without a backup");
   } finally {
     engine.exportFails = null;
+    await until(() => {
+      link.keepMoving(Date.now() + 61_000);
+      return !recordOf("ses_stuck1");
+    });
   }
 });
 
@@ -818,7 +831,7 @@ test("a copy whose setting up gets stuck (its engine not answering) is given up 
   engine.hold = new Promise(() => {});
   const id = "mov_stuckin1";
   try {
-    await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+    await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
     const settingUp = say({ op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") });
     await until(() => engine.holding);
     // Half an hour and more later.
@@ -837,7 +850,7 @@ test("a copy whose setting up gets stuck (its engine not answering) is given up 
 test("one over 1 GB is refused, saying so plainly, and nothing of it comes", async () => {
   script = () => {};
   const id = "mov_big1";
-  await say({ op: "offer", id, kind: "chat", thing: "ses_big1", name: "“Videos”", size: 2 * 1024 ** 3, hash: "a".repeat(64), wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing: "ses_big1", name: "“Videos”", size: 2 * 1024 ** 3, hash: "a".repeat(64), wasPaused: false, from: peerKey });
   const answer = told.find(move => move.id === id);
   assert.equal(answer.op, "refused");
   assert.equal(answer.message, "“Videos” is more than 1 GB, too big to move to another computer, so it stays where it is.");
@@ -847,7 +860,7 @@ test("one over 1 GB is refused, saying so plainly, and nothing of it comes", asy
 test("what's moving says which computer it's going to by name, as your computers call it", async () => {
   chat("ses_named1");
   // Lab gets ready, and then nothing more: it stays on its way.
-  script = move => { if (move.op === "offer") say({ op: "ready", id: move.id }); };
+  script = move => { if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id }); };
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_named1", to: peerKey });
   await until(() => told.slice(before).some(move => move.op === "part"));
@@ -856,7 +869,7 @@ test("what's moving says which computer it's going to by name, as your computers
   assert.equal(listed.stage, "copying");
   assert.ok(listed.size > 0 && listed.sent <= listed.size, "how much of it went");
   // Taken back (lab quiet for long enough), its copy there let go.
-  script = move => { if (move.op === "drop") say({ op: "dropped", id: move.id }); };
+  script = move => { if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id }); };
   link.keepMoving(Date.now() + 11 * 60_000);
   assert.equal((await asked).status, 503);
   await asItWas("ses_named1");
@@ -890,7 +903,7 @@ async function withoutLooks(run) {
 test("a move whose other computer went quiet says it's waiting for it, until it speaks again, and is still taken back after a while", () => withoutLooks(async stopLooks => {
   chat("ses_waits1");
   // Lab gets ready, and then nothing more.
-  script = move => { if (move.op === "offer") say({ op: "ready", id: move.id }); };
+  script = move => { if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id }); };
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_waits1", to: peerKey });
   await until(() => told.slice(before).some(move => move.op === "part"));
@@ -909,35 +922,36 @@ test("a move whose other computer went quiet says it's waiting for it, until it 
   link.keepMoving(Date.now());
   assert.equal((await listed()).waiting, undefined);
   // Quiet for long enough: taken back, as before.
-  script = move => { if (move.op === "drop") say({ op: "dropped", id: move.id }); };
+  script = move => { if (move.op === "drop") say({ op: "dropped", neverSwitched: true, id: move.id }); };
   link.keepMoving(Date.now() + 11 * 60_000);
   assert.equal((await asked).status, 503);
   await asItWas("ses_waits1");
 }));
 
-test("a switch the other computer went quiet on says it's waiting for it, also once it's asked to let its copy go instead", () => withoutLooks(async stopLooks => {
+test("an unanswered switch keeps waiting for the other computer's decision", () => withoutLooks(async stopLooks => {
   chat("ses_waits2");
-  // Lab takes it all, and then says nothing more: not to the switch, nor to letting its copy go.
+  // Lab takes it all, and then says nothing more about the switch.
   labAnswers(null);
-  script = (answer => move => { if (move.op !== "drop") answer(move); })(script);
   const before = told.length;
   const asked = ask("POST", "kuvo/moves", { kind: "chat", id: "ses_waits2", to: peerKey });
-  await until(() => told.slice(before).some(move => move.op === "switch"));
+  await until(() => recordOf("ses_waits2"));
+  const { id } = recordOf("ses_waits2");
+  const mailForMove = () => told.slice(before).filter(move => move.id === id);
+  await until(() => mailForMove().some(move => move.op === "switch"));
   stopLooks();
   const listed = async () => (await ask("GET", "kuvo/moves")).json.moves.find(move => move.thing === "ses_waits2");
   const at = Date.now();
   link.keepMoving(at + 2 * 60_000);
   assert.equal((await listed()).waiting, true);
-  // Asked to let its copy go instead (it may have switched): still waiting for lab.
   link.keepMoving(at + 11 * 60_000);
-  await until(() => told.slice(before).some(move => move.op === "drop"));
+  assert.ok(mailForMove().filter(move => move.op === "switch").length >= 2);
+  assert.ok(!mailForMove().some(move => move.op === "drop"));
   link.keepMoving(at + 12 * 60_000);
   const waiting = await listed();
   assert.equal(waiting.stage, "switching");
   assert.equal(waiting.waiting, true);
-  // Back, it says it let its copy go: the original goes on here.
-  labAnswers(null);
-  link.keepMoving(at + 14 * 60_000);
+  // Back, it proves it never activated: the original goes on here.
+  await say({ op: "dropped", id: waiting.id, neverSwitched: true });
   assert.equal((await asked).status, 409);
   await asItWas("ses_waits2");
 }));
@@ -947,7 +961,7 @@ test("a copy coming here whose other computer went quiet before all of it came s
   const thing = "ses_waits3";
   const { bytes, hash } = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }], { "wakes.json": "[]" });
   const id = "mov_waits3";
-  await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await until(() => told.some(move => move.id === id && move.op === "ready"));
   stopLooks();
   const listed = async () => (await ask("GET", "kuvo/moves")).json.moves.find(move => move.id === id);
@@ -978,7 +992,7 @@ test("a copy all here and set up, whose other computer went quiet before it swit
   const thing = "ses_waits4";
   const { bytes, hash } = bundleFor(thing, [{ info: { id: thing, title: "Notes" }, messages: [] }], { "wakes.json": "[]" });
   const id = "mov_waits4";
-  await say({ op: "offer", id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id, kind: "chat", thing, name: "“Notes”", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await until(() => told.some(move => move.id === id && move.op === "ready"));
   stopLooks();
   await say({ op: "part", id, hash, i: 0, of: 1, d: bytes.toString("base64url") });
@@ -992,7 +1006,7 @@ test("a copy all here and set up, whose other computer went quiet before it swit
   link.keepMoving(at + 3 * 60_000);
   assert.equal((await listed()).waiting, true);
   // Back, it switches: it lives here now.
-  await say({ op: "switch", id });
+  await say({ op: "switch", safeSwitch: true, id });
   assert.ok(told.some(move => move.id === id && move.op === "switched"));
   assert.equal(await listed(), undefined);
 }));
@@ -1007,7 +1021,7 @@ const leftBy = thing => leftHere().find(each => each.thing === thing);
 async function movedAwayChat(id) {
   chat(id);
   script = move => {
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id });
@@ -1049,7 +1063,7 @@ test("while it's on its way back, and as that's taken back, nothing it left goes
   const at = Date.now();
   await say({ op: "ran", id: entry.id, at });
   const one = bundleFor("ses_left2", [{ info: { id: "ses_left2", title: "Trip plans" }, messages: [] }]);
-  await say({ op: "offer", id: "mov_left2", kind: "chat", thing: "ses_left2", name: "“Trip plans”", size: one.bytes.length, hash: one.hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_left2", kind: "chat", thing: "ses_left2", name: "“Trip plans”", size: one.bytes.length, hash: one.hash, wasPaused: false, from: peerKey });
   await until(() => told.some(move => move.id === "mov_left2" && move.op === "ready"));
   link.keepMoving(at + 2 * WEEK);
   assert.ok(fs.existsSync(entry.trash), "on its way, it's kept");
@@ -1064,11 +1078,11 @@ test("while it's on its way back, and as that's taken back, nothing it left goes
 test("moved back before the week's up: what came is the one, the older copy goes, and nothing here is removed later", async () => {
   const entry = await movedAwayChat("ses_left3");
   const one = bundleFor("ses_left3", [{ info: { id: "ses_left3", title: "Trip plans, further on" }, messages: [] }]);
-  await say({ op: "offer", id: "mov_left3", kind: "chat", thing: "ses_left3", name: "“Trip plans”", size: one.bytes.length, hash: one.hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_left3", kind: "chat", thing: "ses_left3", name: "“Trip plans”", size: one.bytes.length, hash: one.hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_left3", hash: one.hash, i: 0, of: 1, d: one.bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_left3" && move.op === "arrived"));
   assert.ok(fs.existsSync(entry.trash), "not yet: it could still be taken back");
-  await say({ op: "switch", id: "mov_left3" });
+  await say({ op: "switch", safeSwitch: true, id: "mov_left3" });
   await until(() => told.some(move => move.id === "mov_left3" && move.op === "switched"));
   assert.ok(!fs.existsSync(entry.trash));
   assert.equal(leftBy("ses_left3"), undefined);
@@ -1188,7 +1202,7 @@ test("it can run there, another way: the move goes, and its answer says how", ()
   const note = "On lab, Trip plans uses the Claude Code account signed in there (ada@example.com).";
   script = move => {
     if (move.op === "check") say({ op: "checked", id: move.id, ok: true, note });
-    if (move.op === "offer") say({ op: "ready", id: move.id });
+    if (move.op === "offer") say({ op: "ready", safeSwitch: true, id: move.id });
     if (move.op === "part") {
       say({ op: "got", id: move.id, i: move.i });
       if (move.i === move.of - 1) say({ op: "arrived", id: move.id });
@@ -1280,7 +1294,7 @@ test("a bot that comes with keys of its own from an earlier box arrives all the 
   const file = path.join(packed, "bundle.tgz");
   assert.equal(spawnSync("tar", ["-czf", file, "-C", packed, "move.json", thing]).status, 0);
   const bytes = fs.readFileSync(file), hash = crypto.createHash("sha256").update(bytes).digest("base64url");
-  await say({ op: "offer", id: "mov_keyed1", kind: "bot", thing, name: "Kay", size: bytes.length, hash, wasPaused: false, from: peerKey });
+  await say({ op: "offer", safeSwitch: true, id: "mov_keyed1", kind: "bot", thing, name: "Kay", size: bytes.length, hash, wasPaused: false, from: peerKey });
   await say({ op: "part", id: "mov_keyed1", hash, i: 0, of: 1, d: bytes.toString("base64url") });
   await until(() => told.some(move => move.id === "mov_keyed1" && (move.op === "failed" || move.op === "arrived")));
   assert.equal(told.find(move => move.id === "mov_keyed1" && (move.op === "failed" || move.op === "arrived")).op, "arrived", JSON.stringify(told.filter(move => move.id === "mov_keyed1")));

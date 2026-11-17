@@ -45,8 +45,12 @@ export interface MoveRecord extends Move {
   /** The box it leaves: its conversation kept in its folder as the original goes (a try at that cut
    * short doesn't keep it again, with less of it). */
   kept?: boolean;
-  /** The box it leaves: tries at letting its original go that its engine, up, didn't take. */
-  finishTries?: number;
+  /** Both peers speak the durable switch protocol for this incoming copy. */
+  safeSwitch?: boolean;
+  /** The destination committed ownership. Activation must finish before it acknowledges. */
+  activation?: { at: number; last?: string };
+  /** The source has reported success and has local cleanup outstanding. */
+  cleanupPending?: boolean;
   /** The box it goes to: its conversations whose queue the move brought going on where it came
    * from (not paused), to go on here once it's switched to. */
   queuesGoOn?: string[];
@@ -90,15 +94,20 @@ export const bundleOf = (id: string) => path.join(MOVES, id);
 const fits = (record: unknown): record is MoveRecord => isObject(record) && typeof record.id === "string" && typeof record.thing === "string"
   && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions);
 
-export function readMoves(): MoveRecord[] {
+export function readMoves(strict = false): MoveRecord[] {
   let names: string[] = [];
-  try { names = fs.readdirSync(MOVES).filter(name => /^mov_[A-Za-z0-9]+\.json$/.test(name)); } catch {}
+  try { names = fs.readdirSync(MOVES).filter(name => /^mov_[A-Za-z0-9]+\.json$/.test(name)); } catch (error) {
+    if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const records: MoveRecord[] = [];
   for (const name of names) {
     try {
       const record = JSON.parse(fs.readFileSync(path.join(MOVES, name), "utf8"));
       if (fits(record)) records.push(record);
-    } catch {}
+      else if (strict) throw new Error("An ownership record could not be read");
+    } catch (error) {
+      if (strict && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
   return records.sort((one, other) => one.started - other.started);
 }
@@ -111,7 +120,7 @@ export const liveMoves = (records = readMoves()): MoveRecord[] => records.filter
 
 /** The moves under way that clients see: not a copy here being let go of (the move was taken back,
  * and goes on where it came from), whose conversations alone are left out (`away`) until it's gone. */
-export const listedMoves = (records = liveMoves()): MoveRecord[] => records.filter(record => !(record.role === "to" && record.dropping));
+export const listedMoves = (records = liveMoves()): MoveRecord[] => records.filter(record => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing"));
 
 /** The move of `thing` under way here, either way. */
 export const moveOf = (thing: string): MoveRecord | null => liveMoves().find(record => record.thing === thing) ?? null;
@@ -216,57 +225,53 @@ export function forgetMovedAway(sessions: readonly string[], now = Date.now()): 
 
 export type { Move, MoveKind, MoveStage };
 
-// How each move that came here ended (`switched` or `dropped`): a step about it sent again later is
-// answered as it ended, never taken for one this box doesn't know. One dropped, for a week; one
-// switched, for a year: the box it came from, asleep all that while, still hears it switched (and
-// lets its original go) rather than `dropped` (and keeps it, a second copy).
+// Ownership decisions have no expiry: an offline source may ask again at any time. Session
+// lists on these entries are only for the short-lived routing hints below.
 const ENDED_FILE = path.join(MOVES, "ended.json");
-const ENDED_FOR = { dropped: 7 * 24 * 3600_000, switched: 365 * 24 * 3600_000 };
-const keptFor = (one: { as?: unknown; at?: unknown; sessions?: unknown } | undefined, now: number): boolean =>
-  typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped") && now - one.at < ENDED_FOR[one.as];
+type Decision = { as: "switched" | "dropped"; at: number; sessions?: string[]; last?: string; peer?: string };
+const keptFor = (one: { as?: unknown; at?: unknown } | undefined): boolean =>
+  typeof one?.at === "number" && (one.as === "switched" || one.as === "dropped");
 
-export function endedAs(id: string, now = Date.now()): "switched" | "dropped" | null {
+function decision(id: string): Decision | null {
   try {
-    const kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, { as?: unknown; at?: unknown }>;
-    const one = kept?.[id];
-    return keptFor(one, now) ? one!.as as "switched" | "dropped" : null;
+    const one = (JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, Decision>)?.[id];
+    return keptFor(one) ? one! : null;
   } catch {
     return null;
   }
 }
+
+export function endedFor(id: string, peer: string): Decision | null {
+  const one = decision(id);
+  return one && (one.peer === undefined || one.peer === peer) ? one : null;
+}
+
+export const endedAs = (id: string): Decision["as"] | null => decision(id)?.as ?? null;
 
 /** When a move that came here was switched to, or let go of. */
-export function endedAt(id: string, now = Date.now()): number | null {
-  try {
-    const kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, { as?: unknown; at?: unknown }>;
-    const one = kept?.[id];
-    return keptFor(one, now) ? one!.at as number : null;
-  } catch {
-    return null;
-  }
-}
+export const endedAt = (id: string): number | null => decision(id)?.at ?? null;
 
 /** The newest message of a copy switched to here, as it came. */
-export function endedLast(id: string, now = Date.now()): string | undefined {
-  try {
-    const one = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8"))?.[id];
-    return keptFor(one, now) && typeof one.last === "string" ? one.last : undefined;
-  } catch {
-    return undefined;
-  }
-}
+export const endedLast = (id: string): string | undefined => decision(id)?.last;
 
 /** `sessions`: those of the copy (switched to here, or let go of to live on where it came from). `last`:
  * the newest message of one switched to, as it came (what's after it ran here, whatever the clocks say). */
-export function noteEnded(id: string, as: "switched" | "dropped", now = Date.now(), sessions: readonly string[] = [], last?: string): void {
-  let kept: Record<string, { as: string; at: number; sessions?: string[]; last?: string }> = {};
-  try { kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) ?? {}; } catch {}
-  for (const [other, one] of Object.entries(kept)) {
-    if (!keptFor(one, now)) delete kept[other];
-    // (A switched one's are only for `switchedHere`.)
-    else if (one.as === "switched" && now - one.at >= MOVED_FOR) delete one.sessions;
+export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sessions: readonly string[] = [], last?: string, peer?: string): void {
+  let kept: Record<string, Decision> = {};
+  try {
+    kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) ?? {};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  kept[id] = { as, at: now, ...(sessions.length ? { sessions: [...sessions] } : {}), ...(last ? { last } : {}) };
+  const before = kept[id];
+  if (keptFor(before)) {
+    if (before!.as !== as) throw new Error("A move’s ownership decision cannot change");
+    return;
+  }
+  for (const one of Object.values(kept)) {
+    if (now - one.at >= MOVED_FOR) delete one.sessions;
+  }
+  kept[id] = { as, at: now, ...(sessions.length ? { sessions: [...sessions] } : {}), ...(last ? { last } : {}), ...(peer ? { peer } : {}) };
   writePrivate(ENDED_FILE, JSON.stringify(kept));
 }
 
@@ -275,7 +280,7 @@ export function noteEnded(id: string, as: "switched" | "dropped", now = Date.now
 export function droppedHere(now = Date.now()): string[] {
   try {
     const kept = JSON.parse(fs.readFileSync(ENDED_FILE, "utf8")) as Record<string, { as?: unknown; at?: unknown; sessions?: unknown }>;
-    return Object.values(kept ?? {}).filter(one => keptFor(one, now) && one.as === "dropped" && Array.isArray(one.sessions))
+    return Object.values(kept ?? {}).filter(one => keptFor(one) && one.as === "dropped" && now - (one.at as number) < MOVED_FOR && Array.isArray(one.sessions))
       .flatMap(one => (one.sessions as unknown[]).filter((each): each is string => typeof each === "string"));
   } catch {
     return [];

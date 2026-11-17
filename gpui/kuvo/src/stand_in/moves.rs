@@ -10,6 +10,7 @@ pub enum Scenario {
     Ready,
     Copying,
     Failed,
+    ReceiptRevoked,
 }
 
 impl StandIn {
@@ -65,6 +66,9 @@ pub(super) fn answer(state: &mut State, request: &Request) -> Option<(u16, Value
             202,
             json!({ "move": moving("holding", "Getting ready to move to Studio…") }),
         ),
+        ("GET", "kuvo/moves/receipt", Some(ReceiptRevoked)) => {
+            (403, json!({"message": "Access was revoked."}))
+        }
         ("GET", "kuvo/moves/receipt", Some(Failed)) => (
             200,
             json!({

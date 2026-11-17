@@ -35,21 +35,14 @@ const labChats = path.join(machineHome, "chats"), labBots = path.join(machineHom
 // What a box wrote (the machine is another process): looked at again every few milliseconds until
 // it's there, or the test runs out of time (`signal`).
 let signal;
-function eventually(found) {
-  return new Promise((resolve, reject) => {
-    const look = () => {
-      const value = found();
-      if (!value) return;
-      clearInterval(timer);
-      resolve(value);
-    };
-    const timer = setInterval(look, 20);
-    signal?.addEventListener("abort", () => {
-      clearInterval(timer);
-      reject(new Error(`it never got there: ${found}`));
-    }, { once: true });
-    look();
-  });
+async function eventually(found) {
+  const stopped = signal;
+  while (true) {
+    stopped?.throwIfAborted();
+    const value = await found();
+    if (value) return value;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
 }
 
 const authorized = request => request.headers.authorization === `Basic ${Buffer.from("opencode:pw").toString("base64")}`;
@@ -327,10 +320,14 @@ test("where something can go: each of your other computers", { timeout: 60_000 }
   assert.match(busy.json.places[0].confirm.message, /A turn is running/);
 
   const reach = path.join(macHome, "run", "peer-reach.json");
-  write(reach, { [lab.key]: Date.now() });
   try {
-    const away = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
-    assert.deepEqual(away.json.places[0], { ...place, ok: false, why: "lab isn’t connected. Connect to it, then try again.", note: "Can’t be reached" });
+    const away = await eventually(async () => {
+      // An announcement already in flight can clear this mark before the route reads it.
+      write(reach, { [lab.key]: Date.now() });
+      const answer = await ask("GET", "kuvo/moves/places?kind=chat&id=ses_chat1");
+      return answer.json.places[0]?.ok === false ? answer.json.places[0] : null;
+    });
+    assert.deepEqual(away, { ...place, ok: false, why: "lab isn’t connected. Connect to it, then try again.", note: "Can’t be reached" });
   } finally {
     fs.rmSync(reach, { force: true });
   }

@@ -34174,8 +34174,13 @@ class GroupRunner {
       return false;
     if (kept.status !== "active") {
       kept.status = "active";
-      this.changed(id);
-      this.began(id);
+      try {
+        this.changed(id);
+        this.began(id);
+      } catch (error) {
+        kept.status = "held";
+        throw error;
+      }
     }
     return true;
   }
@@ -34198,9 +34203,9 @@ class GroupRunner {
     if (!kept)
       return false;
     this.stop(id);
+    this.context.store.trash(id, this.context.trash);
     this.chats.delete(id);
     this.live.delete(id);
-    this.context.store.trash(id, this.context.trash);
     emit("kuvo.group.deleted", { id });
     for (const bot of kept.group.members)
       this.remember(bot);
@@ -39461,4 +39466,4 @@ if (!onMachine) {
 }
 process.on("SIGTERM", () => stop());
 process.on("SIGINT", () => stop());
-// Built from Packages/Box/src/agents c1b2a09610769c9bf1d6539377b9ecd559dcd7945ea0d2bc64b871f3d8ffef5e
+// Built from Packages/Box/src/agents 8e50617dc193537af82b6dc0662fe3fe2cffcd66bd0d4d8ae3be3f4c6d556644

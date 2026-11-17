@@ -227,3 +227,20 @@ fn bot_move_settings_row_is_below_the_header(cx: &mut TestAppContext) {
     click(cx, "menu-item-Studio");
     assert!(cx.debug_bounds("move-confirm").is_some());
 }
+
+#[gpui::test]
+fn bot_move_revoked_receipt_can_be_dismissed_without_a_failed_move(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, 1_794_650_000_000.0);
+    let (_, cx) = open(cx, &stand_in, Scenario::ReceiptRevoked);
+    right_click(cx, "bot-bot_mira");
+    click(cx, "menu-item-Studio");
+    click(cx, "move-go");
+    assert!(cx.debug_bounds("move-tracking").is_some());
+    assert!(cx.debug_bounds("move-failed").is_none());
+    assert!(cx.debug_bounds("move-again").is_none());
+    click(cx, "move-dismiss");
+    assert!(cx.debug_bounds("move-tracking").is_none());
+    assert!(cx.debug_bounds("move-progress").is_none());
+    assert!(cx.debug_bounds("bot-bot_mira").is_some());
+    assert_eq!(stand_in.seen_at("GET", "kuvo/moves/receipt").len(), 1);
+}

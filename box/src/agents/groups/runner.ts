@@ -377,8 +377,14 @@ export class GroupRunner {
     if (!kept) return false
     if (kept.status !== "active") {
       kept.status = "active"
-      this.changed(id)
-      this.began(id)
+      try {
+        this.changed(id)
+        this.began(id)
+      } catch (error) {
+        // A retry must still finish activation if saving or starting the group failed.
+        kept.status = "held"
+        throw error
+      }
     }
     return true
   }
@@ -405,9 +411,10 @@ export class GroupRunner {
     const kept = this.chats.get(id)
     if (!kept) return false
     this.stop(id)
+    // Keep the held group available for a retry until its folder is out of the live store.
+    this.context.store.trash(id, this.context.trash)
     this.chats.delete(id)
     this.live.delete(id)
-    this.context.store.trash(id, this.context.trash)
     emit("kuvo.group.deleted", { id })
     // Its bots no longer remember it from here (the computer it went to does, in the same file,
     // which stays).
