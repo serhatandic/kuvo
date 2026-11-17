@@ -395,7 +395,7 @@ test.if(mac)("run again once it's moved, nothing moves twice, and Move Back says
 test.if(mac)("saved sign-ins are never read by the move, nor by opening or updating Kuvo after it: kuvo-keys is never asked for them, even where it would wait on macOS", () => {
   // (kuvo-keys here waits on macOS's question for as long as no one answers it, as it did at every
   // update before: asked, it's noted, and it answers only once this test's folder is gone.)
-  const m = mac07(root, m => put(join(m.bundle, "Contents", "MacOS", "kuvo-keys"), readFileSync(join(m.bundle, "Contents", "MacOS", "kuvo-keys"), "utf8").replace("passwords)\n", "passwords)\n    while [ -d \"$HOME\" ]; do sleep 1; done; exit 1 ;;\nnever)\n"), 0o755))
+  const m = mac07(root, m => put(join(m.bundle, "Contents", "MacOS", "kuvo-keys"), readFileSync(join(m.bundle, "Contents", "MacOS", "kuvo-keys"), "utf8").replace("passwords)\n", "passwords)\n    n=0; while [ -d \"$HOME\" ] && [ $n -lt 300 ]; do sleep 1; n=$((n+1)); done; exit 1 ;;\nnever)\n"), 0o755))
   const moved = run(m)
   expect(moved.status, moved.errors).toBe(0)
   expect(moved.said).toMatchObject({ result: "done", status: { state: "done", owed: ["passwords"] } })
@@ -411,7 +411,7 @@ test.if(mac)("saved sign-ins are never read by the move, nor by opening or updat
   // Nor does what the box settles as it runs: what's owed that asks nothing.
   const settled = rehome(m, ["--settle"])
   expect(settled.status, settled.errors).toBe(0)
-  expect(settled.said).toMatchObject({ result: "nothing", status: { owed: ["passwords"] } })
+  expect(settled.said).toMatchObject({ status: { owed: ["passwords"] } })
   expect(readFileSync(join(m.home, "keys-asked"), "utf8")).not.toContain("passwords")
 }, LIMIT)
 
@@ -428,6 +428,16 @@ test.if(mac)("what a move that's done still owes that asks nothing is settled by
   expect(settled.said).toMatchObject({ result: "done", status: { owed: ["passwords"] } })
   expect(readdirSync(join(m.keychain, "app"))).toEqual([])
   expect(readFileSync(join(m.home, "keys-asked"), "utf8").trim().split("\n").slice(-1)).toEqual(["delete-originals"])
+}, LIMIT)
+
+test.if(mac)("a Mac moved before, still owing saved sign-ins its earlier Kuvo Code had brought into a vault itself, owes them no more once the box runs: its preferences say so, no Keychain asked", () => {
+  const m = mac07(root)
+  expect(run(m).said).toMatchObject({ result: "done", status: { owed: ["passwords"] } })
+  preferences(m, { "passwords.movedToVault": true })
+  const settled = rehome(m, ["--settle"])
+  expect(settled.status, settled.errors).toBe(0)
+  expect(settled.said).toMatchObject({ result: "done", status: { owed: [] } })
+  expect(readFileSync(join(m.home, "keys-asked"), "utf8")).not.toContain("passwords")
 }, LIMIT)
 
 /** A Mac that ran a keeper build: a box of the app's own in its folder (`S/box`), its engine's

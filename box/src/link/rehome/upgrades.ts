@@ -554,7 +554,7 @@ function said({ S, prefs, dropped }: Upgrade): void {
   const count = (value: unknown) => (isObject(value) ? Object.keys(value).length : Array.isArray(value) ? value.length : 0);
   const drafts = count(prefs.composerDrafts);
   if (drafts) dropped.push(`${drafts === 1 ? "A message" : `${drafts} messages`} you'd typed but not sent ${drafts === 1 ? "wasn't" : "weren't"} brought along.`);
-  if (exists(path.join(S, "Browser", "history.json"))) dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.");
+  if (exists(path.join(S, "Browser", "history.json"))) dropped.push("Websites you were signed in to in Kuvo Code's browser need signing in again. Your history comes along.");
   const edits = new Set([...Object.keys(isObject(prefs.botEditsWaiting) ? prefs.botEditsWaiting : {}), ...Object.keys(isObject(prefs.botEditOutbox) ? prefs.botEditOutbox : {})]).size;
   if (edits) dropped.push(`${edits === 1 ? "A change" : `${edits} changes`} you made to ${edits === 1 ? "a bot" : "bots"} on a machine that was away (a name, look, personality or model) ${edits === 1 ? "wasn't" : "weren't"} sent there. Make ${edits === 1 ? "it" : "them"} again once that machine is connected.`);
   const terminals = isObject(prefs.projectSettings) ? Object.values(prefs.projectSettings).filter(each => isObject(each) && typeof each.terminal === "string" && each.terminal).length : 0;

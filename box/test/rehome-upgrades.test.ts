@@ -140,7 +140,7 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
     "In your group chats, a bot on one of your machines takes its seat again at its next turn: the conversation it had there before stays on that machine, unused.",
     "A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along.",
     "2 messages you'd typed but not sent weren't brought along.",
-    "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.",
+    "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history comes along.",
     "A change you made to a bot on a machine that was away (a name, look, personality or model) wasn't sent there. Make it again once that machine is connected.",
     "The command that opened in place of the chat for a project isn't kept.",
     "You signed out of an account while a machine was away: it may still be signed in to it. Sign out there too once it's connected.",
@@ -151,6 +151,8 @@ test.if(mac)("what 0.7.2 kept itself comes along: projects, worktrees, machines,
     "The model new sessions start with is chosen again in the new app.",
     "You had turned off some of Kuvo Code's notifications (or their sound or badge). Set that again in the new app.",
     "You had turned off sharing anonymous usage in the earlier Kuvo Code. That choice isn't brought along: check it in the new app's settings.",
+    // (Whether your Keychain has any can't be told in a copy's home: they're said to stay there.)
+    "Passwords the earlier Kuvo Code saved for websites stay in your Keychain for now: they aren't in Kuvo's vault yet.",
   ])
   expect(state.counts).toMatchObject({ sessions: 5, bots: 1, botsBefore: 1, wakeUps: 2, wakeUpsBefore: 2, groupChats: 1, groupChatsBefore: 0, worktreeRecords: 1, worktreeRecordsBefore: 0 })
   expect(moved.said!.status.dropped).toEqual(state.dropped)
@@ -180,7 +182,8 @@ test.if(mac)("\"Let my devices connect\" stays as this Mac's link had it set, wi
   expect(run(m).said).toMatchObject({ result: "done" })
   expect(readJSON(join(m.K, "run", "mac-link.json"))).toMatchObject({ phones: false, relay: "wss://relay.example.test", app: "" })
   expect(existsSync(join(m.K, "box", "approval.json"))).toBe(false)
-  expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toEqual([])
+  // (Only that a copy's home can't tell whether your Keychain has saved sign-ins.)
+  expect(readJSON(join(m.K, "updates", "rehome", "state.json")).dropped).toEqual(["Passwords the earlier Kuvo Code saved for websites stay in your Keychain for now: they aren't in Kuvo's vault yet."])
 }, 120_000)
 
 test.if(mac)("0.8.0-beta.1's own: personalities you removed stay removed, and a letter already seen stays seen", () => {

@@ -1095,10 +1095,13 @@ export function askRehome(home: string, ask: "now" | "back"): string | null {
 /** What the app's executable owes once a move's done (deleting the Keychain's originals,
  * unregistering its agent; or, once it's moved back, the opposite), settled. */
 export function settled(home: string, what: string): boolean {
-  const record = readRecord(home);
-  if (!record.owed?.includes(what as never)) return false;
-  noteRecord(home, { owed: record.owed.filter(each => each !== what) });
-  return true;
+  let was = false;
+  // (Read and written under the record's own lock: another settling meanwhile is never undone.)
+  noteRecord(home, now => {
+    was = now.owed?.includes(what as never) === true;
+    return was ? { owed: (now.owed ?? []).filter(each => each !== what) } : {};
+  });
+  return was;
 }
 
 /** The home of its own `root` names (`.kuvo-code`, or a test's or demo copy's own), in your home folder. */

@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { sleep } from "../../shared/wait";
-import { OWN_RUNTIME, accountHome, located, recordedKind } from "../home";
+import { OWN_RUNTIME, accountHome, homeFolder, located, recordedKind } from "../home";
 import { checkedRelease, helperRuns } from "../install/command";
 import { appBoxThere, machineBoxThere } from "../install/verdict";
 import { readApp } from "../mac/app";
@@ -346,13 +346,14 @@ async function settleOwed(home: string, options: { bundle?: string; id?: string;
     }
   }
   // An earlier Kuvo Code's saved sign-ins, owed only where there are some: none where it had
-  // brought them into a vault itself, or where your Keychain, found unlocked a moment ago, lists
-  // none. Asked by what's listed alone, never a password, so macOS asks nothing (nor about a
+  // brought them into a vault itself (its preferences say so: no Keychain asked), or where your
+  // login keychain, found unlocked a moment ago, lists none. Asked by what's listed alone, never a password, so macOS asks nothing (nor about a
   // locked Keychain, never asked of). Where there are some, or it can't be told, they wait for you
   // (`rehomeSignIns`).
-  if (unlocked && owes("passwords") && !owes("keychain")) {
-    const prefs = typeof record.from === "string" ? (await import("./upgrades")).appPreferences(record.from) : {};
-    if (prefs["passwords.movedToVault"] === true || savedSignInsListed() === false) settled(home, "passwords");
+  if (owes("passwords")) {
+    let prefs: Record<string, unknown> = {};
+    try { prefs = typeof record.from === "string" ? (await import("./upgrades")).appPreferences(record.from) : {}; } catch {}
+    if (prefs["passwords.movedToVault"] === true || (unlocked && !owes("keychain") && savedSignInsListed() === false)) settled(home, "passwords");
   }
   if (owes("agent")) {
     // The old keeper's launch agent, let go of: its program is gone with the app it was in.
@@ -369,8 +370,11 @@ async function settleOwed(home: string, options: { bundle?: string; id?: string;
  * can't be told (a copy's home, or `security` said something else). */
 function savedSignInsListed(): boolean | null {
   const tools = launchTools();
-  if (!tools) return null;
-  const found = spawnSync(tools.security, ["find-internet-password", "-c", "KUVO"], { stdio: "ignore", timeout: 30_000 });
+  // (Your login keychain alone, by its file, the one found unlocked: never the others in the list,
+  // one of which might be locked, and asked to be unlocked.)
+  const login = path.join(homeFolder(), "Library", "Keychains", "login.keychain-db");
+  if (!tools || !exists(login)) return null;
+  const found = spawnSync(tools.security, ["find-internet-password", "-c", "KUVO", login], { stdio: "ignore", timeout: 30_000 });
   // (44: errSecItemNotFound, as `security` exits with it.)
   return found.status === 0 ? true : found.status === 44 ? false : null;
 }
@@ -393,6 +397,11 @@ export function keysOf(home: string, given?: string): string | null {
 async function settle(home: string, options: Pick<RunOptions, "bundle" | "id">): Promise<RunOutcome> {
   notePhase(home, "settle");
   const { started, message } = await settleOwed(home, { ...options, start: true });
+  // (Saved sign-ins still in the Keychain are said, once, with what didn't come along.)
+  if (readRecord(home).owed?.includes("passwords")) {
+    const line = "Passwords the earlier Kuvo Code saved for websites stay in your Keychain for now: they aren't in Kuvo's vault yet.";
+    noteRecord(home, now => ((now.dropped ?? []).includes(line) ? {} : { dropped: [...(now.dropped ?? []), line] }));
+  }
   // What the installer staged, once the box runs from its own (the helper the copies trust is the
   // one in its `bin` now).
   if (!readRecord(home).owed?.includes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
@@ -408,15 +417,18 @@ export const movedHere = (home: string): boolean => {
 
 /** `rehome --settle`: what a move that's done still owes that needs no one's answer (`settleOwed`),
  * started by the box itself as it runs, in a process of its own, so nothing waits for it. Its
- * start too: the box runs, through its helper. Nothing where nothing's owed. */
+ * start too: the box runs, through its helper. And the saved sign-ins where the earlier Kuvo Code's
+ * preferences say it had brought them into a vault itself. Nothing where nothing's owed. */
 export async function rehomeSettle(home: string): Promise<RehomeOutcome> {
-  const owesAny = () => (readRecord(home).owed ?? []).some(what => what !== "passwords");
+  const owesAny = () => (readRecord(home).owed ?? []).length > 0;
   if (process.platform !== "darwin" || !movedHere(home) || !owesAny()) return { result: "nothing", status: rehomeStatus(home) };
   return locked(home, () => {}, async () => {
     if (!movedHere(home) || !owesAny()) return { result: "nothing", status: rehomeStatus(home) };
-    if (!launchTools() || helperRuns()) settled(home, "start");
+    // (What the installer staged goes only with the start this run settled: never under an
+    // installer that's at work there as the box starts.)
+    const started = (!launchTools() || helperRuns()) && settled(home, "start");
     await settleOwed(home, { start: false });
-    if (!readRecord(home).owed?.includes("start")) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
+    if (started) fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
     return { result: "done", status: rehomeStatus(home) };
   });
 }

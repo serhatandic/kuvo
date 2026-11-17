@@ -38,11 +38,14 @@ const LOGINS = [
 const state = path.join(K, "updates", "rehome", "state.json");
 const record = () => JSON.parse(fs.readFileSync(state, "utf8"));
 
-/** Once `check()` holds: asked again each time something changes in `folder`, never on a timer. */
+/** Once `check()` holds: asked again each time something changes in `folder`, never on a timer
+ * (a deadline only so a regression fails rather than holding the run). */
 function until(folder, check) {
-  return new Promise(resolve => {
-    const watcher = fs.watch(folder, () => { if (check()) { watcher.close(); resolve(); } });
-    if (check()) { watcher.close(); resolve(); }
+  return new Promise((resolve, reject) => {
+    const done = () => { watcher.close(); clearTimeout(deadline); resolve(); };
+    const watcher = fs.watch(folder, () => { if (check()) done(); });
+    const deadline = setTimeout(() => { watcher.close(); reject(new Error(`never came about in ${folder}`)); }, 120_000);
+    if (check()) done();
   });
 }
 /** Once the hand-over that's running has said how it went. */

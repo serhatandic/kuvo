@@ -390,6 +390,7 @@ case "$verb" in copy) echo '{"copied":0}' ;; passwords) echo '{"v":1,"logins":[]
 test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: each step said in the box's own words, its helper started, and the app's own folder as it was", { skip: !mac && "a Mac's app folder" }, () => {
   const where = computer();
   write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
+  write(path.join(where.home, "Library", "Keychains", "login.keychain-db"), "");
   write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
   write(path.join(where.S, "bots.json"), JSON.stringify([{ id: "bot_a1", name: "Scout", job: "Watch", instructions: "Watch.", look: {}, folder: path.join(where.S, "bots", "bot_a1"), sessionID: "ses_b", created: "2026-10-01T10:00:00Z" }]));
   write(path.join(where.S, "bots", "bot_a1", "MEMORY.md"), "what Scout remembers");
@@ -419,9 +420,9 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
   // Its saved sign-ins, never read by the move (macOS may ask about each): your Keychain lists
   // none, by what's listed alone, so none are owed.
   assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals"]);
-  assert.deepEqual(read(path.join(where.home, "security-asked")).trim().split("\n"), ["find-internet-password -c KUVO"]);
+  assert.deepEqual(read(path.join(where.home, "security-asked")).trim().split("\n"), [`find-internet-password -c KUVO ${path.join(where.home, "Library", "Keychains", "login.keychain-db")}`]);
   assert.deepEqual(moved.said.status.owed, []);
-  assert.deepEqual(moved.said.status.dropped, ["Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along."]);
+  assert.deepEqual(moved.said.status.dropped, ["Websites you were signed in to in Kuvo Code's browser need signing in again. Your history comes along."]);
   // The earlier Kuvo Code's folder: every file as it was. Nothing the installer staged is left.
   assert.deepEqual(everything(where.S).map(name => [name, fs.statSync(path.join(where.S, name)).isFile() ? read(path.join(where.S, name)) : ""]), before);
   assert.equal(exists(staging(where)), false);
@@ -444,6 +445,7 @@ test("an earlier Kuvo Code's chats and settings move with `kuvo-install move`: e
 test("a move launchd wouldn't start: opening Kuvo again starts it with `new`, never the move again; what it still owes the box settles as it runs", { skip: !mac && "a Mac's app folder" }, () => {
   const where = computer();
   write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
+  write(path.join(where.home, "Library", "Keychains", "login.keychain-db"), "");
   write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
   write(path.join(where.home, "launchd-refuses"), "");
   const moved = install(where, "move");
@@ -468,13 +470,15 @@ test("a move launchd wouldn't start: opening Kuvo again starts it with `new`, ne
 test("a moved Mac whose saved sign-ins are still owed opens and updates without the move or the Keychain: they wait for you, and only you start them", { skip: !mac && "a Mac's app folder" }, () => {
   const where = computer();
   write(path.join(where.bundle, "Contents", "MacOS", "kuvo-keys"), keysStandIn, 0o755);
+  write(path.join(where.home, "Library", "Keychains", "login.keychain-db"), "");
   write(path.join(where.S, "Chats", "c1", "notes.md"), "a chat's notes");
   // Your Keychain lists some.
   write(path.join(where.home, "saved-sign-ins"), "");
   const moved = install(where, "move");
   assert.equal(moved.status, 0, moved.stderr + JSON.stringify(moved.lines));
   assert.deepEqual({ result: moved.said.result, started: moved.said.started, owed: moved.said.status.owed, signIns: moved.said.status.signIns }, { result: "done", started: true, owed: ["passwords"], signIns: null });
-  assert.equal(moved.said.message, undefined, "nothing said of them while it moves");
+  assert.equal(moved.said.message, undefined, "nothing asked of them while it moves");
+  assert.ok(moved.said.status.dropped.includes("Passwords the earlier Kuvo Code saved for websites stay in your Keychain for now: they aren't in Kuvo's vault yet."), JSON.stringify(moved.said.status.dropped));
   // The app opening again, after an update or not: nothing to run, and the move, asked all the
   // same (an older app would), does nothing. Neither asks kuvo-keys anything.
   for (let open = 0; open < 2; open++) {
@@ -483,8 +487,8 @@ test("a moved Mac whose saved sign-ins are still owed opens and updates without 
     const again = install(where, "move");
     assert.deepEqual({ status: again.status, result: again.said.result, owed: again.said.status.owed }, { status: 0, result: "nothing", owed: ["passwords"] });
   }
-  // Nor what the box settles as it runs: nothing else is owed, so nothing's done.
-  assert.deepEqual(boxRehome(where, ["--settle"]).said.result, "nothing");
+  // Nor what the box settles as it runs: they stay owed, unasked.
+  assert.deepEqual(boxRehome(where, ["--settle"]).said.status.owed, ["passwords"]);
   assert.deepEqual(read(path.join(where.home, "keys-asked")).trim().split("\n"), ["copy", "delete-originals"]);
 });
 

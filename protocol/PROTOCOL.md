@@ -8176,18 +8176,22 @@ above. Only on a Mac.
   anything else: `install --status` says `new` for its start where its helper isn't in place,
   and null otherwise (`install --move` does nothing); the box settles `start`, `keychain` and
   `agent` itself as it starts (`rehome <root> --settle`, in a process of its own; `start`
-  because it runs), so opening or updating Kuvo never waits on the Keychain. The saved sign-ins
+  because it runs, and only then what the installer staged goes; `passwords` where the earlier
+  Kuvo Code's preferences say it had them in a vault already), so opening or updating Kuvo never
+  waits on the Keychain. The saved sign-ins
   are never the move's: macOS may ask you about each, so they come over only when you ask.
 - **Saved sign-ins** (`passwords`): owed only where there may be some. Where the earlier Kuvo
-  Code had brought them into a vault itself (`passwords.movedToVault` in its preferences), or
-  your Keychain, found unlocked a moment before (the move's own `keys` step, or `delete-originals`
-  just done), lists none (`security find-internet-password -c KUVO`: by what's listed alone, no
-  password read, so macOS asks nothing), `passwords` is settled as the move finishes; else it's
-  owed until you bring them over (`POST kuvo/box/rehome {signIns: true}`, above, which runs
+  Code had brought them into a vault itself (`passwords.movedToVault` in its preferences, read
+  without the Keychain, at the move or as the box starts), or your login keychain, found unlocked
+  a moment before (the move's own `keys` step, or `delete-originals` just done), lists none
+  (`security find-internet-password -c KUVO <login.keychain-db>`: that keychain alone, by what's
+  listed, no password read, so macOS asks nothing), `passwords` is settled; else the move says
+  in `dropped` that they stay in your Keychain for now, and it's owed until you bring them over (`POST kuvo/box/rehome {signIns: true}`, above, which runs
   `kuvo-link.js rehome <root> --sign-ins` with `KUVO_HOME` the box's home). That holds the move's
   lock while it runs (which `kuvo-keys` checks), and nothing waits for it: `install --status`
   takes a lock held by `--sign-ins` or `--settle` (by the holder's command line) for no move at
-  all, and its progress for none. It finds `kuvo-keys` in the app the move took its data with,
+  all, and its progress for none. A try that doesn't finish, for whatever reason, says so in
+  `signIns`. It finds `kuvo-keys` in the app the move took its data with,
   else in Kuvo's desktop app as it last opened with this box (`run/app.json`'s `desktop`).
   `kuvo-keys passwords` says the sign-ins an earlier Kuvo
   Code kept before the vault down its standard output, a pipe this process reads, macOS asking

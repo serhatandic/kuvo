@@ -876,7 +876,7 @@ async function serve(): Promise<void> {
   // setting says (its app's keeper did, by the app's).
   keepKeyFiles();
   // What a move into it that's done still owes that asks nothing, settled beside it.
-  settleOwedAtStart();
+  try { settleOwedAtStart(); } catch (error) { console.error(`What the move still owes couldn't be settled now: ${(error as Error).message}`); }
   keepAwakeWhileWorking(() => agentsWorking());
   // And their conversations and places in group chats, where those weren't answering.
   finishDeletes(readEngineFile, bridgeTarget).catch(() => {});

@@ -11,7 +11,7 @@ import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { RehomeStatus } from "../../shared/routes/box";
 import { APP_FOLDER, K, OWN_HOME_MAC, OWN_RUNTIME, SCRIPT, homeFolder, located } from "../home";
-import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
+import type { AnswerPiece, RouteContext } from "../server/context";
 import { askRehome } from "./move";
 import { movedHere } from "./run";
 import { rehomeFolder, rehomeStatus, signInsRunning, SIGN_INS_PID } from "./state";
@@ -39,7 +39,7 @@ export async function* rehomeRoute({ request, json }: RouteContext): AsyncGenera
   if (method === "GET") return yield* json(200, home ? rehomeStatus(home) : NOTHING_YET);
   if (method !== "POST") return yield* json(405, {});
   const given = parsed(request.body);
-  if (isObject(given) && given.signIns === true) return yield* signIns(fromLocalApp(request), home, json);
+  if (isObject(given) && given.signIns === true) return yield* signIns(request.served === true && request.fromApp === true, home, json);
   // (Kuvo Code asks, having asked you: never a phone, which shows it.)
   if (!request.fromApp && !request.fromMac) return yield* json(403, { message: "Only Kuvo Code on this Mac moves its data." });
   const ask = isObject(given) ? (given.now === true ? "now" : given.back === true ? "back" : null) : null;
@@ -81,7 +81,7 @@ function start(home: string, verb: "--settle" | "--sign-ins"): number | undefine
  * on a phone); one that's running already is left to run. */
 async function* signIns(local: boolean, home: string | null, json: RouteContext["json"]): AsyncGenerator<AnswerPiece> {
   if (!local) return yield* json(403, { message: "Your saved sign-ins come over from Kuvo on the Mac they were saved on." });
-  if (!OWN_HOME_MAC || !home || !ownHome(home)) return yield* json(409, { message: "There are no saved sign-ins to bring over on this Mac." });
+  if (!OWN_HOME_MAC || !home || !ownHome(home)) return yield* json(409, { message: "There are no saved sign-ins to bring over on this computer." });
   if (signInsRunning(home)) return yield* json(200, rehomeStatus(home));
   if (!movedHere(home) || !rehomeStatus(home).owed.includes("passwords")) return yield* json(409, { message: "There are no saved sign-ins left to bring over." });
   const pid = start(home, "--sign-ins");

@@ -171,7 +171,9 @@ export async function rehomeSignIns(home: string): Promise<RehomeOutcome> {
   let reason: Reason | "no-app" = "failed";
   try {
     if (!owed()) return { result: "nothing", status: rehomeStatus(home) };
-    const outcome = await locked(home, () => console.error("Another move is under way: this one waits for it."), async () => {
+    let outcome: RehomeOutcome;
+    try {
+      outcome = await locked(home, () => console.error("Another move is under way: this one waits for it."), async () => {
       if (!owed()) return { result: "nothing", status: rehomeStatus(home) };
       const keys = keysOf(home);
       if (!keys) {
@@ -188,6 +190,13 @@ export async function rehomeSignIns(home: string): Promise<RehomeOutcome> {
       if (!handed.done) reason = handed.reason ?? "failed";
       return { result: handed.done ? "done" : "failed", status: rehomeStatus(home) };
     });
+    } catch (error) {
+      // (Cut short by something unforeseen: said as a try that didn't finish, never left unsaid.)
+      outcome = { result: "failed", status: rehomeStatus(home) };
+      handed = { done: false, why: (error as Error).message, added: 0, short: 0, kept: 0 };
+    }
+    // (One that never got to ask, the lock held by another past its wait: said too.)
+    if (!handed && outcome.result === "waits") handed = { done: false, why: "another move held the lock", added: 0, short: 0, kept: 0 };
     if (!handed) return outcome;
   } finally {
     // (The box's note that this runs, gone with it: before how it went is kept, so the two are
