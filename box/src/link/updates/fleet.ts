@@ -29,6 +29,9 @@ import {
 /** Where the newest signed release this box holds is kept: `boxes.json` and its pack, by the name
  * its address ends in (a folder a release can be offered or taken from as it is). */
 export const HELD = path.join(UPDATES, "release");
+/** The signed release this box runs, kept apart once a newer one is held in its place (`HELD`), for
+ * repairing its files from (`repair.ts`): whichever of the two is its version. */
+export const RUNNING = path.join(UPDATES, "running");
 /** Where a release pulled from a peer is gathered: `<version>.json` (its boxes.json) and
  * `<version>.pack` (its pack, filled in part by part), and the folder it's offered from. */
 export const INCOMING = path.join(UPDATES, "incoming");
@@ -86,6 +89,11 @@ export function keepRelease(boxes: Buffer | string, pack: Buffer): void {
   try { had = fs.readFileSync(path.join(HELD, "boxes.json"), "utf8"); } catch {}
   if (newerVersion(versionIn(had), versionIn(boxes.toString()))) return;
   try {
+    // (The one this box runs, should a newer one take its place: kept apart, to repair from.)
+    if (had && versionIn(had) === boxVersion() && versionIn(had) !== versionIn(boxes.toString())) {
+      fs.rmSync(RUNNING, { recursive: true, force: true });
+      fs.renameSync(HELD, RUNNING);
+    }
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(partial, "boxes.json"), boxes, { mode: 0o600 });

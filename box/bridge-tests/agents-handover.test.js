@@ -255,9 +255,10 @@ test("an older Mac's tools put over a machine's while it runs are repaired once 
   const wake = path.join(box.home, "bin", "kuvo-wake");
   const own = fs.readFileSync(wake);
   // An older Kuvo Code on a Mac connects: it notes its visit and puts its own wake-ups there.
-  write(wake, "# an older Mac's wake-ups\n", 0o755);
+  write(wake, "# an older Mac's wake-ups\n", 0o644);
   write(path.join(box.run, "attached"), "", 0o600);
   await box.until(() => fs.readFileSync(wake).equals(own), "the box's own wake-ups back");
+  assert.equal(fs.statSync(wake).mode & 0o777, 0o755, "a program again, as the release has it");
   assert.ok(!fs.existsSync(path.join(box.home, "bin", ".own")), "and no copy kept apart for an older Mac's app to put back");
 });
 
@@ -269,6 +270,16 @@ test("a held release that isn't what its manifest says is never used, and goes; 
   fs.writeFileSync(path.join(box.home, "bin", "box-version"), "0.9.0");
   assert.deepEqual(box.repair(), { result: "none", why: "otherVersion" });
   fs.writeFileSync(path.join(box.home, "bin", "box-version"), "0.10.0");
+  // Signed with a key the box doesn't know: not used.
+  assert.deepEqual(box.repair(crypto.randomBytes(32).toString("base64")), { result: "none", why: "noRelease" });
+  assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
+  // While a Mac puts its files in place, or a rollback runs: not now.
+  write(path.join(box.run, "mac-installing"), "");
+  assert.deepEqual(box.repair(), { result: "none", why: "busy" });
+  fs.rmSync(path.join(box.run, "mac-installing"));
+  fs.mkdirSync(path.join(box.run, ".rolling-back"));
+  assert.deepEqual(box.repair(), { result: "none", why: "busy" });
+  fs.rmSync(path.join(box.run, ".rolling-back"), { recursive: true });
   // Its pack damaged on disk.
   const held = path.join(box.home, "updates", "release");
   const pack = path.join(held, fs.readdirSync(held).find(name => name.endsWith(".tar.gz")));
@@ -276,8 +287,31 @@ test("a held release that isn't what its manifest says is never used, and goes; 
   assert.deepEqual(box.repair(), { result: "damaged", version: "0.10.0" });
   assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE, "nothing put back from it");
   assert.ok(!fs.existsSync(held), "and it's gone, never handed to another computer");
-  // Signed with a key the box doesn't know: not used.
-  assert.deepEqual(box.repair(crypto.randomBytes(32).toString("base64")), { result: "none", why: "noRelease" });
+});
+
+test("the release a box runs, kept apart once a newer one is held, is what it repairs from", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  const box = machine("kuvo-repair-running-", { release, kept: false });
+  fs.renameSync(path.join(box.home, "updates", "release"), path.join(box.home, "updates", "running"));
+  const agents = path.join(box.home, "bin", "kuvo-agents.js");
+  write(agents, OLDER_BRIDGE);
+  assert.deepEqual(box.repair(), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  // And looked at again: all as the release says.
+  assert.deepEqual(box.repair(), { result: "sound", version: "0.10.0" });
+});
+
+test("Try Again repairs the coding agents' program and starts them, where they'd stopped", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+  // (Its keeper looks only every ten minutes: what brings them back is Try Again.)
+  const box = machine("kuvo-repair-again-", { release, round: "600" });
+  await box.serving();
+  const first = await box.bridgeUp();
+  // An older Kuvo puts its own over it, and the bridge stops (this test's own, by its pid).
+  write(path.join(box.home, "bin", "kuvo-agents.js"), OLDER_BRIDGE);
+  process.kill(first, "SIGTERM");
+  await box.until(() => !runs(first), "the bridge to stop");
+  const tried = await box.ask("POST", "kuvo/agents/start");
+  assert.equal(tried.status, 200, JSON.stringify(tried.json));
+  await box.bridgeUp(first);
+  assert.ok(fs.readFileSync(path.join(box.home, "bin", "kuvo-agents.js"), "utf8").startsWith(fs.readFileSync(builtAgents, "utf8")));
 });
 
 test("nothing is repaired while an update is under way", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {

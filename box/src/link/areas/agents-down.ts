@@ -18,8 +18,10 @@ import type { Target } from "../../shared/records";
 import { IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
-/** Why the coding agents are down (for logs, peers and tests; people see `line`). */
-export type AgentsDownWhy = "engine" | "notInstalled" | "outdated" | "keeper" | "crashing" | "stuck" | "notStarting" | "app";
+/** Why the coding agents are down, every reason a box says (for logs, peers and tests; people see
+ * `line`). */
+export const AGENTS_DOWN_WHY = ["engine", "notInstalled", "outdated", "keeper", "crashing", "stuck", "notStarting", "app"] as const;
+export type AgentsDownWhy = (typeof AGENTS_DOWN_WHY)[number];
 
 export type AgentsState =
   | { state: "running" }
@@ -133,7 +135,7 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
     if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
       // Repaired from the release this box runs, unless it has no sound one (updates/repair.ts).
       const repair = readJSON(path.join(run, "repair.json"));
-      const cant = repair?.result === "damaged" || (repair?.result === "none" && repair.why !== "busy");
+      const cant = repair?.result === "damaged" || (repair?.result === "none" && (repair.why === "noRelease" || repair.why === "otherVersion"));
       return cant
         ? { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start, and there's no sound copy here to repair them from. Kuvo's next update brings them.", tryAgain: false }
         : { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start. Kuvo puts back the right ones by itself.", tryAgain: true };

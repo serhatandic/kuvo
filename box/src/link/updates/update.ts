@@ -44,7 +44,7 @@ const UPDATE_STATE = path.join(RUN, "update.json");
 const UPDATE_TRIAL = path.join(RUN, "update-trial");
 /** An update is here on trial: until it's confirmed, the keeper may yet put the version before back. */
 export const updateOnTrial = (): boolean => fs.existsSync(UPDATE_TRIAL);
-const UPDATE_LOCK = path.join(RUN, ".updating");
+export const UPDATE_LOCK = path.join(RUN, ".updating");
 const ROLLBACK = path.join(UPDATES, "rollback");
 const LAUNCHERS = path.join(RUN, "launchers.json");
 const ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
@@ -53,7 +53,7 @@ const ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
 // offers, or another of your computers hands it, is taken at once.
 const RELEASE_AGE = 3 * 86_400_000;
 const MAC_MEMORY = 30 * 86_400_000;
-const BOX_FILE = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
+export const BOX_FILE = /^(bin\/[A-Za-z0-9._-]+|bin\/runtime\/[A-Za-z0-9._-]+|config\/opencode\/plugins\/[A-Za-z0-9._-]+)$/;
 // A Mac bundle a release carries (the box's helper, `bin/Kuvo Helper.app`), named in `box.json`'s
 // `bundles` (which a box from before them passes over), each of its files by its path in it:
 // none a link, no part starting with a dot (never `..`), and the bundle swapped whole.
@@ -261,7 +261,7 @@ export function isUpdating(): boolean {
   return updateUnderWay(RUN);
 }
 
-function takeUpdateLock(): boolean {
+export function takeUpdateLock(): boolean {
   try {
     fs.mkdirSync(UPDATE_LOCK);
   } catch {
@@ -394,7 +394,7 @@ export function roomForData(): boolean {
 
 // The order files go in: its version first (a Mac connecting meanwhile leaves the box as it is),
 // the keeper's mark last (the keeper starts its new script only once the script is there).
-const installOrder = (files: string[]): string[] => [...files].sort((a, b) => (a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1));
+export const installOrder = (files: string[]): string[] => [...files].sort((a, b) => (a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1));
 
 /** How `update` runs: now (Update Now) or by its release check, from a folder on this computer (`from`, with
  * `boxes.json` and the pack it names) rather than GitHub, and for a test, its keys, address,

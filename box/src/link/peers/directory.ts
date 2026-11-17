@@ -16,6 +16,7 @@ import type { AgentsFile, AskingSession, AtWorkSession, ListedAgent, ToldAgents,
 import type { EngineSession } from "../engine/sessions";
 import { type BotLook, LOOKS as LOOK_WORDS } from "../../shared/routes/bots";
 import type { Peer } from "./known";
+import { AGENTS_DOWN_WHY } from "../areas/agents-down";
 
 export const PEER_AGENTS_FILE = path.join(RUN, "peer-agents.json");
 // COMPAT(beta.1 mac-agents): what a Mac connected over SSH said its agents were, for when the relay couldn't be reached; no Mac writes it now, and it's removed. Goes 3 months after 0.8.0.
@@ -134,11 +135,10 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
 
 /** How a peer said its coding agents stand (`computer.agents`), checked: one of the three states,
  * and a reason of the box's own words for it. */
-const AGENTS_WHY = ["engine", "notInstalled", "outdated", "keeper", "crashing", "stuck", "notStarting", "app"];
 function keptAgents(given: unknown): ToldComputer["agents"] {
   if (!isObject(given) || !["running", "restarting", "down"].includes(given.state as string)) return undefined;
   const state = given.state as "running" | "restarting" | "down";
-  return { state, ...(state === "down" && AGENTS_WHY.includes(given.why as string) ? { why: given.why as string } : {}) };
+  return { state, ...(state === "down" && (AGENTS_DOWN_WHY as readonly string[]).includes(given.why as string) ? { why: given.why as string } : {}) };
 }
 
 const keptBoxes = (boxes: unknown[]): NonNullable<ToldAgents["boxes"]> => boxes.filter(fitsPeer).slice(0, MOST_PEERS).map(cleanPeer).map(({ key, address, kind, name }) => ({ key, address, kind, name }));

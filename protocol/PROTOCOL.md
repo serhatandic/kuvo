@@ -3000,16 +3000,22 @@ the box (`link/areas/agents-down.ts`), never by a client:
 
 ### Updates
 
-**Repaired from the release it runs.** Every box keeps the signed release it runs, whole, in
-`updates/release` (the one it holds for your other computers: "Your computers follow each other").
+**Repaired from the release it runs.** Every box keeps the signed release it runs, whole: as the one
+it holds for your other computers (`updates/release`, "Your computers follow each other"), or, once
+a newer one is held there, apart in `updates/running` (gone once it runs another).
 `kuvo-link.js repair` checks Kuvo's own files here against it: the manifest (`boxes.json`) by its
 signature, the pack by the manifest's SHA-256, each file by the SHA-256 the pack's `box.json`
-names. A file that's missing or differs is put back from the pack, whole, with the pack's mode;
+names (only the names an update would write). A file that's missing or differs is put back from
+the pack, whole, with the pack's mode, in the order an update writes them, under the update's lock
+(`run/.updating`, so no update, rollback or second repair meanwhile); the keeper's own script keeps
+its engine line (`V=`), which is the box's to change;
 `bin/.own`, what an older Kuvo kept apart, goes. Only from the release this box runs
 (`bin/box-version`): a held release of another version is never used (`none`, `otherVersion`), so a
 repair never goes up or down. A held release whose pack isn't what its manifest says is never used
-and is removed (`damaged`): the box's next update brings a sound one. Not while an update or a
-rollback runs, nor within an hour of a Mac's note that it puts its files in place (`busy`). Each
+and is removed (`damaged`): the box's next update brings a sound one. Tar failing on a pack that
+is what its manifest says, or files it couldn't write, is `none`, `failed`, and nothing is removed.
+Not while an update, its trial or a rollback runs, nor within an hour of a Mac's note that it puts
+its files in place (`busy`). Each
 look is noted in `run/repair.json` (`{at, result, version?, files?, why?}`). The keeper starts one
 as it starts, each hour, once `run/attached` is newer than that note, after its coding agents'
 bridge didn't start, and before Try Again (`kuvo-start bridge-again`). Its Mac bundles aren't
